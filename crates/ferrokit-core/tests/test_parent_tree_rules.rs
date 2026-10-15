@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    dispatch_to_object, move_to_thread, register_qobject, set_parent, MoveError, ObjectData,
-    ObjectId, QObject, ReparentError, ThreadId,
+    dispatch_to_object, move_to_thread, register_qobject, set_parent, unregister_qobject,
+    MoveError, ObjectData, ObjectId, QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -290,4 +290,18 @@ fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
         !adopted.data.is_alive(),
         "a child attached during a callback is unregistered too"
     );
+}
+
+#[test]
+fn unregistering_a_parent_ends_its_children_links_like_dropping_it() {
+    let parent = Node::registered();
+    let parent_id = parent.data.id;
+    let mut child = Node::registered();
+    set_parent(&mut child.data, Some(parent_id)).unwrap();
+    assert_eq!(child.data.parent(), Some(parent_id));
+
+    // SAFETY: no callback is active on this thread.
+    unsafe { unregister_qobject(parent_id) };
+
+    assert_eq!(child.data.parent(), None);
 }

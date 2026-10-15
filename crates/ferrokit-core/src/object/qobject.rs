@@ -874,12 +874,16 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
 /// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters its
 /// children (see [`unregister_qobject`] for what that ends), including a child attached while a
-/// running callback borrowed the parent, which the parent records in the registry only.
-/// [`ObjectData::parent`] of the child returns `None` once the parent has been
-/// dropped, provided the parent was registered when this was called. That holds even for a child
-/// that a running callback borrows or that was never registered, which the parent's drop cannot
-/// write to; the public `parent` field can keep the old id there, so read the parent through
-/// `parent()`.
+/// running callback borrowed the parent. [`ObjectData::parent`] of the child returns `None` once
+/// the parent has been dropped or unregistered, provided the parent was registered when this was
+/// called. That holds for a child that a running callback borrows, or that was never registered,
+/// too.
+///
+/// Limits of that guarantee:
+/// - In the cases just named, where the parent's drop cannot write to the child, the public
+///   `parent` field can keep the old id. Read the parent through `parent()`.
+/// - A child attached while a running callback borrowed the parent is known to the registry only:
+///   the parent's own `children()` does not list it. Dropping the parent still reaches it.
 ///
 /// `new_parent` need not be registered: the id is accepted and only the child's own link is
 /// recorded. The parent's child list, `ChildAdded` and the death tracking above all need a
@@ -1077,6 +1081,9 @@ pub fn reparent_owned(
 /// # Safety
 /// Same as [`register_qobject`]: the child must remain at its allocated address while owned and
 /// registered, and must be used on its registration thread.
+/// In addition, the parent must not be dropped from inside a callback of this child. The parent's
+/// drop destroys its owned children without checking whether one of them is borrowed, so the
+/// child would be freed while that callback is still running.
 pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
