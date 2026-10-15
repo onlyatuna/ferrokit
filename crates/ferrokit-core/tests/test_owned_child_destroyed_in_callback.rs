@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+//! A parent dropped from inside the callback of one of its owned children.
+//!
+//! Qt destroys every child with its parent at once, even a child whose slot is running; the rest
+//! of that slot must then not touch the object (undefined behavior in C++, an error in PySide6).
+//! Here the callback runs on `&mut self`, so the child's memory has to outlive it. The child is
+//! destroyed at once as far as anything else can tell: it is unregistered, no longer alive, and its
+//! signals are disconnected. Its memory, and so its `Drop`, goes when the callback returns.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+use ferrokit_core::event::{Event, EventKind};
+use ferrokit_core::object::{
+    add_owned_child, dispatch_to_object, register_qobject, with_object_mut, ObjectData, ObjectId,
+    QObject, ThreadId,
+};
+use ferrokit_core::signal::ConnectionType;
+
+type Log = Rc<RefCell<Vec<String>>>;
+
+struct Parent {
+    data: ObjectData,
+}
+
+impl Parent {
+    fn registered() -> Box<Self> {
+        let mut p = Box::new(Self {
+            data: ObjectData::new(ObjectId::next()),
+        });
+        // SAFETY: the Box stays at this address on this thread until it is dropped, which
+        // unregisters it.
+        unsafe { register_qobject(&mut *p) };
+        p
+    }
+}
+
+impl QObject for Parent {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> &mut ObjectData {
+        &mut self.data
+    }
+}
+
+type UserHook = Box<dyn FnOnce(&mut Child)>;
+
+/// An owned child. It logs when it is freed, and runs `on_user` when it gets a user event.
+struct Child {
+    data: ObjectData,
+    name: &'static str,
+    log: Log,
+    payload: Vec<u32>,
+    on_user: Option<UserHook>,
+}
+
+impl Child {
+    fn new(name: &'static str, log: &Log) -> Box<Self> {
+        Box::new(Self {
+            data: ObjectData::new(ObjectId::next()),
+            name,
+            log: Rc::clone(log),
+            payload: vec![1, 2, 3],
+            on_user: None,
+        })
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        self.log.borrow_mut().push(format!("{} freed", self.name));
+    }
+}
+
+impl QObject for Child {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> &mut ObjectData {
+        &mut self.data
+    }
+    fn event(&mut self, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::User(_)) {
+            if let Some(hook) = self.on_user.take() {
+                hook(self);
+            }
+            return true;
+        }
+        false
+    }
+}
+
+fn attach(parent_id: ObjectId, child: Box<Child>) -> ObjectId {
+    // SAFETY: the parent owns the Box from here on and is dropped on this thread.
+    unsafe { add_owned_child(parent_id, child) }
+        .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"))
+}
+
+fn user_event() -> Event {
+    Event::new(EventKind::User(Box::new(())))
+}
+
+fn has(log: &Log, entry: &str) -> bool {
+    log.borrow().iter().any(|line| line == entry)
+}
+
+/// Makes `child` drop `parent` when it gets a user event, and report what it can still see.
+fn drop_the_parent_from(child: &mut Child, parent: &Rc<RefCell<Option<Box<Parent>>>>, log: &Log) {
+    let parent = Rc::clone(parent);
+    let log = Rc::clone(log);
+    child.on_user = Some(Box::new(move |me: &mut Child| {
+        me.log
+            .borrow_mut()
+            .push("callback: dropping the parent".into());
+        drop(parent.borrow_mut().take());
+        let sibling_freed = has(&log, "sibling freed");
+        let mid_freed = has(&log, "mid freed");
+        let child_freed = has(&log, "child freed");
+        me.log.borrow_mut().push(format!(
+            "callback: parent dropped; alive={} parent={:?} payload={} sibling_freed={sibling_freed} mid_freed={mid_freed} child_freed={child_freed}",
+            me.data.is_alive(),
+            me.data.parent(),
+            me.payload.iter().sum::<u32>(),
+        ));
+    }));
+}
+
+#[test]
+fn an_owned_child_is_freed_when_its_callback_returns_not_when_its_parent_drops() {
+    let log = Log::default();
+    let parent_id;
+    let parent = {
+        let p = Parent::registered();
+        parent_id = p.data.id;
+        Rc::new(RefCell::new(Some(p)))
+    };
+    let mut child = Child::new("child", &log);
+    let child_id = child.data.id;
+    drop_the_parent_from(&mut child, &parent, &log);
+    attach(parent_id, child);
+
+    let mut event = user_event();
+    dispatch_to_object(child_id, &mut event);
+
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            "callback: dropping the parent".to_string(),
+            "callback: parent dropped; alive=false parent=None payload=6 sibling_freed=false mid_freed=false child_freed=false".to_string(),
+            "child freed".to_string(),
+        ]
+    );
+    assert!(
+        with_object_mut(child_id, |_| ()).is_none(),
+        "the child must not stay registered"
+    );
+}
+
+#[test]
+fn only_the_child_whose_callback_is_running_waits_for_it() {
+    let log = Log::default();
+    let parent_id;
+    let parent = {
+        let p = Parent::registered();
+        parent_id = p.data.id;
+        Rc::new(RefCell::new(Some(p)))
+    };
+    attach(parent_id, Child::new("sibling", &log));
+    let mut child = Child::new("child", &log);
+    let child_id = child.data.id;
+    drop_the_parent_from(&mut child, &parent, &log);
+    attach(parent_id, child);
+
+    dispatch_to_object(child_id, &mut user_event());
+
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            "callback: dropping the parent".to_string(),
+            "sibling freed".to_string(),
+            "callback: parent dropped; alive=false parent=None payload=6 sibling_freed=true mid_freed=false child_freed=false".to_string(),
+            "child freed".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_grandchild_whose_callback_is_running_keeps_alive_only_itself() {
+    let log = Log::default();
+    let parent_id;
+    let parent = {
+        let p = Parent::registered();
+        parent_id = p.data.id;
+        Rc::new(RefCell::new(Some(p)))
+    };
+    let mid = Child::new("mid", &log);
+    let mid_id = attach(parent_id, mid);
+    let mut child = Child::new("child", &log);
+    let child_id = child.data.id;
+    drop_the_parent_from(&mut child, &parent, &log);
+    attach(mid_id, child);
+
+    dispatch_to_object(child_id, &mut user_event());
+
+    assert_eq!(
+        *log.borrow(),
+        vec![
+            "callback: dropping the parent".to_string(),
+            "mid freed".to_string(),
+            "callback: parent dropped; alive=false parent=None payload=6 sibling_freed=false mid_freed=true child_freed=false".to_string(),
+            "child freed".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_child_that_is_not_running_is_freed_with_its_parent() {
+    let log = Log::default();
+    let parent = Parent::registered();
+    let parent_id = parent.data.id;
+    attach(parent_id, Child::new("child", &log));
+
+    drop(parent);
+
+    assert_eq!(*log.borrow(), vec!["child freed".to_string()]);
+}
+
+/// A handle that lets a closure that must be `Send + Sync` hold a thread-bound value. Every use
+/// in this file is on one thread.
+struct ThreadBound<T>(T);
+unsafe impl<T> Send for ThreadBound<T> {}
+unsafe impl<T> Sync for ThreadBound<T> {}
+impl<T> ThreadBound<T> {
+    fn get(&self) -> &T {
+        &self.0
+    }
+}
+
+#[test]
+fn a_connection_to_another_object_is_gone_once_the_child_is_destroyed() {
+    let log = Log::default();
+    let parent_id;
+    let parent = {
+        let p = Parent::registered();
+        parent_id = p.data.id;
+        Rc::new(RefCell::new(Some(p)))
+    };
+    let observer = Parent::registered();
+    let slot_calls = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let mut child = Child::new("child", &log);
+    let child_id = child.data.id;
+    {
+        let first = ThreadBound(Rc::clone(&parent));
+        let calls = Arc::clone(&slot_calls);
+        child.data.object_name_changed.connect(move |_| {
+            calls.lock().unwrap().push("first");
+            drop(first.get().borrow_mut().take());
+        });
+        let calls = Arc::clone(&slot_calls);
+        child.data.object_name_changed.connect_object(
+            observer.data.id,
+            ThreadId::current(),
+            ConnectionType::Direct,
+            move |_| calls.lock().unwrap().push("second"),
+        );
+    }
+    child.on_user = Some(Box::new(|me: &mut Child| {
+        me.data.set_object_name("renamed")
+    }));
+    attach(parent_id, child);
+
+    dispatch_to_object(child_id, &mut user_event());
+
+    assert_eq!(
+        *slot_calls.lock().unwrap(),
+        vec!["first"],
+        "a slot of another object, connected after the one that destroyed the sender, must not run"
+    );
+    assert_eq!(*log.borrow(), vec!["child freed".to_string()]);
+}

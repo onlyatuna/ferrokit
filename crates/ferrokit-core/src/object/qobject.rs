@@ -5,6 +5,7 @@ use crate::variant::Variant;
 
 use super::thread::{ThreadContext, ThreadId};
 use crate::event::{Event, EventKind};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -39,6 +40,9 @@ pub struct ObjectRecord {
     /// held its borrow; the guard of that callback applies them when it ends.
     pending_child_changes: Mutex<Vec<ChildListChange>>,
     has_pending_child_changes: AtomicBool,
+    /// Set when an owned child was destroyed while this object's callback was running: the guard
+    /// of that callback then frees the memory it kept (see `destroy_when_released`).
+    free_when_released: AtomicBool,
 }
 
 /// One edit to the `children` list in an object's own `ObjectData`.
@@ -103,6 +107,55 @@ impl Drop for ObjectBorrowGuard {
             }
         }
         self.borrow_flag.store(false, Ordering::Release);
+        if self._entry.free_when_released.load(Ordering::Acquire) {
+            free_parked_children(&self.borrow_flag);
+        }
+    }
+}
+
+/// An owned child that waits to be freed, with the borrow flag of the callback it waits for.
+type ParkedChild = (Arc<AtomicBool>, Box<dyn QObject>);
+
+thread_local! {
+    /// Owned children whose parent was destroyed while a callback of theirs was running. The guard
+    /// of that callback frees them when it ends.
+    static PARKED_CHILDREN: RefCell<Vec<ParkedChild>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Destroys an owned child whose callback is still running, because its parent is being dropped
+/// from inside it. For everything else the child is destroyed at once: it is unregistered, so it
+/// is no longer alive, gets no events or timers, and its connections to other objects are gone.
+/// Its memory is kept until the callback returns, since that callback still runs on `&mut self`;
+/// the guard of the callback frees it (`free_parked_children`).
+fn destroy_when_released(child_id: ObjectId, child: Box<dyn QObject>) {
+    let Some((entry, _)) = registered_ptr(child_id) else {
+        drop(child);
+        return;
+    };
+    entry.free_when_released.store(true, Ordering::Release);
+    PARKED_CHILDREN.with(|parked| {
+        parked
+            .borrow_mut()
+            .push((Arc::clone(&entry.borrow_flag), child));
+    });
+    // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
+    // memory is not freed until it returns. No other callback can start on an unregistered object.
+    unsafe { unregister_qobject(child_id) };
+}
+
+/// Frees the children parked while the callback that held `flag` was running.
+fn free_parked_children(flag: &Arc<AtomicBool>) {
+    let ready: Vec<Box<dyn QObject>> = PARKED_CHILDREN.with(|parked| {
+        let mut parked = parked.borrow_mut();
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *parked)
+            .into_iter()
+            .partition(|(held, _)| Arc::ptr_eq(held, flag));
+        *parked = waiting;
+        ready.into_iter().map(|(_, child)| child).collect()
+    });
+    for mut child in ready {
+        child.object_data_mut().clear_parent();
+        drop(child);
     }
 }
 
@@ -353,6 +406,7 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
         borrow_flag: Arc::new(AtomicBool::new(false)),
         pending_child_changes: Mutex::new(Vec::new()),
         has_pending_child_changes: AtomicBool::new(false),
+        free_when_released: AtomicBool::new(false),
     });
     if let Ok(mut reg) = GLOBAL_OBJECT_REGISTRY.write() {
         if let Some(previous) = reg.insert(id, record) {
@@ -685,9 +739,22 @@ impl ObjectData {
     }
 
     /// Recursively cascades deletion to all children matching Qt `QObjectPrivate::deleteChildren`.
+    ///
+    /// An owned child whose callback is running is destroyed at once as far as anything else can
+    /// tell (unregistered, no longer alive, no events, timers or connections to other objects),
+    /// but its memory and its `Drop` wait until that callback returns: the callback still runs on
+    /// `&mut self`.
     pub fn delete_children(&mut self) {
-        for child in &mut self.owned_children {
-            child.object_data_mut().clear_parent();
+        let mut idle = Vec::with_capacity(self.owned_children.len());
+        for mut child in std::mem::take(&mut self.owned_children) {
+            let id = child.object_data().id;
+            if registered_and_borrowed(id) {
+                // Only the id was read; nothing else may touch a child a callback is using.
+                destroy_when_released(id, child);
+            } else {
+                child.object_data_mut().clear_parent();
+                idle.push(child);
+            }
         }
         for child_id in std::mem::take(&mut self.children) {
             release_child(child_id);
@@ -697,7 +764,7 @@ impl ObjectData {
         for child_id in registered_children_of(self.id) {
             release_child(child_id);
         }
-        self.owned_children.clear();
+        drop(idle);
     }
 
     /// Unregisters this object from dispatch and global metadata.
@@ -866,8 +933,8 @@ fn release_child(child_id: ObjectId) {
     // reached. A child that cannot be borrowed here (a running callback holds it, or it was never
     // registered) is not written to; its `parent()` sees the parent's liveness token instead.
     let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
-    // SAFETY: child destruction is synchronous on the owning thread; no callback is active for
-    // this child while the parent cascades deletion.
+    // SAFETY: the child may be borrowed by a running callback. It is not written to or freed here:
+    // whoever holds its `Box` frees it, and the callback's guard keeps its own `Arc` to the record.
     unsafe { unregister_qobject(child_id) };
 }
 
@@ -1084,7 +1151,7 @@ pub fn reparent_owned(
     {
         let data = boxed.object_data_mut();
         data.parent = new_parent;
-        data.parent_liveness = None;
+        data.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
         data.owned_by_parent = new_parent.is_some();
     }
 
@@ -1138,12 +1205,16 @@ pub fn reparent_owned(
 /// borrowed (for example from inside its own callback), returns `Busy`. In every case the `Box` is
 /// handed back, so nothing is dropped silently.
 ///
+/// Dropping the parent from inside a callback of this child is allowed. The child is then
+/// destroyed at once for everything but that callback: it is unregistered, no longer alive, gets
+/// no events or timers, and its connections to other objects are gone. Its memory, and so its
+/// `Drop`, waits until the callback returns, because the callback still runs on `&mut self`. Qt
+/// frees the child there and then, and also stops the signal emission that is under way; here
+/// that emission still calls the slots connected without a receiver object (`Signal::connect`).
+///
 /// # Safety
 /// Same as [`register_qobject`]: the child must remain at its allocated address while owned and
 /// registered, and must be used on its registration thread.
-/// In addition, the parent must not be dropped from inside a callback of this child. The parent's
-/// drop destroys its owned children without checking whether one of them is borrowed, so the
-/// child would be freed while that callback is still running.
 pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
@@ -1161,7 +1232,7 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
         {
             let data = child.object_data_mut();
             data.parent = Some(parent_id);
-            data.parent_liveness = None;
+            data.parent_liveness = liveness_of(parent_id).map(|alive| (parent_id, alive));
             data.owned_by_parent = true;
         }
         parent.object_data_mut().add_child(child_id);
