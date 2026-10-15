@@ -3,9 +3,10 @@
 //!
 //! Qt refuses a parent that belongs to another thread. It has already removed the child from its
 //! old parent when it finds out, warns, and leaves the child without a parent
-//! (qobject.cpp:2309-2345). `set_parent` does the same and reports `Err(DifferentThread)`. An owned
-//! child's `Box` would be lost by a silent detach, so `reparent_owned` and `add_owned_child` refuse
-//! without changing anything.
+//! (qobject.cpp:2309-2345). `set_parent` does the same, prints Qt's warning and reports
+//! `Err(DifferentThread)`. An owned child's `Box` would be lost by a detach, so `reparent_owned`
+//! and `add_owned_child` refuse without changing anything and without printing the warning: the
+//! owner keeps the child it had, and a refused new child is handed back.
 
 use std::sync::mpsc::{channel, Sender};
 use std::thread::JoinHandle;
@@ -193,7 +194,49 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
         1,
         "the owner still holds the Box"
     );
-    assert!(remote.finish().children.is_empty());
+    let child = owner.data.owned_children[0].object_data();
+    assert_eq!(
+        child.parent(),
+        Some(owner_id),
+        "the child keeps its old parent"
+    );
+    assert!(child.is_owned_by_parent());
+    assert_eq!(
+        owner.seen,
+        vec![format!("added {}", child_id.0)],
+        "the old parent is told nothing more"
+    );
+    let report = remote.finish();
+    assert!(report.children.is_empty(), "the new parent gained no child");
+    assert!(report.seen.is_empty(), "the new parent heard nothing");
+}
+
+#[test]
+fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
+    let owner = Node::registered();
+    let owner_id = owner.data.id;
+    let other = Node::registered();
+    let other_id = other.data.id;
+    // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
+    let child_id = unsafe { add_owned_child(owner_id, Node::registered()) }
+        .map_err(|(error, _)| error)
+        .expect("same thread");
+    let remote = Remote::start();
+    assert_eq!(
+        reparent_owned(child_id, Some(remote.id)).err(),
+        Some(ReparentError::DifferentThread)
+    );
+
+    let moved = reparent_owned(child_id, Some(other_id));
+
+    assert!(
+        matches!(moved, Ok(None)),
+        "the move was refused: {:?}",
+        moved.err()
+    );
+    assert!(owner.data.children.is_empty());
+    assert_eq!(other.data.children, vec![child_id]);
+    remote.finish();
 }
 
 #[test]
@@ -214,10 +257,14 @@ fn an_owned_child_built_for_another_thread_is_handed_back() {
         Err((error, handed_back)) => {
             assert_eq!(error, ReparentError::DifferentThread);
             assert_eq!(handed_back.data.id, child_id);
+            assert_eq!(handed_back.data.parent(), None, "no parent link was made");
+            assert!(!handed_back.data.is_owned_by_parent());
         }
         Ok(_) => panic!("an owned child with another affinity was attached"),
     }
     assert!(owner.data.children.is_empty());
+    assert!(owner.data.owned_children.is_empty());
+    assert!(owner.seen.is_empty(), "the owner was told of no child");
 }
 
 const CASE_ENV: &str = "FERROKIT_TEST_CASE";
@@ -256,6 +303,62 @@ fn the_refusal_prints_qts_warning() {
     assert!(
         stderr
             .contains("QObject::setParent: Cannot set parent, new parent is in a different thread"),
+        "stderr was: {stderr}"
+    );
+}
+
+/// The two refusals of `the_owned_refusals_print_no_warning`, run in a child process so its stderr
+/// can be read. Does nothing in a normal run.
+#[test]
+fn the_owned_refusal_case_for_the_silence_test() {
+    if std::env::var(CASE_ENV).as_deref() != Ok("silence") {
+        return;
+    }
+    let owner = Node::registered();
+    let owner_id = owner.data.id;
+    // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
+    let child_id = unsafe { add_owned_child(owner_id, Node::registered()) }
+        .map_err(|(error, _)| error)
+        .expect("same thread");
+    let remote = Remote::start();
+    assert_eq!(
+        reparent_owned(child_id, Some(remote.id)).err(),
+        Some(ReparentError::DifferentThread)
+    );
+    remote.finish();
+
+    let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
+    let foreign = Box::new(Node {
+        data: ObjectData::with_thread(ObjectId::next(), elsewhere),
+        seen: Vec::new(),
+    });
+    // SAFETY: the Box comes back with the error.
+    let refused = unsafe { add_owned_child(owner_id, foreign) };
+    assert!(matches!(refused, Err((ReparentError::DifferentThread, _))));
+}
+
+#[test]
+fn the_owned_refusals_print_no_warning() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "the_owned_refusal_case_for_the_silence_test",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CASE_ENV, "silence")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the case failed: {stderr}");
+    assert!(
+        stdout.contains("the_owned_refusal_case_for_the_silence_test ... ok"),
+        "the case did not run: {stdout}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("different thread"),
         "stderr was: {stderr}"
     );
 }

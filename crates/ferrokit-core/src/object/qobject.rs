@@ -920,9 +920,16 @@ pub enum ReparentError {
     /// The object or a parent is borrowed by an active callback.
     Busy,
     /// The new parent belongs to a different thread than the child: their thread affinities
-    /// differ, and a parent and its children share one thread. [`set_parent`] has already removed
-    /// the child from its old parent by then, as Qt does, so the child is left without a parent.
-    /// [`reparent_owned`] and [`add_owned_child`] change nothing.
+    /// (`ObjectData::thread_id`) differ, and a parent and its children share one thread. What is
+    /// left behind depends on the call:
+    /// - [`set_parent`] does what Qt's `setParent` does. The child has already been removed from
+    ///   its old parent, which received `ChildRemoved`, so it is left without a parent, and Qt's
+    ///   warning goes to stderr.
+    /// - [`reparent_owned`] changes nothing and prints nothing: the child stays with its old
+    ///   parent, which still owns its `Box`. Qt would detach the child.
+    /// - [`add_owned_child`] attaches nothing and prints nothing, and hands the `Box` back: the
+    ///   child has no parent and the parent's children are as they were. Qt's constructor leaves
+    ///   the new object without a parent in the same way, but warns.
     DifferentThread,
 }
 
@@ -1002,7 +1009,8 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
 /// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
 /// thread is not checked, but a registered child must still be used on the thread it is registered
-/// on (see [`register_qobject`]).
+/// on (see [`register_qobject`]). [`reparent_owned`] and [`add_owned_child`] refuse the same
+/// pairs without detaching anything and without the warning; see [`ReparentError::DifferentThread`].
 ///
 /// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
 /// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters its
@@ -1098,8 +1106,10 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// changed, so an `Err` leaves the hierarchy exactly as it was.
 ///
 /// Refuses with [`ReparentError::DifferentThread`] when the new parent's thread differs from the
-/// child's. Unlike [`set_parent`] it changes nothing: the `Box` is the child's only owner, and
-/// Qt's detach-and-leave-parentless cannot hand it back together with an error.
+/// child's. Unlike [`set_parent`] it changes nothing: the child keeps its old parent and that
+/// parent keeps owning its `Box`, no event is sent, and no warning is printed. Qt's `setParent`
+/// would detach the child and leave it without a parent; here that would leave the `Box` without
+/// an owner, and the return type cannot hand it back together with an error.
 pub fn reparent_owned(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
@@ -1203,7 +1213,9 @@ pub fn reparent_owned(
 /// Returns the child id. If the parent's thread differs from the child's, returns
 /// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the parent is
 /// borrowed (for example from inside its own callback), returns `Busy`. In every case the `Box` is
-/// handed back, so nothing is dropped silently.
+/// handed back and nothing is attached: the child gets no parent, the parent's children stay as
+/// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
+/// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
 ///
 /// Dropping the parent from inside a callback of this child is allowed. The child is then
 /// destroyed at once for everything but that callback: it is unregistered, no longer alive, gets
