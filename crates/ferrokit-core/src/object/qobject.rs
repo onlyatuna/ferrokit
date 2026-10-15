@@ -285,7 +285,7 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
         thread_id: RwLock::new(thread_id),
         registration_thread: RwLock::new(ThreadId::current()),
         ptr: RegisteredPtr(ptr),
-        parent: RwLock::new(data.parent),
+        parent: RwLock::new(data.parent()),
         children: RwLock::new(data.children.clone()),
         liveness: Arc::clone(&data.liveness),
         generation: AtomicU32::new(data.generation),
@@ -431,6 +431,13 @@ pub struct ObjectData {
     /// lifetime belongs to the parent, so `set_parent` (which only sees `&mut ObjectData`, a
     /// borrow *into* that `Box`) must not detach it; [`reparent_owned`] moves the `Box` safely.
     owned_by_parent: bool,
+
+    /// The parent's id and liveness token, captured when a registered parent was set. It lets
+    /// [`ObjectData::parent`] see the parent die when the parent's drop cannot write to this
+    /// object: a running callback borrows it, it was never registered, or it is registered on
+    /// another thread. A token whose id differs from `parent` is stale and ignored, because
+    /// `parent` is a public field that can be assigned directly.
+    parent_liveness: Option<(ObjectId, Arc<AtomicBool>)>,
 }
 
 impl fmt::Debug for ObjectData {
@@ -481,6 +488,7 @@ impl ObjectData {
             owned_children: Vec::new(),
             timers: Vec::new(),
             owned_by_parent: false,
+            parent_liveness: None,
         }
     }
     /// Creates a new ObjectData with a unique auto-generated ObjectId.
@@ -510,6 +518,7 @@ impl ObjectData {
             owned_children: Vec::new(),
             timers: Vec::new(),
             owned_by_parent: false,
+            parent_liveness: None,
         }
     }
 
@@ -547,8 +556,22 @@ impl ObjectData {
     }
 
     /// Returns the parent object ID if any (`QObject::parent`).
+    ///
+    /// `None` once the parent has been dropped, as long as it was registered when it was set,
+    /// even if this object could not be updated at that moment. The public `parent` field can
+    /// still name the dead parent then; read it through this method.
     pub fn parent(&self) -> Option<ObjectId> {
-        self.parent
+        let id = self.parent?;
+        match &self.parent_liveness {
+            Some((token_id, alive)) if *token_id == id && !alive.load(Ordering::Acquire) => None,
+            _ => Some(id),
+        }
+    }
+
+    /// Forgets the parent, and the token that tracked it.
+    fn clear_parent(&mut self) {
+        self.parent = None;
+        self.parent_liveness = None;
     }
 
     /// Returns a slice of direct children object IDs (`QObject::children`).
@@ -598,14 +621,15 @@ impl ObjectData {
     /// Recursively cascades deletion to all children matching Qt `QObjectPrivate::deleteChildren`.
     pub fn delete_children(&mut self) {
         for child in &mut self.owned_children {
-            child.object_data_mut().parent = None;
+            child.object_data_mut().clear_parent();
         }
         for child_id in std::mem::take(&mut self.children) {
             // A child whose `Box` this parent does not hold survives it and only loses its
             // parent. Its own link is cleared before the unregister below, after which it can no
-            // longer be reached. A child that is borrowed right now, or registered on another
-            // thread, keeps the stale id.
-            let _ = with_object_mut(child_id, |child| child.object_data_mut().parent = None);
+            // longer be reached. A child that cannot be borrowed here (a running callback holds
+            // it, or it was never registered) is not written to; its `parent()` sees the
+            // parent's liveness token instead.
+            let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
             // SAFETY: child destruction is synchronous on the owning thread; no callback is
             // active for this child while the parent cascades deletion.
             unsafe { unregister_qobject(child_id) };
@@ -657,7 +681,7 @@ impl ObjectData {
 impl Drop for ObjectData {
     fn drop(&mut self) {
         // 1. If we have a parent, unlink from parent and notify it
-        if let Some(parent_id) = self.parent {
+        if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
                 // The parent's borrow is held, so its child lists cannot be edited now. The
                 // removal is posted, not dropped.
@@ -762,6 +786,12 @@ pub enum ReparentError {
     Busy,
 }
 
+/// The liveness token of a registered object, or `None` if `id` is not registered.
+fn liveness_of(id: ObjectId) -> Option<Arc<AtomicBool>> {
+    let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
+    registry.get(&id).map(|record| Arc::clone(&record.liveness))
+}
+
 /// Whether making `new_parent` the parent of `child_id` would make an object its own ancestor:
 /// `new_parent` is the child itself or one of its descendants, as the registry records them.
 fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
@@ -793,11 +823,21 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// which Qt documents as undefined behavior.
 ///
 /// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
-/// When the parent is dropped the child is not destroyed. It is unregistered, which also
-/// disconnects its signals and stops its timers, and it ends up without a parent (Qt deletes it).
+/// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters the
+/// children in its own child list, so their signals are disconnected and their timers stopped.
+/// [`ObjectData::parent`] of the child returns `None` once the parent has been dropped, provided
+/// the parent was registered when this was called. That holds even for a child that a running
+/// callback borrows or that was never registered, which the parent's drop cannot write to; the
+/// public `parent` field can keep the old id there, so read the parent through `parent()`.
+///
+/// Limit: a child attached while the new parent is borrowed by a running callback is recorded in
+/// the registry only. The parent's drop does not reach it, so it stays registered, with `parent()`
+/// returning `None`.
+///
 /// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
-    if child.parent == new_parent {
+    let old_parent = child.parent();
+    if old_parent == new_parent {
         return Ok(());
     }
     if child.owned_by_parent {
@@ -812,7 +852,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 
     // Update global registry parent/children records.
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(old_record) = child.parent.and_then(|id| registry.get(&id)) {
+        if let Some(old_record) = old_parent.and_then(|id| registry.get(&id)) {
             old_record
                 .children
                 .write()
@@ -831,7 +871,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     }
 
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks.
-    if let Some(old_parent_id) = child.parent {
+    if let Some(old_parent_id) = old_parent {
         with_object_mut(old_parent_id, |obj| {
             obj.object_data_mut().children.retain(|&id| id != child_id);
         });
@@ -841,6 +881,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }
     }
     child.parent = new_parent;
+    child.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
     if let Some(new_parent_id) = new_parent {
         with_object_mut(new_parent_id, |obj| {
             let data = obj.object_data_mut();
@@ -911,6 +952,7 @@ pub fn reparent_owned(
     {
         let data = boxed.object_data_mut();
         data.parent = new_parent;
+        data.parent_liveness = None;
         data.owned_by_parent = new_parent.is_some();
     }
 
@@ -980,6 +1022,7 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
         {
             let data = child.object_data_mut();
             data.parent = Some(parent_id);
+            data.parent_liveness = None;
             data.owned_by_parent = true;
         }
         parent.object_data_mut().add_child(child_id);
@@ -1012,11 +1055,12 @@ pub fn reparent(
     }
     if let Some(new_p) = new_parent {
         child.parent = Some(new_p.id);
+        child.parent_liveness = Some((new_p.id, Arc::clone(&new_p.liveness)));
         if !new_p.children.contains(&child.id) {
             new_p.children.push(child.id);
         }
     } else {
-        child.parent = None;
+        child.clear_parent();
     }
 }
 

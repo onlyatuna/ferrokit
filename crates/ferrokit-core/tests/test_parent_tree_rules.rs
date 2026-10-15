@@ -6,9 +6,13 @@
 //! here the change is refused. Qt deletes every child with its parent; here a child whose `Box`
 //! is not held by the parent (it was attached with `set_parent`) stays alive and loses the parent.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_qobject, set_parent, ObjectData, ObjectId, QObject, ReparentError,
+    dispatch_to_object, move_to_thread, register_qobject, set_parent, MoveError, ObjectData,
+    ObjectId, QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -142,4 +146,92 @@ fn dropping_a_parent_does_not_touch_the_parent_of_an_unrelated_child() {
     drop(doomed);
 
     assert_eq!(child.data.parent(), Some(kept_id));
+}
+
+/// Drops the parent it is given from inside its own `event`, so the parent goes away while this
+/// object is borrowed by a running callback.
+struct Reactor {
+    data: ObjectData,
+    victim: Rc<RefCell<Option<Box<Node>>>>,
+    parent_seen: Vec<Option<ObjectId>>,
+}
+
+impl Reactor {
+    fn registered(victim: Rc<RefCell<Option<Box<Node>>>>) -> Box<Self> {
+        let mut r = Box::new(Self {
+            data: ObjectData::new(ObjectId::next()),
+            victim,
+            parent_seen: Vec::new(),
+        });
+        // SAFETY: as in `Node::registered`.
+        unsafe { register_qobject(&mut *r) };
+        r
+    }
+}
+
+impl QObject for Reactor {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> &mut ObjectData {
+        &mut self.data
+    }
+    fn event(&mut self, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::UpdateRequest) {
+            self.parent_seen.push(self.data.parent());
+            drop(self.victim.borrow_mut().take());
+            self.parent_seen.push(self.data.parent());
+        }
+        false
+    }
+}
+
+/// A registered child whose callback drops its own parent, and that callback's observations.
+fn child_that_drops_its_parent() -> (Box<Reactor>, ObjectId) {
+    let parent = Node::registered();
+    let parent_id = parent.data.id;
+    let victim = Rc::new(RefCell::new(Some(parent)));
+    let mut child = Reactor::registered(Rc::clone(&victim));
+    set_parent(&mut child.data, Some(parent_id)).unwrap();
+
+    let mut event = Event::new(EventKind::UpdateRequest);
+    dispatch_to_object(child.data.id, &mut event);
+
+    assert!(victim.borrow().is_none(), "the callback dropped the parent");
+    (child, parent_id)
+}
+
+#[test]
+fn a_child_borrowed_while_its_parent_is_dropped_is_left_without_a_parent() {
+    let (child, parent_id) = child_that_drops_its_parent();
+
+    assert_eq!(
+        child.parent_seen,
+        vec![Some(parent_id), None],
+        "inside the callback: the parent before it is dropped, none right after"
+    );
+    assert_eq!(child.data.parent(), None, "once the callback has returned");
+}
+
+#[test]
+fn a_child_that_was_never_registered_is_left_without_a_parent() {
+    let parent = Node::registered();
+    let parent_id = parent.data.id;
+    let mut child = ObjectData::new(ObjectId::next());
+    set_parent(&mut child, Some(parent_id)).unwrap();
+    assert_eq!(child.parent(), Some(parent_id));
+
+    drop(parent);
+
+    assert_eq!(child.parent(), None);
+}
+
+#[test]
+fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
+    let (mut child, _) = child_that_drops_its_parent();
+    let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
+
+    let moved = move_to_thread(&mut child.data, elsewhere, ThreadId::current());
+
+    assert_ne!(moved, Err(MoveError::HasParent));
 }

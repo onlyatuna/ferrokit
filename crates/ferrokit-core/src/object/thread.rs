@@ -280,7 +280,7 @@ pub fn move_to_thread(
     target_thread: ThreadId,
     current_caller_thread: ThreadId,
 ) -> Result<(), MoveError> {
-    if object_data.parent.is_some() {
+    if object_data.parent().is_some() {
         return Err(MoveError::HasParent);
     }
     if object_data.thread_id != current_caller_thread {
