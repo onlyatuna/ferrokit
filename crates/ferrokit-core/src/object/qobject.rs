@@ -768,7 +768,8 @@ pub fn remove_event_filter(target: &mut ObjectData, filter: ObjectId) {
     target.event_filters.remove(filter);
 }
 
-/// Why a parent change was refused. Nothing is changed when an error is returned.
+/// Why a parent change was refused. Nothing is changed when an error is returned, except for
+/// [`ReparentError::DifferentThread`] from [`set_parent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReparentError {
     /// [`set_parent`]: the object's `Box` is held by its parent's `owned_children`. Detaching it
@@ -782,6 +783,11 @@ pub enum ReparentError {
     InvalidParent,
     /// The object or a parent is borrowed by an active callback.
     Busy,
+    /// The new parent belongs to a different thread than the child: their thread affinities
+    /// differ, and a parent and its children share one thread. [`set_parent`] has already removed
+    /// the child from its old parent by then, as Qt does, so the child is left without a parent.
+    /// [`reparent_owned`] and [`add_owned_child`] change nothing.
+    DifferentThread,
 }
 
 /// Lets go of a child whose `Box` its parent does not hold: it survives the parent, loses its
@@ -810,6 +816,12 @@ fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
         .copied()
         .filter(|child_id| registry.contains_key(child_id))
         .collect()
+}
+
+/// Whether `parent` belongs to a different thread than `child_thread`. An object whose thread is
+/// unknown (not built through `ObjectData`, or already unregistered) is not judged to differ.
+fn in_different_thread(child_thread: ThreadId, parent: ObjectId) -> bool {
+    query_object_thread(parent).is_some_and(|thread| thread != child_thread)
 }
 
 /// The liveness token of a registered object, or `None` if `id` is not registered.
@@ -848,6 +860,14 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// child itself or one of its descendants. Qt's release build accepts that and builds a cycle,
 /// which Qt documents as undefined behavior.
 ///
+/// Thread affinity: the child's thread and the new parent's thread (`ObjectData::thread_id`, as
+/// [`move_to_thread`](crate::object::move_to_thread) changes it) must be the same, because a parent and its children share one
+/// thread. Otherwise, as in Qt (qobject.cpp:2309-2345), the child is removed from its old parent,
+/// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
+/// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
+/// thread is not checked, but a registered child must still be used on the thread it is registered
+/// on (see [`register_qobject`]).
+///
 /// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
 /// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters its
 /// children (see [`unregister_qobject`] for what that ends), including a child attached while a
@@ -873,6 +893,10 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
             return Err(ReparentError::InvalidParent);
         }
     }
+    // Qt finds the mismatch only after it has removed the child from its old parent, so the
+    // change below goes ahead as a detach.
+    let refused_thread = new_parent.is_some_and(|np| in_different_thread(child.thread_id, np));
+    let new_parent = if refused_thread { None } else { new_parent };
 
     // Update global registry parent/children records.
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
@@ -918,6 +942,10 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
             dispatch_to_object(new_parent_id, &mut added);
         }
     }
+    if refused_thread {
+        eprintln!("QObject::setParent: Cannot set parent, new parent is in a different thread");
+        return Err(ReparentError::DifferentThread);
+    }
     Ok(())
 }
 
@@ -928,6 +956,10 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// it instead of dropping it. `ChildRemoved`/`ChildAdded` go through `notify_helper`, so object
 /// and application event filters see them. Validation and borrows are taken before anything is
 /// changed, so an `Err` leaves the hierarchy exactly as it was.
+///
+/// Refuses with [`ReparentError::DifferentThread`] when the new parent's thread differs from the
+/// child's. Unlike [`set_parent`] it changes nothing: the `Box` is the child's only owner, and
+/// Qt's detach-and-leave-parentless cannot hand it back together with an error.
 pub fn reparent_owned(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
@@ -951,6 +983,9 @@ pub fn reparent_owned(
     }
 
     if let Some(np) = new_parent {
+        if in_different_thread(*child_record.thread_id.read().unwrap(), np) {
+            return Err(ReparentError::DifferentThread);
+        }
         registered_ptr(np).ok_or(ReparentError::InvalidParent)?;
         if would_create_cycle(child_id, np) {
             return Err(ReparentError::InvalidParent);
@@ -1025,8 +1060,9 @@ pub fn reparent_owned(
 /// Attaches `child` as an owned child of `parent_id` and sends `ChildAdded` to the parent
 /// (Qt `setParent_helper`, qobject.cpp:2346-2352).
 ///
-/// Returns the child id. If the parent is not registered, returns `UnknownObject`; if the parent is
-/// borrowed (for example from inside its own callback), returns `Busy`. In both cases the `Box` is
+/// Returns the child id. If the parent's thread differs from the child's, returns
+/// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the parent is
+/// borrowed (for example from inside its own callback), returns `Busy`. In every case the `Box` is
 /// handed back, so nothing is dropped silently.
 ///
 /// # Safety
@@ -1036,6 +1072,9 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
 ) -> Result<ObjectId, (ReparentError, Box<T>)> {
+    if in_different_thread(child.object_data().thread_id, parent_id) {
+        return Err((ReparentError::DifferentThread, child));
+    }
     if registered_ptr(parent_id).is_none() {
         return Err((ReparentError::UnknownObject, child));
     }
