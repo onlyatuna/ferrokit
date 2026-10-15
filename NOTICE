@@ -1,0 +1,64 @@
+ferrokit
+Copyright (C) 2026 The ferrokit contributors
+
+ferrokit is licensed under the GNU Lesser General Public License, version 3 only
+(SPDX: LGPL-3.0-only). The license text is in LICENSE. The LGPL is a set of additional
+permissions on top of the GNU General Public License, version 3, whose text is in
+LICENSES/GPL-3.0-only.txt.
+
+
+Upstream: Qt
+------------
+ferrokit re-implements parts of the design, the algorithms and the observable behaviour of Qt
+(https://github.com/qt/qtbase, checked against qtbase 6.11.x). Comments in the source point at the
+qtbase files and lines that a behaviour was checked against. Qt is available under several
+licenses, among them the LGPL-3.0-only that ferrokit uses.
+
+The qtbase files referred to carry the copyright of The Qt Company Ltd. and, in some files, of
+other contributors, among them Intel Corporation, Klaralvdalens Datakonsult AB (a KDAB Group
+company), Olivier Goffart, Samuel Gaist and Konstantin Ritt. The header of each upstream file has
+its exact notices. This list is not exhaustive.
+
+Of the 11 qcocoa* files of qtbase that ferrokit's macOS code refers to, four are licensed under the
+BSD 3-Clause license (LICENSES/BSD-3-Clause.txt); the other seven carry Qt's usual set of licenses,
+which includes LGPL-3.0-only (checked against qtbase 6.11.3):
+
+  plugins/platforms/cocoa/qcocoasystemtrayicon.mm
+      Copyright (C) 2016 The Qt Company Ltd.
+      Copyright (C) 2012 Klaralvdalens Datakonsult AB, a KDAB Group company
+      Copyright (c) 2007-2008, Apple, Inc.
+  plugins/platforms/cocoa/qcocoaapplication.mm
+      Copyright (C) 2016 The Qt Company Ltd.
+      Copyright (c) 2007-2008, Apple, Inc.
+  plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
+      Copyright (C) 2018 The Qt Company Ltd.
+      Copyright (c) 2007-2008, Apple, Inc.
+  plugins/platforms/cocoa/qcocoaeventdispatcher.mm
+      Copyright (C) 2016 The Qt Company Ltd.
+      Copyright (c) 2007-2008, Apple, Inc.
+
+
+Easing equations
+----------------
+Qt's QEasingCurve uses Robert Penner's Easing Equations, which qtbase ships under the BSD 3-Clause
+license (src/3rdparty/easing/easing.cpp). The curves of ferrokit-core (animation/easing.rs: elastic,
+back, bounce and the others, with the default period 0.3 and overshoot 1.70158) are the same
+equations, so that notice applies to them too (LICENSES/BSD-3-Clause.txt):
+
+  Copyright (c) 2001 Robert Penner
+  All rights reserved.
+
+
+Reference data
+--------------
+Expected values in many tests (for example crates/ferrokit-widgets/tests/fixtures/layout_qt_oracle.txt,
+and the numbers in the text, layout and style sheet tests) were measured by running Qt through
+PySide6 6.11.2 (Qt 6.11.2). The file fixtures/layout_qt_oracle_known.txt next to it lists the cases
+where ferrokit differs from Qt; they were recorded the same way.
+
+
+Trademarks
+----------
+"Qt" is a registered trademark of The Qt Company Ltd. and its subsidiaries.
+ferrokit is an independent project. It is not affiliated with, endorsed by or sponsored by The Qt
+Company.

@@ -1,0 +1,251 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+//! `PlatformWindow::is_active` and `WindowFlags::TOOLTIP` (`Qt::ToolTip`): a tooltip window is
+//! shown without taking activation, so showing it never moves the foreground away from the
+//! window it annotates.
+
+use ferrokit_gui::geometry::primitives::Rect;
+use ferrokit_platform::{
+    ClosureWindowEventHandler, GenericWindow, PlatformWindow, WaylandEvent, WaylandNativeWindow,
+    WindowFlags, WindowSystemEvent, X11Event, X11NativeWindow,
+};
+
+fn rect() -> Rect {
+    Rect::new(120, 120, 160, 80)
+}
+
+// ---- Windows: real Win32 windows -------------------------------------------------------------
+
+#[cfg(windows)]
+mod win32 {
+    use super::*;
+    use ferrokit_platform::NativeWindow;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowLongW, IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE,
+        GWL_STYLE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
+    };
+
+    fn ex_style(w: &NativeWindow) -> u32 {
+        unsafe { GetWindowLongW(w.hwnd(), GWL_EXSTYLE) as u32 }
+    }
+
+    fn foreground() -> isize {
+        unsafe { GetForegroundWindow() as isize }
+    }
+
+    #[test]
+    fn tooltip_window_is_a_non_activating_topmost_tool_popup() {
+        let tip = NativeWindow::new("tip", rect(), WindowFlags::TOOLTIP).unwrap();
+        let ex = ex_style(&tip);
+        assert_ne!(ex & WS_EX_NOACTIVATE, 0, "WS_EX_NOACTIVATE");
+        assert_ne!(ex & WS_EX_TOPMOST, 0, "WS_EX_TOPMOST");
+        assert_ne!(ex & WS_EX_TOOLWINDOW, 0, "WS_EX_TOOLWINDOW (no taskbar button)");
+        assert_eq!(ex & WS_EX_APPWINDOW, 0);
+        let style = unsafe { GetWindowLongW(tip.hwnd(), GWL_STYLE) as u32 };
+        assert_ne!(style & WS_POPUP, 0);
+        assert_eq!(style & WS_CAPTION, 0, "no frame");
+    }
+
+    #[test]
+    fn a_regular_window_does_not_get_noactivate() {
+        let w = NativeWindow::new("w", rect(), WindowFlags::FRAMELESS).unwrap();
+        assert_eq!(ex_style(&w) & WS_EX_NOACTIVATE, 0);
+    }
+
+    /// Makes `w` the foreground window. A process that lost foreground rights (for example
+    /// because the previous foreground window was destroyed) may need the Alt-tap trick.
+    fn take_foreground(w: &NativeWindow) -> bool {
+        unsafe {
+            SetForegroundWindow(w.hwnd());
+            if foreground() != w.hwnd() as isize {
+                keybd_event(VK_MENU as u8, 0, 0, 0);
+                keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+                SetForegroundWindow(w.hwnd());
+            }
+        }
+        foreground() == w.hwnd() as isize
+    }
+
+    const SKIP: &str = "SKIPPED: the desktop session refused to give this process the foreground";
+
+    #[test]
+    fn showing_a_tooltip_window_does_not_take_the_foreground() {
+        let owner = NativeWindow::new("owner", rect(), WindowFlags::FRAMELESS).unwrap();
+        owner.show();
+        if !take_foreground(&owner) {
+            eprintln!("{SKIP}");
+            return;
+        }
+
+        let tip = NativeWindow::new("tip", rect(), WindowFlags::TOOLTIP).unwrap();
+        PlatformWindow::show(&tip);
+        assert_ne!(unsafe { IsWindowVisible(tip.hwnd()) }, 0, "the tip is visible");
+        assert_eq!(
+            foreground(),
+            owner.hwnd() as isize,
+            "showing the tip changed the foreground window"
+        );
+        assert!(PlatformWindow::is_active(&owner));
+        assert!(!PlatformWindow::is_active(&tip));
+
+        // Control: the same check can fail. An ordinary window shown the same way does take the
+        // foreground, so the assertions above are not vacuous.
+        let ordinary = NativeWindow::new("ordinary", rect(), WindowFlags::FRAMELESS).unwrap();
+        PlatformWindow::show(&ordinary);
+        assert_eq!(foreground(), ordinary.hwnd() as isize, "control: show() activates");
+        assert!(PlatformWindow::is_active(&ordinary));
+        assert!(!PlatformWindow::is_active(&owner));
+    }
+
+    #[test]
+    fn is_active_is_the_foreground_window() {
+        let a = NativeWindow::new("a", rect(), WindowFlags::FRAMELESS).unwrap();
+        let b = NativeWindow::new("b", rect(), WindowFlags::FRAMELESS).unwrap();
+        a.show();
+        b.show();
+        if !take_foreground(&a) {
+            eprintln!("{SKIP}");
+            return;
+        }
+        assert!(PlatformWindow::is_active(&a));
+        assert!(!PlatformWindow::is_active(&b));
+
+        assert!(take_foreground(&b));
+        assert!(!PlatformWindow::is_active(&a));
+        assert!(PlatformWindow::is_active(&b));
+    }
+
+    #[test]
+    fn a_hidden_window_is_not_active() {
+        let w = NativeWindow::new("w", rect(), WindowFlags::FRAMELESS).unwrap();
+        assert!(!PlatformWindow::is_active(&w), "never shown");
+        w.show();
+        let _ = take_foreground(&w);
+        w.hide();
+        assert!(!PlatformWindow::is_active(&w));
+    }
+}
+
+// ---- Simulated backends: activation comes from the focus events the window system delivers ----
+
+fn noop_handler() -> Box<dyn ferrokit_platform::WindowSystemEventHandler> {
+    Box::new(ClosureWindowEventHandler::new(|_| {}))
+}
+
+#[test]
+fn generic_window_is_active_between_focus_in_and_focus_out() {
+    let mut w = GenericWindow::new("g", rect(), WindowFlags::NORMAL);
+    w.set_event_handler(noop_handler());
+    w.show();
+    assert!(!w.is_active(), "showing does not activate by itself");
+
+    w.queue_event(WindowSystemEvent::FocusIn);
+    w.poll_events();
+    assert!(w.is_active());
+
+    w.queue_event(WindowSystemEvent::FocusOut);
+    w.poll_events();
+    assert!(!w.is_active());
+
+    w.queue_event(WindowSystemEvent::FocusIn);
+    w.poll_events();
+    w.hide();
+    assert!(!w.is_active(), "a hidden window is never active");
+}
+
+#[test]
+fn x11_window_is_active_between_focus_in_and_focus_out() {
+    let mut w = X11NativeWindow::new("x", rect(), WindowFlags::NORMAL).unwrap();
+    w.show();
+    assert!(!w.is_active());
+
+    // Activation is window-system state: it must not depend on a handler being installed.
+    assert!(!w.dispatch_x11_event(X11Event::FocusIn));
+    assert!(w.is_active());
+    w.set_event_handler(noop_handler());
+    assert!(w.dispatch_x11_event(X11Event::FocusOut));
+    assert!(!w.is_active());
+
+    w.dispatch_x11_event(X11Event::FocusIn);
+    w.hide();
+    assert!(!w.is_active());
+}
+
+#[test]
+fn wayland_window_is_active_between_keyboard_enter_and_leave() {
+    let mut w = WaylandNativeWindow::new("w", rect(), WindowFlags::NORMAL).unwrap();
+    w.show();
+    assert!(!w.is_active());
+
+    w.dispatch_wayland_event(WaylandEvent::KeyboardEnter);
+    assert!(w.is_active());
+    w.dispatch_wayland_event(WaylandEvent::KeyboardLeave);
+    assert!(!w.is_active());
+
+    w.dispatch_wayland_event(WaylandEvent::KeyboardEnter);
+    w.hide();
+    assert!(!w.is_active());
+}
+
+#[test]
+fn simulated_focus_events_reach_the_handler_as_focus_in_and_out() {
+    use std::sync::{Arc, Mutex};
+    let log = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let sink = Arc::clone(&log);
+    let mut w = WaylandNativeWindow::new("w", rect(), WindowFlags::NORMAL).unwrap();
+    w.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |e| match e {
+        WindowSystemEvent::FocusIn => sink.lock().unwrap().push("in"),
+        WindowSystemEvent::FocusOut => sink.lock().unwrap().push("out"),
+        _ => {}
+    })));
+    w.dispatch_wayland_event(WaylandEvent::KeyboardEnter);
+    w.dispatch_wayland_event(WaylandEvent::KeyboardLeave);
+    assert_eq!(*log.lock().unwrap(), vec!["in", "out"]);
+}
+
+// Mock-runtime test. On macOS the real NSWindow key status and level are checked on the main
+// thread: examples/appkit_main_thread.rs (`window_key_status`, `window_level`).
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn cocoa_window_is_active_only_when_it_is_the_key_window() {
+    use ferrokit_core::object::ThreadContext;
+    use ferrokit_platform::{CocoaNativeWindow, MockObjcRuntime};
+    ThreadContext::init_current(true, None);
+
+    let normal = CocoaNativeWindow::new("n", rect(), WindowFlags::NORMAL).unwrap();
+    assert!(!normal.is_active(), "not shown yet");
+    normal.show();
+    assert!(normal.is_active(), "makeKeyAndOrderFront: makes it the key window");
+    normal.hide();
+    assert!(!normal.is_active(), "orderOut: resigns key");
+
+    // A tooltip is ordered front but never becomes key.
+    let tip = CocoaNativeWindow::new("t", rect(), WindowFlags::TOOLTIP).unwrap();
+    tip.show();
+    let data = MockObjcRuntime::instance().get_object_data(tip.ns_window()).unwrap();
+    assert!(data.is_visible, "the tip is on screen");
+    assert!(!tip.is_active(), "showing a tooltip must not take key status");
+    assert_eq!(
+        data.level,
+        ferrokit_platform::NS_SCREEN_SAVER_WINDOW_LEVEL,
+        "tooltips go above stays-on-top windows"
+    );
+}
+
+#[test]
+fn a_tooltip_window_is_not_activated_by_being_shown_on_any_backend() {
+    let mut g = GenericWindow::new("g", rect(), WindowFlags::TOOLTIP);
+    g.set_event_handler(noop_handler());
+    g.show();
+    g.poll_events();
+    assert!(!g.is_active());
+
+    let x = X11NativeWindow::new("x", rect(), WindowFlags::TOOLTIP).unwrap();
+    x.show();
+    assert!(!x.is_active());
+
+    let w = WaylandNativeWindow::new("w", rect(), WindowFlags::TOOLTIP).unwrap();
+    w.show();
+    assert!(!w.is_active());
+}

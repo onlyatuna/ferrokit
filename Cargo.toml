@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferrokit-core",
+    "crates/ferrokit-gui",
+    "crates/ferrokit-platform",
+    "crates/ferrokit-widgets",
+    "crates/ferrokit-derive",
+]
+
+# One feature set for every member. Cargo unifies features over the packages a command selects, so
+# with per-crate lists `cargo test -p ferrokit-core` built a different windows-sys (and so a different
+# ferrokit-core, ferrokit-gui and every test binary of theirs) than `cargo test --workspace`;
+# tools/run_test_binaries.py, which builds with `--workspace` and runs each target with `-p`,
+# compiled those crates twice.
+[workspace.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -1,0 +1,29 @@
+[package]
+name = "ferrokit-platform"
+version = "0.1.0"
+edition = "2021"
+description = "Native windows, screens, tray icons and other platform services of ferrokit (Windows first; other back ends are experimental)."
+license = "LGPL-3.0-only"
+repository = "https://github.com/onlyatuna/ferrokit"
+publish = false
+
+[dependencies]
+ferrokit-core = { path = "../ferrokit-core" }
+ferrokit-gui = { path = "../ferrokit-gui" }
+bitflags = "2.4"
+tinyfiledialogs = "3.9.1"
+[features]
+default = []
+test-hooks = []
+[dev-dependencies]
+parking_lot = "0.12"
+ferrokit-platform = { path = ".", features = ["test-hooks"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Future dependencies: zbus, x11rb / wayland-client
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Future dependencies: objc2, objc2-app-kit

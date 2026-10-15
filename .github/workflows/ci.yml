@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Workspace Test (${{ matrix.os }})
+    # Some tests are known to hang when run serially; cap a stuck run instead of the 6 h default.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust version
+        run: rustc -V && cargo -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libx11-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxinerama-dev \
+            libgl1-mesa-dev libgles2-mesa-dev pkg-config
+          # The font tests resolve Arial and a CJK fallback, as they do on Windows.
+          echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+            | sudo debconf-set-selections
+          sudo apt-get install -y ttf-mscorefonts-installer fonts-noto-cjk
+          fc-list | grep -iE "arial|noto sans cjk" | head -n 5
+
+      # Lists every target that does not compile on this platform; `cargo test` stops at the first.
+      - name: Compile every target (cargo check --keep-going)
+        run: cargo check --workspace --all-targets --keep-going
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # One binary at a time with a time limit each, so one hang does not hide the rest.
+      - name: Run test binaries (per-binary timeout)
+        # 120 s: about 5x the slowest normal target observed (test_tooltip, 23.1 s on Windows).
+        # Builds use every runner core; the targets still run one at a time.
+        run: python tools/run_test_binaries.py --timeout 120 --jobs 4
+
+      # libtest runs tests on worker threads; this runs GuiApplication/CoreApplication on the OS
+      # main thread, one child process per check with its own time limit.
+      - name: macOS main-thread entry (application dispatcher and event loop)
+        if: ${{ runner.os == 'macOS' && !cancelled() }}
+        run: cargo run -q -p ferrokit-gui --example main_thread_entry
+
+      # ferrokit-platform AppKit checks (windows, status items, menus, screens, cursor, theme) on the
+      # OS main thread, one child process per check, reporting ok/FAILED/ENV/CRASH per check.
+      # Known open: status_item_message (ENV: no app bundle). Any other check not ok, or a listed
+      # one passing, fails the step.
+      - name: macOS main-thread AppKit checks (ferrokit-platform)
+        if: ${{ runner.os == 'macOS' && !cancelled() }}
+        run: >-
+          cargo run -q -p ferrokit-platform --example appkit_main_thread --
+          --known-open=status_item_message
+
+      - name: Run doc tests
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --doc

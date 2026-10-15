@@ -1,0 +1,31 @@
+[package]
+name = "ferrokit-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Geometry, painting and text layout of ferrokit, a Rust implementation of a subset of Qt."
+license = "LGPL-3.0-only"
+repository = "https://github.com/onlyatuna/ferrokit"
+publish = false
+
+[dependencies]
+ferrokit-core = { path = "../ferrokit-core" }
+tiny-skia = "0.11"
+png = "0.17"
+ab_glyph_rasterizer = "0.1"
+rustybuzz = "0.20.1"
+unicode-segmentation = "1.12"
+serde = { version = "1.0", features = ["derive"], optional = true }
+memmap2 = "0.9.11"
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1.0"
+# Reference rasterizer for tests/test_outline_face_parity.rs and examples/face_compare.rs only.
+fontdue = "0.9.4"
+parking_lot = "0.12"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite", "Win32_Foundation"] }

@@ -1,0 +1,7 @@
+# Tests share process-wide state: the application's device pixel ratio, the platform singleton and
+# the Win32 desktop. Run in parallel, a test that measures text at ratio 1 can see another test's
+# ratio of 1.25, and window tests can steal each other's focus. Qt's own test runner is one process
+# per test binary running one test at a time; this keeps that. An explicit RUST_TEST_THREADS still
+# wins (`force` is off).
+[env]
+RUST_TEST_THREADS = "1"

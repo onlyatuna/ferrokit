@@ -1,0 +1,16 @@
+[package]
+name = "ferrokit-derive"
+version = "0.1.0"
+edition = "2021"
+description = "Derive macro for the ferrokit object model."
+license = "LGPL-3.0-only"
+repository = "https://github.com/onlyatuna/ferrokit"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"

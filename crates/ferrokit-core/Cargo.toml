@@ -1,0 +1,28 @@
+[package]
+name = "ferrokit-core"
+version = "0.1.0"
+edition = "2021"
+description = "Object model, events, signals and slots, timers and event loop of ferrokit, a Rust implementation of a subset of Qt."
+license = "LGPL-3.0-only"
+repository = "https://github.com/onlyatuna/ferrokit"
+publish = false
+
+[dependencies]
+parking_lot = "0.12"
+ferrokit-derive = { path = "../ferrokit-derive", optional = true }
+
+[features]
+default = ["derive"]
+derive = ["dep:ferrokit-derive"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Future dependencies: epoll platform event mechanisms
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Future dependencies: kqueue, core-foundation

@@ -1,0 +1,19 @@
+[package]
+name = "ferrokit-widgets"
+version = "0.1.0"
+edition = "2021"
+description = "Widgets, layouts and style sheets of ferrokit, a Rust implementation of a subset of Qt."
+license = "LGPL-3.0-only"
+repository = "https://github.com/onlyatuna/ferrokit"
+publish = false
+
+[dependencies]
+ferrokit-core = { path = "../ferrokit-core" }
+ferrokit-gui = { path = "../ferrokit-gui" }
+ferrokit-platform = { path = "../ferrokit-platform" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+parking_lot = "0.12"

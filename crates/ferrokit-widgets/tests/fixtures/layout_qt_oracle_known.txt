@@ -1,0 +1,2 @@
+# Known mismatches: layout_qt_oracle.rs replays these and reports them without failing.
+# Recorded with PySide6 6.11.2 (Qt 6.11.2).
