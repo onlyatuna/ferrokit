@@ -162,3 +162,46 @@ fn a_parent_that_is_not_borrowed_is_edited_at_once() {
 
     assert_eq!(parent.data.children(), &[child.data.id]);
 }
+
+#[test]
+fn a_child_moved_between_two_borrowed_parents_ends_up_under_the_new_one_only() {
+    let old = Node::registered();
+    let new = Node::registered();
+    let (old_id, new_id) = (old.data.id, new.data.id);
+    let mut child = Node::registered();
+    let child_id = child.data.id;
+    set_parent(&mut child.data, Some(old_id)).unwrap();
+
+    // The callback of one parent runs the callback of the other, so both borrows are held and
+    // both lists wait; the inner borrow ends first.
+    with_object_mut(old_id, |_| {
+        with_object_mut(new_id, |_| {
+            set_parent(&mut child.data, Some(new_id)).unwrap();
+        })
+        .expect("the new parent is registered and not borrowed");
+    })
+    .expect("the old parent is registered and not borrowed");
+
+    assert!(old.data.children().is_empty());
+    assert_eq!(new.data.children(), &[child_id]);
+    assert_eq!(child.data.parent(), Some(new_id));
+}
+
+#[test]
+fn a_child_attached_and_dropped_in_the_same_borrow_is_never_listed() {
+    let parent = Node::registered();
+    let parent_id = parent.data.id;
+    let mut temporary = Node::registered();
+
+    with_object_mut(parent_id, move |_| {
+        set_parent(&mut temporary.data, Some(parent_id)).unwrap();
+        drop(temporary);
+    })
+    .expect("the parent is registered and not borrowed");
+
+    assert!(
+        parent.data.children().is_empty(),
+        "the dropped child is still listed: {:?}",
+        parent.data.children()
+    );
+}
