@@ -777,9 +777,12 @@ pub enum ReparentError {
     OwnedByParent,
     /// [`reparent_owned`]: the object has no parent that owns it.
     NotOwned,
-    /// The object is not registered, is dead, or is registered on another thread.
+    /// The object is not registered, is dead, or is registered on another thread. For
+    /// [`add_owned_child`] the object is the new parent.
     UnknownObject,
-    /// The new parent is the object itself, one of its descendants, or not registered.
+    /// [`set_parent`]: the new parent is the object itself or one of its descendants. Not for an
+    /// unregistered parent, which `set_parent` accepts. [`reparent_owned`]: those two, and also a
+    /// new parent that is not registered on the calling thread.
     InvalidParent,
     /// The object or a parent is borrowed by an active callback.
     Busy,
@@ -877,6 +880,12 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// that a running callback borrows or that was never registered, which the parent's drop cannot
 /// write to; the public `parent` field can keep the old id there, so read the parent through
 /// `parent()`.
+///
+/// `new_parent` need not be registered: the id is accepted and only the child's own link is
+/// recorded. The parent's child list, `ChildAdded` and the death tracking above all need a
+/// registered parent and do not happen. Qt has no such case (a `QObject*` is always a live
+/// object), so nothing more is specified for it. [`reparent_owned`] and [`add_owned_child`]
+/// refuse an unregistered parent.
 ///
 /// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
@@ -1755,10 +1764,11 @@ mod tests {
         assert_eq!(target.event_count, 0);
     }
 
-    /// Sets the parent object, updating parent-child relationships.
-
+    /// A parent that is not registered is accepted and only the child's own link is recorded:
+    /// the parent's list stays empty. Qt has no such case (a `QObject*` is always a live object),
+    /// so `set_parent` specifies nothing more for it; the docs of `set_parent` say so.
     #[test]
-    fn test_borrowed_parent_links_only_update_child_metadata() {
+    fn test_set_parent_to_an_unregistered_parent_records_only_the_childs_link() {
         let parent = ObjectData::new(ObjectId::next());
         let mut child = ObjectData::new(ObjectId::next());
 
