@@ -8,7 +8,7 @@ use crate::event::{Event, EventKind};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 static GLOBAL_OBJECT_THREADS: RwLock<Option<HashMap<ObjectId, ThreadId>>> = RwLock::new(None);
 
@@ -35,6 +35,25 @@ pub struct ObjectRecord {
     pub liveness: Arc<AtomicBool>,
     pub generation: AtomicU32,
     borrow_flag: Arc<AtomicBool>,
+    /// Edits to the `children` list in the object's own `ObjectData` that arrived while a callback
+    /// held its borrow; the guard of that callback applies them when it ends.
+    pending_child_changes: Mutex<Vec<ChildListChange>>,
+    has_pending_child_changes: AtomicBool,
+}
+
+/// One edit to the `children` list in an object's own `ObjectData`.
+enum ChildListChange {
+    Add(ObjectId),
+    Remove(ObjectId),
+}
+
+impl ChildListChange {
+    fn apply(&self, data: &mut ObjectData) {
+        match *self {
+            ChildListChange::Add(id) => data.add_child(id),
+            ChildListChange::Remove(id) => data.remove_child(id),
+        }
+    }
 }
 
 pub struct ObjectBorrowGuard {
@@ -61,6 +80,28 @@ impl std::ops::DerefMut for ObjectBorrowGuard {
 
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
+        if self
+            ._entry
+            .has_pending_child_changes
+            .swap(false, Ordering::AcqRel)
+        {
+            let changes = self
+                ._entry
+                .pending_child_changes
+                .lock()
+                .map(|mut queued| std::mem::take(&mut *queued))
+                .unwrap_or_default();
+            // A dead object is not written to: its memory may already be freed. Every drop of a
+            // registered object marks the shared liveness token dead before the memory goes.
+            if self._entry.liveness.load(Ordering::Acquire) {
+                // SAFETY: the callback that held this borrow has returned, so no reference into
+                // the object is live, and the object is alive.
+                let data = unsafe { (*self.ptr).object_data_mut() };
+                for change in &changes {
+                    change.apply(data);
+                }
+            }
+        }
         self.borrow_flag.store(false, Ordering::Release);
     }
 }
@@ -114,6 +155,26 @@ fn borrow_registered(id: ObjectId) -> Option<ObjectBorrowGuard> {
         borrow_flag: Arc::clone(&entry.borrow_flag),
         _entry: entry,
     })
+}
+
+/// Edits the `children` list kept in `parent`'s own `ObjectData`. When a running callback holds
+/// the parent's borrow, the list cannot be touched now: the edit is queued and applied when that
+/// callback returns. A parent that is not registered on this thread has no list to edit here.
+fn edit_child_list(parent: ObjectId, change: ChildListChange) {
+    let Some((entry, _)) = registered_ptr(parent) else {
+        return;
+    };
+    match borrow_registered(parent) {
+        Some(mut guard) => change.apply(guard.object_data_mut()),
+        None => {
+            if let Ok(mut queued) = entry.pending_child_changes.lock() {
+                queued.push(change);
+                entry
+                    .has_pending_child_changes
+                    .store(true, Ordering::Release);
+            }
+        }
+    }
 }
 
 /// Calls `f` with the registered QObject on its physical registration thread.
@@ -290,6 +351,8 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
         liveness: Arc::clone(&data.liveness),
         generation: AtomicU32::new(data.generation),
         borrow_flag: Arc::new(AtomicBool::new(false)),
+        pending_child_changes: Mutex::new(Vec::new()),
+        has_pending_child_changes: AtomicBool::new(false),
     });
     if let Ok(mut reg) = GLOBAL_OBJECT_REGISTRY.write() {
         if let Some(previous) = reg.insert(id, record) {
@@ -575,6 +638,9 @@ impl ObjectData {
     }
 
     /// Returns a slice of direct children object IDs (`QObject::children`).
+    ///
+    /// A change to the children made while a callback of this object is running (for example
+    /// `set_parent` called from its `event`) shows here once that callback has returned.
     pub fn children(&self) -> &[ObjectId] {
         &self.children
     }
@@ -626,9 +692,8 @@ impl ObjectData {
         for child_id in std::mem::take(&mut self.children) {
             release_child(child_id);
         }
-        // `set_parent` records a child in this object's own list only when it can borrow this
-        // object. A child attached while a callback held the borrow is in the registry's list
-        // alone, and still registered here.
+        // The registry's list is complete at once, while this object's own list lags until a
+        // running callback of this object returns. Whatever is still registered here goes too.
         for child_id in registered_children_of(self.id) {
             release_child(child_id);
         }
@@ -682,7 +747,8 @@ impl Drop for ObjectData {
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
                 // The parent's borrow is held, so its child lists cannot be edited now. The
-                // removal is posted, not dropped.
+                // removal is queued and the event is posted, not dropped.
+                edit_child_list(parent_id, ChildListChange::Remove(self.id));
                 crate::event_loop::post_event_to_thread(
                     ThreadId::current(),
                     parent_id,
@@ -882,8 +948,9 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// Limits of that guarantee:
 /// - In the cases just named, where the parent's drop cannot write to the child, the public
 ///   `parent` field can keep the old id. Read the parent through `parent()`.
-/// - A child attached while a running callback borrowed the parent is known to the registry only:
-///   the parent's own `children()` does not list it. Dropping the parent still reaches it.
+/// - While a running callback holds the parent's borrow, the parent's own `children()` still
+///   shows the list as it was; the change is applied when that callback returns. The registry
+///   has it at once, so dropping the parent reaches the child either way.
 ///
 /// `new_parent` need not be registered: the id is accepted and only the child's own link is
 /// recorded. The parent's child list, `ChildAdded` and the death tracking above all need a
@@ -933,9 +1000,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks.
     if let Some(old_parent_id) = old_parent {
-        with_object_mut(old_parent_id, |obj| {
-            obj.object_data_mut().children.retain(|&id| id != child_id);
-        });
+        edit_child_list(old_parent_id, ChildListChange::Remove(child_id));
         let removed = Event::new(EventKind::ChildRemoved { child_id });
         if let Err(mut removed) = defer_if_borrowed(old_parent_id, removed) {
             dispatch_to_object(old_parent_id, &mut removed);
@@ -944,12 +1009,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     child.parent = new_parent;
     child.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
     if let Some(new_parent_id) = new_parent {
-        with_object_mut(new_parent_id, |obj| {
-            let data = obj.object_data_mut();
-            if !data.children.contains(&child_id) {
-                data.children.push(child_id);
-            }
-        });
+        edit_child_list(new_parent_id, ChildListChange::Add(child_id));
         let added = Event::new(EventKind::ChildAdded { child_id });
         if let Err(mut added) = defer_if_borrowed(new_parent_id, added) {
             dispatch_to_object(new_parent_id, &mut added);
