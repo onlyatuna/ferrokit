@@ -588,7 +588,9 @@ impl ObjectData {
         let thread_id = ThreadId::current();
         register_object_thread(id, thread_id);
         let signals_blocked = Arc::new(AtomicBool::new(false));
-        let object_name_changed = Signal::with_owner_parts(id, Arc::clone(&signals_blocked));
+        let liveness = Arc::new(AtomicBool::new(true));
+        let object_name_changed =
+            Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
         Self {
             id,
             parent: None,
@@ -600,7 +602,7 @@ impl ObjectData {
             event_filters: EventFilterChain::new(),
             dynamic_properties: HashMap::new(),
             object_name: None,
-            liveness: Arc::new(AtomicBool::new(true)),
+            liveness,
             generation: 1,
             owned_children: Vec::new(),
             timers: Vec::new(),
@@ -618,7 +620,9 @@ impl ObjectData {
     pub fn with_thread(id: ObjectId, thread_id: ThreadId) -> Self {
         register_object_thread(id, thread_id);
         let signals_blocked = Arc::new(AtomicBool::new(false));
-        let object_name_changed = Signal::with_owner_parts(id, Arc::clone(&signals_blocked));
+        let liveness = Arc::new(AtomicBool::new(true));
+        let object_name_changed =
+            Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
         Self {
             id,
             parent: None,
@@ -630,7 +634,7 @@ impl ObjectData {
             event_filters: EventFilterChain::new(),
             dynamic_properties: HashMap::new(),
             object_name: None,
-            liveness: Arc::new(AtomicBool::new(true)),
+            liveness,
             generation: 1,
             owned_children: Vec::new(),
             timers: Vec::new(),
@@ -810,6 +814,12 @@ impl ObjectData {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
+        // The object is gone from this first step on: the token goes false before the parent is
+        // told or a child is deleted, so a signal of this object that is emitted by then reaches
+        // no slot. Qt `~QObject` disconnects every receiver before `deleteChildren`
+        // (qobject.cpp:1086-1178), and `QPointer` is cleared before anything else is destroyed.
+        self.liveness.store(false, Ordering::Release);
+
         // 1. If we have a parent, unlink from parent and notify it
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
@@ -840,8 +850,7 @@ impl Drop for ObjectData {
         // 2. Cascade deletion to all children (deleteChildren)
         self.delete_children();
 
-        // 3. Mark liveness dead & advance generation for QPointer / GenerationalId safety
-        self.liveness.store(false, Ordering::Release);
+        // 3. Advance the generation for QPointer / GenerationalId safety
         self.generation = self.generation.wrapping_add(1);
 
         // SAFETY: an object registered through the unsafe registration API must be

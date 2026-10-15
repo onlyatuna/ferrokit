@@ -267,11 +267,14 @@ pub struct Signal<T> {
 
 /// The QObject that owns a bound signal. `blocked` is the owner's own `signals_blocked` flag
 /// (Qt `QObjectPrivate::blockSig`), shared rather than looked up in the registry, so blocking
-/// works for unregistered owners and survives unregistration.
+/// works for unregistered owners and survives unregistration. `alive` is the owner's liveness
+/// token (`ObjectData::liveness`), the flag `QPointer` reads: it goes false when the owner is
+/// destroyed. Holding it does not keep the owner alive, only the flag.
 #[derive(Clone)]
 struct Emitter {
     id: ObjectId,
     blocked: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
 }
 
 /// Type alias for signals explicitly dedicated to queued or cross-thread messaging.
@@ -325,18 +328,28 @@ impl<T> Signal<T> {
 
     /// Creates a signal owned by `owner`, matching a QObject's own signal.
     /// Emission is suppressed while `owner` has signals blocked (`QObject::blockSignals`), whether
-    /// or not `owner` is registered. Slots see `owner` as `sender()`.
+    /// or not `owner` is registered. Slots see `owner` as `sender()`. An emission ends as soon as
+    /// `owner` is destroyed (see [`Signal::emit`]).
     pub fn with_owner(owner: &ObjectData) -> Self {
-        Self::with_owner_parts(owner.id, Arc::clone(&owner.signals_blocked))
+        Self::with_owner_parts(
+            owner.id,
+            Arc::clone(&owner.signals_blocked),
+            Arc::clone(&owner.liveness),
+        )
     }
 
-    /// Creates a signal owned by an explicit `(ObjectId, signals_blocked)` pair.
-    pub fn with_owner_parts(id: ObjectId, blocked: Arc<AtomicBool>) -> Self {
+    /// Creates a signal owned by an explicit `(ObjectId, signals_blocked, liveness)` triple. The
+    /// last two are the owner's `ObjectData::signals_blocked` and `ObjectData::liveness`.
+    pub fn with_owner_parts(
+        id: ObjectId,
+        blocked: Arc<AtomicBool>,
+        alive: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(SignalInner {
                 subscribers: Vec::new(),
             })),
-            emitter: Some(Emitter { id, blocked }),
+            emitter: Some(Emitter { id, blocked, alive }),
         }
     }
 
@@ -446,6 +459,18 @@ impl<T> Signal<T> {
 
     /// Emits the signal to all connected subscribers.
     /// Modeled after Qt `qobject.cpp:doActivate`.
+    ///
+    /// A signal that has an owner (`Signal::with_owner`) stops when its owner is destroyed, even
+    /// by one of its own slots: the slots after that one are not called, however they were
+    /// connected (`connect`, `connect_object`, queued or not), and an emission started on an owner
+    /// that is already gone calls none. In Qt `~QObject` disconnects every receiver and zeroes the
+    /// connection counter before it deletes the children, and `doActivate` leaves its loop
+    /// (qobject.cpp:1086-1178, 4431). An owner counts as gone from the first step of its
+    /// destruction. A nested emission ends only the emissions whose owner was destroyed; the
+    /// others go on. A signal without an owner has nothing to lose and always runs to the end.
+    ///
+    /// Once the owner is found gone `self` is not read again: the slot that destroyed it may have
+    /// freed the object this signal is a field of.
     pub fn emit(&self, value: &T) {
         if let Some(emitter) = &self.emitter {
             if emitter.blocked.load(Ordering::Acquire) {
@@ -453,12 +478,20 @@ impl<T> Signal<T> {
             }
         }
 
-        let _sender_guard = SenderGuard::new(self.emitter_id());
+        let emitter_id = self.emitter_id();
+        let owner_alive = self.emitter.as_ref().map(|e| Arc::clone(&e.alive));
+        let _sender_guard = SenderGuard::new(emitter_id);
 
         let snapshot = self.inner.lock().subscribers.clone();
         let current_thread = ThreadId::current();
 
         for sub in snapshot {
+            if owner_alive
+                .as_ref()
+                .is_some_and(|alive| !alive.load(Ordering::Acquire))
+            {
+                break;
+            }
             if !sub.connected.load(Ordering::Acquire) {
                 continue;
             }
@@ -496,7 +529,7 @@ impl<T> Signal<T> {
                         slot(value);
                     }
                     SlotDispatcher::Queued { queued_fn, .. } => {
-                        queued_fn(value, sub.receiver_id, target_thread, self.emitter_id());
+                        queued_fn(value, sub.receiver_id, target_thread, emitter_id);
                     }
                 },
             }));
