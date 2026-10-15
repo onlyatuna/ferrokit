@@ -235,3 +235,59 @@ fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
 
     assert_ne!(moved, Err(MoveError::HasParent));
 }
+
+/// Adopts the child it is given from inside its own `event`, so it is borrowed while `set_parent`
+/// runs and cannot record the child in its own list.
+struct Adopter {
+    data: ObjectData,
+    child: Rc<RefCell<Box<Node>>>,
+}
+
+impl QObject for Adopter {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> &mut ObjectData {
+        &mut self.data
+    }
+    fn event(&mut self, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::UpdateRequest) {
+            let id = self.data.id;
+            set_parent(&mut self.child.borrow_mut().data, Some(id)).unwrap();
+        }
+        false
+    }
+}
+
+#[test]
+fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
+    let adopted = Rc::new(RefCell::new(Node::registered()));
+    let mut parent = Box::new(Adopter {
+        data: ObjectData::new(ObjectId::next()),
+        child: Rc::clone(&adopted),
+    });
+    // SAFETY: as in `Node::registered`.
+    unsafe { register_qobject(&mut *parent) };
+    let parent_id = parent.data.id;
+    let mut event = Event::new(EventKind::UpdateRequest);
+    dispatch_to_object(parent_id, &mut event);
+    assert_eq!(adopted.borrow().data.parent(), Some(parent_id));
+
+    // Attached from outside any callback, for comparison.
+    let mut plain = Node::registered();
+    set_parent(&mut plain.data, Some(parent_id)).unwrap();
+
+    drop(parent);
+
+    assert_eq!(plain.data.parent(), None);
+    assert!(
+        !plain.data.is_alive(),
+        "a child in the parent's list is unregistered"
+    );
+    let adopted = adopted.borrow();
+    assert_eq!(adopted.data.parent(), None);
+    assert!(
+        !adopted.data.is_alive(),
+        "a child attached during a callback is unregistered too"
+    );
+}

@@ -624,15 +624,13 @@ impl ObjectData {
             child.object_data_mut().clear_parent();
         }
         for child_id in std::mem::take(&mut self.children) {
-            // A child whose `Box` this parent does not hold survives it and only loses its
-            // parent. Its own link is cleared before the unregister below, after which it can no
-            // longer be reached. A child that cannot be borrowed here (a running callback holds
-            // it, or it was never registered) is not written to; its `parent()` sees the
-            // parent's liveness token instead.
-            let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
-            // SAFETY: child destruction is synchronous on the owning thread; no callback is
-            // active for this child while the parent cascades deletion.
-            unsafe { unregister_qobject(child_id) };
+            release_child(child_id);
+        }
+        // `set_parent` records a child in this object's own list only when it can borrow this
+        // object. A child attached while a callback held the borrow is in the registry's list
+        // alone, and still registered here.
+        for child_id in registered_children_of(self.id) {
+            release_child(child_id);
         }
         self.owned_children.clear();
     }
@@ -786,6 +784,34 @@ pub enum ReparentError {
     Busy,
 }
 
+/// Lets go of a child whose `Box` its parent does not hold: it survives the parent, loses its
+/// parent link, and is unregistered.
+fn release_child(child_id: ObjectId) {
+    // The link is cleared before the unregister below, after which the child can no longer be
+    // reached. A child that cannot be borrowed here (a running callback holds it, or it was never
+    // registered) is not written to; its `parent()` sees the parent's liveness token instead.
+    let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
+    // SAFETY: child destruction is synchronous on the owning thread; no callback is active for
+    // this child while the parent cascades deletion.
+    unsafe { unregister_qobject(child_id) };
+}
+
+/// The children the registry lists for `id` that are still registered.
+fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
+    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
+        return Vec::new();
+    };
+    let Some(record) = registry.get(&id) else {
+        return Vec::new();
+    };
+    let children = record.children.read().unwrap();
+    children
+        .iter()
+        .copied()
+        .filter(|child_id| registry.contains_key(child_id))
+        .collect()
+}
+
 /// The liveness token of a registered object, or `None` if `id` is not registered.
 fn liveness_of(id: ObjectId) -> Option<Arc<AtomicBool>> {
     let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
@@ -823,16 +849,14 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// which Qt documents as undefined behavior.
 ///
 /// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
-/// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters the
-/// children in its own child list, so their signals are disconnected and their timers stopped.
-/// [`ObjectData::parent`] of the child returns `None` once the parent has been dropped, provided
-/// the parent was registered when this was called. That holds even for a child that a running
-/// callback borrows or that was never registered, which the parent's drop cannot write to; the
-/// public `parent` field can keep the old id there, so read the parent through `parent()`.
-///
-/// Limit: a child attached while the new parent is borrowed by a running callback is recorded in
-/// the registry only. The parent's drop does not reach it, so it stays registered, with `parent()`
-/// returning `None`.
+/// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters its
+/// children (see [`unregister_qobject`] for what that ends), including a child attached while a
+/// running callback borrowed the parent, which the parent records in the registry only.
+/// [`ObjectData::parent`] of the child returns `None` once the parent has been
+/// dropped, provided the parent was registered when this was called. That holds even for a child
+/// that a running callback borrows or that was never registered, which the parent's drop cannot
+/// write to; the public `parent` field can keep the old id there, so read the parent through
+/// `parent()`.
 ///
 /// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
