@@ -601,6 +601,11 @@ impl ObjectData {
             child.object_data_mut().parent = None;
         }
         for child_id in std::mem::take(&mut self.children) {
+            // A child whose `Box` this parent does not hold survives it and only loses its
+            // parent. Its own link is cleared before the unregister below, after which it can no
+            // longer be reached. A child that is borrowed right now, or registered on another
+            // thread, keeps the stale id.
+            let _ = with_object_mut(child_id, |child| child.object_data_mut().parent = None);
             // SAFETY: child destruction is synchronous on the owning thread; no callback is
             // active for this child while the parent cascades deletion.
             unsafe { unregister_qobject(child_id) };
@@ -757,6 +762,24 @@ pub enum ReparentError {
     Busy,
 }
 
+/// Whether making `new_parent` the parent of `child_id` would make an object its own ancestor:
+/// `new_parent` is the child itself or one of its descendants, as the registry records them.
+fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
+    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
+        return false;
+    };
+    let mut cursor = Some(new_parent);
+    // The bound ends the walk if the registry already holds a cycle.
+    for _ in 0..=registry.len() {
+        let Some(id) = cursor else { break };
+        if id == child_id {
+            return true;
+        }
+        cursor = registry.get(&id).and_then(|r| *r.parent.read().unwrap());
+    }
+    false
+}
+
 /// Sets a non-owned child's parent and updates registered relationship metadata, sending
 /// `ChildRemoved`/`ChildAdded` to the registered parents.
 ///
@@ -764,6 +787,15 @@ pub enum ReparentError {
 /// [`reparent_owned`] for those. Qt's `setParent_helper` (qobject.cpp:2287-2345) never destroys
 /// the child; here the borrow `child` points into the owning `Box`, so ownership has to move
 /// through an id-based call.
+///
+/// Refuses with [`ReparentError::InvalidParent`], changing nothing, when `new_parent` is the
+/// child itself or one of its descendants. Qt's release build accepts that and builds a cycle,
+/// which Qt documents as undefined behavior.
+///
+/// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
+/// When the parent is dropped the child is not destroyed. It is unregistered, which also
+/// disconnects its signals and stops its timers, and it ends up without a parent (Qt deletes it).
+/// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
     if child.parent == new_parent {
         return Ok(());
@@ -772,6 +804,11 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         return Err(ReparentError::OwnedByParent);
     }
     let child_id = child.id;
+    if let Some(np) = new_parent {
+        if would_create_cycle(child_id, np) {
+            return Err(ReparentError::InvalidParent);
+        }
+    }
 
     // Update global registry parent/children records.
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
@@ -849,19 +886,9 @@ pub fn reparent_owned(
     }
 
     if let Some(np) = new_parent {
-        if np == child_id {
-            return Err(ReparentError::InvalidParent);
-        }
         registered_ptr(np).ok_or(ReparentError::InvalidParent)?;
-        // The new parent must not be a descendant of the child (would orphan a cycle).
-        let registry = GLOBAL_OBJECT_REGISTRY.read().unwrap();
-        let mut cursor = Some(np);
-        for _ in 0..=registry.len() {
-            let Some(id) = cursor else { break };
-            if id == child_id {
-                return Err(ReparentError::InvalidParent);
-            }
-            cursor = registry.get(&id).and_then(|r| *r.parent.read().unwrap());
+        if would_create_cycle(child_id, np) {
+            return Err(ReparentError::InvalidParent);
         }
     }
 
