@@ -123,10 +123,11 @@ thread_local! {
 }
 
 /// Destroys an owned child whose callback is still running, because its parent is being dropped
-/// from inside it. For everything else the child is destroyed at once: it is unregistered, so it
-/// is no longer alive, gets no events or timers, and its connections to other objects are gone.
-/// Its memory is kept until the callback returns, since that callback still runs on `&mut self`;
-/// the guard of the callback frees it (`free_parked_children`).
+/// from inside it. For everything else the child is destroyed at once, and so is everything the
+/// registry lists below it: it is unregistered, so it is no longer alive, gets no events or
+/// timers, and its connections to other objects are gone. Its memory is kept until the callback
+/// returns, since that callback still runs on `&mut self`; the guard of the callback frees it
+/// (`free_parked_children`), and with it the memory of the objects below it.
 fn destroy_when_released(child_id: ObjectId, child: Box<dyn QObject>) {
     let Some((entry, _)) = registered_ptr(child_id) else {
         drop(child);
@@ -138,9 +139,21 @@ fn destroy_when_released(child_id: ObjectId, child: Box<dyn QObject>) {
             .borrow_mut()
             .push((Arc::clone(&entry.borrow_flag), child));
     });
+    unregister_descendants(child_id);
     // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
     // memory is not freed until it returns. No other callback can start on an unregistered object.
     unsafe { unregister_qobject(child_id) };
+}
+
+/// Unregisters everything the registry lists below `id`, the deepest first, and touches no memory:
+/// a callback may be running in any of them, and whoever holds an object's `Box` frees it.
+fn unregister_descendants(id: ObjectId) {
+    for child_id in registered_children_of(id) {
+        unregister_descendants(child_id);
+        // SAFETY: a running callback keeps its own `Arc` to the record, and the memory is not
+        // freed before that callback returns (see `destroy_when_released`).
+        unsafe { unregister_qobject(child_id) };
+    }
 }
 
 /// Frees the children parked while the callback that held `flag` was running.
@@ -746,8 +759,8 @@ impl ObjectData {
     ///
     /// An owned child whose callback is running is destroyed at once as far as anything else can
     /// tell (unregistered, no longer alive, no events, timers or connections to other objects),
-    /// but its memory and its `Drop` wait until that callback returns: the callback still runs on
-    /// `&mut self`.
+    /// and so is everything below it; but its memory and its `Drop` wait until that callback
+    /// returns: the callback still runs on `&mut self`.
     pub fn delete_children(&mut self) {
         let mut idle = Vec::with_capacity(self.owned_children.len());
         for mut child in std::mem::take(&mut self.owned_children) {
@@ -952,6 +965,19 @@ fn release_child(child_id: ObjectId) {
     // SAFETY: the child may be borrowed by a running callback. It is not written to or freed here:
     // whoever holds its `Box` frees it, and the callback's guard keeps its own `Arc` to the record.
     unsafe { unregister_qobject(child_id) };
+}
+
+/// Lists `child_id` among the children the registry keeps for `parent_id`.
+fn list_in_registry(parent_id: ObjectId, child_id: ObjectId) {
+    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
+        return;
+    };
+    if let Some(record) = registry.get(&parent_id) {
+        let mut children = record.children.write().unwrap();
+        if !children.contains(&child_id) {
+            children.push(child_id);
+        }
+    }
 }
 
 /// The children the registry lists for `id` that are still registered.
@@ -1226,12 +1252,13 @@ pub fn reparent_owned(
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
 /// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
 ///
-/// Dropping the parent from inside a callback of this child is allowed. The child is then
-/// destroyed at once for everything but that callback: it is unregistered, no longer alive, gets
-/// no events or timers, and its connections to other objects are gone. Its memory, and so its
-/// `Drop`, waits until the callback returns, because the callback still runs on `&mut self`. Qt
-/// frees the child there and then, and also stops the signal emission that is under way; here
-/// that emission still calls the slots connected without a receiver object (`Signal::connect`).
+/// Dropping the parent from inside a callback of this child is allowed. The child, and everything
+/// the registry lists below it, is then destroyed at once for everything but that callback: it is
+/// unregistered, no longer alive, gets no events or timers, and its connections to other objects
+/// are gone. Its memory, and so its `Drop`, waits until the callback returns, because the
+/// callback still runs on `&mut self`. Qt frees the child there and then. A signal emission that
+/// is under way ends as in Qt: no slot is called after the one that dropped the parent (see
+/// [`Signal::emit`](crate::signal::Signal::emit)).
 ///
 /// # Safety
 /// Same as [`register_qobject`]: the child must remain at its allocated address while owned and
@@ -1259,6 +1286,9 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
         parent.object_data_mut().add_child(child_id);
         // SAFETY: delegated to this function's caller contract.
         unsafe { register_qobject(&mut *child) };
+        // The registry's list is what still reaches the child while a running callback of the
+        // parent hides it from the parent's own `children`.
+        list_in_registry(parent_id, child_id);
         parent.object_data_mut().owned_children.push(child);
     });
     match attached {
