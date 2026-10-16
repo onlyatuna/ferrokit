@@ -19,7 +19,7 @@ use super::qobject::{ObjectId, QObject};
 ///
 /// Dropping it drops the object, which unregisters it, and frees the memory.
 ///
-/// The rules of [`register_qobject`](super::register_qobject) still hold for a registered object:
+/// The rules in the [`crate::object`] module documentation still hold for a registered object:
 /// while one of its callbacks runs, its owner must not access it at all, not even to read it;
 /// between callbacks the owner may use it through `Deref` and `DerefMut`.
 ///
@@ -83,7 +83,8 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
 
     /// Gives the object to a `Box`. The object keeps its address and stays registered if it was,
     /// but a `Box` is a unique owner: using the object through it while it is registered has the
-    /// limits of [`register_boxed_qobject`](super::register_boxed_qobject).
+    /// limits of `register_boxed_qobject` (see rule 4 in the [`crate::object`] module
+    /// documentation).
     pub fn into_box(this: Self) -> Box<T> {
         let this = ManuallyDrop::new(this);
         // SAFETY: `ptr` came from `Box::into_raw` and is owned by `this`, which is not dropped.
@@ -97,7 +98,7 @@ impl<T: QObject + ?Sized> std::ops::Deref for OwnedObject<T> {
     fn deref(&self) -> &T {
         // SAFETY: the object lives as long as its owner. No `&mut` to it is live while the owner
         // is borrowed: the registry's callbacks and the owner's use do not overlap (see the type's
-        // documentation and `register_qobject`).
+        // documentation and the module documentation of `object`).
         unsafe { self.ptr.as_ref() }
     }
 }

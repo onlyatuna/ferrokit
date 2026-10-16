@@ -13,6 +13,9 @@
 //! `!Unpin` type, and `dyn QObject` is not `Unpin`, so the same misuse through a `Box<dyn QObject>`
 //! (what `reparent_owned` returns) goes unreported and cannot serve as a control.
 
+// The controls call the deprecated registration functions on purpose.
+#![allow(deprecated)]
+
 use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};

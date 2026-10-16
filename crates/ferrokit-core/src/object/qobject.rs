@@ -396,21 +396,32 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
 
 /// Registers `obj` so that the registry can call it by id.
 ///
-/// Limit: the registry keeps a pointer made from the reference `obj`. Under Rust's aliasing
-/// rules, the next direct use of the object through the variable, field or `Box` that `obj`
-/// borrowed from invalidates that pointer, so a callback after such a use is undefined behavior,
-/// even if the program appears to work; Miri reports it. When the owner uses the object between
-/// callbacks, register it with [`register_qobject_ptr`] (a pointer taken with `&raw mut`) or
-/// [`register_owned_qobject`] instead. This function is kept for existing callers.
+/// Deprecated, because the registry keeps a pointer made from the reference `obj`. Under Rust's
+/// aliasing rules, the next direct use of the object through the variable, field or `Box` that
+/// `obj` borrowed from invalidates that pointer, so a callback after such a use is undefined
+/// behavior, even if the program appears to work; Miri reports it. Nothing in this function
+/// prevents that use, and nothing in the function can tell whether the caller makes it.
+///
+/// # Migrating
+/// - An object in a variable: `register_qobject_ptr(NonNull::new_unchecked(&raw mut x))`; the
+///   variable can be used directly between callbacks.
+/// - An object in a `Box`: create it with [`register_owned_qobject`] and keep the returned
+///   [`OwnedObject`] where the `Box` was. It dereferences the same way and may be moved.
+///
+/// The [`crate::object`] module documentation says which function fits where the object lives
+/// and lists the uses that break the aliasing rules.
 ///
 /// # Safety
 /// The object must remain alive at the same address until `unregister_qobject` completes.
-/// Do not move or drop it while registered. All access from any thread must occur through
-/// registry callbacks, except sequential direct access between callbacks on the registration
-/// thread. The object must not be unregistered or re-registered while a callback is active.
-/// Callbacks execute only on the physical registration thread. `move_to_thread` transfers that
-/// registration to the target thread together with the thread affinity. The caller must ensure
-/// no overlapping mutable or mutable/shared aliases exist while a callback runs.
+/// Do not move or drop it while registered. The thread rules of [`crate::object`] apply. The
+/// caller must ensure that no overlapping mutable or mutable/shared aliases exist while a
+/// callback runs, and that the owner makes no direct use of the object between callbacks (see
+/// above).
+#[deprecated(
+    note = "the registry's pointer comes from a reference that the next direct use of the object \
+            invalidates; use `register_qobject_ptr` with a pointer taken by `&raw mut`, or \
+            `register_owned_qobject`; see the documentation of the `object` module"
+)]
 pub unsafe fn register_qobject(obj: &mut dyn QObject) {
     let ptr = obj as *mut dyn QObject;
     let data = unsafe { &*ptr }.object_data();
@@ -450,13 +461,18 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
 
 /// Registers a pinned object.
 ///
-/// The registry's pointer is made from the reference inside `obj`, with the limit described at
-/// [`register_qobject`]. Miri does not check that limit for `!Unpin` types, so a `!Unpin` object
-/// passing under Miri is no evidence that the use is sound.
+/// The registry's pointer is made from the reference inside `obj`, so the next direct use of the
+/// object through another path invalidates it (rule 1 in the [`crate::object`] module
+/// documentation). Miri does not check that for `!Unpin` types, so a `!Unpin` object passing
+/// under Miri is no evidence that the use is sound. There is no pointer-based form for pinned
+/// objects yet; the only caller, `Timer`, reaches its object only through the registry between
+/// registrations.
 ///
 /// # Safety
-/// The pinned object must remain alive and at its pinned address until unregistered.
-/// All access and aliasing requirements are identical to [`register_qobject`].
+/// The pinned object must remain alive and at its pinned address until unregistered. The thread
+/// rules of [`crate::object`] apply. The caller must ensure that no overlapping mutable or
+/// mutable/shared aliases exist while a callback runs, and that the owner makes no direct use of
+/// the object between callbacks.
 pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) {
     let ptr = unsafe { obj.as_mut().get_unchecked_mut() as *mut dyn QObject };
     let data = unsafe { (*ptr).object_data() };
@@ -465,14 +481,34 @@ pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) 
 
 /// Registers a boxed object and hands the `Box` back.
 ///
-/// Limit: Rust treats a `Box` as the only pointer to its object, so using or moving the returned
-/// `Box` invalidates the pointer the registry keeps, with the consequences described at
-/// [`register_qobject`]. Use [`register_owned_qobject`], whose [`OwnedObject`] shares its pointer
-/// with the registry. This function is kept for existing callers.
+/// Deprecated, because Rust treats a `Box` as the only pointer to its object. Using or moving
+/// the returned `Box` invalidates the pointer the registry keeps, so a callback after that is
+/// undefined behavior, even if the program appears to work; Miri reports it. The `Box` is the
+/// only way to use the object, so every caller is affected the first time it uses the object
+/// between callbacks, and no wrapper around this function can make that sound.
+///
+/// # Migrating
+/// [`register_owned_qobject`] takes the value instead of a `Box` and returns an [`OwnedObject`],
+/// whose pointer is the one the registry keeps. It dereferences like the `Box` did.
+///
+/// ```text
+/// // before
+/// let (id, mut node) = unsafe { register_boxed_qobject(Box::new(Node::new())) };
+/// // after
+/// let mut node = unsafe { register_owned_qobject(Node::new()) };
+/// let id = OwnedObject::object_id(&node);
+/// ```
 ///
 /// # Safety
-/// The returned Box must remain alive and unmoved until unregistered. All access and aliasing
-/// requirements are identical to [`register_qobject`].
+/// The returned Box must remain alive and unmoved until unregistered. The thread rules of
+/// [`crate::object`] apply, and the owner must make no use of the object between callbacks, which
+/// is what the `Box` is for.
+#[deprecated(
+    note = "using or moving the returned `Box` invalidates the registry's pointer; use \
+            `register_owned_qobject`, which takes the value and returns an `OwnedObject` that \
+            shares its pointer with the registry: `let (id, b) = register_boxed_qobject(Box::new(v))` \
+            becomes `let b = register_owned_qobject(v); let id = OwnedObject::object_id(&b);`"
+)]
 pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
     mut boxed: Box<T>,
 ) -> (ObjectId, Box<T>) {
@@ -492,7 +528,8 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
 ///   may then use `x` directly between callbacks.
 ///
 /// A pointer made from a reference (`&mut x as *mut _`, `NonNull::from(&mut x)`) or from a `Box`
-/// that is used afterwards does not qualify; it has the limit described at [`register_qobject`].
+/// that is used afterwards does not qualify (rule 1 in the [`crate::object`] module
+/// documentation).
 ///
 /// # Safety
 /// - `ptr` points to a live object that stays at this address until `unregister_qobject`
@@ -500,9 +537,10 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
 /// - Between callbacks, the owner reaches the object only through `ptr` or pointers derived from
 ///   it, as described above.
 /// - While a callback of the object runs, nothing else accesses the object, not even to read it.
-/// - Registering the object again, while it is registered, uses the same pointer. It does not
-///   happen, and neither does unregistering it, while a callback of the object runs.
-/// - The thread rules of [`register_qobject`] apply.
+/// - Registering the object again, while it is registered, gives the registry the new pointer, and
+///   nothing uses the old one afterwards. That does not happen, and neither does unregistering
+///   the object, while a callback of the object runs.
+/// - The thread rules of [`crate::object`] apply.
 pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
     let raw = ptr.as_ptr();
     // SAFETY: the caller guarantees the object is alive and that no callback of it runs.
@@ -519,7 +557,7 @@ pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
 /// # Safety
 /// While a callback of the object runs, the owner does not access the object, not even to read
 /// it, and is not dropped. The owner is used and dropped on the registration thread. The thread
-/// rules of [`register_qobject`] apply.
+/// rules of [`crate::object`] apply.
 pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObject<T> {
     let owned = OwnedObject::new(obj);
     let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owned);
@@ -1118,7 +1156,7 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
 /// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
 /// thread is not checked, but a registered child must still be used on the thread it is registered
-/// on (see [`register_qobject`]). [`reparent_owned`] and [`add_owned_child`] refuse the same
+/// on (see the thread rules in [`crate::object`]). [`reparent_owned`] and [`add_owned_child`] refuse the same
 /// pairs without detaching anything and without the warning; see [`ReparentError::DifferentThread`].
 ///
 /// The parent does not own the child: whoever does keeps the child alive and frees it.

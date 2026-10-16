@@ -16,10 +16,10 @@
 //! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through the `OwnedObject`, and move the `OwnedObject` |
 //! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | use the variable or field directly |
 //! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent, or through the `OwnedObject` that `reparent_owned_object` returns |
-//! | pinned (`!Unpin`, like `Timer`) | [`register_pinned_qobject`] | nothing safe beyond the rules of [`register_qobject`]; there is no pointer-based form for pinned objects yet |
+//! | pinned (`!Unpin`, like `Timer`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
 //!
-//! [`register_qobject`] and [`register_boxed_qobject`] build the registry's pointer from a
-//! reference or a `Box`, which is where the rules below are broken.
+//! `register_qobject` and `register_boxed_qobject` are deprecated: they build the registry's
+//! pointer from a reference or a `Box`, which is where rule 1 below is broken.
 //!
 //! ## Registering an object on the heap
 //!
@@ -126,6 +126,15 @@
 //! Miri does not check that a `&mut` or a `Box` to a `!Unpin` type is unique, and `dyn QObject`
 //! is not `Unpin`: a program that breaks rule 1 through a `Box<dyn QObject>` passes Miri. Use a
 //! concrete type to test.
+//!
+//! ## Thread rules
+//!
+//! Callbacks run only on the thread the object was registered on, its registration thread.
+//! [`move_to_thread`] moves that registration to the target thread together with the thread
+//! affinity. Between callbacks the owner uses the object directly only on the registration
+//! thread; any other thread reaches it through the registry, which runs the callback on the
+//! registration thread. An object is neither unregistered nor registered again while one of its
+//! callbacks runs.
 
 mod owned;
 pub mod qobject;
