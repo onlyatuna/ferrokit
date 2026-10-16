@@ -115,14 +115,19 @@ fn move_to_thread_three_levels_unowned_children_updates_all_thread_id_fields() {
     let mut grand = SimpleObject::new();
     let grand_id = grand.data.id;
 
+    // The pointers are kept: after registering, a `&mut` taken through a variable would
+    // invalidate the registry's pointer (rule 7 in the `object` module documentation).
+    let child_ptr = &raw mut child;
+    let grand_ptr = &raw mut grand;
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut root));
-        register_qobject_ptr(NonNull::new_unchecked(&raw mut child));
-        register_qobject_ptr(NonNull::new_unchecked(&raw mut grand));
+        register_qobject_ptr(NonNull::new_unchecked(child_ptr));
+        register_qobject_ptr(NonNull::new_unchecked(grand_ptr));
     }
 
-    set_parent(&mut child.data, Some(root_id)).expect("set child parent");
-    set_parent(&mut grand.data, Some(child_id)).expect("set grand parent");
+    // SAFETY: no callback of either object runs; the pointers are the registered ones.
+    set_parent(unsafe { &mut (*child_ptr).data }, Some(root_id)).expect("set child parent");
+    set_parent(unsafe { &mut (*grand_ptr).data }, Some(child_id)).expect("set grand parent");
 
     // Perform move_to_thread
     let res = move_to_thread_by_id(root_id, target_thread, source_thread);

@@ -133,9 +133,12 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         data: ObjectData::new(ObjectId(300)),
         event_called: false,
     };
-    // SAFETY: target remains alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the registry's pointer.
     target.object_data_mut().install_event_filter(id_b);
+    let target_ptr = &raw mut target;
+    // SAFETY: target remains alive and unmoved on this thread until unregistered below.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(target_ptr)) };
 
     let mut ev = Event::new(EventKind::UpdateRequest);
     let handled = ferrokit_core::object::send_event(target.data.id, &mut ev);
@@ -147,7 +150,8 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     assert!(!target.event_called, "Target event() must not be called");
 
     // 2.3 Tombstone test: remove_event_filter() inside filter callback should not crash iteration
-    target.object_data_mut().remove_event_filter(id_b);
+    // SAFETY: no callback of `target` runs; `target_ptr` is the registered pointer.
+    unsafe { (*target_ptr).object_data_mut().remove_event_filter(id_b) };
     assert_eq!(target.object_data().event_filters.snapshot(), vec![]);
 
     // SAFETY: the callbacks have returned and these registrations are owner-thread.

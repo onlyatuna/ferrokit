@@ -105,13 +105,15 @@ fn object_filter_consumed_event_returns_true() {
     let mut filter = ConsumingFilter::new();
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the registry's pointer.
+    receiver
+        .object_data_mut()
+        .install_event_filter(filter.data.id);
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
-    receiver
-        .object_data_mut()
-        .install_event_filter(filter.data.id);
 
     let mut event = Event::new(EventKind::UpdateRequest);
     let handled = send_event(receiver.data.id, &mut event);

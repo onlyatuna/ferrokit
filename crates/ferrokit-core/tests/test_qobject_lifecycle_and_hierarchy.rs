@@ -189,15 +189,17 @@ fn test_child_unlink_notifies_parent() {
     {
         let mut child = MockContainer::new("child");
         let child_id = child.data.id;
+        let child_ptr = &raw mut child;
         // SAFETY: child stays on this thread and alive until unregistered.
-        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut child)) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(child_ptr)) };
 
-        child.data.set_parent(Some(parent_id)).unwrap();
+        // SAFETY: no callback of either object runs; the pointers are the registered ones.
+        unsafe { (*child_ptr).data.set_parent(Some(parent_id)).unwrap() };
         assert_eq!(parent.data.children.len(), 1);
         assert_eq!(parent.child_added_count.load(Ordering::SeqCst), 1);
 
         // Explicitly unparenting
-        child.data.set_parent(None).unwrap();
+        unsafe { (*child_ptr).data.set_parent(None).unwrap() };
         assert_eq!(parent.data.children.len(), 0);
         assert_eq!(parent.child_removed_count.load(Ordering::SeqCst), 1);
 

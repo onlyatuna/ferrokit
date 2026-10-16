@@ -61,9 +61,11 @@ fn install_event_filter_allows_self() {
         false,
     );
     let id = obj.data.id;
-    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
+    let obj_ptr = &raw mut obj;
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
-    let ok = install_event_filter(&mut obj.data, id);
+    // SAFETY: no callback of `obj` runs; `obj_ptr` is the registered pointer.
+    let ok = install_event_filter(unsafe { &mut (*obj_ptr).data }, id);
     assert!(
         ok,
         "install_event_filter must allow installing self as filter (qobject.cpp:2407-2423)"
@@ -90,14 +92,17 @@ fn install_event_filter_allows_mutual_cycle() {
     );
     let a_id = obj_a.data.id;
     let b_id = obj_b.data.id;
+    let a_ptr = &raw mut obj_a;
+    let b_ptr = &raw mut obj_b;
 
     unsafe {
-        register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_a));
-        register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_b));
+        register_qobject_ptr(NonNull::new_unchecked(a_ptr));
+        register_qobject_ptr(NonNull::new_unchecked(b_ptr));
     }
 
-    let ok_a = install_event_filter(&mut obj_a.data, b_id);
-    let ok_b = install_event_filter(&mut obj_b.data, a_id);
+    // SAFETY: no callback of either object runs; the pointers are the registered ones.
+    let ok_a = install_event_filter(unsafe { &mut (*a_ptr).data }, b_id);
+    let ok_b = install_event_filter(unsafe { &mut (*b_ptr).data }, a_id);
 
     assert!(ok_a, "obj_a installing obj_b must succeed");
     assert!(
