@@ -216,6 +216,20 @@ def sweep_target(args, target, names, model, results, excerpts):
             print(f"{target}::{stopper} {model} {results[key]['kind']}", flush=True)
             continue
         if re.search(r"^test result: ", text, re.M):
+            # Miri reports leaks after the last test line, when the process ends, so every test
+            # shows `ok` and only the exit status fails. The leak cannot be tied to one test, so
+            # it is recorded under its own key: a baseline never lists it, which makes it a
+            # regression instead of letting the target count as all-pass.
+            leaked = len(re.findall(r"^error: memory leaked", text, re.M))
+            if leaked:
+                key = f"{target}::(leaks at process exit)::{model}"
+                results[key] = {
+                    "kind": "leak",
+                    "bucket": bucket_of("leak"),
+                    "sig": [("error", f"{leaked} leaked allocations at process exit")],
+                }
+                excerpts[key] = text[text.find("error: memory leaked") :][:3000]
+                print(f"{target} {model}: {leaked} leaked allocations at process exit", flush=True)
             break
         # Nothing reported and nothing started: the run itself failed (build error, no such test).
         kind, sig = classify(text)

@@ -325,6 +325,10 @@ fn a_slot_that_drops_the_owner_and_emits_again_reaches_nothing() {
         "the slot that dropped the owner"
     );
     assert_eq!(later_runs.load(Ordering::SeqCst), 0, "the slot after it");
+
+    // The first slot holds a handle to the signal it is connected to. Without this the signal
+    // and the slot keep each other alive, and Miri reports the leak when the process ends.
+    handle.disconnect_all();
 }
 
 #[test]
