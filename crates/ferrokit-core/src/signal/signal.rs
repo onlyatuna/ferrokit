@@ -511,13 +511,22 @@ impl<T> Signal<T> {
     ///
     /// Once the owner is found gone `self` is not read again: the slot that destroyed it may have
     /// freed the object this signal is a field of.
+    ///
+    /// # Owner already destroyed before `emit` starts
+    /// When a cloned `Signal<T>` outlives its owner (after `ObjectData::drop` or
+    /// `unregister_qobject` sets the shared `liveness` token to `false`), calling `emit` invokes
+    /// no slot and returns `()` silently without panicking. This differs from PySide6 6.11.2,
+    /// which raises `RuntimeError: Signal source has been deleted` when `.emit()` is called on a
+    /// `SignalInstance` whose C++ `QObject` has been deleted (while C++ Qt has no safe way to call
+    /// a member on a deleted `QObject*`). Returning `()` keeps `emit(&self, &T)` infallible across
+    /// all callers and is identical on Windows, macOS, and Linux because `liveness` is an
+    /// OS-independent `Arc<AtomicBool>`.
     pub fn emit(&self, value: &T) {
         if let Some(emitter) = &self.emitter {
-            if emitter.blocked.load(Ordering::Acquire) {
+            if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire) {
                 return;
             }
         }
-
         let emitter_id = self.emitter_id();
         let owner_alive = self.emitter.as_ref().map(|e| Arc::clone(&e.alive));
         let _sender_guard = SenderGuard::new(emitter_id);

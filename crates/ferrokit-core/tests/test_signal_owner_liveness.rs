@@ -26,7 +26,7 @@ use ferrokit_core::object::{
     register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, OwnedObject,
     QObject, ThreadId,
 };
-use ferrokit_core::signal::{ConnectionType, Signal};
+use ferrokit_core::signal::{ConnectionType, Signal, SlotId};
 
 /// An object whose signal is bound to its own `ObjectData`.
 struct Owner {
@@ -142,7 +142,7 @@ fn connect_every_kind(
     counters.push(("connect_single_shot_to", n));
 
     signal
-        .connect_unique_to(rcv, unique_slot)
+        .connect_unique_with_key(rcv, SlotId::next(), unique_slot)
         .expect("the unique connection is made");
 
     let (n, slot) = counter();
@@ -239,9 +239,12 @@ fn a_queued_call_posted_while_the_owner_was_alive_is_still_delivered_after_it_is
     let rcv = receiver();
     let owner = Owner::registered();
     let (n, slot) = counter();
-    owner
-        .changed
-        .connect_object(rcv.data.id, ThreadId::current(), ConnectionType::Queued, slot);
+    owner.changed.connect_object(
+        rcv.data.id,
+        ThreadId::current(),
+        ConnectionType::Queued,
+        slot,
+    );
 
     owner.changed.emit(&1);
     assert_eq!(n.load(Ordering::SeqCst), 0, "queued: not yet");
@@ -281,7 +284,11 @@ fn an_emission_started_inside_a_slot_on_a_dropped_owner_ends_there_and_the_outer
 
     outer.changed.emit(&1);
 
-    assert_eq!(gone_runs.load(Ordering::SeqCst), 0, "the dropped owner's slot");
+    assert_eq!(
+        gone_runs.load(Ordering::SeqCst),
+        0,
+        "the dropped owner's slot"
+    );
     assert_eq!(
         second_runs.load(Ordering::SeqCst),
         1,
@@ -312,7 +319,11 @@ fn a_slot_that_drops_the_owner_and_emits_again_reaches_nothing() {
 
     handle.emit(&1);
 
-    assert_eq!(first_runs.load(Ordering::SeqCst), 1, "the slot that dropped the owner");
+    assert_eq!(
+        first_runs.load(Ordering::SeqCst),
+        1,
+        "the slot that dropped the owner"
+    );
     assert_eq!(later_runs.load(Ordering::SeqCst), 0, "the slot after it");
 }
 
@@ -363,9 +374,20 @@ fn unregistering_an_owner_that_still_exists_silences_its_signal() {
     unsafe { unregister_qobject(id) };
     owner.changed.emit(&2);
 
-    assert_eq!(n.load(Ordering::SeqCst), 1, "unregistered: the slot does not run");
-    assert!(!owner.data.is_alive(), "an unregistered object is not alive");
-    assert_eq!(owner.data.object_name(), Some("still here"), "the object itself is intact");
+    assert_eq!(
+        n.load(Ordering::SeqCst),
+        1,
+        "unregistered: the slot does not run"
+    );
+    assert!(
+        !owner.data.is_alive(),
+        "an unregistered object is not alive"
+    );
+    assert_eq!(
+        owner.data.object_name(),
+        Some("still here"),
+        "the object itself is intact"
+    );
 }
 
 #[test]
@@ -420,13 +442,21 @@ fn a_slot_that_unregisters_its_owner_ends_the_emission() {
     owner.changed.emit(&1);
     owner.changed.emit(&2);
 
-    assert_eq!(first_runs.load(Ordering::SeqCst), 1, "the slot that unregistered the owner");
-    assert_eq!(later_runs.load(Ordering::SeqCst), 0, "the slot after it, in both emissions");
+    assert_eq!(
+        first_runs.load(Ordering::SeqCst),
+        1,
+        "the slot that unregistered the owner"
+    );
+    assert_eq!(
+        later_runs.load(Ordering::SeqCst),
+        0,
+        "the slot after it, in both emissions"
+    );
 }
 
 #[test]
-fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the_outer_one_goes_on(
-) {
+fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the_outer_one_goes_on()
+{
     let outer = Owner::registered();
     let mut retired = Owner::new();
     let retired_id = retired.data.id;
@@ -445,8 +475,16 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
 
     outer.changed.emit(&1);
 
-    assert_eq!(retired_runs.load(Ordering::SeqCst), 0, "the unregistered owner's slot");
-    assert_eq!(second_runs.load(Ordering::SeqCst), 1, "the outer emission goes on");
+    assert_eq!(
+        retired_runs.load(Ordering::SeqCst),
+        0,
+        "the unregistered owner's slot"
+    );
+    assert_eq!(
+        second_runs.load(Ordering::SeqCst),
+        1,
+        "the outer emission goes on"
+    );
 }
 
 #[test]
