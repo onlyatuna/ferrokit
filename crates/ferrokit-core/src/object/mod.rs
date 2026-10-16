@@ -14,7 +14,7 @@
 //! | The object lives | Register it with | Between callbacks the owner may |
 //! |---|---|---|
 //! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through the `OwnedObject`, and move the `OwnedObject` |
-//! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | use the variable or field directly |
+//! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | read the variable or field directly; write it only through the pointer that was registered (rule 7) |
 //! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent, or through the `OwnedObject` that `reparent_owned_object` returns |
 //! | pinned (`!Unpin`, like `Timer`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
 //!
@@ -84,11 +84,14 @@
 //!
 //! let mut node = Node { data: ObjectData::new(ObjectId::next()), hits: 0 };
 //! let id = node.data.id;
+//! let node_ptr = &raw mut node;
 //! // SAFETY: `node` stays here, unmoved, until it is unregistered below; the pointer is taken
 //! // with `&raw mut`, so no reference is made.
-//! unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
+//! unsafe { register_qobject_ptr(NonNull::new_unchecked(node_ptr)) };
 //!
-//! node.hits += 1; // a direct use between callbacks
+//! // SAFETY: no callback of `node` runs, and `node_ptr` is the pointer that was registered.
+//! unsafe { (*node_ptr).hits += 1 }; // a write between callbacks goes through that pointer
+//! assert_eq!(node.hits, 1); // a read can use the variable
 //! assert!(with_object(id, |o| o.object_data().id == id).unwrap());
 //!
 //! // SAFETY: no callback of `node` runs.
@@ -104,7 +107,7 @@
 //!    x)`, `register_boxed_qobject(b)` followed by a use of `b`, and a pointer made with `&mut x
 //!    as *mut _`, `NonNull::from(&mut x)` or from a `Box` that is used afterwards all hand the
 //!    registry a pointer that the next direct use of `x` invalidates. Take the pointer with `&raw
-//!    mut x`, or register through an [`OwnedObject`].
+//!    mut x` (and see rule 7), or register through an [`OwnedObject`].
 //! 2. **Holding a reference across a call that may run a callback.** A `&x`, a `&mut x`, or a
 //!    closure that captures one, held while events are processed, an event is sent, or a signal
 //!    connected to the object is emitted, is still live when the callback writes through the
@@ -122,6 +125,12 @@
 //!    id** (`send_event`, `with_object_mut`). The callback overlaps the borrow, and no way of
 //!    registering the object prevents that. [`move_to_thread`] and `Widget::set_tool_tip` do this
 //!    today.
+//! 7. **Writing the variable after registering it by pointer.** A write through the variable, or
+//!    a `&mut` taken from it (a `&mut self` method, `&mut x.data`), invalidates the pointer given
+//!    to `register_qobject_ptr` under Stacked Borrows; the next callback is then undefined
+//!    behavior. Reading the variable is fine. Tree Borrows accepts the write, so a run under Tree
+//!    Borrows alone does not show this. Set the object up before registering it, or keep the
+//!    pointer (`let p = &raw mut x;`) and write through `p`.
 //!
 //! Miri does not check that a `&mut` or a `Box` to a `!Unpin` type is unique, and `dyn QObject`
 //! is not `Unpin`: a program that breaks rule 1 through a `Box<dyn QObject>` passes Miri. Use a

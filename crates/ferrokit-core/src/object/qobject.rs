@@ -403,8 +403,9 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
 /// prevents that use, and nothing in the function can tell whether the caller makes it.
 ///
 /// # Migrating
-/// - An object in a variable: `register_qobject_ptr(NonNull::new_unchecked(&raw mut x))`; the
-///   variable can be used directly between callbacks.
+/// - An object in a variable: `register_qobject_ptr(NonNull::new_unchecked(&raw mut x))`. The
+///   variable can be read directly between callbacks; write it before registering, or through the
+///   pointer that was registered.
 /// - An object in a `Box`: create it with [`register_owned_qobject`] and keep the returned
 ///   [`OwnedObject`] where the `Box` was. It dereferences the same way and may be moved.
 ///
@@ -525,7 +526,9 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
 /// - an object on the heap held by an [`OwnedObject`], registered with
 ///   [`OwnedObject::as_non_null`] (what [`register_owned_qobject`] does);
 /// - an object in a variable or field, registered with a pointer taken by `&raw mut x`. The owner
-///   may then use `x` directly between callbacks.
+///   may read `x` directly between callbacks, but writes it only through `ptr` (rule 7 in the
+///   [`crate::object`] module documentation): under Stacked Borrows a write through `x` itself
+///   invalidates the registered pointer.
 ///
 /// A pointer made from a reference (`&mut x as *mut _`, `NonNull::from(&mut x)`) or from a `Box`
 /// that is used afterwards does not qualify (rule 1 in the [`crate::object`] module
