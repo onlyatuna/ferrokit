@@ -3,7 +3,8 @@
 //!
 //! Qt refuses a parent that belongs to another thread. It has already removed the child from its
 //! old parent when it finds out, warns, and leaves the child without a parent
-//! (qobject.cpp:2309-2345). `set_parent` does the same, prints Qt's warning and reports
+//! (qobject.cpp:2309-2345; line numbers differ between Qt versions, these were checked against Qt
+//! 6.11.2's `qobject.cpp`). `set_parent` does the same, prints Qt's warning and reports
 //! `Err(DifferentThread)`. An owned child's `Box` would be lost by a detach, so `reparent_owned`
 //! and `add_owned_child` refuse without changing anything and without printing the warning: the
 //! owner keeps the child it had, and a refused new child is handed back.

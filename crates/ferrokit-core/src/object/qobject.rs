@@ -1040,7 +1040,8 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 ///
 /// Thread affinity: the child's thread and the new parent's thread (`ObjectData::thread_id`, as
 /// [`move_to_thread`](crate::object::move_to_thread) changes it) must be the same, because a parent and its children share one
-/// thread. Otherwise, as in Qt (qobject.cpp:2309-2345), the child is removed from its old parent,
+/// thread. Otherwise, as in Qt (qobject.cpp:2309-2345; line numbers differ between Qt versions,
+/// these were checked against Qt 6.11.2's `qobject.cpp`), the child is removed from its old parent,
 /// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
 /// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
 /// thread is not checked, but a registered child must still be used on the thread it is registered
