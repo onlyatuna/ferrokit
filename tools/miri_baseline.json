@@ -36,7 +36,6 @@
   ],
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
-    "test_miri_aliasing_controls::an_owner_turned_into_a_box_then_use_of_the_box_between_callbacks",
     "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks",
     "test_miri_aliasing_controls::register_qobject_then_use_of_the_box_between_callbacks",
     "test_pointer_registration_between_callbacks::control_writing_the_variable_after_registering_it_by_pointer"
@@ -340,8 +339,6 @@
     "test_meta_invoke_queued_resolution::queued_signature_invoke_rejects_wrong_argument_type_without_posting::TB": "pass",
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable::SB": "UB",
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable::TB": "UB",
-    "test_miri_aliasing_controls::an_owner_turned_into_a_box_then_use_of_the_box_between_callbacks::SB": "UB",
-    "test_miri_aliasing_controls::an_owner_turned_into_a_box_then_use_of_the_box_between_callbacks::TB": "UB",
     "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks::SB": "UB",
     "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks::TB": "UB",
     "test_miri_aliasing_controls::register_qobject_then_use_of_the_box_between_callbacks::SB": "UB",

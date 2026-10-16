@@ -117,8 +117,9 @@
 //!    including a read of its id. An owner that needs the id of a child it owns gets it from
 //!    [`OwnedObject::object_id`].
 //! 4. **Using a `Box` that stands for a registered object.** A `Box` claims to be the only
-//!    pointer to its object. [`reparent_owned`] returns a `Box` for that reason; use
-//!    [`reparent_owned_object`] to get an [`OwnedObject`].
+//!    pointer to its object. No function of this crate turns a registered object back into a
+//!    `Box`: [`reparent_owned_object`] and the owners in `owned_children` give an
+//!    [`OwnedObject`], and an object leaves the registry only through `unregister_qobject`.
 //! 5. **Moving or dropping the object while it is registered.** The address must stay until
 //!    `unregister_qobject` returns. (An [`OwnedObject`] may move; the object it owns does not.)
 //! 6. **A method that holds `&self` or `&mut self` and delivers an event to the same object by

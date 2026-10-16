@@ -100,33 +100,6 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     pub(crate) fn borrow_state(this: &Self) -> &Arc<ObjectBorrowState> {
         &this.borrow_state
     }
-
-    /// Gives the object to a `Box`.
-    ///
-    /// The object keeps its address, but a `Box<T>` claims unique ownership (`Unique` permission
-    /// for `T: Sized + Unpin`). While the object remains registered in the global registry:
-    /// - using or moving the returned `Box<T>` invalidates the registry's pointer, so the next
-    ///   callback is undefined behavior under Stacked Borrows and Tree Borrows; and
-    /// - conversely, if any callback runs through the registry's pointer after `into_box`, that
-    ///   callback's write pops the `Box<T>`'s `Unique` tag, so even dropping the `Box<T>` later
-    ///   (without ever reading or writing `*boxed` directly) is undefined behavior under Stacked
-    ///   Borrows and Tree Borrows.
-    ///
-    /// Keep the object in an [`OwnedObject`] while it is registered, or call
-    /// [`unregister_qobject`](super::unregister_qobject) before converting it with `into_box`.
-    #[deprecated(
-        note = "a `Box<T>` claims unique ownership, so any registry callback after `into_box` \
-                invalidates the `Box` and makes dropping it UB under Stacked Borrows and Tree \
-                Borrows; keep the `OwnedObject` or unregister the object before calling `into_box`"
-    )]
-    pub fn into_box(this: Self) -> Box<T> {
-        let this = ManuallyDrop::new(this);
-        // SAFETY: `this` is in `ManuallyDrop`, so drop its `Arc` field before taking the raw
-        // pointer.
-        drop(unsafe { std::ptr::read(&this.borrow_state) });
-        // SAFETY: `ptr` came from `Box::into_raw` and is owned by `this`, which is not dropped.
-        unsafe { Box::from_raw(this.ptr.as_ptr()) }
-    }
 }
 
 impl<T: QObject + ?Sized> std::ops::Deref for OwnedObject<T> {
@@ -149,8 +122,8 @@ impl<T: QObject + ?Sized> std::ops::DerefMut for OwnedObject<T> {
 
 impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
     fn drop(&mut self) {
-        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here or by `into_box`, which
-        // does not run this.
+        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is never
+        // turned back into a `Box`, so no second pointer that claims unique ownership exists.
         drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
     }
 }

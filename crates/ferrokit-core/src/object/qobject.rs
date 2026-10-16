@@ -763,7 +763,7 @@ pub struct ObjectData {
 
     /// True while this object is held in its parent's `owned_children`. Such an object's
     /// lifetime belongs to the parent, so `set_parent` (which only sees `&mut ObjectData`, a
-    /// borrow *into* the owned object) must not detach it; [`reparent_owned`] moves its owner.
+    /// borrow *into* the owned object) must not detach it; [`reparent_owned_object`] moves its owner.
     owned_by_parent: bool,
 
     /// The parent's id and liveness token, captured when a registered parent was set. It lets
@@ -881,7 +881,7 @@ impl ObjectData {
         set_parent(self, new_parent)
     }
 
-    /// True while a parent owns this object (see [`reparent_owned`]).
+    /// True while a parent owns this object (see [`reparent_owned_object`]).
     pub fn is_owned_by_parent(&self) -> bool {
         self.owned_by_parent
     }
@@ -1136,15 +1136,15 @@ pub fn remove_event_filter(target: &mut ObjectData, filter: ObjectId) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReparentError {
     /// [`set_parent`]: the object is held by its parent's `owned_children`. Detaching it there
-    /// would destroy it (or leave the caller's `&mut` dangling); use [`reparent_owned`].
+    /// would destroy it (or leave the caller's `&mut` dangling); use [`reparent_owned_object`].
     OwnedByParent,
-    /// [`reparent_owned`]: the object has no parent that owns it.
+    /// [`reparent_owned_object`]: the object has no parent that owns it.
     NotOwned,
     /// The object is not registered, is dead, or is registered on another thread. For
     /// [`add_owned_child`] the object is the new parent.
     UnknownObject,
     /// [`set_parent`]: the new parent is the object itself or one of its descendants. Not for an
-    /// unregistered parent, which `set_parent` accepts. [`reparent_owned`]: those two, and also a
+    /// unregistered parent, which `set_parent` accepts. [`reparent_owned_object`]: those two, and also a
     /// new parent that is not registered on the calling thread.
     InvalidParent,
     /// The object or a parent is borrowed by an active callback.
@@ -1155,7 +1155,7 @@ pub enum ReparentError {
     /// - [`set_parent`] does what Qt's `setParent` does. The child has already been removed from
     ///   its old parent, which received `ChildRemoved`, so it is left without a parent, and Qt's
     ///   warning goes to stderr.
-    /// - [`reparent_owned`] changes nothing and prints nothing: the child stays with its old
+    /// - [`reparent_owned_object`] changes nothing and prints nothing: the child stays with its old
     ///   parent, which still owns it. Qt would detach the child.
     /// - [`add_owned_child`] attaches nothing and prints nothing, and hands the `Box` back: the
     ///   child has no parent and the parent's children are as they were. Qt's constructor leaves
@@ -1238,7 +1238,7 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// `ChildRemoved`/`ChildAdded` to the registered parents.
 ///
 /// Refuses with [`ReparentError::OwnedByParent`] when a parent owns the child; use
-/// [`reparent_owned`] for those. Qt's `setParent_helper` (qobject.cpp:2287-2345) never destroys
+/// [`reparent_owned_object`] for those. Qt's `setParent_helper` (qobject.cpp:2287-2345) never destroys
 /// the child; here the borrow `child` points into the object the parent owns, so ownership has to
 /// move through an id-based call.
 ///
@@ -1253,7 +1253,7 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
 /// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
 /// thread is not checked, but a registered child must still be used on the thread it is registered
-/// on (see the thread rules in [`crate::object`]). [`reparent_owned`] and [`add_owned_child`] refuse the same
+/// on (see the thread rules in [`crate::object`]). [`reparent_owned_object`] and [`add_owned_child`] refuse the same
 /// pairs without detaching anything and without the warning; see [`ReparentError::DifferentThread`].
 ///
 /// The parent does not own the child: whoever does keeps the child alive and frees it.
@@ -1274,7 +1274,7 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// `new_parent` need not be registered: the id is accepted and only the child's own link is
 /// recorded. The parent's child list, `ChildAdded` and the death tracking above all need a
 /// registered parent and do not happen. Qt has no such case (a `QObject*` is always a live
-/// object), so nothing more is specified for it. [`reparent_owned`] and [`add_owned_child`]
+/// object), so nothing more is specified for it. [`reparent_owned_object`] and [`add_owned_child`]
 /// refuse an unregistered parent.
 ///
 /// Use [`add_owned_child`] to make the parent own the child.
@@ -1342,7 +1342,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 }
 
 /// Moves an owned child to `new_parent`, or releases it to the caller when `new_parent` is
-/// `None` (`Ok(Some(box))`; the child stays alive and registered, with no parent).
+/// `None` (`Ok(Some(owner))`; the child stays alive and registered, with no parent).
 ///
 /// Unlike Qt's `setParent`, ownership is explicit: the parent owns the child, so detaching hands
 /// the child to the caller instead of dropping it. `ChildRemoved`/`ChildAdded` go through
@@ -1355,27 +1355,10 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// detach the child and leave it without a parent; here that would leave the child without an
 /// owner, and the return type cannot hand it back together with an error.
 ///
-/// A released child comes back as a `Box`. A `Box` claims to be the only pointer to its object,
-/// which the registry's pointer contradicts while the child stays registered: any use of the `Box`
-/// invalidates the registry's pointer, and any callback through the registry invalidates the `Box`
-/// so that dropping it is undefined behavior. Use [`reparent_owned_object`] to get an
-/// [`OwnedObject`], which shares its pointer with the registry.
-#[deprecated(
-    note = "detaching with `new_parent = None` converts the owner to a `Box`, which claims unique \
-            ownership while the child stays registered; use `reparent_owned_object` to keep an \
-            `OwnedObject`"
-)]
-pub fn reparent_owned(
-    child_id: ObjectId,
-    new_parent: Option<ObjectId>,
-) -> Result<Option<Box<dyn QObject>>, ReparentError> {
-    #[allow(deprecated)]
-    reparent_owned_object(child_id, new_parent).map(|released| released.map(OwnedObject::into_box))
-}
-
-/// [`reparent_owned`] that releases the child as an [`OwnedObject`] instead of a `Box`. The owner
-/// keeps the pointer the registry has, so the caller may use the child between its callbacks
-/// while it stays registered.
+/// A released child comes back as an [`OwnedObject`], which shares its pointer with the
+/// registry, so the caller may use the child between its callbacks while it stays registered. It
+/// is never given up as a `Box`: a `Box` claims to be the only pointer to its object, and the
+/// registry's pointer contradicts that.
 pub fn reparent_owned_object(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
