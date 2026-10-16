@@ -75,3 +75,35 @@ jobs:
       - name: Run doc tests
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
+
+  miri:
+    name: Nightly Miri (SB & TB, non-blocking)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    # Non-blocking initially while open aliasing defects remain tracked in the baseline.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly Miri toolchain
+        run: |
+          rustup toolchain install nightly-2026-10-16 --profile minimal --component miri rust-src
+          cargo +nightly-2026-10-16 miri setup
+          rustc +nightly-2026-10-16 -V
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run Miri sweep (SB & TB, baseline diff, isolation allowlist)
+        run: >-
+          python tools/miri_sweep.py
+          --crate ferrokit-core
+          --toolchain nightly-2026-10-16
+          --models SB,TB
+          --baseline tools/miri_baseline.json
+          --run-isolation-allowlist
+          --fail-on-regression
+          --summary "$GITHUB_STEP_SUMMARY"
+          --out miri_results.json
