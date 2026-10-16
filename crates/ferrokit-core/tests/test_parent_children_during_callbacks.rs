@@ -7,7 +7,8 @@
 //! when the callback returns. Inside that callback the list still shows the old state.
 
 use ferrokit_core::object::{
-    register_qobject, set_parent, with_object_mut, ObjectData, ObjectId, QObject,
+    register_owned_qobject, set_parent, with_object_mut, ObjectData, ObjectId, OwnedObject,
+    QObject,
 };
 
 struct Node {
@@ -15,14 +16,14 @@ struct Node {
 }
 
 impl Node {
-    fn registered() -> Box<Self> {
-        let mut n = Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
-        });
-        // SAFETY: the Box is never moved out of and stays on this thread until it is dropped,
-        // which unregisters it.
-        unsafe { register_qobject(&mut *n) };
-        n
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe {
+            register_owned_qobject(Self {
+                data: ObjectData::new(ObjectId::next()),
+            })
+        }
     }
 }
 

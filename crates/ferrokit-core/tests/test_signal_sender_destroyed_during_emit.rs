@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ferrokit_core::object::ThreadId;
-use ferrokit_core::object::{add_owned_child, register_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    add_owned_child, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+};
 use ferrokit_core::signal::{ConnectionType, Signal};
 
 type Calls = Arc<Mutex<Vec<&'static str>>>;
@@ -54,19 +56,21 @@ struct Node {
 
 impl Node {
     fn new() -> Box<Self> {
-        Box::new(Self {
+        Box::new(Self::unboxed())
+    }
+
+    fn unboxed() -> Self {
+        Self {
             data: ObjectData::new(ObjectId::next()),
             freed: Arc::new(AtomicBool::new(false)),
             on_drop: None,
-        })
+        }
     }
 
-    fn registered() -> Box<Self> {
-        let mut node = Self::new();
-        // SAFETY: the Box stays at this address on this thread until it is dropped, which
-        // unregisters it.
-        unsafe { register_qobject(&mut *node) };
-        node
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe { register_owned_qobject(Self::unboxed()) }
     }
 }
 
@@ -91,7 +95,7 @@ impl QObject for Node {
 /// A sender: an owned child of a parent, with a handle to its own signal. Dropping the parent
 /// destroys the sender.
 struct Sender {
-    owner: ThreadBound<Rc<RefCell<Option<Box<Node>>>>>,
+    owner: ThreadBound<Rc<RefCell<Option<OwnedObject<Node>>>>>,
     signal: Signal<String>,
     freed: Arc<AtomicBool>,
 }

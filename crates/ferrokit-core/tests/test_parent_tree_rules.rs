@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    dispatch_to_object, move_to_thread, register_qobject, set_parent, unregister_qobject,
-    MoveError, ObjectData, ObjectId, QObject, ReparentError, ThreadId,
+    dispatch_to_object, move_to_thread, register_owned_qobject, set_parent, unregister_qobject,
+    MoveError, ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -21,15 +21,15 @@ struct Node {
 }
 
 impl Node {
-    fn registered() -> Box<Self> {
-        let mut n = Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
-            seen: Vec::new(),
-        });
-        // SAFETY: the Box is never moved out of and stays on this thread until it is dropped,
-        // which unregisters it.
-        unsafe { register_qobject(&mut *n) };
-        n
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe {
+            register_owned_qobject(Self {
+                data: ObjectData::new(ObjectId::next()),
+                seen: Vec::new(),
+            })
+        }
     }
 }
 
@@ -152,20 +152,20 @@ fn dropping_a_parent_does_not_touch_the_parent_of_an_unrelated_child() {
 /// object is borrowed by a running callback.
 struct Reactor {
     data: ObjectData,
-    victim: Rc<RefCell<Option<Box<Node>>>>,
+    victim: Rc<RefCell<Option<OwnedObject<Node>>>>,
     parent_seen: Vec<Option<ObjectId>>,
 }
 
 impl Reactor {
-    fn registered(victim: Rc<RefCell<Option<Box<Node>>>>) -> Box<Self> {
-        let mut r = Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
-            victim,
-            parent_seen: Vec::new(),
-        });
+    fn registered(victim: Rc<RefCell<Option<OwnedObject<Node>>>>) -> OwnedObject<Self> {
         // SAFETY: as in `Node::registered`.
-        unsafe { register_qobject(&mut *r) };
-        r
+        unsafe {
+            register_owned_qobject(Self {
+                data: ObjectData::new(ObjectId::next()),
+                victim,
+                parent_seen: Vec::new(),
+            })
+        }
     }
 }
 
@@ -187,7 +187,7 @@ impl QObject for Reactor {
 }
 
 /// A registered child whose callback drops its own parent, and that callback's observations.
-fn child_that_drops_its_parent() -> (Box<Reactor>, ObjectId) {
+fn child_that_drops_its_parent() -> (OwnedObject<Reactor>, ObjectId) {
     let parent = Node::registered();
     let parent_id = parent.data.id;
     let victim = Rc::new(RefCell::new(Some(parent)));
@@ -240,7 +240,7 @@ fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
 /// runs and cannot record the child in its own list.
 struct Adopter {
     data: ObjectData,
-    child: Rc<RefCell<Box<Node>>>,
+    child: Rc<RefCell<OwnedObject<Node>>>,
 }
 
 impl QObject for Adopter {
@@ -262,12 +262,13 @@ impl QObject for Adopter {
 #[test]
 fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
     let adopted = Rc::new(RefCell::new(Node::registered()));
-    let mut parent = Box::new(Adopter {
-        data: ObjectData::new(ObjectId::next()),
-        child: Rc::clone(&adopted),
-    });
     // SAFETY: as in `Node::registered`.
-    unsafe { register_qobject(&mut *parent) };
+    let parent = unsafe {
+        register_owned_qobject(Adopter {
+            data: ObjectData::new(ObjectId::next()),
+            child: Rc::clone(&adopted),
+        })
+    };
     let parent_id = parent.data.id;
     let mut event = Event::new(EventKind::UpdateRequest);
     dispatch_to_object(parent_id, &mut event);

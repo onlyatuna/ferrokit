@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::notify_helper;
 use ferrokit_core::object::{
-    add_owned_child, register_qobject, reparent_owned, set_parent, unregister_qobject, with_object,
-    ObjectData, ObjectId, QObject, ReparentError,
+    add_owned_child, register_owned_qobject, reparent_owned, set_parent, unregister_qobject,
+    with_object, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
 };
 
 type Hook = Arc<Mutex<Option<Box<dyn FnMut(&mut Event) + Send>>>>;
@@ -24,18 +24,20 @@ struct Node {
 }
 
 impl Node {
-    fn boxed() -> Box<Self> {
-        Box::new(Self {
+    fn new() -> Self {
+        Self {
             data: ObjectData::new(ObjectId::next()),
             seen: Arc::new(Mutex::new(Vec::new())),
             hook: Arc::new(Mutex::new(None)),
-        })
+        }
     }
-    fn registered() -> Box<Self> {
-        let mut n = Self::boxed();
-        // SAFETY: the Box is never moved out of and stays on this thread until unregistered.
-        unsafe { register_qobject(&mut *n) };
-        n
+    fn boxed() -> Box<Self> {
+        Box::new(Self::new())
+    }
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe { register_owned_qobject(Self::new()) }
     }
 }
 
@@ -84,16 +86,16 @@ impl QObject for Spy {
     }
 }
 
-fn adopt(parent: &mut Node) -> (ObjectId, Arc<std::sync::atomic::AtomicBool>) {
+fn adopt(parent_id: ObjectId) -> (ObjectId, Arc<std::sync::atomic::AtomicBool>) {
     let child = Node::boxed();
     let alive = child.data.liveness();
     // SAFETY: the child's Box is moved into `parent` and only moved again by reparent_owned.
-    let id = unsafe { add_owned_child(parent.data.id, child) }
+    let id = unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
     (id, alive)
 }
 
-fn finish(node: Box<Node>) {
+fn finish(node: OwnedObject<Node>) {
     let id = node.data.id;
     drop(node);
     // SAFETY: dropped on its registration thread, no callback active.
@@ -112,7 +114,7 @@ fn parent_of(id: ObjectId) -> Option<Option<ObjectId>> {
 #[test]
 fn set_parent_none_on_owned_child_keeps_child_alive() {
     let mut parent = Node::registered();
-    let (child_id, child_alive) = adopt(&mut parent);
+    let (child_id, child_alive) = adopt(parent.data.id);
 
     let result = set_parent(parent.data.owned_children[0].object_data_mut(), None);
 
@@ -127,8 +129,8 @@ fn set_parent_none_on_owned_child_keeps_child_alive() {
 
 #[test]
 fn reparent_owned_to_none_returns_the_box_and_child_survives() {
-    let mut parent = Node::registered();
-    let (child_id, child_alive) = adopt(&mut parent);
+    let parent = Node::registered();
+    let (child_id, child_alive) = adopt(parent.data.id);
 
     let released = reparent_owned(child_id, None).unwrap().expect("ownership returns to the caller");
 
@@ -148,9 +150,9 @@ fn reparent_owned_to_none_returns_the_box_and_child_survives() {
 
 #[test]
 fn reparent_owned_moves_ownership_to_a_new_parent() {
-    let mut a = Node::registered();
+    let a = Node::registered();
     let b = Node::registered();
-    let (child_id, alive) = adopt(&mut a);
+    let (child_id, alive) = adopt(a.data.id);
     assert_eq!(a.data.children, vec![child_id]);
     assert!(b.data.children.is_empty());
 
@@ -172,13 +174,17 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
     let mut a = Node::registered();
     let mut b = Node::registered();
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut spy = Box::new(Spy { data: ObjectData::new(ObjectId::next()), log: Arc::clone(&log) });
+    // SAFETY: the owner stays on this thread and is dropped when no callback of it runs.
+    let spy = unsafe {
+        register_owned_qobject(Spy {
+            data: ObjectData::new(ObjectId::next()),
+            log: Arc::clone(&log),
+        })
+    };
     let spy_id = spy.data.id;
-    // SAFETY: stays boxed on this thread until unregistered below.
-    unsafe { register_qobject(&mut *spy) };
     a.data.install_event_filter(spy_id);
     b.data.install_event_filter(spy_id);
-    let (child_id, _alive) = adopt(&mut a);
+    let (child_id, _alive) = adopt(a.data.id);
 
     reparent_owned(child_id, Some(b.data.id)).unwrap();
 
@@ -207,8 +213,8 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
 
 #[test]
 fn reparent_owned_rejects_self_and_descendant_parents_without_changes() {
-    let mut top = Node::registered();
-    let (mid_id, _) = adopt(&mut top);
+    let top = Node::registered();
+    let (mid_id, _) = adopt(top.data.id);
     // Give `mid` a child of its own, reachable through the registry.
     let grand_id = attach_grandchild(mid_id);
 
@@ -255,9 +261,9 @@ fn reparent_owned_rejects_children_that_are_not_owned() {
 
 #[test]
 fn reparent_owned_fails_visibly_when_a_party_is_borrowed_and_changes_nothing() {
-    let mut a = Node::registered();
+    let a = Node::registered();
     let b = Node::registered();
-    let (child_id, alive) = adopt(&mut a);
+    let (child_id, alive) = adopt(a.data.id);
     let b_id = b.data.id;
 
     // 1) Destination parent is mid-callback.

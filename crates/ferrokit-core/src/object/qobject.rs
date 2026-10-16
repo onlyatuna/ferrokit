@@ -3,11 +3,13 @@ use crate::event::EventFilterChain;
 use crate::signal::Signal;
 use crate::variant::Variant;
 
+use super::owned::OwnedObject;
 use super::thread::{ThreadContext, ThreadId};
 use crate::event::{Event, EventKind};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -114,7 +116,7 @@ impl Drop for ObjectBorrowGuard {
 }
 
 /// An owned child that waits to be freed, with the borrow flag of the callback it waits for.
-type ParkedChild = (Arc<AtomicBool>, Box<dyn QObject>);
+type ParkedChild = (Arc<AtomicBool>, OwnedObject<dyn QObject>);
 
 thread_local! {
     /// Owned children whose parent was destroyed while a callback of theirs was running. The guard
@@ -127,8 +129,10 @@ thread_local! {
 /// registry lists below it: it is unregistered, so it is no longer alive, gets no events or
 /// timers, and its connections to other objects are gone. Its memory is kept until the callback
 /// returns, since that callback still runs on `&mut self`; the guard of the callback frees it
-/// (`free_parked_children`), and with it the memory of the objects below it.
-fn destroy_when_released(child_id: ObjectId, child: Box<dyn QObject>) {
+/// (`free_parked_children`), and with it the memory of the objects below it. The child is not
+/// read here: its id comes from its owner.
+fn destroy_when_released(child: OwnedObject<dyn QObject>) {
+    let child_id = OwnedObject::object_id(&child);
     let Some((entry, _)) = registered_ptr(child_id) else {
         drop(child);
         return;
@@ -146,7 +150,7 @@ fn destroy_when_released(child_id: ObjectId, child: Box<dyn QObject>) {
 }
 
 /// Unregisters everything the registry lists below `id`, the deepest first, and touches no memory:
-/// a callback may be running in any of them, and whoever holds an object's `Box` frees it.
+/// a callback may be running in any of them, and whoever owns an object frees it.
 fn unregister_descendants(id: ObjectId) {
     for child_id in registered_children_of(id) {
         unregister_descendants(child_id);
@@ -158,7 +162,7 @@ fn unregister_descendants(id: ObjectId) {
 
 /// Frees the children parked while the callback that held `flag` was running.
 fn free_parked_children(flag: &Arc<AtomicBool>) {
-    let ready: Vec<Box<dyn QObject>> = PARKED_CHILDREN.with(|parked| {
+    let ready: Vec<OwnedObject<dyn QObject>> = PARKED_CHILDREN.with(|parked| {
         let mut parked = parked.borrow_mut();
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *parked)
             .into_iter()
@@ -390,6 +394,15 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     None
 }
 
+/// Registers `obj` so that the registry can call it by id.
+///
+/// Limit: the registry keeps a pointer made from the reference `obj`. Under Rust's aliasing
+/// rules, the next direct use of the object through the variable, field or `Box` that `obj`
+/// borrowed from invalidates that pointer, so a callback after such a use is undefined behavior,
+/// even if the program appears to work; Miri reports it. When the owner uses the object between
+/// callbacks, register it with [`register_qobject_ptr`] (a pointer taken with `&raw mut`) or
+/// [`register_owned_qobject`] instead. This function is kept for existing callers.
+///
 /// # Safety
 /// The object must remain alive at the same address until `unregister_qobject` completes.
 /// Do not move or drop it while registered. All access from any thread must occur through
@@ -435,6 +448,12 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
     register_object_thread(id, thread_id);
 }
 
+/// Registers a pinned object.
+///
+/// The registry's pointer is made from the reference inside `obj`, with the limit described at
+/// [`register_qobject`]. Miri does not check that limit for `!Unpin` types, so a `!Unpin` object
+/// passing under Miri is no evidence that the use is sound.
+///
 /// # Safety
 /// The pinned object must remain alive and at its pinned address until unregistered.
 /// All access and aliasing requirements are identical to [`register_qobject`].
@@ -444,6 +463,13 @@ pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) 
     register_object_metadata(data, ptr);
 }
 
+/// Registers a boxed object and hands the `Box` back.
+///
+/// Limit: Rust treats a `Box` as the only pointer to its object, so using or moving the returned
+/// `Box` invalidates the pointer the registry keeps, with the consequences described at
+/// [`register_qobject`]. Use [`register_owned_qobject`], whose [`OwnedObject`] shares its pointer
+/// with the registry. This function is kept for existing callers.
+///
 /// # Safety
 /// The returned Box must remain alive and unmoved until unregistered. All access and aliasing
 /// requirements are identical to [`register_qobject`].
@@ -454,6 +480,53 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
     let ptr = &mut *boxed as *mut dyn QObject;
     register_object_metadata(boxed.object_data(), ptr);
     (id, boxed)
+}
+
+/// Registers the object at `ptr`. The registry keeps this exact pointer.
+///
+/// Every access the owner makes to the object between callbacks must go through `ptr` or a
+/// pointer derived from it; then the registry's pointer stays valid. That holds for:
+/// - an object on the heap held by an [`OwnedObject`], registered with
+///   [`OwnedObject::as_non_null`] (what [`register_owned_qobject`] does);
+/// - an object in a variable or field, registered with a pointer taken by `&raw mut x`. The owner
+///   may then use `x` directly between callbacks.
+///
+/// A pointer made from a reference (`&mut x as *mut _`, `NonNull::from(&mut x)`) or from a `Box`
+/// that is used afterwards does not qualify; it has the limit described at [`register_qobject`].
+///
+/// # Safety
+/// - `ptr` points to a live object that stays at this address until `unregister_qobject`
+///   completes.
+/// - Between callbacks, the owner reaches the object only through `ptr` or pointers derived from
+///   it, as described above.
+/// - While a callback of the object runs, nothing else accesses the object, not even to read it.
+/// - Registering the object again, while it is registered, uses the same pointer. It does not
+///   happen, and neither does unregistering it, while a callback of the object runs.
+/// - The thread rules of [`register_qobject`] apply.
+pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
+    let raw = ptr.as_ptr();
+    // SAFETY: the caller guarantees the object is alive and that no callback of it runs.
+    let data = unsafe { (*raw).object_data() };
+    register_object_metadata(data, raw);
+}
+
+/// Moves `obj` to the heap, registers it, and returns its owner. Dropping the owner drops the
+/// object, which unregisters it.
+///
+/// The owner may use the object through `Deref` and `DerefMut` between callbacks, and may be
+/// moved; the registry's pointer stays valid (see [`OwnedObject`]).
+///
+/// # Safety
+/// While a callback of the object runs, the owner does not access the object, not even to read
+/// it, and is not dropped. The owner is used and dropped on the registration thread. The thread
+/// rules of [`register_qobject`] apply.
+pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObject<T> {
+    let owned = OwnedObject::new(obj);
+    let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owned);
+    // SAFETY: the object stays at this address until the owner is dropped; the rest is the
+    // caller's contract.
+    unsafe { register_qobject_ptr(ptr) };
+    owned
 }
 
 /// Unregisters an object from all registries and cleans up active timers and connections.
@@ -553,13 +626,14 @@ pub struct ObjectData {
     /// Object lifecycle generation counter.
     pub generation: u32,
 
-    /// Directly owned child objects for cascading destruction.
-    pub owned_children: Vec<Box<dyn QObject>>,
+    /// Directly owned child objects for cascading destruction. Each owner shares its pointer with
+    /// the registry (see [`OwnedObject`]), and knows the child's id without reading the child.
+    pub owned_children: Vec<OwnedObject<dyn QObject>>,
     pub timers: Vec<crate::timer::TimerId>,
 
-    /// True while this object's `Box` lives in its parent's `owned_children`. Such an object's
+    /// True while this object is held in its parent's `owned_children`. Such an object's
     /// lifetime belongs to the parent, so `set_parent` (which only sees `&mut ObjectData`, a
-    /// borrow *into* that `Box`) must not detach it; [`reparent_owned`] moves the `Box` safely.
+    /// borrow *into* the owned object) must not detach it; [`reparent_owned`] moves its owner.
     owned_by_parent: bool,
 
     /// The parent's id and liveness token, captured when a registered parent was set. It lets
@@ -674,7 +748,7 @@ impl ObjectData {
         set_parent(self, new_parent)
     }
 
-    /// True while a parent owns this object's `Box` (see [`reparent_owned`]).
+    /// True while a parent owns this object (see [`reparent_owned`]).
     pub fn is_owned_by_parent(&self) -> bool {
         self.owned_by_parent
     }
@@ -760,14 +834,13 @@ impl ObjectData {
     /// An owned child whose callback is running is destroyed at once as far as anything else can
     /// tell (unregistered, no longer alive, no events, timers or connections to other objects),
     /// and so is everything below it; but its memory and its `Drop` wait until that callback
-    /// returns: the callback still runs on `&mut self`.
+    /// returns: the callback still runs on `&mut self`. Such a child is not read, not even for its
+    /// id, which comes from its owner.
     pub fn delete_children(&mut self) {
         let mut idle = Vec::with_capacity(self.owned_children.len());
         for mut child in std::mem::take(&mut self.owned_children) {
-            let id = child.object_data().id;
-            if registered_and_borrowed(id) {
-                // Only the id was read; nothing else may touch a child a callback is using.
-                destroy_when_released(id, child);
+            if registered_and_borrowed(OwnedObject::object_id(&child)) {
+                destroy_when_released(child);
             } else {
                 child.object_data_mut().clear_parent();
                 idle.push(child);
@@ -853,7 +926,7 @@ impl Drop for ObjectData {
                     parent_obj
                         .object_data_mut()
                         .owned_children
-                        .retain(|c| c.object_data().id != self.id);
+                        .retain(|c| OwnedObject::object_id(c) != self.id);
                     let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
                     parent_obj.event(&mut ev);
                 });
@@ -927,8 +1000,8 @@ pub fn remove_event_filter(target: &mut ObjectData, filter: ObjectId) {
 /// [`ReparentError::DifferentThread`] from [`set_parent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReparentError {
-    /// [`set_parent`]: the object's `Box` is held by its parent's `owned_children`. Detaching it
-    /// there would destroy it (or leave the caller's `&mut` dangling); use [`reparent_owned`].
+    /// [`set_parent`]: the object is held by its parent's `owned_children`. Detaching it there
+    /// would destroy it (or leave the caller's `&mut` dangling); use [`reparent_owned`].
     OwnedByParent,
     /// [`reparent_owned`]: the object has no parent that owns it.
     NotOwned,
@@ -948,14 +1021,14 @@ pub enum ReparentError {
     ///   its old parent, which received `ChildRemoved`, so it is left without a parent, and Qt's
     ///   warning goes to stderr.
     /// - [`reparent_owned`] changes nothing and prints nothing: the child stays with its old
-    ///   parent, which still owns its `Box`. Qt would detach the child.
+    ///   parent, which still owns it. Qt would detach the child.
     /// - [`add_owned_child`] attaches nothing and prints nothing, and hands the `Box` back: the
     ///   child has no parent and the parent's children are as they were. Qt's constructor leaves
     ///   the new object without a parent in the same way, but warns.
     DifferentThread,
 }
 
-/// Lets go of a child whose `Box` its parent does not hold: it survives the parent, loses its
+/// Lets go of a child that its parent does not own: it survives the parent, loses its
 /// parent link, and is unregistered.
 fn release_child(child_id: ObjectId) {
     // The link is cleared before the unregister below, after which the child can no longer be
@@ -963,7 +1036,7 @@ fn release_child(child_id: ObjectId) {
     // registered) is not written to; its `parent()` sees the parent's liveness token instead.
     let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
     // SAFETY: the child may be borrowed by a running callback. It is not written to or freed here:
-    // whoever holds its `Box` frees it, and the callback's guard keeps its own `Arc` to the record.
+    // whoever owns it frees it, and the callback's guard keeps its own `Arc` to the record.
     unsafe { unregister_qobject(child_id) };
 }
 
@@ -1029,10 +1102,10 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// Sets a non-owned child's parent and updates registered relationship metadata, sending
 /// `ChildRemoved`/`ChildAdded` to the registered parents.
 ///
-/// Refuses with [`ReparentError::OwnedByParent`] when a parent owns the child's `Box`; use
+/// Refuses with [`ReparentError::OwnedByParent`] when a parent owns the child; use
 /// [`reparent_owned`] for those. Qt's `setParent_helper` (qobject.cpp:2287-2345) never destroys
-/// the child; here the borrow `child` points into the owning `Box`, so ownership has to move
-/// through an id-based call.
+/// the child; here the borrow `child` points into the object the parent owns, so ownership has to
+/// move through an id-based call.
 ///
 /// Refuses with [`ReparentError::InvalidParent`], changing nothing, when `new_parent` is the
 /// child itself or one of its descendants. Qt's release build accepts that and builds a cycle,
@@ -1048,7 +1121,7 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
 /// on (see [`register_qobject`]). [`reparent_owned`] and [`add_owned_child`] refuse the same
 /// pairs without detaching anything and without the warning; see [`ReparentError::DifferentThread`].
 ///
-/// The parent does not hold the child's `Box`: whoever does keeps the child alive and frees it.
+/// The parent does not own the child: whoever does keeps the child alive and frees it.
 /// Dropping the parent does not destroy such a child (Qt deletes it). The parent unregisters its
 /// children (see [`unregister_qobject`] for what that ends), including a child attached while a
 /// running callback borrowed the parent. [`ObjectData::parent`] of the child returns `None` once
@@ -1136,23 +1209,39 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// Moves an owned child to `new_parent`, or releases it to the caller when `new_parent` is
 /// `None` (`Ok(Some(box))`; the child stays alive and registered, with no parent).
 ///
-/// Unlike Qt's `setParent`, ownership is explicit: the `Box` is the owner, so detaching returns
-/// it instead of dropping it. `ChildRemoved`/`ChildAdded` go through `notify_helper`, so object
-/// and application event filters see them. Validation and borrows are taken before anything is
-/// changed, so an `Err` leaves the hierarchy exactly as it was.
+/// Unlike Qt's `setParent`, ownership is explicit: the parent owns the child, so detaching hands
+/// the child to the caller instead of dropping it. `ChildRemoved`/`ChildAdded` go through
+/// `notify_helper`, so object and application event filters see them. Validation and borrows are
+/// taken before anything is changed, so an `Err` leaves the hierarchy exactly as it was.
 ///
 /// Refuses with [`ReparentError::DifferentThread`] when the new parent's thread differs from the
 /// child's. Unlike [`set_parent`] it changes nothing: the child keeps its old parent and that
-/// parent keeps owning its `Box`, no event is sent, and no warning is printed. Qt's `setParent`
-/// would detach the child and leave it without a parent; here that would leave the `Box` without
-/// an owner, and the return type cannot hand it back together with an error.
+/// parent keeps owning it, no event is sent, and no warning is printed. Qt's `setParent` would
+/// detach the child and leave it without a parent; here that would leave the child without an
+/// owner, and the return type cannot hand it back together with an error.
+///
+/// A released child comes back as a `Box`, which is a unique owner: using the child through it
+/// while it stays registered has the limits of [`register_boxed_qobject`]. Use
+/// [`reparent_owned_object`] to get an [`OwnedObject`], which shares its pointer with the
+/// registry.
 pub fn reparent_owned(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
 ) -> Result<Option<Box<dyn QObject>>, ReparentError> {
+    reparent_owned_object(child_id, new_parent).map(|released| released.map(OwnedObject::into_box))
+}
+
+/// [`reparent_owned`] that releases the child as an [`OwnedObject`] instead of a `Box`. The owner
+/// keeps the pointer the registry has, so the caller may use the child between its callbacks
+/// while it stays registered.
+pub fn reparent_owned_object(
+    child_id: ObjectId,
+    new_parent: Option<ObjectId>,
+) -> Result<Option<OwnedObject<dyn QObject>>, ReparentError> {
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
     // Only the borrow flag is used: the guard is never dereferenced, so no `&mut` aliases the
-    // `Box` that is about to move. It rejects a call made from inside the child's own callback.
+    // child, which is written through its owner below. It rejects a call made from inside the
+    // child's own callback.
     let child_guard = borrow_registered(child_id).ok_or(ReparentError::Busy)?;
     let old_parent_id = (*child_record.parent.read().unwrap()).ok_or(ReparentError::NotOwned)?;
     registered_ptr(old_parent_id).ok_or(ReparentError::NotOwned)?;
@@ -1162,7 +1251,7 @@ pub fn reparent_owned(
             p.object_data()
                 .owned_children
                 .iter()
-                .any(|c| c.object_data().id == child_id)
+                .any(|c| OwnedObject::object_id(c) == child_id)
         })
         .ok_or(ReparentError::Busy)?;
         return if owned { Ok(None) } else { Err(ReparentError::NotOwned) };
@@ -1184,18 +1273,18 @@ pub fn reparent_owned(
         None => None,
     };
 
-    let mut boxed = {
+    let mut owner = {
         let data = old_guard.object_data_mut();
         let pos = data
             .owned_children
             .iter()
-            .position(|c| c.object_data().id == child_id)
+            .position(|c| OwnedObject::object_id(c) == child_id)
             .ok_or(ReparentError::NotOwned)?;
         data.children.retain(|&id| id != child_id);
         data.owned_children.remove(pos)
     };
     {
-        let data = boxed.object_data_mut();
+        let data = owner.object_data_mut();
         data.parent = new_parent;
         data.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
         data.owned_by_parent = new_parent.is_some();
@@ -1224,10 +1313,10 @@ pub fn reparent_owned(
             if !data.children.contains(&child_id) {
                 data.children.push(child_id);
             }
-            data.owned_children.push(boxed);
+            data.owned_children.push(owner);
             None
         }
-        None => Some(boxed),
+        None => Some(owner),
     };
 
     drop(new_guard);
@@ -1253,6 +1342,9 @@ pub fn reparent_owned(
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
 /// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
 ///
+/// On success the parent holds the child in an [`OwnedObject`] and the child is registered with
+/// that owner's pointer, so moving the child between parents leaves the registry's pointer valid.
+///
 /// Dropping the parent from inside a callback of this child is allowed. The child, and everything
 /// the registry lists below it, is then destroyed at once for everything but that callback: it is
 /// unregistered, no longer alive, gets no events or timers, and its connections to other objects
@@ -1263,7 +1355,8 @@ pub fn reparent_owned(
 ///
 /// # Safety
 /// Same as [`register_qobject`]: the child must remain at its allocated address while owned and
-/// registered, and must be used on its registration thread.
+/// registered, and must be used on its registration thread. While a callback of the child runs,
+/// nothing outside it accesses the child.
 pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
@@ -1285,12 +1378,16 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
             data.owned_by_parent = true;
         }
         parent.object_data_mut().add_child(child_id);
-        // SAFETY: delegated to this function's caller contract.
-        unsafe { register_qobject(&mut *child) };
+        // The parent holds the child through an owner made from the `Box`; the registry gets a
+        // copy of the owner's pointer, so moving the owner later invalidates nothing.
+        let owner = OwnedObject::into_dyn(OwnedObject::from_box(child));
+        // SAFETY: the object stays at this address while the owner lives; the rest is delegated
+        // to this function's caller contract.
+        unsafe { register_qobject_ptr(OwnedObject::as_non_null(&owner)) };
         // The registry's list is what still reaches the child while a running callback of the
         // parent hides it from the parent's own `children`.
         list_in_registry(parent_id, child_id);
-        parent.object_data_mut().owned_children.push(child);
+        parent.object_data_mut().owned_children.push(owner);
     });
     match attached {
         Some(()) => {

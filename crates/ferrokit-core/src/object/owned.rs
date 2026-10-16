@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+//! [`OwnedObject`]: the owner of a heap object that the registry also points to.
+
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
+
+use super::qobject::{ObjectId, QObject};
+
+/// Owner of a heap object whose pointer the registry shares.
+///
+/// It holds the raw pointer made by `Box::into_raw`. An object registered through
+/// [`OwnedObject::as_non_null`], as [`register_owned_qobject`](super::register_owned_qobject) and
+/// [`add_owned_child`](super::add_owned_child) do, gives the registry a copy of that same pointer:
+/// the owner's accesses and the registry's callbacks then derive from one pointer, and moving the
+/// `OwnedObject` moves no `Box` and leaves the registry's pointer valid. A `Box<T>` cannot do
+/// that. Rust treats a `Box` as the only pointer to its object, so using or moving it invalidates
+/// a pointer the registry keeps, even if the program appears to work.
+///
+/// Dropping it drops the object, which unregisters it, and frees the memory.
+///
+/// The rules of [`register_qobject`](super::register_qobject) still hold for a registered object:
+/// while one of its callbacks runs, its owner must not access it at all, not even to read it;
+/// between callbacks the owner may use it through `Deref` and `DerefMut`.
+///
+/// The functions are associated functions (`OwnedObject::object_id(&owner)`), so they do not hide
+/// methods of `T` reached through `Deref`.
+pub struct OwnedObject<T: QObject + ?Sized> {
+    ptr: NonNull<T>,
+    /// Read once, when the owner is made. A parent decides what to do with a child whose callback
+    /// is running without reading the child: a `&` to it would alias the callback's `&mut self`.
+    id: ObjectId,
+    // `Box<T>` states ownership for the drop check and is `Unpin` for every `T`. A bare
+    // `PhantomData<T>` would make every type that holds an `ObjectData` `!Unpin`, and Miri does
+    // not check the uniqueness of `&mut` to a `!Unpin` type.
+    _owns: PhantomData<Box<T>>,
+}
+
+impl<T: QObject> OwnedObject<T> {
+    /// Moves `obj` to the heap. The object is not registered.
+    pub fn new(obj: T) -> Self {
+        Self::from_box(Box::new(obj))
+    }
+
+    /// The same owner, of the object behind `dyn QObject`, as a parent keeps it.
+    pub fn into_dyn(this: Self) -> OwnedObject<dyn QObject> {
+        let this = ManuallyDrop::new(this);
+        OwnedObject {
+            ptr: this.ptr,
+            id: this.id,
+            _owns: PhantomData,
+        }
+    }
+}
+
+impl<T: QObject + ?Sized> OwnedObject<T> {
+    /// Takes over the object of `boxed`, keeping it at its address.
+    ///
+    /// The object's id is read here and kept; it must not change afterwards. If the object was
+    /// registered through the `Box` before, the registry's pointer is not this owner's: register
+    /// it again through [`OwnedObject::as_non_null`] before a callback can run.
+    pub fn from_box(boxed: Box<T>) -> Self {
+        let id = boxed.object_data().id;
+        // SAFETY: `Box::into_raw` never returns null.
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        Self {
+            ptr,
+            id,
+            _owns: PhantomData,
+        }
+    }
+
+    /// The pointer that the owner and the registry share. Pass it to
+    /// [`register_qobject_ptr`](super::register_qobject_ptr) to register the object.
+    pub fn as_non_null(this: &Self) -> NonNull<T> {
+        this.ptr
+    }
+
+    /// The object's id, read without touching the object.
+    pub fn object_id(this: &Self) -> ObjectId {
+        this.id
+    }
+
+    /// Gives the object to a `Box`. The object keeps its address and stays registered if it was,
+    /// but a `Box` is a unique owner: using the object through it while it is registered has the
+    /// limits of [`register_boxed_qobject`](super::register_boxed_qobject).
+    pub fn into_box(this: Self) -> Box<T> {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: `ptr` came from `Box::into_raw` and is owned by `this`, which is not dropped.
+        unsafe { Box::from_raw(this.ptr.as_ptr()) }
+    }
+}
+
+impl<T: QObject + ?Sized> std::ops::Deref for OwnedObject<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the object lives as long as its owner. No `&mut` to it is live while the owner
+        // is borrowed: the registry's callbacks and the owner's use do not overlap (see the type's
+        // documentation and `register_qobject`).
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+impl<T: QObject + ?Sized> std::ops::DerefMut for OwnedObject<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as for `deref`, and the owner is borrowed exclusively.
+        unsafe { self.ptr.as_mut() }
+    }
+}
+
+impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here or by `into_box`, which
+        // does not run this.
+        drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
+    }
+}
+
+// Miri does not check the uniqueness of `&mut` to a `!Unpin` type. Every object type holds an
+// `ObjectData`, so this keeps a change to it from turning that check off for all of them.
+const _: () = {
+    const fn assert_unpin<T: Unpin + ?Sized>() {}
+    assert_unpin::<super::ObjectData>();
+    assert_unpin::<OwnedObject<dyn QObject>>();
+};

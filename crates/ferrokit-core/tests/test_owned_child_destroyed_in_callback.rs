@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_qobject, set_parent, with_object_mut, ObjectData,
-    ObjectId, QObject, ThreadId,
+    add_owned_child, dispatch_to_object, register_owned_qobject, set_parent, with_object_mut,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::signal::ConnectionType;
 
@@ -26,24 +26,24 @@ struct Parent {
 }
 
 impl Parent {
-    fn registered() -> Box<Self> {
+    fn registered() -> OwnedObject<Self> {
         Self::build(None)
     }
 
     /// A parent that logs when it is freed.
-    fn logging(log: &Log) -> Box<Self> {
+    fn logging(log: &Log) -> OwnedObject<Self> {
         Self::build(Some(Rc::clone(log)))
     }
 
-    fn build(log: Option<Log>) -> Box<Self> {
-        let mut p = Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
-            log,
-        });
-        // SAFETY: the Box stays at this address on this thread until it is dropped, which
-        // unregisters it.
-        unsafe { register_qobject(&mut *p) };
-        p
+    fn build(log: Option<Log>) -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe {
+            register_owned_qobject(Self {
+                data: ObjectData::new(ObjectId::next()),
+                log,
+            })
+        }
     }
 }
 
@@ -132,7 +132,11 @@ fn has(log: &Log, entry: &str) -> bool {
 }
 
 /// Makes `child` drop `parent` when it gets a user event, and report what it can still see.
-fn drop_the_parent_from(child: &mut Child, parent: &Rc<RefCell<Option<Box<Parent>>>>, log: &Log) {
+fn drop_the_parent_from(
+    child: &mut Child,
+    parent: &Rc<RefCell<Option<OwnedObject<Parent>>>>,
+    log: &Log,
+) {
     let parent = Rc::clone(parent);
     let log = Rc::clone(log);
     child.on_user = Some(Box::new(move |me: &mut Child| {
