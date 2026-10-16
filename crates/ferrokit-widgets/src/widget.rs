@@ -688,16 +688,14 @@ pub trait Widget: QObject + 'static {
         *self.widget_base().tool_tip.borrow_mut() = text.to_string();
     }
 
-    /// `QWidget::setToolTip` (`qwidget.cpp:11793-11800` sends `QEvent::ToolTipChange`).
+    /// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`): updates the tooltip text.
     ///
-    /// Safe to call directly on an unregistered widget. On a registered concrete widget, holding
-    /// `&self` while `send_event` re-borrows the widget as `&mut Self` violates Stacked Borrows;
-    /// use [`set_owned_widget_tool_tip`], [`set_widget_ptr_tool_tip`], or [`set_tool_tip_text`]
-    /// followed by `send_event` after the `&self` borrow ends.
+    /// This method updates the tooltip text in place without synchronously invoking
+    /// `send_event`, avoiding alias conflicts with the registry while `&self` is held.
+    /// To deliver `EventKind::ToolTipChange` to a registered widget or `WidgetRef`, use
+    /// [`set_widget_tool_tip`], [`set_owned_widget_tool_tip`], or [`set_widget_ptr_tool_tip`].
     fn set_tool_tip(&self, text: &str) {
         self.set_tool_tip_text(text);
-        let mut ev = Event::new(EventKind::ToolTipChange);
-        ferrokit_core::object::send_event(self.id(), &mut ev);
     }
 
     /// `QWidget::toolTipDuration`: how long the tip stays, in ms; -1 (the default) derives it from
@@ -802,6 +800,12 @@ impl WidgetBase {
             explicit_max: Cell::new((false, false)),
         }
     }
+    /// Unique object identifier.
+    #[inline]
+    pub fn id(&self) -> ObjectId {
+        self.object_data.id()
+    }
+
 
     pub fn with_geometry(geometry: Rect) -> Self {
         let base = Self::new();
@@ -997,7 +1001,7 @@ impl WidgetBase {
         // could not send them, `FocusManager::process_pending`.
         if !enable {
             if let Some(focus) = self.focus_state.borrow().upgrade() {
-                if focus.lose(self.object_data.id, !parent_disabled) {
+                if focus.lose(self.object_data.id(), !parent_disabled) {
                     self.has_focus.set(false);
                     notices.push(EnabledNotice::FocusLost(focus));
                 }
@@ -1039,14 +1043,14 @@ impl WidgetBase {
             None => rect,
         };
         self.dirty.set(Some(pending));
-        let target_receiver = self.window_id.get().unwrap_or(self.object_data.id);
+        let target_receiver = self.window_id.get().unwrap_or(self.object_data.id());
         // Direct path: the window's render state queues its deferred render without a QObject
         // dispatch. Falls back to `UpdateRequest` when this thread has no window render state.
         if crate::window::schedule_widget_update(target_receiver) {
             return;
         }
         let target_thread = ferrokit_core::object::query_object_thread(target_receiver)
-            .unwrap_or(self.object_data.thread_id);
+            .unwrap_or(self.object_data.thread_id());
         post_event_to_thread(
             target_thread,
             target_receiver,
@@ -1392,7 +1396,7 @@ impl Widget for EmptyWidget {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry.get()

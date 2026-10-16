@@ -41,7 +41,7 @@ impl Widget for ToolTipProbe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -146,17 +146,44 @@ fn set_tool_tip_delivers_tool_tip_change_event() {
     assert_eq!(owned.tool_tip(), "Owned Tooltip");
     drop(owned);
 
-    // 3. `WidgetRef` using two-phase `set_widget_tool_tip`, plus direct `set_tool_tip` on an
-    //    unregistered widget.
+    // 3. Direct `set_tool_tip` on an unregistered widget updates text without UB.
+    let seen_unreg = Arc::new(AtomicBool::new(false));
+    let unreg = ToolTipProbe {
+        base: ferrokit_widgets::widget::WidgetBase::new(),
+        change_seen: Arc::clone(&seen_unreg),
+    };
+    unreg.set_tool_tip("Direct Unregistered");
+    assert_eq!(unreg.tool_tip(), "Direct Unregistered");
+    assert!(!seen_unreg.load(Ordering::SeqCst));
+
+    // 4. Direct `set_tool_tip` on a registered widget updates text without taking an overlapping
+    //    mutable borrow through the registry, passing Stacked Borrows and Tree Borrows.
+    let seen_reg = Arc::new(AtomicBool::new(false));
+    let mut reg_probe = ToolTipProbe {
+        base: ferrokit_widgets::widget::WidgetBase::new(),
+        change_seen: Arc::clone(&seen_reg),
+    };
+    let reg_id = reg_probe.id();
+    let reg_ptr = &raw mut reg_probe;
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(reg_ptr));
+    }
+    reg_probe.set_tool_tip("Direct Registered");
+    assert_eq!(reg_probe.tool_tip(), "Direct Registered");
+    assert!(
+        !seen_reg.load(Ordering::SeqCst),
+        "set_tool_tip(&self) avoids synchronous send_event to eliminate alias conflicts"
+    );
+    unsafe {
+        unregister_qobject(reg_id);
+    }
+
+    // 5. `WidgetRef` using two-phase `set_widget_tool_tip` for event delivery.
     let seen_ref = Arc::new(AtomicBool::new(false));
     let widget_ref: WidgetRef = Rc::new(RefCell::new(Box::new(ToolTipProbe {
         base: ferrokit_widgets::widget::WidgetBase::new(),
         change_seen: Arc::clone(&seen_ref),
     })));
-    widget_ref.borrow().set_tool_tip("Direct Unregistered");
-    assert_eq!(widget_ref.borrow().tool_tip(), "Direct Unregistered");
-    assert!(!seen_ref.load(Ordering::SeqCst));
-
     set_widget_tool_tip(&widget_ref, "Ref Tooltip");
     assert!(seen_ref.load(Ordering::SeqCst));
     assert_eq!(widget_ref.borrow().tool_tip(), "Ref Tooltip");
