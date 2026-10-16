@@ -1,4 +1,132 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+//! Objects, the registry that reaches them by id, and the ways to register an object.
+//!
+//! # Registering an object
+//!
+//! The registry keeps a raw pointer to every registered object and uses it to call the object by
+//! id: an event, a queued signal, a timer. Rust's aliasing rules decide whether that pointer is
+//! still usable when such a callback runs. A pointer made from a reference stops being valid as
+//! soon as the owner uses the object in any other way, and a callback through a pointer that is no
+//! longer valid is undefined behavior. The program may appear to work; Miri reports it.
+//!
+//! Which function to use depends on where the object lives:
+//!
+//! | The object lives | Register it with | Between callbacks the owner may |
+//! |---|---|---|
+//! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through the `OwnedObject`, and move the `OwnedObject` |
+//! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | use the variable or field directly |
+//! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent, or through the `OwnedObject` that `reparent_owned_object` returns |
+//! | pinned (`!Unpin`, like `Timer`) | [`register_pinned_qobject`] | nothing safe beyond the rules of [`register_qobject`]; there is no pointer-based form for pinned objects yet |
+//!
+//! [`register_qobject`] and [`register_boxed_qobject`] build the registry's pointer from a
+//! reference or a `Box`, which is where the rules below are broken.
+//!
+//! ## Registering an object on the heap
+//!
+//! ```
+//! # use ferrokit_core::event::Event;
+//! # use ferrokit_core::object::{ObjectData, ObjectId, QObject};
+//! # struct Node {
+//! #     data: ObjectData,
+//! #     hits: u32,
+//! # }
+//! # impl QObject for Node {
+//! #     fn object_data(&self) -> &ObjectData {
+//! #         &self.data
+//! #     }
+//! #     fn object_data_mut(&mut self) -> &mut ObjectData {
+//! #         &mut self.data
+//! #     }
+//! #     fn event(&mut self, _event: &mut Event) -> bool {
+//! #         self.hits += 1;
+//! #         false
+//! #     }
+//! # }
+//! use ferrokit_core::object::{register_owned_qobject, with_object, OwnedObject};
+//!
+//! let node = Node { data: ObjectData::new(ObjectId::next()), hits: 0 };
+//! // SAFETY: while a callback of the node runs, nothing here touches it; the owner stays on
+//! // this thread.
+//! let mut node = unsafe { register_owned_qobject(node) };
+//! let id = OwnedObject::object_id(&node);
+//!
+//! node.hits += 1; // a direct use between callbacks
+//! assert!(with_object(id, |o| o.object_data().id == id).unwrap()); // the registry still reaches it
+//!
+//! drop(node); // dropping the owner drops the object and unregisters it
+//! assert!(with_object(id, |_| ()).is_none());
+//! ```
+//!
+//! ## Registering an object in a variable
+//!
+//! ```
+//! # use ferrokit_core::event::Event;
+//! # use ferrokit_core::object::{ObjectData, ObjectId, QObject};
+//! # struct Node {
+//! #     data: ObjectData,
+//! #     hits: u32,
+//! # }
+//! # impl QObject for Node {
+//! #     fn object_data(&self) -> &ObjectData {
+//! #         &self.data
+//! #     }
+//! #     fn object_data_mut(&mut self) -> &mut ObjectData {
+//! #         &mut self.data
+//! #     }
+//! #     fn event(&mut self, _event: &mut Event) -> bool {
+//! #         self.hits += 1;
+//! #         false
+//! #     }
+//! # }
+//! use std::ptr::NonNull;
+//!
+//! use ferrokit_core::object::{register_qobject_ptr, unregister_qobject, with_object};
+//!
+//! let mut node = Node { data: ObjectData::new(ObjectId::next()), hits: 0 };
+//! let id = node.data.id;
+//! // SAFETY: `node` stays here, unmoved, until it is unregistered below; the pointer is taken
+//! // with `&raw mut`, so no reference is made.
+//! unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
+//!
+//! node.hits += 1; // a direct use between callbacks
+//! assert!(with_object(id, |o| o.object_data().id == id).unwrap());
+//!
+//! // SAFETY: no callback of `node` runs.
+//! unsafe { unregister_qobject(id) };
+//! ```
+//!
+//! ## What breaks the rules
+//!
+//! Each of these makes a later callback undefined behavior, whichever function registered the
+//! object, unless the entry says otherwise:
+//!
+//! 1. **Registering through a reference, then using the object directly.** `register_qobject(&mut
+//!    x)`, `register_boxed_qobject(b)` followed by a use of `b`, and a pointer made with `&mut x
+//!    as *mut _`, `NonNull::from(&mut x)` or from a `Box` that is used afterwards all hand the
+//!    registry a pointer that the next direct use of `x` invalidates. Take the pointer with `&raw
+//!    mut x`, or register through an [`OwnedObject`].
+//! 2. **Holding a reference across a call that may run a callback.** A `&x`, a `&mut x`, or a
+//!    closure that captures one, held while events are processed, an event is sent, or a signal
+//!    connected to the object is emitted, is still live when the callback writes through the
+//!    registry's pointer. Read the state through [`with_object`], or keep it outside the object
+//!    (`Rc<Cell<_>>`, an atomic).
+//! 3. **Touching the object while one of its callbacks runs.** Not even a read is allowed,
+//!    including a read of its id. An owner that needs the id of a child it owns gets it from
+//!    [`OwnedObject::object_id`].
+//! 4. **Using a `Box` that stands for a registered object.** A `Box` claims to be the only
+//!    pointer to its object. [`reparent_owned`] returns a `Box` for that reason; use
+//!    [`reparent_owned_object`] to get an [`OwnedObject`].
+//! 5. **Moving or dropping the object while it is registered.** The address must stay until
+//!    `unregister_qobject` returns. (An [`OwnedObject`] may move; the object it owns does not.)
+//! 6. **A method that holds `&self` or `&mut self` and delivers an event to the same object by
+//!    id** (`send_event`, `with_object_mut`). The callback overlaps the borrow, and no way of
+//!    registering the object prevents that. [`move_to_thread`] and `Widget::set_tool_tip` do this
+//!    today.
+//!
+//! Miri does not check that a `&mut` or a `Box` to a `!Unpin` type is unique, and `dyn QObject`
+//! is not `Unpin`: a program that breaks rule 1 through a `Box<dyn QObject>` passes Miri. Use a
+//! concrete type to test.
+
 mod owned;
 pub mod qobject;
 pub mod thread;

@@ -1354,9 +1354,10 @@ pub fn reparent_owned_object(
 /// [`Signal::emit`](crate::signal::Signal::emit)).
 ///
 /// # Safety
-/// Same as [`register_qobject`]: the child must remain at its allocated address while owned and
-/// registered, and must be used on its registration thread. While a callback of the child runs,
-/// nothing outside it accesses the child.
+/// The child must remain at its allocated address while owned and registered, and must be used on
+/// its registration thread; the thread rules of [`register_qobject_ptr`] apply. While a callback
+/// of the child runs, nothing outside it accesses the child. A reference to the child taken
+/// before this call, from the `Box` or from a pointer made from it, is not valid after it.
 pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
