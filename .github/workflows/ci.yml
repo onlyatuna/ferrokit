@@ -87,7 +87,7 @@ jobs:
 
       - name: Install nightly Miri toolchain
         run: |
-          rustup toolchain install nightly-2026-10-16 --profile minimal --component miri rust-src
+          rustup toolchain install nightly-2026-10-16 --profile minimal -c miri -c rust-src
           cargo +nightly-2026-10-16 miri setup
           rustc +nightly-2026-10-16 -V
 
