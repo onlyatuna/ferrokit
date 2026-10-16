@@ -26,6 +26,21 @@ unsafe impl Send for RegisteredPtr {}
 // SAFETY: shared access to a record never dereferences the pointer off the registration thread.
 unsafe impl Sync for RegisteredPtr {}
 
+/// Shared callback-borrow and deferred-free state of an [`ObjectData`], kept by the object,
+/// its [`OwnedObject`] owner (if any), and its [`ObjectRecord`] in the global registry.
+///
+/// Keeping this in an `Arc` owned alongside `ObjectData` lets a parent check whether a child's
+/// callback is still on the stack ([`OwnedObject::is_borrowed`]) without reading the child's
+/// memory and even after an ancestor's `unregister_descendants` removed the child from
+/// `GLOBAL_OBJECT_REGISTRY`.
+#[derive(Default)]
+pub(crate) struct ObjectBorrowState {
+    pub(crate) borrow_flag: AtomicBool,
+    /// Set when an owned child was destroyed while this object's callback was running: the guard
+    /// of that callback then frees the memory it kept (see `destroy_when_released`).
+    pub(crate) free_when_released: AtomicBool,
+}
+
 /// Registry record for a QObject. The stored pointer is dereferenced only on the registration
 /// thread, which `registered_ptr` enforces together with the borrow flag.
 pub struct ObjectRecord {
@@ -37,14 +52,11 @@ pub struct ObjectRecord {
     pub children: RwLock<Vec<ObjectId>>,
     pub liveness: Arc<AtomicBool>,
     pub generation: AtomicU32,
-    borrow_flag: Arc<AtomicBool>,
+    borrow_state: Arc<ObjectBorrowState>,
     /// Edits to the `children` list in the object's own `ObjectData` that arrived while a callback
     /// held its borrow; the guard of that callback applies them when it ends.
     pending_child_changes: Mutex<Vec<ChildListChange>>,
     has_pending_child_changes: AtomicBool,
-    /// Set when an owned child was destroyed while this object's callback was running: the guard
-    /// of that callback then frees the memory it kept (see `destroy_when_released`).
-    free_when_released: AtomicBool,
 }
 
 /// One edit to the `children` list in an object's own `ObjectData`.
@@ -64,7 +76,7 @@ impl ChildListChange {
 
 pub struct ObjectBorrowGuard {
     ptr: *mut dyn QObject,
-    borrow_flag: Arc<AtomicBool>,
+    borrow_state: Arc<ObjectBorrowState>,
     _entry: Arc<ObjectRecord>,
 }
 
@@ -108,16 +120,19 @@ impl Drop for ObjectBorrowGuard {
                 }
             }
         }
-        self.borrow_flag.store(false, Ordering::Release);
-        if self._entry.free_when_released.load(Ordering::Acquire) {
-            free_parked_children(&self.borrow_flag);
+        self.borrow_state.borrow_flag.store(false, Ordering::Release);
+        if self
+            .borrow_state
+            .free_when_released
+            .swap(false, Ordering::AcqRel)
+        {
+            free_parked_children(&self.borrow_state);
         }
     }
 }
 
-/// An owned child that waits to be freed, with the borrow flag of the callback it waits for.
-type ParkedChild = (Arc<AtomicBool>, OwnedObject<dyn QObject>);
-
+/// An owned child that waits to be freed, with the borrow state of the callback it waits for.
+type ParkedChild = (Arc<ObjectBorrowState>, OwnedObject<dyn QObject>);
 thread_local! {
     /// Owned children whose parent was destroyed while a callback of theirs was running. The guard
     /// of that callback frees them when it ends.
@@ -133,15 +148,16 @@ thread_local! {
 /// read here: its id comes from its owner.
 fn destroy_when_released(child: OwnedObject<dyn QObject>) {
     let child_id = OwnedObject::object_id(&child);
-    let Some((entry, _)) = registered_ptr(child_id) else {
+    let borrow_state = Arc::clone(OwnedObject::borrow_state(&child));
+    if !borrow_state.borrow_flag.load(Ordering::Acquire) {
         drop(child);
         return;
-    };
-    entry.free_when_released.store(true, Ordering::Release);
+    }
+    borrow_state
+        .free_when_released
+        .store(true, Ordering::Release);
     PARKED_CHILDREN.with(|parked| {
-        parked
-            .borrow_mut()
-            .push((Arc::clone(&entry.borrow_flag), child));
+        parked.borrow_mut().push((borrow_state, child));
     });
     unregister_descendants(child_id);
     // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
@@ -161,12 +177,12 @@ fn unregister_descendants(id: ObjectId) {
 }
 
 /// Frees the children parked while the callback that held `flag` was running.
-fn free_parked_children(flag: &Arc<AtomicBool>) {
+fn free_parked_children(state: &Arc<ObjectBorrowState>) {
     let ready: Vec<OwnedObject<dyn QObject>> = PARKED_CHILDREN.with(|parked| {
         let mut parked = parked.borrow_mut();
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *parked)
             .into_iter()
-            .partition(|(held, _)| Arc::ptr_eq(held, flag));
+            .partition(|(held, _)| Arc::ptr_eq(held, state));
         *parked = waiting;
         ready.into_iter().map(|(_, child)| child).collect()
     });
@@ -199,7 +215,8 @@ pub(crate) fn registered_on_current_thread(id: ObjectId) -> bool {
 /// callback. `ObjectId(0)` names no object, so it is never borrowed.
 pub(crate) fn registered_and_borrowed(id: ObjectId) -> bool {
     id != ObjectId(0)
-        && registered_ptr(id).is_some_and(|(entry, _)| entry.borrow_flag.load(Ordering::Acquire))
+        && registered_ptr(id)
+            .is_some_and(|(entry, _)| entry.borrow_state.borrow_flag.load(Ordering::Acquire))
 }
 
 /// Defers a child event to a registered parent whose borrow is held. The event is posted,
@@ -217,12 +234,13 @@ fn defer_if_borrowed(parent: ObjectId, event: Event) -> Result<(), Event> {
 fn borrow_registered(id: ObjectId) -> Option<ObjectBorrowGuard> {
     let (entry, ptr) = registered_ptr(id)?;
     entry
+        .borrow_state
         .borrow_flag
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .ok()?;
     Some(ObjectBorrowGuard {
         ptr,
-        borrow_flag: Arc::clone(&entry.borrow_flag),
+        borrow_state: Arc::clone(&entry.borrow_state),
         _entry: entry,
     })
 }
@@ -441,10 +459,9 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
         children: RwLock::new(data.children.clone()),
         liveness: Arc::clone(&data.liveness),
         generation: AtomicU32::new(data.generation),
-        borrow_flag: Arc::new(AtomicBool::new(false)),
+        borrow_state: Arc::clone(&data.borrow_state),
         pending_child_changes: Mutex::new(Vec::new()),
         has_pending_child_changes: AtomicBool::new(false),
-        free_when_released: AtomicBool::new(false),
     });
     if let Ok(mut reg) = GLOBAL_OBJECT_REGISTRY.write() {
         if let Some(previous) = reg.insert(id, record) {
@@ -683,6 +700,7 @@ pub struct ObjectData {
     /// another thread. A token whose id differs from `parent` is stale and ignored, because
     /// `parent` is a public field that can be assigned directly.
     parent_liveness: Option<(ObjectId, Arc<AtomicBool>)>,
+    pub(crate) borrow_state: Arc<ObjectBorrowState>,
 }
 
 impl fmt::Debug for ObjectData {
@@ -736,6 +754,7 @@ impl ObjectData {
             timers: Vec::new(),
             owned_by_parent: false,
             parent_liveness: None,
+            borrow_state: Arc::new(ObjectBorrowState::default()),
         }
     }
     /// Creates a new ObjectData with a unique auto-generated ObjectId.
@@ -768,6 +787,7 @@ impl ObjectData {
             timers: Vec::new(),
             owned_by_parent: false,
             parent_liveness: None,
+            borrow_state: Arc::new(ObjectBorrowState::default()),
         }
     }
 
@@ -880,7 +900,9 @@ impl ObjectData {
     pub fn delete_children(&mut self) {
         let mut idle = Vec::with_capacity(self.owned_children.len());
         for mut child in std::mem::take(&mut self.owned_children) {
-            if registered_and_borrowed(OwnedObject::object_id(&child)) {
+            if OwnedObject::is_borrowed(&child)
+                || registered_and_borrowed(OwnedObject::object_id(&child))
+            {
                 destroy_when_released(child);
             } else {
                 child.object_data_mut().clear_parent();
@@ -1536,6 +1558,9 @@ pub trait QObject: std::any::Any {
     fn find_child_any(&self, name: &str, type_id: std::any::TypeId) -> Option<&dyn std::any::Any> {
         // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
         for child in &self.object_data().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             let name_matches = name.is_empty() || child.object_name() == Some(name);
             if name_matches {
                 if let Some(any) = child.as_qobject_any() {
@@ -1547,6 +1572,9 @@ pub trait QObject: std::any::Any {
         }
         // 2. Descendants if no direct child matched
         for child in &self.object_data().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             if let Some(found) = child.find_child_any(name, type_id) {
                 return Some(found);
             }
@@ -1558,17 +1586,23 @@ pub trait QObject: std::any::Any {
     fn find_child_id(&self, name: &str, type_id: std::any::TypeId) -> Option<ObjectId> {
         // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
         for child in &self.object_data().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             let name_matches = name.is_empty() || child.object_name() == Some(name);
             if name_matches {
                 if let Some(any) = child.as_qobject_any() {
                     if any.type_id() == type_id {
-                        return Some(child.object_data().id);
+                        return Some(OwnedObject::object_id(child));
                     }
                 }
             }
         }
         // 2. Descendants if no direct child matched
         for child in &self.object_data().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             if let Some(found_id) = child.find_child_id(name, type_id) {
                 return Some(found_id);
             }
@@ -1584,6 +1618,9 @@ pub trait QObject: std::any::Any {
         // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
         let mut match_idx = None;
         for (i, child) in self.object_data().owned_children.iter().enumerate() {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             let name_matches = name.is_empty() || child.object_name() == Some(name);
             if name_matches
                 && child
@@ -1599,6 +1636,9 @@ pub trait QObject: std::any::Any {
         }
         // 2. Descendants if no direct child matched
         for child in &mut self.object_data_mut().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             if let Some(found) = child.find_child_any_mut(name, type_id) {
                 return Some(found);
             }
@@ -1617,6 +1657,9 @@ pub trait QObject: std::any::Any {
 
         // 1. Check owned children
         for child in &self.object_data().owned_children {
+            if OwnedObject::is_borrowed(child) {
+                continue;
+            }
             let name_matches = target_name.is_empty() || child.object_name() == Some(target_name);
             if name_matches {
                 if let Some(any) = child.as_qobject_any() {

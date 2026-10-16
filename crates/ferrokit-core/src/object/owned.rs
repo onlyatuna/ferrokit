@@ -4,8 +4,10 @@
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use super::qobject::{ObjectId, QObject};
+use super::qobject::{ObjectBorrowState, ObjectId, QObject};
 
 /// Owner of a heap object whose pointer the registry shares.
 ///
@@ -30,6 +32,8 @@ pub struct OwnedObject<T: QObject + ?Sized> {
     /// Read once, when the owner is made. A parent decides what to do with a child whose callback
     /// is running without reading the child: a `&` to it would alias the callback's `&mut self`.
     id: ObjectId,
+    /// Shared callback-borrow state, read without touching the object or looking up the registry.
+    borrow_state: Arc<ObjectBorrowState>,
     // `Box<T>` states ownership for the drop check and is `Unpin` for every `T`. A bare
     // `PhantomData<T>` would make every type that holds an `ObjectData` `!Unpin`, and Miri does
     // not check the uniqueness of `&mut` to a `!Unpin` type.
@@ -45,9 +49,12 @@ impl<T: QObject> OwnedObject<T> {
     /// The same owner, of the object behind `dyn QObject`, as a parent keeps it.
     pub fn into_dyn(this: Self) -> OwnedObject<dyn QObject> {
         let this = ManuallyDrop::new(this);
+        // SAFETY: `this` is in `ManuallyDrop`, so `this.borrow_state` is moved out once here.
+        let borrow_state = unsafe { std::ptr::read(&this.borrow_state) };
         OwnedObject {
             ptr: this.ptr,
             id: this.id,
+            borrow_state,
             _owns: PhantomData,
         }
     }
@@ -60,12 +67,15 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     /// registered through the `Box` before, the registry's pointer is not this owner's: register
     /// it again through [`OwnedObject::as_non_null`] before a callback can run.
     pub fn from_box(boxed: Box<T>) -> Self {
-        let id = boxed.object_data().id;
+        let data = boxed.object_data();
+        let id = data.id;
+        let borrow_state = Arc::clone(&data.borrow_state);
         // SAFETY: `Box::into_raw` never returns null.
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
         Self {
             ptr,
             id,
+            borrow_state,
             _owns: PhantomData,
         }
     }
@@ -81,12 +91,25 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
         this.id
     }
 
+    /// Whether a callback of this object is currently running and holds its exclusive borrow,
+    /// checked without reading the object or looking it up in the global registry.
+    pub fn is_borrowed(this: &Self) -> bool {
+        this.borrow_state.borrow_flag.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn borrow_state(this: &Self) -> &Arc<ObjectBorrowState> {
+        &this.borrow_state
+    }
+
     /// Gives the object to a `Box`. The object keeps its address and stays registered if it was,
     /// but a `Box` is a unique owner: using the object through it while it is registered has the
     /// limits of `register_boxed_qobject` (see rule 4 in the [`crate::object`] module
     /// documentation).
     pub fn into_box(this: Self) -> Box<T> {
         let this = ManuallyDrop::new(this);
+        // SAFETY: `this` is in `ManuallyDrop`, so drop its `Arc` field before taking the raw
+        // pointer.
+        drop(unsafe { std::ptr::read(&this.borrow_state) });
         // SAFETY: `ptr` came from `Box::into_raw` and is owned by `this`, which is not dropped.
         unsafe { Box::from_raw(this.ptr.as_ptr()) }
     }
