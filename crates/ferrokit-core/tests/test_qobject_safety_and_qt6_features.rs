@@ -6,7 +6,7 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject, sender,
-    unregister_qobject, MoveError, ObjectData, ObjectId, QObject, ScopeLevelGuard, ThreadContext,
+    unregister_qobject, MoveByIdError, ObjectData, ObjectId, QObject, ScopeLevelGuard, ThreadContext,
     ThreadId,
 };
 use ferrokit_core::property::Property;
@@ -91,30 +91,30 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
 
     let child = Box::new(TestWidget::new("worker_child"));
     // SAFETY: child remains boxed and owned at a stable address by parent.
-    let child_id = unsafe { add_owned_child(parent.data.id, child) }
+    let child_id = unsafe { add_owned_child(parent.data.id(), child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
     // Qt rule: Child with parent CANNOT be moved to another thread directly!
     let child_move_res = move_to_thread_by_id(child_id, target_thread, current_thread);
     assert_eq!(
         child_move_res,
-        Err(MoveError::HasParent),
+        Err(MoveByIdError::HasParent),
         "Cannot move objects with a parent"
     );
 
     // Moving root cascades to all children
-    let parent_move_res = move_to_thread_by_id(parent.data.id, target_thread, current_thread);
+    let parent_move_res = move_to_thread_by_id(parent.data.id(), target_thread, current_thread);
     assert_eq!(parent_move_res, Ok(()));
 
-    assert_eq!(parent.data.thread_id, target_thread);
+    assert_eq!(parent.data.thread_id(), target_thread);
     assert_eq!(query_object_thread(child_id), Some(target_thread));
     assert_eq!(
-        parent.data.owned_children[0].object_data().thread_id,
+        parent.data.owned_children()[0].object_data().thread_id(),
         target_thread
     );
 
     // SAFETY: parent callbacks have ended on its registration thread.
-    unsafe { unregister_qobject(parent.data.id) };
+    unsafe { unregister_qobject(parent.data.id()) };
     ThreadContext::clear_current();
 }
 
@@ -127,7 +127,7 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
     // SAFETY: the owner stays on this thread through the signal's lifetime; nothing touches the
     // emitter while a callback of it runs.
     let emitter = unsafe { register_owned_qobject(TestWidget::new("emitter")) };
-    let emitter_id = emitter.data.id;
+    let emitter_id = emitter.data.id();
 
     let sig: Signal<i32> = Signal::with_owner(&emitter.data);
     let captured_sender = Arc::new(Mutex::new(None));
@@ -153,7 +153,7 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
         // SAFETY: the owner stays on this thread until it is dropped below; nothing touches the
         // receiver while a callback of it runs.
         let receiver = unsafe { register_owned_qobject(TestWidget::new("receiver")) };
-        let r_id = receiver.data.id;
+        let r_id = receiver.data.id();
 
         let rc_clone = Arc::clone(&recv_count);
 
@@ -200,19 +200,19 @@ fn test_qobject_start_and_kill_timer() {
 
     let t1 = widget.start_timer(100, TimerType::Coarse);
     assert!(t1.is_valid());
-    assert_eq!(widget.data.timers.len(), 1);
+    assert_eq!(widget.data.timers().len(), 1);
 
     let t2 = widget.start_timer(200, TimerType::Precise);
     assert!(t2.is_valid());
-    assert_eq!(widget.data.timers.len(), 2);
+    assert_eq!(widget.data.timers().len(), 2);
 
     let killed = widget.kill_timer(t1);
     assert!(killed);
-    assert_eq!(widget.data.timers.len(), 1);
-    assert_eq!(widget.data.timers[0], t2);
+    assert_eq!(widget.data.timers().len(), 1);
+    assert_eq!(widget.data.timers()[0], t2);
 
     // Dropping widget kills remaining timers
-    let wid = widget.data.id;
+    let wid = widget.data.id();
     drop(widget);
     // SAFETY: widget destruction ended its callback lifetime on this thread.
     unsafe { unregister_qobject(wid) };
@@ -231,7 +231,7 @@ fn test_delete_later_posts_one_deferred_delete_and_debounces() {
     // SAFETY: the owner stays on this thread until the unregister below; nothing touches the
     // widget while a callback of it runs.
     let widget = unsafe { register_owned_qobject(TestWidget::new("self_post")) };
-    let wid = widget.data.id;
+    let wid = widget.data.id();
 
     ThreadContext::set_current_loop_level(1);
     {
@@ -256,7 +256,7 @@ fn test_delete_later_inside_handler_scope_survives_nested_pump() {
     // SAFETY: the owner stays on this thread until delivery unregisters the object; nothing
     // touches the widget while a callback of it runs.
     let widget = unsafe { register_owned_qobject(TestWidget::new("nested_pump")) };
-    let wid = widget.data.id;
+    let wid = widget.data.id();
 
     ThreadContext::set_current_loop_level(1);
     let scope = ScopeLevelGuard::enter();
@@ -348,23 +348,23 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
     let mut obj_b = unsafe { register_owned_qobject(TestWidget::new("obj_b")) };
 
     // 1. Qt allows installing self as event filter (qobject.cpp:2407-2423)
-    let a_id = obj_a.data.id;
+    let a_id = obj_a.data.id();
     let self_filter = ferrokit_core::object::install_event_filter(&mut obj_a.data, a_id);
     assert!(
         self_filter,
         "Qt allows installing object as its own event filter"
     );
     // 2. Normal installation succeeds
-    let ok = ferrokit_core::object::install_event_filter(&mut obj_a.data, obj_b.data.id);
+    let ok = ferrokit_core::object::install_event_filter(&mut obj_a.data, obj_b.data.id());
     assert!(ok);
-    assert!(obj_a.data.event_filters.contains(obj_b.data.id));
+    assert!(obj_a.data.event_filters().contains(obj_b.data.id()));
 
     // 3. Qt allows mutual event filters (qobject.cpp:2407-2423)
-    let cycle = ferrokit_core::object::install_event_filter(&mut obj_b.data, obj_a.data.id);
+    let cycle = ferrokit_core::object::install_event_filter(&mut obj_b.data, obj_a.data.id());
     assert!(cycle, "Mutual filter installation succeeds in Qt");
     // SAFETY: neither registered object has an active callback.
     unsafe {
-        unregister_qobject(obj_a.data.id);
-        unregister_qobject(obj_b.data.id);
+        unregister_qobject(obj_a.data.id());
+        unregister_qobject(obj_b.data.id());
     }
 }

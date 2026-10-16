@@ -13,7 +13,7 @@ use std::rc::Rc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     dispatch_to_object, move_to_thread_by_id, register_owned_qobject, register_qobject_ptr,
-    unregister_qobject, MoveError, ObjectData, ObjectId, QObject, ThreadId,
+    unregister_qobject, MoveByIdError, ObjectData, ObjectId, QObject, ThreadId,
 };
 
 struct Probe {
@@ -59,7 +59,7 @@ fn an_owned_object_moved_to_another_thread() {
     // SAFETY: the owner stays on this thread; the only callback that runs is the one
     // `move_to_thread_by_id` causes.
     let probe = unsafe { register_owned_qobject(Probe::new()) };
-    let id = probe.data.id;
+    let id = probe.data.id();
 
     assert_eq!(
         move_to_thread_by_id(id, target, ThreadId::current()),
@@ -67,7 +67,7 @@ fn an_owned_object_moved_to_another_thread() {
     );
 
     assert_eq!(probe.thread_changes, 1, "ThreadChange reached the object");
-    assert_eq!(probe.data.thread_id, target);
+    assert_eq!(probe.data.thread_id(), target);
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(id) };
 }
@@ -76,7 +76,7 @@ fn an_owned_object_moved_to_another_thread() {
 fn a_variable_registered_by_a_raw_pointer_moved_to_another_thread() {
     let target = another_thread();
     let mut probe = Probe::new();
-    let id = probe.data.id;
+    let id = probe.data.id();
     // SAFETY: `probe` stays here, unmoved, until it is unregistered below; the pointer is taken
     // with `&raw mut`.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
@@ -87,7 +87,7 @@ fn a_variable_registered_by_a_raw_pointer_moved_to_another_thread() {
     );
 
     assert_eq!(probe.thread_changes, 1, "ThreadChange reached the object");
-    assert_eq!(probe.data.thread_id, target);
+    assert_eq!(probe.data.thread_id(), target);
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(id) };
 }
@@ -95,7 +95,7 @@ fn a_variable_registered_by_a_raw_pointer_moved_to_another_thread() {
 struct BusyProbe {
     data: ObjectData,
     target: ThreadId,
-    result: Rc<Cell<Option<Result<(), MoveError>>>>,
+    result: Rc<Cell<Option<Result<(), MoveByIdError>>>>,
 }
 
 impl QObject for BusyProbe {
@@ -107,7 +107,7 @@ impl QObject for BusyProbe {
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
-            let res = move_to_thread_by_id(self.data.id, self.target, ThreadId::current());
+            let res = move_to_thread_by_id(self.data.id(), self.target, ThreadId::current());
             self.result.set(Some(res));
         }
         true
@@ -119,7 +119,7 @@ fn move_to_thread_by_id_rejects_unknown_and_busy_objects() {
     let target = another_thread();
     assert_eq!(
         move_to_thread_by_id(ObjectId::next(), target, ThreadId::current()),
-        Err(MoveError::UnknownObject)
+        Err(MoveByIdError::UnknownObject)
     );
 
     let result = Rc::new(Cell::new(None));
@@ -131,12 +131,12 @@ fn move_to_thread_by_id_rejects_unknown_and_busy_objects() {
             result: Rc::clone(&result),
         })
     };
-    let id = probe.data.id;
+    let id = probe.data.id();
 
     dispatch_to_object(id, &mut Event::new(EventKind::UpdateRequest));
     assert_eq!(
         result.get(),
-        Some(Err(MoveError::Busy)),
+        Some(Err(MoveByIdError::Busy)),
         "moving an object whose callback currently holds its borrow must return Busy"
     );
     // SAFETY: no callback runs.

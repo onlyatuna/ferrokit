@@ -405,46 +405,46 @@ pub(crate) fn prepare_move_to_thread(
     id: ObjectId,
     target_thread: ThreadId,
     current_caller_thread: ThreadId,
-) -> Result<Option<Vec<ObjectId>>, super::thread::MoveError> {
-    use super::thread::MoveError;
+) -> Result<Option<Vec<ObjectId>>, super::thread::MoveByIdError> {
+    use super::thread::MoveByIdError;
     let entry = {
         let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() else {
-            return Err(MoveError::UnknownObject);
+            return Err(MoveByIdError::UnknownObject);
         };
         let Some(entry) = reg.get(&id).cloned() else {
-            return Err(MoveError::UnknownObject);
+            return Err(MoveByIdError::UnknownObject);
         };
         entry
     };
     if !entry.liveness.load(Ordering::Acquire) {
-        return Err(MoveError::UnknownObject);
+        return Err(MoveByIdError::UnknownObject);
     }
     if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
-        return Err(MoveError::Busy);
+        return Err(MoveByIdError::Busy);
     }
     let on_registration_thread =
         *entry.registration_thread.read().unwrap() == ThreadId::current();
     if !on_registration_thread {
         if entry.parent.read().unwrap().is_some() {
-            return Err(MoveError::HasParent);
+            return Err(MoveByIdError::HasParent);
         }
-        return Err(MoveError::WrongThread);
+        return Err(MoveByIdError::WrongThread);
     }
 
     let initial = with_object(id, |obj| {
         let data = obj.object_data();
         if data.parent().is_some() {
-            return Err(MoveError::HasParent);
+            return Err(MoveByIdError::HasParent);
         }
-        if data.thread_id != current_caller_thread {
-            return Err(MoveError::WrongThread);
+        if data.thread_id() != current_caller_thread {
+            return Err(MoveByIdError::WrongThread);
         }
-        if data.thread_id == target_thread {
+        if data.thread_id() == target_thread {
             return Ok(None);
         }
         Ok(Some(data.children.clone()))
     })
-    .ok_or(MoveError::Busy)??;
+    .ok_or(MoveByIdError::Busy)??;
 
     let Some(initial_children) = initial else {
         return Ok(None);
@@ -457,7 +457,7 @@ pub(crate) fn prepare_move_to_thread(
             continue;
         }
         if registered_and_borrowed(child_id) {
-            return Err(MoveError::Busy);
+            return Err(MoveByIdError::Busy);
         }
         all_ids.push(child_id);
         let more = with_object(child_id, |obj| obj.object_data().children.clone())
@@ -519,8 +519,8 @@ pub unsafe fn register_qobject(obj: &mut dyn QObject) {
 }
 
 fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
-    let id = data.id;
-    let thread_id = data.thread_id;
+    let id = data.id();
+    let thread_id = data.thread_id();
     let record = Arc::new(ObjectRecord {
         id,
         thread_id: RwLock::new(thread_id),
@@ -602,7 +602,7 @@ pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) 
 pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
     mut boxed: Box<T>,
 ) -> (ObjectId, Box<T>) {
-    let id = boxed.object_data().id;
+    let id = boxed.object_data().id();
     let ptr = &mut *boxed as *mut dyn QObject;
     register_object_metadata(boxed.object_data(), ptr);
     (id, boxed)
@@ -727,39 +727,39 @@ impl GenerationalId {
 
 /// Core object metadata: ObjectData (`QObjectData` equivalent).
 pub struct ObjectData {
-    pub id: ObjectId,
-    pub parent: Option<ObjectId>,
-    pub children: Vec<ObjectId>,
+    id: ObjectId,
+    parent: Option<ObjectId>,
+    children: Vec<ObjectId>,
 
     /// Thread affinity.
-    pub thread_id: ThreadId,
+    thread_id: ThreadId,
 
-    pub delete_later_called: AtomicBool,
+    pub(crate) delete_later_called: AtomicBool,
 
-    pub signals_blocked: Arc<AtomicBool>,
+    pub(crate) signals_blocked: Arc<AtomicBool>,
 
     /// Installed event filters chain.
-    pub event_filters: EventFilterChain,
+    pub(crate) event_filters: EventFilterChain,
 
     /// Dynamic properties map (`QObject::dynamicPropertyNames`).
-    pub dynamic_properties: HashMap<String, Variant>,
+    pub(crate) dynamic_properties: HashMap<String, Variant>,
 
     /// Object name for hierarchy queries (`QObject::objectName`).
-    pub object_name: Option<String>,
+    pub(crate) object_name: Option<String>,
 
     /// Emitted when object name changes (`QObject::objectNameChanged`).
-    pub object_name_changed: Signal<String>,
+    pub(crate) object_name_changed: Signal<String>,
 
     /// Shared liveness token for guarded weak references (`QPointer`).
-    pub liveness: Arc<AtomicBool>,
+    pub(crate) liveness: Arc<AtomicBool>,
 
     /// Object lifecycle generation counter.
-    pub generation: u32,
+    pub(crate) generation: u32,
 
     /// Directly owned child objects for cascading destruction. Each owner shares its pointer with
     /// the registry (see [`OwnedObject`]), and knows the child's id without reading the child.
-    pub owned_children: Vec<OwnedObject<dyn QObject>>,
-    pub timers: Vec<crate::timer::TimerId>,
+    owned_children: Vec<OwnedObject<dyn QObject>>,
+    pub(crate) timers: Vec<crate::timer::TimerId>,
 
     /// True while this object is held in its parent's `owned_children`. Such an object's
     /// lifetime belongs to the parent, so `set_parent` (which only sees `&mut ObjectData`, a
@@ -770,7 +770,7 @@ pub struct ObjectData {
     /// [`ObjectData::parent`] see the parent die when the parent's drop cannot write to this
     /// object: a running callback borrows it, it was never registered, or it is registered on
     /// another thread. A token whose id differs from `parent` is stale and ignored, because
-    /// `parent` is a public field that can be assigned directly.
+    /// `parent` is a private field managed through `set_parent`.
     parent_liveness: Option<(ObjectId, Arc<AtomicBool>)>,
     pub(crate) borrow_state: Arc<ObjectBorrowState>,
 }
@@ -834,6 +834,62 @@ impl ObjectData {
     pub fn with_auto_id() -> Self {
         Self::new(ObjectId::next())
     }
+    /// Returns the unique object identifier (`QObject*` equivalent).
+    #[inline]
+    pub fn id(&self) -> ObjectId {
+        self.id
+    }
+
+    /// Returns the thread affinity of this object (`QObject::thread`).
+    #[inline]
+    pub fn thread_id(&self) -> ThreadId {
+        self.thread_id
+    }
+
+    /// Returns a slice of directly owned child objects.
+    #[inline]
+    pub fn owned_children(&self) -> &[OwnedObject<dyn QObject>] {
+        &self.owned_children
+    }
+    /// Emitted when object name changes (`QObject::objectNameChanged`).
+    #[inline]
+    pub fn object_name_changed(&self) -> &Signal<String> {
+        &self.object_name_changed
+    }
+
+    /// Installed event filters chain.
+    #[inline]
+    pub fn event_filters(&self) -> &EventFilterChain {
+        &self.event_filters
+    }
+
+    /// Active timer identifiers registered on this object.
+    #[inline]
+    pub fn timers(&self) -> &[crate::timer::TimerId] {
+        &self.timers
+    }
+    /// True while signals of this object are blocked (`QObject::signalsBlocked`).
+    #[inline]
+    pub fn signals_blocked(&self) -> bool {
+        self.signals_blocked.load(Ordering::Acquire)
+    }
+
+    /// Shared signal-blocker token.
+    #[inline]
+    pub fn signals_blocked_token(&self) -> &Arc<AtomicBool> {
+        &self.signals_blocked
+    }
+
+
+
+    pub(crate) fn set_thread_id(&mut self, thread_id: ThreadId) {
+        self.thread_id = thread_id;
+    }
+
+    pub(crate) fn owned_children_mut(&mut self) -> &mut Vec<OwnedObject<dyn QObject>> {
+        &mut self.owned_children
+    }
+
 
     /// Core object metadata: ObjectData (`QObjectData` equivalent).
     pub fn with_thread(id: ObjectId, thread_id: ThreadId) -> Self {
@@ -1487,13 +1543,13 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     parent_id: ObjectId,
     child: Box<T>,
 ) -> Result<ObjectId, (ReparentError, Box<T>)> {
-    if in_different_thread(child.object_data().thread_id, parent_id) {
+    if in_different_thread(child.object_data().thread_id(), parent_id) {
         return Err((ReparentError::DifferentThread, child));
     }
     if registered_ptr(parent_id).is_none() {
         return Err((ReparentError::UnknownObject, child));
     }
-    let child_id = child.object_data().id;
+    let child_id = child.object_data().id();
     let mut pending = Some(child);
     let attached = with_object_mut(parent_id, |parent| {
         let mut child = pending.take().expect("closure runs at most once");
@@ -1844,7 +1900,7 @@ pub trait QObject: std::any::Any {
         conn_type: crate::signal::ConnectionType,
     ) -> Result<Variant, crate::meta::InvokeError> {
         use crate::signal::ConnectionType;
-        let id = self.object_data().id;
+        let id = self.object_data().id();
         let on_owner_thread =
             registration_thread_of(id).map_or(true, |thread| thread == ThreadId::current());
         let direct = match conn_type {
@@ -1875,7 +1931,7 @@ pub trait QObject: std::any::Any {
         interval_ms: u64,
         timer_type: crate::timer::TimerType,
     ) -> crate::timer::TimerId {
-        let receiver = self.object_data().id;
+        let receiver = self.object_data().id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
         self.object_data_mut().timers.push(id);
         id
@@ -1980,7 +2036,7 @@ impl<T: ?Sized> QPointer<T> {
     pub fn new<O: QObject>(obj: &O) -> Self {
         let data = obj.object_data();
         Self {
-            id: data.id,
+            id: data.id(),
             generation: data.generation,
             liveness: Arc::clone(&data.liveness),
             _marker: std::marker::PhantomData,
@@ -1989,7 +2045,7 @@ impl<T: ?Sized> QPointer<T> {
 
     pub fn from_data(data: &ObjectData) -> Self {
         Self {
-            id: data.id,
+            id: data.id(),
             generation: data.generation,
             liveness: Arc::clone(&data.liveness),
             _marker: std::marker::PhantomData,
@@ -2178,14 +2234,14 @@ mod tests {
         let mut snooper = EventSnooper::new(ObjectId::next(), true);
         let mut target = TargetWidget::new(ObjectId::next());
 
-        install_event_filter(target.object_data_mut(), snooper.object_data().id);
+        install_event_filter(target.object_data_mut(), snooper.object_data().id());
 
         let mut ev = Event::new(EventKind::UpdateRequest);
 
         let mut filtered = false;
         for filter_id in target.object_data().event_filters.snapshot() {
-            if filter_id == snooper.object_data().id
-                && snooper.event_filter(target.object_data().id, &mut ev)
+            if filter_id == snooper.object_data().id()
+                && snooper.event_filter(target.object_data().id(), &mut ev)
             {
                 filtered = true;
                 break;
@@ -2242,7 +2298,7 @@ mod tests {
         let mut probe = Probe {
             data: ObjectData::new(ObjectId::next()),
         };
-        let id = probe.data.id;
+        let id = probe.data.id();
         // SAFETY: `probe` stays at this stack address and is unregistered below before it drops.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
 
@@ -2336,7 +2392,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
             child_added: Arc::clone(&child_added),
         };
-        let parent_id = parent.data.id;
+        let parent_id = parent.data.id();
         // SAFETY: `parent` stays at this stack address and is unregistered below before it drops.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
         let mut child = ObjectData::new(ObjectId::next());
@@ -2385,7 +2441,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
             events: Arc::clone(&events),
         };
-        let id = target.data.id;
+        let id = target.data.id();
         // SAFETY: `target` stays at this stack address and is unregistered below before it drops.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
 
@@ -2444,7 +2500,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
             removed: Arc::clone(&removed),
         };
-        let parent_id = parent.data.id;
+        let parent_id = parent.data.id();
         // SAFETY: `parent` stays at this stack address and is unregistered below before it drops.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
         let mut child = ObjectData::new(ObjectId::next());

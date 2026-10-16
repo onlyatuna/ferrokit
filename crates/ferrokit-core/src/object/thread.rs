@@ -238,8 +238,48 @@ impl ThreadContext {
 pub enum MoveError {
     HasParent,
     WrongThread,
+}
+
+impl std::fmt::Display for MoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HasParent => write!(f, "cannot move object with parent to thread"),
+            Self::WrongThread => write!(f, "cannot move object from different thread"),
+        }
+    }
+}
+
+impl std::error::Error for MoveError {}
+
+/// Thread migration error matching QObject::moveToThread rules by ObjectId.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveByIdError {
+    HasParent,
+    WrongThread,
     UnknownObject,
     Busy,
+}
+
+impl std::fmt::Display for MoveByIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HasParent => write!(f, "cannot move object with parent to thread"),
+            Self::WrongThread => write!(f, "cannot move object from different thread"),
+            Self::UnknownObject => write!(f, "object is not registered or no longer alive"),
+            Self::Busy => write!(f, "cannot move object while it is currently borrowed"),
+        }
+    }
+}
+
+impl std::error::Error for MoveByIdError {}
+
+impl From<MoveError> for MoveByIdError {
+    fn from(err: MoveError) -> Self {
+        match err {
+            MoveError::HasParent => Self::HasParent,
+            MoveError::WrongThread => Self::WrongThread,
+        }
+    }
 }
 
 fn collect_descendants(initial_children: &[ObjectId]) -> Vec<ObjectId> {
@@ -250,7 +290,7 @@ fn collect_descendants(initial_children: &[ObjectId]) -> Vec<ObjectId> {
         if !result.contains(&child_id) {
             result.push(child_id);
             crate::object::with_object(child_id, |obj| {
-                queue.extend_from_slice(&obj.object_data().children);
+                queue.extend_from_slice(obj.object_data().children());
             });
         }
     }
@@ -259,9 +299,9 @@ fn collect_descendants(initial_children: &[ObjectId]) -> Vec<ObjectId> {
 
 /// Sets affinity on `data` and on its owned descendants (`owned_children`), recording visited ids.
 fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<ObjectId>) {
-    data.thread_id = target_thread;
-    visited.push(data.id);
-    for child in &mut data.owned_children {
+    data.set_thread_id(target_thread);
+    visited.push(data.id());
+    for child in data.owned_children_mut() {
         flip_owned(child.object_data_mut(), target_thread, visited);
     }
 }
@@ -283,7 +323,7 @@ pub fn move_to_thread_by_id(
     id: ObjectId,
     target_thread: ThreadId,
     current_caller_thread: ThreadId,
-) -> Result<(), MoveError> {
+) -> Result<(), MoveByIdError> {
     let Some(all_ids) =
         crate::object::qobject::prepare_move_to_thread(id, target_thread, current_caller_thread)?
     else {
@@ -303,7 +343,7 @@ pub fn move_to_thread_by_id(
     //    before the physical registration thread is flipped.
     for &node_id in &all_ids {
         crate::object::with_object_mut(node_id, |obj| {
-            obj.object_data_mut().thread_id = target_thread;
+            obj.object_data_mut().set_thread_id(target_thread);
         });
     }
 
@@ -349,15 +389,15 @@ pub fn move_to_thread(
     if object_data.parent().is_some() {
         return Err(MoveError::HasParent);
     }
-    if object_data.thread_id != current_caller_thread {
+    if object_data.thread_id() != current_caller_thread {
         return Err(MoveError::WrongThread);
     }
-    if object_data.thread_id == target_thread {
+    if object_data.thread_id() == target_thread {
         return Ok(());
     }
 
-    let mut all_ids = vec![object_data.id];
-    all_ids.extend(collect_descendants(&object_data.children));
+    let mut all_ids = vec![object_data.id()];
+    all_ids.extend(collect_descendants(object_data.children()));
 
     // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
     for &id in &all_ids {
@@ -486,12 +526,12 @@ mod tests {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),
             })
         };
-        let id = obj.data.id;
-        assert_eq!(obj.data.thread_id, thread_a);
+        let id = obj.data.id();
+        assert_eq!(obj.data.thread_id(), thread_a);
 
         let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert!(res.is_ok());
-        assert_eq!(obj.data.thread_id, thread_b);
+        assert_eq!(obj.data.thread_id(), thread_b);
     }
 
     #[test]
@@ -500,13 +540,13 @@ mod tests {
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
         let mut data = ObjectData::with_thread(ObjectId::next(), thread_a);
-        data.parent = Some(ObjectId(1));
+        data.set_parent(Some(ObjectId(1))).unwrap();
         let obj = unsafe { crate::object::register_owned_qobject(UnitProbe { data }) };
-        let id = obj.data.id;
+        let id = obj.data.id();
 
         let res = move_to_thread_by_id(id, thread_b, thread_a);
-        assert_eq!(res, Err(MoveError::HasParent));
-        assert_eq!(obj.data.thread_id, thread_a);
+        assert_eq!(res, Err(MoveByIdError::HasParent));
+        assert_eq!(obj.data.thread_id(), thread_a);
     }
 
     #[test]
@@ -519,10 +559,10 @@ mod tests {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),
             })
         };
-        let id = obj.data.id;
+        let id = obj.data.id();
 
         let res = move_to_thread_by_id(id, thread_b, thread_b);
-        assert_eq!(res, Err(MoveError::WrongThread));
-        assert_eq!(obj.data.thread_id, thread_a);
+        assert_eq!(res, Err(MoveByIdError::WrongThread));
+        assert_eq!(obj.data.thread_id(), thread_a);
     }
 }
