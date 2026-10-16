@@ -1190,7 +1190,11 @@ impl Default for EventLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{register_qobject, unregister_qobject, ObjectData, QObject, ThreadContext};
+    use crate::object::{
+        register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, QObject,
+        ThreadContext,
+    };
+    use std::ptr::NonNull;
 
     #[test]
     fn test_livelock_prevention() {
@@ -1234,7 +1238,7 @@ mod tests {
 
         let mut widget = LivelockWidget::new(ObjectId::next(), q_clone);
         // SAFETY: this test keeps the widget on this thread and alive through unregister.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         {
             let mut q = event_loop.queue().lock().unwrap();
@@ -1296,7 +1300,7 @@ mod tests {
 
         let mut widget = ReentrantWidget::new(ObjectId::next(), q_clone);
         // SAFETY: this test keeps the widget on this thread and alive through unregister.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         event_loop.post_event(
             widget.object_data().id,
@@ -1348,7 +1352,7 @@ mod tests {
         let event_loop = EventLoop::new();
         let mut widget = DeleteWidget::new(ObjectId::next());
         // SAFETY: this test keeps the widget on this thread and alive through unregister.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         // delete_later stamps (loop 1, scope 0), promoted to scope 1 (qobject.cpp:2558-2559).
         ThreadContext::set_current_loop_level(1);
@@ -1433,7 +1437,7 @@ mod tests {
             received_quit: false,
         };
         // SAFETY: this test keeps the widget on this thread and alive through unregister.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         event_loop.post_event(
             widget.object_data().id,
@@ -1511,7 +1515,7 @@ mod tests {
         let event_loop = EventLoop::new();
         let mut mock = MockObject::new(ObjectId::next());
         // SAFETY: this test keeps the object on this thread and alive through unregister.
-        unsafe { register_qobject(&mut mock) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut mock)) };
 
         event_loop.post_event(
             mock.object_data().id,
@@ -1566,7 +1570,7 @@ mod tests {
 
         let mut relay = RelayObject::new(ObjectId::next(), handle);
         // SAFETY: this test keeps the relay on this thread and alive through unregister.
-        unsafe { register_qobject(&mut relay) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
 
         event_loop.post_event(relay.object_data().id, Event::new(EventKind::UpdateRequest));
 
@@ -1619,7 +1623,7 @@ mod tests {
         let event_loop = EventLoop::new();
         let mut widget = PaintWidget::new(ObjectId::next());
         // SAFETY: this test keeps the widget on this thread and alive through unregister.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         let id = widget.object_data().id;
 
@@ -1676,7 +1680,7 @@ mod tests {
         let mut widget = WakeupWidget::new(ObjectId::next());
         // SAFETY: this test keeps the widget alive but event is posted cross-thread.
         // QObject callback dispatch remains on this registration thread.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         let id = widget.object_data().id;
 
@@ -1701,7 +1705,7 @@ mod tests {
 
     #[test]
     fn test_notify_helper_pipeline_and_safe_removal() {
-        use crate::object::{register_qobject, unregister_qobject, ObjectData};
+        use crate::object::{register_qobject_ptr, unregister_qobject, ObjectData};
 
         struct TraceFilter {
             data: ObjectData,
@@ -1779,12 +1783,12 @@ mod tests {
 
         let mut app_filter = TraceFilter::new("app_filter", false, None, Arc::clone(&trace));
         // SAFETY: filters remain on this thread and alive until removed/unregistered.
-        unsafe { register_qobject(&mut app_filter) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut app_filter)) };
         install_application_event_filter(app_filter.data.id);
 
         let mut target = TargetWidget::new(Arc::clone(&trace));
         // SAFETY: target remains on this thread and alive until unregistered.
-        unsafe { register_qobject(&mut target) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
 
         let mut obj_filter = TraceFilter::new(
             "obj_filter",
@@ -1793,7 +1797,7 @@ mod tests {
             Arc::clone(&trace),
         );
         // SAFETY: filter remains on this thread and alive until unregistered.
-        unsafe { register_qobject(&mut obj_filter) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_filter)) };
         target
             .object_data_mut()
             .install_event_filter(obj_filter.data.id);
@@ -1907,9 +1911,9 @@ mod tests {
         let later_id = later.data.id;
         // SAFETY: all three stay on this thread and unmoved until unregistered below.
         unsafe {
-            register_qobject(&mut target);
-            register_qobject(&mut earlier);
-            register_qobject(&mut later);
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut later));
         }
         target.object_data_mut().install_event_filter(later_id);
         target.object_data_mut().install_event_filter(earlier_id);
@@ -1944,9 +1948,9 @@ mod tests {
         let later_id = later.data.id;
         // SAFETY: all three stay on this thread and unmoved until unregistered below.
         unsafe {
-            register_qobject(&mut target);
-            register_qobject(&mut earlier);
-            register_qobject(&mut later);
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut later));
         }
         install_application_event_filter(later_id);
         install_application_event_filter(earlier_id);
@@ -1982,9 +1986,9 @@ mod tests {
         let added_id = added.data.id;
         // SAFETY: all three stay on this thread and unmoved until unregistered below.
         unsafe {
-            register_qobject(&mut target);
-            register_qobject(&mut first);
-            register_qobject(&mut added);
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
         }
         target.object_data_mut().install_event_filter(first_id);
         let mut installed = false;
@@ -2028,9 +2032,9 @@ mod tests {
         let added_id = added.data.id;
         // SAFETY: all three stay on this thread and unmoved until unregistered below.
         unsafe {
-            register_qobject(&mut target);
-            register_qobject(&mut first);
-            register_qobject(&mut added);
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
         }
         install_application_event_filter(first_id);
         let mut installed = false;
@@ -2086,7 +2090,7 @@ mod tests {
         let event_loop = EventLoop::new();
         let mut target = MockTarget::new(ObjectId::next());
         // SAFETY: target stays on this thread and alive until the test ends.
-        unsafe { register_qobject(&mut target) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
 
         let id = target.object_data().id;
 
@@ -2149,7 +2153,7 @@ mod tests {
             loop_handle: event_loop.handle(),
         };
         // SAFETY: relay stays on this thread and alive until the test ends.
-        unsafe { register_qobject(&mut relay) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
         let id = relay.data.id;
 
         event_loop.post_event_with_priority(
@@ -2231,7 +2235,7 @@ mod tests {
             loop_handle: event_loop.handle(),
         };
         // SAFETY: relay stays on this thread and alive until the test ends.
-        unsafe { register_qobject(&mut relay) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
         let id = relay.data.id;
 
         event_loop.post_event_with_priority(id, Event::new(EventKind::User(Box::new("A"))), 0);
@@ -2458,7 +2462,7 @@ mod tests {
         };
         // SAFETY: the object stays on this thread and alive until the pump unregisters it after
         // delivering its deferred delete.
-        unsafe { register_qobject(&mut object) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut object)) };
         let object_addr = &object as *const Deletable as usize;
 
         let deleted_during_nested = Arc::new(Mutex::new(None));
@@ -2557,22 +2561,24 @@ mod tests {
         let survived_nested = Arc::new(Mutex::new(None));
         let deleted_by_outer = Arc::new(Mutex::new(None));
         let el = EventLoop::new();
-        let mut victim = Box::new(Victim {
-            data: ObjectData::new(ObjectId::next()),
-        });
+        // SAFETY: the owner stays on this thread and alive for the whole test.
+        let victim = unsafe {
+            register_owned_qobject(Victim {
+                data: ObjectData::new(ObjectId::next()),
+            })
+        };
         let victim_id = victim.data.id;
-        // SAFETY: the victim stays boxed and alive for the whole test.
-        unsafe { register_qobject(&mut *victim) };
-        let mut driver = Box::new(Driver {
-            data: ObjectData::new(ObjectId::next()),
-            victim_data: &victim.data as *const ObjectData as usize,
-            victim_id,
-            survived_nested: Arc::clone(&survived_nested),
-            deleted_by_outer: Arc::clone(&deleted_by_outer),
-        });
+        // SAFETY: as above.
+        let driver = unsafe {
+            register_owned_qobject(Driver {
+                data: ObjectData::new(ObjectId::next()),
+                victim_data: &victim.data as *const ObjectData as usize,
+                victim_id,
+                survived_nested: Arc::clone(&survived_nested),
+                deleted_by_outer: Arc::clone(&deleted_by_outer),
+            })
+        };
         let driver_id = driver.data.id;
-        // SAFETY: the driver stays boxed and alive for the whole test.
-        unsafe { register_qobject(&mut *driver) };
         post_event_to_thread(
             ThreadId::current(),
             driver_id,
@@ -2724,7 +2730,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id;
-        unsafe { register_qobject(&mut probe) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         let ran = Arc::new(AtomicBool::new(false));
         let ran_clone = Arc::clone(&ran);
         post_event_to_thread(
@@ -2747,7 +2753,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id;
-        unsafe { register_qobject(&mut probe) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         post_event_to_thread(ThreadId::current(), id, meta_call(|| {}));
         assert_eq!(queued_for_current_thread(), 1);
         unsafe { unregister_qobject(id) };
@@ -2776,7 +2782,7 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id;
-        unsafe { register_qobject(&mut probe) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         let ran = Arc::new(AtomicBool::new(false));
         let ran_clone = Arc::clone(&ran);
         post_event_to_thread(

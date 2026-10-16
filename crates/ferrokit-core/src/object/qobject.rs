@@ -1932,6 +1932,7 @@ pub fn send_event(receiver: ObjectId, event: &mut Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
     use std::sync::atomic::AtomicUsize;
 
     /// Timer event handler (`QObject::timerEvent`).
@@ -2097,7 +2098,7 @@ mod tests {
         };
         let id = probe.data.id;
         // SAFETY: `probe` stays at this stack address and is unregistered below before it drops.
-        unsafe { register_qobject(&mut probe) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
 
         probe.delete_later();
         probe.delete_later();
@@ -2144,7 +2145,7 @@ mod tests {
         };
         // SAFETY: widget remains at this stack address and alive until unregistered; this
         // thread performs all accesses and no direct alias is used during registry callbacks.
-        unsafe { register_qobject(&mut widget) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         assert!(with_object(id, |_| ()).is_some());
         assert!(with_object_mut(id, |_| ()).is_some());
@@ -2191,7 +2192,7 @@ mod tests {
         };
         let parent_id = parent.data.id;
         // SAFETY: `parent` stays at this stack address and is unregistered below before it drops.
-        unsafe { register_qobject(&mut parent) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
         let mut child = ObjectData::new(ObjectId::next());
 
         // The parent's borrow is held while `set_parent` runs, as in a re-entrant callback.
@@ -2240,7 +2241,7 @@ mod tests {
         };
         let id = target.data.id;
         // SAFETY: `target` stays at this stack address and is unregistered below before it drops.
-        unsafe { register_qobject(&mut target) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
 
         let rejections_before = crate::event_loop::borrowed_send_rejections();
         let sent = with_object_mut(id, |_| {
@@ -2299,7 +2300,7 @@ mod tests {
         };
         let parent_id = parent.data.id;
         // SAFETY: `parent` stays at this stack address and is unregistered below before it drops.
-        unsafe { register_qobject(&mut parent) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
         let mut child = ObjectData::new(ObjectId::next());
         set_parent(&mut child, Some(parent_id)).unwrap();
 

@@ -853,6 +853,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1050,7 +1051,7 @@ mod tests {
         };
         let receiver_id = receiver.data.id;
         // SAFETY: registered for the test; unregistered before it returns.
-        unsafe { crate::object::register_qobject(&mut receiver) };
+        unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
         let target_thread = ThreadId::current();
 
         let received_msg = Arc::new(Mutex::new(String::new()));
