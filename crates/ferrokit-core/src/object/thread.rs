@@ -237,8 +237,9 @@ impl ThreadContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveError {
     HasParent,
-
     WrongThread,
+    UnknownObject,
+    Busy,
 }
 
 fn collect_descendants(initial_children: &[ObjectId]) -> Vec<ObjectId> {
@@ -265,16 +266,81 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
     }
 }
 
+/// Moves a registered object and all its descendants to `target_thread` by [`ObjectId`], matching
+/// Qt `QObject::moveToThread` semantics (`qobject.cpp:1706-1780`) without holding an outer
+/// `&mut ObjectData` across `ThreadChange` delivery or recursive child updates.
+///
+/// Cascading actions, in Qt order (`qobject.cpp:1782-1792`):
+/// 1. Validates that `id` is registered and alive, has no parent, belongs to
+///    `current_caller_thread`, and has no active callback borrow in its subtree; releases that
+///    inspection borrow before step 2.
+/// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change.
+/// 3. Detaches their timers from the source thread and updates each node's `ObjectData.thread_id`
+///    through a separate short-lived registry borrow (`qobject.cpp:1490-1502`).
+/// 4. Flips the physical registration thread and moves queued posted events to the target queue
+///    (`qobject.cpp:1794-1815`), then re-arms the detached timers on the target thread.
+pub fn move_to_thread_by_id(
+    id: ObjectId,
+    target_thread: ThreadId,
+    current_caller_thread: ThreadId,
+) -> Result<(), MoveError> {
+    let Some(all_ids) =
+        crate::object::qobject::prepare_move_to_thread(id, target_thread, current_caller_thread)?
+    else {
+        return Ok(());
+    };
+
+    // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
+    for &node_id in &all_ids {
+        let mut ev = Event::new(EventKind::ThreadChange);
+        crate::object::send_event(node_id, &mut ev);
+    }
+
+    // 2. Detach timers from the source thread (`qobject.cpp:1490-1502`).
+    let timers = crate::timer::detach_timers_for_objects(&all_ids);
+
+    // 3. Affinity. Each node in the subtree is updated through its own short-lived registry borrow
+    //    before the physical registration thread is flipped.
+    for &node_id in &all_ids {
+        crate::object::with_object_mut(node_id, |obj| {
+            obj.object_data_mut().thread_id = target_thread;
+        });
+    }
+
+    // 4. Physical registration flip and queued-event transfer, in one critical section.
+    crate::event_loop::move_receivers_to_thread(&all_ids, target_thread, || {
+        for &node_id in &all_ids {
+            crate::object::qobject::set_registration_thread(node_id, target_thread);
+        }
+    });
+    for &node_id in &all_ids {
+        crate::object::register_object_thread(node_id, target_thread);
+    }
+
+    // 5. Re-arm the detached timers on the target thread (`qobject.cpp:1496-1500`).
+    if !timers.is_empty() {
+        crate::event_loop::post_event_to_thread(
+            target_thread,
+            ObjectId(0),
+            Event::new(EventKind::MetaCall(Box::new(move |_| {
+                crate::timer::adopt_timers(timers);
+            }))),
+        );
+    }
+    Ok(())
+}
+
 /// Moves object and all its children to target thread matching Qt moveToThread semantics
 /// (`qobject.cpp:1706-1780`).
 ///
-/// Cascading actions, in Qt order (`qobject.cpp:1782-1792`):
-/// 1. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change.
-/// 2. Detaches their timers from the source thread; the target re-arms them under the same ids
-///    (`qobject.cpp:1490-1502`).
-/// 3. Changes thread affinity (`ObjectData.thread_id`) and the physical registration, and moves
-///    their queued posted events to the target queue (`qobject.cpp:1794-1815`).
-/// 4. Re-arms the detached timers on the target thread.
+/// Deprecated, because holding `object_data: &mut ObjectData` while delivering `ThreadChange`
+/// through the registry (`send_event`) and recursively mutating `owned_children` creates
+/// overlapping mutable borrows under Stacked Borrows and Tree Borrows. Use
+/// [`move_to_thread_by_id`] instead.
+#[deprecated(
+    note = "holding `&mut ObjectData` across `ThreadChange` delivery and recursive child updates \
+            overlaps the registry's callback borrow; use `move_to_thread_by_id`"
+)]
 pub fn move_to_thread(
     object_data: &mut ObjectData,
     target_thread: ThreadId,
@@ -397,17 +463,35 @@ mod tests {
         assert_eq!(queue.lock().unwrap().events[0].receiver, ObjectId(42));
     }
 
+    struct UnitProbe {
+        data: ObjectData,
+    }
+
+    impl crate::object::QObject for UnitProbe {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> &mut ObjectData {
+            &mut self.data
+        }
+    }
+
     #[test]
     fn test_move_to_thread_success() {
         let thread_a = ThreadId::current();
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
-        let mut obj = ObjectData::with_thread(ObjectId(10), thread_a);
-        assert_eq!(obj.thread_id, thread_a);
+        let obj = unsafe {
+            crate::object::register_owned_qobject(UnitProbe {
+                data: ObjectData::with_thread(ObjectId::next(), thread_a),
+            })
+        };
+        let id = obj.data.id;
+        assert_eq!(obj.data.thread_id, thread_a);
 
-        let res = move_to_thread(&mut obj, thread_b, thread_a);
+        let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert!(res.is_ok());
-        assert_eq!(obj.thread_id, thread_b);
+        assert_eq!(obj.data.thread_id, thread_b);
     }
 
     #[test]
@@ -415,12 +499,14 @@ mod tests {
         let thread_a = ThreadId::current();
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
-        let mut obj = ObjectData::with_thread(ObjectId(10), thread_a);
-        obj.parent = Some(ObjectId(1));
+        let mut data = ObjectData::with_thread(ObjectId::next(), thread_a);
+        data.parent = Some(ObjectId(1));
+        let obj = unsafe { crate::object::register_owned_qobject(UnitProbe { data }) };
+        let id = obj.data.id;
 
-        let res = move_to_thread(&mut obj, thread_b, thread_a);
+        let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert_eq!(res, Err(MoveError::HasParent));
-        assert_eq!(obj.thread_id, thread_a);
+        assert_eq!(obj.data.thread_id, thread_a);
     }
 
     #[test]
@@ -428,10 +514,15 @@ mod tests {
         let thread_a = ThreadId::current();
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
-        let mut obj = ObjectData::with_thread(ObjectId(10), thread_a);
+        let obj = unsafe {
+            crate::object::register_owned_qobject(UnitProbe {
+                data: ObjectData::with_thread(ObjectId::next(), thread_a),
+            })
+        };
+        let id = obj.data.id;
 
-        let res = move_to_thread(&mut obj, thread_b, thread_b);
+        let res = move_to_thread_by_id(id, thread_b, thread_b);
         assert_eq!(res, Err(MoveError::WrongThread));
-        assert_eq!(obj.thread_id, thread_a);
+        assert_eq!(obj.data.thread_id, thread_a);
     }
 }

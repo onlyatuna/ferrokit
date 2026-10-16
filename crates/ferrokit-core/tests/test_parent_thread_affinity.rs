@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, register_owned_qobject, reparent_owned, set_parent,
+    add_owned_child, move_to_thread_by_id, register_owned_qobject, reparent_owned, set_parent,
     ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
 };
 
@@ -161,20 +161,21 @@ fn a_refused_parent_leaves_the_child_free_to_take_a_parent_in_its_own_thread() {
 
 #[test]
 fn the_check_compares_the_current_affinities_not_the_creating_threads() {
-    let mut parent = Node::registered();
+    let parent = Node::registered();
     let parent_id = parent.data.id;
     let mut child = Node::registered();
+    let child_id = child.data.id;
     let here = ThreadId::current();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
 
-    move_to_thread(&mut parent.data, elsewhere, here).unwrap();
+    move_to_thread_by_id(parent_id, elsewhere, here).unwrap();
     assert_eq!(
         set_parent(&mut child.data, Some(parent_id)),
         Err(ReparentError::DifferentThread),
         "the parent moved away from the thread it was created in"
     );
 
-    move_to_thread(&mut child.data, elsewhere, here).unwrap();
+    move_to_thread_by_id(child_id, elsewhere, here).unwrap();
     assert_eq!(set_parent(&mut child.data, Some(parent_id)), Ok(()));
 }
 

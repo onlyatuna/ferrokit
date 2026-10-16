@@ -123,8 +123,8 @@
 //!    `unregister_qobject` returns. (An [`OwnedObject`] may move; the object it owns does not.)
 //! 6. **A method that holds `&self` or `&mut self` and delivers an event to the same object by
 //!    id** (`send_event`, `with_object_mut`). The callback overlaps the borrow, and no way of
-//!    registering the object prevents that. [`move_to_thread`] and `Widget::set_tool_tip` do this
-//!    today.
+//!    registering the object prevents that. The deprecated [`move_to_thread`] does this; use
+//!    [`move_to_thread_by_id`] instead.
 //! 7. **Writing the variable after registering it by pointer.** Under Stacked Borrows, Miri
 //!    rejects the next callback after a field write through the variable (`x.n += 1`), after an
 //!    explicit `&mut` taken from it (`&mut x.data`), and after an assignment that drops the old
@@ -142,7 +142,7 @@
 //! ## Thread rules
 //!
 //! Callbacks run only on the thread the object was registered on, its registration thread.
-//! [`move_to_thread`] moves that registration to the target thread together with the thread
+//! [`move_to_thread_by_id`] moves that registration to the target thread together with the thread
 //! affinity. Between callbacks the owner uses the object directly only on the registration
 //! thread; any other thread reaches it through the registry, which runs the callback on the
 //! registration thread. An object is neither unregistered nor registered again while one of its

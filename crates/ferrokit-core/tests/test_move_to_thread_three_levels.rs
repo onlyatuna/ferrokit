@@ -8,8 +8,8 @@
 use std::ptr::NonNull;
 
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, register_qobject_ptr, unregister_qobject, ObjectData, ObjectId,
-    QObject, ThreadId,
+    add_owned_child, move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData,
+    ObjectId, QObject, ThreadId,
 };
 #[derive(Debug)]
 struct SimpleObject {
@@ -64,7 +64,7 @@ fn move_to_thread_three_levels_updates_all_thread_id_fields() {
     assert_eq!(root.data.thread_id, source_thread);
 
     // Perform move_to_thread
-    let res = move_to_thread(&mut root.data, target_thread, source_thread);
+    let res = move_to_thread_by_id(root_id, target_thread, source_thread);
     assert_eq!(res, Ok(()));
 
     // Verify root ObjectData.thread_id
@@ -125,7 +125,7 @@ fn move_to_thread_three_levels_unowned_children_updates_all_thread_id_fields() {
     set_parent(&mut grand.data, Some(child_id)).expect("set grand parent");
 
     // Perform move_to_thread
-    let res = move_to_thread(&mut root.data, target_thread, source_thread);
+    let res = move_to_thread_by_id(root_id, target_thread, source_thread);
     assert_eq!(res, Ok(()));
 
     // Verify thread_id fields

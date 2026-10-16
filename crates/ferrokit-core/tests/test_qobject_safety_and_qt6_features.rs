@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, query_object_thread, register_owned_qobject, sender,
+    add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject, sender,
     unregister_qobject, MoveError, ObjectData, ObjectId, QObject, ScopeLevelGuard, ThreadContext,
     ThreadId,
 };
@@ -87,7 +87,7 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
 
     // SAFETY: the owner stays on this registration thread; nothing touches the parent while a
     // callback of it runs.
-    let mut parent = unsafe { register_owned_qobject(TestWidget::new("worker_root")) };
+    let parent = unsafe { register_owned_qobject(TestWidget::new("worker_root")) };
 
     let child = Box::new(TestWidget::new("worker_child"));
     // SAFETY: child remains boxed and owned at a stable address by parent.
@@ -95,11 +95,7 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
     // Qt rule: Child with parent CANNOT be moved to another thread directly!
-    let child_move_res = move_to_thread(
-        parent.data.owned_children[0].object_data_mut(),
-        target_thread,
-        current_thread,
-    );
+    let child_move_res = move_to_thread_by_id(child_id, target_thread, current_thread);
     assert_eq!(
         child_move_res,
         Err(MoveError::HasParent),
@@ -107,7 +103,7 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     );
 
     // Moving root cascades to all children
-    let parent_move_res = move_to_thread(&mut parent.data, target_thread, current_thread);
+    let parent_move_res = move_to_thread_by_id(parent.data.id, target_thread, current_thread);
     assert_eq!(parent_move_res, Ok(()));
 
     assert_eq!(parent.data.thread_id, target_thread);

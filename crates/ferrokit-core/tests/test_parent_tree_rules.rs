@@ -11,8 +11,9 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    dispatch_to_object, move_to_thread, register_owned_qobject, set_parent, unregister_qobject,
-    MoveError, ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
+    dispatch_to_object, move_to_thread_by_id, register_owned_qobject, set_parent,
+    unregister_qobject, MoveError, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
+    ThreadId,
 };
 
 struct Node {
@@ -228,10 +229,10 @@ fn a_child_that_was_never_registered_is_left_without_a_parent() {
 
 #[test]
 fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
-    let (mut child, _) = child_that_drops_its_parent();
+    let (child, _) = child_that_drops_its_parent();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
 
-    let moved = move_to_thread(&mut child.data, elsewhere, ThreadId::current());
+    let moved = move_to_thread_by_id(child.data.id, elsewhere, ThreadId::current());
 
     assert_ne!(moved, Err(MoveError::HasParent));
 }

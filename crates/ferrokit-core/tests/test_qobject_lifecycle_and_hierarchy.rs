@@ -2,7 +2,7 @@
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, query_object_thread, register_owned_qobject,
+    add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject,
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
     QObjectExt, QPointer, SignalBlocker, ThreadId,
 };
@@ -394,7 +394,7 @@ fn test_move_to_thread_cascades_children_and_events() {
         .recv_timeout(Duration::from_secs(10))
         .expect("worker thread must report its id");
 
-    assert_eq!(move_to_thread(&mut parent.data, target, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(parent_id, target, source), Ok(()));
 
     // Affinity and ThreadChange.
     assert_eq!(parent.data.thread_id, target);

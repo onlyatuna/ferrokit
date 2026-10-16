@@ -22,7 +22,7 @@ use ferrokit_core::event_loop::{
     get_thread_event_sender, post_event_to_thread, post_event_to_thread_with_priority, EventLoop,
 };
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, query_object_thread, register_qobject_ptr, send_event,
+    add_owned_child, move_to_thread_by_id, query_object_thread, register_qobject_ptr, send_event,
     unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_core::signal::Signal;
@@ -226,7 +226,7 @@ fn timers_of_moved_object_keep_firing_on_the_target_thread() {
         watched.lock().unwrap().len() >= 3
     });
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut probe.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(probe_id, owner_tid, source), Ok(()));
     assert!(
         owner.finish(),
         "the timer of a moved object must keep ticking on the target thread"
@@ -276,7 +276,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
 
     let owner = Owner::spawn(vec![grand_id, child_id, root_id], 1, || true);
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut root.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(root_id, owner_tid, source), Ok(()));
 
     for (name, seen) in [
         ("root", &root_seen),
@@ -313,7 +313,7 @@ fn zero_interval_timer_of_moved_object_ticks_at_most_once_per_turn() {
 
     let owner = Owner::spawn(vec![probe_id], TURNS, || false);
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut probe.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(probe_id, owner_tid, source), Ok(()));
     let _ = owner.finish();
 
     let ticks = ticks.lock().unwrap();
@@ -351,7 +351,7 @@ fn queued_events_of_moved_subtree_wait_for_target_loop_in_order() {
         watched.lock().unwrap().len() >= 2
     });
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut root.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(root_id, owner_tid, source), Ok(()));
 
     // Posted after the move, to the same receiver.
     post_event_to_thread(source, child_id, record(&ran, "after-move"));
@@ -382,7 +382,7 @@ fn transferred_events_preserve_priority_ordering() {
     let watched = Arc::clone(&ran);
     let owner = Owner::spawn(vec![root_id], 5, move || watched.lock().unwrap().len() >= 2);
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut root.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(root_id, owner_tid, source), Ok(()));
 
     assert!(
         owner.finish(),
@@ -412,7 +412,7 @@ fn post_through_stale_handle_is_forwarded_to_the_owner_thread() {
     let watched = Arc::clone(&ran);
     let owner = Owner::spawn(vec![id], 5, move || watched.lock().unwrap().len() >= 1);
     let owner_tid = owner.tid;
-    assert_eq!(move_to_thread(&mut plain.data, owner_tid, source), Ok(()));
+    assert_eq!(move_to_thread_by_id(id, owner_tid, source), Ok(()));
 
     stale.post_event(id, record(&ran, "stale"));
     el.process_events(false);
@@ -446,10 +446,7 @@ fn auto_connection_follows_receiver_thread_after_move() {
         !watched.lock().unwrap().is_empty()
     });
     let owner_tid = owner.tid;
-    assert_eq!(
-        move_to_thread(&mut receiver.data, owner_tid, source),
-        Ok(())
-    );
+    assert_eq!(move_to_thread_by_id(receiver_id, owner_tid, source), Ok(()));
 
     signal.emit(&7);
     assert!(

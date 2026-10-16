@@ -397,6 +397,77 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     }
 }
 
+/// Stage A of [`crate::object::move_to_thread_by_id`]: validates `id` and collects the full
+/// registered subtree (`all_ids`, root first), releasing every borrow before returning.
+///
+/// Returns `Ok(None)` when `id` is already on `target_thread`.
+pub(crate) fn prepare_move_to_thread(
+    id: ObjectId,
+    target_thread: ThreadId,
+    current_caller_thread: ThreadId,
+) -> Result<Option<Vec<ObjectId>>, super::thread::MoveError> {
+    use super::thread::MoveError;
+    let entry = {
+        let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() else {
+            return Err(MoveError::UnknownObject);
+        };
+        let Some(entry) = reg.get(&id).cloned() else {
+            return Err(MoveError::UnknownObject);
+        };
+        entry
+    };
+    if !entry.liveness.load(Ordering::Acquire) {
+        return Err(MoveError::UnknownObject);
+    }
+    if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
+        return Err(MoveError::Busy);
+    }
+    let on_registration_thread =
+        *entry.registration_thread.read().unwrap() == ThreadId::current();
+    if !on_registration_thread {
+        if entry.parent.read().unwrap().is_some() {
+            return Err(MoveError::HasParent);
+        }
+        return Err(MoveError::WrongThread);
+    }
+
+    let initial = with_object(id, |obj| {
+        let data = obj.object_data();
+        if data.parent().is_some() {
+            return Err(MoveError::HasParent);
+        }
+        if data.thread_id != current_caller_thread {
+            return Err(MoveError::WrongThread);
+        }
+        if data.thread_id == target_thread {
+            return Ok(None);
+        }
+        Ok(Some(data.children.clone()))
+    })
+    .ok_or(MoveError::Busy)??;
+
+    let Some(initial_children) = initial else {
+        return Ok(None);
+    };
+
+    let mut all_ids = vec![id];
+    let mut queue = initial_children;
+    while let Some(child_id) = queue.pop() {
+        if all_ids.contains(&child_id) {
+            continue;
+        }
+        if registered_and_borrowed(child_id) {
+            return Err(MoveError::Busy);
+        }
+        all_ids.push(child_id);
+        let more = with_object(child_id, |obj| obj.object_data().children.clone())
+            .unwrap_or_else(|| registered_children_of(child_id));
+        queue.extend(more);
+    }
+
+    Ok(Some(all_ids))
+}
+
 /// Queries the target object's thread affinity across threads.
 pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
