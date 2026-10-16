@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::Event;
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+};
 use ferrokit_core::signal::Signal;
 
 struct Receiver {
@@ -17,13 +19,14 @@ struct Receiver {
 }
 
 impl Receiver {
-    fn boxed() -> Box<Self> {
-        let mut r = Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
-        });
-        // SAFETY: the box is neither moved nor dropped before `destroy` unregisters it.
-        unsafe { register_qobject(&mut *r) };
-        r
+    fn owned() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread; nothing touches the object while a callback of
+        // it runs, and `destroy` unregisters it before the owner is dropped.
+        unsafe {
+            register_owned_qobject(Self {
+                data: ObjectData::new(ObjectId::next()),
+            })
+        }
     }
 
     fn id(&self) -> ObjectId {
@@ -50,7 +53,7 @@ impl QObject for Receiver {
 }
 
 /// Destroys a receiver the way its owner does: unregister (which severs its connections), drop.
-fn destroy(receiver: Box<Receiver>) {
+fn destroy(receiver: OwnedObject<Receiver>) {
     let id = receiver.id();
     // SAFETY: no callback is running; the object is still alive for this call.
     unsafe { unregister_qobject(id) };
@@ -69,8 +72,8 @@ fn counter() -> (Arc<AtomicUsize>, impl Fn(&i32) + Send + Sync + 'static) {
 fn receiver_destroyed_disconnects_from_every_signal() {
     let a: Signal<i32> = Signal::new();
     let b: Signal<i32> = Signal::new();
-    let r1 = Receiver::boxed();
-    let r2 = Receiver::boxed();
+    let r1 = Receiver::owned();
+    let r2 = Receiver::owned();
     let (calls_r1, slot_r1) = counter();
     let (calls_r2, slot_r2) = counter();
     a.connect_to(&*r1, slot_r1);
@@ -102,7 +105,7 @@ fn receiver_destroyed_disconnects_from_every_signal() {
 fn disconnect_with_another_signals_id_leaves_that_connection_intact() {
     let a: Signal<i32> = Signal::new();
     let b: Signal<i32> = Signal::new();
-    let r = Receiver::boxed();
+    let r = Receiver::owned();
     let (calls, slot) = counter();
     let id_a = a.connect_to(&*r, slot);
 
@@ -124,8 +127,8 @@ fn disconnect_with_another_signals_id_leaves_that_connection_intact() {
 fn disconnect_removes_only_its_own_connection() {
     let a: Signal<i32> = Signal::new();
     let b: Signal<i32> = Signal::new();
-    let ra = Receiver::boxed();
-    let rb = Receiver::boxed();
+    let ra = Receiver::owned();
+    let rb = Receiver::owned();
     let (calls_a, slot_a) = counter();
     let (calls_b, slot_b) = counter();
     let id_a = a.connect_to(&*ra, slot_a);

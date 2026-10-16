@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, register_qobject, reparent_owned, set_parent, ObjectData,
-    ObjectId, QObject, ReparentError, ThreadId,
+    add_owned_child, move_to_thread, register_owned_qobject, reparent_owned, set_parent,
+    ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -25,15 +25,17 @@ struct Node {
 }
 
 impl Node {
-    fn registered() -> Box<Self> {
-        let mut n = Box::new(Self {
+    fn new() -> Self {
+        Self {
             data: ObjectData::new(ObjectId::next()),
             seen: Vec::new(),
-        });
-        // SAFETY: the Box is never moved out of and stays on this thread until it is dropped,
-        // which unregisters it.
-        unsafe { register_qobject(&mut *n) };
-        n
+        }
+    }
+
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread until it is dropped, which unregisters the node;
+        // the tests touch the node only between callbacks.
+        unsafe { register_owned_qobject(Self::new()) }
     }
 }
 
@@ -181,7 +183,7 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
     let owner = Node::registered();
     let owner_id = owner.data.id;
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
-    let child_id = unsafe { add_owned_child(owner_id, Node::registered()) }
+    let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
     let remote = Remote::start();
@@ -219,7 +221,7 @@ fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
     let other = Node::registered();
     let other_id = other.data.id;
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
-    let child_id = unsafe { add_owned_child(owner_id, Node::registered()) }
+    let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
     let remote = Remote::start();
@@ -318,7 +320,7 @@ fn the_owned_refusal_case_for_the_silence_test() {
     let owner = Node::registered();
     let owner_id = owner.data.id;
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
-    let child_id = unsafe { add_owned_child(owner_id, Node::registered()) }
+    let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
     let remote = Remote::start();

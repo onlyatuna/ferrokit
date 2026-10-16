@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::Event;
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+};
 use ferrokit_core::signal::{ConnectionId, Signal};
 
 fn counter() -> (Arc<AtomicUsize>, impl Fn(&i32) + Send + Sync + 'static) {
@@ -131,12 +133,14 @@ impl QObject for Receiver {
 #[test]
 fn receiver_destroyed_during_emit_is_not_called() {
     let signal = Signal::<i32>::new();
-    let mut receiver = Box::new(Receiver {
-        data: ObjectData::with_auto_id(),
-    });
+    // SAFETY: the owner stays on this thread; nothing touches the object while a callback of it
+    // runs, and the slot below unregisters it before the owner is dropped.
+    let receiver = unsafe {
+        register_owned_qobject(Receiver {
+            data: ObjectData::with_auto_id(),
+        })
+    };
     let receiver_id = receiver.data.id;
-    // SAFETY: boxed, never moved, accessed only on this thread until unregistered below.
-    unsafe { register_qobject(&mut *receiver) };
 
     let (calls, slot) = counter();
     signal.connect(move |_| {

@@ -9,7 +9,7 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -117,23 +117,24 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
     let mut app = CoreApplication::new(vec!["test".to_string()]);
     let log: Log = Arc::new(Mutex::new(Vec::new()));
 
-    let mut sink = Box::new(Sink {
-        data: ObjectData::new(ObjectId::next()),
-        log: Arc::clone(&log),
-    });
+    // SAFETY: both owners stay on this thread; nothing touches either object while a handler runs,
+    // and they are unregistered after exec returns.
+    let sink = unsafe {
+        register_owned_qobject(Sink {
+            data: ObjectData::new(ObjectId::next()),
+            log: Arc::clone(&log),
+        })
+    };
     let sink_id = sink.data.id;
-    let mut trigger = Box::new(Trigger {
-        data: ObjectData::new(ObjectId::next()),
-        sink: sink_id,
-        log: Arc::clone(&log),
-    });
+    // SAFETY: as above.
+    let trigger = unsafe {
+        register_owned_qobject(Trigger {
+            data: ObjectData::new(ObjectId::next()),
+            sink: sink_id,
+            log: Arc::clone(&log),
+        })
+    };
     let trigger_id = trigger.data.id;
-
-    // SAFETY: both objects stay boxed on this thread until exec returns, then they are unregistered.
-    unsafe {
-        register_qobject(&mut *sink);
-        register_qobject(&mut *trigger);
-    }
     post_event_to_thread(
         ThreadId::current(),
         trigger_id,
