@@ -475,7 +475,7 @@ impl Frame {
         let props = self.base.properties.borrow();
         let ctx = crate::style::stylesheet::WidgetStyleContext {
             type_name: "QFrame",
-            object_name: self.base.object_data.object_name.as_deref().unwrap_or(""),
+            object_name: self.base.object_data.object_name().unwrap_or(""),
             pseudo_states: self.base.style_pseudo_states(false, false, &mut buf),
             sub_control: None,
             attributes: props.as_slice(),
@@ -534,7 +534,7 @@ impl Widget for Frame {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {

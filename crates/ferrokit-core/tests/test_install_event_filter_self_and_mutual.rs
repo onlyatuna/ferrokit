@@ -42,7 +42,7 @@ impl QObject for SelfFilterWidget {
         &mut self.data
     }
     fn event_filter(&mut self, watched: ObjectId, _event: &mut Event) -> bool {
-        if watched == self.data.id {
+        if watched == self.data.id() {
             self.filter_called.fetch_add(1, Ordering::SeqCst);
         }
         self.consume
@@ -60,7 +60,7 @@ fn install_event_filter_allows_self() {
         Arc::new(AtomicU32::new(0)),
         false,
     );
-    let id = obj.data.id;
+    let id = obj.data.id();
     let obj_ptr = &raw mut obj;
     unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
@@ -71,7 +71,7 @@ fn install_event_filter_allows_self() {
         "install_event_filter must allow installing self as filter (qobject.cpp:2407-2423)"
     );
     assert!(
-        obj.data.event_filters.contains(id),
+        obj.data.event_filters().contains(id),
         "filter chain must contain self id"
     );
 
@@ -90,8 +90,8 @@ fn install_event_filter_allows_mutual_cycle() {
         Arc::new(AtomicU32::new(0)),
         false,
     );
-    let a_id = obj_a.data.id;
-    let b_id = obj_b.data.id;
+    let a_id = obj_a.data.id();
+    let b_id = obj_b.data.id();
     let a_ptr = &raw mut obj_a;
     let b_ptr = &raw mut obj_b;
 
@@ -124,7 +124,7 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     // 1. Pass-through mode: filter returns false -> event() is called
     let mut obj =
         SelfFilterWidget::new(Arc::clone(&filter_called), Arc::clone(&event_called), false);
-    let id = obj.data.id;
+    let id = obj.data.id();
     // Installed before registering: a `&mut` through the variable after that would invalidate
     // the pointer the registry holds.
     install_event_filter(&mut obj.data, id);

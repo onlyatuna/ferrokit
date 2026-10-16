@@ -215,7 +215,7 @@ fn queued_signal_invoke_emits_on_owner_loop() {
         data: ObjectData::with_auto_id(),
         changed: Signal::new(),
     };
-    let id = probe.data.id;
+    let id = probe.data.id();
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
     probe.changed.connect(move |v| s.lock().push(v.clone()));

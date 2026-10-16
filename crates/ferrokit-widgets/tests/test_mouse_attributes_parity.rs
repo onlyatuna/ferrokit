@@ -83,7 +83,7 @@ fn no_mouse_propagation_stops_event_from_propagating_to_parent() {
             &self.base
         }
         fn id(&self) -> ObjectId {
-            self.base.object_data.id
+            self.base.object_data.id()
         }
         fn geometry(&self) -> Rect {
             self.base.geometry()

@@ -62,7 +62,7 @@ impl Widget for Probe {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()

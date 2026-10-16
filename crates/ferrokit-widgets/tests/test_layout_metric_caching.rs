@@ -83,7 +83,7 @@ impl Widget for MetricCountingProbe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -177,7 +177,7 @@ impl Widget for UpdateCountingContainer {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry.get()

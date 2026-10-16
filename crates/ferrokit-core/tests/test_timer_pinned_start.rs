@@ -43,7 +43,7 @@ fn dropping_a_started_timer_unregisters_its_address() {
     let mut timer = Timer::new();
     timer.set_interval(10);
     timer.as_mut().start();
-    let id = timer.object_data().id;
+    let id = timer.object_data().id();
     assert!(
         with_object(id, |_| ()).is_some(),
         "a started timer must be registered"

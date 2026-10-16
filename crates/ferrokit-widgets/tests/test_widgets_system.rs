@@ -238,7 +238,7 @@ impl Widget for HoverButton {
     }
 
     fn id(&self) -> ferrokit_core::object::ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {
@@ -471,7 +471,7 @@ fn test_dirty_region_culling_skips_non_intersecting_widgets() {
             &self.base
         }
 
-        fn id(&self) -> ferrokit_core::object::ObjectId { self.base.object_data.id }
+        fn id(&self) -> ferrokit_core::object::ObjectId { self.base.object_data.id() }
         fn is_visible(&self) -> bool { self.base.is_visible() }
         fn set_visible(&self, v: bool) { self.base.set_visible(v); }
         fn is_enabled(&self) -> bool { true }

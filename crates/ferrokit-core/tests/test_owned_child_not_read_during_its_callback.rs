@@ -123,7 +123,7 @@ fn gone(id: ObjectId) -> bool {
 fn dropping_the_parent_from_the_childs_callback_does_not_read_the_child() {
     let slot: Rc<Cell<Option<OwnedObject<Node>>>> = Rc::new(Cell::new(None));
     let parent = Node::registered();
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     slot.set(Some(parent));
     let hook_slot = Rc::clone(&slot);
     let (probe_id, reads) = attach_probe(parent_id, Box::new(move |_| drop(hook_slot.take())));
@@ -143,7 +143,7 @@ fn dropping_the_parent_from_the_childs_callback_does_not_read_the_child() {
 fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
     let other = Node::registered();
-    let (parent_id, other_id) = (parent.data.id, other.data.id);
+    let (parent_id, other_id) = (parent.data.id(), other.data.id());
     let sibling = Rc::new(Cell::new(ObjectId(0)));
     let target = Rc::clone(&sibling);
     // Attached first, so a search of the parent's owned children meets it before the sibling.
@@ -166,9 +166,9 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
         0,
         "the running child was read while a sibling moved"
     );
-    assert_eq!(parent.data.owned_children.len(), 1);
+    assert_eq!(parent.data.owned_children().len(), 1);
     assert_eq!(
-        OwnedObject::object_id(&other.data.owned_children[0]),
+        OwnedObject::object_id(&other.data.owned_children()[0]),
         sibling.get()
     );
 }
@@ -176,7 +176,7 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
 #[test]
 fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     let sibling = Rc::new(Cell::new(ObjectId(0)));
     let target = Rc::clone(&sibling);
     let (probe_id, reads) = attach_probe(
@@ -198,15 +198,15 @@ fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_rea
         0,
         "the running child was read while its parent was searched"
     );
-    assert_eq!(parent.data.owned_children.len(), 2);
+    assert_eq!(parent.data.owned_children().len(), 2);
 }
 
 #[test]
 fn dropping_a_non_owned_sibling_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     let mut loose = Node::registered();
-    let loose_id = loose.data.id;
+    let loose_id = loose.data.id();
     set_parent(&mut loose.data, Some(parent_id)).unwrap();
     let slot = Rc::new(Cell::new(Some(loose)));
     let hook_slot = Rc::clone(&slot);

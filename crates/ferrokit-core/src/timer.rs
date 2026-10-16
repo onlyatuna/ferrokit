@@ -589,7 +589,7 @@ impl Timer {
     /// Registers this timer's current configuration with the thread timer context and records
     /// the new id. Callers must have stopped the timer first, or it must never have been started.
     fn rearm(&self) -> TimerId {
-        let receiver = self.data.id;
+        let receiver = self.data.id();
         let interval_ms = self.interval_ms.get();
         let timer_type = self.timer_type.get();
         let single_shot = self.single_shot.get();
@@ -713,7 +713,7 @@ impl Timer {
         // box is freed, so the registry never holds a stale pointer (see `Timer::start`).
         unsafe { crate::object::register_pinned_qobject(self.as_mut()) };
         let id = registry.register(
-            self.data.id,
+            self.data.id(),
             self.interval_ms.get(),
             self.timer_type.get(),
             self.single_shot.get(),
@@ -738,7 +738,7 @@ impl Timer {
         // box is freed, so the registry never holds a stale pointer (see `Timer::start`).
         unsafe { crate::object::register_pinned_qobject(self.as_mut()) };
         let id = registry.register(
-            self.data.id,
+            self.data.id(),
             self.interval_ms.get(),
             self.timer_type.get(),
             self.single_shot.get(),
@@ -880,7 +880,7 @@ impl Drop for Timer {
     fn drop(&mut self) {
         self.stop();
         // SAFETY: Drop occurs after the timer's event callbacks have completed.
-        unsafe { crate::object::unregister_qobject(self.data.id) };
+        unsafe { crate::object::unregister_qobject(self.data.id()) };
     }
 }
 

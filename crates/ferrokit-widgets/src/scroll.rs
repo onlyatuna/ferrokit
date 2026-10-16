@@ -223,7 +223,7 @@ impl Widget for ScrollBar {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {
@@ -652,7 +652,7 @@ impl Widget for ScrollArea {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {

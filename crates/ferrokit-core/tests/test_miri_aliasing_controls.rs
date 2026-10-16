@@ -70,7 +70,7 @@ fn use_directly(o: &mut dyn QObject) {
 )]
 fn register_qobject_then_use_of_the_box_between_callbacks() {
     let mut node = Box::new(Node::new());
-    let id = node.data.id;
+    let id = node.data.id();
     // SAFETY: the Box stays in place on this thread until it is unregistered below.
     unsafe { register_qobject(&mut *node) };
     touch(id);
@@ -104,7 +104,7 @@ fn register_boxed_qobject_then_use_of_the_box_between_callbacks() {
 )]
 fn a_pointer_made_from_a_reference_then_use_of_the_variable() {
     let mut node = Node::new();
-    let id = node.data.id;
+    let id = node.data.id();
     let ptr = NonNull::from(&mut node as &mut dyn QObject);
     // SAFETY: `node` stays here until it is unregistered below.
     unsafe { register_qobject_ptr(ptr) };

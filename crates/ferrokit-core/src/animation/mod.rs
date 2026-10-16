@@ -289,7 +289,7 @@ impl PropertyAnimation {
 
     /// Sets the target QObject identifier.
     pub fn set_target(&mut self, target: &dyn QObject) {
-        self.target_id = Some(target.object_data().id);
+        self.target_id = Some(target.object_data().id());
     }
 
     /// Sets target object ID directly.

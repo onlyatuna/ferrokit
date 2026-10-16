@@ -125,7 +125,7 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
             log: Arc::clone(&log),
         })
     };
-    let sink_id = sink.data.id;
+    let sink_id = sink.data.id();
     // SAFETY: as above.
     let trigger = unsafe {
         register_owned_qobject(Trigger {
@@ -134,7 +134,7 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
             log: Arc::clone(&log),
         })
     };
-    let trigger_id = trigger.data.id;
+    let trigger_id = trigger.data.id();
     post_event_to_thread(
         ThreadId::current(),
         trigger_id,

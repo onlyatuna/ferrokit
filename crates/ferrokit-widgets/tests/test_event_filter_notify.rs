@@ -103,7 +103,7 @@ impl Widget for Probe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -194,7 +194,7 @@ fn font_change_reaches_object_filter_on_button_set_font() {
     let (filter_id, seen, _pin) = register_spy(false);
     let mut button = Button::new("b");
     button.object_data_mut().install_event_filter(filter_id);
-    let id = button.object_data().id;
+    let id = button.object_data().id();
 
     button.set_font(Font::new("Consolas", 9.0));
 
@@ -260,7 +260,7 @@ fn paint_goes_through_filters_and_a_consuming_filter_skips_paint_event() {
             paints: Arc::clone(&paints),
         };
         widget.object_data_mut().install_event_filter(filter_id);
-        let id = widget.object_data().id;
+        let id = widget.object_data().id();
 
         let mut pixmap = Pixmap::with_dpr(10, 10, 1.0).expect("pixmap");
         let mut painter = Painter::begin(&mut pixmap);

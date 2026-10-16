@@ -47,7 +47,7 @@ fn slot_b(_: &i32) {}
 #[test]
 fn two_slots_with_equal_code_are_both_connected() {
     let rcv = receiver();
-    let id = rcv.data.id;
+    let id = rcv.data.id();
     let signal: Signal<i32> = Signal::new();
 
     let key_a = SlotId::next();
@@ -73,7 +73,7 @@ fn two_slots_with_equal_code_are_both_connected() {
 #[test]
 fn the_same_slot_is_refused_a_second_time() {
     let rcv = receiver();
-    let id = rcv.data.id;
+    let id = rcv.data.id();
     let signal: Signal<i32> = Signal::new();
     let sum = Arc::new(AtomicI32::new(0));
 

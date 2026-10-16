@@ -77,11 +77,11 @@ impl Remote {
         let (release, released) = channel::<()>();
         let thread = std::thread::spawn(move || {
             let node = Node::registered();
-            id_tx.send(node.data.id).unwrap();
+            id_tx.send(node.data.id()).unwrap();
             // Ends when `finish` sends, or when the test panics and drops the sender.
             let _ = released.recv();
             RemoteReport {
-                children: node.data.children.clone(),
+                children: node.data.children().to_vec(),
                 seen: node.seen.clone(),
             }
         });
@@ -104,9 +104,9 @@ impl Remote {
 #[test]
 fn a_parent_in_another_thread_is_refused_and_the_child_loses_its_old_parent() {
     let old = Node::registered();
-    let old_id = old.data.id;
+    let old_id = old.data.id();
     let mut child = Node::registered();
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     set_parent(&mut child.data, Some(old_id)).unwrap();
     let remote = Remote::start();
 
@@ -115,7 +115,7 @@ fn a_parent_in_another_thread_is_refused_and_the_child_loses_its_old_parent() {
     assert_eq!(result, Err(ReparentError::DifferentThread));
     assert_eq!(child.data.parent(), None);
     assert!(
-        old.data.children.is_empty(),
+        old.data.children().is_empty(),
         "the old parent no longer lists the child"
     );
     assert_eq!(
@@ -145,7 +145,7 @@ fn a_parent_in_another_thread_is_refused_for_a_child_that_had_no_parent() {
 #[test]
 fn a_refused_parent_leaves_the_child_free_to_take_a_parent_in_its_own_thread() {
     let own = Node::registered();
-    let own_id = own.data.id;
+    let own_id = own.data.id();
     let mut child = Node::registered();
     let remote = Remote::start();
     assert_eq!(
@@ -162,9 +162,9 @@ fn a_refused_parent_leaves_the_child_free_to_take_a_parent_in_its_own_thread() {
 #[test]
 fn the_check_compares_the_current_affinities_not_the_creating_threads() {
     let parent = Node::registered();
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     let mut child = Node::registered();
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     let here = ThreadId::current();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
 
@@ -182,7 +182,7 @@ fn the_check_compares_the_current_affinities_not_the_creating_threads() {
 #[test]
 fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
     let owner = Node::registered();
-    let owner_id = owner.data.id;
+    let owner_id = owner.data.id();
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
@@ -192,13 +192,13 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
     let result = reparent_owned_object(child_id, Some(remote.id));
 
     assert_eq!(result.err(), Some(ReparentError::DifferentThread));
-    assert_eq!(owner.data.children, vec![child_id]);
+    assert_eq!(owner.data.children(), &[child_id]);
     assert_eq!(
-        owner.data.owned_children.len(),
+        owner.data.owned_children().len(),
         1,
         "the owner still holds the Box"
     );
-    let child = owner.data.owned_children[0].object_data();
+    let child = owner.data.owned_children()[0].object_data();
     assert_eq!(
         child.parent(),
         Some(owner_id),
@@ -218,9 +218,9 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
 #[test]
 fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
     let owner = Node::registered();
-    let owner_id = owner.data.id;
+    let owner_id = owner.data.id();
     let other = Node::registered();
-    let other_id = other.data.id;
+    let other_id = other.data.id();
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
@@ -238,21 +238,21 @@ fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
         "the move was refused: {:?}",
         moved.err()
     );
-    assert!(owner.data.children.is_empty());
-    assert_eq!(other.data.children, vec![child_id]);
+    assert!(owner.data.children().is_empty());
+    assert_eq!(other.data.children(), &[child_id]);
     remote.finish();
 }
 
 #[test]
 fn an_owned_child_built_for_another_thread_is_handed_back() {
     let owner = Node::registered();
-    let owner_id = owner.data.id;
+    let owner_id = owner.data.id();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
     let child = Box::new(Node {
         data: ObjectData::with_thread(ObjectId::next(), elsewhere),
         seen: Vec::new(),
     });
-    let child_id = child.data.id;
+    let child_id = child.data.id();
 
     // SAFETY: the Box comes back with the error, so nothing stays attached to the owner.
     let result = unsafe { add_owned_child(owner_id, child) };
@@ -260,14 +260,14 @@ fn an_owned_child_built_for_another_thread_is_handed_back() {
     match result {
         Err((error, handed_back)) => {
             assert_eq!(error, ReparentError::DifferentThread);
-            assert_eq!(handed_back.data.id, child_id);
+            assert_eq!(handed_back.data.id(), child_id);
             assert_eq!(handed_back.data.parent(), None, "no parent link was made");
             assert!(!handed_back.data.is_owned_by_parent());
         }
         Ok(_) => panic!("an owned child with another affinity was attached"),
     }
-    assert!(owner.data.children.is_empty());
-    assert!(owner.data.owned_children.is_empty());
+    assert!(owner.data.children().is_empty());
+    assert!(owner.data.owned_children().is_empty());
     assert!(owner.seen.is_empty(), "the owner was told of no child");
 }
 
@@ -319,7 +319,7 @@ fn the_owned_refusal_case_for_the_silence_test() {
         return;
     }
     let owner = Node::registered();
-    let owner_id = owner.data.id;
+    let owner_id = owner.data.id();
     // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)

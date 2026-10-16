@@ -41,7 +41,7 @@ fn posted_quit_consumed_by_application_filter_does_not_end_exec() {
     let mut filter = ConsumeQuit {
         data: ObjectData::new(ObjectId::next()),
     };
-    let filter_id = filter.data.id;
+    let filter_id = filter.data.id();
     // SAFETY: the filter stays on this thread and is unregistered before it is dropped.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
@@ -66,7 +66,7 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
     let mut filter = ConsumeQuit {
         data: ObjectData::new(ObjectId::next()),
     };
-    let filter_id = filter.data.id;
+    let filter_id = filter.data.id();
     // SAFETY: as above.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);

@@ -44,7 +44,7 @@ fn test_exec_flushes_deferred_delete_requested_by_last_handler() {
             data: ObjectData::new(ObjectId::next()),
         })
     };
-    let wid = victim.data.id;
+    let wid = victim.data.id();
 
     let ev = Event::new_spontaneous(EventKind::MouseButtonPress {
         x: 0,

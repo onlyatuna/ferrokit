@@ -1611,7 +1611,7 @@ impl Widget for Menu {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {
@@ -1693,9 +1693,9 @@ impl Widget for Menu {
         let old_covered = self.last_covered.get();
         self.base.dirty.set(Some(covered.united(&old_covered)));
         self.last_covered.set(covered);
-        let target = self.base.window_id().unwrap_or(self.base.object_data.id);
+        let target = self.base.window_id().unwrap_or(self.base.object_data.id());
         let target_thread = ferrokit_core::object::query_object_thread(target)
-            .unwrap_or(self.base.object_data.thread_id);
+            .unwrap_or(self.base.object_data.thread_id());
         ferrokit_core::event_loop::post_event_to_thread(
             target_thread,
             target,

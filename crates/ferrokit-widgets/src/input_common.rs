@@ -14,7 +14,7 @@ macro_rules! leaf_widget_common {
         }
 
         fn id(&self) -> ferrokit_core::object::ObjectId {
-            self.base.object_data.id
+            self.base.object_data.id()
         }
 
         fn geometry(&self) -> ferrokit_gui::geometry::primitives::Rect {

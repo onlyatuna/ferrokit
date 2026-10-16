@@ -166,7 +166,7 @@ impl QObject for AffinityProbe {
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::ThreadChange) {
-            *self.seen.lock().unwrap() = query_object_thread(self.data.id);
+            *self.seen.lock().unwrap() = query_object_thread(self.data.id());
             return true;
         }
         false
@@ -214,7 +214,7 @@ fn timers_of_moved_object_keep_firing_on_the_target_thread() {
         data: ObjectData::new(ObjectId::next()),
         ticks: Arc::clone(&ticks),
     };
-    let probe_id = probe.data.id;
+    let probe_id = probe.data.id();
     // The timer is armed in this thread's registry, so this thread needs a timer context.
     let _source_loop = EventLoop::new();
     // SAFETY: `probe` stays on this thread and alive until the owner has unregistered it.
@@ -253,7 +253,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         data: ObjectData::new(ObjectId::next()),
         seen: Arc::clone(&root_seen),
     };
-    let root_id = root.data.id;
+    let root_id = root.data.id();
     // SAFETY: `root` stays on this thread and alive until the owner has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
@@ -261,7 +261,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         data: ObjectData::new(ObjectId::next()),
         seen: Arc::clone(&child_seen),
     });
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     // SAFETY: `child` is boxed and owned by `root` at a stable address.
     let _ = unsafe { add_owned_child(root_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
@@ -269,7 +269,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         data: ObjectData::new(ObjectId::next()),
         seen: Arc::clone(&grand_seen),
     });
-    let grand_id = grand.data.id;
+    let grand_id = grand.data.id();
     // SAFETY: `grand` is boxed and owned by `child` at a stable address.
     let _ = unsafe { add_owned_child(child_id, grand) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
@@ -305,7 +305,7 @@ fn zero_interval_timer_of_moved_object_ticks_at_most_once_per_turn() {
         data: ObjectData::new(ObjectId::next()),
         ticks: Arc::clone(&ticks),
     };
-    let probe_id = probe.data.id;
+    let probe_id = probe.data.id();
     let _source_loop = EventLoop::new();
     // SAFETY: `probe` stays on this thread and alive until the owner has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
@@ -334,11 +334,11 @@ fn queued_events_of_moved_subtree_wait_for_target_loop_in_order() {
     let ran: Ran = Arc::new(Mutex::new(Vec::new()));
 
     let mut root = Plain::new();
-    let root_id = root.data.id;
+    let root_id = root.data.id();
     // SAFETY: `root` stays on this thread and alive until the owner has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
     let child = Box::new(Plain::new());
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     // SAFETY: `child` is boxed and owned by `root` at a stable address.
     let _ = unsafe { add_owned_child(root_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
@@ -371,7 +371,7 @@ fn transferred_events_preserve_priority_ordering() {
     let ran: Ran = Arc::new(Mutex::new(Vec::new()));
 
     let mut root = Plain::new();
-    let root_id = root.data.id;
+    let root_id = root.data.id();
     // SAFETY: root stays on this thread and alive until owner unregisters it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
@@ -405,7 +405,7 @@ fn post_through_stale_handle_is_forwarded_to_the_owner_thread() {
     let stale = get_thread_event_sender(source).expect("this thread's loop must be registered");
 
     let mut plain = Plain::new();
-    let id = plain.data.id;
+    let id = plain.data.id();
     // SAFETY: `plain` stays on this thread and alive until the owner has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut plain)) };
 
@@ -430,7 +430,7 @@ fn post_through_stale_handle_is_forwarded_to_the_owner_thread() {
 fn auto_connection_follows_receiver_thread_after_move() {
     let source = ThreadId::current();
     let mut receiver = Plain::new();
-    let receiver_id = receiver.data.id;
+    let receiver_id = receiver.data.id();
     // SAFETY: `receiver` stays on this thread and alive until the owner has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
@@ -469,7 +469,7 @@ fn send_event_from_foreign_thread_is_rejected_without_running_the_owner_callback
         data: ObjectData::new(ObjectId::next()),
         calls: Arc::clone(&calls),
     };
-    let id = obj.data.id;
+    let id = obj.data.id();
     // SAFETY: `obj` stays on this thread and alive until it is unregistered below.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
 

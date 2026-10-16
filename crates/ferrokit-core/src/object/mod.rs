@@ -51,7 +51,7 @@
 //! let id = OwnedObject::object_id(&node);
 //!
 //! node.hits += 1; // a direct use between callbacks
-//! assert!(with_object(id, |o| o.object_data().id == id).unwrap()); // the registry still reaches it
+//! assert!(with_object(id, |o| o.object_data().id() == id).unwrap()); // the registry still reaches it
 //!
 //! drop(node); // dropping the owner drops the object and unregisters it
 //! assert!(with_object(id, |_| ()).is_none());
@@ -83,7 +83,7 @@
 //! use ferrokit_core::object::{register_qobject_ptr, unregister_qobject, with_object};
 //!
 //! let mut node = Node { data: ObjectData::new(ObjectId::next()), hits: 0 };
-//! let id = node.data.id;
+//! let id = node.data.id();
 //! let node_ptr = &raw mut node;
 //! // SAFETY: `node` stays here, unmoved, until it is unregistered below; the pointer is taken
 //! // with `&raw mut`, so no reference is made.
@@ -92,7 +92,7 @@
 //! // SAFETY: no callback of `node` runs, and `node_ptr` is the pointer that was registered.
 //! unsafe { (*node_ptr).hits += 1 }; // a write between callbacks goes through that pointer
 //! assert_eq!(node.hits, 1); // a read can use the variable
-//! assert!(with_object(id, |o| o.object_data().id == id).unwrap());
+//! assert!(with_object(id, |o| o.object_data().id() == id).unwrap());
 //!
 //! // SAFETY: no callback of `node` runs.
 //! unsafe { unregister_qobject(id) };

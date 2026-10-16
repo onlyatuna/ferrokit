@@ -106,14 +106,14 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
             data: ObjectData::new(ObjectId::next()),
         })
     };
-    let root_id = root.data.id;
+    let root_id = root.data.id();
     root_cell.set(Some(root));
 
     let mid = Box::new(Mid {
         data: ObjectData::new(ObjectId::next()),
         root: Rc::clone(&root_cell),
     });
-    let mid_id = mid.data.id;
+    let mid_id = mid.data.id();
     // SAFETY: the parent owns the child from here on and is dropped on this thread.
     unsafe { add_owned_child(root_id, mid) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
@@ -124,7 +124,7 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
         freed: Rc::clone(&freed),
         freed_during_its_callback: Rc::clone(&report),
     });
-    let leaf_id = leaf.data.id;
+    let leaf_id = leaf.data.id();
     // SAFETY: as above.
     unsafe { add_owned_child(mid_id, leaf) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
@@ -207,7 +207,7 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
             found_while_child_running: Rc::clone(&found),
         })
     };
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
 
     let mut child_data = ObjectData::new(ObjectId::next());
     child_data.set_object_name("running");
@@ -216,7 +216,7 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
         parent_id,
         steps: 0,
     });
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     // SAFETY: parent owns the child on this thread.
     unsafe { add_owned_child(parent_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 

@@ -77,15 +77,15 @@ fn application_filter_consumed_event_returns_true() {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
-    install_application_event_filter(filter.data.id);
+    install_application_event_filter(filter.data.id());
 
     let mut event = Event::new(EventKind::UpdateRequest);
-    let handled = send_event(receiver.data.id, &mut event);
+    let handled = send_event(receiver.data.id(), &mut event);
 
     clear_application_event_filters();
     unsafe {
-        unregister_qobject(filter.data.id);
-        unregister_qobject(receiver.data.id);
+        unregister_qobject(filter.data.id());
+        unregister_qobject(receiver.data.id());
     }
 
     assert!(
@@ -109,18 +109,18 @@ fn object_filter_consumed_event_returns_true() {
     // the registry's pointer.
     receiver
         .object_data_mut()
-        .install_event_filter(filter.data.id);
+        .install_event_filter(filter.data.id());
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
 
     let mut event = Event::new(EventKind::UpdateRequest);
-    let handled = send_event(receiver.data.id, &mut event);
+    let handled = send_event(receiver.data.id(), &mut event);
 
     unsafe {
-        unregister_qobject(filter.data.id);
-        unregister_qobject(receiver.data.id);
+        unregister_qobject(filter.data.id());
+        unregister_qobject(receiver.data.id());
     }
 
     assert!(

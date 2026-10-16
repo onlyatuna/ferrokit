@@ -54,7 +54,7 @@ fn callback(id: ObjectId) {
 #[test]
 fn reading_the_variable_between_callbacks_leaves_the_registered_pointer_usable() {
     let mut node = Node::new();
-    let id = node.data.id;
+    let id = node.data.id();
     // SAFETY: `node` stays here, unmoved, until it is unregistered below.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
 
@@ -71,7 +71,7 @@ fn reading_the_variable_between_callbacks_leaves_the_registered_pointer_usable()
 #[test]
 fn writing_through_the_registered_pointer_between_callbacks_leaves_it_usable() {
     let mut node = Node::new();
-    let id = node.data.id;
+    let id = node.data.id();
     let node_ptr = &raw mut node;
     // SAFETY: `node` stays here, unmoved, until it is unregistered below.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(node_ptr)) };
@@ -94,7 +94,7 @@ fn writing_through_the_registered_pointer_between_callbacks_leaves_it_usable() {
 #[cfg_attr(not(miri), ignore = "undefined behavior under Stacked Borrows; run under Miri")]
 fn control_writing_the_variable_after_registering_it_by_pointer() {
     let mut node = Node::new();
-    let id = node.data.id;
+    let id = node.data.id();
     // SAFETY: this breaks the rule on purpose; see the module documentation of this file.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
 

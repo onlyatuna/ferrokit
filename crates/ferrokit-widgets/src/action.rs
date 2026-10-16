@@ -314,7 +314,7 @@ impl Action {
     }
 
     pub fn id(&self) -> ObjectId {
-        self.object_data.id
+        self.object_data.id()
     }
 
     pub fn text(&self) -> &str {

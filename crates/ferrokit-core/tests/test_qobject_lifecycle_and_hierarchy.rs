@@ -138,7 +138,7 @@ impl QObject for MockLabel {
 #[test]
 fn test_ownership_and_deletion_cascade() {
     let mut parent = MockContainer::new("root_parent");
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     // SAFETY: parent stays on this thread and alive until the explicit drop.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
 
@@ -154,7 +154,7 @@ fn test_ownership_and_deletion_cascade() {
         grandchild_liveness = grandchild.data.liveness();
         assert!(grandchild_liveness.load(Ordering::SeqCst));
 
-        let child_id = child.data.id;
+        let child_id = child.data.id();
         // SAFETY: parent is registered; the Box stays at a stable address until cascade drop.
         let _ = unsafe { add_owned_child(parent_id, child) }
             .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
@@ -163,8 +163,8 @@ fn test_ownership_and_deletion_cascade() {
             .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
     }
 
-    assert_eq!(parent.data.owned_children.len(), 1);
-    assert_eq!(parent.data.children.len(), 1);
+    assert_eq!(parent.data.owned_children().len(), 1);
+    assert_eq!(parent.data.children().len(), 1);
     assert!(child_liveness.load(Ordering::SeqCst));
     assert!(grandchild_liveness.load(Ordering::SeqCst));
 
@@ -182,25 +182,25 @@ fn test_ownership_and_deletion_cascade() {
 #[test]
 fn test_child_unlink_notifies_parent() {
     let mut parent = MockContainer::new("parent");
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     // SAFETY: parent stays on this thread and alive until unregistered.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
 
     {
         let mut child = MockContainer::new("child");
-        let child_id = child.data.id;
+        let child_id = child.data.id();
         let child_ptr = &raw mut child;
         // SAFETY: child stays on this thread and alive until unregistered.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(child_ptr)) };
 
         // SAFETY: no callback of either object runs; the pointers are the registered ones.
         unsafe { (*child_ptr).data.set_parent(Some(parent_id)).unwrap() };
-        assert_eq!(parent.data.children.len(), 1);
+        assert_eq!(parent.data.children().len(), 1);
         assert_eq!(parent.child_added_count.load(Ordering::SeqCst), 1);
 
         // Explicitly unparenting
         unsafe { (*child_ptr).data.set_parent(None).unwrap() };
-        assert_eq!(parent.data.children.len(), 0);
+        assert_eq!(parent.data.children().len(), 0);
         assert_eq!(parent.child_removed_count.load(Ordering::SeqCst), 1);
 
         // SAFETY: child callback is no longer active and this is its registration thread.
@@ -220,13 +220,13 @@ fn test_object_hierarchy_search_find_child() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let panel = Box::new(MockContainer::new("panel"));
-    let panel_id = panel.data.id;
+    let panel_id = panel.data.id();
     let btn1 = Box::new(MockButton::new("ok_button", "OK"));
     let btn2 = Box::new(MockButton::new("cancel_button", "Cancel"));
     let label = Box::new(MockLabel::new("status_label", "Ready"));
 
     // SAFETY: panel stays boxed at a stable address while root owns it; the attach registers it.
-    let _ = unsafe { add_owned_child(root.data.id, panel) }
+    let _ = unsafe { add_owned_child(root.data.id(), panel) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
     // SAFETY: all children remain boxed at stable addresses while panel owns them.
     let _ = unsafe { add_owned_child(panel_id, btn1) }
@@ -277,15 +277,15 @@ fn test_find_child_searches_direct_children_before_descendants() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let panel = Box::new(MockContainer::new("panel"));
-    let panel_id = panel.data.id;
+    let panel_id = panel.data.id();
     let grandchild_btn = Box::new(MockButton::new("action_btn", "from_grandchild"));
     let direct_btn = Box::new(MockButton::new("action_btn", "from_direct_child"));
-    let direct_btn_id = direct_btn.data.id;
+    let direct_btn_id = direct_btn.data.id();
 
     unsafe {
-        add_owned_child(root.data.id, panel).ok().unwrap();
+        add_owned_child(root.data.id(), panel).ok().unwrap();
         add_owned_child(panel_id, grandchild_btn).ok().unwrap();
-        add_owned_child(root.data.id, direct_btn).ok().unwrap();
+        add_owned_child(root.data.id(), direct_btn).ok().unwrap();
     }
 
     let found = root.find_child::<MockButton>("action_btn");
@@ -339,8 +339,8 @@ fn test_object_name_changed_signal() {
 fn test_qobject_hierarchy_accessors() {
     let mut parent = MockContainer::new("p");
     let mut child = MockButton::new("c", "Click");
-    let child_id = child.object_data().id;
-    let parent_id = parent.object_data().id;
+    let child_id = child.object_data().id();
+    let parent_id = parent.object_data().id();
 
     assert_eq!(child.parent(), None);
     assert!(child.children_ids().is_empty());
@@ -348,8 +348,7 @@ fn test_qobject_hierarchy_accessors() {
     assert_eq!(child.thread(), ThreadId::current());
 
     parent.object_data_mut().add_child(child_id);
-    child.object_data_mut().parent = Some(parent_id);
-
+    child.object_data_mut().set_parent(Some(parent_id)).unwrap();
     assert_eq!(child.parent(), Some(parent_id));
     assert_eq!(parent.children_ids(), vec![child_id]);
     assert_eq!(parent.object_data().children(), &[child_id]);
@@ -365,9 +364,9 @@ fn test_move_to_thread_cascades_children_and_events() {
     let mut parent = MockContainer::new("worker_root");
     // SAFETY: parent stays on this thread and alive until the worker has unregistered it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
-    let parent_id = parent.data.id;
+    let parent_id = parent.data.id();
     let child = Box::new(MockContainer::new("worker_child"));
-    let child_id = child.data.id;
+    let child_id = child.data.id();
     // SAFETY: child remains boxed and owned by parent at a stable address.
     let _ = unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
@@ -399,9 +398,9 @@ fn test_move_to_thread_cascades_children_and_events() {
     assert_eq!(move_to_thread_by_id(parent_id, target, source), Ok(()));
 
     // Affinity and ThreadChange.
-    assert_eq!(parent.data.thread_id, target);
+    assert_eq!(parent.data.thread_id(), target);
     assert_eq!(
-        parent.data.owned_children[0].object_data().thread_id,
+        parent.data.owned_children()[0].object_data().thread_id(),
         target
     );
     assert_eq!(query_object_thread(child_id), Some(target));
@@ -478,7 +477,7 @@ fn test_raii_signal_blocker() {
     assert_eq!(click_count.load(Ordering::SeqCst), 4);
 
     // SAFETY: button callbacks have returned on this registration thread.
-    unsafe { unregister_qobject(btn.data.id) };
+    unsafe { unregister_qobject(btn.data.id()) };
 }
 
 // --- 5. Guarded Pointer (QPointer) & Generational Liveness Tests ---
@@ -531,7 +530,7 @@ fn test_double_register_keeps_object_reachable() {
         "second registration must not kill the live object"
     );
     assert_eq!(qptr.id(), Some(id));
-    let found = ferrokit_core::object::with_object(id, |obj| obj.object_data().id);
+    let found = ferrokit_core::object::with_object(id, |obj| obj.object_data().id());
     assert_eq!(
         found,
         Some(id),

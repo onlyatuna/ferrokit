@@ -467,7 +467,7 @@ fn generate_property_accessors(
         Some(notify_ident) => (
             quote! { let changed = s.#field_ident != converted; },
             quote! {
-                if changed && !s.#data_ident.signals_blocked.load(::std::sync::atomic::Ordering::Acquire) {
+                if changed && !s.#data_ident.signals_blocked() {
                     let new_value = s.#field_ident.clone();
                     s.#notify_ident.emit(&new_value);
                 }

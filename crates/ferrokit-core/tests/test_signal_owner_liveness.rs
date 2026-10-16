@@ -116,7 +116,7 @@ fn connect_every_kind(
     ferrokit_core::signal::ScopedConnection,
 ) {
     let here = ThreadId::current();
-    let id = rcv.data.id;
+    let id = rcv.data.id();
     let mut counters = Vec::new();
 
     let (n, slot) = counter();
@@ -240,7 +240,7 @@ fn a_queued_call_posted_while_the_owner_was_alive_is_still_delivered_after_it_is
     let owner = Owner::registered();
     let (n, slot) = counter();
     owner.changed.connect_object(
-        rcv.data.id,
+        rcv.data.id(),
         ThreadId::current(),
         ConnectionType::Queued,
         slot,
@@ -365,7 +365,7 @@ macro_rules! register_in_place {
 #[test]
 fn unregistering_an_owner_that_still_exists_silences_its_signal() {
     let mut owner = Owner::new();
-    let id = owner.data.id;
+    let id = owner.data.id();
     register_in_place!(owner);
     let (n, slot) = counter();
     owner.changed.connect(slot);
@@ -401,7 +401,7 @@ fn an_owner_that_was_never_registered_emits_and_unregistering_an_unknown_id_chan
     owner.changed.connect(slot);
 
     // SAFETY: no object has this id, so there is no callback to overlap.
-    unsafe { unregister_qobject(owner.data.id) };
+    unsafe { unregister_qobject(owner.data.id()) };
     owner.changed.emit(&1);
 
     assert_eq!(n.load(Ordering::SeqCst), 1);
@@ -413,7 +413,7 @@ fn an_unregistered_object_stays_retired_when_it_is_registered_again() {
     // The liveness token only ever goes from alive to gone, as a `QPointer` only ever goes null:
     // registering the same object again does not bring it back.
     let mut owner = Owner::new();
-    let id = owner.data.id;
+    let id = owner.data.id();
     register_in_place!(owner);
     let (n, slot) = counter();
     owner.changed.connect(slot);
@@ -432,7 +432,7 @@ fn an_unregistered_object_stays_retired_when_it_is_registered_again() {
 #[test]
 fn a_slot_that_unregisters_its_owner_ends_the_emission() {
     let mut owner = Owner::new();
-    let id = owner.data.id;
+    let id = owner.data.id();
     register_in_place!(owner);
     let (first_runs, first_counter) = counter();
     let (later_runs, later) = counter();
@@ -463,7 +463,7 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
 {
     let outer = Owner::registered();
     let mut retired = Owner::new();
-    let retired_id = retired.data.id;
+    let retired_id = retired.data.id();
     register_in_place!(retired);
     let (retired_runs, slot) = counter();
     retired.changed.connect(slot);
@@ -494,7 +494,7 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
 #[test]
 fn an_emission_from_another_thread_after_the_unregistration_calls_no_slot() {
     let mut owner = Owner::new();
-    let id = owner.data.id;
+    let id = owner.data.id();
     register_in_place!(owner);
     let (n, slot) = counter();
     owner.changed.connect(slot);

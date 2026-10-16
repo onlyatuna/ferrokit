@@ -534,7 +534,7 @@ impl Drop for CoreApplication {
         IN_EXEC.store(false, Ordering::SeqCst);
         ABOUT_TO_QUIT_EMITTED.store(false, Ordering::SeqCst);
         // SAFETY: Drop is on the application object's owning thread after dispatch ends.
-        unsafe { unregister_qobject(self.data.id) };
+        unsafe { unregister_qobject(self.data.id()) };
         let _ = LOCAL_EVENT_LOOP.try_with(|el| {
             *el.borrow_mut() = None;
         });

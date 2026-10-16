@@ -140,7 +140,7 @@ fn receiver_destroyed_during_emit_is_not_called() {
             data: ObjectData::with_auto_id(),
         })
     };
-    let receiver_id = receiver.data.id;
+    let receiver_id = receiver.data.id();
 
     let (calls, slot) = counter();
     signal.connect(move |_| {

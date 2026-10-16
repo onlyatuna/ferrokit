@@ -160,7 +160,7 @@ fn test_signal_auto_thread_affinity() {
     let obj = unsafe {
         register_owned_qobject(DynamicMockObject::new(ObjectId::next(), last_prop, count))
     };
-    let id = obj.object_data().id;
+    let id = obj.object_data().id();
 
     // Verify initial registered thread matches current
     assert_eq!(query_object_thread(id), Some(ThreadId::current()));

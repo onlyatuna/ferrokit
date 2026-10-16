@@ -32,7 +32,8 @@
     "test_parked_ancestor_frees_running_descendant",
     "test_unique_connection_slot_identity",
     "test_signal_owner_liveness",
-    "test_move_to_thread_with_borrowed_data"
+    "test_move_to_thread_with_borrowed_data",
+    "test_object_data_encapsulation"
   ],
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
@@ -560,6 +561,12 @@
     "test_unique_connection_slot_identity::the_same_slot_is_refused_a_second_time::SB": "pass",
     "test_unique_connection_slot_identity::the_same_slot_is_refused_a_second_time::TB": "pass",
     "test_unique_connection_slot_identity::two_slots_with_equal_code_are_both_connected::SB": "pass",
-    "test_unique_connection_slot_identity::two_slots_with_equal_code_are_both_connected::TB": "pass"
+    "test_unique_connection_slot_identity::two_slots_with_equal_code_are_both_connected::TB": "pass",
+    "test_object_data_encapsulation::test_encapsulated_getters_return_consistent_views:SB": "pass",
+    "test_object_data_encapsulation::test_encapsulated_getters_return_consistent_views:TB": "pass",
+    "test_object_data_encapsulation::test_running_child_cannot_be_cleared_by_safe_code:SB": "pass",
+    "test_object_data_encapsulation::test_running_child_cannot_be_cleared_by_safe_code:TB": "pass",
+    "test_object_data_encapsulation::test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf:SB": "pass",
+    "test_object_data_encapsulation::test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf:TB": "pass"
   }
 }

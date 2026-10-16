@@ -372,7 +372,7 @@ impl<T> Signal<T> {
     /// `owner` is destroyed (see [`Signal::emit`]).
     pub fn with_owner(owner: &ObjectData) -> Self {
         Self::with_owner_parts(
-            owner.id,
+            owner.id(),
             Arc::clone(&owner.signals_blocked),
             Arc::clone(&owner.liveness),
         )
@@ -639,7 +639,7 @@ impl<T: 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let id = receiver.object_data().id;
+        let id = receiver.object_data().id();
         self.connect_direct_object(id, slot)
     }
 
@@ -683,8 +683,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let receiver_id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object_impl(
             receiver_id,
             thread,
@@ -710,8 +710,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
         receiver: &R,
         slot: fn(&T),
     ) -> Option<ConnectionId> {
-        let receiver_id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object_impl(
             receiver_id,
             thread,
@@ -731,8 +731,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let receiver_id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object_impl(receiver_id, thread, ConnectionType::Auto, None, true, slot)
             .expect("a single-shot connection is never rejected as duplicate")
     }
@@ -824,8 +824,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object(id, thread, ConnectionType::Auto, slot)
     }
 
@@ -1127,7 +1127,7 @@ mod tests {
         let mut receiver = Receiver {
             data: crate::object::ObjectData::new(ObjectId::next()),
         };
-        let receiver_id = receiver.data.id;
+        let receiver_id = receiver.data.id();
         // SAFETY: registered for the test; unregistered before it returns.
         unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
         let target_thread = ThreadId::current();

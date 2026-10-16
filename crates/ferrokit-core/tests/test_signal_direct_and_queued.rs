@@ -109,7 +109,7 @@ fn test_direct_to_qobject_lifecycle_auto_disconnect() {
     let counter = Arc::new(AtomicI32::new(0));
 
     let receiver = MockReceiverWidget::new(ObjectId::next(), Arc::clone(&counter));
-    let receiver_id = receiver.object_data().id;
+    let receiver_id = receiver.object_data().id();
 
     let cnt = Arc::clone(&counter);
     signal.connect_direct_to(&receiver, move |_| {
@@ -173,7 +173,7 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
     let mut receiver = Probe {
         data: ObjectData::new(ObjectId::next()),
     };
-    let receiver_id = receiver.data.id;
+    let receiver_id = receiver.data.id();
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let processed = Arc::new(AtomicBool::new(false));
@@ -232,7 +232,7 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     let mut receiver = Probe {
         data: ObjectData::new(ObjectId::next()),
     };
-    let receiver_id = receiver.data.id;
+    let receiver_id = receiver.data.id();
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let ran = Arc::new(AtomicBool::new(false));

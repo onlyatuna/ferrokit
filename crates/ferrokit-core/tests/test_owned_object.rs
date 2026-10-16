@@ -90,7 +90,7 @@ fn add(parent: ObjectId) -> ObjectId {
 #[test]
 fn the_owner_and_the_callbacks_see_each_others_writes() {
     let mut owner = root();
-    let id = owner.data.id;
+    let id = owner.data.id();
     touch(id);
     assert_eq!(owner.bump(), 2);
     touch(id);
@@ -103,7 +103,7 @@ fn the_owner_and_the_callbacks_see_each_others_writes() {
 #[test]
 fn a_moved_owner_still_reaches_the_object_the_registry_calls() {
     let owner = root();
-    let id = owner.data.id;
+    let id = owner.data.id();
     touch(id);
     let mut moved = vec![owner];
     let mut owner = moved.pop().expect("one owner");
@@ -115,15 +115,15 @@ fn a_moved_owner_still_reaches_the_object_the_registry_calls() {
 #[test]
 fn three_owned_levels_are_called_and_read_by_the_owner() {
     let owner = root();
-    let (pid, cid) = (owner.data.id, add(owner.data.id));
+    let (pid, cid) = (owner.data.id(), add(owner.data.id()));
     let gid = add(cid);
     touch(gid);
     touch(cid);
     touch(gid);
 
-    let child = &owner.data.owned_children[0];
+    let child = &owner.data.owned_children()[0];
     assert_eq!(OwnedObject::object_id(child), cid);
-    assert_eq!(child.object_data().owned_children.len(), 1);
+    assert_eq!(child.object_data().owned_children().len(), 1);
     assert_eq!(count(gid), 2);
 
     drop(owner);
@@ -134,7 +134,7 @@ fn three_owned_levels_are_called_and_read_by_the_owner() {
 fn an_owned_child_moved_between_parents_stays_callable() {
     let mut a = root();
     let mut b = root();
-    let (aid, bid) = (a.data.id, b.data.id);
+    let (aid, bid) = (a.data.id(), b.data.id());
     let cid = add(aid);
     touch(cid);
 
@@ -145,7 +145,7 @@ fn an_owned_child_moved_between_parents_stays_callable() {
     drop(a);
     touch(cid);
     b.bump();
-    assert_eq!(b.data.owned_children.len(), 1);
+    assert_eq!(b.data.owned_children().len(), 1);
 
     drop(b);
     assert!(gone(cid) && gone(aid) && gone(bid));
@@ -154,7 +154,7 @@ fn an_owned_child_moved_between_parents_stays_callable() {
 #[test]
 fn a_child_released_as_an_owner_stays_registered_and_usable() {
     let a = root();
-    let aid = a.data.id;
+    let aid = a.data.id();
     let cid = add(aid);
     touch(cid);
 
@@ -181,7 +181,7 @@ fn a_child_released_as_an_owner_stays_registered_and_usable() {
 #[test]
 fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_read_between_callbacks() {
     let mut x = Node::new();
-    let id = x.data.id;
+    let id = x.data.id();
     // SAFETY: `x` stays here, unmoved, until it is unregistered below, and the pointer is taken
     // without making a reference.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut x as *mut dyn QObject)) };
@@ -197,7 +197,7 @@ fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_read_between_callb
 #[test]
 fn registering_again_with_the_owners_pointer_keeps_the_object_alive() {
     let mut owner = root();
-    let id = owner.data.id;
+    let id = owner.data.id();
     let alive = owner.data.liveness();
     touch(id);
     // SAFETY: the object stays in place while `owner` lives, and no callback of it runs.
@@ -245,7 +245,7 @@ fn a_registered_parent_dropped_in_its_childs_callback_frees_the_child_afterwards
     let freed = Rc::new(Cell::new(false));
     let seen = Rc::new(Cell::new(None));
     let owner = root();
-    let pid = owner.data.id;
+    let pid = owner.data.id();
     parent.set(Some(owner));
     let reactor = Box::new(Reactor {
         data: ObjectData::new(ObjectId::next()),
@@ -253,7 +253,7 @@ fn a_registered_parent_dropped_in_its_childs_callback_frees_the_child_afterwards
         freed: Rc::clone(&freed),
         seen: Rc::clone(&seen),
     });
-    let rid = reactor.data.id;
+    let rid = reactor.data.id();
     // SAFETY: the parent owns the child from here on and is dropped on this thread.
     unsafe { add_owned_child(pid, reactor) }.unwrap_or_else(|(err, _)| panic!("{err:?}"));
 

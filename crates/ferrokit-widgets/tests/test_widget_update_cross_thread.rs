@@ -56,7 +56,7 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
 
     let seen = Arc::new(AtomicBool::new(false));
     let mut filter = SpyFilter::new(Arc::clone(&seen));
-    let filter_id = filter.data.id;
+    let filter_id = filter.data.id();
 
     // Set up before registering, as the module documentation of `ferrokit_core::object` advises
     // (rule 7): a use of the variable after that can invalidate the pointer the registry holds.
@@ -95,7 +95,7 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
 fn worker_thread_calling_unregistered_widget_update_posts_to_widget_affinity_thread() {
     let el = EventLoop::new();
 
-    // An unregistered widget created on the main thread has object_data.thread_id = main_thread
+    // An unregistered widget created on the main thread has object_data.thread_id() = main_thread
     let mut widget = EmptyWidget::new();
     widget.set_visible(true);
     let widget_id = widget.id();

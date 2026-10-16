@@ -68,7 +68,7 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     /// it again through [`OwnedObject::as_non_null`] before a callback can run.
     pub fn from_box(boxed: Box<T>) -> Self {
         let data = boxed.object_data();
-        let id = data.id;
+        let id = data.id();
         let borrow_state = Arc::clone(&data.borrow_state);
         // SAFETY: `Box::into_raw` never returns null.
         let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
@@ -122,6 +122,8 @@ impl<T: QObject + ?Sized> std::ops::DerefMut for OwnedObject<T> {
 
 impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
     fn drop(&mut self) {
+        // SAFETY: unregister the object's registration before deallocating memory.
+        unsafe { crate::object::unregister_qobject(self.id) };
         // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is never
         // turned back into a `Box`, so no second pointer that claims unique ownership exists.
         drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });

@@ -141,7 +141,7 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(target_ptr)) };
 
     let mut ev = Event::new(EventKind::UpdateRequest);
-    let handled = ferrokit_core::object::send_event(target.data.id, &mut ev);
+    let handled = ferrokit_core::object::send_event(target.data.id(), &mut ev);
 
     assert!(
         handled,
@@ -152,12 +152,12 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     // 2.3 Tombstone test: remove_event_filter() inside filter callback should not crash iteration
     // SAFETY: no callback of `target` runs; `target_ptr` is the registered pointer.
     unsafe { (*target_ptr).object_data_mut().remove_event_filter(id_b) };
-    assert_eq!(target.object_data().event_filters.snapshot(), vec![]);
+    assert_eq!(target.object_data().event_filters().snapshot(), vec![]);
 
     // SAFETY: the callbacks have returned and these registrations are owner-thread.
     unsafe {
         unregister_qobject(id_b);
-        unregister_qobject(target.data.id);
+        unregister_qobject(target.data.id());
     }
 }
 
@@ -220,7 +220,7 @@ fn test_level2_loop_livelock_protection() {
             self.counter.fetch_add(1, Ordering::SeqCst);
             // When receiving an event, post another event inside callback
             self.loop_handle
-                .post_event(self.data.id, Event::new(EventKind::User(Box::new(()))));
+                .post_event(self.data.id(), Event::new(EventKind::User(Box::new(()))));
             true
         }
     }
@@ -235,7 +235,7 @@ fn test_level2_loop_livelock_protection() {
     };
     // SAFETY: receiver remains alive and unmoved on this thread until unregistered below.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
-    let r_id = receiver.data.id;
+    let r_id = receiver.data.id();
 
     event_loop.post_event(r_id, Event::new(EventKind::User(Box::new(()))));
 

@@ -30,7 +30,7 @@ impl Receiver {
     }
 
     fn id(&self) -> ObjectId {
-        self.data.id
+        self.data.id()
     }
 }
 

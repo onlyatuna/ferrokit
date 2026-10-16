@@ -768,14 +768,14 @@ impl Window {
     }
 
     pub fn id(&self) -> ObjectId {
-        self.object_data.id
+        self.object_data.id()
     }
 
     pub fn root_widget(&self) -> WidgetRef {
         std::rc::Rc::clone(&self.root_widget)
     }
     pub fn set_root_widget(&mut self, widget: WidgetRef) {
-        widget.borrow_mut().set_window_id(Some(self.object_data.id));
+        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
         let geom = self.geometry.get();
         widget
             .borrow_mut()
@@ -1279,8 +1279,8 @@ impl Drop for Window {
             ferrokit_platform::unregister_window_event_binding(hwnd);
         }
         // Deferred renders already queued for this window become no-ops.
-        RenderState::unregister(self.object_data.id);
-        crate::application::Application::unregister_window(self.object_data.id);
+        RenderState::unregister(self.object_data.id());
+        crate::application::Application::unregister_window(self.object_data.id());
     }
 }
 
