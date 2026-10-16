@@ -38,8 +38,8 @@ impl QObject for Node {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         match &event.kind {
@@ -174,8 +174,8 @@ impl QObject for Reactor {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
@@ -248,8 +248,8 @@ impl QObject for Adopter {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {

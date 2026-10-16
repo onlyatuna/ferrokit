@@ -66,7 +66,7 @@ enum ChildListChange {
 }
 
 impl ChildListChange {
-    fn apply(&self, data: &mut ObjectData) {
+    fn apply(&self, mut data: ObjectDataMut<'_>) {
         match *self {
             ChildListChange::Add(id) => data.add_child(id),
             ChildListChange::Remove(id) => data.remove_child(id),
@@ -114,9 +114,9 @@ impl Drop for ObjectBorrowGuard {
             if self._entry.liveness.load(Ordering::Acquire) {
                 // SAFETY: the callback that held this borrow has returned, so no reference into
                 // the object is live, and the object is alive.
-                let data = unsafe { (*self.ptr).object_data_mut() };
+                let mut data = unsafe { (*self.ptr).object_data_mut() };
                 for change in &changes {
-                    change.apply(data);
+                    change.apply(ObjectDataMut::new(data.raw_data_mut()));
                 }
             }
         }
@@ -1087,6 +1087,134 @@ impl ObjectData {
     pub fn dynamic_property_names(&self) -> Vec<String> {
         self.dynamic_properties.keys().cloned().collect()
     }
+
+    /// Swaps the hierarchy and property contents with another ObjectData instance,
+    /// while strictly preserving identity, liveness, borrow_state, and thread affinity.
+    pub fn swap_content(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.parent, &mut other.parent);
+        std::mem::swap(&mut self.parent_liveness, &mut other.parent_liveness);
+        std::mem::swap(&mut self.children, &mut other.children);
+        std::mem::swap(&mut self.owned_children, &mut other.owned_children);
+        std::mem::swap(&mut self.owned_by_parent, &mut other.owned_by_parent);
+        std::mem::swap(&mut self.event_filters, &mut other.event_filters);
+        std::mem::swap(&mut self.dynamic_properties, &mut other.dynamic_properties);
+        std::mem::swap(&mut self.object_name, &mut other.object_name);
+        std::mem::swap(&mut self.timers, &mut other.timers);
+        std::mem::swap(&mut self.signals_blocked, &mut other.signals_blocked);
+        std::mem::swap(&mut self.delete_later_called, &mut other.delete_later_called);
+    }
+}
+
+/// Scoped mutable proxy for ObjectData.
+///
+/// Encapsulates mutable access to an object's internal metadata without giving out a raw
+/// `&mut ObjectData`, preventing arbitrary `std::mem::swap` from breaking identity,
+/// registry and liveness invariants.
+pub struct ObjectDataMut<'a> {
+    pub(crate) data: &'a mut ObjectData,
+}
+
+impl<'a> ObjectDataMut<'a> {
+    #[inline]
+    pub fn new(data: &'a mut ObjectData) -> Self {
+        Self { data }
+    }
+
+    /// Swaps hierarchy and property contents with another ObjectDataMut proxy,
+    /// while strictly keeping each object's identity, liveness, and registry state anchored.
+    #[inline]
+    pub fn swap_content(&mut self, other: &mut ObjectDataMut<'_>) {
+        self.data.swap_content(other.data);
+    }
+
+    #[inline]
+    pub fn install_event_filter(&mut self, filter: ObjectId) {
+        self.data.install_event_filter(filter);
+    }
+
+    #[inline]
+    pub fn remove_event_filter(&mut self, filter: ObjectId) {
+        self.data.remove_event_filter(filter);
+    }
+
+    #[inline]
+    pub fn set_object_name(&mut self, name: &str) {
+        self.data.set_object_name(name);
+    }
+
+    #[inline]
+    pub fn set_property(&mut self, name: &str, value: Variant) -> bool {
+        self.data.set_property(name, value)
+    }
+
+    #[inline]
+    pub fn set_thread_id(&mut self, thread_id: ThreadId) {
+        self.data.set_thread_id(thread_id);
+    }
+
+    #[inline]
+    pub fn clear_parent(&mut self) {
+        self.data.clear_parent();
+    }
+
+    #[inline]
+    pub fn add_child(&mut self, child: ObjectId) {
+        self.data.add_child(child);
+    }
+
+    #[inline]
+    pub fn remove_child(&mut self, child: ObjectId) {
+        self.data.remove_child(child);
+    }
+
+    #[inline]
+    pub fn set_parent(&mut self, parent: Option<ObjectId>) -> Result<(), ReparentError> {
+        self.data.set_parent(parent)
+    }
+
+    #[inline]
+    pub fn add_timer(&mut self, id: crate::timer::TimerId) {
+        self.data.timers.push(id);
+    }
+
+    #[inline]
+    pub fn remove_timer(&mut self, id: crate::timer::TimerId) {
+        self.data.timers.retain(|&t| t != id);
+    }
+
+    #[inline]
+    pub(crate) fn raw_data_mut(&mut self) -> &mut ObjectData {
+        self.data
+    }
+
+    #[inline]
+    pub(crate) fn owned_children_mut(&mut self) -> &mut Vec<OwnedObject<dyn QObject>> {
+        &mut self.data.owned_children
+    }
+
+    #[inline]
+    pub(crate) fn into_owned_children_mut(self) -> &'a mut Vec<OwnedObject<dyn QObject>> {
+        &mut self.data.owned_children
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn timers_mut(&mut self) -> &mut Vec<crate::timer::TimerId> {
+        &mut self.data.timers
+    }
+
+    #[inline]
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<ObjectId> {
+        &mut self.data.children
+    }
+}
+
+impl<'a> std::ops::Deref for ObjectDataMut<'a> {
+    type Target = ObjectData;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.data
+    }
 }
 
 impl Drop for ObjectData {
@@ -1110,14 +1238,9 @@ impl Drop for ObjectData {
                 );
             } else {
                 with_object_mut(parent_id, |parent_obj| {
-                    parent_obj
-                        .object_data_mut()
-                        .children
-                        .retain(|&id| id != self.id);
-                    parent_obj
-                        .object_data_mut()
-                        .owned_children
-                        .retain(|c| OwnedObject::object_id(c) != self.id);
+                    let mut pdata = parent_obj.object_data_mut();
+                    pdata.children_mut().retain(|&id| id != self.id);
+                    pdata.owned_children_mut().retain(|c| OwnedObject::object_id(c) != self.id);
                     let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
                     parent_obj.event(&mut ev);
                 });
@@ -1455,20 +1578,21 @@ pub fn reparent_owned_object(
     };
 
     let mut owner = {
-        let data = old_guard.object_data_mut();
+        let mut data = old_guard.object_data_mut();
         let pos = data
-            .owned_children
+            .owned_children()
             .iter()
             .position(|c| OwnedObject::object_id(c) == child_id)
             .ok_or(ReparentError::NotOwned)?;
-        data.children.retain(|&id| id != child_id);
-        data.owned_children.remove(pos)
+        data.children_mut().retain(|&id| id != child_id);
+        data.owned_children_mut().remove(pos)
     };
     {
-        let data = owner.object_data_mut();
-        data.parent = new_parent;
-        data.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
-        data.owned_by_parent = new_parent.is_some();
+        let mut data = owner.object_data_mut();
+        let raw = data.raw_data_mut();
+        raw.parent = new_parent;
+        raw.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
+        raw.owned_by_parent = new_parent.is_some();
     }
 
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
@@ -1490,11 +1614,11 @@ pub fn reparent_owned_object(
 
     let released = match new_guard.as_mut() {
         Some(guard) => {
-            let data = guard.object_data_mut();
+            let mut data = guard.object_data_mut();
             if !data.children.contains(&child_id) {
-                data.children.push(child_id);
+                data.children_mut().push(child_id);
             }
-            data.owned_children.push(owner);
+            data.owned_children_mut().push(owner);
             None
         }
         None => Some(owner),
@@ -1554,10 +1678,11 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     let attached = with_object_mut(parent_id, |parent| {
         let mut child = pending.take().expect("closure runs at most once");
         {
-            let data = child.object_data_mut();
-            data.parent = Some(parent_id);
-            data.parent_liveness = liveness_of(parent_id).map(|alive| (parent_id, alive));
-            data.owned_by_parent = true;
+            let mut data = child.object_data_mut();
+            let raw = data.raw_data_mut();
+            raw.parent = Some(parent_id);
+            raw.parent_liveness = liveness_of(parent_id).map(|alive| (parent_id, alive));
+            raw.owned_by_parent = true;
         }
         parent.object_data_mut().add_child(child_id);
         // The parent holds the child through an owner made from the `Box`; the registry gets a
@@ -1569,7 +1694,7 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
         // The registry's list is what still reaches the child while a running callback of the
         // parent hides it from the parent's own `children`.
         list_in_registry(parent_id, child_id);
-        parent.object_data_mut().owned_children.push(owner);
+        parent.object_data_mut().owned_children_mut().push(owner);
     });
     match attached {
         Some(()) => {
@@ -1609,7 +1734,7 @@ pub fn reparent(
 pub trait QObject: std::any::Any {
     /// Core object metadata: ObjectData (`QObjectData` equivalent).
     fn object_data(&self) -> &ObjectData;
-    fn object_data_mut(&mut self) -> &mut ObjectData;
+    fn object_data_mut(&mut self) -> ObjectDataMut<'_>;
     /// Returns the static MetaObject reflection structure for this class (`QObject::metaObject`).
     fn meta_object(&self) -> &'static crate::meta::MetaObject {
         &crate::meta::QOBJECT_META_OBJECT
@@ -1750,10 +1875,10 @@ pub trait QObject: std::any::Any {
             }
         }
         if let Some(i) = match_idx {
-            return self.object_data_mut().owned_children[i].as_qobject_any_mut();
+            return self.object_data_mut().into_owned_children_mut()[i].as_qobject_any_mut();
         }
         // 2. Descendants if no direct child matched
-        for child in &mut self.object_data_mut().owned_children {
+        for child in self.object_data_mut().into_owned_children_mut() {
             if OwnedObject::is_borrowed(child) {
                 continue;
             }
@@ -1933,13 +2058,13 @@ pub trait QObject: std::any::Any {
     ) -> crate::timer::TimerId {
         let receiver = self.object_data().id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
-        self.object_data_mut().timers.push(id);
+        self.object_data_mut().add_timer(id);
         id
     }
 
     /// Kills the timer with the specified timer ID (`QObject::killTimer`).
     fn kill_timer(&mut self, id: crate::timer::TimerId) -> bool {
-        self.object_data_mut().timers.retain(|&t| t != id);
+        self.object_data_mut().remove_timer(id);
         crate::timer::kill_object_timer(id)
     }
 
@@ -1989,7 +2114,7 @@ pub struct SignalBlocker {
 
 impl SignalBlocker {
     pub fn new(obj: &mut dyn QObject) -> Self {
-        Self::from_data(obj.object_data_mut())
+        Self::from_data(obj.object_data_mut().raw_data_mut())
     }
 
     pub fn from_data(data: &mut ObjectData) -> Self {
@@ -2158,9 +2283,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn timer_event(&mut self, timer_id: u64) {
                 self.received_timer_id = Some(timer_id);
             }
@@ -2196,9 +2321,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
                 self.intercept
             }
@@ -2222,9 +2347,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.event_count += 1;
                 true
@@ -2234,7 +2359,7 @@ mod tests {
         let mut snooper = EventSnooper::new(ObjectId::next(), true);
         let mut target = TargetWidget::new(ObjectId::next());
 
-        install_event_filter(target.object_data_mut(), snooper.object_data().id());
+        install_event_filter(target.object_data_mut().raw_data_mut(), snooper.object_data().id());
 
         let mut ev = Event::new(EventKind::UpdateRequest);
 
@@ -2289,9 +2414,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
         }
 
         let el = crate::event_loop::EventLoop::new();
@@ -2331,9 +2456,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn custom_event(&mut self, _event: &mut Event) {
                 self.events.fetch_add(1, Ordering::SeqCst);
             }
@@ -2374,9 +2499,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::ChildAdded { .. }) {
                     self.child_added.fetch_add(1, Ordering::SeqCst);
@@ -2427,9 +2552,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.events.fetch_add(1, Ordering::SeqCst);
                 true
@@ -2482,9 +2607,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::ChildRemoved { .. }) {
                     self.removed.fetch_add(1, Ordering::SeqCst);

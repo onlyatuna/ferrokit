@@ -48,8 +48,8 @@ impl QObject for Node {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         self.n += 1;
@@ -228,8 +228,8 @@ impl QObject for Reactor {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         drop(self.parent.take());

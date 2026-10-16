@@ -302,7 +302,7 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
     data.set_thread_id(target_thread);
     visited.push(data.id());
     for child in data.owned_children_mut() {
-        flip_owned(child.object_data_mut(), target_thread, visited);
+        flip_owned(child.object_data_mut().raw_data_mut(), target_thread, visited);
     }
 }
 
@@ -417,7 +417,7 @@ pub fn move_to_thread(
     for &id in &all_ids[1..] {
         if !visited.contains(&id) {
             crate::object::with_object_mut(id, |obj| {
-                flip_owned(obj.object_data_mut(), target_thread, &mut visited);
+                flip_owned(obj.object_data_mut().raw_data_mut(), target_thread, &mut visited);
             });
         }
     }
@@ -511,9 +511,9 @@ mod tests {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
     }
 
     #[test]

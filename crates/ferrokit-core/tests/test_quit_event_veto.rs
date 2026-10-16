@@ -24,8 +24,8 @@ impl QObject for ConsumeQuit {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, _watched: ObjectId, event: &mut Event) -> bool {
         matches!(event.kind, EventKind::Quit { .. })

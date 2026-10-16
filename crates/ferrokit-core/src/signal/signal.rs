@@ -1120,9 +1120,9 @@ mod tests {
             fn object_data(&self) -> &crate::object::ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut crate::object::ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
         }
         let mut receiver = Receiver {
             data: crate::object::ObjectData::new(ObjectId::next()),

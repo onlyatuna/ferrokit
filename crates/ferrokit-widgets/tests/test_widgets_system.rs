@@ -203,8 +203,8 @@ impl ferrokit_core::object::QObject for HoverButton {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
@@ -462,9 +462,9 @@ fn test_dirty_region_culling_skips_non_intersecting_widgets() {
         fn object_data(&self) -> &ferrokit_core::object::ObjectData {
             &self.base.object_data
         }
-        fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-            &mut self.base.object_data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
+    }
     }
     impl Widget for TestWidget {
         fn widget_base(&self) -> &ferrokit_widgets::widget::WidgetBase {

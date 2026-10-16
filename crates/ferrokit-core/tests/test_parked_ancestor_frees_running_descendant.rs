@@ -29,8 +29,8 @@ impl QObject for Root {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 }
 
@@ -44,8 +44,8 @@ impl QObject for Mid {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
@@ -74,8 +74,8 @@ impl QObject for Leaf {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn as_qobject_any(&self) -> Option<&dyn Any> {
         Some(self)
@@ -150,8 +150,8 @@ impl QObject for SearchingParent {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
@@ -180,8 +180,8 @@ impl QObject for RunningChild {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn as_qobject_any(&self) -> Option<&dyn Any> {
         Some(self)

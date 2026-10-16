@@ -225,9 +225,9 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
                 fn object_data(&self) -> &ObjectData {
                     &self.0
                 }
-                fn object_data_mut(&mut self) -> &mut ObjectData {
-                    &mut self.0
-                }
+                fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.0)
+    }
             }
             let mut stub = NullObj(ObjectData::new(receiver));
             if let Some(task) = task_opt.take() {
@@ -1218,9 +1218,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.call_count += 1;
                 let mut q = self.queue.lock().unwrap();
@@ -1284,9 +1284,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.received = true;
                 let mut q = self.queue.lock().unwrap();
@@ -1336,9 +1336,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::DeferredDelete { .. }) {
                     self.deleted = true;
@@ -1418,9 +1418,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::Quit { .. }) {
                     self.received_quit = true;
@@ -1499,9 +1499,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::User(..)) {
                     self.counter += 1;
@@ -1554,9 +1554,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.call_count += 1;
                 self.handle
@@ -1607,9 +1607,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::UpdateRequest) {
                     self.paint_count += 1;
@@ -1662,9 +1662,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::User(..)) {
                     self.received_event = true;
@@ -1736,9 +1736,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
                 self.trace.lock().unwrap().push(self.label);
                 if let Some(target) = self.remove_target {
@@ -1769,9 +1769,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.trace.lock().unwrap().push("target_event");
                 true
@@ -1858,9 +1858,9 @@ mod tests {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event_filter(&mut self, watched: ObjectId, _event: &mut Event) -> bool {
             self.trace.lock().unwrap().push(self.label);
             let me = self.data.id();
@@ -1889,9 +1889,9 @@ mod tests {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.trace.lock().unwrap().push("target");
             true
@@ -2091,9 +2091,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 true
             }
@@ -2136,9 +2136,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if let EventKind::User(any_data) = &event.kind {
                     let label = *any_data.downcast_ref::<&'static str>().unwrap();
@@ -2214,9 +2214,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if let EventKind::User(any_data) = &event.kind {
                     let label = *any_data.downcast_ref::<&'static str>().unwrap();
@@ -2452,9 +2452,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::DeferredDelete { .. }) {
                     self.deleted.store(true, Ordering::SeqCst);
@@ -2512,9 +2512,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, _event: &mut Event) -> bool {
                 false
             }
@@ -2531,9 +2531,9 @@ mod tests {
             fn object_data(&self) -> &ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn event(&mut self, event: &mut Event) -> bool {
                 match event.kind {
                     EventKind::MouseButtonPress { .. } => {
@@ -2702,9 +2702,9 @@ mod tests {
             &self.data
         }
 
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
     }
 
     fn queued_for_current_thread() -> usize {

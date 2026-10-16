@@ -854,8 +854,8 @@ impl QObject for Timer {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {

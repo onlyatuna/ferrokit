@@ -97,9 +97,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
             self.intercept
         }
@@ -113,9 +113,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.event_called = true;
             true
@@ -213,9 +213,9 @@ fn test_level2_loop_livelock_protection() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.counter.fetch_add(1, Ordering::SeqCst);
             // When receiving an event, post another event inside callback

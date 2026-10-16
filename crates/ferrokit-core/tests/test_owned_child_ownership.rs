@@ -45,8 +45,8 @@ impl QObject for Node {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         match &event.kind {
@@ -81,8 +81,8 @@ impl QObject for Spy {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, watched: ObjectId, event: &mut Event) -> bool {
         match &event.kind {
@@ -134,7 +134,7 @@ fn set_parent_none_on_owned_child_keeps_child_alive() {
     let mut parent = Node::registered();
     let (child_id, child_alive) = adopt(parent.data.id());
 
-    let result = with_object_mut(child_id, |c| set_parent(c.object_data_mut(), None)).unwrap();
+    let result = with_object_mut(child_id, |c| c.object_data_mut().set_parent(None)).unwrap();
 
     assert_eq!(result, Err(ReparentError::OwnedByParent));
     assert!(

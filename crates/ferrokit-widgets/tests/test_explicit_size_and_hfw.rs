@@ -29,8 +29,8 @@ impl QObject for Probe {
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         false

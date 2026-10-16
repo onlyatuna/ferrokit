@@ -31,8 +31,8 @@ impl QObject for ConsumingFilter {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
         true // consume the event
@@ -57,8 +57,8 @@ impl QObject for Receiver {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         self.reached.store(true, Ordering::SeqCst);

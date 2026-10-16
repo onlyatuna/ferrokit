@@ -630,9 +630,9 @@ mod tests {
                 &self.data
             }
 
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn timer_event(&mut self, timer_id: u64) {
                 self.hits.lock().unwrap().push(timer_id);
             }

@@ -34,8 +34,8 @@ impl QObject for Probe {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::ThreadChange) {
@@ -102,8 +102,8 @@ impl QObject for BusyProbe {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {

@@ -36,8 +36,8 @@ impl QObject for EncapsulatedNode {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn as_qobject_any(&self) -> Option<&dyn Any> {
         Some(self)
@@ -67,9 +67,9 @@ fn test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf() {
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed))) };
     let a_id = OwnedObject::object_id(&a);
 
-    // Swap ObjectData with a fresh, un-registered one
+    // Exchanging content with a fresh, un-registered one via ObjectDataMut proxy
     let mut stolen = ObjectData::new(ObjectId::next());
-    std::mem::swap(a.object_data_mut(), &mut stolen);
+    a.object_data_mut().swap_content(&mut ferrokit_core::object::ObjectDataMut::new(&mut stolen));
 
     // Dropping `a` deallocates its heap memory.
     // OwnedObject::drop ensures `a_id` is unregistered and marked dead,
@@ -175,8 +175,8 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
         .map_err(|(e, _)| e)
         .expect("attach child_b");
 
-    // Swap ObjectData between two live registered objects
-    std::mem::swap(a.object_data_mut(), b.object_data_mut());
+    // Exchanging content between two live registered objects via ObjectDataMut proxy
+    a.object_data_mut().swap_content(&mut b.object_data_mut());
 
     // Drop A only
     drop(a);
@@ -185,18 +185,30 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
     assert!(freed_a.load(Ordering::Acquire), "node A must be dropped");
     assert!(!freed_b.load(Ordering::Acquire), "node B must remain alive");
 
-    // Child B was carried by A's ObjectData and thus deleted during A's drop
-    assert!(child_b_freed.load(Ordering::Acquire), "child B was cleaned up with A's ObjectData");
-    // Child A was carried to B's ObjectData and remains alive with B
+    // Child B was carried by A's content and thus deleted during A's drop
+    assert!(child_b_freed.load(Ordering::Acquire), "child B was cleaned up with A's content");
+    // Child A was carried to B's content and remains alive with B
     assert!(!child_a_freed.load(Ordering::Acquire), "child A remains alive with B");
 
-    // Registry invariants: both a_id (by OwnedObject::drop(a)) and b_id
-    // (by ObjectData::drop(a.data)) have been safely unregistered.
-    // Neither can be accessed through registry lookup, preventing any dangling pointer or UAF.
+    // Registry & Identity invariants:
+    // a_id was cleanly unregistered by dropping A.
     assert!(with_object(a_id, |_| ()).is_none(), "a_id must not be accessible in registry");
-    assert!(with_object(b_id, |_| ()).is_none(), "b_id must not be accessible in registry");
+    // b_id REMAINS REGISTERED and accessible: identity does not transfer with ObjectData!
+    assert!(with_object(b_id, |_| ()).is_some(), "b_id must remain valid and registered in registry");
 
-    // Surviving node B can still access its local tree and child without panic or UB
+    // Surviving node B maintains its stable identity, matching outer OwnedObject and liveness:
+    assert_eq!(b.object_data().id(), b_id, "surviving node B must retain its b_id identity");
+    assert_eq!(OwnedObject::object_id(&b), b_id, "outer OwnedObject id must match b_id");
+    assert!(b.object_data().is_alive(), "surviving node B must remain active/alive");
+
+    // Surviving node B can perform subsequent operations:
+    // 1. Mutate properties through ObjectDataMut
+    b.object_data_mut().set_object_name("surviving_b");
+    assert_eq!(b.object_name(), Some("surviving_b"));
+    // 2. Dispatch events through registry
+    let mut ev = Event::new(EventKind::User(Box::new(42u32)));
+    assert!(dispatch_to_object(b_id, &mut ev), "event dispatch to surviving B must succeed");
+    // 3. Inspect adopted child A
     assert_eq!(b.object_data().owned_children().len(), 1);
     assert_eq!(b.object_data().owned_children()[0].object_data().id(), child_a_id);
 
@@ -204,4 +216,58 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
     drop(b);
     assert!(freed_b.load(Ordering::Acquire), "node B must be dropped");
     assert!(child_a_freed.load(Ordering::Acquire), "child A must be dropped with B");
+    assert!(with_object(b_id, |_| ()).is_none(), "b_id must be cleanly unregistered on drop");
+}
+
+#[test]
+fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
+    let freed_root = Arc::new(AtomicBool::new(false));
+    let mut root = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_root))) };
+    let root_id = OwnedObject::object_id(&root);
+
+    let freed_peer = Arc::new(AtomicBool::new(false));
+    let mut peer = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_peer))) };
+    let peer_id = OwnedObject::object_id(&peer);
+
+    // Build 2-level subtree: parent -> grandchild
+    let freed_child = Arc::new(AtomicBool::new(false));
+    let child = Box::new(make_node(Arc::clone(&freed_child)));
+    let child_id = child.data.id();
+
+    let freed_grandchild = Arc::new(AtomicBool::new(false));
+    let grandchild = Box::new(make_node(Arc::clone(&freed_grandchild)));
+    let _grandchild_id = grandchild.data.id();
+
+    unsafe { add_owned_child(root_id, child) }
+        .map_err(|(e, _)| e)
+        .expect("attach child to root");
+
+    unsafe { add_owned_child(child_id, grandchild) }
+        .map_err(|(e, _)| e)
+        .expect("attach grandchild to child");
+
+    // Swap content between root (which has child -> grandchild) and peer (empty)
+    root.object_data_mut().swap_content(&mut peer.object_data_mut());
+
+    // Peer now holds child -> grandchild; root is now empty of children
+    assert_eq!(root.object_data().owned_children().len(), 0);
+    assert_eq!(peer.object_data().owned_children().len(), 1);
+
+    // Drop root: only root is deallocated; peer and its subtree stay alive
+    drop(root);
+    assert!(freed_root.load(Ordering::Acquire), "root dropped");
+    assert!(!freed_peer.load(Ordering::Acquire), "peer alive");
+    assert!(!freed_child.load(Ordering::Acquire), "child alive with peer");
+    assert!(!freed_grandchild.load(Ordering::Acquire), "grandchild alive with peer");
+
+    // Peer is still validly registered under peer_id
+    assert!(with_object(peer_id, |_| ()).is_some());
+    assert_eq!(peer.object_data().id(), peer_id);
+
+    // Dropping peer cleanly cascades deletion through all nested levels
+    drop(peer);
+    assert!(freed_peer.load(Ordering::Acquire), "peer dropped");
+    assert!(freed_child.load(Ordering::Acquire), "child cascadingly dropped");
+    assert!(freed_grandchild.load(Ordering::Acquire), "grandchild cascadingly dropped");
+    assert!(with_object(peer_id, |_| ()).is_none());
 }

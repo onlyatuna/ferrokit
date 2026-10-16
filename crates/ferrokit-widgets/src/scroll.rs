@@ -165,8 +165,8 @@ impl QObject for ScrollBar {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
@@ -603,8 +603,8 @@ impl QObject for ScrollArea {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {

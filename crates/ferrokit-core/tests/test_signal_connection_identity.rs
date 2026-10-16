@@ -38,8 +38,8 @@ impl QObject for Receiver {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

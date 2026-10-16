@@ -489,8 +489,8 @@ impl QObject for Frame {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {

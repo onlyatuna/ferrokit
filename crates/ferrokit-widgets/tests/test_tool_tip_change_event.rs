@@ -24,8 +24,8 @@ impl ferrokit_core::object::QObject for ToolTipProbe {
     fn object_data(&self) -> &ferrokit_core::object::ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, ev: &mut Event) -> bool {
         if matches!(ev.kind, EventKind::ToolTipChange) {

@@ -43,8 +43,8 @@ impl QObject for DynamicMockObject {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn dynamic_property_change(&mut self, property_name: &str) {
         *self.last_changed_property.borrow_mut() = Some(property_name.to_string());
