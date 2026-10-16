@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use ferrokit_core::event::{compress_event, CoreCompressor, Event, EventFilterChain, EventKind};
 use ferrokit_core::event_loop::{EventLoop, PostedEvent};
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext,
 };
 use ferrokit_core::signal::Signal;
 use ferrokit_core::timer::Timer;
@@ -126,14 +127,14 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         intercept: true, // Intercept
     };
     // SAFETY: both objects remain alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut filter_b_obj) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter_b_obj)) };
 
     let mut target = TargetWidget {
         data: ObjectData::new(ObjectId(300)),
         event_called: false,
     };
     // SAFETY: target remains alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut target) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
     target.object_data_mut().install_event_filter(id_b);
 
     let mut ev = Event::new(EventKind::UpdateRequest);
@@ -229,7 +230,7 @@ fn test_level2_loop_livelock_protection() {
         loop_handle: event_loop.handle(),
     };
     // SAFETY: receiver remains alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut receiver) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
     let r_id = receiver.data.id;
 
     event_loop.post_event(r_id, Event::new(EventKind::User(Box::new(()))));

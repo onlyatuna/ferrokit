@@ -10,10 +10,11 @@
 //!   so this behaviour is ferrokit's own requirement.
 
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, SignalBlocker,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, SignalBlocker,
 };
 use ferrokit_core::signal::{sender, Signal};
 use ferrokit_core::variant::Variant;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -86,7 +87,7 @@ fn block_survives_unregister() {
     let id = owner.id;
     // SAFETY: `owner` is a local that is not moved between register and unregister.
     unsafe {
-        register_qobject(&mut owner);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut owner));
         unregister_qobject(id);
     }
     owner.clicked.emit(&());

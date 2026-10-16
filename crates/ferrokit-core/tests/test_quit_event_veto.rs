@@ -3,10 +3,14 @@
 //! and a consumed Quit must not end exec (qcoreapplication.cpp:1285-1290, 2054-2056).
 use parking_lot::Mutex;
 
+use std::ptr::NonNull;
+
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{clear_application_event_filters, install_application_event_filter};
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+};
 use ferrokit_core::timer::Timer;
 
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
@@ -39,7 +43,7 @@ fn posted_quit_consumed_by_application_filter_does_not_end_exec() {
     };
     let filter_id = filter.data.id;
     // SAFETY: the filter stays on this thread and is unregistered before it is dropped.
-    unsafe { register_qobject(&mut filter) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
     Timer::single_shot(10, move || {
         CoreApplication::post_event(app_id, Event::new(EventKind::Quit { exit_code: 0 }));
@@ -64,7 +68,7 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
     };
     let filter_id = filter.data.id;
     // SAFETY: as above.
-    unsafe { register_qobject(&mut filter) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
     // QCoreApplication::quit on the application thread is sendEvent (qcoreapplication.cpp:2153-2155).
     Timer::single_shot(10, || CoreApplication::quit());

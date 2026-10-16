@@ -6,13 +6,14 @@
 //!   If an application or object event filter consumes an event, `filtered = true`
 //!   and `notify_helper` returns `filtered` (`true`).
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{clear_application_event_filters, install_application_event_filter};
 use ferrokit_core::object::{
-    register_qobject, send_event, unregister_qobject, ObjectData, ObjectId, QObject,
+    register_qobject_ptr, send_event, unregister_qobject, ObjectData, ObjectId, QObject,
 };
 struct ConsumingFilter {
     data: ObjectData,
@@ -73,8 +74,8 @@ fn application_filter_consumed_event_returns_true() {
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
     unsafe {
-        register_qobject(&mut filter);
-        register_qobject(&mut receiver);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
     install_application_event_filter(filter.data.id);
 
@@ -105,8 +106,8 @@ fn object_filter_consumed_event_returns_true() {
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
     unsafe {
-        register_qobject(&mut filter);
-        register_qobject(&mut receiver);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
     receiver
         .object_data_mut()

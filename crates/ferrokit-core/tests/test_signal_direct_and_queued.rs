@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_core::signal::{ConnectionType, QueuedSignal, Signal};
+use std::ptr::NonNull;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -173,7 +174,7 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
         data: ObjectData::new(ObjectId::next()),
     };
     let receiver_id = receiver.data.id;
-    unsafe { register_qobject(&mut receiver) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let processed = Arc::new(AtomicBool::new(false));
     let proc_clone = Arc::clone(&processed);
@@ -232,7 +233,7 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
         data: ObjectData::new(ObjectId::next()),
     };
     let receiver_id = receiver.data.id;
-    unsafe { register_qobject(&mut receiver) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let ran = Arc::new(AtomicBool::new(false));
     let ran_clone = Arc::clone(&ran);

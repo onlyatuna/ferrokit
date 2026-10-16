@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+};
 use ferrokit_core::signal::Signal;
 
 struct Receiver {
@@ -32,7 +35,7 @@ fn unique_to_rejects_duplicate_receiver_slot_pair() {
         data: ObjectData::new(id),
     };
     // SAFETY: `rcv` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut rcv) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
     let first = signal.connect_unique_to(&rcv, slot_count);
@@ -90,7 +93,7 @@ fn single_shot_to_receiver_fires_once() {
         data: ObjectData::new(id),
     };
     // SAFETY: `rcv` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut rcv) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
     signal.connect_single_shot_to(&rcv, slot_count);

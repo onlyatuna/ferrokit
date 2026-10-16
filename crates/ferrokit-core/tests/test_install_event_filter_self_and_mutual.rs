@@ -6,13 +6,14 @@
 //!   `QObject::installEventFilter` does not reject self (`obj == this`) or direct cycles.
 //!   It only validates thread affinity, removes existing entry, and prepends to the filter list.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    install_event_filter, register_qobject, send_event, unregister_qobject, ObjectData, ObjectId,
-    QObject,
+    install_event_filter, register_qobject_ptr, send_event, unregister_qobject, ObjectData,
+    ObjectId, QObject,
 };
 
 struct SelfFilterWidget {
@@ -60,7 +61,7 @@ fn install_event_filter_allows_self() {
         false,
     );
     let id = obj.data.id;
-    unsafe { register_qobject(&mut obj) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
 
     let ok = install_event_filter(&mut obj.data, id);
     assert!(
@@ -91,8 +92,8 @@ fn install_event_filter_allows_mutual_cycle() {
     let b_id = obj_b.data.id;
 
     unsafe {
-        register_qobject(&mut obj_a);
-        register_qobject(&mut obj_b);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_a));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_b));
     }
 
     let ok_a = install_event_filter(&mut obj_a.data, b_id);
@@ -119,7 +120,7 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     let mut obj =
         SelfFilterWidget::new(Arc::clone(&filter_called), Arc::clone(&event_called), false);
     let id = obj.data.id;
-    unsafe { register_qobject(&mut obj) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
 
     install_event_filter(&mut obj.data, id);
 

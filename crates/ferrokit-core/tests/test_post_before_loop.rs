@@ -6,6 +6,7 @@
 //! thread runs events. Each test uses a fresh thread (std `ThreadId`s are never reused), so the
 //! "target thread has no loop yet" state is exact.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject, ThreadId};
-use ferrokit_core::object::{register_qobject, unregister_qobject};
+use ferrokit_core::object::{register_qobject_ptr, unregister_qobject};
 use ferrokit_core::signal::{ConnectionType, Signal};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -189,7 +190,7 @@ fn core_application_post_event_before_receiver_thread_has_loop_is_delivered() {
         let id = ObjectId::next();
         let mut rcv = Receiver1 { data: ObjectData::new(id), got: got_w };
         // SAFETY: `rcv` stays on this thread and alive until unregistered below.
-        unsafe { register_qobject(&mut rcv) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
         reg_tx.send(id).unwrap();
         go_rx.recv().unwrap();
         let el = EventLoop::new();
