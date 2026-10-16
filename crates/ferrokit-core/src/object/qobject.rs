@@ -1220,8 +1220,8 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// detach the child and leave it without a parent; here that would leave the child without an
 /// owner, and the return type cannot hand it back together with an error.
 ///
-/// A released child comes back as a `Box`, which is a unique owner: using the child through it
-/// while it stays registered has the limits of [`register_boxed_qobject`]. Use
+/// A released child comes back as a `Box`. A `Box` claims to be the only pointer to its object,
+/// which the registry's pointer contradicts while the child stays registered. Use
 /// [`reparent_owned_object`] to get an [`OwnedObject`], which shares its pointer with the
 /// registry.
 pub fn reparent_owned(

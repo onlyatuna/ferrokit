@@ -164,7 +164,10 @@ fn a_child_released_as_an_owner_stays_registered_and_usable() {
     assert_eq!(OwnedObject::object_id(&released), cid);
     assert_eq!(released.object_data().parent(), None);
     touch(cid);
-    released.event(&mut Event::new(EventKind::UpdateRequest));
+    // Through the concrete type: Miri does not check the uniqueness of `&mut dyn QObject`, since
+    // `dyn QObject` is not `Unpin`, but it does check `&mut Node`.
+    let any: &mut dyn std::any::Any = &mut *released;
+    any.downcast_mut::<Node>().expect("a Node").bump();
     touch(cid);
     drop(a);
     assert!(!gone(cid), "the old parent no longer owns it");

@@ -6,16 +6,19 @@
 //! the code under test.
 //!
 //! They show the limits of the registration functions kept for existing callers
-//! (`register_qobject`, `register_boxed_qobject`, a `Box` released by `reparent_owned`). They are
+//! (`register_qobject`, `register_boxed_qobject`) and of giving an owner up for a `Box`. They are
 //! not run on a normal build, where the undefined behavior would go unnoticed.
+//!
+//! Every control uses a concrete type. Miri does not check the uniqueness of `&mut` or `Box` to a
+//! `!Unpin` type, and `dyn QObject` is not `Unpin`, so the same misuse through a `Box<dyn QObject>`
+//! (what `reparent_owned` returns) goes unreported and cannot serve as a control.
 
 use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, register_boxed_qobject, register_owned_qobject, register_qobject,
-    register_qobject_ptr, reparent_owned, unregister_qobject, with_object_mut, ObjectData,
-    ObjectId, OwnedObject, QObject,
+    register_boxed_qobject, register_owned_qobject, register_qobject, register_qobject_ptr,
+    unregister_qobject, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject,
 };
 
 struct Node {
@@ -29,11 +32,6 @@ impl Node {
             data: ObjectData::new(ObjectId::next()),
             n: 0,
         }
-    }
-
-    fn bump(&mut self) -> u32 {
-        self.n += 1;
-        self.n
     }
 }
 
@@ -50,9 +48,16 @@ impl QObject for Node {
     }
 }
 
+/// A write through the registry.
 fn touch(id: ObjectId) {
     with_object_mut(id, |o| o.event(&mut Event::new(EventKind::UpdateRequest)))
         .expect("registered and not borrowed");
+}
+
+/// A write by the owner, through an explicit `&mut`. A method call such as `node.event(..)` would
+/// make a two-phase borrow, which Stacked Borrows treats more leniently.
+fn use_directly(o: &mut dyn QObject) {
+    o.event(&mut Event::new(EventKind::UpdateRequest));
 }
 
 #[test]
@@ -66,8 +71,9 @@ fn register_qobject_then_use_of_the_box_between_callbacks() {
     // SAFETY: the Box stays in place on this thread until it is unregistered below.
     unsafe { register_qobject(&mut *node) };
     touch(id);
-    node.bump();
+    use_directly(&mut *node);
     touch(id);
+    use_directly(&mut *node);
     // SAFETY: no callback runs.
     unsafe { unregister_qobject(id) };
 }
@@ -81,8 +87,9 @@ fn register_boxed_qobject_then_use_of_the_box_between_callbacks() {
     // SAFETY: the Box stays in place on this thread until it is unregistered below.
     let (id, mut node) = unsafe { register_boxed_qobject(Box::new(Node::new())) };
     touch(id);
-    node.bump();
+    use_directly(&mut *node);
     touch(id);
+    use_directly(&mut *node);
     // SAFETY: no callback runs.
     unsafe { unregister_qobject(id) };
 }
@@ -98,8 +105,10 @@ fn a_pointer_made_from_a_reference_then_use_of_the_variable() {
     let ptr = NonNull::from(&mut node as &mut dyn QObject);
     // SAFETY: `node` stays here until it is unregistered below.
     unsafe { register_qobject_ptr(ptr) };
-    node.bump();
     touch(id);
+    use_directly(&mut node);
+    touch(id);
+    use_directly(&mut node);
     // SAFETY: no callback runs.
     unsafe { unregister_qobject(id) };
 }
@@ -115,25 +124,7 @@ fn an_owner_turned_into_a_box_then_use_of_the_box_between_callbacks() {
     let id = owner.data.id;
     touch(id);
     let mut node = OwnedObject::into_box(owner);
-    node.bump();
+    use_directly(&mut *node);
     touch(id);
-}
-
-#[test]
-#[cfg_attr(
-    not(miri),
-    ignore = "Miri control: expected to be reported as undefined behavior under Miri"
-)]
-fn a_child_released_by_reparent_owned_then_use_of_the_box_between_callbacks() {
-    // SAFETY: as above.
-    let parent = unsafe { register_owned_qobject(Node::new()) };
-    // SAFETY: the parent owns the child until it is released below.
-    let child_id = unsafe { add_owned_child(parent.data.id, Box::new(Node::new())) }
-        .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
-    let mut released = reparent_owned(child_id, None)
-        .unwrap()
-        .expect("ownership comes back to the caller");
-    released.event(&mut Event::new(EventKind::UpdateRequest));
-    touch(child_id);
-    drop(parent);
+    use_directly(&mut *node);
 }
