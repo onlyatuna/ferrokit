@@ -58,8 +58,8 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
     let mut filter = SpyFilter::new(Arc::clone(&seen));
     let filter_id = filter.data.id;
 
-    // Set up before registering: a `&mut` through the variable after that would invalidate the
-    // pointer the registry holds.
+    // Set up before registering, as the module documentation of `ferrokit_core::object` advises
+    // (rule 7): a use of the variable after that can invalidate the pointer the registry holds.
     widget.object_data_mut().install_event_filter(filter_id);
     // SAFETY: both stay on this thread, unmoved, until unregistered below.
     unsafe {

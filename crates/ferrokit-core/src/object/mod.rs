@@ -125,12 +125,15 @@
 //!    id** (`send_event`, `with_object_mut`). The callback overlaps the borrow, and no way of
 //!    registering the object prevents that. [`move_to_thread`] and `Widget::set_tool_tip` do this
 //!    today.
-//! 7. **Writing the variable after registering it by pointer.** A write through the variable, or
-//!    a `&mut` taken from it (a `&mut self` method, `&mut x.data`), invalidates the pointer given
-//!    to `register_qobject_ptr` under Stacked Borrows; the next callback is then undefined
-//!    behavior. Reading the variable is fine. Tree Borrows accepts the write, so a run under Tree
-//!    Borrows alone does not show this. Set the object up before registering it, or keep the
-//!    pointer (`let p = &raw mut x;`) and write through `p`.
+//! 7. **Writing the variable after registering it by pointer.** Under Stacked Borrows, Miri
+//!    rejects the next callback after a field write through the variable (`x.n += 1`), after an
+//!    explicit `&mut` taken from it (`&mut x.data`), and after an assignment that drops the old
+//!    value of a field (`x.on_event = …`): each invalidates the pointer given to
+//!    `register_qobject_ptr`. Reading the variable is accepted, and so was calling a `&mut self`
+//!    method on it in the cases tried, but that rests on how Miri treats that borrow, so do not
+//!    count on it. Tree Borrows accepts all of these, so a run under Tree Borrows alone does not
+//!    show the problem. Set the object up before registering it, or keep the pointer (`let p =
+//!    &raw mut x;`) and write through `p`.
 //!
 //! Miri does not check that a `&mut` or a `Box` to a `!Unpin` type is unique, and `dyn QObject`
 //! is not `Unpin`: a program that breaks rule 1 through a `Box<dyn QObject>` passes Miri. Use a
