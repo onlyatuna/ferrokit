@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::notify_helper;
 use ferrokit_core::object::{
-    add_owned_child, register_owned_qobject, reparent_owned, set_parent, unregister_qobject,
+    add_owned_child, register_owned_qobject, reparent_owned_object, set_parent, unregister_qobject,
     with_object, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
 };
 
@@ -50,8 +50,16 @@ impl QObject for Node {
     }
     fn event(&mut self, event: &mut Event) -> bool {
         match &event.kind {
-            EventKind::ChildAdded { child_id } => self.seen.lock().unwrap().push(format!("added {}", child_id.0)),
-            EventKind::ChildRemoved { child_id } => self.seen.lock().unwrap().push(format!("removed {}", child_id.0)),
+            EventKind::ChildAdded { child_id } => self
+                .seen
+                .lock()
+                .unwrap()
+                .push(format!("added {}", child_id.0)),
+            EventKind::ChildRemoved { child_id } => self
+                .seen
+                .lock()
+                .unwrap()
+                .push(format!("removed {}", child_id.0)),
             _ => {}
         }
         let hook = Arc::clone(&self.hook);
@@ -78,8 +86,16 @@ impl QObject for Spy {
     }
     fn event_filter(&mut self, watched: ObjectId, event: &mut Event) -> bool {
         match &event.kind {
-            EventKind::ChildAdded { child_id } => self.log.lock().unwrap().push(format!("added {} on {}", child_id.0, watched.0)),
-            EventKind::ChildRemoved { child_id } => self.log.lock().unwrap().push(format!("removed {} on {}", child_id.0, watched.0)),
+            EventKind::ChildAdded { child_id } => self
+                .log
+                .lock()
+                .unwrap()
+                .push(format!("added {} on {}", child_id.0, watched.0)),
+            EventKind::ChildRemoved { child_id } => self
+                .log
+                .lock()
+                .unwrap()
+                .push(format!("removed {} on {}", child_id.0, watched.0)),
             _ => {}
         }
         false
@@ -103,7 +119,9 @@ fn finish(node: OwnedObject<Node>) {
 }
 
 /// Reduces the result to its error so tests can compare it (`dyn QObject` has no `Debug`).
-fn refused(r: Result<Option<Box<dyn QObject>>, ReparentError>) -> Result<(), ReparentError> {
+fn refused(
+    r: Result<Option<OwnedObject<dyn QObject>>, ReparentError>,
+) -> Result<(), ReparentError> {
     r.map(|_| ())
 }
 
@@ -119,12 +137,26 @@ fn set_parent_none_on_owned_child_keeps_child_alive() {
     let result = set_parent(parent.data.owned_children[0].object_data_mut(), None);
 
     assert_eq!(result, Err(ReparentError::OwnedByParent));
-    assert!(child_alive.load(Ordering::SeqCst), "set_parent(None) destroyed an owned child");
-    assert_eq!(parent.data.owned_children.len(), 1, "parent must still own the child");
-    assert_eq!(parent.data.children, vec![child_id], "child must still be listed");
+    assert!(
+        child_alive.load(Ordering::SeqCst),
+        "set_parent(None) destroyed an owned child"
+    );
+    assert_eq!(
+        parent.data.owned_children.len(),
+        1,
+        "parent must still own the child"
+    );
+    assert_eq!(
+        parent.data.children,
+        vec![child_id],
+        "child must still be listed"
+    );
 
     finish(parent);
-    assert!(!child_alive.load(Ordering::SeqCst), "dropping the parent destroys its owned child");
+    assert!(
+        !child_alive.load(Ordering::SeqCst),
+        "dropping the parent destroys its owned child"
+    );
 }
 
 #[test]
@@ -132,20 +164,32 @@ fn reparent_owned_to_none_returns_the_box_and_child_survives() {
     let parent = Node::registered();
     let (child_id, child_alive) = adopt(parent.data.id);
 
-    let released = reparent_owned(child_id, None).unwrap().expect("ownership returns to the caller");
+    let released = reparent_owned_object(child_id, None)
+        .unwrap()
+        .expect("ownership returns to the caller");
 
     assert!(child_alive.load(Ordering::SeqCst));
     assert_eq!(released.object_data().parent, None);
     assert!(!released.object_data().is_owned_by_parent());
     assert!(parent.data.children.is_empty());
     assert!(parent.data.owned_children.is_empty());
-    assert_eq!(parent_of(child_id), Some(None), "registry record must be unparented too");
+    assert_eq!(
+        parent_of(child_id),
+        Some(None),
+        "registry record must be unparented too"
+    );
 
     // Parent going away no longer touches the released child.
     finish(parent);
-    assert!(child_alive.load(Ordering::SeqCst), "released child must outlive its former parent");
+    assert!(
+        child_alive.load(Ordering::SeqCst),
+        "released child must outlive its former parent"
+    );
     drop(released);
-    assert!(!child_alive.load(Ordering::SeqCst), "caller owns it and may drop it");
+    assert!(
+        !child_alive.load(Ordering::SeqCst),
+        "caller owns it and may drop it"
+    );
 }
 
 #[test]
@@ -156,7 +200,9 @@ fn reparent_owned_moves_ownership_to_a_new_parent() {
     assert_eq!(a.data.children, vec![child_id]);
     assert!(b.data.children.is_empty());
 
-    assert!(reparent_owned(child_id, Some(b.data.id)).unwrap().is_none());
+    assert!(reparent_owned_object(child_id, Some(b.data.id))
+        .unwrap()
+        .is_none());
 
     assert!(a.data.children.is_empty() && a.data.owned_children.is_empty());
     assert_eq!(b.data.children, vec![child_id]);
@@ -166,7 +212,10 @@ fn reparent_owned_moves_ownership_to_a_new_parent() {
     finish(a);
     assert!(alive.load(Ordering::SeqCst));
     finish(b);
-    assert!(!alive.load(Ordering::SeqCst), "the new parent owns and destroys it");
+    assert!(
+        !alive.load(Ordering::SeqCst),
+        "the new parent owns and destroys it"
+    );
 }
 
 #[test]
@@ -186,7 +235,7 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
     b.data.install_event_filter(spy_id);
     let (child_id, _alive) = adopt(a.data.id);
 
-    reparent_owned(child_id, Some(b.data.id)).unwrap();
+    reparent_owned_object(child_id, Some(b.data.id)).unwrap();
 
     assert_eq!(
         *log.lock().unwrap(),
@@ -199,9 +248,15 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
     );
     assert_eq!(
         *a.seen.lock().unwrap(),
-        vec![format!("added {}", child_id.0), format!("removed {}", child_id.0)]
+        vec![
+            format!("added {}", child_id.0),
+            format!("removed {}", child_id.0)
+        ]
     );
-    assert_eq!(*b.seen.lock().unwrap(), vec![format!("added {}", child_id.0)]);
+    assert_eq!(
+        *b.seen.lock().unwrap(),
+        vec![format!("added {}", child_id.0)]
+    );
 
     finish(a);
     finish(b);
@@ -218,9 +273,18 @@ fn reparent_owned_rejects_self_and_descendant_parents_without_changes() {
     // Give `mid` a child of its own, reachable through the registry.
     let grand_id = attach_grandchild(mid_id);
 
-    assert_eq!(refused(reparent_owned(mid_id, Some(mid_id))), Err(ReparentError::InvalidParent));
-    assert_eq!(refused(reparent_owned(mid_id, Some(grand_id))), Err(ReparentError::InvalidParent));
-    assert_eq!(refused(reparent_owned(mid_id, Some(ObjectId(u64::MAX)))), Err(ReparentError::InvalidParent));
+    assert_eq!(
+        refused(reparent_owned_object(mid_id, Some(mid_id))),
+        Err(ReparentError::InvalidParent)
+    );
+    assert_eq!(
+        refused(reparent_owned_object(mid_id, Some(grand_id))),
+        Err(ReparentError::InvalidParent)
+    );
+    assert_eq!(
+        refused(reparent_owned_object(mid_id, Some(ObjectId(u64::MAX)))),
+        Err(ReparentError::InvalidParent)
+    );
 
     assert_eq!(top.data.owned_children.len(), 1);
     assert_eq!(parent_of(mid_id), Some(Some(top.data.id)));
@@ -244,11 +308,20 @@ fn reparent_owned_rejects_children_that_are_not_owned() {
     // Registered metadata link only: the parent does not hold the Box.
     loose.data.set_parent(Some(parent.data.id)).unwrap();
 
-    assert_eq!(refused(reparent_owned(loose_id, None)), Err(ReparentError::NotOwned));
-    assert_eq!(refused(reparent_owned(ObjectId(u64::MAX), None)), Err(ReparentError::UnknownObject));
+    assert_eq!(
+        refused(reparent_owned_object(loose_id, None)),
+        Err(ReparentError::NotOwned)
+    );
+    assert_eq!(
+        refused(reparent_owned_object(ObjectId(u64::MAX), None)),
+        Err(ReparentError::UnknownObject)
+    );
     let root = Node::registered();
     let root_id = root.data.id;
-    assert_eq!(refused(reparent_owned(root_id, Some(parent.data.id))), Err(ReparentError::NotOwned));
+    assert_eq!(
+        refused(reparent_owned_object(root_id, Some(parent.data.id))),
+        Err(ReparentError::NotOwned)
+    );
 
     // set_parent still works for non-owned children.
     loose.data.set_parent(None).unwrap();
@@ -272,7 +345,10 @@ fn reparent_owned_fails_visibly_when_a_party_is_borrowed_and_changes_nothing() {
         let outcome = Arc::clone(&outcome);
         *b.hook.lock().unwrap() = Some(Box::new(move |ev| {
             if matches!(ev.kind, EventKind::UpdateRequest) {
-                outcome.lock().unwrap().push(reparent_owned(child_id, Some(b_id)).map(|_| ()));
+                outcome
+                    .lock()
+                    .unwrap()
+                    .push(reparent_owned_object(child_id, Some(b_id)).map(|_| ()));
             }
         }));
     }
@@ -285,12 +361,19 @@ fn reparent_owned_fails_visibly_when_a_party_is_borrowed_and_changes_nothing() {
     {
         let outcome2 = Arc::clone(&outcome2);
         ferrokit_core::object::with_object_mut(child_id, |_| {
-            outcome2.lock().unwrap().push(reparent_owned(child_id, None).map(|_| ()));
+            outcome2
+                .lock()
+                .unwrap()
+                .push(reparent_owned_object(child_id, None).map(|_| ()));
         });
     }
     assert_eq!(*outcome2.lock().unwrap(), vec![Err(ReparentError::Busy)]);
 
-    assert_eq!(a.data.owned_children.len(), 1, "failed calls must leave ownership untouched");
+    assert_eq!(
+        a.data.owned_children.len(),
+        1,
+        "failed calls must leave ownership untouched"
+    );
     assert_eq!(a.data.children, vec![child_id]);
     assert!(b.data.children.is_empty());
     assert_eq!(parent_of(child_id), Some(Some(a.data.id)));
@@ -312,7 +395,10 @@ fn add_owned_child_sends_child_added() {
     let attached = unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
     assert_eq!(attached, child_id);
-    assert_eq!(*parent.seen.lock().unwrap(), vec![format!("added {}", child_id.0)]);
+    assert_eq!(
+        *parent.seen.lock().unwrap(),
+        vec![format!("added {}", child_id.0)]
+    );
     finish(parent);
 }
 

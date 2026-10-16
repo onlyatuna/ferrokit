@@ -101,10 +101,24 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
         &this.borrow_state
     }
 
-    /// Gives the object to a `Box`. The object keeps its address and stays registered if it was,
-    /// but a `Box` is a unique owner: using the object through it while it is registered has the
-    /// limits of `register_boxed_qobject` (see rule 4 in the [`crate::object`] module
-    /// documentation).
+    /// Gives the object to a `Box`.
+    ///
+    /// The object keeps its address, but a `Box<T>` claims unique ownership (`Unique` permission
+    /// for `T: Sized + Unpin`). While the object remains registered in the global registry:
+    /// - using or moving the returned `Box<T>` invalidates the registry's pointer, so the next
+    ///   callback is undefined behavior under Stacked Borrows and Tree Borrows; and
+    /// - conversely, if any callback runs through the registry's pointer after `into_box`, that
+    ///   callback's write pops the `Box<T>`'s `Unique` tag, so even dropping the `Box<T>` later
+    ///   (without ever reading or writing `*boxed` directly) is undefined behavior under Stacked
+    ///   Borrows and Tree Borrows.
+    ///
+    /// Keep the object in an [`OwnedObject`] while it is registered, or call
+    /// [`unregister_qobject`](super::unregister_qobject) before converting it with `into_box`.
+    #[deprecated(
+        note = "a `Box<T>` claims unique ownership, so any registry callback after `into_box` \
+                invalidates the `Box` and makes dropping it UB under Stacked Borrows and Tree \
+                Borrows; keep the `OwnedObject` or unregister the object before calling `into_box`"
+    )]
     pub fn into_box(this: Self) -> Box<T> {
         let this = ManuallyDrop::new(this);
         // SAFETY: `this` is in `ManuallyDrop`, so drop its `Arc` field before taking the raw

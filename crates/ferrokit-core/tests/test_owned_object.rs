@@ -13,8 +13,8 @@ use std::rc::Rc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     add_owned_child, dispatch_to_object, register_owned_qobject, register_qobject_ptr,
-    reparent_owned, reparent_owned_object, unregister_qobject, with_object, with_object_mut,
-    ObjectData, ObjectId, OwnedObject, QObject,
+    reparent_owned_object, unregister_qobject, with_object, with_object_mut, ObjectData, ObjectId,
+    OwnedObject, QObject,
 };
 
 // Miri does not check the uniqueness of `&mut` to a `!Unpin` type; the scenarios rely on it
@@ -138,7 +138,7 @@ fn an_owned_child_moved_between_parents_stays_callable() {
     let cid = add(aid);
     touch(cid);
 
-    assert!(reparent_owned(cid, Some(bid)).unwrap().is_none());
+    assert!(reparent_owned_object(cid, Some(bid)).unwrap().is_none());
     touch(cid);
     assert_eq!(count(cid), 2);
     a.bump();

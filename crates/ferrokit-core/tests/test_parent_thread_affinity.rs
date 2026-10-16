@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, register_owned_qobject, reparent_owned, set_parent,
-    ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
+    add_owned_child, move_to_thread_by_id, register_owned_qobject, reparent_owned_object,
+    set_parent, ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -189,7 +189,7 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
         .expect("same thread");
     let remote = Remote::start();
 
-    let result = reparent_owned(child_id, Some(remote.id));
+    let result = reparent_owned_object(child_id, Some(remote.id));
 
     assert_eq!(result.err(), Some(ReparentError::DifferentThread));
     assert_eq!(owner.data.children, vec![child_id]);
@@ -227,11 +227,11 @@ fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
         .expect("same thread");
     let remote = Remote::start();
     assert_eq!(
-        reparent_owned(child_id, Some(remote.id)).err(),
+        reparent_owned_object(child_id, Some(remote.id)).err(),
         Some(ReparentError::DifferentThread)
     );
 
-    let moved = reparent_owned(child_id, Some(other_id));
+    let moved = reparent_owned_object(child_id, Some(other_id));
 
     assert!(
         matches!(moved, Ok(None)),
@@ -326,7 +326,7 @@ fn the_owned_refusal_case_for_the_silence_test() {
         .expect("same thread");
     let remote = Remote::start();
     assert_eq!(
-        reparent_owned(child_id, Some(remote.id)).err(),
+        reparent_owned_object(child_id, Some(remote.id)).err(),
         Some(ReparentError::DifferentThread)
     );
     remote.finish();

@@ -570,11 +570,12 @@ pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) 
 
 /// Registers a boxed object and hands the `Box` back.
 ///
-/// Deprecated, because Rust treats a `Box` as the only pointer to its object. Using or moving
-/// the returned `Box` invalidates the pointer the registry keeps, so a callback after that is
-/// undefined behavior, even if the program appears to work; Miri reports it. The `Box` is the
-/// only way to use the object, so every caller is affected the first time it uses the object
-/// between callbacks, and no wrapper around this function can make that sound.
+/// Deprecated, because Rust treats a `Box` as the only pointer to its object. Returning `(id,
+/// boxed)` moves the `Box<T>`, which under Stacked Borrows (for `T: Sized + Unpin`) already
+/// invalidates the pointer the registry took before the first callback even runs; under both
+/// Stacked Borrows and Tree Borrows, any direct use of the `Box<T>` invalidates the registry's
+/// pointer, and any callback through the registry invalidates the `Box<T>` so that even dropping
+/// it afterwards is undefined behavior. No wrapper around this function can make that sound.
 ///
 /// # Migrating
 /// [`register_owned_qobject`] takes the value instead of a `Box` and returns an [`OwnedObject`],
@@ -1355,13 +1356,20 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// owner, and the return type cannot hand it back together with an error.
 ///
 /// A released child comes back as a `Box`. A `Box` claims to be the only pointer to its object,
-/// which the registry's pointer contradicts while the child stays registered. Use
-/// [`reparent_owned_object`] to get an [`OwnedObject`], which shares its pointer with the
-/// registry.
+/// which the registry's pointer contradicts while the child stays registered: any use of the `Box`
+/// invalidates the registry's pointer, and any callback through the registry invalidates the `Box`
+/// so that dropping it is undefined behavior. Use [`reparent_owned_object`] to get an
+/// [`OwnedObject`], which shares its pointer with the registry.
+#[deprecated(
+    note = "detaching with `new_parent = None` converts the owner to a `Box`, which claims unique \
+            ownership while the child stays registered; use `reparent_owned_object` to keep an \
+            `OwnedObject`"
+)]
 pub fn reparent_owned(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
 ) -> Result<Option<Box<dyn QObject>>, ReparentError> {
+    #[allow(deprecated)]
     reparent_owned_object(child_id, new_parent).map(|released| released.map(OwnedObject::into_box))
 }
 

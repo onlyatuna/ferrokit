@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned, set_parent,
+    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object, set_parent,
     with_object, ObjectData, ObjectId, OwnedObject, QObject,
 };
 
@@ -150,7 +150,7 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
     let (probe_id, reads) = attach_probe(
         parent_id,
         Box::new(move |_| {
-            let moved = reparent_owned(target.get(), Some(other_id));
+            let moved = reparent_owned_object(target.get(), Some(other_id));
             assert!(
                 matches!(moved, Ok(None)),
                 "the sibling moves to the other parent"
@@ -182,7 +182,7 @@ fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_rea
     let (probe_id, reads) = attach_probe(
         parent_id,
         Box::new(move |_| {
-            let kept = reparent_owned(target.get(), Some(parent_id));
+            let kept = reparent_owned_object(target.get(), Some(parent_id));
             assert!(
                 matches!(kept, Ok(None)),
                 "nothing to do: it is owned there already"
