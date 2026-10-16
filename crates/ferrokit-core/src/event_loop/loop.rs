@@ -1782,28 +1782,27 @@ mod tests {
         let trace = Arc::new(Mutex::new(Vec::new()));
 
         let mut app_filter = TraceFilter::new("app_filter", false, None, Arc::clone(&trace));
-        // SAFETY: filters remain on this thread and alive until removed/unregistered.
-        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut app_filter)) };
-        install_application_event_filter(app_filter.data.id);
-
+        let app_filter_id = app_filter.data.id;
         let mut target = TargetWidget::new(Arc::clone(&trace));
-        // SAFETY: target remains on this thread and alive until unregistered.
-        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
-
-        let mut obj_filter = TraceFilter::new(
-            "obj_filter",
-            false,
-            Some(target.data.id),
-            Arc::clone(&trace),
-        );
-        // SAFETY: filter remains on this thread and alive until unregistered.
-        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_filter)) };
-        target
-            .object_data_mut()
-            .install_event_filter(obj_filter.data.id);
+        let target_id = target.data.id;
+        let mut obj_filter =
+            TraceFilter::new("obj_filter", false, Some(target_id), Arc::clone(&trace));
+        let obj_filter_id = obj_filter.data.id;
+        // Set up before registering: the registry holds a pointer made here, and a use of the
+        // variable after that would invalidate it.
+        target.object_data_mut().install_event_filter(obj_filter_id);
+        let app_filter_ptr = &raw mut app_filter;
+        // SAFETY: the three objects stay on this thread, unmoved and alive, until unregistered
+        // below; the variables are not written to after this, only `app_filter_ptr` is.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(app_filter_ptr));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut obj_filter));
+        }
+        install_application_event_filter(app_filter_id);
 
         let mut event1 = Event::new(EventKind::UpdateRequest);
-        let handled = send_event(target.data.id, &mut event1);
+        let handled = send_event(target_id, &mut event1);
         assert!(handled);
         assert_eq!(
             *trace.lock().unwrap(),
@@ -1812,23 +1811,24 @@ mod tests {
 
         trace.lock().unwrap().clear();
         let mut event2 = Event::new(EventKind::UpdateRequest);
-        let handled2 = send_event(target.data.id, &mut event2);
+        let handled2 = send_event(target_id, &mut event2);
         assert!(handled2);
         assert_eq!(*trace.lock().unwrap(), vec!["app_filter", "target_event"]);
 
-        app_filter.intercept = true;
+        // SAFETY: no callback is active, and `app_filter_ptr` is the pointer that was registered.
+        unsafe { (*app_filter_ptr).intercept = true };
         trace.lock().unwrap().clear();
         let mut event3 = Event::new(EventKind::UpdateRequest);
-        let handled3 = send_event(target.data.id, &mut event3);
+        let handled3 = send_event(target_id, &mut event3);
         assert!(handled3);
         assert_eq!(*trace.lock().unwrap(), vec!["app_filter"]);
 
         clear_application_event_filters();
         // SAFETY: the event-loop callback has returned and these registrations are owner-thread.
         unsafe {
-            unregister_qobject(app_filter.data.id);
-            unregister_qobject(obj_filter.data.id);
-            unregister_qobject(target.data.id);
+            unregister_qobject(app_filter_id);
+            unregister_qobject(obj_filter_id);
+            unregister_qobject(target_id);
         }
     }
 
@@ -1909,12 +1909,8 @@ mod tests {
         let target_id = target.data.id;
         let earlier_id = earlier.data.id;
         let later_id = later.data.id;
-        // SAFETY: all three stay on this thread and unmoved until unregistered below.
-        unsafe {
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut later));
-        }
+        // Set up before registering: a write through the variable after that would invalidate
+        // the pointer the registry holds.
         target.object_data_mut().install_event_filter(later_id);
         target.object_data_mut().install_event_filter(earlier_id);
         earlier.on_event = Some(Box::new(move |watched: ObjectId, _: ObjectId| {
@@ -1922,6 +1918,13 @@ mod tests {
                 obj.object_data_mut().remove_event_filter(later_id);
             });
         }));
+        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
+        // variables are not used again.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut later));
+        }
 
         let mut event = Event::new(EventKind::UpdateRequest);
         assert!(send_event(target_id, &mut event));
@@ -1946,7 +1949,13 @@ mod tests {
         let target_id = target.data.id;
         let earlier_id = earlier.data.id;
         let later_id = later.data.id;
-        // SAFETY: all three stay on this thread and unmoved until unregistered below.
+        // Set up before registering: a write through the variable after that would invalidate
+        // the pointer the registry holds.
+        earlier.on_event = Some(Box::new(move |_: ObjectId, _: ObjectId| {
+            remove_application_event_filter(later_id);
+        }));
+        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
+        // variables are not used again.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
@@ -1954,9 +1963,6 @@ mod tests {
         }
         install_application_event_filter(later_id);
         install_application_event_filter(earlier_id);
-        earlier.on_event = Some(Box::new(move |_: ObjectId, _: ObjectId| {
-            remove_application_event_filter(later_id);
-        }));
 
         let mut event = Event::new(EventKind::UpdateRequest);
         assert!(send_event(target_id, &mut event));
@@ -1984,12 +1990,8 @@ mod tests {
         let target_id = target.data.id;
         let first_id = first.data.id;
         let added_id = added.data.id;
-        // SAFETY: all three stay on this thread and unmoved until unregistered below.
-        unsafe {
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
-        }
+        // Set up before registering: a write through the variable after that would invalidate
+        // the pointer the registry holds.
         target.object_data_mut().install_event_filter(first_id);
         let mut installed = false;
         first.on_event = Some(Box::new(move |watched: ObjectId, _: ObjectId| {
@@ -2000,6 +2002,13 @@ mod tests {
                 });
             }
         }));
+        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
+        // variables are not used again.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
+        }
 
         let mut event = Event::new(EventKind::UpdateRequest);
         assert!(send_event(target_id, &mut event));
@@ -2030,13 +2039,8 @@ mod tests {
         let target_id = target.data.id;
         let first_id = first.data.id;
         let added_id = added.data.id;
-        // SAFETY: all three stay on this thread and unmoved until unregistered below.
-        unsafe {
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
-            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
-        }
-        install_application_event_filter(first_id);
+        // Set up before registering: a write through the variable after that would invalidate
+        // the pointer the registry holds.
         let mut installed = false;
         first.on_event = Some(Box::new(move |_: ObjectId, _: ObjectId| {
             if !installed {
@@ -2044,6 +2048,14 @@ mod tests {
                 install_application_event_filter(added_id);
             }
         }));
+        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
+        // variables are not used again.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut added));
+        }
+        install_application_event_filter(first_id);
 
         let mut event = Event::new(EventKind::UpdateRequest);
         assert!(send_event(target_id, &mut event));

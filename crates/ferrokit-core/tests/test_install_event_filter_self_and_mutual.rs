@@ -120,9 +120,13 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     let mut obj =
         SelfFilterWidget::new(Arc::clone(&filter_called), Arc::clone(&event_called), false);
     let id = obj.data.id;
-    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
-
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the pointer the registry holds.
     install_event_filter(&mut obj.data, id);
+    let obj_ptr = &raw mut obj;
+    // SAFETY: `obj` stays on this thread, unmoved and alive, until unregistered below, and only
+    // `obj_ptr` is used to reach it from here on.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
     let mut ev1 = Event::new(EventKind::UpdateRequest);
     let res1 = send_event(id, &mut ev1);
@@ -132,7 +136,8 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     assert_eq!(event_called.load(Ordering::SeqCst), 1);
 
     // 2. Consume mode: filter returns true -> event() is NOT called, send_event returns true
-    obj.consume = true;
+    // SAFETY: no callback is active, and `obj_ptr` is the pointer that was registered.
+    unsafe { (*obj_ptr).consume = true };
     let mut ev2 = Event::new(EventKind::UpdateRequest);
     let res2 = send_event(id, &mut ev2);
 
