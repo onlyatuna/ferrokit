@@ -9,7 +9,9 @@
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+};
 use ferrokit_core::timer::{Timer, TimerType};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -184,9 +186,9 @@ impl QObject for TickObject {
 fn start_timer_fires_timer_event() {
     let mut el = EventLoop::new();
     let ticks = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(TickObject::new(Arc::clone(&ticks)));
-    // SAFETY: `obj` is boxed and not moved until the timer is killed and the object unregistered.
-    unsafe { register_qobject(&mut *obj) };
+    // SAFETY: the owner stays on this thread until the object is unregistered below; nothing
+    // touches the object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
     let id = obj.start_timer(20, TimerType::Precise);
     assert!(id.is_valid());
@@ -205,9 +207,9 @@ fn start_timer_fires_timer_event() {
 fn kill_timer_stops_firing() {
     let mut el = EventLoop::new();
     let ticks = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(TickObject::new(Arc::clone(&ticks)));
-    // SAFETY: `obj` is boxed and not moved until the object is unregistered below.
-    unsafe { register_qobject(&mut *obj) };
+    // SAFETY: the owner stays on this thread until the object is unregistered below; nothing
+    // touches the object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
     let id = obj.start_timer(20, TimerType::Precise);
     assert!(pump_until(&mut el, Duration::from_secs(2), || ticks
@@ -232,9 +234,9 @@ fn kill_timer_stops_firing() {
 fn zero_interval_object_timer_fires_repeatedly() {
     let mut el = EventLoop::new();
     let ticks = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(TickObject::new(Arc::clone(&ticks)));
-    // SAFETY: `obj` is boxed and not moved until the timer is killed and the object unregistered.
-    unsafe { register_qobject(&mut *obj) };
+    // SAFETY: the owner stays on this thread until the object is unregistered below; nothing
+    // touches the object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
     let id = obj.start_timer(0, TimerType::Coarse);
     assert!(
@@ -329,13 +331,10 @@ fn timer_event_passes_event_filter() {
     let mut el = EventLoop::new();
     let ticks = Arc::new(AtomicU32::new(0));
     let seen = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(TickObject::new(Arc::clone(&ticks)));
-    let mut filter = Box::new(FilterSpy::new(Arc::clone(&seen), false));
-    // SAFETY: both boxes are not moved until unregistered below.
-    unsafe {
-        register_qobject(&mut *obj);
-        register_qobject(&mut *filter);
-    }
+    // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
+    // object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
+    let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), false)) };
     let filter_id = filter.object_data().id;
     obj.object_data_mut().install_event_filter(filter_id);
 
@@ -361,9 +360,9 @@ fn timer_event_passes_event_filter() {
 fn timer_event_reaches_event_override() {
     let mut el = EventLoop::new();
     let timers = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(EventSpy::new(Arc::clone(&timers)));
-    // SAFETY: `obj` is boxed and not moved until unregistered below.
-    unsafe { register_qobject(&mut *obj) };
+    // SAFETY: the owner stays on this thread until the object is unregistered below; nothing
+    // touches the object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(EventSpy::new(Arc::clone(&timers))) };
 
     let id = obj.start_timer(20, TimerType::Precise);
     assert!(pump_until(&mut el, Duration::from_secs(2), || timers
@@ -387,13 +386,10 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
     let mut el = EventLoop::new();
     let ticks = Arc::new(AtomicU32::new(0));
     let seen = Arc::new(AtomicU32::new(0));
-    let mut obj = Box::new(TickObject::new(Arc::clone(&ticks)));
-    let mut filter = Box::new(FilterSpy::new(Arc::clone(&seen), true));
-    // SAFETY: both boxes are not moved until unregistered below.
-    unsafe {
-        register_qobject(&mut *obj);
-        register_qobject(&mut *filter);
-    }
+    // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
+    // object while a callback of it runs.
+    let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
+    let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), true)) };
     let filter_id = filter.object_data().id;
     obj.object_data_mut().install_event_filter(filter_id);
 
