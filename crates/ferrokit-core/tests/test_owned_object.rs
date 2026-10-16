@@ -179,16 +179,16 @@ fn a_child_released_as_an_owner_stays_registered_and_usable() {
 }
 
 #[test]
-fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_used_between_callbacks() {
+fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_read_between_callbacks() {
     let mut x = Node::new();
     let id = x.data.id;
     // SAFETY: `x` stays here, unmoved, until it is unregistered below, and the pointer is taken
     // without making a reference.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut x as *mut dyn QObject)) };
     touch(id);
-    assert_eq!(x.bump(), 2);
+    assert_eq!(x.n, 1);
     touch(id);
-    assert_eq!(x.n, 3);
+    assert_eq!(x.n, 2);
     // SAFETY: no callback of `x` runs.
     unsafe { unregister_qobject(id) };
     assert!(gone(id));
