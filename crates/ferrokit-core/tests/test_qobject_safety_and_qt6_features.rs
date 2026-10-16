@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, query_object_thread, register_qobject, sender,
+    add_owned_child, move_to_thread, query_object_thread, register_owned_qobject, sender,
     unregister_qobject, MoveError, ObjectData, ObjectId, QObject, ScopeLevelGuard, ThreadContext,
     ThreadId,
 };
@@ -85,9 +85,9 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
             .unwrap(),
     );
 
-    let mut parent = Box::new(TestWidget::new("worker_root"));
-    // SAFETY: parent remains boxed and unmoved on this registration thread.
-    unsafe { register_qobject(&mut *parent) };
+    // SAFETY: the owner stays on this registration thread; nothing touches the parent while a
+    // callback of it runs.
+    let mut parent = unsafe { register_owned_qobject(TestWidget::new("worker_root")) };
 
     let child = Box::new(TestWidget::new("worker_child"));
     // SAFETY: child remains boxed and owned at a stable address by parent.
@@ -128,9 +128,9 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
 
 #[test]
 fn test_signal_sender_tracking_and_auto_disconnection() {
-    let mut emitter = Box::new(TestWidget::new("emitter"));
-    // SAFETY: emitter remains boxed and unmoved through its signal lifetime.
-    unsafe { register_qobject(&mut *emitter) };
+    // SAFETY: the owner stays on this thread through the signal's lifetime; nothing touches the
+    // emitter while a callback of it runs.
+    let emitter = unsafe { register_owned_qobject(TestWidget::new("emitter")) };
     let emitter_id = emitter.data.id;
 
     let sig: Signal<i32> = Signal::with_owner(&emitter.data);
@@ -154,9 +154,9 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
     // Test automatic disconnection on object drop
     let recv_count = Arc::new(AtomicUsize::new(0));
     {
-        let mut receiver = Box::new(TestWidget::new("receiver"));
-        // SAFETY: receiver remains boxed and unmoved until it is dropped below.
-        unsafe { register_qobject(&mut *receiver) };
+        // SAFETY: the owner stays on this thread until it is dropped below; nothing touches the
+        // receiver while a callback of it runs.
+        let receiver = unsafe { register_owned_qobject(TestWidget::new("receiver")) };
         let r_id = receiver.data.id;
 
         let rc_clone = Arc::clone(&recv_count);
@@ -191,9 +191,9 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
 
 #[test]
 fn test_qobject_start_and_kill_timer() {
-    let mut widget = Box::new(TestWidget::new("timer_widget"));
-    // SAFETY: widget remains boxed and unmoved until after timers are stopped.
-    unsafe { register_qobject(&mut *widget) };
+    // SAFETY: the owner stays on this thread until after the timers are stopped; nothing touches
+    // the widget while a callback of it runs.
+    let mut widget = unsafe { register_owned_qobject(TestWidget::new("timer_widget")) };
 
     // Initialize thread timer context
     let registry = Arc::new(std::sync::Mutex::new(ferrokit_core::timer::TimerRegistry::new()));
@@ -232,10 +232,10 @@ fn test_qobject_start_and_kill_timer() {
 #[test]
 fn test_delete_later_posts_one_deferred_delete_and_debounces() {
     let event_loop = EventLoop::new();
-    let mut widget = Box::new(TestWidget::new("self_post"));
+    // SAFETY: the owner stays on this thread until the unregister below; nothing touches the
+    // widget while a callback of it runs.
+    let widget = unsafe { register_owned_qobject(TestWidget::new("self_post")) };
     let wid = widget.data.id;
-    // SAFETY: widget stays boxed until unregister below.
-    unsafe { register_qobject(&mut *widget) };
 
     ThreadContext::set_current_loop_level(1);
     {
@@ -257,10 +257,10 @@ fn test_delete_later_posts_one_deferred_delete_and_debounces() {
 #[test]
 fn test_delete_later_inside_handler_scope_survives_nested_pump() {
     let event_loop = EventLoop::new();
-    let mut widget = Box::new(TestWidget::new("nested_pump"));
+    // SAFETY: the owner stays on this thread until delivery unregisters the object; nothing
+    // touches the widget while a callback of it runs.
+    let widget = unsafe { register_owned_qobject(TestWidget::new("nested_pump")) };
     let wid = widget.data.id;
-    // SAFETY: widget stays boxed until delivery unregisters it.
-    unsafe { register_qobject(&mut *widget) };
 
     ThreadContext::set_current_loop_level(1);
     let scope = ScopeLevelGuard::enter();
@@ -346,13 +346,10 @@ fn test_qt6_reactive_property_bindings_and_cycle_prevention() {
 
 #[test]
 fn test_event_filter_cross_thread_and_cycle_prevention() {
-    let mut obj_a = Box::new(TestWidget::new("obj_a"));
-    // SAFETY: object remains boxed and unmoved until unregistered.
-    unsafe { register_qobject(&mut *obj_a) };
-
-    let mut obj_b = Box::new(TestWidget::new("obj_b"));
-    // SAFETY: object remains boxed and unmoved until unregistered.
-    unsafe { register_qobject(&mut *obj_b) };
+    // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
+    // object while a callback of it runs.
+    let mut obj_a = unsafe { register_owned_qobject(TestWidget::new("obj_a")) };
+    let mut obj_b = unsafe { register_owned_qobject(TestWidget::new("obj_b")) };
 
     // 1. Qt allows installing self as event filter (qobject.cpp:2407-2423)
     let a_id = obj_a.data.id;

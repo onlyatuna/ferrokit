@@ -5,8 +5,10 @@
 //! - `corelib/kernel/qobject.cpp:1706-1859` `moveToThread`:
 //!   Recursively updates thread data / thread affinity for root and all descendants.
 
+use std::ptr::NonNull;
+
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, register_qobject, unregister_qobject, ObjectData, ObjectId,
+    add_owned_child, move_to_thread, register_qobject_ptr, unregister_qobject, ObjectData, ObjectId,
     QObject, ThreadId,
 };
 #[derive(Debug)]
@@ -38,7 +40,7 @@ fn move_to_thread_three_levels_updates_all_thread_id_fields() {
 
     let mut root = SimpleObject::new();
     let root_id = root.data.id;
-    unsafe { register_qobject(&mut root) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let child = Box::new(SimpleObject::new());
     let child_id = child.data.id;
@@ -114,9 +116,9 @@ fn move_to_thread_three_levels_unowned_children_updates_all_thread_id_fields() {
     let grand_id = grand.data.id;
 
     unsafe {
-        register_qobject(&mut root);
-        register_qobject(&mut child);
-        register_qobject(&mut grand);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut root));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut child));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut grand));
     }
 
     set_parent(&mut child.data, Some(root_id)).expect("set child parent");

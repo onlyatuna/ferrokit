@@ -2,11 +2,12 @@
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, query_object_thread, register_boxed_qobject, register_qobject,
-    unregister_qobject, ObjectData, ObjectId, QObject, QObjectExt, QPointer, SignalBlocker,
-    ThreadId,
+    add_owned_child, move_to_thread, query_object_thread, register_owned_qobject,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    QObjectExt, QPointer, SignalBlocker, ThreadId,
 };
 use ferrokit_core::signal::Signal;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -139,7 +140,7 @@ fn test_ownership_and_deletion_cascade() {
     let mut parent = MockContainer::new("root_parent");
     let parent_id = parent.data.id;
     // SAFETY: parent stays on this thread and alive until the explicit drop.
-    unsafe { register_qobject(&mut parent) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
 
     let child_liveness: Arc<AtomicBool>;
     let grandchild_liveness: Arc<AtomicBool>;
@@ -183,13 +184,13 @@ fn test_child_unlink_notifies_parent() {
     let mut parent = MockContainer::new("parent");
     let parent_id = parent.data.id;
     // SAFETY: parent stays on this thread and alive until unregistered.
-    unsafe { register_qobject(&mut parent) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
 
     {
         let mut child = MockContainer::new("child");
         let child_id = child.data.id;
         // SAFETY: child stays on this thread and alive until unregistered.
-        unsafe { register_qobject(&mut child) };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut child)) };
 
         child.data.set_parent(Some(parent_id)).unwrap();
         assert_eq!(parent.data.children.len(), 1);
@@ -214,7 +215,7 @@ fn test_child_unlink_notifies_parent() {
 fn test_object_hierarchy_search_find_child() {
     let mut root = MockContainer::new("window");
     // SAFETY: root stays on this thread and alive through all hierarchy queries.
-    unsafe { register_qobject(&mut root) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let panel = Box::new(MockContainer::new("panel"));
     let panel_id = panel.data.id;
@@ -271,7 +272,7 @@ fn test_find_child_searches_direct_children_before_descendants() {
     // corelib/kernel/qobject.cpp:2242-2256 qt_qFindChild_helper
     // Qt scans direct children first, and only searches deeper descendants if no direct child matches.
     let mut root = MockContainer::new("root");
-    unsafe { register_qobject(&mut root) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let panel = Box::new(MockContainer::new("panel"));
     let panel_id = panel.data.id;
@@ -361,7 +362,7 @@ fn test_move_to_thread_cascades_children_and_events() {
     let (ran_tx, ran_rx) = channel::<ThreadId>();
     let mut parent = MockContainer::new("worker_root");
     // SAFETY: parent stays on this thread and alive until the worker has unregistered it.
-    unsafe { register_qobject(&mut parent) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut parent)) };
     let parent_id = parent.data.id;
     let child = Box::new(MockContainer::new("worker_child"));
     let child_id = child.data.id;
@@ -422,7 +423,7 @@ fn test_move_to_thread_cascades_children_and_events() {
 fn test_raii_signal_blocker() {
     let mut btn = MockButton::new("my_btn", "Click Me");
     // SAFETY: button stays on this thread and alive until unregistered.
-    unsafe { register_qobject(&mut btn) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut btn)) };
 
     let click_count = Arc::new(AtomicUsize::new(0));
     let counter_clone = click_count.clone();
@@ -482,8 +483,9 @@ fn test_raii_signal_blocker() {
 
 #[test]
 fn test_qpointer_and_generational_liveness() {
-    let widget = Box::new(MockButton::new("guarded_btn", "Submit"));
-    let (id, registered) = unsafe { register_boxed_qobject(widget) };
+    // SAFETY: the owner stays on this thread; no callback of the widget runs in this test.
+    let registered = unsafe { register_owned_qobject(MockButton::new("guarded_btn", "Submit")) };
+    let id = OwnedObject::object_id(&registered);
 
     let qptr: QPointer<MockButton> = QPointer::new(&*registered);
     assert!(!qptr.is_null());
@@ -503,7 +505,7 @@ fn test_qpointer_and_generational_liveness() {
     assert!(!qptr.is_valid());
     assert_eq!(qptr.id(), None);
 
-    // SAFETY: dropping the returned Box ended its callback lifetime.
+    // SAFETY: dropping the owner ended its callback lifetime.
     unsafe { unregister_qobject(id) };
 }
 
@@ -512,12 +514,15 @@ fn test_qpointer_and_generational_liveness() {
 /// liveness token differs, so the same object registered twice must still be `Some` in the registry.
 #[test]
 fn test_double_register_keeps_object_reachable() {
-    let widget = Box::new(MockButton::new("double_reg_btn", "Again"));
-    let (id, mut registered) = unsafe { register_boxed_qobject(widget) };
+    // SAFETY: the owner stays on this thread; no callback of the widget runs in this test.
+    let registered =
+        unsafe { register_owned_qobject(MockButton::new("double_reg_btn", "Again")) };
+    let id = OwnedObject::object_id(&registered);
     let qptr: QPointer<MockButton> = QPointer::new(&*registered);
 
-    // SAFETY: the object stays boxed on this thread and is registered again at the same address.
-    unsafe { register_qobject(&mut *registered) };
+    // SAFETY: the object stays at this address while `registered` lives, and the pointer is the
+    // owner's own, the one the first registration used.
+    unsafe { register_qobject_ptr(OwnedObject::<MockButton>::as_non_null(&registered)) };
 
     assert!(
         qptr.is_valid(),
