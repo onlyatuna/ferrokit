@@ -6,13 +6,14 @@
 //!   `QWidget::update` posts `UpdateRequest` via `QCoreApplication::postEvent`,
 //!   which posts to the receiver's thread (`d->threadData`), never the caller's thread.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget};
 
@@ -58,8 +59,8 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
     let filter_id = filter.data.id;
 
     unsafe {
-        register_qobject(&mut widget);
-        register_qobject(&mut filter);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut widget));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
     }
     widget.object_data_mut().install_event_filter(filter_id);
 

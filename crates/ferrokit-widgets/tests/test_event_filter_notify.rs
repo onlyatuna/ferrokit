@@ -7,7 +7,7 @@
 
 use parking_lot::Mutex;
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::object::{register_boxed_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::paint::Painter;
@@ -55,17 +55,18 @@ impl QObject for Spy {
     }
 }
 
-/// Registers a spy filter. The returned box keeps the filter alive for the test body.
-fn register_spy(consume_paint: bool) -> (ObjectId, Seen, Box<Spy>) {
+/// Registers a spy filter. The returned owner keeps the filter alive for the test body.
+fn register_spy(consume_paint: bool) -> (ObjectId, Seen, OwnedObject<Spy>) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let spy = Box::new(Spy {
+    let spy = Spy {
         data: ObjectData::with_auto_id(),
         seen: Arc::clone(&seen),
         consume_paint,
-    });
-    // SAFETY: test-only; the returned box is kept alive by the caller for the whole test.
-    let (id, pin) = unsafe { register_boxed_qobject(spy) };
-    (id, seen, pin)
+    };
+    // SAFETY: test-only; the caller keeps the owner on this thread for the whole test, and
+    // nothing touches the spy while a callback of it runs.
+    let pin = unsafe { register_owned_qobject(spy) };
+    (OwnedObject::object_id(&pin), seen, pin)
 }
 
 fn saw(seen: &Seen, watched: ObjectId, kind: &str) -> bool {

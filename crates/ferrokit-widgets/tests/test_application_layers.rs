@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use ferrokit_core::application::{ApplicationAttribute, CoreApplication};
 use ferrokit_core::event::{Event, EventFilter, EventKind, FilterResult};
-use ferrokit_core::object::{register_boxed_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
 use ferrokit_gui::application::{ApplicationState, GuiApplication, LayoutDirection};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
@@ -239,16 +239,18 @@ fn test_application_level_event_filters() {
     let app = CoreApplication::new(vec![]);
     let count = Arc::new(AtomicI32::new(0));
 
-    let filter_obj = Box::new(SpyEventFilter::new(Arc::clone(&count)));
-    // SAFETY: test-only; objects outlive their registration scope and no aliases exist.
-    let (filter_id, _pinned) = unsafe { register_boxed_qobject(filter_obj) };
+    // SAFETY: test-only; the owners stay on this thread for the whole test, and nothing touches
+    // either object while a callback of it runs.
+    let filter_owner = unsafe { register_owned_qobject(SpyEventFilter::new(Arc::clone(&count))) };
+    let filter_id = OwnedObject::object_id(&filter_owner);
 
     CoreApplication::install_event_filter(filter_id);
 
     // Create and register a test target object
-    let target = Box::new(SpyEventFilter::new(Arc::new(AtomicI32::new(0))));
-    // SAFETY: test-only; objects outlive their registration scope and no aliases exist.
-    let (target_id, _pinned_target) = unsafe { register_boxed_qobject(target) };
+    // SAFETY: as above.
+    let target_owner =
+        unsafe { register_owned_qobject(SpyEventFilter::new(Arc::new(AtomicI32::new(0)))) };
+    let target_id = OwnedObject::object_id(&target_owner);
 
     let mut ev = Event::new(EventKind::UpdateRequest);
     let handled = CoreApplication::send_event(target_id, &mut ev);

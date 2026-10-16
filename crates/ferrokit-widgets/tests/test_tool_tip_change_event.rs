@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Parity tests for `ToolTipChange` event.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectId};
+use ferrokit_core::object::{register_qobject_ptr, unregister_qobject, ObjectId};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_widgets::widget::Widget;
 
@@ -110,7 +111,7 @@ fn set_tool_tip_delivers_tool_tip_change_event() {
     };
     let id = probe.id();
     unsafe {
-        register_qobject(&mut probe);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut probe));
     }
 
     assert!(!seen.load(Ordering::SeqCst));

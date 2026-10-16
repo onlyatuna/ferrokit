@@ -135,7 +135,7 @@ fn test_top_level_window_rendering() {
 
 #[test]
 fn test_asynchronous_update_request_and_event_loop_compression() {
-    use ferrokit_core::object::register_boxed_qobject;
+    use ferrokit_core::object::register_owned_qobject;
 
     let el = EventLoop::new();
 
@@ -146,8 +146,9 @@ fn test_asynchronous_update_request_and_event_loop_compression() {
     )
     .expect("failed to create top-level window");
 
-    // SAFETY: test-only; boxed_win outlives this scope and no concurrent aliases exist.
-    let (_win_id, boxed_win) = unsafe { register_boxed_qobject(Box::new(win)) };
+    // SAFETY: test-only; the owner outlives this scope on this thread, and nothing touches the
+    // window while a callback of it runs.
+    let boxed_win = unsafe { register_owned_qobject(win) };
 
     let root = boxed_win.root_widget();
     let child1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
