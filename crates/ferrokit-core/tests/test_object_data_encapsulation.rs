@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, with_object,
-    with_object_mut, ObjectData, ObjectId, OwnedObject, QObject,
+    add_owned_child, dispatch_to_object, query_object_children, query_object_parent,
+    register_owned_qobject, with_object, with_object_mut, ObjectData, ObjectId,
+    OwnedObject, QObject,
 };
 
 type Hook = Box<dyn FnOnce(&mut EncapsulatedNode)>;
@@ -161,6 +162,11 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
+    a.object_data_mut().set_object_name("name_a");
+    b.object_data_mut().set_object_name("name_b");
+    a.block_signals(true);
+    b.block_signals(false);
+
     let child_a_freed = Arc::new(AtomicBool::new(false));
     let child_a = Box::new(make_node(Arc::clone(&child_a_freed)));
     let child_a_id = child_a.data.id();
@@ -170,53 +176,111 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
 
     let child_b_freed = Arc::new(AtomicBool::new(false));
     let child_b = Box::new(make_node(Arc::clone(&child_b_freed)));
-    let _child_b_id = child_b.data.id();
+    let child_b_id = child_b.data.id();
     unsafe { add_owned_child(b_id, child_b) }
         .map_err(|(e, _)| e)
         .expect("attach child_b");
 
-    // Exchanging content between two live registered objects via ObjectDataMut proxy
-    a.object_data_mut().swap_content(&mut b.object_data_mut());
+    // Initial parent assertions
+    assert_eq!(query_object_parent(child_a_id), Some(Some(a_id)));
+    assert_eq!(query_object_parent(child_b_id), Some(Some(b_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&child_a_id));
+    assert!(query_object_children(b_id).unwrap().contains(&child_b_id));
 
-    // Drop A only
+    // Phase 1: Pure property swap (swap_properties / swap_content)
+    // Only swaps object_name and dynamic_properties; strictly excludes hierarchy,
+    // ownership, signals_blocked, timers, identity and liveness.
+    a.object_data_mut().swap_content(&mut b.object_data_mut());
+    assert_eq!(a.object_name(), Some("name_b"));
+    assert_eq!(b.object_name(), Some("name_a"));
+    assert!(a.signals_blocked(), "signals_blocked must NOT be swapped by swap_content");
+    assert!(!b.signals_blocked(), "signals_blocked must NOT be swapped by swap_content");
+    assert_eq!(a.object_data().owned_children().len(), 1, "swap_content must NOT swap owned_children");
+    assert_eq!(b.object_data().owned_children().len(), 1, "swap_content must NOT swap owned_children");
+    assert_eq!(query_object_parent(child_a_id), Some(Some(a_id)), "hierarchy must NOT be swapped by swap_content");
+    assert_eq!(query_object_parent(child_b_id), Some(Some(b_id)), "hierarchy must NOT be swapped by swap_content");
+
+    // Phase 2: Transactional hierarchy & ownership transfer
+    a.object_data_mut()
+        .swap_hierarchy_and_ownership(&mut b.object_data_mut())
+        .expect("hierarchy swap must succeed");
+
+    // Verification requirement:
+    // 交換後（child A 轉移至 B）：
+    assert_eq!(
+        b.object_data().owned_children()[0].object_data().parent(),
+        Some(b_id),
+        "child A parent must be Some(b_id) via owned_children after swap"
+    );
+    with_object(child_a_id, |c| {
+        assert_eq!(c.object_data().parent(), Some(b_id), "child A parent must be Some(b_id) via with_object");
+    });
+    // 驗證 Registry 中 B 的 children 清單與 child A 的父物件記錄同步
+    assert_eq!(query_object_parent(child_a_id), Some(Some(b_id)));
+    assert!(query_object_children(b_id).unwrap().contains(&child_a_id));
+
+    // child B 轉移至 A：
+    assert_eq!(
+        a.object_data().owned_children()[0].object_data().parent(),
+        Some(a_id),
+        "child B parent must be Some(a_id) via owned_children after swap"
+    );
+    with_object(child_b_id, |c| {
+        assert_eq!(c.object_data().parent(), Some(a_id), "child B parent must be Some(a_id) via with_object");
+    });
+    assert_eq!(query_object_parent(child_b_id), Some(Some(a_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&child_b_id));
+
+    // signals_blocked must remain undisturbed
+    assert!(a.signals_blocked());
+    assert!(!b.signals_blocked());
+
+    // Phase 3: Drop A only
     drop(a);
 
     // A is deallocated; B remains alive
     assert!(freed_a.load(Ordering::Acquire), "node A must be dropped");
     assert!(!freed_b.load(Ordering::Acquire), "node B must remain alive");
 
-    // Child B was carried by A's content and thus deleted during A's drop
-    assert!(child_b_freed.load(Ordering::Acquire), "child B was cleaned up with A's content");
-    // Child A was carried to B's content and remains alive with B
+    // Child B was carried by A's ownership and thus deleted during A's drop
+    assert!(child_b_freed.load(Ordering::Acquire), "child B was cleaned up with A's drop");
+    // Child A was carried to B's ownership and remains alive with B
     assert!(!child_a_freed.load(Ordering::Acquire), "child A remains alive with B");
 
     // Registry & Identity invariants:
-    // a_id was cleanly unregistered by dropping A.
     assert!(with_object(a_id, |_| ()).is_none(), "a_id must not be accessible in registry");
-    // b_id REMAINS REGISTERED and accessible: identity does not transfer with ObjectData!
     assert!(with_object(b_id, |_| ()).is_some(), "b_id must remain valid and registered in registry");
-
-    // Surviving node B maintains its stable identity, matching outer OwnedObject and liveness:
     assert_eq!(b.object_data().id(), b_id, "surviving node B must retain its b_id identity");
     assert_eq!(OwnedObject::object_id(&b), b_id, "outer OwnedObject id must match b_id");
     assert!(b.object_data().is_alive(), "surviving node B must remain active/alive");
 
-    // Surviving node B can perform subsequent operations:
-    // 1. Mutate properties through ObjectDataMut
+    // Verification requirement:
+    // drop(A) 之後：
+    assert_eq!(
+        b.object_data().owned_children()[0].object_data().parent(),
+        Some(b_id),
+        "child A parent must remain Some(b_id) after drop(A)"
+    );
+    with_object(child_a_id, |c| {
+        assert_eq!(c.object_data().parent(), Some(b_id), "child A parent must remain Some(b_id) in registry after drop(A)");
+    });
+    // 驗證 Registry 中 B 的 children 清單與 child A 的父物件記錄同步
+    assert_eq!(query_object_parent(child_a_id), Some(Some(b_id)));
+    assert!(query_object_children(b_id).unwrap().contains(&child_a_id));
+
+    // Surviving node B operations and signals_blocked state:
+    assert!(!b.signals_blocked(), "surviving B signals_blocked remains false");
     b.object_data_mut().set_object_name("surviving_b");
     assert_eq!(b.object_name(), Some("surviving_b"));
-    // 2. Dispatch events through registry
     let mut ev = Event::new(EventKind::User(Box::new(42u32)));
     assert!(dispatch_to_object(b_id, &mut ev), "event dispatch to surviving B must succeed");
-    // 3. Inspect adopted child A
-    assert_eq!(b.object_data().owned_children().len(), 1);
-    assert_eq!(b.object_data().owned_children()[0].object_data().id(), child_a_id);
 
     // Drop B cleanly
     drop(b);
     assert!(freed_b.load(Ordering::Acquire), "node B must be dropped");
     assert!(child_a_freed.load(Ordering::Acquire), "child A must be dropped with B");
     assert!(with_object(b_id, |_| ()).is_none(), "b_id must be cleanly unregistered on drop");
+    assert!(with_object(child_a_id, |_| ()).is_none(), "child_a_id must be cleanly unregistered on drop");
 }
 
 #[test]
@@ -236,7 +300,7 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
 
     let freed_grandchild = Arc::new(AtomicBool::new(false));
     let grandchild = Box::new(make_node(Arc::clone(&freed_grandchild)));
-    let _grandchild_id = grandchild.data.id();
+    let grandchild_id = grandchild.data.id();
 
     unsafe { add_owned_child(root_id, child) }
         .map_err(|(e, _)| e)
@@ -246,12 +310,17 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
         .map_err(|(e, _)| e)
         .expect("attach grandchild to child");
 
-    // Swap content between root (which has child -> grandchild) and peer (empty)
-    root.object_data_mut().swap_content(&mut peer.object_data_mut());
+    // Transactionally swap hierarchy between root (child -> grandchild) and peer (empty)
+    root.object_data_mut()
+        .swap_hierarchy_and_ownership(&mut peer.object_data_mut())
+        .expect("hierarchy swap must succeed");
 
     // Peer now holds child -> grandchild; root is now empty of children
     assert_eq!(root.object_data().owned_children().len(), 0);
     assert_eq!(peer.object_data().owned_children().len(), 1);
+    assert_eq!(peer.object_data().owned_children()[0].object_data().parent(), Some(peer_id));
+    assert_eq!(query_object_parent(child_id), Some(Some(peer_id)));
+    assert!(query_object_children(peer_id).unwrap().contains(&child_id));
 
     // Drop root: only root is deallocated; peer and its subtree stay alive
     drop(root);
@@ -260,9 +329,12 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
     assert!(!freed_child.load(Ordering::Acquire), "child alive with peer");
     assert!(!freed_grandchild.load(Ordering::Acquire), "grandchild alive with peer");
 
-    // Peer is still validly registered under peer_id
+    // Peer is still validly registered under peer_id with its synchronized subtree
     assert!(with_object(peer_id, |_| ()).is_some());
     assert_eq!(peer.object_data().id(), peer_id);
+    assert_eq!(peer.object_data().owned_children()[0].object_data().parent(), Some(peer_id));
+    assert_eq!(query_object_parent(child_id), Some(Some(peer_id)));
+    assert!(query_object_children(peer_id).unwrap().contains(&child_id));
 
     // Dropping peer cleanly cascades deletion through all nested levels
     drop(peer);
@@ -270,4 +342,6 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
     assert!(freed_child.load(Ordering::Acquire), "child cascadingly dropped");
     assert!(freed_grandchild.load(Ordering::Acquire), "grandchild cascadingly dropped");
     assert!(with_object(peer_id, |_| ()).is_none());
+    assert!(with_object(child_id, |_| ()).is_none());
+    assert!(with_object(grandchild_id, |_| ()).is_none());
 }

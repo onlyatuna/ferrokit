@@ -469,6 +469,24 @@ pub(crate) fn prepare_move_to_thread(
 }
 
 /// Queries the target object's thread affinity across threads.
+/// Queries the parent ObjectId recorded in the global object registry for `id`, or `None` if
+/// `id` is not registered. Returns `Some(None)` if registered but parent is `None`.
+pub fn query_object_parent(id: ObjectId) -> Option<Option<ObjectId>> {
+    let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
+    let record = registry.get(&id)?;
+    let parent = *record.parent.read().unwrap();
+    Some(parent)
+}
+
+/// Queries the list of children recorded in the global object registry for `id`, or `None` if
+/// `id` is not registered.
+pub fn query_object_children(id: ObjectId) -> Option<Vec<ObjectId>> {
+    let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
+    let record = registry.get(&id)?;
+    let children = record.children.read().unwrap().clone();
+    Some(children)
+}
+
 pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
         if let Some(entry) = reg.get(&id) {
@@ -942,13 +960,13 @@ impl ObjectData {
         self.owned_by_parent
     }
 
-    pub fn add_child(&mut self, child_id: ObjectId) {
+    pub(crate) fn add_child(&mut self, child_id: ObjectId) {
         if !self.children.contains(&child_id) {
             self.children.push(child_id);
         }
     }
 
-    pub fn remove_child(&mut self, child_id: ObjectId) {
+    pub(crate) fn remove_child(&mut self, child_id: ObjectId) {
         self.children.retain(|&id| id != child_id);
     }
 
@@ -1088,20 +1106,20 @@ impl ObjectData {
         self.dynamic_properties.keys().cloned().collect()
     }
 
-    /// Swaps the hierarchy and property contents with another ObjectData instance,
-    /// while strictly preserving identity, liveness, borrow_state, and thread affinity.
-    pub fn swap_content(&mut self, other: &mut Self) {
-        std::mem::swap(&mut self.parent, &mut other.parent);
-        std::mem::swap(&mut self.parent_liveness, &mut other.parent_liveness);
-        std::mem::swap(&mut self.children, &mut other.children);
-        std::mem::swap(&mut self.owned_children, &mut other.owned_children);
-        std::mem::swap(&mut self.owned_by_parent, &mut other.owned_by_parent);
-        std::mem::swap(&mut self.event_filters, &mut other.event_filters);
-        std::mem::swap(&mut self.dynamic_properties, &mut other.dynamic_properties);
+    /// Swaps only property and name contents with another ObjectData instance.
+    /// Strictly does NOT swap hierarchy (parent/children), ownership (owned_children/owned_by_parent),
+    /// identity (id), liveness, thread_id, borrow_state, event filters, signals_blocked, timers,
+    /// or delete_later_called.
+    pub fn swap_properties(&mut self, other: &mut Self) {
         std::mem::swap(&mut self.object_name, &mut other.object_name);
-        std::mem::swap(&mut self.timers, &mut other.timers);
-        std::mem::swap(&mut self.signals_blocked, &mut other.signals_blocked);
-        std::mem::swap(&mut self.delete_later_called, &mut other.delete_later_called);
+        std::mem::swap(&mut self.dynamic_properties, &mut other.dynamic_properties);
+    }
+
+    /// Pure property swap alias. Hierarchy and ownership must be transferred via
+    /// transactional operations that update child parent pointers and registry state.
+    #[inline]
+    pub fn swap_content(&mut self, other: &mut Self) {
+        self.swap_properties(other);
     }
 }
 
@@ -1120,11 +1138,102 @@ impl<'a> ObjectDataMut<'a> {
         Self { data }
     }
 
-    /// Swaps hierarchy and property contents with another ObjectDataMut proxy,
-    /// while strictly keeping each object's identity, liveness, and registry state anchored.
+    /// Swaps only property and name contents with another ObjectDataMut proxy.
+    #[inline]
+    pub fn swap_properties(&mut self, other: &mut ObjectDataMut<'_>) {
+        self.data.swap_properties(other.data);
+    }
+
+    /// Pure property swap alias.
     #[inline]
     pub fn swap_content(&mut self, other: &mut ObjectDataMut<'_>) {
         self.data.swap_content(other.data);
+    }
+
+    /// Transactionally swaps children hierarchy and ownership between two objects,
+    /// synchronizing each transferred child's parent ID, parent liveness token, and
+    /// the global object registry.
+    pub fn swap_hierarchy_and_ownership(&mut self, other: &mut ObjectDataMut<'_>) -> Result<(), ReparentError> {
+        let self_id = self.data.id;
+        let other_id = other.data.id;
+        if self_id == other_id {
+            return Ok(());
+        }
+
+        // Thread affinity validation: all children must match the target parent's thread.
+        let self_thread = self.data.thread_id;
+        let other_thread = other.data.thread_id;
+        if self_thread != other_thread {
+            for child in &self.data.owned_children {
+                if child.object_data().thread() != other_thread {
+                    return Err(ReparentError::DifferentThread);
+                }
+            }
+            for &child_id in &self.data.children {
+                if in_different_thread(other_thread, child_id) {
+                    return Err(ReparentError::DifferentThread);
+                }
+            }
+            for child in &other.data.owned_children {
+                if child.object_data().thread() != self_thread {
+                    return Err(ReparentError::DifferentThread);
+                }
+            }
+            for &child_id in &other.data.children {
+                if in_different_thread(self_thread, child_id) {
+                    return Err(ReparentError::DifferentThread);
+                }
+            }
+        }
+
+        // Cycle check: self cannot be descendant of other, nor other of self.
+        if would_create_cycle(self_id, other_id) || would_create_cycle(other_id, self_id) {
+            return Err(ReparentError::InvalidParent);
+        }
+
+        // Swap local children and owned_children vectors.
+        std::mem::swap(&mut self.data.children, &mut other.data.children);
+        std::mem::swap(&mut self.data.owned_children, &mut other.data.owned_children);
+
+        let self_liveness = liveness_of(self_id);
+        let other_liveness = liveness_of(other_id);
+
+        // Update children now under `self`: parent becomes `self_id`.
+        for child in &mut self.data.owned_children {
+            let mut odm = child.object_data_mut();
+            let child_data = odm.raw_data_mut();
+            child_data.parent = Some(self_id);
+            child_data.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
+        }
+        // Update children now under `other`: parent becomes `other_id`.
+        for child in &mut other.data.owned_children {
+            let mut odm = child.object_data_mut();
+            let child_data = odm.raw_data_mut();
+            child_data.parent = Some(other_id);
+            child_data.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
+        }
+
+        // Update global registry: records for all transferred children and both parents.
+        if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
+            for &child_id in &self.data.children {
+                if let Some(record) = registry.get(&child_id) {
+                    *record.parent.write().unwrap() = Some(self_id);
+                }
+            }
+            for &child_id in &other.data.children {
+                if let Some(record) = registry.get(&child_id) {
+                    *record.parent.write().unwrap() = Some(other_id);
+                }
+            }
+            if let Some(self_record) = registry.get(&self_id) {
+                *self_record.children.write().unwrap() = self.data.children.clone();
+            }
+            if let Some(other_record) = registry.get(&other_id) {
+                *other_record.children.write().unwrap() = other.data.children.clone();
+            }
+        }
+
+        Ok(())
     }
 
     #[inline]
@@ -1148,22 +1257,22 @@ impl<'a> ObjectDataMut<'a> {
     }
 
     #[inline]
-    pub fn set_thread_id(&mut self, thread_id: ThreadId) {
+    pub(crate) fn set_thread_id(&mut self, thread_id: ThreadId) {
         self.data.set_thread_id(thread_id);
     }
 
     #[inline]
-    pub fn clear_parent(&mut self) {
+    pub(crate) fn clear_parent(&mut self) {
         self.data.clear_parent();
     }
 
     #[inline]
-    pub fn add_child(&mut self, child: ObjectId) {
+    pub(crate) fn add_child(&mut self, child: ObjectId) {
         self.data.add_child(child);
     }
 
     #[inline]
-    pub fn remove_child(&mut self, child: ObjectId) {
+    pub(crate) fn remove_child(&mut self, child: ObjectId) {
         self.data.remove_child(child);
     }
 
@@ -1173,12 +1282,12 @@ impl<'a> ObjectDataMut<'a> {
     }
 
     #[inline]
-    pub fn add_timer(&mut self, id: crate::timer::TimerId) {
+    pub(crate) fn add_timer(&mut self, id: crate::timer::TimerId) {
         self.data.timers.push(id);
     }
 
     #[inline]
-    pub fn remove_timer(&mut self, id: crate::timer::TimerId) {
+    pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) {
         self.data.timers.retain(|&t| t != id);
     }
 
