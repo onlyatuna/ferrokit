@@ -150,3 +150,58 @@ fn test_running_child_cannot_be_cleared_by_safe_code() {
     drop(parent);
     assert!(child_freed.load(Ordering::Acquire));
 }
+
+#[test]
+fn test_swapping_two_registered_objects_data_and_dropping_one() {
+    let freed_a = Arc::new(AtomicBool::new(false));
+    let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
+    let a_id = OwnedObject::object_id(&a);
+
+    let freed_b = Arc::new(AtomicBool::new(false));
+    let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
+    let b_id = OwnedObject::object_id(&b);
+
+    let child_a_freed = Arc::new(AtomicBool::new(false));
+    let child_a = Box::new(make_node(Arc::clone(&child_a_freed)));
+    let child_a_id = child_a.data.id();
+    unsafe { add_owned_child(a_id, child_a) }
+        .map_err(|(e, _)| e)
+        .expect("attach child_a");
+
+    let child_b_freed = Arc::new(AtomicBool::new(false));
+    let child_b = Box::new(make_node(Arc::clone(&child_b_freed)));
+    let _child_b_id = child_b.data.id();
+    unsafe { add_owned_child(b_id, child_b) }
+        .map_err(|(e, _)| e)
+        .expect("attach child_b");
+
+    // Swap ObjectData between two live registered objects
+    std::mem::swap(a.object_data_mut(), b.object_data_mut());
+
+    // Drop A only
+    drop(a);
+
+    // A is deallocated; B remains alive
+    assert!(freed_a.load(Ordering::Acquire), "node A must be dropped");
+    assert!(!freed_b.load(Ordering::Acquire), "node B must remain alive");
+
+    // Child B was carried by A's ObjectData and thus deleted during A's drop
+    assert!(child_b_freed.load(Ordering::Acquire), "child B was cleaned up with A's ObjectData");
+    // Child A was carried to B's ObjectData and remains alive with B
+    assert!(!child_a_freed.load(Ordering::Acquire), "child A remains alive with B");
+
+    // Registry invariants: both a_id (by OwnedObject::drop(a)) and b_id
+    // (by ObjectData::drop(a.data)) have been safely unregistered.
+    // Neither can be accessed through registry lookup, preventing any dangling pointer or UAF.
+    assert!(with_object(a_id, |_| ()).is_none(), "a_id must not be accessible in registry");
+    assert!(with_object(b_id, |_| ()).is_none(), "b_id must not be accessible in registry");
+
+    // Surviving node B can still access its local tree and child without panic or UB
+    assert_eq!(b.object_data().owned_children().len(), 1);
+    assert_eq!(b.object_data().owned_children()[0].object_data().id(), child_a_id);
+
+    // Drop B cleanly
+    drop(b);
+    assert!(freed_b.load(Ordering::Acquire), "node B must be dropped");
+    assert!(child_a_freed.load(Ordering::Acquire), "child A must be dropped with B");
+}
