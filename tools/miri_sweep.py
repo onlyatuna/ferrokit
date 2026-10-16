@@ -141,8 +141,14 @@ def sweep_target(args, target, names, model, results, excerpts):
                 continue
             key = f"{target}::{name}::{model}"
             if outcome == "FAILED":
-                section = failure_section(text, name) or text
-                kind, sig = classify(section)
+                section = failure_section(text, name)
+                if section:
+                    kind, sig = classify(section)
+                else:
+                    # libtest prints a failed test's output only when the run ends normally. A
+                    # later stop (undefined behavior) in the same run cuts it off, and that stop
+                    # belongs to another test, so it must not be read as this test's cause.
+                    kind, sig = "panic", [("panic", "failed; its output was cut off by a later stop")]
                 results[key] = {"kind": kind, "sig": sig}
                 excerpts[key] = section[:3000]
             else:
