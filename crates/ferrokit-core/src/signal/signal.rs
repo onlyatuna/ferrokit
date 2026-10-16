@@ -80,7 +80,6 @@ impl ConnectionType {
     }
 }
 /// Unique connection identifier: ConnectionId.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u64);
 
@@ -92,6 +91,48 @@ impl ConnectionId {
     }
 }
 
+/// Unique slot identifier for [`SlotKey::Id`], allocated by an atomic counter rather than a
+/// function pointer address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SlotId(pub u64);
+
+impl SlotId {
+    /// Allocates a new process-unique slot identifier.
+    pub fn next() -> Self {
+        static NEXT_SLOT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        SlotId(NEXT_SLOT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// Explicit slot identity key for `UniqueConnection` deduplication
+/// ([`Signal::connect_unique_with_key`]).
+///
+/// Comparing function pointer addresses (`fn(&T) as usize`) is not reliable in Rust: release
+/// builds with identical-code folding (such as MSVC `/OPT:ICF`) can give two distinct functions
+/// the same address, and Miri or multiple codegen units can give one function distinct addresses
+/// across casts. `SlotKey` compares explicit values instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotKey {
+    /// Process-unique numeric slot token (for example from [`SlotId::next`]).
+    Id(SlotId),
+    /// Named slot key compared by string content (`"ClassName::slot_name"`).
+    Named(&'static str),
+    /// Legacy function-pointer address key used only by deprecated [`Signal::connect_unique_to`].
+    #[doc(hidden)]
+    FnAddr(usize),
+}
+
+impl From<SlotId> for SlotKey {
+    fn from(id: SlotId) -> Self {
+        SlotKey::Id(id)
+    }
+}
+
+impl From<&'static str> for SlotKey {
+    fn from(name: &'static str) -> Self {
+        SlotKey::Named(name)
+    }
+}
 /// RAII handle that disconnects the connection when dropped (`QMetaObject::Connection`).
 pub struct ScopedConnection {
     id: ConnectionId,
@@ -231,9 +272,8 @@ struct Subscriber<T> {
     /// Cleared the moment the connection is severed. `emit` re-checks it before every call,
     /// like `doActivate` re-checks `c->receiver` (qobject.cpp:4269).
     connected: Arc<AtomicBool>,
-    /// Qt `UniqueConnection` key: the slot's function-pointer identity; `None` for other connections.
-    slot_key: Option<usize>,
-    /// Qt `SingleShotConnection`: the connection is removed before its slot runs.
+    /// Qt `UniqueConnection` key: explicit [`SlotKey`] identity; `None` for other connections.
+    slot_key: Option<SlotKey>,
     single_shot: bool,
 }
 
@@ -622,10 +662,40 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .expect("a non-unique connection is always established")
     }
 
+    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`) using an explicit [`SlotKey`] instead of a
+    /// function-pointer address: when `receiver` already has `key` connected to this signal,
+    /// nothing is connected and `None` is returned.
+    pub fn connect_unique_with_key<R: QObject + ?Sized, K: Into<SlotKey>, F>(
+        &self,
+        receiver: &R,
+        key: K,
+        slot: F,
+    ) -> Option<ConnectionId>
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        let receiver_id = receiver.object_data().id;
+        let thread = receiver.object_data().thread_id;
+        self.connect_object_impl(
+            receiver_id,
+            thread,
+            ConnectionType::Auto,
+            Some(key.into()),
+            false,
+            slot,
+        )
+    }
+
     /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`): when `receiver` already has this `slot`
     /// connected to this signal, nothing is connected and `None` is returned. Qt only accepts
     /// unique connections with a receiver and a member slot (`qobject.cpp:5510-5513`); a function
     /// pointer plays the member-slot role here.
+    #[deprecated(
+        note = "comparing function pointers by address (`fn(&T) as usize`) can merge distinct \
+                functions under release identical-code folding (such as MSVC `/OPT:ICF`) and can \
+                produce different addresses across casts under Miri; use \
+                `connect_unique_with_key` with an explicit `SlotId` or `SlotKey`"
+    )]
     pub fn connect_unique_to<R: QObject + ?Sized>(
         &self,
         receiver: &R,
@@ -637,12 +707,11 @@ impl<T: Clone + Send + 'static> Signal<T> {
             receiver_id,
             thread,
             ConnectionType::Auto,
-            Some(slot as usize),
+            Some(SlotKey::FnAddr(slot as usize)),
             false,
             slot,
         )
     }
-
     /// Qt `SingleShotConnection` with a receiver: removed before its slot runs, so a re-entrant
     /// emit cannot invoke it twice (`qobject.cpp:4362-4382`).
     pub fn connect_single_shot_to<R: QObject + ?Sized, F>(
@@ -666,7 +735,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         receiver_id: ObjectId,
         receiver_thread: ThreadId,
         conn_type: ConnectionType,
-        unique: Option<usize>,
+        unique: Option<SlotKey>,
         single_shot: bool,
         slot: F,
     ) -> Option<ConnectionId>
