@@ -227,9 +227,23 @@ fn destroy_when_released(child: OwnedObject<dyn QObject>) {
 
 /// Unregisters everything the registry lists below `id`, the deepest first, and touches no memory:
 /// a callback may be running in any of them, and whoever owns an object frees it.
+///
+/// The walk keeps the objects it has met, so lists that name each other in a ring end it, and it
+/// does not recurse, so a deep hierarchy does not use the stack.
 fn unregister_descendants(id: ObjectId) {
-    for child_id in registered_children_of(id) {
-        unregister_descendants(child_id);
+    let mut below = Vec::new();
+    let mut met = std::collections::HashSet::from([id]);
+    let mut pending = vec![id];
+    while let Some(parent_id) = pending.pop() {
+        for child_id in registered_children_of(parent_id) {
+            if met.insert(child_id) {
+                below.push(child_id);
+                pending.push(child_id);
+            }
+        }
+    }
+    // A child comes after its parent in `below`, so the reverse order takes the deepest first.
+    for child_id in below.into_iter().rev() {
         // SAFETY: a running callback keeps its own `Arc` to the record, and the memory is not
         // freed before that callback returns (see `destroy_when_released`).
         unsafe { unregister_qobject(child_id) };
@@ -675,6 +689,16 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
 /// a child that is the object itself or one of its ancestors: the registry never holds a cycle.
 /// A link that cannot be checked, because a lock on the way is poisoned, is not recorded either.
 ///
+/// The children the record lists are the object's own, without those that are registered under
+/// another parent (or none): a listed child that the registry says belongs elsewhere would make
+/// the lists disagree with the links, and lists that name each other in a ring would never end a
+/// walk down them. A child that is not registered yet is listed as the object has it.
+///
+/// When the object is registered again while it is registered (the record being replaced shares
+/// its liveness token), the replaced record is the truth for its parent and children: it has
+/// children that only the registry knows (a child of another registration thread, listed by
+/// `set_parent`), and the object's own copy of its links may be older. They are kept.
+///
 /// With `adopted_by`, the object is also listed among the children of that parent, and a link
 /// that would close a cycle, or cannot be checked, is refused: nothing is inserted and the caller,
 /// who still owns the object, gets the error.
@@ -685,11 +709,22 @@ fn register_record(
 ) -> Result<(), ReparentError> {
     let id = data.id();
     let thread_id = data.thread_id();
-    let mut parent = data.parent();
-    let mut children = data.children.clone();
     {
         let _hierarchy = lock_hierarchy();
         let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let same_object = registry
+            .get(&id)
+            .filter(|previous| Arc::ptr_eq(&previous.liveness, &data.liveness))
+            .cloned();
+        let mut parent = match (&same_object, adopted_by) {
+            (_, Some(parent_id)) => Some(parent_id),
+            (Some(previous), None) => *read_unpoisoned(&previous.parent),
+            (None, None) => data.parent(),
+        };
+        let mut children = match &same_object {
+            Some(previous) => read_unpoisoned(&previous.children).clone(),
+            None => data.children.clone(),
+        };
         let verdict = match parent {
             Some(parent_id) => would_create_cycle_in(&registry, id, parent_id),
             None => Ok(false),
@@ -701,7 +736,13 @@ fn register_record(
             (Ok(true) | Err(_), None) => parent = None,
         }
         let ancestors = ancestors_in(&registry, parent);
-        children.retain(|child_id| *child_id != id && !ancestors.contains(child_id));
+        children.retain(|child_id| {
+            *child_id != id
+                && !ancestors.contains(child_id)
+                && registry
+                    .get(child_id)
+                    .map_or(true, |record| *read_unpoisoned(&record.parent) == Some(id))
+        });
         // The parent's list is taken before anything is inserted, so that a poisoned list refuses
         // the adoption with nothing changed, as every other commit does. The parent is borrowed by
         // the caller, so it is registered. Its registry list is what still reaches the child while
@@ -4795,6 +4836,106 @@ mod tests {
         assert_eq!(returned.0.parent(), None);
         assert!(!returned.0.is_owned_by_parent());
         drop(returned);
+    }
+
+    /// Objects whose own lists name each other (the safe `reparent` builds that without any
+    /// parent link) are registered: a child that is registered under another parent is not listed,
+    /// so the registry's lists do not form a ring, and dropping the parent of such an object from
+    /// inside its own callback ends (`unregister_descendants` walks the lists).
+    #[test]
+    #[allow(deprecated)]
+    // Ignored under Miri without a reason on purpose: the sweep reads `ignored` at the end of the
+    // line. The pointer of the `Box` that is registered first is not used after the `Box` moves.
+    #[cfg_attr(miri, ignore)]
+    fn test_registering_objects_whose_lists_name_each_other_leaves_no_ring_in_the_registry() {
+        // SAFETY: the owner is dropped at the end, on this thread.
+        let q = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let q_id = OwnedObject::object_id(&q);
+        let mut a = Box::new(Plain(ObjectData::new(ObjectId::next())));
+        let mut b = OwnedObject::new(Plain(ObjectData::new(ObjectId::next())));
+        let (a_id, b_id) = (a.0.id(), b.0.id());
+        reparent(&mut b.0, None, Some(&mut a.0)); // b.parent = a, a.children = [b]
+        reparent(&mut b.0, None, None); // b's own link is cleared; a still lists b
+        reparent(&mut a.0, None, Some(&mut b.0)); // a.parent = b, b.children = [a]
+        reparent(&mut a.0, None, None); // a's own link is cleared; b still lists a
+
+        let a_ptr: *mut Plain = &raw mut *a;
+        // SAFETY: the box is kept and not used again before `add_owned_child` takes it over.
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(a_ptr as *mut dyn QObject)) };
+        // SAFETY: the owner is kept and not used again before it is dropped.
+        unsafe { register_qobject_ptr(OwnedObject::as_non_null(&b) as NonNull<dyn QObject>) };
+        assert_eq!(query_object_children(a_id), Some(vec![b_id]));
+        assert_eq!(query_object_children(b_id), Some(Vec::new()), "the lists of a and b make a ring");
+
+        // SAFETY: the box is not used again.
+        unsafe { add_owned_child(q_id, a) }.map_err(|(e, _)| e).unwrap();
+        assert_eq!(
+            query_object_children(a_id),
+            Some(Vec::new()),
+            "b is not a's child: it is registered without a parent"
+        );
+        let mut q = Some(q);
+        let finished = with_object_mut(a_id, |_| drop(q.take()));
+        assert!(finished.is_some());
+        assert_eq!(query_object_parent(a_id), None, "a is gone with its parent");
+        drop(b);
+    }
+
+    /// `unregister_descendants` ends on lists that name each other in a ring, which the registry
+    /// does not build itself but which a poisoned or stale list could hold; it unregisters what is
+    /// below the object and leaves the object.
+    #[test]
+    fn test_unregister_descendants_ends_on_lists_that_name_each_other() {
+        let a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let c = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (a_id, b_id, c_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b), OwnedObject::object_id(&c));
+        for (parent, child) in [(a_id, b_id), (b_id, c_id), (c_id, a_id)] {
+            record(parent).children.write().unwrap().push(child);
+        }
+
+        unregister_descendants(a_id);
+
+        assert_eq!(query_object_parent(b_id), None);
+        assert_eq!(query_object_parent(c_id), None);
+        assert!(query_object_parent(a_id).is_some(), "the object itself stays registered");
+        for record in [record(a_id)] {
+            record.children.write().unwrap().clear();
+        }
+        drop(c);
+        drop(b);
+        drop(a);
+    }
+
+    /// An object that is registered again while it is registered keeps what only the registry
+    /// knows: a child of another registration thread that `set_parent` listed in the registry
+    /// (the parent's own list cannot be edited from there). It is not dropped from the list, and the
+    /// child still loses its parent link when the parent is destroyed.
+    #[test]
+    fn test_registering_an_object_again_keeps_the_children_that_only_the_registry_lists() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let x_id = ObjectId::next();
+        // SAFETY: the object is owned here and dropped at the end, on this thread.
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity))) };
+        let child_id = OwnedObject::object_id(&child);
+        let x = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(x_id, affinity))) },
+            move |x| set_parent(&mut x.0, Some(child_id)),
+        );
+        x.wait_ready();
+        x.start();
+        assert_eq!(x.result.recv().expect("set_parent did not return"), Ok(()));
+        assert_eq!(query_object_children(child_id), Some(vec![x_id]));
+        assert!(child.0.children().is_empty(), "the parent's own list cannot be edited from another thread");
+
+        register_object_metadata(&child.0, OwnedObject::as_non_null(&child).as_ptr() as *mut dyn QObject);
+
+        assert_eq!(query_object_children(child_id), Some(vec![x_id]), "re-registration dropped a listed child");
+        assert_eq!(query_object_parent(x_id), Some(Some(child_id)));
+        drop(child);
+        assert_eq!(query_object_parent(x_id), Some(None), "x kept a dead parent");
+        x.finish();
     }
 
     /// Cleanup of a destroyed object cannot report an error, and skipping a step leaves an id in a
