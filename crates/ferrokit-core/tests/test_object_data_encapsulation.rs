@@ -15,7 +15,7 @@ use std::sync::Arc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     add_owned_child, dispatch_to_object, move_to_thread_by_id, query_object_children,
-    query_object_parent, register_owned_qobject, with_object,
+    query_object_parent, query_object_parents_snapshot, register_owned_qobject, with_object,
     with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
     ThreadId,
 };
@@ -587,7 +587,7 @@ fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
         let inconsistencies = Arc::clone(&inconsistencies);
         move || {
             while !stop.load(Ordering::Acquire) {
-                if let (Some(Some(p1)), Some(Some(p2))) = (query_object_parent(c1_id), query_object_parent(c2_id)) {
+                if let Some((Some(p1), Some(p2))) = query_object_parents_snapshot(c1_id, c2_id) {
                     // Valid states:
                     // State 0: p1 == a_id && p2 == b_id
                     // State 1: p1 == b_id && p2 == a_id
@@ -616,8 +616,7 @@ fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
     // Verify post-swap state
     assert_eq!(c1.object_data().parent(), Some(b_id));
     assert_eq!(c2.object_data().parent(), Some(a_id));
-    assert_eq!(query_object_parent(c1_id), Some(Some(b_id)));
-    assert_eq!(query_object_parent(c2_id), Some(Some(a_id)));
+    assert_eq!(query_object_parents_snapshot(c1_id, c2_id), Some((Some(b_id), Some(a_id))));
 
     drop(c1);
     drop(c2);

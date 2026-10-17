@@ -511,6 +511,29 @@ pub fn query_object_children(id: ObjectId) -> Option<Vec<ObjectId>> {
     Some(children)
 }
 
+/// Queries the parent ObjectIds of two objects simultaneously in a consistent snapshot,
+/// acquiring their parent read locks in a fixed order (ascending ObjectId).
+/// Returns `None` if either object is not registered or a lock is poisoned.
+pub fn query_object_parents_snapshot(id1: ObjectId, id2: ObjectId) -> Option<(Option<ObjectId>, Option<ObjectId>)> {
+    if id1 == id2 {
+        let p = query_object_parent(id1)?;
+        return Some((p, p));
+    }
+    let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
+    let r1 = registry.get(&id1)?;
+    let r2 = registry.get(&id2)?;
+    let (p1, p2) = if id1 < id2 {
+        let g1 = r1.parent.read().ok()?;
+        let g2 = r2.parent.read().ok()?;
+        (*g1, *g2)
+    } else {
+        let g2 = r2.parent.read().ok()?;
+        let g1 = r1.parent.read().ok()?;
+        (*g1, *g2)
+    };
+    Some((p1, p2))
+}
+
 pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
         if let Some(entry) = reg.get(&id) {
@@ -1197,16 +1220,16 @@ impl<'a> ObjectDataMut<'a> {
 
         // 1. Cycle check: neither object can be a descendant of the other,
         // and no child being transferred can create a cycle with its target parent.
-        if would_create_cycle(self_id, other_id) || would_create_cycle(other_id, self_id) {
+        if would_create_cycle(self_id, other_id)? || would_create_cycle(other_id, self_id)? {
             return Err(ReparentError::InvalidParent);
         }
         for &child_id in &self.data.children {
-            if would_create_cycle(child_id, other_id) {
+            if would_create_cycle(child_id, other_id)? {
                 return Err(ReparentError::InvalidParent);
             }
         }
         for &child_id in &other.data.children {
-            if would_create_cycle(child_id, self_id) {
+            if would_create_cycle(child_id, self_id)? {
                 return Err(ReparentError::InvalidParent);
             }
         }
@@ -1361,8 +1384,8 @@ impl<'a> ObjectDataMut<'a> {
             child_parent_guards.push(parent_lock);
         }
 
-        let self_liveness = liveness_of(self_id);
-        let other_liveness = liveness_of(other_id);
+        let self_liveness = Arc::clone(&self_record.liveness);
+        let other_liveness = Arc::clone(&other_record.liveness);
 
         // 5. Infallible Atomic Commit:
         // All checks succeeded, all borrow guards and write locks are held.
@@ -1377,11 +1400,11 @@ impl<'a> ObjectDataMut<'a> {
                     match t.target {
                         TransferTarget::ToOther => {
                             raw.parent = Some(other_id);
-                            raw.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
+                            raw.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
                         }
                         TransferTarget::ToSelf => {
                             raw.parent = Some(self_id);
-                            raw.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
+                            raw.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
                         }
                     }
                 }
@@ -1393,13 +1416,13 @@ impl<'a> ObjectDataMut<'a> {
             let mut odm = child.object_data_mut();
             let child_data = odm.raw_data_mut();
             child_data.parent = Some(other_id);
-            child_data.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
+            child_data.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
         }
         for child in &mut other.data.owned_children {
             let mut odm = child.object_data_mut();
             let child_data = odm.raw_data_mut();
             child_data.parent = Some(self_id);
-            child_data.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
+            child_data.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
         }
 
         // Step C: Update Registry `record.parent` for all children under the held write locks.
@@ -1692,20 +1715,20 @@ fn liveness_of(id: ObjectId) -> Option<Arc<AtomicBool>> {
 
 /// Whether making `new_parent` the parent of `child_id` would make an object its own ancestor:
 /// `new_parent` is the child itself or one of its descendants, as the registry records them.
-fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> bool {
-    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
-        return false;
-    };
+fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> Result<bool, ReparentError> {
+    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
     let mut cursor = Some(new_parent);
     // The bound ends the walk if the registry already holds a cycle.
     for _ in 0..=registry.len() {
         let Some(id) = cursor else { break };
         if id == child_id {
-            return true;
+            return Ok(true);
         }
-        cursor = registry.get(&id).and_then(|r| *r.parent.read().unwrap());
+        let Some(record) = registry.get(&id) else { break };
+        let parent_guard = record.parent.read().map_err(|_| ReparentError::Busy)?;
+        cursor = *parent_guard;
     }
-    false
+    Ok(false)
 }
 
 /// Sets a non-owned child's parent and updates registered relationship metadata, sending
@@ -1762,7 +1785,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     }
     let child_id = child.id;
     if let Some(np) = new_parent {
-        if would_create_cycle(child_id, np) {
+        if would_create_cycle(child_id, np)? {
             return Err(ReparentError::InvalidParent);
         }
     }
@@ -1861,7 +1884,7 @@ pub fn reparent_owned_object(
             return Err(ReparentError::DifferentThread);
         }
         registered_ptr(np).ok_or(ReparentError::InvalidParent)?;
-        if would_create_cycle(child_id, np) {
+        if would_create_cycle(child_id, np)? {
             return Err(ReparentError::InvalidParent);
         }
     }
@@ -2975,6 +2998,62 @@ mod tests {
         unsafe {
             unregister_qobject(a_id);
             unregister_qobject(b_id);
+        }
+    }
+
+    #[test]
+    fn test_swap_hierarchy_handles_poisoned_ancestor_parent_lock() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut ancestor = Node(ObjectData::new(ObjectId::next()));
+        let mut a = Node(ObjectData::new(ObjectId::next()));
+        let mut b = Node(ObjectData::new(ObjectId::next()));
+
+        let ancestor_id = ancestor.0.id();
+        let a_id = a.0.id();
+        let b_id = b.0.id();
+
+        let ptr_ancestor = &raw mut ancestor as *mut dyn QObject;
+        register_object_metadata(&ancestor.0, ptr_ancestor);
+        let ptr_a = &raw mut a as *mut dyn QObject;
+        register_object_metadata(&a.0, ptr_a);
+        let ptr_b = &raw mut b as *mut dyn QObject;
+        register_object_metadata(&b.0, ptr_b);
+
+        // Make ancestor the parent of a in the registry
+        let record_a = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&a_id).unwrap().clone();
+        *record_a.parent.write().unwrap() = Some(ancestor_id);
+        a.0.parent = Some(ancestor_id);
+
+        let record_ancestor = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&ancestor_id).unwrap().clone();
+        record_ancestor.children.write().unwrap().push(a_id);
+        ancestor.0.children.push(a_id);
+
+        // Poison ancestor's parent lock on a background thread
+        let handle = std::thread::spawn({
+            let record_ancestor = Arc::clone(&record_ancestor);
+            move || {
+                let _lock = record_ancestor.parent.write().unwrap();
+                panic!("intentional ancestor parent lock poison");
+            }
+        });
+        let _ = handle.join();
+        assert!(record_ancestor.parent.is_poisoned());
+
+        // Attempt swap between a and b:
+        // would_create_cycle(b_id, a_id) will inspect a's parent chain, encountering ancestor's poisoned parent lock.
+        // It must return Err(ReparentError::Busy) without panicking!
+        let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+        assert_eq!(res, Err(ReparentError::Busy));
+
+        unsafe {
+            unregister_qobject(a_id);
+            unregister_qobject(b_id);
+            unregister_qobject(ancestor_id);
         }
     }
 
