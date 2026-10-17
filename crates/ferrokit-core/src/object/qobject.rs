@@ -1364,6 +1364,13 @@ impl<'a> ObjectDataMut<'a> {
             return Ok(());
         }
 
+        // A parent that lists the other object, or is listed by it, cannot be swapped: the other
+        // one would end up its own child. It is answered here, also because the data handles taken
+        // below must not reach the object of the other argument, which the caller borrows.
+        if self.data.children.contains(&other_id) || other.data.children.contains(&self_id) {
+            return Err(ReparentError::InvalidParent);
+        }
+
         // 1. Thread affinity validation: all children must match destination parent's thread.
         let self_thread = self.data.thread_id;
         let other_thread = other.data.thread_id;
@@ -3688,11 +3695,14 @@ mod tests {
         assert!(record_p2.children.is_poisoned());
 
         // Attempt reparent_owned_object to p2 - must fail with Busy, p1 must still own child
-        let snapshot = || states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
-        let before = snapshot();
+        let before = states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
         let res = reparent_owned_object(child_id, Some(p2_id));
         assert!(matches!(res, Err(ReparentError::Busy)));
-        assert_eq!(snapshot(), before, "a refused reparent changed something");
+        assert_eq!(
+            states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]),
+            before,
+            "a refused reparent changed something"
+        );
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
         assert!(p1.0.owned_children.iter().any(|c| OwnedObject::object_id(c) == child_id));
 
@@ -3726,11 +3736,14 @@ mod tests {
         let child_guard = borrow_registered(child_id).unwrap();
 
         // Attempt reparent - must reject with Busy
-        let snapshot = || states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
-        let before = snapshot();
+        let before = states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
         let res = reparent_owned_object(child_id, Some(p2_id));
         assert!(matches!(res, Err(ReparentError::Busy)));
-        assert_eq!(snapshot(), before, "a refused reparent changed something");
+        assert_eq!(
+            states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]),
+            before,
+            "a refused reparent changed something"
+        );
         drop(child_guard);
 
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
