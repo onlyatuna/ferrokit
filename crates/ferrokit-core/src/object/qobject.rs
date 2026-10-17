@@ -1292,12 +1292,12 @@ impl ObjectData {
             }
         }
         for child_id in std::mem::take(&mut self.children) {
-            release_child(child_id);
+            release_child(child_id, self.id);
         }
         // The registry's list is complete at once, while this object's own list lags until a
         // running callback of this object returns. Whatever is still registered here goes too.
         for child_id in registered_children_of(self.id) {
-            release_child(child_id);
+            release_child(child_id, self.id);
         }
         drop(idle);
     }
@@ -1921,18 +1921,36 @@ pub enum ReparentError {
 }
 
 /// Lets go of a child that its parent does not own: it survives the parent, loses its
-/// parent link, and is unregistered.
-fn release_child(child_id: ObjectId) {
+/// parent link, and is unregistered. A listed object whose own link names another parent, or none,
+/// is not a child of `parent_id` (the safe `reparent` edits the objects' own links and lists
+/// separately, so a list can name an object that was never linked to this parent) and is left
+/// alone.
+fn release_child(child_id: ObjectId, parent_id: ObjectId) {
     // The link is cleared before the unregister below, after which the child can no longer be
     // reached. A child that cannot be borrowed here (a running callback holds it, or it was never
-    // registered) is not written to; its `parent()` sees the parent's liveness token instead.
-    let _ = with_object_mut(child_id, |child| child.object_data_mut().clear_parent());
+    // registered) is not written to; its `parent()` sees the parent's liveness token instead, and
+    // it is let go.
+    let belongs_elsewhere = with_object_mut(child_id, |child| {
+        let mut data = child.object_data_mut();
+        if data.raw_data_mut().parent == Some(parent_id) {
+            data.clear_parent();
+            false
+        } else {
+            true
+        }
+    });
+    if belongs_elsewhere == Some(true) {
+        return;
+    }
     // SAFETY: the child may be borrowed by a running callback. It is not written to or freed here:
     // whoever owns it frees it, and the callback's guard keeps its own `Arc` to the record.
     unsafe { unregister_qobject(child_id) };
 }
 
-/// The children the registry lists for `id` that are still registered.
+/// The children the registry lists for `id` that are still registered and that the registry says
+/// are `id`'s: a listed child whose own record names another parent (or none) is a stale entry
+/// (the safe `reparent` edits the objects' own links only, so lists can name objects that were
+/// never linked in the registry) and is not a child to destroy or move.
 fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
     // Reached from the cleanup of a destroyed object, which cannot report a failure and must not
     // skip its children: a poisoned lock is read as it is (see `read_unpoisoned`).
@@ -1944,7 +1962,11 @@ fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
     children
         .iter()
         .copied()
-        .filter(|child_id| registry.contains_key(child_id))
+        .filter(|child_id| {
+            registry
+                .get(child_id)
+                .is_some_and(|child| *read_unpoisoned(&child.parent) == Some(id))
+        })
         .collect()
 }
 
@@ -2275,15 +2297,17 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// detach the child and leave it without a parent; here that would leave the child without an
 /// owner, and the return type cannot hand it back together with an error.
 ///
-/// The errors, in the order they are met: `UnknownObject` when the child is not registered on the
-/// calling thread; `InvalidParent` when the new parent is the child itself; `NotOwned` when the
-/// child has no parent, its parent does not own it, or that parent is registered on another
-/// thread; `DifferentThread`; `InvalidParent` when the new parent is not registered on the calling
-/// thread; `Busy` when the child or a parent is borrowed by a running callback, or a lock is
-/// poisoned; and last `InvalidParent` when the new parent is a descendant of the child. That last
-/// check is made once the borrows are held, so a descendant that is borrowed answers `Busy`.
-/// Moving the child to the parent that already owns it changes nothing and returns `Ok(None)`, as
-/// a real move does.
+/// The errors: `UnknownObject` when the child is not registered on the calling thread;
+/// `InvalidParent` when the new parent is the child itself (answered before anything is
+/// borrowed, also from inside the child's own callback), is not registered on the calling thread,
+/// or is a descendant of the child; `NotOwned` when the child has no parent, its parent does not
+/// own it, or that parent is not registered on the calling thread; `DifferentThread`; and `Busy`
+/// when the child or a parent is borrowed by a running callback, or a lock is poisoned. A
+/// parentless child, or a new parent, that is borrowed is `Busy` before the checks that need the
+/// borrows: the descendant check is made last, once the borrows are held, so a descendant that is
+/// borrowed answers `Busy`. Which of several applicable errors is returned is not otherwise
+/// specified. Moving the child to the parent that already owns it changes nothing and returns
+/// `Ok(None)`, as a real move does.
 ///
 /// A released child comes back as an [`OwnedObject`], which shares its pointer with the
 /// registry, so the caller may use the child between its callbacks while it stays registered. It
@@ -2488,7 +2512,8 @@ pub fn reparent_owned_object(
 /// dropping that parent would unregister the child the new parent owns), or the parent is the
 /// child itself or one of its descendants (a child that is registered already can have
 /// descendants), returns `InvalidParent`; if the parent is borrowed (for example from inside its
-/// own callback), returns `Busy`. In every case the `Box` is
+/// own callback), returns `Busy`, which is also what a borrowed descendant answers. In every case
+/// the `Box` is
 /// handed back and nothing is attached: the child gets no parent, the parent's children stay as
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
 /// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
@@ -4907,17 +4932,18 @@ mod tests {
         drop(b);
     }
 
-    /// `unregister_descendants` ends on lists that name each other in a ring, which the registry
-    /// does not build itself but which a poisoned or stale list could hold; it unregisters what is
-    /// below the object and leaves the object.
+    /// `unregister_descendants` ends on a ring in the registry's lists and links, which the registry
+    /// does not build itself but which a stale or poisoned record could hold; it unregisters what
+    /// is below the object and leaves the object.
     #[test]
-    fn test_unregister_descendants_ends_on_lists_that_name_each_other() {
+    fn test_unregister_descendants_ends_on_a_ring() {
         let a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let c = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (a_id, b_id, c_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b), OwnedObject::object_id(&c));
         for (parent, child) in [(a_id, b_id), (b_id, c_id), (c_id, a_id)] {
             record(parent).children.write().unwrap().push(child);
+            *record(child).parent.write().unwrap() = Some(parent);
         }
 
         unregister_descendants(a_id);
@@ -4925,12 +4951,35 @@ mod tests {
         assert_eq!(query_object_parent(b_id), None);
         assert_eq!(query_object_parent(c_id), None);
         assert!(query_object_parent(a_id).is_some(), "the object itself stays registered");
-        for record in [record(a_id)] {
-            record.children.write().unwrap().clear();
-        }
+        record(a_id).children.write().unwrap().clear();
+        *record(a_id).parent.write().unwrap() = None;
         drop(c);
         drop(b);
         drop(a);
+    }
+
+    /// A list that names an object whose own record names no parent (the safe `reparent` edits the
+    /// objects' own links only, so such an entry can be registered) does not make that object a
+    /// child: dropping the listing object leaves it registered.
+    #[test]
+    fn test_dropping_an_object_does_not_destroy_a_listed_object_that_is_not_its_child() {
+        let mut a = OwnedObject::new(Plain(ObjectData::new(ObjectId::next())));
+        let mut b = OwnedObject::new(Plain(ObjectData::new(ObjectId::next())));
+        let b_id = OwnedObject::object_id(&b);
+        reparent(&mut b.0, None, Some(&mut a.0)); // b.parent = a, a.children = [b]
+        reparent(&mut b.0, None, None); // b's own link is cleared; a still lists b
+        // SAFETY: the owners are kept until they are dropped below, on this thread.
+        unsafe {
+            register_qobject_ptr(OwnedObject::as_non_null(&a) as NonNull<dyn QObject>);
+            register_qobject_ptr(OwnedObject::as_non_null(&b) as NonNull<dyn QObject>);
+        }
+        assert_eq!(query_object_parent(b_id), Some(None));
+
+        drop(a);
+
+        assert_eq!(query_object_parent(b_id), Some(None), "b was destroyed with an object that does not own it");
+        assert!(with_object(b_id, |_| ()).is_some());
+        drop(b);
     }
 
     /// An object that is registered again while it is registered keeps what only the registry
