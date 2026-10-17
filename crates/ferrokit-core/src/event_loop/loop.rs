@@ -606,7 +606,10 @@ impl EventLoop {
     }
 
     pub fn set_compressor(&mut self, compressor: Arc<dyn EventCompressor>) {
-        lock_unpoisoned(&self.state.queue).compressor = compressor;
+        // The compressor that is replaced is dropped after the queue lock is released: its `Drop`
+        // may post events, which takes that lock.
+        let replaced = std::mem::replace(&mut lock_unpoisoned(&self.state.queue).compressor, compressor);
+        drop(replaced);
     }
 
     pub fn install_native_event_filter(&self, filter: Box<dyn crate::event::NativeEventFilter>) {
@@ -1070,21 +1073,33 @@ impl ThreadEventRegistry {
 /// posted to that thread before the loop existed. The drain happens under the registry
 /// lock so a concurrent poster cannot overtake the buffered events.
 pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) {
-    let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
-    let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
-    if let Some(buffered) = reg.pending.remove(&thread_id) {
-        for posted in buffered.events {
-            handle.post_event_with_priority(posted.receiver, posted.event, posted.priority);
+    // What is left over (a replayed event that was merged, the handle this one replaces) is kept
+    // in values declared before the lock, so that it is dropped after the lock is released: a
+    // `Drop` that posts an event or unregisters an object takes that lock.
+    let mut merged = Vec::new();
+    let mut replaced = None;
+    {
+        let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
+        let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        if let Some(buffered) = reg.pending.remove(&thread_id) {
+            for posted in buffered.events {
+                let mut event = Some(posted.event);
+                handle.post_from_slot(posted.receiver, &mut event, posted.priority);
+                merged.push(event);
+            }
         }
+        replaced = reg.handles.insert(thread_id, handle).or(replaced);
     }
-    reg.handles.insert(thread_id, handle);
+    drop(merged);
+    drop(replaced);
 }
 
 pub fn unregister_thread_event_loop(thread_id: ThreadId) {
-    let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
-    if let Some(reg) = reg.as_mut() {
-        reg.handles.remove(&thread_id);
-    }
+    let removed = {
+        let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
+        reg.as_mut().and_then(|reg| reg.handles.remove(&thread_id))
+    };
+    drop(removed);
 }
 
 /// Posts `event` to the thread's event queue. If the thread has no event loop yet the event is

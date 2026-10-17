@@ -87,3 +87,37 @@ fn a_merged_event_is_dropped_after_the_queue_lock_of_the_loop_is_released() {
         drop(el);
     });
 }
+
+/// A compressor whose `Drop` posts an event.
+struct PostsWhenDropped {
+    thread: ThreadId,
+    drops: Arc<AtomicUsize>,
+}
+
+impl EventCompressor for PostsWhenDropped {
+    fn try_compress(&self, _existing: &mut Event, _incoming: &Event, _receiver: ObjectId) -> bool {
+        false
+    }
+}
+
+impl Drop for PostsWhenDropped {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        post_event_to_thread(self.thread, ObjectId(7), Event::new(EventKind::UpdateRequest));
+    }
+}
+
+#[test]
+fn a_replaced_compressor_is_dropped_after_the_queue_lock_is_released() {
+    finishes_within(Duration::from_secs(30), || {
+        let mut el = EventLoop::new();
+        let thread = ThreadId::current();
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        el.set_compressor(Arc::new(PostsWhenDropped { thread, drops: Arc::clone(&drops) }));
+        el.set_compressor(Arc::new(MergeAll));
+
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(el);
+    });
+}
