@@ -113,7 +113,18 @@ impl TimerEntry {
     }
 }
 
+/// Rounds `interval_ms` to the nearest second (halves round up), as Qt's very coarse timers do.
+/// An interval within 500 ms of `u64::MAX` rounds down to the largest multiple of 1000 that fits.
+fn round_to_second(interval_ms: u64) -> u64 {
+    interval_ms.saturating_add(500) / 1000 * 1000
+}
+
 /// Calculates next deadline matching calculateNextTimeout.
+///
+/// Returns the adjusted interval and the absolute deadline, both in milliseconds. Never panics
+/// and never wraps, for any interval and clock value in any build profile: a deadline that does
+/// not fit in `u64` saturates at `u64::MAX`. The clock (`current_time_ms`) counts milliseconds
+/// since process start and cannot reach that value, so such a timer never fires early.
 pub fn calculate_next_timeout(
     timer_type: &mut TimerType,
     interval_ms: u64,
@@ -132,7 +143,7 @@ pub fn calculate_next_timeout(
                 if interval < 1000 {
                     interval = 1000;
                 } else {
-                    interval = (interval + 500) / 1000 * 1000;
+                    interval = round_to_second(interval);
                 }
                 current_time = current_time / 1000 * 1000;
             } else if interval <= 20 {
@@ -143,12 +154,12 @@ pub fn calculate_next_timeout(
             if interval < 1000 {
                 interval = 1000;
             } else {
-                interval = (interval + 500) / 1000 * 1000;
+                interval = round_to_second(interval);
             }
             current_time = current_time / 1000 * 1000;
         }
     }
-    let timeout = current_time + interval;
+    let timeout = current_time.saturating_add(interval);
     (interval, timeout)
 }
 
@@ -695,7 +706,7 @@ impl Timer {
         };
 
         if deadline > now {
-            (deadline - now) as i64
+            i64::try_from(deadline - now).unwrap_or(i64::MAX)
         } else {
             0
         }
@@ -961,6 +972,84 @@ mod tests {
         assert_eq!(t4, TimerType::VeryCoarse);
         assert_eq!(inv4, 1000);
         assert_eq!(to4, 1000 + 1000);
+    }
+
+    /// Expected outcome of `calculate_next_timeout`, computed in 128-bit arithmetic that cannot
+    /// overflow, for the type the call settles on.
+    fn expected_next_timeout(settled: TimerType, interval: u64, now: u64) -> (u64, u64) {
+        let max = u64::MAX as u128;
+        let (adjusted, floor_now) = match settled {
+            TimerType::VeryCoarse => {
+                let rounded = ((interval as u128 + 500) / 1000 * 1000).min(max / 1000 * 1000);
+                (rounded.max(1000), now as u128 / 1000 * 1000)
+            }
+            TimerType::Precise | TimerType::Coarse => (interval as u128, now as u128),
+        };
+        (adjusted as u64, (floor_now + adjusted).min(max) as u64)
+    }
+
+    #[test]
+    fn calculate_next_timeout_saturates_instead_of_overflowing() {
+        let intervals = [
+            1,
+            999,
+            20_000,
+            u64::MAX / 2,
+            i64::MAX as u64,
+            u64::MAX - 501,
+            u64::MAX - 500,
+            u64::MAX - 499,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        let clocks = [0, 999, 1_000_000, u64::MAX / 2, u64::MAX - 1, u64::MAX];
+        for start in [TimerType::Precise, TimerType::Coarse, TimerType::VeryCoarse] {
+            for interval in intervals {
+                for now in clocks {
+                    let mut settled = start;
+                    let got = calculate_next_timeout(&mut settled, interval, now);
+                    assert_eq!(
+                        got,
+                        expected_next_timeout(settled, interval, now),
+                        "{start:?} interval {interval} clock {now}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unreachable_deadline_is_clamped_to_the_far_future() {
+        // The largest multiple of 1000 that fits is the rounded very coarse interval.
+        let largest_rounded = u64::MAX / 1000 * 1000;
+        let mut very_coarse = TimerType::VeryCoarse;
+        assert_eq!(
+            calculate_next_timeout(&mut very_coarse, u64::MAX, 1000),
+            (largest_rounded, u64::MAX)
+        );
+
+        let mut coarse = TimerType::Coarse;
+        assert_eq!(
+            calculate_next_timeout(&mut coarse, u64::MAX, 1000),
+            (largest_rounded, u64::MAX)
+        );
+        assert_eq!(coarse, TimerType::VeryCoarse);
+
+        let mut precise = TimerType::Precise;
+        assert_eq!(
+            calculate_next_timeout(&mut precise, u64::MAX, 1000),
+            (u64::MAX, u64::MAX)
+        );
+
+        // A saturated deadline is far beyond every clock reading, so the timer is registered but
+        // never reported as expired.
+        for ty in [TimerType::Precise, TimerType::Coarse, TimerType::VeryCoarse] {
+            let mut registry = TimerRegistry::new();
+            let id = registry.register(ObjectId(1), u64::MAX, ty, false);
+            assert!(registry.get(id).unwrap().next_fire_ms >= largest_rounded);
+            assert!(registry.next_deadline().unwrap() >= largest_rounded);
+            assert!(registry.expired_timers(largest_rounded - 1).is_empty());
+        }
     }
 
     #[test]
