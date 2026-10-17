@@ -1698,9 +1698,10 @@ fn list_in_registry(parent_id: ObjectId, child_id: ObjectId) {
         return;
     };
     if let Some(record) = registry.get(&parent_id) {
-        let mut children = record.children.write().unwrap();
-        if !children.contains(&child_id) {
-            children.push(child_id);
+        if let Ok(mut children) = record.children.write() {
+            if !children.contains(&child_id) {
+                children.push(child_id);
+            }
         }
     }
 }
@@ -1713,7 +1714,9 @@ fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
     let Some(record) = registry.get(&id) else {
         return Vec::new();
     };
-    let children = record.children.read().unwrap();
+    let Ok(children) = record.children.read() else {
+        return Vec::new();
+    };
     children
         .iter()
         .copied()
@@ -1814,67 +1817,103 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     let refused_thread = new_parent.is_some_and(|np| in_different_thread(child.thread_id, np));
     let new_parent = if refused_thread { None } else { new_parent };
 
-    // Update global registry parent/children records following global lock hierarchy:
-    // Tier 1: Update parents' `children` records in ascending ObjectId order.
-    // Tier 2: Update `child_record.parent` record.
-    if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-        match (old_parent, new_parent) {
-            (Some(old_id), Some(new_id)) if old_id != new_id => {
-                let old_rec = registry.get(&old_id);
-                let new_rec = registry.get(&new_id);
-                if old_id < new_id {
-                    if let Some(r) = old_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            ch.retain(|&id| id != child_id);
-                        }
-                    }
-                    if let Some(r) = new_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            if !ch.contains(&child_id) {
-                                ch.push(child_id);
-                            }
-                        }
-                    }
-                } else {
-                    if let Some(r) = new_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            if !ch.contains(&child_id) {
-                                ch.push(child_id);
-                            }
-                        }
-                    }
-                    if let Some(r) = old_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            ch.retain(|&id| id != child_id);
-                        }
-                    }
-                }
-            }
-            (Some(old_id), _) => {
-                if let Some(r) = registry.get(&old_id) {
-                    if let Ok(mut ch) = r.children.write() {
-                        ch.retain(|&id| id != child_id);
-                    }
-                }
-            }
-            (_, Some(new_id)) => {
-                if let Some(r) = registry.get(&new_id) {
-                    if let Ok(mut ch) = r.children.write() {
-                        if !ch.contains(&child_id) {
-                            ch.push(child_id);
-                        }
-                    }
-                }
-            }
-            (None, None) => {}
-        }
+    // Acquire Registry read lock (Level 0)
+    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
 
-        // Tier 2: Update child's parent record.
-        if let Some(child_record) = registry.get(&child_id) {
-            if let Ok(mut p) = child_record.parent.write() {
-                *p = new_parent;
+    let child_record = registry.get(&child_id);
+    let old_rec = old_parent.and_then(|id| registry.get(&id));
+    let new_rec = new_parent.and_then(|id| registry.get(&id));
+
+    if child_record.is_some() {
+        if let Some(_) = new_parent {
+            if new_rec.is_none() {
+                return Err(ReparentError::InvalidParent);
             }
         }
+    }
+
+    // Tier 1: Acquire parents' `children` write lock(s) in ascending ObjectId order.
+    enum ParentLockPair<'a> {
+        None,
+        SingleOld(std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>),
+        SingleNew(std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>),
+        Both {
+            old_guard: std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>,
+            new_guard: std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>,
+        },
+    }
+
+    let parent_locks = match (old_parent, new_parent) {
+        (Some(old_id), Some(new_id)) if old_id != new_id => {
+            let old_r = old_rec.ok_or(ReparentError::InvalidParent);
+            let new_r = new_rec.ok_or(ReparentError::InvalidParent);
+            if let (Ok(o_rec), Ok(n_rec)) = (old_r, new_r) {
+                if old_id < new_id {
+                    let o_g = o_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                    let n_g = n_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                    ParentLockPair::Both { old_guard: o_g, new_guard: n_g }
+                } else {
+                    let n_g = n_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                    let o_g = o_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                    ParentLockPair::Both { old_guard: o_g, new_guard: n_g }
+                }
+            } else if let Ok(o_rec) = old_r {
+                let o_g = o_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::SingleOld(o_g)
+            } else if let Ok(n_rec) = new_r {
+                let n_g = n_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::SingleNew(n_g)
+            } else {
+                ParentLockPair::None
+            }
+        }
+        (Some(_), _) => {
+            if let Some(o_rec) = old_rec {
+                let o_g = o_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::SingleOld(o_g)
+            } else {
+                ParentLockPair::None
+            }
+        }
+        (_, Some(_)) => {
+            if let Some(n_rec) = new_rec {
+                let n_g = n_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::SingleNew(n_g)
+            } else {
+                ParentLockPair::None
+            }
+        }
+        (None, None) => ParentLockPair::None,
+    };
+
+    // Tier 2: Acquire child's `record.parent` write lock if child is registered.
+    let child_parent_guard = if let Some(rec) = child_record {
+        Some(rec.parent.write().map_err(|_| ReparentError::Busy)?)
+    } else {
+        None
+    };
+
+    // Infallible Commit: all locks held, no failures possible from here.
+    match parent_locks {
+        ParentLockPair::Both { mut old_guard, mut new_guard } => {
+            old_guard.retain(|&id| id != child_id);
+            if !new_guard.contains(&child_id) {
+                new_guard.push(child_id);
+            }
+        }
+        ParentLockPair::SingleOld(mut old_guard) => {
+            old_guard.retain(|&id| id != child_id);
+        }
+        ParentLockPair::SingleNew(mut new_guard) => {
+            if !new_guard.contains(&child_id) {
+                new_guard.push(child_id);
+            }
+        }
+        ParentLockPair::None => {}
+    }
+
+    if let Some(mut p_guard) = child_parent_guard {
+        *p_guard = new_parent;
     }
 
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks.
@@ -1886,7 +1925,9 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }
     }
     child.parent = new_parent;
-    child.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
+    child.parent_liveness = new_parent.and_then(|id| {
+        registry.get(&id).map(|rec| (id, Arc::clone(&rec.liveness)))
+    });
     if let Some(new_parent_id) = new_parent {
         edit_child_list(new_parent_id, ChildListChange::Add(child_id));
         let added = Event::new(EventKind::ChildAdded { child_id });
@@ -1924,12 +1965,11 @@ pub fn reparent_owned_object(
     new_parent: Option<ObjectId>,
 ) -> Result<Option<OwnedObject<dyn QObject>>, ReparentError> {
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
-    // Only the borrow flag is used: the guard is never dereferenced, so no `&mut` aliases the
-    // child, which is written through its owner below. It rejects a call made from inside the
-    // child's own callback.
     let child_guard = borrow_registered(child_id).ok_or(ReparentError::Busy)?;
-    let old_parent_id = (*child_record.parent.read().unwrap()).ok_or(ReparentError::NotOwned)?;
-    registered_ptr(old_parent_id).ok_or(ReparentError::NotOwned)?;
+
+    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+    let old_parent_id = (*child_record.parent.read().map_err(|_| ReparentError::Busy)?).ok_or(ReparentError::NotOwned)?;
+    let old_record = registry.get(&old_parent_id).ok_or(ReparentError::NotOwned)?;
 
     if new_parent == Some(old_parent_id) {
         let owned = with_object(old_parent_id, |p| {
@@ -1942,15 +1982,19 @@ pub fn reparent_owned_object(
         return if owned { Ok(None) } else { Err(ReparentError::NotOwned) };
     }
 
-    if let Some(np) = new_parent {
-        if in_different_thread(*child_record.thread_id.read().unwrap(), np) {
+    let new_record = if let Some(np) = new_parent {
+        let child_thread = *child_record.thread_id.read().map_err(|_| ReparentError::Busy)?;
+        if in_different_thread(child_thread, np) {
             return Err(ReparentError::DifferentThread);
         }
-        registered_ptr(np).ok_or(ReparentError::InvalidParent)?;
+        let rec = registry.get(&np).ok_or(ReparentError::InvalidParent)?;
         if would_create_cycle(child_id, np)? {
             return Err(ReparentError::InvalidParent);
         }
-    }
+        Some(rec)
+    } else {
+        None
+    };
 
     let mut old_guard = borrow_registered(old_parent_id).ok_or(ReparentError::Busy)?;
     let mut new_guard = match new_parent {
@@ -1958,74 +2002,70 @@ pub fn reparent_owned_object(
         None => None,
     };
 
-    let mut owner = {
-        let mut data = old_guard.object_data_mut();
-        let pos = data
-            .owned_children()
-            .iter()
-            .position(|c| OwnedObject::object_id(c) == child_id)
-            .ok_or(ReparentError::NotOwned)?;
-        data.children_mut().retain(|&id| id != child_id);
-        data.owned_children_mut().remove(pos)
+    let pos = old_guard
+        .object_data()
+        .owned_children
+        .iter()
+        .position(|c| OwnedObject::object_id(c) == child_id)
+        .ok_or(ReparentError::NotOwned)?;
+
+    enum ParentLockPair<'a> {
+        SingleOld(std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>),
+        Both {
+            old_guard: std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>,
+            new_guard: std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>,
+        },
+    }
+
+    let parent_locks = match new_parent {
+        Some(new_id) if new_id != old_parent_id => {
+            let new_rec = new_record.unwrap();
+            if old_parent_id < new_id {
+                let o = old_record.children.write().map_err(|_| ReparentError::Busy)?;
+                let n = new_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::Both { old_guard: o, new_guard: n }
+            } else {
+                let n = new_rec.children.write().map_err(|_| ReparentError::Busy)?;
+                let o = old_record.children.write().map_err(|_| ReparentError::Busy)?;
+                ParentLockPair::Both { old_guard: o, new_guard: n }
+            }
+        }
+        _ => {
+            let o = old_record.children.write().map_err(|_| ReparentError::Busy)?;
+            ParentLockPair::SingleOld(o)
+        }
     };
+
+    let mut child_parent_guard = child_record.parent.write().map_err(|_| ReparentError::Busy)?;
+
+    // Infallible Commit: all locks and borrows held, zero failure risk.
+    let mut owner = {
+        let mut old_data = old_guard.object_data_mut();
+        old_data.children_mut().retain(|&id| id != child_id);
+        old_data.owned_children_mut().remove(pos)
+    };
+
+    let new_liveness = new_parent.and_then(|id| registry.get(&id).map(|r| (id, Arc::clone(&r.liveness))));
     {
         let mut data = owner.object_data_mut();
         let raw = data.raw_data_mut();
         raw.parent = new_parent;
-        raw.parent_liveness = new_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
+        raw.parent_liveness = new_liveness;
         raw.owned_by_parent = new_parent.is_some();
     }
 
-    // Update global registry parent/children records following global lock hierarchy:
-    // Tier 1: Update parents' `children` records in ascending ObjectId order.
-    // Tier 2: Update `child_record.parent` record.
-    if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-        match new_parent {
-            Some(new_id) if new_id != old_parent_id => {
-                let old_rec = registry.get(&old_parent_id);
-                let new_rec = registry.get(&new_id);
-                if old_parent_id < new_id {
-                    if let Some(r) = old_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            ch.retain(|&id| id != child_id);
-                        }
-                    }
-                    if let Some(r) = new_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            if !ch.contains(&child_id) {
-                                ch.push(child_id);
-                            }
-                        }
-                    }
-                } else {
-                    if let Some(r) = new_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            if !ch.contains(&child_id) {
-                                ch.push(child_id);
-                            }
-                        }
-                    }
-                    if let Some(r) = old_rec {
-                        if let Ok(mut ch) = r.children.write() {
-                            ch.retain(|&id| id != child_id);
-                        }
-                    }
-                }
-            }
-            _ => {
-                if let Some(r) = registry.get(&old_parent_id) {
-                    if let Ok(mut ch) = r.children.write() {
-                        ch.retain(|&id| id != child_id);
-                    }
-                }
+    match parent_locks {
+        ParentLockPair::Both { mut old_guard, mut new_guard } => {
+            old_guard.retain(|&id| id != child_id);
+            if !new_guard.contains(&child_id) {
+                new_guard.push(child_id);
             }
         }
-
-        // Tier 2: Update child's parent record.
-        if let Ok(mut p) = child_record.parent.write() {
-            *p = new_parent;
+        ParentLockPair::SingleOld(mut old_guard) => {
+            old_guard.retain(|&id| id != child_id);
         }
     }
+    *child_parent_guard = new_parent;
 
     let released = match new_guard.as_mut() {
         Some(guard) => {
@@ -3194,6 +3234,127 @@ mod tests {
             unregister_qobject(c_id);
             unregister_qobject(b_id);
             unregister_qobject(a_id);
+        }
+    }
+
+    #[test]
+    fn test_set_parent_handles_poisoned_parent_lock() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut parent = Node(ObjectData::new(ObjectId::next()));
+        let mut child = Node(ObjectData::new(ObjectId::next()));
+        let parent_id = parent.0.id();
+        let child_id = child.0.id();
+
+        let ptr_p = &raw mut parent as *mut dyn QObject;
+        register_object_metadata(&parent.0, ptr_p);
+        let ptr_c = &raw mut child as *mut dyn QObject;
+        register_object_metadata(&child.0, ptr_c);
+
+        let record_p = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&parent_id).unwrap().clone();
+        let handle = std::thread::spawn({
+            let record_p = Arc::clone(&record_p);
+            move || {
+                let _lock = record_p.children.write().unwrap();
+                panic!("poison parent children lock");
+            }
+        });
+        let _ = handle.join();
+        assert!(record_p.children.is_poisoned());
+
+        // Attempt set_parent - must fail with Busy, child must stay parentless
+        let res = set_parent(&mut child.0, Some(parent_id));
+        assert_eq!(res, Err(ReparentError::Busy));
+        assert_eq!(child.0.parent(), None);
+
+        unsafe {
+            unregister_qobject(child_id);
+            unregister_qobject(parent_id);
+        }
+    }
+
+    #[test]
+    fn test_reparent_owned_handles_poisoned_parent_lock() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut p1 = Node(ObjectData::new(ObjectId::next()));
+        let mut p2 = Node(ObjectData::new(ObjectId::next()));
+        let p1_id = p1.0.id();
+        let p2_id = p2.0.id();
+
+        let ptr_p1 = &raw mut p1 as *mut dyn QObject;
+        register_object_metadata(&p1.0, ptr_p1);
+        let ptr_p2 = &raw mut p2 as *mut dyn QObject;
+        register_object_metadata(&p2.0, ptr_p2);
+
+        let child_box = Box::new(Node(ObjectData::new(ObjectId::next())));
+        let child_id = unsafe { add_owned_child(p1_id, child_box).map_err(|(e, _)| e).unwrap() };
+        // Poison p2's children lock
+        let record_p2 = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&p2_id).unwrap().clone();
+        let handle = std::thread::spawn({
+            let record_p2 = Arc::clone(&record_p2);
+            move || {
+                let _lock = record_p2.children.write().unwrap();
+                panic!("poison p2 children lock");
+            }
+        });
+        let _ = handle.join();
+        assert!(record_p2.children.is_poisoned());
+
+        // Attempt reparent_owned_object to p2 - must fail with Busy, p1 must still own child
+        let res = reparent_owned_object(child_id, Some(p2_id));
+        assert!(matches!(res, Err(ReparentError::Busy)));
+        assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
+        assert!(p1.0.owned_children.iter().any(|c| OwnedObject::object_id(c) == child_id));
+
+        unsafe {
+            unregister_qobject(p2_id);
+            unregister_qobject(p1_id);
+        }
+    }
+
+    #[test]
+    fn test_reparent_owned_rejects_when_child_borrowed() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut p1 = Node(ObjectData::new(ObjectId::next()));
+        let mut p2 = Node(ObjectData::new(ObjectId::next()));
+        let p1_id = p1.0.id();
+        let p2_id = p2.0.id();
+
+        let ptr_p1 = &raw mut p1 as *mut dyn QObject;
+        register_object_metadata(&p1.0, ptr_p1);
+        let ptr_p2 = &raw mut p2 as *mut dyn QObject;
+        register_object_metadata(&p2.0, ptr_p2);
+
+        let child_box = Box::new(Node(ObjectData::new(ObjectId::next())));
+        let child_id = unsafe { add_owned_child(p1_id, child_box).map_err(|(e, _)| e).unwrap() };
+        // Borrow child exclusively via borrow_registered
+        let child_guard = borrow_registered(child_id).unwrap();
+
+        // Attempt reparent - must reject with Busy
+        let res = reparent_owned_object(child_id, Some(p2_id));
+        assert!(matches!(res, Err(ReparentError::Busy)));
+        drop(child_guard);
+
+        assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
+        assert!(p1.0.owned_children.iter().any(|c| OwnedObject::object_id(c) == child_id));
+
+        unsafe {
+            unregister_qobject(p2_id);
+            unregister_qobject(p1_id);
         }
     }
 }

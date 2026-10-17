@@ -15,8 +15,8 @@ use std::sync::Arc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     add_owned_child, dispatch_to_object, move_to_thread_by_id, query_object_children,
-    query_object_parent, query_object_parents_snapshot, register_owned_qobject, with_object,
-    with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
+    query_object_parent, query_object_parents_snapshot, register_owned_qobject, reparent_owned_object,
+    with_object, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
     ThreadId,
 };
 
@@ -718,4 +718,107 @@ fn test_swap_hierarchy_mixed_owned_and_non_owned_children() {
     drop(nb);
     assert!(freed_na.load(Ordering::Acquire));
     assert!(freed_nb.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_set_parent_and_reparent_owned_failure_invariance() {
+    let p1 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    let _p2 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    let p1_id = OwnedObject::object_id(&p1);
+
+    // 1. Non-owned child failure invariance with set_parent
+    let mut non_owned = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    let no_id = OwnedObject::object_id(&non_owned);
+    non_owned.object_data_mut().set_parent(Some(p1_id)).expect("set parent p1");
+    assert_eq!(non_owned.object_data().parent(), Some(p1_id));
+    assert!(p1.object_data().children().contains(&no_id));
+
+    // Attempting to set parent to an unregistered object ID must fail with InvalidParent
+    let unknown_id = ObjectId(999999);
+    let err = non_owned.object_data_mut().set_parent(Some(unknown_id));
+    assert_eq!(err, Err(ReparentError::InvalidParent));
+    // State MUST remain completely untouched
+    assert_eq!(non_owned.object_data().parent(), Some(p1_id));
+    assert!(p1.object_data().children().contains(&no_id));
+    assert_eq!(query_object_parent(no_id), Some(Some(p1_id)));
+
+    // 2. Owned child failure invariance with reparent_owned_object
+    let owned_child = make_node(Arc::new(AtomicBool::new(false)));
+    let oc_id = unsafe { add_owned_child(p1_id, Box::new(owned_child)).map_err(|(e, _)| e).unwrap() };
+    assert_eq!(query_object_parent(oc_id), Some(Some(p1_id)));
+    assert!(p1.object_data().children().contains(&oc_id));
+    assert!(p1.object_data().owned_children().iter().any(|c| OwnedObject::object_id(c) == oc_id));
+
+    // Attempt reparent to unregistered object ID
+    let err_owned = reparent_owned_object(oc_id, Some(unknown_id));
+    assert_eq!(err_owned.map(|_| ()), Err(ReparentError::InvalidParent));
+    // Must remain 100% owned by p1
+    assert_eq!(query_object_parent(oc_id), Some(Some(p1_id)));
+    assert!(p1.object_data().children().contains(&oc_id));
+    assert!(p1.object_data().owned_children().iter().any(|c| OwnedObject::object_id(c) == oc_id));
+
+    // Attempt reparent to child itself (cycle)
+    let err_cycle = reparent_owned_object(oc_id, Some(oc_id));
+    assert_eq!(err_cycle.map(|_| ()), Err(ReparentError::InvalidParent));
+    assert_eq!(query_object_parent(oc_id), Some(Some(p1_id)));
+    assert!(p1.object_data().children().contains(&oc_id));
+    assert!(p1.object_data().owned_children().iter().any(|c| OwnedObject::object_id(c) == oc_id));
+}
+
+#[test]
+fn test_reparent_owned_concurrent_snapshot_atomicity() {
+    let p1 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    let p2 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    let p1_id = OwnedObject::object_id(&p1);
+    let p2_id = OwnedObject::object_id(&p2);
+
+    let child = make_node(Arc::new(AtomicBool::new(false)));
+    let child_id = unsafe { add_owned_child(p1_id, Box::new(child)).map_err(|(e, _)| e).unwrap() };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let inconsistencies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Arc::new(AtomicBool::new(false));
+
+    let reader = std::thread::spawn({
+        let stop = Arc::clone(&stop);
+        let inconsistencies = Arc::clone(&inconsistencies);
+        let read_count = Arc::clone(&read_count);
+        let started = Arc::clone(&started);
+        move || {
+            while !stop.load(Ordering::Acquire) {
+                read_count.fetch_add(1, Ordering::Relaxed);
+                let parent_opt = query_object_parent(child_id);
+                match parent_opt {
+                    Some(Some(pid)) if pid == p1_id || pid == p2_id => {
+                        // Consistently observing either parent 1 or parent 2
+                    }
+                    _ => {
+                        // None, detached without parent, or invalid ID is an invariant violation!
+                        inconsistencies.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                started.store(true, Ordering::Release);
+            }
+        }
+    });
+
+    while !started.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+
+    // Reparent child between p1 and p2 multiple times
+    for _ in 0..10 {
+        let res1 = reparent_owned_object(child_id, Some(p2_id));
+        assert!(res1.is_ok());
+        let res2 = reparent_owned_object(child_id, Some(p1_id));
+        assert!(res2.is_ok());
+    }
+
+    stop.store(true, Ordering::Release);
+    reader.join().unwrap();
+
+    assert!(read_count.load(Ordering::SeqCst) > 0);
+    assert_eq!(inconsistencies.load(Ordering::SeqCst), 0);
+    assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
 }
