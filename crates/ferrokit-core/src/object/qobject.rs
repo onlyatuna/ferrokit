@@ -3589,9 +3589,20 @@ mod tests {
         let (parent_record, child_record) = records_rx.recv().unwrap();
         let parent_list = parent_record.children.write().unwrap();
         go_tx.send(()).unwrap();
-        // The other thread now unregisters the child and waits for `parent_list`.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let link_is_free = child_record.parent.try_write().is_ok();
+        // The other thread now unregisters the child and waits for `parent_list`. Where it waits
+        // cannot be observed, so the link is probed over a stretch of time that is long enough for
+        // it to get there (Miri's clock only moves with the work done, so it is given longer).
+        // Holding the link for an instant, to read the parent's id, is fine and is probed again;
+        // holding it for as long as the wait is the fault, and no probe succeeds then.
+        let settle_ms: u64 = if cfg!(miri) { 2000 } else { 300 };
+        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+        let link_is_free = (0..100).any(|_| {
+            let free = child_record.parent.try_write().is_ok();
+            if !free {
+                std::thread::sleep(std::time::Duration::from_millis(settle_ms / 100));
+            }
+            free
+        });
         drop(parent_list);
         unregistering.join().unwrap();
         assert!(link_is_free, "unregister held the child's `parent` lock while waiting for the parent's list");
