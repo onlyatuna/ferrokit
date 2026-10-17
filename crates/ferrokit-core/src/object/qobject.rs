@@ -231,6 +231,30 @@ fn defer_if_borrowed(parent: ObjectId, event: Event) -> Result<(), Event> {
     }
 }
 
+fn borrow_record(entry: &Arc<ObjectRecord>) -> Result<ObjectBorrowGuard, ReparentError> {
+    let reg_thread = entry.registration_thread.read().map_err(|_| ReparentError::Busy)?;
+    if *reg_thread != ThreadId::current() {
+        return Err(ReparentError::DifferentThread);
+    }
+    if !entry.liveness.load(Ordering::Acquire) {
+        return Err(ReparentError::UnknownObject);
+    }
+    let ptr = entry.ptr.0;
+    if ptr.is_null() {
+        return Err(ReparentError::UnknownObject);
+    }
+    entry
+        .borrow_state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| ReparentError::Busy)?;
+    Ok(ObjectBorrowGuard {
+        ptr,
+        borrow_state: Arc::clone(&entry.borrow_state),
+        _entry: Arc::clone(entry),
+    })
+}
+
 fn borrow_registered(id: ObjectId) -> Option<ObjectBorrowGuard> {
     let (entry, ptr) = registered_ptr(id)?;
     entry
@@ -474,7 +498,7 @@ pub(crate) fn prepare_move_to_thread(
 pub fn query_object_parent(id: ObjectId) -> Option<Option<ObjectId>> {
     let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
     let record = registry.get(&id)?;
-    let parent = *record.parent.read().unwrap();
+    let parent = *record.parent.read().ok()?;
     Some(parent)
 }
 
@@ -483,7 +507,7 @@ pub fn query_object_parent(id: ObjectId) -> Option<Option<ObjectId>> {
 pub fn query_object_children(id: ObjectId) -> Option<Vec<ObjectId>> {
     let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
     let record = registry.get(&id)?;
-    let children = record.children.read().unwrap().clone();
+    let children = record.children.read().ok()?.clone();
     Some(children)
 }
 
@@ -692,18 +716,22 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     if let Some(entry) = removed {
         entry.liveness.store(false, Ordering::Release);
         if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-            if let Some(parent_id) = *entry.parent.read().unwrap() {
-                if let Some(parent) = registry.get(&parent_id) {
-                    parent
-                        .children
-                        .write()
-                        .unwrap()
-                        .retain(|&child_id| child_id != id);
+            if let Ok(parent_guard) = entry.parent.read() {
+                if let Some(parent_id) = *parent_guard {
+                    if let Some(parent) = registry.get(&parent_id) {
+                        if let Ok(mut children) = parent.children.write() {
+                            children.retain(|&child_id| child_id != id);
+                        }
+                    }
                 }
             }
-            for child_id in entry.children.read().unwrap().iter() {
-                if let Some(child) = registry.get(child_id) {
-                    *child.parent.write().unwrap() = None;
+            if let Ok(children) = entry.children.read() {
+                for child_id in children.iter() {
+                    if let Some(child) = registry.get(child_id) {
+                        if let Ok(mut p) = child.parent.write() {
+                            *p = None;
+                        }
+                    }
                 }
             }
         }
@@ -1183,7 +1211,7 @@ impl<'a> ObjectDataMut<'a> {
             }
         }
 
-        // 2. Thread affinity validation: all children must match the destination parent's thread.
+        // 2. Thread affinity validation: all children must match destination parent's thread.
         let self_thread = self.data.thread_id;
         let other_thread = other.data.thread_id;
         if self_thread != other_thread {
@@ -1209,177 +1237,158 @@ impl<'a> ObjectDataMut<'a> {
             }
         }
 
-        // 3. Acquire Registry read lock without unwraps. Failure returns Err(ReparentError::Busy).
+        // 3. Acquire Registry read lock (Level 0 lock).
         let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
 
-        // Pre-validate non-owned children: each non-owned child must exist in the registry
-        // and must not be currently borrowed.
+        // Pre-validate parents in registry:
+        let self_record = registry.get(&self_id).ok_or(ReparentError::UnknownObject)?;
+        let other_record = registry.get(&other_id).ok_or(ReparentError::UnknownObject)?;
+
+        if !self_record.liveness.load(Ordering::Acquire) || !other_record.liveness.load(Ordering::Acquire) {
+            return Err(ReparentError::UnknownObject);
+        }
+
+        let self_reg_children = self_record.children.read().map_err(|_| ReparentError::Busy)?;
+        if *self_reg_children != self.data.children {
+            return Err(ReparentError::InvalidParent);
+        }
+        let other_reg_children = other_record.children.read().map_err(|_| ReparentError::Busy)?;
+        if *other_reg_children != other.data.children {
+            return Err(ReparentError::InvalidParent);
+        }
+        drop(self_reg_children);
+        drop(other_reg_children);
+
+        // Pre-validate owned children sets:
         let self_owned_set: std::collections::HashSet<ObjectId> =
             self.data.owned_children.iter().map(|c| c.object_data().id()).collect();
         let other_owned_set: std::collections::HashSet<ObjectId> =
             other.data.owned_children.iter().map(|c| c.object_data().id()).collect();
 
-        for &child_id in &self.data.children {
-            if !self_owned_set.contains(&child_id) {
-                let Some(record) = registry.get(&child_id) else {
-                    return Err(ReparentError::UnknownObject);
-                };
-                if record.borrow_state.borrow_flag.load(Ordering::Acquire) {
-                    return Err(ReparentError::Busy);
-                }
+        // Every owned child must be present in its parent's `children` list
+        for &owned_id in &self_owned_set {
+            if !self.data.children.contains(&owned_id) {
+                return Err(ReparentError::InvalidParent);
             }
         }
-        for &child_id in &other.data.children {
-            if !other_owned_set.contains(&child_id) {
-                let Some(record) = registry.get(&child_id) else {
-                    return Err(ReparentError::UnknownObject);
-                };
-                if record.borrow_state.borrow_flag.load(Ordering::Acquire) {
-                    return Err(ReparentError::Busy);
-                }
+        for &owned_id in &other_owned_set {
+            if !other.data.children.contains(&owned_id) {
+                return Err(ReparentError::InvalidParent);
             }
+        }
+
+        // Pre-validate and collect all children:
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum TransferTarget {
+            ToOther,
+            ToSelf,
+        }
+
+        struct ChildTransfer {
+            child_id: ObjectId,
+            target: TransferTarget,
+            record: Arc<ObjectRecord>,
+            is_owned: bool,
+        }
+
+        let mut transfers: Vec<ChildTransfer> = Vec::with_capacity(
+            self.data.children.len() + other.data.children.len(),
+        );
+
+        for &child_id in &self.data.children {
+            let record = registry.get(&child_id).ok_or(ReparentError::UnknownObject)?;
+            if !record.liveness.load(Ordering::Acquire) {
+                return Err(ReparentError::UnknownObject);
+            }
+            let reg_parent = *record.parent.read().map_err(|_| ReparentError::Busy)?;
+            if reg_parent != Some(self_id) {
+                return Err(ReparentError::InvalidParent);
+            }
+            transfers.push(ChildTransfer {
+                child_id,
+                target: TransferTarget::ToOther,
+                record: Arc::clone(record),
+                is_owned: self_owned_set.contains(&child_id),
+            });
+        }
+
+        for &child_id in &other.data.children {
+            let record = registry.get(&child_id).ok_or(ReparentError::UnknownObject)?;
+            if !record.liveness.load(Ordering::Acquire) {
+                return Err(ReparentError::UnknownObject);
+            }
+            let reg_parent = *record.parent.read().map_err(|_| ReparentError::Busy)?;
+            if reg_parent != Some(other_id) {
+                return Err(ReparentError::InvalidParent);
+            }
+            transfers.push(ChildTransfer {
+                child_id,
+                target: TransferTarget::ToSelf,
+                record: Arc::clone(record),
+                is_owned: other_owned_set.contains(&child_id),
+            });
+        }
+
+        // Sort all child transfers by child_id for deterministic deadlock-free lock acquisition
+        transfers.sort_by_key(|t| t.child_id);
+        if transfers.windows(2).any(|w| w[0].child_id == w[1].child_id) {
+            return Err(ReparentError::InvalidParent);
+        }
+
+        // 4. Deadlock-free two-tier lock and borrow acquisition:
+        // Tier 1: Acquire parents' `children` write locks in ascending ObjectId order.
+        let (mut self_children_guard, mut other_children_guard) = if self_id < other_id {
+            let s = self_record.children.write().map_err(|_| ReparentError::Busy)?;
+            let o = other_record.children.write().map_err(|_| ReparentError::Busy)?;
+            (s, o)
+        } else {
+            let o = other_record.children.write().map_err(|_| ReparentError::Busy)?;
+            let s = self_record.children.write().map_err(|_| ReparentError::Busy)?;
+            (s, o)
+        };
+
+        // Tier 2: Acquire RAII borrow guards and `record.parent` write locks for all children in ascending child_id order.
+        let mut borrow_guards: Vec<Option<ObjectBorrowGuard>> = Vec::with_capacity(transfers.len());
+        let mut child_parent_guards: Vec<std::sync::RwLockWriteGuard<'_, Option<ObjectId>>> =
+            Vec::with_capacity(transfers.len());
+
+        for t in &transfers {
+            // Borrow the child record to obtain exclusive execution/callback guard
+            let guard = borrow_record(&t.record)?;
+            borrow_guards.push(Some(guard));
+
+            let parent_lock = t.record.parent.write().map_err(|_| ReparentError::Busy)?;
+            child_parent_guards.push(parent_lock);
         }
 
         let self_liveness = liveness_of(self_id);
         let other_liveness = liveness_of(other_id);
 
-        // 4. Update Registry records with transactional journal rollback on any lock failure.
-        struct RegistryRollbackEntry {
-            child_id: ObjectId,
-            old_parent: Option<ObjectId>,
-        }
-        let mut journal: Vec<RegistryRollbackEntry> = Vec::new();
+        // 5. Infallible Atomic Commit:
+        // All checks succeeded, all borrow guards and write locks are held.
+        // No step from here can fail.
 
-        let registry_update_res: Result<(), ReparentError> = (|| {
-            // Update children of self -> new parent is other_id
-            for &child_id in &self.data.children {
-                if let Some(record) = registry.get(&child_id) {
-                    let mut lock = record.parent.write().map_err(|_| ReparentError::Busy)?;
-                    let old_parent = *lock;
-                    *lock = Some(other_id);
-                    journal.push(RegistryRollbackEntry { child_id, old_parent });
-                }
-            }
-            // Update children of other -> new parent is self_id
-            for &child_id in &other.data.children {
-                if let Some(record) = registry.get(&child_id) {
-                    let mut lock = record.parent.write().map_err(|_| ReparentError::Busy)?;
-                    let old_parent = *lock;
-                    *lock = Some(self_id);
-                    journal.push(RegistryRollbackEntry { child_id, old_parent });
-                }
-            }
-            // Update parent records children lists
-            if let Some(self_record) = registry.get(&self_id) {
-                let mut lock = self_record.children.write().map_err(|_| ReparentError::Busy)?;
-                *lock = other.data.children.clone();
-            }
-            if let Some(other_record) = registry.get(&other_id) {
-                let mut lock = other_record.children.write().map_err(|_| ReparentError::Busy)?;
-                *lock = self.data.children.clone();
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = registry_update_res {
-            // Roll back registry mutations
-            for entry in journal.into_iter().rev() {
-                if let Some(record) = registry.get(&entry.child_id) {
-                    if let Ok(mut lock) = record.parent.write() {
-                        *lock = entry.old_parent;
-                    }
-                }
-            }
-            if let Some(self_record) = registry.get(&self_id) {
-                if let Ok(mut lock) = self_record.children.write() {
-                    *lock = self.data.children.clone();
-                }
-            }
-            if let Some(other_record) = registry.get(&other_id) {
-                if let Ok(mut lock) = other_record.children.write() {
-                    *lock = other.data.children.clone();
-                }
-            }
-            return Err(e);
-        }
-
-        // 5. Update local parent and parent_liveness of non-owned children.
-        // If any non-owned child update fails, rollback both non-owned and registry mutations.
-        let mut non_owned_self_updated: Vec<ObjectId> = Vec::new();
-        let mut non_owned_other_updated: Vec<ObjectId> = Vec::new();
-
-        let non_owned_res: Result<(), ReparentError> = (|| {
-            for &child_id in &self.data.children {
-                if !self_owned_set.contains(&child_id) {
-                    let updated = with_object_mut(child_id, |c| {
-                        let mut odm = c.object_data_mut();
-                        let raw = odm.raw_data_mut();
-                        raw.parent = Some(other_id);
-                        raw.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
-                    });
-                    if updated.is_none() {
-                        return Err(ReparentError::Busy);
-                    }
-                    non_owned_self_updated.push(child_id);
-                }
-            }
-            for &child_id in &other.data.children {
-                if !other_owned_set.contains(&child_id) {
-                    let updated = with_object_mut(child_id, |c| {
-                        let mut odm = c.object_data_mut();
-                        let raw = odm.raw_data_mut();
-                        raw.parent = Some(self_id);
-                        raw.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
-                    });
-                    if updated.is_none() {
-                        return Err(ReparentError::Busy);
-                    }
-                    non_owned_other_updated.push(child_id);
-                }
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = non_owned_res {
-            // Revert non-owned local updates
-            for &child_id in &non_owned_self_updated {
-                let _ = with_object_mut(child_id, |c| {
-                    let mut odm = c.object_data_mut();
+        // Step A: Update non-owned children's local ObjectData via their held borrow guards.
+        for (i, t) in transfers.iter().enumerate() {
+            if !t.is_owned {
+                if let Some(guard) = &mut borrow_guards[i] {
+                    let mut odm = guard.object_data_mut();
                     let raw = odm.raw_data_mut();
-                    raw.parent = Some(self_id);
-                    raw.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
-                });
-            }
-            for &child_id in &non_owned_other_updated {
-                let _ = with_object_mut(child_id, |c| {
-                    let mut odm = c.object_data_mut();
-                    let raw = odm.raw_data_mut();
-                    raw.parent = Some(other_id);
-                    raw.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
-                });
-            }
-            // Revert registry mutations
-            for entry in journal.into_iter().rev() {
-                if let Some(record) = registry.get(&entry.child_id) {
-                    if let Ok(mut lock) = record.parent.write() {
-                        *lock = entry.old_parent;
+                    match t.target {
+                        TransferTarget::ToOther => {
+                            raw.parent = Some(other_id);
+                            raw.parent_liveness = other_liveness.clone().map(|al| (other_id, al));
+                        }
+                        TransferTarget::ToSelf => {
+                            raw.parent = Some(self_id);
+                            raw.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
+                        }
                     }
                 }
             }
-            if let Some(self_record) = registry.get(&self_id) {
-                if let Ok(mut lock) = self_record.children.write() {
-                    *lock = self.data.children.clone();
-                }
-            }
-            if let Some(other_record) = registry.get(&other_id) {
-                if let Ok(mut lock) = other_record.children.write() {
-                    *lock = other.data.children.clone();
-                }
-            }
-            return Err(e);
         }
 
-        // 6. Update owned children local metadata (infallible since owned directly)
+        // Step B: Update owned children's local ObjectData via their respective parents' owned_children.
         for child in &mut self.data.owned_children {
             let mut odm = child.object_data_mut();
             let child_data = odm.raw_data_mut();
@@ -1393,10 +1402,23 @@ impl<'a> ObjectDataMut<'a> {
             child_data.parent_liveness = self_liveness.clone().map(|al| (self_id, al));
         }
 
-        // 7. Local vector swap: final infallible commit point.
+        // Step C: Update Registry `record.parent` for all children under the held write locks.
+        for (i, t) in transfers.iter().enumerate() {
+            match t.target {
+                TransferTarget::ToOther => *child_parent_guards[i] = Some(other_id),
+                TransferTarget::ToSelf => *child_parent_guards[i] = Some(self_id),
+            }
+        }
+
+        // Step D: Update Registry `record.children` for both parents under the held write locks.
+        *self_children_guard = other.data.children.clone();
+        *other_children_guard = self.data.children.clone();
+
+        // Step E: Atomic local vector swap.
         std::mem::swap(&mut self.data.children, &mut other.data.children);
         std::mem::swap(&mut self.data.owned_children, &mut other.data.owned_children);
 
+        // Commit complete. When returning Ok(()), all guards drop cleanly and publish the changes atomically.
         Ok(())
     }
 
@@ -2914,5 +2936,88 @@ mod tests {
         assert_eq!(removed.load(Ordering::SeqCst), 1);
         // SAFETY: the last callback has completed on this thread.
         unsafe { unregister_qobject(parent_id) };
+    }
+
+    #[test]
+    fn test_swap_hierarchy_handles_poisoned_registry_lock() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut a = Node(ObjectData::new(ObjectId::next()));
+        let mut b = Node(ObjectData::new(ObjectId::next()));
+        let a_id = a.0.id();
+        let b_id = b.0.id();
+        let ptr_a = &raw mut a as *mut dyn QObject;
+        register_object_metadata(&a.0, ptr_a);
+        let ptr_b = &raw mut b as *mut dyn QObject;
+        register_object_metadata(&b.0, ptr_b);
+
+        let record_a = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&a_id).unwrap().clone();
+
+        // Poison node_a's children lock on a background thread
+        let handle = std::thread::spawn({
+            let record_a = Arc::clone(&record_a);
+            move || {
+                let _lock = record_a.children.write().unwrap();
+                panic!("intentional lock poison");
+            }
+        });
+        let _ = handle.join();
+        assert!(record_a.children.is_poisoned());
+
+        // Attempt swap - must return Err(ReparentError::Busy) without panicking
+        let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+        assert_eq!(res, Err(ReparentError::Busy));
+
+        unsafe {
+            unregister_qobject(a_id);
+            unregister_qobject(b_id);
+        }
+    }
+
+    #[test]
+    fn test_swap_hierarchy_rejects_mismatched_parent_record() {
+        struct Node(ObjectData);
+        impl QObject for Node {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+
+        let mut a = Node(ObjectData::new(ObjectId::next()));
+        let mut b = Node(ObjectData::new(ObjectId::next()));
+        let mut c = Node(ObjectData::new(ObjectId::next()));
+        let a_id = a.0.id();
+        let b_id = b.0.id();
+        let c_id = c.0.id();
+
+        let ptr_a = &raw mut a as *mut dyn QObject;
+        register_object_metadata(&a.0, ptr_a);
+        let ptr_b = &raw mut b as *mut dyn QObject;
+        register_object_metadata(&b.0, ptr_b);
+        let ptr_c = &raw mut c as *mut dyn QObject;
+        register_object_metadata(&c.0, ptr_c);
+
+        // Manually inject c_id into a's children, but leave c's registry parent as None
+        a.0.children.push(c_id);
+        {
+            let reg = GLOBAL_OBJECT_REGISTRY.read().unwrap();
+            let a_rec = reg.get(&a_id).unwrap();
+            a_rec.children.write().unwrap().push(c_id);
+        }
+
+        // Registry parent of c is None, which mismatches Some(a_id)!
+        let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+        assert_eq!(res, Err(ReparentError::InvalidParent));
+
+        // Cleanup
+        a.0.children.retain(|&id| id != c_id);
+        unsafe {
+            unregister_qobject(c_id);
+            unregister_qobject(b_id);
+            unregister_qobject(a_id);
+        }
     }
 }
