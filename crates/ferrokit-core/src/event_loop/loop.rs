@@ -13,6 +13,7 @@ use crate::event::{
     compress_event as run_compress_event, CoreCompressor, Event, EventCompressor, EventKind,
 };
 use crate::object::{send_event, EventSender, ObjectData, ObjectId, QObject};
+use crate::poison::lock_unpoisoned;
 use crate::timer::TimerRegistry;
 
 #[allow(unused_imports)]
@@ -552,7 +553,7 @@ impl EventLoop {
         if let Some(custom) = self.custom_timeout {
             return Some(custom);
         }
-        let deadline = self.state.timer_registry.lock().unwrap().next_deadline()?;
+        let deadline = lock_unpoisoned(&self.state.timer_registry).next_deadline()?;
         let now = crate::timer::current_time_ms();
         if deadline > now {
             Some(Duration::from_millis(deadline - now))
@@ -570,7 +571,10 @@ impl EventLoop {
     }
 
     pub fn post_event_with_priority(&self, receiver: ObjectId, event: Event, priority: i32) {
-        let mut queue = self.state.queue.lock().unwrap();
+        // The compressor runs under the queue lock: it merges into queued events in place, and
+        // the merge-or-insert decision must be atomic against other posters and the pump. See
+        // `EventLoopHandle::post_event_with_priority` for why a panicking compressor is harmless.
+        let mut queue = lock_unpoisoned(&self.state.queue);
         let q = &mut *queue;
         if run_compress_event(&mut q.events, receiver, &event, &*q.compressor) {
             return;
@@ -580,7 +584,7 @@ impl EventLoop {
     }
 
     pub fn set_compressor(&mut self, compressor: Arc<dyn EventCompressor>) {
-        self.state.queue.lock().unwrap().compressor = compressor;
+        lock_unpoisoned(&self.state.queue).compressor = compressor;
     }
 
     pub fn install_native_event_filter(&self, filter: Box<dyn crate::event::NativeEventFilter>) {
@@ -600,13 +604,13 @@ impl EventLoop {
     /// posted events stay queued. Returns the number delivered.
     pub fn flush_deferred_deletes(&self) -> usize {
         {
-            let mut q = self.state.queue.lock().unwrap();
+            let mut q = lock_unpoisoned(&self.state.queue);
             q.insertion_offset = q.events.len();
         }
         let mut delivered = 0;
         loop {
             let posted = {
-                let mut q = self.state.queue.lock().unwrap();
+                let mut q = lock_unpoisoned(&self.state.queue);
                 let end = q.insertion_offset;
                 let levels = current_levels();
                 let found = q.events.iter().take(end).position(|p| match p.event.kind {
@@ -670,11 +674,7 @@ impl EventLoop {
         self.exit.exit_requested.store(false, Ordering::SeqCst);
         // qeventloop.cpp:192-195: entering the application's loop drops its stale posted Quit.
         if let Some(app_id) = crate::application::app_object_on_current_thread() {
-            self.state
-                .queue
-                .lock()
-                .unwrap()
-                .remove_posted_quits_for(app_id);
+            lock_unpoisoned(&self.state.queue).remove_posted_quits_for(app_id);
         }
         self.state.running.lock().push(self.exit.clone());
         let _running = RunningLoop(Arc::clone(&self.state.running));
@@ -751,9 +751,7 @@ pub fn send_posted_events_for_queue(queue: &Arc<Mutex<EventQueue>>) -> (usize, O
         // A native modal loop left events queued and consumed its wake-up. Re-arm it if a normal
         // pump at the current levels can deliver them, so `process_events` returns instead of
         // blocking on them.
-        let deliverable = queue
-            .lock()
-            .unwrap()
+        let deliverable = lock_unpoisoned(queue)
             .events
             .iter()
             .any(|e| deliverable_now(&e.event));
@@ -781,7 +779,7 @@ pub fn pump_posted_events_modal() -> Option<usize> {
     if let Some(code) = quit_code {
         handle.exit(code);
     }
-    if !handle.queue.lock().unwrap().is_empty() {
+    if !lock_unpoisoned(&handle.queue).is_empty() {
         MODAL_PUMP_LEFT_QUEUED.with(|f| f.set(true));
     }
     Some(delivered)
@@ -914,7 +912,7 @@ impl Drop for LoopLevelGuard {
 
 fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Option<i32>) {
     {
-        let mut q = queue.lock().unwrap();
+        let mut q = lock_unpoisoned(queue);
         q.insertion_offset = q.events.len();
     }
 
@@ -926,7 +924,7 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
     // `startOffset`, qcoreapplication.cpp:1815-1858).
     loop {
         let posted = {
-            let mut q = queue.lock().unwrap();
+            let mut q = lock_unpoisoned(queue);
             let Some(index) = next_deliverable_index(&mut q, modal) else {
                 break;
             };
@@ -978,7 +976,14 @@ impl EventLoopHandle {
         self.post_event_with_priority(receiver, event, 0);
     }
     pub fn post_event_with_priority(&self, receiver: ObjectId, event: Event, priority: i32) {
-        let mut queue = self.queue.lock().unwrap();
+        // `EventCompressor::try_compress` is user code and runs under the queue lock, because it
+        // merges into queued events in place and the merge-or-insert decision must be atomic
+        // against other posters and the pump (Qt compresses under the `postEventList` mutex).
+        // A panicking compressor cannot leave the queue inconsistent: it runs before the queue
+        // is changed (it sees `events` as a slice, so the length cannot change) and the incoming
+        // event is simply dropped by the unwind. The lock is therefore taken with
+        // `lock_unpoisoned`, so a later destruction or loop teardown still completes.
+        let mut queue = lock_unpoisoned(&self.queue);
         let q = &mut *queue;
         if run_compress_event(&mut q.events, receiver, &event, &*q.compressor) {
             return;
@@ -1034,7 +1039,7 @@ impl ThreadEventRegistry {
 /// posted to that thread before the loop existed. The drain happens under the registry
 /// lock so a concurrent poster cannot overtake the buffered events.
 pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) {
-    let mut reg = THREAD_EVENT_HANDLES.lock().unwrap();
+    let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
     if let Some(buffered) = reg.pending.remove(&thread_id) {
         for posted in buffered.events {
@@ -1045,7 +1050,7 @@ pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) 
 }
 
 pub fn unregister_thread_event_loop(thread_id: ThreadId) {
-    let mut reg = THREAD_EVENT_HANDLES.lock().unwrap();
+    let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     if let Some(reg) = reg.as_mut() {
         reg.handles.remove(&thread_id);
     }
@@ -1067,7 +1072,11 @@ pub fn post_event_to_thread_with_priority(
     // `move_to_thread` flips registration and moves queued events under the same lock, so a post
     // cannot land on the old owner's queue after the move. Qt posts to the receiver's thread data
     // (qcoreapplication.cpp:1694).
-    let mut reg = THREAD_EVENT_HANDLES.lock().unwrap();
+    // A user compressor can panic while this lock is held (see
+    // `EventLoopHandle::post_event_with_priority`). That happens before the registry or the
+    // queue is changed beyond the empty entries created by `get_or_insert_with` and
+    // `or_default`, so the registry stays valid and every lock of it recovers from poison.
+    let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
     let thread_id = routed_thread(receiver, thread_id);
     match reg.handles.get(&thread_id) {
@@ -1090,7 +1099,7 @@ fn routed_thread(receiver: ObjectId, default: ThreadId) -> ThreadId {
 }
 
 pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
-    let reg = THREAD_EVENT_HANDLES.lock().unwrap();
+    let reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     reg.as_ref().and_then(|r| r.handles.get(&thread_id).cloned())
 }
 
@@ -1102,7 +1111,7 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
     let mut woken = None;
     {
-        let mut guard = THREAD_EVENT_HANDLES.lock().unwrap();
+        let mut guard = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = guard.get_or_insert_with(ThreadEventRegistry::new);
         flip();
         let mut moved = Vec::new();
@@ -1113,10 +1122,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
             }
             seen.push(&handle.queue);
             moved.extend(
-                handle
-                    .queue
-                    .lock()
-                    .unwrap()
+                lock_unpoisoned(&handle.queue)
                     .remove_posted_events_matching(|id| receivers.contains(&id)),
             );
         }
@@ -1132,7 +1138,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
         if !moved.is_empty() {
             match reg.handles.get(&to) {
                 Some(handle) => {
-                    let mut queue = handle.queue.lock().unwrap();
+                    let mut queue = lock_unpoisoned(&handle.queue);
                     for posted in moved {
                         queue.insert_posted(posted);
                     }
@@ -1163,7 +1169,7 @@ pub(crate) fn purge_posted_events_for_receiver(receiver: ObjectId) {
     }
     let mut removed = Vec::new();
     {
-        let mut guard = THREAD_EVENT_HANDLES.lock().unwrap();
+        let mut guard = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         if let Some(reg) = guard.as_mut() {
             let mut seen: Vec<&Arc<Mutex<EventQueue>>> = Vec::new();
             for handle in reg.handles.values() {
@@ -1171,7 +1177,7 @@ pub(crate) fn purge_posted_events_for_receiver(receiver: ObjectId) {
                     continue;
                 }
                 seen.push(&handle.queue);
-                removed.extend(handle.queue.lock().unwrap().remove_posted_events(receiver));
+                removed.extend(lock_unpoisoned(&handle.queue).remove_posted_events(receiver));
             }
             for queue in reg.pending.values_mut() {
                 removed.extend(queue.remove_posted_events(receiver));

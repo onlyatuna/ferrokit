@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::object::query_object_thread;
 use crate::object::{ObjectData, ObjectId, QObject, ThreadId};
+use crate::poison::write_unpoisoned;
 
 use crate::event::{Event, EventKind};
 use crate::event_loop::post_event_to_thread;
@@ -191,41 +192,34 @@ pub fn register_connection(
     receiver_id: Option<ObjectId>,
     disconnect_fn: Arc<dyn Fn() + Send + Sync>,
 ) {
-    if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-        conns.insert(
+    write_unpoisoned(&GLOBAL_CONNECTIONS).insert(
+        id,
+        ConnectionRecord {
             id,
-            ConnectionRecord {
-                id,
-                sender_id,
-                receiver_id,
-                disconnect_fn,
-            },
-        );
-    }
+            sender_id,
+            receiver_id,
+            disconnect_fn,
+        },
+    );
 }
 
 pub fn unregister_connection(id: ConnectionId) {
-    if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-        conns.remove(&id);
-    }
+    write_unpoisoned(&GLOBAL_CONNECTIONS).remove(&id);
 }
 
 pub fn disconnect_all_for_object(object_id: ObjectId) {
     let to_disconnect: Vec<Arc<dyn Fn() + Send + Sync>> = {
-        if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-            let mut matched = Vec::new();
-            conns.retain(|_, record| {
-                if record.sender_id == Some(object_id) || record.receiver_id == Some(object_id) {
-                    matched.push(Arc::clone(&record.disconnect_fn));
-                    false
-                } else {
-                    true
-                }
-            });
-            matched
-        } else {
-            Vec::new()
-        }
+        let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
+        let mut matched = Vec::new();
+        conns.retain(|_, record| {
+            if record.sender_id == Some(object_id) || record.receiver_id == Some(object_id) {
+                matched.push(Arc::clone(&record.disconnect_fn));
+                false
+            } else {
+                true
+            }
+        });
+        matched
     };
 
     for disc in to_disconnect {

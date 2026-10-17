@@ -2,6 +2,7 @@
 use crate::event::{Event, EventKind};
 use crate::object::qobject::ObjectData;
 use crate::object::ObjectId;
+use crate::poison::{lock_unpoisoned, read_unpoisoned, write_unpoisoned};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -35,7 +36,7 @@ impl EventSender {
     /// Sends a posted event to the target thread queue and triggers wakeup.
     pub fn send(&self, event: PostedEvent) {
         {
-            let mut q = self.queue.lock().unwrap();
+            let mut q = lock_unpoisoned(&self.queue);
             q.events.push(event);
         }
 
@@ -112,7 +113,7 @@ static GLOBAL_THREAD_SENDERS: RwLock<Option<HashMap<ThreadId, EventSender>>> = R
 
 /// Registers a thread's event sender in the global registry.
 pub fn register_thread_sender(thread_id: ThreadId, sender: EventSender) {
-    let mut lock = GLOBAL_THREAD_SENDERS.write().unwrap();
+    let mut lock = write_unpoisoned(&GLOBAL_THREAD_SENDERS);
     if lock.is_none() {
         *lock = Some(HashMap::new());
     }
@@ -123,21 +124,16 @@ pub fn register_thread_sender(thread_id: ThreadId, sender: EventSender) {
 
 /// Unregisters a thread's event sender from the global registry.
 pub fn unregister_thread_sender(thread_id: ThreadId) {
-    if let Ok(mut lock) = GLOBAL_THREAD_SENDERS.write() {
-        if let Some(map) = lock.as_mut() {
-            map.remove(&thread_id);
-        }
+    if let Some(map) = write_unpoisoned(&GLOBAL_THREAD_SENDERS).as_mut() {
+        map.remove(&thread_id);
     }
 }
 
 /// Queries an event sender handle for the given thread.
 pub fn query_thread_sender(thread_id: ThreadId) -> Option<EventSender> {
-    if let Ok(lock) = GLOBAL_THREAD_SENDERS.read() {
-        if let Some(map) = lock.as_ref() {
-            return map.get(&thread_id).cloned();
-        }
-    }
-    None
+    read_unpoisoned(&GLOBAL_THREAD_SENDERS)
+        .as_ref()
+        .and_then(|map| map.get(&thread_id).cloned())
 }
 impl ThreadContext {
     /// Initializes the thread context for the current thread.

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 use crate::event_loop::dispatcher::{DispatchResult, EventDispatcher, EventDispatcherHandle};
 use crate::event_loop::socket_notifier::{SocketDescriptor, SocketEvent, SocketNotifier};
+use crate::poison::lock_unpoisoned;
 use crate::timer::{TimerEntry, TimerId, TimerRegistry};
 
 pub const EPOLLIN: u32 = 0x001;
@@ -506,7 +507,7 @@ impl EventDispatcher for UnixEventDispatcher {
 
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
         let now_ms = crate::timer::current_time_ms();
-        let mut expired_ids = registry.lock().unwrap().expired_timers(now_ms);
+        let mut expired_ids = lock_unpoisoned(registry).expired_timers(now_ms);
 
         let pending = std::mem::take(&mut *self.pending_timers.lock().unwrap());
         for id in pending {

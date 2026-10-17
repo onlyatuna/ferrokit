@@ -46,6 +46,7 @@ use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 pub use crate::event_loop::dispatcher::DispatchResult;
 use crate::event_loop::dispatcher::{EventDispatcher, EventDispatcherHandle};
 use crate::object::{ObjectId, QObject};
+use crate::poison::lock_unpoisoned;
 use crate::timer::{calculate_next_timeout, current_time_ms, TimerEntry, TimerId, TimerRegistry};
 
 thread_local! {
@@ -117,7 +118,7 @@ impl Drop for InTimerGuard {
     fn drop(&mut self) {
         if !self.single_shot {
             crate::timer::with_thread_timer_context(|ctx| {
-                let mut reg = ctx.registry.lock().unwrap();
+                let mut reg = lock_unpoisoned(&ctx.registry);
                 if let Some(entry) = reg.get_mut(self.id) {
                     entry.in_timer_event = false;
                 } else {
@@ -136,7 +137,7 @@ fn dispatch_thread_timer(raw_id: u32, internal_hwnd: HWND) {
     let mut single_shot = false;
 
     crate::timer::with_thread_timer_context(|ctx| {
-        let mut reg = ctx.registry.lock().unwrap();
+        let mut reg = lock_unpoisoned(&ctx.registry);
         if let Some(entry) = reg.get_mut(id) {
             if !entry.in_timer_event {
                 entry.in_timer_event = true;
@@ -421,7 +422,7 @@ impl Win32EventDispatcher {
             };
 
             if single_shot {
-                registry.lock().unwrap().unregister(id);
+                lock_unpoisoned(registry).unregister(id);
                 unsafe {
                     KillTimer(self.internal_hwnd, raw_id as usize);
                 }
@@ -436,9 +437,7 @@ impl Win32EventDispatcher {
             }
 
             if !single_shot {
-                let still_registered = registry
-                    .lock()
-                    .unwrap()
+                let still_registered = lock_unpoisoned(registry)
                     .get_mut(id)
                     .map(|entry| entry.in_timer_event = false)
                     .is_some();

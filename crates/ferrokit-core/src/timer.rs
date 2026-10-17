@@ -15,6 +15,7 @@ use windows_sys::Win32::Foundation::HWND;
 pub type HWND = *mut std::ffi::c_void;
 
 use crate::object::{ObjectData, ObjectId, QObject};
+use crate::poison::lock_unpoisoned;
 use crate::signal::Signal;
 
 static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -317,10 +318,7 @@ pub fn with_thread_timer_context<R>(f: impl FnOnce(&ThreadTimerContext) -> R) ->
 /// on the internal window, as `Timer::single_shot` always did).
 fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u64) {
     let _timer_id =
-        ctx.registry
-            .lock()
-            .unwrap()
-            .register(receiver, interval_ms, TimerType::Coarse, true);
+        lock_unpoisoned(&ctx.registry).register(receiver, interval_ms, TimerType::Coarse, true);
     #[cfg(windows)]
     if !ctx.internal_hwnd.is_null() {
         unsafe {
@@ -338,7 +336,7 @@ fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u6
 /// Modeled after Qt's QObjectPrivate::moveToThread_helper timer cleanup.
 pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
     with_thread_timer_context(|ctx| {
-        let mut reg = ctx.registry.lock().unwrap();
+        let mut reg = lock_unpoisoned(&ctx.registry);
         let to_remove: Vec<TimerId> = reg
             .entries
             .iter()
@@ -360,7 +358,7 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
 /// qobject.cpp:1490-1502).
 pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> Vec<TimerEntry> {
     with_thread_timer_context(|ctx| {
-        let mut reg = ctx.registry.lock().unwrap();
+        let mut reg = lock_unpoisoned(&ctx.registry);
         let ids: Vec<TimerId> = reg
             .entries
             .iter()
@@ -415,7 +413,7 @@ pub(crate) fn adopt_timers(entries: Vec<TimerEntry>) {
         return;
     }
     let armed = with_thread_timer_context(|ctx| {
-        let mut reg = ctx.registry.lock().unwrap();
+        let mut reg = lock_unpoisoned(&ctx.registry);
         for entry in local {
             reg.register_with_id(
                 entry.id,
@@ -442,7 +440,7 @@ fn arm_in_context(
     timer_type: TimerType,
     single_shot: bool,
 ) -> TimerId {
-    let mut reg = ctx.registry.lock().unwrap();
+    let mut reg = lock_unpoisoned(&ctx.registry);
     let timer_id = reg.register(receiver, interval_ms, timer_type, single_shot);
     arm_source(ctx, timer_id, receiver, interval_ms);
     timer_id
@@ -482,7 +480,7 @@ fn arm_source(ctx: &ThreadTimerContext, timer_id: TimerId, receiver: ObjectId, i
 /// Removes a timer and disarms its delivery source (`QObject::killTimer` → `unregisterTimer`,
 /// qeventdispatcher_win.cpp:383-392). Uses the REGISTERED interval, not the mutable `Timer` field.
 fn disarm_in_context(ctx: &ThreadTimerContext, id: TimerId) -> bool {
-    let mut reg = ctx.registry.lock().unwrap();
+    let mut reg = lock_unpoisoned(&ctx.registry);
     let Some(entry) = reg.unregister(id) else {
         return false;
     };
@@ -663,7 +661,7 @@ impl Timer {
         if self.is_active() {
             let id = self.id.get();
             with_thread_timer_context(|ctx| {
-                if let Some(entry) = ctx.registry.lock().unwrap().get_mut(id) {
+                if let Some(entry) = lock_unpoisoned(&ctx.registry).get_mut(id) {
                     entry.single_shot = v;
                 }
             });
@@ -693,9 +691,7 @@ impl Timer {
         }
         let now = current_time_ms();
         let deadline_opt = with_thread_timer_context(|ctx| {
-            ctx.registry
-                .lock()
-                .unwrap()
+            lock_unpoisoned(&ctx.registry)
                 .get(self.id.get())
                 .map(|e| e.next_fire_ms)
         })
@@ -826,7 +822,7 @@ pub(crate) fn begin_timer_delivery(
     id: TimerId,
     now_ms: u64,
 ) -> Option<(ObjectId, bool)> {
-    let mut reg = registry.lock().unwrap();
+    let mut reg = lock_unpoisoned(registry);
     let entry = reg.get_mut(id)?;
     if entry.in_timer_event {
         return None;
@@ -846,7 +842,7 @@ pub(crate) fn begin_timer_delivery(
 pub fn repost_zero_timer(receiver: ObjectId, timer_id: u64) {
     let id = TimerId(timer_id as u32);
     let still_armed = with_thread_timer_context(|ctx| {
-        let reg = ctx.registry.lock().unwrap();
+        let reg = lock_unpoisoned(&ctx.registry);
         reg.get(id)
             .is_some_and(|e| e.receiver == receiver && e.interval_ms == 0 && !e.single_shot)
     })

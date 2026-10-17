@@ -8,6 +8,11 @@ use crate::object::ObjectId;
 /// with an existing queued event. Modeled after Qt's `QCoreApplication::compressEvent`.
 pub trait EventCompressor: Send + Sync {
     /// Returns true if incoming event was successfully merged or deduplicated.
+    ///
+    /// Runs with the event queue lock held (and, when posting by thread, the event registry
+    /// lock), so it must be quick and must not post events or destroy objects. A panic here
+    /// drops the incoming event and leaves the queue intact: it is called before the queue is
+    /// changed, and it only sees the queued events as a slice.
     fn try_compress(&self, existing: &mut Event, incoming: &Event, receiver: ObjectId) -> bool;
 }
 
