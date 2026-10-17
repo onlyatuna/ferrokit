@@ -3726,6 +3726,28 @@ mod tests {
         }
     }
 
+    /// The lists the two objects keep are compared with the registry's under the write locks of the
+    /// two parents: a registry list that names a child the object's own list lacks is refused, and
+    /// nothing changes (no list is written over).
+    #[test]
+    fn test_swap_refuses_a_registry_list_that_disagrees_with_the_objects_own() {
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let mut a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let mut b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
+        let listed_only_in_the_registry = ObjectId::next();
+        record(a_id).children.write().unwrap().push(listed_only_in_the_registry);
+        let before = states(&[&a.0, &b.0]);
+
+        let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+
+        assert_eq!(res, Err(ReparentError::InvalidParent));
+        assert_eq!(states(&[&a.0, &b.0]), before, "a refused swap changed something");
+        assert_eq!(query_object_children(a_id), Some(vec![listed_only_in_the_registry]));
+        assert_eq!(query_object_children(b_id), Some(Vec::new()));
+        record(a_id).children.write().unwrap().clear();
+    }
+
     #[test]
     fn test_set_parent_handles_poisoned_parent_lock() {
         struct Node(ObjectData);
@@ -4002,9 +4024,12 @@ mod tests {
                     data.owned_by_parent,
                 ),
                 registry: registry.get(&data.id).map(|r| {
+                    // The list (L1) before the link (L2), one lock at a time, like the commits.
+                    let children = read_unpoisoned(&r.children).clone();
+                    let parent = *read_unpoisoned(&r.parent);
                     (
-                        *read_unpoisoned(&r.parent),
-                        read_unpoisoned(&r.children).clone(),
+                        parent,
+                        children,
                         r.borrow_state.borrow_flag.load(Ordering::Acquire),
                         r.liveness.load(Ordering::Acquire),
                     )
@@ -4468,7 +4493,8 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn test_event_test_notices_the_registry_held_during_the_events() {
         let name = "test_set_parent_of_a_registered_child_delivers_events_in_order_with_no_lock_held";
-        assert!(noticed(run_in_child(name, "set_parent_holds_registry", CHILD_LIMIT)));
+        assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed);
+        assert_eq!(run_in_child(name, "set_parent_holds_registry", CHILD_LIMIT), ChildRun::Failed);
     }
 
     /// A hierarchy change that is held between its cycle check and its commit while a second one

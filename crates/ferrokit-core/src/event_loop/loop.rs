@@ -314,14 +314,34 @@ impl EventQueue {
     pub fn post_event_with_priority(
         &mut self,
         receiver: ObjectId,
-        mut event: Event,
+        event: Event,
         priority: i32,
     ) {
-        if self.compress_event(receiver, &mut event) {
+        // A merged event is dropped here, under whatever lock the caller holds. Callers that hold
+        // a lock use `post_from_slot`, which leaves it to them.
+        let mut event = Some(event);
+        self.post_from_slot(receiver, &mut event, priority);
+    }
+
+    /// Posts the event in `event` and leaves the slot empty, or, when the event is merged into one
+    /// that is queued, leaves it in the slot for the caller to drop. A payload's `Drop` may
+    /// unregister objects or post events, which takes locks that the caller of this function may
+    /// hold, so the caller declares the slot before taking them and drops it after releasing them.
+    pub(crate) fn post_from_slot(
+        &mut self,
+        receiver: ObjectId,
+        event: &mut Option<Event>,
+        priority: i32,
+    ) {
+        let Some(incoming) = event.as_mut() else {
+            return;
+        };
+        if self.compress_event(receiver, incoming) {
             return;
         }
-
-        self.insert_posted(PostedEvent::new(receiver, event, priority));
+        if let Some(event) = event.take() {
+            self.insert_posted(PostedEvent::new(receiver, event, priority));
+        }
     }
 
     /// Removes the event at `index`. Removing one from the current turn shrinks
@@ -571,16 +591,18 @@ impl EventLoop {
     }
 
     pub fn post_event_with_priority(&self, receiver: ObjectId, event: Event, priority: i32) {
+        // A merged event is dropped after the queue lock is released (the slot is declared first):
+        // a payload's `Drop` may post events or unregister objects.
+        let mut event = Some(event);
         // The compressor runs under the queue lock: it merges into queued events in place, and
         // the merge-or-insert decision must be atomic against other posters and the pump. See
         // `EventLoopHandle::post_event_with_priority` for why a panicking compressor is harmless.
         let mut queue = lock_unpoisoned(&self.state.queue);
         let q = &mut *queue;
-        if run_compress_event(&mut q.events, receiver, &event, &*q.compressor) {
-            return;
+        q.post_from_slot(receiver, &mut event, priority);
+        if event.is_none() {
+            self.state.dispatcher.wake_up();
         }
-        q.insert_posted(PostedEvent::new(receiver, event, priority));
-        self.state.dispatcher.wake_up();
     }
 
     pub fn set_compressor(&mut self, compressor: Arc<dyn EventCompressor>) {
@@ -976,21 +998,29 @@ impl EventLoopHandle {
         self.post_event_with_priority(receiver, event, 0);
     }
     pub fn post_event_with_priority(&self, receiver: ObjectId, event: Event, priority: i32) {
+        // Declared before the lock, so that a merged event, or one that a panicking compressor was
+        // looking at, is dropped after the queue lock is released: a payload's `Drop` may post
+        // events or unregister objects, which take that lock.
+        let mut event = Some(event);
+        self.post_from_slot(receiver, &mut event, priority);
+    }
+
+    /// See [`EventQueue::post_from_slot`]: the caller drops what is left in the slot, after it has
+    /// released every lock it holds.
+    pub(crate) fn post_from_slot(&self, receiver: ObjectId, event: &mut Option<Event>, priority: i32) {
         // `EventCompressor::try_compress` is user code and runs under the queue lock, because it
         // merges into queued events in place and the merge-or-insert decision must be atomic
         // against other posters and the pump (Qt compresses under the `postEventList` mutex).
         // A panicking compressor cannot leave the queue structurally inconsistent: it runs before
         // the queue is changed (it sees `events` as a slice, so the length cannot change) and the
-        // incoming event is simply dropped by the unwind; an event it had already edited in place
-        // stays as it was left. The lock is therefore taken with `lock_unpoisoned`, so a later
-        // destruction or loop teardown still completes.
+        // incoming event stays in the slot; an event it had already edited in place stays as it
+        // was left. The lock is therefore taken with `lock_unpoisoned`, so a later destruction or
+        // loop teardown still completes.
         let mut queue = lock_unpoisoned(&self.queue);
-        let q = &mut *queue;
-        if run_compress_event(&mut q.events, receiver, &event, &*q.compressor) {
-            return;
+        queue.post_from_slot(receiver, event, priority);
+        if event.is_none() {
+            self.dispatcher.wake_up();
         }
-        q.insert_posted(PostedEvent::new(receiver, event, priority));
-        self.dispatcher.wake_up();
     }
 
     pub fn post_quit(&self, receiver: ObjectId, exit_code: i32) {
@@ -1077,16 +1107,21 @@ pub fn post_event_to_thread_with_priority(
     // `EventLoopHandle::post_event_with_priority`). That happens before the registry or the
     // queue is changed beyond the empty entries created by `get_or_insert_with` and
     // `or_default`, so the registry stays valid and every lock of it recovers from poison.
+    //
+    // The event is held in a slot declared before the lock: an event that is merged into a queued
+    // one, or that a panicking compressor was looking at, is dropped after the registry lock is
+    // released. A payload's `Drop` may post events or unregister objects, which take that lock.
+    let mut event = Some(event);
     let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
     let thread_id = routed_thread(receiver, thread_id);
     match reg.handles.get(&thread_id) {
-        Some(handle) => handle.post_event_with_priority(receiver, event, priority),
+        Some(handle) => handle.post_from_slot(receiver, &mut event, priority),
         None => reg
             .pending
             .entry(thread_id)
             .or_default()
-            .post_event_with_priority(receiver, event, priority),
+            .post_from_slot(receiver, &mut event, priority),
     }
 }
 
