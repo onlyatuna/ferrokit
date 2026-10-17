@@ -979,10 +979,11 @@ impl EventLoopHandle {
         // `EventCompressor::try_compress` is user code and runs under the queue lock, because it
         // merges into queued events in place and the merge-or-insert decision must be atomic
         // against other posters and the pump (Qt compresses under the `postEventList` mutex).
-        // A panicking compressor cannot leave the queue inconsistent: it runs before the queue
-        // is changed (it sees `events` as a slice, so the length cannot change) and the incoming
-        // event is simply dropped by the unwind. The lock is therefore taken with
-        // `lock_unpoisoned`, so a later destruction or loop teardown still completes.
+        // A panicking compressor cannot leave the queue structurally inconsistent: it runs before
+        // the queue is changed (it sees `events` as a slice, so the length cannot change) and the
+        // incoming event is simply dropped by the unwind; an event it had already edited in place
+        // stays as it was left. The lock is therefore taken with `lock_unpoisoned`, so a later
+        // destruction or loop teardown still completes.
         let mut queue = lock_unpoisoned(&self.queue);
         let q = &mut *queue;
         if run_compress_event(&mut q.events, receiver, &event, &*q.compressor) {

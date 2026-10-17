@@ -12,8 +12,10 @@
 //! helpers are therefore used only for locks whose data is a plain container (`HashMap`, `Vec`,
 //! a queue of events) changed by single-step operations (insert, remove, retain, push, store),
 //! or by steps that run no user code between the first and the last change. For such data the
-//! poison flag carries no information, so it is cleared after recovery and later lockers, outside
-//! the crate included, see a healthy lock.
+//! poison flag carries no information, so it is cleared when a helper recovers the lock, and
+//! later lockers see a healthy lock. Code outside the crate that locks the same mutex (for
+//! example `EventLoop::queue()`) before any internal caller has recovered it still sees the
+//! poison.
 //!
 //! Do not use them for data with an invariant that spans several steps with user code in
 //! between: there a poisoned lock must be reported, or the user code must run without the lock.

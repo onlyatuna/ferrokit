@@ -530,7 +530,7 @@ impl EventDispatcher for UnixEventDispatcher {
                 crate::timer::dispatch_single_shot_callback(receiver);
             }
 
-            let mut reg = registry.lock().unwrap();
+            let mut reg = lock_unpoisoned(registry);
             if single_shot {
                 reg.unregister(id);
                 self.reactor.unregister_timer(id);

@@ -147,26 +147,40 @@ impl std::ops::DerefMut for ObjectBorrowGuard {
     }
 }
 
+/// Releases a borrow flag when it goes out of scope, a panic included.
+struct ReleaseBorrowFlag<'a>(&'a ObjectBorrowState);
+
+impl Drop for ReleaseBorrowFlag<'_> {
+    fn drop(&mut self) {
+        self.0.borrow_flag.store(false, Ordering::Release);
+    }
+}
+
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
-        if self
-            ._entry
-            .has_pending_child_changes
-            .swap(false, Ordering::AcqRel)
         {
-            let changes = std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
-            // A dead object is not written to: its memory may already be freed. Every drop of a
-            // registered object marks the shared liveness token dead before the memory goes.
-            if self._entry.liveness.load(Ordering::Acquire) {
-                // SAFETY: the callback that held this borrow has returned, so no reference into
-                // the object is live, and the object is alive.
-                let mut data = unsafe { (*self.ptr).object_data_mut() };
-                for change in &changes {
-                    change.apply(ObjectDataMut::new(data.raw_data_mut()));
+            // The flag is released when this block ends, also when the object's own accessor
+            // panics while the edits queued during the callback are applied: the object would
+            // stay borrowed for ever otherwise.
+            let _release = ReleaseBorrowFlag(&self.borrow_state);
+            if self
+                ._entry
+                .has_pending_child_changes
+                .swap(false, Ordering::AcqRel)
+            {
+                let changes = std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
+                // A dead object is not written to: its memory may already be freed. Every drop of a
+                // registered object marks the shared liveness token dead before the memory goes.
+                if self._entry.liveness.load(Ordering::Acquire) {
+                    // SAFETY: the callback that held this borrow has returned, so no reference into
+                    // the object is live, and the object is alive.
+                    let mut data = unsafe { (*self.ptr).object_data_mut() };
+                    for change in &changes {
+                        change.apply(ObjectDataMut::new(data.raw_data_mut()));
+                    }
                 }
             }
         }
-        self.borrow_state.borrow_flag.store(false, Ordering::Release);
         if self
             .borrow_state
             .free_when_released
@@ -688,6 +702,16 @@ fn register_record(
         }
         let ancestors = ancestors_in(&registry, parent);
         children.retain(|child_id| *child_id != id && !ancestors.contains(child_id));
+        // The parent's list is taken before anything is inserted, so that a poisoned list refuses
+        // the adoption with nothing changed, as every other commit does. The parent is borrowed by
+        // the caller, so it is registered. Its registry list is what still reaches the child while
+        // a running callback of the parent hides it from the parent's own `children`. L0 (write)
+        // before L1, as everywhere.
+        let parent_record = adopted_by.and_then(|parent_id| registry.get(&parent_id).cloned());
+        let mut parent_list = match &parent_record {
+            Some(parent_record) => Some(parent_record.children.write().map_err(|_| ReparentError::Busy)?),
+            None => None,
+        };
         let record = Arc::new(ObjectRecord {
             id,
             thread_id: RwLock::new(thread_id),
@@ -710,15 +734,9 @@ fn register_record(
                 previous.liveness.store(false, Ordering::Release);
             }
         }
-        if let Some(parent_id) = adopted_by {
-            // The parent is borrowed by the caller, so it is registered. Its registry list is
-            // what still reaches the child while a running callback of the parent hides it from
-            // the parent's own `children`. L0 (write) before L1, as everywhere.
-            if let Some(parent_record) = registry.get(&parent_id) {
-                let mut list = write_unpoisoned(&parent_record.children);
-                if !list.contains(&id) {
-                    list.push(id);
-                }
+        if let Some(list) = parent_list.as_mut() {
+            if !list.contains(&id) {
+                list.push(id);
             }
         }
     }
@@ -1150,8 +1168,8 @@ impl ObjectData {
     /// Returns the parent object ID if any (`QObject::parent`).
     ///
     /// `None` once the parent has been dropped, as long as it was registered when it was set,
-    /// even if this object could not be updated at that moment. The public `parent` field can
-    /// still name the dead parent then; read it through this method.
+    /// even if this object could not be updated at that moment: the link this object keeps can
+    /// still name the dead parent then, and this method does not report it.
     pub fn parent(&self) -> Option<ObjectId> {
         let id = self.parent?;
         match &self.parent_liveness {
@@ -1356,7 +1374,13 @@ impl<'a> ObjectDataMut<'a> {
     /// (such as [`query_object_parent`]) are protected individually by single locks, but do not provide
     /// cross-record snapshot atomicity.
     ///
-    /// An `Err` leaves everything as it was.
+    /// An `Err` leaves everything as it was, and no event is sent. `InvalidParent`: one object lists
+    /// the other (that is answered first), an owned child is missing from its parent's list, a
+    /// listed child is not registered, a ring would form, or the lists and links the objects keep
+    /// disagree with the registry's. `DifferentThread`: the thread affinities of the two objects, or
+    /// of a child and the object it moves to, do not fit, or a child is registered on another
+    /// thread. `UnknownObject`: either object is not registered or is dead, or a child is dead.
+    /// `Busy`: a child is borrowed by a running callback, or a lock is poisoned.
     pub fn swap_hierarchy_and_ownership(&mut self, other: &mut ObjectDataMut<'_>) -> Result<(), ReparentError> {
         let self_id = self.data.id;
         let other_id = other.data.id;
@@ -1820,16 +1844,23 @@ pub enum ReparentError {
     /// [`set_parent`]: the object is held by its parent's `owned_children`. Detaching it there
     /// would destroy it (or leave the caller's `&mut` dangling); use [`reparent_owned_object`].
     OwnedByParent,
-    /// [`reparent_owned_object`]: the object has no parent that owns it.
+    /// [`reparent_owned_object`]: the object has no parent that owns it, or that parent is not
+    /// registered on the calling thread.
     NotOwned,
     /// The object is not registered, is dead, or is registered on another thread. For
-    /// [`add_owned_child`] the object is the new parent.
+    /// [`add_owned_child`] the object is the new parent; for
+    /// [`ObjectDataMut::swap_hierarchy_and_ownership`] it is either of the two objects, or one of
+    /// the children that move (dead).
     UnknownObject,
     /// [`set_parent`]: the new parent is the object itself or one of its descendants, or the
     /// child is registered and the new parent is not (two unregistered objects can be linked: only
-    /// the child's own link is recorded). [`reparent_owned_object`]: the first of those, and also
-    /// a new parent that is not registered on the calling thread. [`add_owned_child`]: the parent
-    /// is the child itself or one of its descendants.
+    /// the child's own link is recorded). A new parent of another thread affinity gets
+    /// `DifferentThread` instead of the second case. [`reparent_owned_object`]: the new parent is the child itself, or is
+    /// not registered on the calling thread, or (checked last) is a descendant of the child.
+    /// [`add_owned_child`]: the child has a parent already, or the parent is the child itself or
+    /// one of its descendants. [`ObjectDataMut::swap_hierarchy_and_ownership`]: one object is
+    /// below the other, the lists the objects keep disagree with the registry's, or a listed child
+    /// is not registered.
     InvalidParent,
     /// The object or a parent is borrowed by an active callback, or a lock that guards a link or
     /// a list of the hierarchy is poisoned. Nothing was changed.
@@ -1977,8 +2008,9 @@ fn ancestors_in(
 /// too.
 ///
 /// Limits of that guarantee:
-/// - In the cases just named, where the parent's drop cannot write to the child, the public
-///   `parent` field can keep the old id. Read the parent through `parent()`.
+/// - In the cases just named, where the parent's drop cannot write to the child, the child's own
+///   link can keep the old id. Read the parent through `parent()`, which ignores a link whose
+///   parent is dead.
 /// - While a running callback holds the parent's borrow, the parent's own `children()` still
 ///   shows the list as it was; the change is applied when that callback returns. The registry
 ///   has it at once, so dropping the parent reaches the child either way.
@@ -1986,10 +2018,13 @@ fn ancestors_in(
 /// `new_parent` need not be registered when the child is not either: the id is accepted and only
 /// the child's own link is recorded, and the parent's child list, `ChildAdded` and the death
 /// tracking above, which need a registered parent, do not happen. A registered child is refused
-/// with [`ReparentError::InvalidParent`], changing nothing: the registry never links a registered
-/// object to an id it does not hold. Qt has no such case (a `QObject*` is always a live object),
-/// so nothing more is specified for it. [`reparent_owned_object`] and [`add_owned_child`] refuse
-/// an unregistered parent.
+/// with [`ReparentError::InvalidParent`], changing nothing: `set_parent` does not link a
+/// registered object to an id the registry does not hold. (An object that was linked to an
+/// unregistered parent while it was unregistered keeps that link when it is registered; the
+/// registry then has it on the object's record only, and not in the parent's list.) A new parent
+/// of another thread affinity gets [`ReparentError::DifferentThread`] instead, registered or not.
+/// Qt has no such case (a `QObject*` is always a live object), so nothing more is specified for
+/// it. [`reparent_owned_object`] and [`add_owned_child`] refuse an unregistered parent.
 ///
 /// # Events and what they see
 /// The registry is changed completely before the first event. From `ChildRemoved` on,
@@ -1998,10 +2033,17 @@ fn ancestors_in(
 /// child from the old parent's list, sends `ChildRemoved`, and only then changes the child's
 /// parent and the new parent's list): the old parent's own `children()` has lost the child when it
 /// gets `ChildRemoved`; the child's own `parent()` and the new parent's own `children()` change
-/// after that handler has returned, and `ChildAdded` sees all of it. An object whose borrow is held
-/// by a running callback has its list change applied, and gets its event, when that callback
-/// returns. If the `ChildRemoved` handler panics, the child and the new parent's list are still
-/// brought in line with the registry, `ChildAdded` is not sent, and the panic then continues.
+/// after that handler has returned, and `ChildAdded` sees all of it.
+///
+/// An object whose borrow is held by a running callback has its list change applied when that
+/// callback returns, and its event is posted to the thread's event queue: the next event
+/// processing delivers it, not this call. An event that is delivered at once (to the other
+/// parent, when its borrow is not held) can therefore come before a posted one. The events go to
+/// the receiver directly, so its object event filters do not see them, unlike those of
+/// [`reparent_owned_object`] and [`add_owned_child`].
+///
+/// If the `ChildRemoved` handler panics, the child and the new parent's list are still brought
+/// in line with the registry, `ChildAdded` is not sent, and the panic then continues.
 ///
 /// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
@@ -2192,6 +2234,16 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 /// detach the child and leave it without a parent; here that would leave the child without an
 /// owner, and the return type cannot hand it back together with an error.
 ///
+/// The errors, in the order they are met: `UnknownObject` when the child is not registered on the
+/// calling thread; `InvalidParent` when the new parent is the child itself; `NotOwned` when the
+/// child has no parent, its parent does not own it, or that parent is registered on another
+/// thread; `DifferentThread`; `InvalidParent` when the new parent is not registered on the calling
+/// thread; `Busy` when the child or a parent is borrowed by a running callback, or a lock is
+/// poisoned; and last `InvalidParent` when the new parent is a descendant of the child. That last
+/// check is made once the borrows are held, so a descendant that is borrowed answers `Busy`.
+/// Moving the child to the parent that already owns it changes nothing and returns `Ok(None)`, as
+/// a real move does.
+///
 /// A released child comes back as an [`OwnedObject`], which shares its pointer with the
 /// registry, so the caller may use the child between its callbacks while it stays registered. It
 /// is never given up as a `Box`: a `Box` claims to be the only pointer to its object, and the
@@ -2213,6 +2265,11 @@ pub fn reparent_owned_object(
     // `pending_child_changes` mutex and can free parked children, which unregisters them and so
     // takes L0 for writing.
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
+    // An object is not its own parent. This is answered before the child is borrowed: the borrow
+    // of the new parent, which would be the child, would answer `Busy` otherwise.
+    if new_parent == Some(child_id) {
+        return Err(ReparentError::InvalidParent);
+    }
     let mut child_guard = borrow_record(&child_record).map_err(|_| ReparentError::Busy)?;
 
     let old_parent_id = (*child_record.parent.read().map_err(|_| ReparentError::Busy)?)
@@ -2232,11 +2289,6 @@ pub fn reparent_owned_object(
 
     let new_record = match new_parent {
         Some(np) => {
-            // An object is not its own parent. This is answered first: the borrow of the new parent
-            // below would meet the child's own borrow and answer `Busy`.
-            if np == child_id {
-                return Err(ReparentError::InvalidParent);
-            }
             let child_thread = *child_record.thread_id.read().map_err(|_| ReparentError::Busy)?;
             if in_different_thread(child_thread, np) {
                 return Err(ReparentError::DifferentThread);
@@ -2246,9 +2298,17 @@ pub fn reparent_owned_object(
         None => None,
     };
 
-    let mut old_guard = borrow_record(&old_record).map_err(|_| ReparentError::Busy)?;
+    // A parent that is not registered on the calling thread, or is dead, is not `Busy`: the
+    // calling thread cannot do what is asked of it.
+    let mut old_guard = borrow_record(&old_record).map_err(|error| match error {
+        ReparentError::Busy => ReparentError::Busy,
+        _ => ReparentError::NotOwned,
+    })?;
     let mut new_guard = match &new_record {
-        Some(record) => Some(borrow_record(record).map_err(|_| ReparentError::Busy)?),
+        Some(record) => Some(borrow_record(record).map_err(|error| match error {
+            ReparentError::Busy => ReparentError::Busy,
+            _ => ReparentError::InvalidParent,
+        })?),
         None => None,
     };
 
@@ -2382,10 +2442,12 @@ pub fn reparent_owned_object(
 /// (Qt `setParent_helper`, qobject.cpp:2346-2352).
 ///
 /// Returns the child id. If the parent's thread differs from the child's, returns
-/// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the parent is
-/// borrowed (for example from inside its own callback), returns `Busy`; if the parent is the child
-/// itself or one of its descendants (a child that is registered already can have descendants),
-/// returns `InvalidParent`. In every case the `Box` is
+/// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the child has
+/// a parent already (take it from that parent first: that parent would go on listing it, and
+/// dropping that parent would unregister the child the new parent owns), or the parent is the
+/// child itself or one of its descendants (a child that is registered already can have
+/// descendants), returns `InvalidParent`; if the parent is borrowed (for example from inside its
+/// own callback), returns `Busy`. In every case the `Box` is
 /// handed back and nothing is attached: the child gets no parent, the parent's children stay as
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
 /// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
@@ -2415,6 +2477,9 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     }
     if registered_ptr(parent_id).is_none() {
         return Err((ReparentError::UnknownObject, child));
+    }
+    if child.object_data().parent().is_some() {
+        return Err((ReparentError::InvalidParent, child));
     }
     let child_id = child.object_data().id();
     let mut pending = Some(child);
@@ -3966,9 +4031,12 @@ mod tests {
         fn start(&self) {
             let _ = self.go.send(());
         }
+        /// Ends the thread, whether it was started or not, and waits for it.
         fn finish(self) {
-            let _ = self.end.send(());
-            self.handle.join().expect("a thread panicked");
+            let Side { go, end, handle, .. } = self;
+            drop(go);
+            let _ = end.send(());
+            handle.join().expect("a thread panicked");
         }
     }
 
@@ -4679,7 +4747,9 @@ mod tests {
     /// the function. The `Box` comes back unchanged.
     #[test]
     #[allow(deprecated)]
-    #[cfg_attr(miri, ignore = "the deprecated Box registration breaks the aliasing rules by design")]
+    // Ignored under Miri without a reason on purpose: the sweep reads `ignored` at the end of the
+    // line. The deprecated `Box` registration breaks the aliasing rules by design.
+    #[cfg_attr(miri, ignore)]
     fn test_add_owned_child_refuses_a_parent_that_is_a_descendant_of_the_child() {
         // SAFETY: the box is kept and not used between the calls below.
         let (b_id, boxed) = unsafe { register_boxed_qobject(Box::new(Plain(ObjectData::new(ObjectId::next())))) };
@@ -4699,6 +4769,32 @@ mod tests {
         unsafe { unregister_qobject(b_id) };
         drop(returned);
         drop(d);
+    }
+
+    /// An adoption into a parent whose registry list is poisoned is refused with `Busy` and
+    /// nothing changed, like every other commit on that list; the `Box` comes back.
+    #[test]
+    fn test_add_owned_child_refuses_a_parent_whose_list_is_poisoned_and_changes_nothing() {
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        let parent_record = record(parent_id);
+        poison(&parent_record, |r| {
+            let _held = r.children.write().unwrap();
+            panic!("poison on purpose");
+        });
+        let boxed = Box::new(Plain(ObjectData::new(ObjectId::next())));
+        let child_id = boxed.0.id();
+        let before = states(&[&parent.0]);
+
+        let (error, returned) = unsafe { add_owned_child(parent_id, boxed) }.unwrap_err();
+        assert_eq!(error, ReparentError::Busy);
+        assert_eq!(states(&[&parent.0]), before);
+        assert!(read_unpoisoned(&parent_record.children).is_empty());
+        assert_eq!(query_object_parent(child_id), None, "the child was registered");
+        assert_eq!(returned.0.parent(), None);
+        assert!(!returned.0.is_owned_by_parent());
+        drop(returned);
     }
 
     /// Cleanup of a destroyed object cannot report an error, and skipping a step leaves an id in a
@@ -4769,6 +4865,110 @@ mod tests {
         let before = states(&[&child.0]);
         assert!(matches!(reparent_owned_object(owned_id, Some(parent_id)), Err(ReparentError::Busy)));
         assert_eq!(states(&[&child.0]), before);
+        drop(child);
+        drop(parent);
+    }
+
+    /// A new parent that is registered on another thread (with the affinity of the child) cannot
+    /// be borrowed here: the answer is the documented `InvalidParent`, not `Busy`, and nothing
+    /// changes.
+    #[test]
+    fn test_reparent_owned_object_answers_invalid_parent_for_a_parent_of_another_registration_thread() {
+        let affinity = ThreadId::current();
+        let np_id = ObjectId::next();
+        let there = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(np_id, affinity))) },
+            |_| (),
+        );
+        there.wait_ready();
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let p = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity))) };
+        let child_id = unsafe {
+            add_owned_child(OwnedObject::object_id(&p), Box::new(Plain(ObjectData::with_thread(ObjectId::next(), affinity))))
+        }
+        .map_err(|(e, _)| e)
+        .unwrap();
+        let before = states(&[&p.0, p.0.owned_children[0].object_data()]);
+        let res = reparent_owned_object(child_id, Some(np_id));
+        assert!(matches!(res, Err(ReparentError::InvalidParent)), "{:?}", res.as_ref().err());
+        assert_eq!(states(&[&p.0, p.0.owned_children[0].object_data()]), before);
+        there.finish();
+    }
+
+    /// An object is not its own parent, also when the call comes from inside its own callback (its
+    /// borrow is held): the answer is `InvalidParent`, not `Busy`.
+    #[test]
+    fn test_reparent_owned_object_answers_invalid_parent_for_its_own_id_inside_its_own_callback() {
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let p = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let child_id = unsafe { add_owned_child(OwnedObject::object_id(&p), Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let inside = with_object_mut(child_id, |_| reparent_owned_object(child_id, Some(child_id)).map(|_| ()));
+        assert_eq!(inside, Some(Err(ReparentError::InvalidParent)));
+    }
+
+    /// A child that has a parent already is refused: that parent would go on listing it, and
+    /// dropping that parent would unregister the child that the new parent owns. The `Box` comes
+    /// back, and neither parent's list changed.
+    #[test]
+    fn test_add_owned_child_refuses_a_child_that_has_a_parent_already() {
+        // SAFETY: the parents are owned here and dropped at the end, on this thread.
+        let a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
+        let mut boxed = Box::new(Plain(ObjectData::new(ObjectId::next())));
+        let child_id = boxed.0.id();
+        assert_eq!(set_parent(&mut boxed.0, Some(a_id)), Ok(()));
+        assert_eq!(query_object_children(a_id), Some(vec![child_id]));
+
+        let (error, returned) = unsafe { add_owned_child(b_id, boxed) }.unwrap_err();
+        assert_eq!(error, ReparentError::InvalidParent);
+        assert_eq!(returned.0.parent(), Some(a_id));
+        assert!(!returned.0.is_owned_by_parent());
+        assert_eq!(query_object_children(a_id), Some(vec![child_id]));
+        assert_eq!(query_object_children(b_id), Some(Vec::new()));
+        assert_eq!(query_object_parent(child_id), None, "the child was registered");
+        drop(returned);
+        drop(b);
+        drop(a);
+    }
+
+    /// An object whose own accessor panics while the child-list edits queued during its callback
+    /// are applied does not stay borrowed for ever.
+    #[test]
+    fn test_borrow_flag_is_released_when_the_accessor_panics_in_the_guards_drop() {
+        struct Panicky {
+            data: ObjectData,
+            armed: Arc<AtomicBool>,
+        }
+        impl QObject for Panicky {
+            fn object_data(&self) -> &ObjectData {
+                &self.data
+            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+                assert!(!self.armed.load(Ordering::SeqCst), "the accessor panics on purpose");
+                ObjectDataMut::new(&mut self.data)
+            }
+        }
+        let armed = Arc::new(AtomicBool::new(false));
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe {
+            register_owned_qobject(Panicky { data: ObjectData::new(ObjectId::next()), armed: Arc::clone(&armed) })
+        };
+        let parent_id = OwnedObject::object_id(&parent);
+        let mut child = ObjectData::new(ObjectId::next());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_object_mut(parent_id, |_| {
+                // The parent is borrowed, so the edit of its own list is queued...
+                assert_eq!(set_parent(&mut child, Some(parent_id)), Ok(()));
+                // ... and applied by the guard when this callback returns.
+                armed.store(true, Ordering::SeqCst);
+            })
+        }));
+        armed.store(false, Ordering::SeqCst);
+        assert!(outcome.is_err(), "the accessor did not panic: the queued edit was not applied by the guard");
+        assert!(with_object(parent_id, |_| ()).is_some(), "the parent stays borrowed");
         drop(child);
         drop(parent);
     }

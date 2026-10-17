@@ -11,8 +11,9 @@ pub trait EventCompressor: Send + Sync {
     ///
     /// Runs with the event queue lock held (and, when posting by thread, the event registry
     /// lock), so it must be quick and must not post events or destroy objects. A panic here
-    /// drops the incoming event and leaves the queue intact: it is called before the queue is
-    /// changed, and it only sees the queued events as a slice.
+    /// drops the incoming event and leaves the queue structurally valid: the compressor is called
+    /// before the queue is changed and only sees the queued events as a slice. An event it had
+    /// already edited in place stays as it was left.
     fn try_compress(&self, existing: &mut Event, incoming: &Event, receiver: ObjectId) -> bool;
 }
 
