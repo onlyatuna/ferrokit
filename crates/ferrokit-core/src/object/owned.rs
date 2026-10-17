@@ -58,6 +58,21 @@ impl<T: QObject> OwnedObject<T> {
             _owns: PhantomData,
         }
     }
+
+    /// Gives the object back as a `Box`: for an owner whose object the registry never received a
+    /// pointer of, because the registration was refused before anything was inserted.
+    ///
+    /// # Safety
+    /// The registry must hold no pointer made from this owner (its [`OwnedObject::as_non_null`]),
+    /// and no other pointer made from it may be used afterwards.
+    pub(crate) unsafe fn into_box(this: Self) -> Box<T> {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: `this` is in `ManuallyDrop`, so `borrow_state` is moved out once here.
+        drop(unsafe { std::ptr::read(&this.borrow_state) });
+        // SAFETY: `ptr` came from `Box::into_raw` in `from_box` and is turned back into its `Box`
+        // once: the owner is consumed and its `Drop` does not run.
+        unsafe { Box::from_raw(this.ptr.as_ptr()) }
+    }
 }
 
 impl<T: QObject + ?Sized> OwnedObject<T> {
@@ -124,8 +139,9 @@ impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
     fn drop(&mut self) {
         // SAFETY: unregister the object's registration before deallocating memory.
         unsafe { crate::object::unregister_qobject(self.id) };
-        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is never
-        // turned back into a `Box`, so no second pointer that claims unique ownership exists.
+        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is turned back
+        // into a `Box` only by `into_box`, for an object that was never registered through it, so
+        // no second pointer that claims unique ownership exists.
         drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
     }
 }

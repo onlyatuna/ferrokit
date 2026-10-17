@@ -11,9 +11,60 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 static GLOBAL_OBJECT_THREADS: RwLock<Option<HashMap<ObjectId, ThreadId>>> = RwLock::new(None);
+
+/// Serialises every operation that gives an object a new parent in the registry. The check that the
+/// new parent is not a descendant of the child, and the commit that records the link, both happen
+/// with this held, so no other operation of that kind can slip between them: `set_parent`,
+/// `reparent_owned_object`, `swap_hierarchy_and_ownership` and the registration of a record that
+/// carries a parent link. Operations that only remove links (`unregister_qobject`, dropping an
+/// object) do not take it, since removing a link cannot close a cycle.
+///
+/// It is taken before the registry (L0) and is never requested while L0, L1, L2 or the
+/// `pending_child_changes` mutex is held. It is released before any event is delivered, before any
+/// handler or user accessor (`QObject::object_data_mut`) runs, and before an `ObjectBorrowGuard`
+/// or an `OwnedObject` is dropped. It guards no data, so a poisoned state says nothing about
+/// anything it protects and is taken as it is.
+static HIERARCHY_MUTATION: Mutex<()> = Mutex::new(());
+
+#[cfg(not(test))]
+type HierarchyGuard = MutexGuard<'static, ()>;
+#[cfg(test)]
+type HierarchyGuard = Option<MutexGuard<'static, ()>>;
+
+#[cfg(not(test))]
+fn lock_hierarchy() -> HierarchyGuard {
+    HIERARCHY_MUTATION.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+fn lock_hierarchy() -> HierarchyGuard {
+    if test_hooks::mutant("skip_hierarchy_lock") {
+        return None;
+    }
+    Some(HIERARCHY_MUTATION.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Locks for a value that one store replaces, or that only plain container edits change
+/// (`insert`, `remove`, `retain`, `push`, `take`): a panic cannot leave such a value half written, so
+/// a poisoned lock still guards a valid value and is used as it is. They serve where the caller
+/// cannot report an error (cleanup, `Drop`) and where a panic would only turn the failure of one
+/// thread into one of every later caller. Unlike the helpers of the `poison` module they leave the
+/// poison flag set: the commits of a hierarchy change use the plain `read`/`write` calls on these
+/// locks and return `ReparentError::Busy` for a poisoned one, and cleanup must not change that.
+fn read_unpoisoned<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Physical pointer to a registered QObject. It is dereferenced only by `registered_ptr`, after
 /// the caller is verified to run on the record's registration thread.
@@ -103,12 +154,7 @@ impl Drop for ObjectBorrowGuard {
             .has_pending_child_changes
             .swap(false, Ordering::AcqRel)
         {
-            let changes = self
-                ._entry
-                .pending_child_changes
-                .lock()
-                .map(|mut queued| std::mem::take(&mut *queued))
-                .unwrap_or_default();
+            let changes = std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
             // A dead object is not written to: its memory may already be freed. Every drop of a
             // registered object marks the shared liveness token dead before the memory goes.
             if self._entry.liveness.load(Ordering::Acquire) {
@@ -197,7 +243,7 @@ static GLOBAL_OBJECT_REGISTRY: std::sync::LazyLock<RwLock<HashMap<ObjectId, Arc<
 
 fn registered_ptr(id: ObjectId) -> Option<(Arc<ObjectRecord>, *mut dyn QObject)> {
     let entry = GLOBAL_OBJECT_REGISTRY.read().ok()?.get(&id)?.clone();
-    if *entry.registration_thread.read().unwrap() != ThreadId::current()
+    if *read_unpoisoned(&entry.registration_thread) != ThreadId::current()
         || !entry.liveness.load(Ordering::Acquire)
     {
         return None;
@@ -279,12 +325,10 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
     match borrow_registered(parent) {
         Some(mut guard) => change.apply(guard.object_data_mut()),
         None => {
-            if let Ok(mut queued) = entry.pending_child_changes.lock() {
-                queued.push(change);
-                entry
-                    .has_pending_child_changes
-                    .store(true, Ordering::Release);
-            }
+            lock_unpoisoned(&entry.pending_child_changes).push(change);
+            entry
+                .has_pending_child_changes
+                .store(true, Ordering::Release);
         }
     }
 }
@@ -312,8 +356,12 @@ pub fn dispatch_to_object(receiver: ObjectId, event: &mut Event) -> bool {
 }
 
 /// Registers an object's thread affinity in the global registry.
+///
+/// Lock order: this map, then the registry (L0, read), then the record's `thread_id`. They are held
+/// together so that two calls for one id leave both stores with the same last writer. No caller
+/// holds L0, L1, L2 or `HIERARCHY_MUTATION`.
 pub fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
-    let mut lock = GLOBAL_OBJECT_THREADS.write().unwrap();
+    let mut lock = write_unpoisoned(&GLOBAL_OBJECT_THREADS);
     if lock.is_none() {
         *lock = Some(HashMap::new());
     }
@@ -322,17 +370,16 @@ pub fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
     }
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
         if let Some(entry) = reg.get(&id) {
-            *entry.thread_id.write().unwrap() = thread_id;
+            *write_unpoisoned(&entry.thread_id) = thread_id;
         }
     }
 }
 
-/// Unregisters an object's thread affinity from the global registry.
+/// Unregisters an object's thread affinity from the global registry. It is part of the cleanup of
+/// a destroyed object, which cannot report a failure, so a poisoned map is used as it is.
 pub fn unregister_object_thread(id: ObjectId) {
-    if let Ok(mut lock) = GLOBAL_OBJECT_THREADS.write() {
-        if let Some(map) = lock.as_mut() {
-            map.remove(&id);
-        }
+    if let Some(map) = write_unpoisoned(&GLOBAL_OBJECT_THREADS).as_mut() {
+        map.remove(&id);
     }
 }
 
@@ -342,7 +389,7 @@ pub(crate) fn registration_thread_of(id: ObjectId) -> Option<ThreadId> {
     if !entry.liveness.load(Ordering::Acquire) {
         return None;
     }
-    let thread_id = *entry.registration_thread.read().unwrap();
+    let thread_id = *read_unpoisoned(&entry.registration_thread);
     Some(thread_id)
 }
 
@@ -416,7 +463,7 @@ pub fn invoke_method_on_thread(
 pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
         if let Some(entry) = reg.get(&id) {
-            *entry.registration_thread.write().unwrap() = thread_id;
+            *write_unpoisoned(&entry.registration_thread) = thread_id;
         }
     }
 }
@@ -447,9 +494,9 @@ pub(crate) fn prepare_move_to_thread(
         return Err(MoveByIdError::Busy);
     }
     let on_registration_thread =
-        *entry.registration_thread.read().unwrap() == ThreadId::current();
+        *read_unpoisoned(&entry.registration_thread) == ThreadId::current();
     if !on_registration_thread {
-        if entry.parent.read().unwrap().is_some() {
+        if read_unpoisoned(&entry.parent).is_some() {
             return Err(MoveByIdError::HasParent);
         }
         return Err(MoveByIdError::WrongThread);
@@ -552,13 +599,11 @@ pub fn query_object_parents_snapshot(id1: ObjectId, id2: ObjectId) -> Option<(Op
 pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
         if let Some(entry) = reg.get(&id) {
-            return Some(*entry.thread_id.read().unwrap());
+            return Some(*read_unpoisoned(&entry.thread_id));
         }
     }
-    if let Ok(lock) = GLOBAL_OBJECT_THREADS.read() {
-        if let Some(map) = lock.as_ref() {
-            return map.get(&id).copied();
-        }
+    if let Some(map) = read_unpoisoned(&GLOBAL_OBJECT_THREADS).as_ref() {
+        return map.get(&id).copied();
     }
     None
 }
@@ -598,24 +643,65 @@ pub unsafe fn register_qobject(obj: &mut dyn QObject) {
     register_object_metadata(data, ptr);
 }
 
+/// Registers `ptr` under the id of `data`. See [`register_record`]. This form cannot fail: a parent
+/// link that would close a cycle is left out of the record.
 fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
+    // The record gets copies; nothing keeps a reference to `data` past the call.
+    let _ = register_record(data, ptr, None);
+}
+
+/// Builds the record of `data` and inserts it into the registry, replacing the record of an
+/// object registered earlier under the same id.
+///
+/// The record carries the parent link `data` has, which is a new parent edge in the registry, so
+/// it is made like every other: with `HIERARCHY_MUTATION` held, and with the check that the parent
+/// is not a descendant done against the registry the record goes into. `set_parent` accepts an
+/// unregistered parent for an unregistered child, so objects can have been linked into a cycle
+/// that no registry walk could see. A link that would close one is not recorded, and neither is
+/// a child that is the object itself or one of its ancestors: the registry never holds a cycle.
+/// A link that cannot be checked, because a lock on the way is poisoned, is not recorded either.
+///
+/// With `adopted_by`, the object is also listed among the children of that parent, and a link
+/// that would close a cycle, or cannot be checked, is refused: nothing is inserted and the caller,
+/// who still owns the object, gets the error.
+fn register_record(
+    data: &ObjectData,
+    ptr: *mut dyn QObject,
+    adopted_by: Option<ObjectId>,
+) -> Result<(), ReparentError> {
     let id = data.id();
     let thread_id = data.thread_id();
-    let record = Arc::new(ObjectRecord {
-        id,
-        thread_id: RwLock::new(thread_id),
-        registration_thread: RwLock::new(ThreadId::current()),
-        ptr: RegisteredPtr(ptr),
-        parent: RwLock::new(data.parent()),
-        children: RwLock::new(data.children.clone()),
-        liveness: Arc::clone(&data.liveness),
-        generation: AtomicU32::new(data.generation),
-        borrow_state: Arc::clone(&data.borrow_state),
-        pending_child_changes: Mutex::new(Vec::new()),
-        has_pending_child_changes: AtomicBool::new(false),
-    });
-    if let Ok(mut reg) = GLOBAL_OBJECT_REGISTRY.write() {
-        if let Some(previous) = reg.insert(id, record) {
+    let mut parent = data.parent();
+    let mut children = data.children.clone();
+    {
+        let _hierarchy = lock_hierarchy();
+        let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let verdict = match parent {
+            Some(parent_id) => would_create_cycle_in(&registry, id, parent_id),
+            None => Ok(false),
+        };
+        match (verdict, adopted_by) {
+            (Ok(false), _) => {}
+            (Ok(true), Some(_)) => return Err(ReparentError::InvalidParent),
+            (Err(error), Some(_)) => return Err(error),
+            (Ok(true) | Err(_), None) => parent = None,
+        }
+        let ancestors = ancestors_in(&registry, parent);
+        children.retain(|child_id| *child_id != id && !ancestors.contains(child_id));
+        let record = Arc::new(ObjectRecord {
+            id,
+            thread_id: RwLock::new(thread_id),
+            registration_thread: RwLock::new(ThreadId::current()),
+            ptr: RegisteredPtr(ptr),
+            parent: RwLock::new(parent),
+            children: RwLock::new(children),
+            liveness: Arc::clone(&data.liveness),
+            generation: AtomicU32::new(data.generation),
+            borrow_state: Arc::clone(&data.borrow_state),
+            pending_child_changes: Mutex::new(Vec::new()),
+            has_pending_child_changes: AtomicBool::new(false),
+        });
+        if let Some(previous) = registry.insert(id, record) {
             // Re-registering the same object (e.g. `Timer::start` after `stop`, possibly at a new
             // address) shares the liveness token with the replaced record. Killing it would
             // mark the live object dead and null every `QPointer` to it. Only a different
@@ -624,8 +710,20 @@ fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
                 previous.liveness.store(false, Ordering::Release);
             }
         }
+        if let Some(parent_id) = adopted_by {
+            // The parent is borrowed by the caller, so it is registered. Its registry list is
+            // what still reaches the child while a running callback of the parent hides it from
+            // the parent's own `children`. L0 (write) before L1, as everywhere.
+            if let Some(parent_record) = registry.get(&parent_id) {
+                let mut list = write_unpoisoned(&parent_record.children);
+                if !list.contains(&id) {
+                    list.push(id);
+                }
+            }
+        }
     }
     register_object_thread(id, thread_id);
+    Ok(())
 }
 
 /// Registers a pinned object.
@@ -747,45 +845,43 @@ pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObjec
 /// alive through this call. Invoke on the object's physical registration thread so its timers
 /// are stopped from that thread's timer registry.
 pub unsafe fn unregister_qobject(id: ObjectId) {
-    let removed = GLOBAL_OBJECT_REGISTRY
-        .write()
-        .ok()
-        .and_then(|mut reg| reg.remove(&id));
+    // This cleanup cannot report a failure, and a step that is skipped leaves a record that
+    // points to freed memory, an id in a parent's list, or a child with a dead parent. The locks
+    // below guard single stores and plain container edits, which a panic cannot leave half done,
+    // so a poisoned lock is used as it is (see `read_unpoisoned`).
+    let removed = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY).remove(&id);
     if let Some(entry) = removed {
         entry.liveness.store(false, Ordering::Release);
         // Lock order: the registry (L0), then the `children` of a parent (L1), then the `parent`
-        // of a child (L2), as in `set_parent`. A lock is never requested while one of a higher
-        // level is held, so the paths that take them cannot wait on each other in a circle.
-        if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-            // Unlist from the parent. The parent is named by this object's own `parent` (L2),
-            // which must not be held while the parent's list (L1) is locked: it is read and let
-            // go, the parent's list is locked, and the link is read again under that lock.
-            // Changing the link of a listed object needs that list, so the link is stable under
-            // it; if it changed in between, the unlisting is done for the new parent. The loop is
-            // bounded, and ends at once when a lock is poisoned or the parent is gone.
-            for _ in 0..=registry.len() {
-                let Some(parent_id) = entry.parent.read().ok().and_then(|link| *link) else {
-                    break;
-                };
-                let Some(parent) = registry.get(&parent_id) else {
-                    break;
-                };
-                let Ok(mut children) = parent.children.write() else {
-                    break;
-                };
-                if entry.parent.read().is_ok_and(|link| *link == Some(parent_id)) {
-                    children.retain(|&child_id| child_id != id);
-                    break;
-                }
+        // of a child (L2). This function does not take `HIERARCHY_MUTATION`: it only removes links.
+        let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        // Unlist from the parent. The parent is named by this object's own `parent` (L2),
+        // which must not be held while the parent's list (L1) is locked: it is read and let
+        // go, the parent's list is locked, and the link is read again under that lock.
+        // Changing the link of a listed object needs that list, so the link is stable under
+        // it; if it changed in between, the unlisting is done for the new parent. The loop is
+        // bounded, and ends at once when the parent is gone.
+        for _ in 0..=registry.len() {
+            #[cfg(test)]
+            let _held_by_mutant = test_hooks::mutant("unregister_holds_link")
+                .then(|| read_unpoisoned(&entry.parent));
+            let Some(parent_id) = *read_unpoisoned(&entry.parent) else {
+                break;
+            };
+            #[cfg(test)]
+            test_hooks::run(test_hooks::Point::AfterLinkRead);
+            let Some(parent) = registry.get(&parent_id) else {
+                break;
+            };
+            let mut children = write_unpoisoned(&parent.children);
+            if *read_unpoisoned(&entry.parent) == Some(parent_id) {
+                children.retain(|&child_id| child_id != id);
+                break;
             }
-            if let Ok(children) = entry.children.read() {
-                for child_id in children.iter() {
-                    if let Some(child) = registry.get(child_id) {
-                        if let Ok(mut p) = child.parent.write() {
-                            *p = None;
-                        }
-                    }
-                }
+        }
+        for child_id in read_unpoisoned(&entry.children).iter() {
+            if let Some(child) = registry.get(child_id) {
+                *write_unpoisoned(&child.parent) = None;
             }
         }
     }
@@ -1235,10 +1331,23 @@ impl<'a> ObjectDataMut<'a> {
     /// synchronizing both owned and non-owned transferred children's local parent ID,
     /// parent liveness token, and the global object registry.
     ///
-    /// # Atomicity and Locking Strategy
-    /// - Level 0: Global object registry read lock is acquired first.
-    /// - Level 1: Both parents' `children` write locks are acquired in ascending `ObjectId` order.
-    /// - Level 2: All transferred children's borrow guards and `parent` write locks are acquired in ascending `ObjectId` order.
+    /// # Locking
+    /// - Before any lock: the registry records of both objects and of every child to move are
+    ///   looked up, an [`ObjectBorrowGuard`] is taken for every child (a failed borrow returns
+    ///   [`ReparentError::Busy`] at once, nothing waits for one), and the handles to the data the
+    ///   commit writes are obtained from the objects' accessors (their own code, which must not run
+    ///   under a lock).
+    /// - `HIERARCHY_MUTATION`, then Level 0 (the registry, read). The cycle checks run against that
+    ///   registry, under both, so nothing that adds a parent link can slip in before the commit.
+    ///   The records looked up earlier must still be the registered ones.
+    /// - Level 1: both objects' `children` write locks in ascending `ObjectId` order. The registry's
+    ///   lists are compared with the objects' own lists only now, under these write locks, so a list
+    ///   that changed since the lookup is refused instead of overwritten.
+    /// - Level 2: the `parent` write locks of the children in ascending `ObjectId` order, each
+    ///   checked to name the object it is being moved away from.
+    /// - On every exit, the locks go first (Level 2, Level 1, Level 0), then `HIERARCHY_MUTATION`,
+    ///   and the borrow guards last: dropping one takes the `pending_child_changes` mutex and can
+    ///   free parked children, which takes the registry for writing.
     ///
     /// # Atomicity Boundary
     /// During the commit phase, all write locks and borrow guards are held simultaneously, guaranteeing
@@ -1246,6 +1355,8 @@ impl<'a> ObjectDataMut<'a> {
     /// (such as [`query_object_parents_snapshot`]). Note that independent single-record queries
     /// (such as [`query_object_parent`]) are protected individually by single locks, but do not provide
     /// cross-record snapshot atomicity.
+    ///
+    /// An `Err` leaves everything as it was.
     pub fn swap_hierarchy_and_ownership(&mut self, other: &mut ObjectDataMut<'_>) -> Result<(), ReparentError> {
         let self_id = self.data.id;
         let other_id = other.data.id;
@@ -1253,23 +1364,7 @@ impl<'a> ObjectDataMut<'a> {
             return Ok(());
         }
 
-        // 1. Cycle check: neither object can be a descendant of the other,
-        // and no child being transferred can create a cycle with its target parent.
-        if would_create_cycle(self_id, other_id)? || would_create_cycle(other_id, self_id)? {
-            return Err(ReparentError::InvalidParent);
-        }
-        for &child_id in &self.data.children {
-            if would_create_cycle(child_id, other_id)? {
-                return Err(ReparentError::InvalidParent);
-            }
-        }
-        for &child_id in &other.data.children {
-            if would_create_cycle(child_id, self_id)? {
-                return Err(ReparentError::InvalidParent);
-            }
-        }
-
-        // 2. Thread affinity validation: all children must match destination parent's thread.
+        // 1. Thread affinity validation: all children must match destination parent's thread.
         let self_thread = self.data.thread_id;
         let other_thread = other.data.thread_id;
         if self_thread != other_thread {
@@ -1295,41 +1390,11 @@ impl<'a> ObjectDataMut<'a> {
             }
         }
 
-        // The borrow guards are declared before the registry guard and the locks below, so they
-        // are dropped after all of them, on every exit. Dropping one takes the
-        // `pending_child_changes` mutex and can free parked children, which unregisters them and
-        // so takes the registry for writing.
-        let mut borrow_guards: Vec<Option<ObjectBorrowGuard>> = Vec::new();
-
-        // 3. Acquire Registry read lock (Level 0 lock).
-        let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
-
-        // Pre-validate parents in registry:
-        let self_record = registry.get(&self_id).ok_or(ReparentError::UnknownObject)?;
-        let other_record = registry.get(&other_id).ok_or(ReparentError::UnknownObject)?;
-
-        if !self_record.liveness.load(Ordering::Acquire) || !other_record.liveness.load(Ordering::Acquire) {
-            return Err(ReparentError::UnknownObject);
-        }
-
-        let self_reg_children = self_record.children.read().map_err(|_| ReparentError::Busy)?;
-        if *self_reg_children != self.data.children {
-            return Err(ReparentError::InvalidParent);
-        }
-        let other_reg_children = other_record.children.read().map_err(|_| ReparentError::Busy)?;
-        if *other_reg_children != other.data.children {
-            return Err(ReparentError::InvalidParent);
-        }
-        drop(self_reg_children);
-        drop(other_reg_children);
-
-        // Pre-validate owned children sets:
+        // 2. Owned children, by the ids their owners kept: each must be in its parent's list.
         let self_owned_set: std::collections::HashSet<ObjectId> =
-            self.data.owned_children.iter().map(|c| c.object_data().id()).collect();
+            self.data.owned_children.iter().map(OwnedObject::object_id).collect();
         let other_owned_set: std::collections::HashSet<ObjectId> =
-            other.data.owned_children.iter().map(|c| c.object_data().id()).collect();
-
-        // Every owned child must be present in its parent's `children` list
+            other.data.owned_children.iter().map(OwnedObject::object_id).collect();
         for &owned_id in &self_owned_set {
             if !self.data.children.contains(&owned_id) {
                 return Err(ReparentError::InvalidParent);
@@ -1341,7 +1406,6 @@ impl<'a> ObjectDataMut<'a> {
             }
         }
 
-        // Pre-validate and collect all children:
         #[derive(Clone, Copy, PartialEq, Eq)]
         enum TransferTarget {
             ToOther,
@@ -1355,52 +1419,122 @@ impl<'a> ObjectDataMut<'a> {
             is_owned: bool,
         }
 
-        let mut transfers: Vec<ChildTransfer> = Vec::with_capacity(
-            self.data.children.len() + other.data.children.len(),
-        );
-
-        for &child_id in &self.data.children {
-            let record = registry.get(&child_id).ok_or(ReparentError::UnknownObject)?;
-            if !record.liveness.load(Ordering::Acquire) {
+        // 3. The records involved. The registry lock is let go again; what is found here is
+        // checked to be still registered once the locks below are held.
+        let (self_record, other_record, mut transfers) = {
+            let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+            let self_record = Arc::clone(registry.get(&self_id).ok_or(ReparentError::UnknownObject)?);
+            let other_record = Arc::clone(registry.get(&other_id).ok_or(ReparentError::UnknownObject)?);
+            if !self_record.liveness.load(Ordering::Acquire)
+                || !other_record.liveness.load(Ordering::Acquire)
+            {
                 return Err(ReparentError::UnknownObject);
             }
-            let reg_parent = *record.parent.read().map_err(|_| ReparentError::Busy)?;
-            if reg_parent != Some(self_id) {
-                return Err(ReparentError::InvalidParent);
+            let mut transfers: Vec<ChildTransfer> =
+                Vec::with_capacity(self.data.children.len() + other.data.children.len());
+            for (children, target, owned_set) in [
+                (&self.data.children, TransferTarget::ToOther, &self_owned_set),
+                (&other.data.children, TransferTarget::ToSelf, &other_owned_set),
+            ] {
+                for &child_id in children {
+                    // A child that the object lists but the registry does not hold: the two disagree.
+                    let record = registry.get(&child_id).ok_or(ReparentError::InvalidParent)?;
+                    if !record.liveness.load(Ordering::Acquire) {
+                        return Err(ReparentError::UnknownObject);
+                    }
+                    transfers.push(ChildTransfer {
+                        child_id,
+                        target,
+                        record: Arc::clone(record),
+                        is_owned: owned_set.contains(&child_id),
+                    });
+                }
             }
-            transfers.push(ChildTransfer {
-                child_id,
-                target: TransferTarget::ToOther,
-                record: Arc::clone(record),
-                is_owned: self_owned_set.contains(&child_id),
-            });
-        }
+            (self_record, other_record, transfers)
+        };
 
-        for &child_id in &other.data.children {
-            let record = registry.get(&child_id).ok_or(ReparentError::UnknownObject)?;
-            if !record.liveness.load(Ordering::Acquire) {
-                return Err(ReparentError::UnknownObject);
-            }
-            let reg_parent = *record.parent.read().map_err(|_| ReparentError::Busy)?;
-            if reg_parent != Some(other_id) {
-                return Err(ReparentError::InvalidParent);
-            }
-            transfers.push(ChildTransfer {
-                child_id,
-                target: TransferTarget::ToSelf,
-                record: Arc::clone(record),
-                is_owned: other_owned_set.contains(&child_id),
-            });
-        }
-
-        // Sort all child transfers by child_id for deterministic deadlock-free lock acquisition
+        // Sort all child transfers by child_id for a lock acquisition order that is the same for everyone.
         transfers.sort_by_key(|t| t.child_id);
         if transfers.windows(2).any(|w| w[0].child_id == w[1].child_id) {
             return Err(ReparentError::InvalidParent);
         }
 
-        // 4. Deadlock-free two-tier lock and borrow acquisition:
-        // Tier 1: Acquire parents' `children` write locks in ascending ObjectId order.
+        // 4. Borrows and data handles, before any lock. The borrow guards are declared before the
+        // registry guard and the locks below, so they are dropped after all of them, on every exit.
+        let mut borrow_guards: Vec<ObjectBorrowGuard> = Vec::with_capacity(transfers.len());
+        for t in &transfers {
+            borrow_guards.push(borrow_record(&t.record)?);
+        }
+        // A non-owned child is written through its borrow guard; an owned child through its owner,
+        // as the parent holds it. Each object gets one handle, so no two `&mut` reach it.
+        let mut child_datas: Vec<Option<ObjectDataMut<'_>>> = borrow_guards
+            .iter_mut()
+            .zip(&transfers)
+            .map(|(guard, t)| (!t.is_owned).then(|| guard.object_data_mut()))
+            .collect();
+        let mut self_owned_datas: Vec<ObjectDataMut<'_>> = self
+            .data
+            .owned_children
+            .iter_mut()
+            .map(|child| child.object_data_mut())
+            .collect();
+        let mut other_owned_datas: Vec<ObjectDataMut<'_>> = other
+            .data
+            .owned_children
+            .iter_mut()
+            .map(|child| child.object_data_mut())
+            .collect();
+
+        // 5. From here on no accessor and no handler runs.
+        let _hierarchy = lock_hierarchy();
+        let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+        let registered = |id: ObjectId, record: &Arc<ObjectRecord>| {
+            registry.get(&id).is_some_and(|current| Arc::ptr_eq(current, record))
+        };
+        if !registered(self_id, &self_record) || !registered(other_id, &other_record) {
+            return Err(ReparentError::UnknownObject);
+        }
+        if transfers.iter().any(|t| !registered(t.child_id, &t.record)) {
+            return Err(ReparentError::InvalidParent);
+        }
+
+        // Cycle check: neither object can be a descendant of the other, and no child being
+        // transferred can create a cycle with its target parent.
+        if would_create_cycle_in(&registry, self_id, other_id)?
+            || would_create_cycle_in(&registry, other_id, self_id)?
+        {
+            return Err(ReparentError::InvalidParent);
+        }
+        for &child_id in &self.data.children {
+            if would_create_cycle_in(&registry, child_id, other_id)? {
+                return Err(ReparentError::InvalidParent);
+            }
+        }
+        for &child_id in &other.data.children {
+            if would_create_cycle_in(&registry, child_id, self_id)? {
+                return Err(ReparentError::InvalidParent);
+            }
+        }
+
+        #[cfg(test)]
+        let validate_under_the_locks = !test_hooks::mutant("swap_prevalidates_children");
+        #[cfg(not(test))]
+        let validate_under_the_locks = true;
+        #[cfg(test)]
+        if !validate_under_the_locks {
+            // The defect this function once had: the lists are compared under read locks taken in
+            // argument order and let go before the write locks are taken.
+            let first = self_record.children.read().map_err(|_| ReparentError::Busy)?;
+            test_hooks::run(test_hooks::Point::BetweenChildrenReads);
+            let second = other_record.children.read().map_err(|_| ReparentError::Busy)?;
+            if *first != self.data.children || *second != other.data.children {
+                return Err(ReparentError::InvalidParent);
+            }
+        }
+        #[cfg(test)]
+        test_hooks::run(test_hooks::Point::AfterCycleCheck);
+
+        // Tier 1: the parents' `children` write locks in ascending ObjectId order.
         let (mut self_children_guard, mut other_children_guard) = if self_id < other_id {
             let s = self_record.children.write().map_err(|_| ReparentError::Busy)?;
             let o = other_record.children.write().map_err(|_| ReparentError::Busy)?;
@@ -1410,68 +1544,71 @@ impl<'a> ObjectDataMut<'a> {
             let s = self_record.children.write().map_err(|_| ReparentError::Busy)?;
             (s, o)
         };
+        // Only a writer of these lists could change them, and none can now.
+        if validate_under_the_locks
+            && (*self_children_guard != self.data.children
+                || *other_children_guard != other.data.children)
+        {
+            return Err(ReparentError::InvalidParent);
+        }
 
-        // Tier 2: Acquire RAII borrow guards and `record.parent` write locks for all children in ascending child_id order.
-        borrow_guards.reserve(transfers.len());
+        // Tier 2: the children's `parent` write locks in ascending child_id order.
         let mut child_parent_guards: Vec<std::sync::RwLockWriteGuard<'_, Option<ObjectId>>> =
             Vec::with_capacity(transfers.len());
-
         for t in &transfers {
-            // Borrow the child record to obtain exclusive execution/callback guard
-            let guard = borrow_record(&t.record)?;
-            borrow_guards.push(Some(guard));
-
-            let parent_lock = t.record.parent.write().map_err(|_| ReparentError::Busy)?;
-            child_parent_guards.push(parent_lock);
+            let guard = t.record.parent.write().map_err(|_| ReparentError::Busy)?;
+            let named = match t.target {
+                TransferTarget::ToOther => self_id,
+                TransferTarget::ToSelf => other_id,
+            };
+            if *guard != Some(named) {
+                return Err(ReparentError::InvalidParent);
+            }
+            child_parent_guards.push(guard);
         }
 
         let self_liveness = Arc::clone(&self_record.liveness);
         let other_liveness = Arc::clone(&other_record.liveness);
 
-        // 5. Infallible Atomic Commit:
+        // 6. Infallible Atomic Commit:
         // All checks succeeded, all borrow guards and write locks are held.
-        // No step from here can fail.
+        // No step from here can fail, and none runs code of an object.
 
-        // Step A: Update non-owned children's local ObjectData via their held borrow guards.
-        for (i, t) in transfers.iter().enumerate() {
-            if !t.is_owned {
-                if let Some(guard) = &mut borrow_guards[i] {
-                    let mut odm = guard.object_data_mut();
-                    let raw = odm.raw_data_mut();
-                    match t.target {
-                        TransferTarget::ToOther => {
-                            raw.parent = Some(other_id);
-                            raw.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
-                        }
-                        TransferTarget::ToSelf => {
-                            raw.parent = Some(self_id);
-                            raw.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
-                        }
+        // Step A: Update non-owned children's local ObjectData.
+        for (t, data) in transfers.iter().zip(child_datas.iter_mut()) {
+            if let Some(data) = data {
+                let raw = data.raw_data_mut();
+                match t.target {
+                    TransferTarget::ToOther => {
+                        raw.parent = Some(other_id);
+                        raw.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
+                    }
+                    TransferTarget::ToSelf => {
+                        raw.parent = Some(self_id);
+                        raw.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
                     }
                 }
             }
         }
 
         // Step B: Update owned children's local ObjectData via their respective parents' owned_children.
-        for child in &mut self.data.owned_children {
-            let mut odm = child.object_data_mut();
-            let child_data = odm.raw_data_mut();
-            child_data.parent = Some(other_id);
-            child_data.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
+        for data in &mut self_owned_datas {
+            let raw = data.raw_data_mut();
+            raw.parent = Some(other_id);
+            raw.parent_liveness = Some((other_id, Arc::clone(&other_liveness)));
         }
-        for child in &mut other.data.owned_children {
-            let mut odm = child.object_data_mut();
-            let child_data = odm.raw_data_mut();
-            child_data.parent = Some(self_id);
-            child_data.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
+        for data in &mut other_owned_datas {
+            let raw = data.raw_data_mut();
+            raw.parent = Some(self_id);
+            raw.parent_liveness = Some((self_id, Arc::clone(&self_liveness)));
         }
 
         // Step C: Update Registry `record.parent` for all children under the held write locks.
-        for (i, t) in transfers.iter().enumerate() {
-            match t.target {
-                TransferTarget::ToOther => *child_parent_guards[i] = Some(other_id),
-                TransferTarget::ToSelf => *child_parent_guards[i] = Some(self_id),
-            }
+        for (t, guard) in transfers.iter().zip(child_parent_guards.iter_mut()) {
+            **guard = Some(match t.target {
+                TransferTarget::ToOther => other_id,
+                TransferTarget::ToSelf => self_id,
+            });
         }
 
         // Step D: Update Registry `record.children` for both parents under the held write locks.
@@ -1681,11 +1818,14 @@ pub enum ReparentError {
     /// The object is not registered, is dead, or is registered on another thread. For
     /// [`add_owned_child`] the object is the new parent.
     UnknownObject,
-    /// [`set_parent`]: the new parent is the object itself or one of its descendants. Not for an
-    /// unregistered parent, which `set_parent` accepts. [`reparent_owned_object`]: those two, and also a
-    /// new parent that is not registered on the calling thread.
+    /// [`set_parent`]: the new parent is the object itself or one of its descendants, or the
+    /// child is registered and the new parent is not (two unregistered objects can be linked: only
+    /// the child's own link is recorded). [`reparent_owned_object`]: the first of those, and also
+    /// a new parent that is not registered on the calling thread. [`add_owned_child`]: the parent
+    /// is the child itself or one of its descendants.
     InvalidParent,
-    /// The object or a parent is borrowed by an active callback.
+    /// The object or a parent is borrowed by an active callback, or a lock that guards a link or
+    /// a list of the hierarchy is poisoned. Nothing was changed.
     Busy,
     /// The new parent belongs to a different thread than the child: their thread affinities
     /// (`ObjectData::thread_id`) differ, and a parent and its children share one thread. What is
@@ -1713,31 +1853,15 @@ fn release_child(child_id: ObjectId) {
     unsafe { unregister_qobject(child_id) };
 }
 
-/// Lists `child_id` among the children the registry keeps for `parent_id`.
-fn list_in_registry(parent_id: ObjectId, child_id: ObjectId) {
-    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
-        return;
-    };
-    if let Some(record) = registry.get(&parent_id) {
-        if let Ok(mut children) = record.children.write() {
-            if !children.contains(&child_id) {
-                children.push(child_id);
-            }
-        }
-    }
-}
-
 /// The children the registry lists for `id` that are still registered.
 fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
-    let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() else {
-        return Vec::new();
-    };
+    // Reached from the cleanup of a destroyed object, which cannot report a failure and must not
+    // skip its children: a poisoned lock is read as it is (see `read_unpoisoned`).
+    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
     let Some(record) = registry.get(&id) else {
         return Vec::new();
     };
-    let Ok(children) = record.children.read() else {
-        return Vec::new();
-    };
+    let children = read_unpoisoned(&record.children);
     children
         .iter()
         .copied()
@@ -1767,22 +1891,52 @@ fn record_of(id: ObjectId) -> Result<Option<Arc<ObjectRecord>>, ReparentError> {
 /// Whether making `new_parent` the parent of `child_id` would make an object its own ancestor:
 /// `new_parent` is the child itself or one of its descendants, as the registry records them.
 ///
-/// Takes the registry read lock itself, so the caller must not hold it: a second read lock taken
-/// by the same thread waits for ever when a writer has queued between the two.
-fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> Result<bool, ReparentError> {
-    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+/// The caller holds `HIERARCHY_MUTATION` and a lock on the registry, and passes the registry it
+/// holds: a second read lock taken by the same thread waits for ever when a writer has queued
+/// between the two. While `HIERARCHY_MUTATION` is held no other operation adds a parent link, so
+/// the chain walked here does not grow before the caller commits; links removed meanwhile only
+/// shorten it.
+///
+/// A walk that does not end within one step per registered object means the registry already
+/// holds a cycle; the answer is then `true`, so that nothing is linked into it.
+fn would_create_cycle_in(
+    registry: &HashMap<ObjectId, Arc<ObjectRecord>>,
+    child_id: ObjectId,
+    new_parent: ObjectId,
+) -> Result<bool, ReparentError> {
     let mut cursor = Some(new_parent);
-    // The bound ends the walk if the registry already holds a cycle.
     for _ in 0..=registry.len() {
-        let Some(id) = cursor else { break };
+        let Some(id) = cursor else { return Ok(false) };
         if id == child_id {
             return Ok(true);
         }
-        let Some(record) = registry.get(&id) else { break };
+        let Some(record) = registry.get(&id) else {
+            return Ok(false);
+        };
         let parent_guard = record.parent.read().map_err(|_| ReparentError::Busy)?;
         cursor = *parent_guard;
     }
-    Ok(false)
+    Ok(true)
+}
+
+/// `start` and the ids above it, as the registry records them. The chain ends at an id that is
+/// not registered or that was already seen. A poisoned link is read as it is.
+fn ancestors_in(
+    registry: &HashMap<ObjectId, Arc<ObjectRecord>>,
+    start: Option<ObjectId>,
+) -> Vec<ObjectId> {
+    let mut chain = Vec::new();
+    let mut cursor = start;
+    while let Some(id) = cursor {
+        if chain.contains(&id) {
+            break;
+        }
+        chain.push(id);
+        cursor = registry
+            .get(&id)
+            .and_then(|record| *read_unpoisoned(&record.parent));
+    }
+    chain
 }
 
 /// Sets a non-owned child's parent and updates registered relationship metadata, sending
@@ -1822,11 +1976,25 @@ fn would_create_cycle(child_id: ObjectId, new_parent: ObjectId) -> Result<bool, 
 ///   shows the list as it was; the change is applied when that callback returns. The registry
 ///   has it at once, so dropping the parent reaches the child either way.
 ///
-/// `new_parent` need not be registered: the id is accepted and only the child's own link is
-/// recorded. The parent's child list, `ChildAdded` and the death tracking above all need a
-/// registered parent and do not happen. Qt has no such case (a `QObject*` is always a live
-/// object), so nothing more is specified for it. [`reparent_owned_object`] and [`add_owned_child`]
-/// refuse an unregistered parent.
+/// `new_parent` need not be registered when the child is not either: the id is accepted and only
+/// the child's own link is recorded, and the parent's child list, `ChildAdded` and the death
+/// tracking above, which need a registered parent, do not happen. A registered child is refused
+/// with [`ReparentError::InvalidParent`], changing nothing: the registry never links a registered
+/// object to an id it does not hold. Qt has no such case (a `QObject*` is always a live object),
+/// so nothing more is specified for it. [`reparent_owned_object`] and [`add_owned_child`] refuse
+/// an unregistered parent.
+///
+/// # Events and what they see
+/// The registry is changed completely before the first event. From `ChildRemoved` on,
+/// [`query_object_parent`], [`query_object_children`] and the registry's lists show the finished
+/// change. What the objects keep themselves follows Qt's order (`setParent_helper` removes the
+/// child from the old parent's list, sends `ChildRemoved`, and only then changes the child's
+/// parent and the new parent's list): the old parent's own `children()` has lost the child when it
+/// gets `ChildRemoved`; the child's own `parent()` and the new parent's own `children()` change
+/// after that handler has returned, and `ChildAdded` sees all of it. An object whose borrow is held
+/// by a running callback has its list change applied, and gets its event, when that callback
+/// returns. If the `ChildRemoved` handler panics, the child and the new parent's list are still
+/// brought in line with the registry, `ChildAdded` is not sent, and the panic then continues.
 ///
 /// Use [`add_owned_child`] to make the parent own the child.
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
@@ -1838,18 +2006,23 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         return Err(ReparentError::OwnedByParent);
     }
     let child_id = child.id;
-    if let Some(np) = new_parent {
-        if would_create_cycle(child_id, np)? {
+    // Qt finds the mismatch only after it has removed the child from its old parent, so the
+    // change below goes ahead as a detach. A parent that would close a cycle is refused first.
+    let requested_parent = new_parent;
+    let refused_thread = requested_parent.is_some_and(|np| in_different_thread(child.thread_id, np));
+    let new_parent = if refused_thread { None } else { requested_parent };
+
+    // `HIERARCHY_MUTATION`, then the registry (L0). The cycle check and the commit below both
+    // happen under the two, so no other operation can add a parent link between them.
+    let hierarchy = lock_hierarchy();
+    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+    if let Some(np) = requested_parent {
+        if would_create_cycle_in(&registry, child_id, np)? {
             return Err(ReparentError::InvalidParent);
         }
     }
-    // Qt finds the mismatch only after it has removed the child from its old parent, so the
-    // change below goes ahead as a detach.
-    let refused_thread = new_parent.is_some_and(|np| in_different_thread(child.thread_id, np));
-    let new_parent = if refused_thread { None } else { new_parent };
-
-    // Acquire Registry read lock (Level 0)
-    let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
+    #[cfg(test)]
+    test_hooks::run(test_hooks::Point::AfterCycleCheck);
 
     let child_record = registry.get(&child_id);
     let old_rec = old_parent.and_then(|id| registry.get(&id));
@@ -1952,29 +2125,44 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }
     }
 
-    // The registry lock (L0) ends here. Below, `edit_child_list`, `defer_if_borrowed` and
-    // `dispatch_to_object` take it again for themselves, deliver events to handlers that may
-    // register or drop objects, and take the `pending_child_changes` mutex, which is only taken
-    // with none of L0, L1 and L2 held. What the child keeps of its new parent is copied out first.
+    // The registry lock (L0) and `HIERARCHY_MUTATION` end here. Below, `edit_child_list`,
+    // `defer_if_borrowed` and `dispatch_to_object` take the registry again for themselves, deliver
+    // events to handlers that may register or drop objects, and take the `pending_child_changes`
+    // mutex, which is only taken with none of L0, L1 and L2 held. What the child keeps of its new
+    // parent is copied out first.
     let new_liveness = new_parent.and_then(|id| registry.get(&id).map(|rec| (id, Arc::clone(&rec.liveness))));
     drop(registry);
+    drop(hierarchy);
+    #[cfg(test)]
+    let _held_by_mutant =
+        test_hooks::mutant("set_parent_holds_registry").then(|| GLOBAL_OBJECT_REGISTRY.read());
 
-    // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks.
-    if let Some(old_parent_id) = old_parent {
-        edit_child_list(old_parent_id, ChildListChange::Remove(child_id));
-        let removed = Event::new(EventKind::ChildRemoved { child_id });
-        if let Err(mut removed) = defer_if_borrowed(old_parent_id, removed) {
-            dispatch_to_object(old_parent_id, &mut removed);
-        }
-    }
+    // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks. A
+    // panic of the old parent's handler is held back until the child and the new parent's list
+    // agree with the registry, and then continues.
+    let removed_panic = old_parent.and_then(|old_parent_id| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            edit_child_list(old_parent_id, ChildListChange::Remove(child_id));
+            let removed = Event::new(EventKind::ChildRemoved { child_id });
+            if let Err(mut removed) = defer_if_borrowed(old_parent_id, removed) {
+                dispatch_to_object(old_parent_id, &mut removed);
+            }
+        }))
+        .err()
+    });
     child.parent = new_parent;
     child.parent_liveness = new_liveness;
     if let Some(new_parent_id) = new_parent {
         edit_child_list(new_parent_id, ChildListChange::Add(child_id));
-        let added = Event::new(EventKind::ChildAdded { child_id });
-        if let Err(mut added) = defer_if_borrowed(new_parent_id, added) {
-            dispatch_to_object(new_parent_id, &mut added);
+        if removed_panic.is_none() {
+            let added = Event::new(EventKind::ChildAdded { child_id });
+            if let Err(mut added) = defer_if_borrowed(new_parent_id, added) {
+                dispatch_to_object(new_parent_id, &mut added);
+            }
         }
+    }
+    if let Some(payload) = removed_panic {
+        std::panic::resume_unwind(payload);
     }
     if refused_thread {
         eprintln!("QObject::setParent: Cannot set parent, new parent is in a different thread");
@@ -2005,17 +2193,20 @@ pub fn reparent_owned_object(
     child_id: ObjectId,
     new_parent: Option<ObjectId>,
 ) -> Result<Option<OwnedObject<dyn QObject>>, ReparentError> {
-    // Lock order, as in `set_parent`: the registry read lock (L0), then the `children` of the
-    // parents (L1, lower id first), then the `parent` of the child (L2). A borrow flag is one
-    // compare-and-swap that fails at once (`borrow_record`), so nothing ever waits for it.
+    // The records and the borrows come first, with no lock held: the records by one registry
+    // lookup each (which takes L0 and lets it go), the borrows by `borrow_record`, one
+    // compare-and-swap that fails at once, so nothing ever waits for it. The handles to the data
+    // the commit writes come from the objects' accessors (their own code) before any lock, too.
     //
-    // The records come first, one registry lookup each, which takes L0 and lets it go. L0 is then
-    // taken once for the commit, and the code inside looks nothing up again. The borrow guards
-    // are declared before it, so they are dropped after L2, L1 and L0 are let go: dropping one
-    // takes the `pending_child_changes` mutex and can free parked children, which unregisters
-    // them and so takes L0 for writing.
+    // The commit takes `HIERARCHY_MUTATION` and the registry (L0) once, checks that the records
+    // are still the registered ones and that the new parent is not a descendant, takes the
+    // `children` of the parents (L1, lower id first) and the `parent` of the child (L2), and
+    // writes through the handles. The borrow guards are declared before all of that, so they are
+    // dropped after L2, L1, L0 and `HIERARCHY_MUTATION`: dropping one takes the
+    // `pending_child_changes` mutex and can free parked children, which unregisters them and so
+    // takes L0 for writing.
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
-    let child_guard = borrow_record(&child_record).map_err(|_| ReparentError::Busy)?;
+    let mut child_guard = borrow_record(&child_record).map_err(|_| ReparentError::Busy)?;
 
     let old_parent_id = (*child_record.parent.read().map_err(|_| ReparentError::Busy)?)
         .ok_or(ReparentError::NotOwned)?;
@@ -2034,15 +2225,16 @@ pub fn reparent_owned_object(
 
     let new_record = match new_parent {
         Some(np) => {
+            // An object is not its own parent. This is answered first: the borrow of the new parent
+            // below would meet the child's own borrow and answer `Busy`.
+            if np == child_id {
+                return Err(ReparentError::InvalidParent);
+            }
             let child_thread = *child_record.thread_id.read().map_err(|_| ReparentError::Busy)?;
             if in_different_thread(child_thread, np) {
                 return Err(ReparentError::DifferentThread);
             }
-            let record = record_of(np)?.ok_or(ReparentError::InvalidParent)?;
-            if would_create_cycle(child_id, np)? {
-                return Err(ReparentError::InvalidParent);
-            }
-            Some(record)
+            Some(record_of(np)?.ok_or(ReparentError::InvalidParent)?)
         }
         None => None,
     };
@@ -2053,8 +2245,11 @@ pub fn reparent_owned_object(
         None => None,
     };
 
-    let pos = old_guard
-        .object_data()
+    let mut child_data = child_guard.object_data_mut();
+    let mut old_data = old_guard.object_data_mut();
+    let mut new_data = new_guard.as_mut().map(|guard| guard.object_data_mut());
+
+    let pos = old_data
         .owned_children
         .iter()
         .position(|c| OwnedObject::object_id(c) == child_id)
@@ -2069,6 +2264,7 @@ pub fn reparent_owned_object(
     }
 
     let released = {
+        let hierarchy = lock_hierarchy();
         let registry = GLOBAL_OBJECT_REGISTRY.read().map_err(|_| ReparentError::Busy)?;
         // The records taken above must still be the registered ones. Nothing is unregistered or
         // registered again while a callback of the object runs, and the borrows above stand for
@@ -2086,7 +2282,12 @@ pub fn reparent_owned_object(
             if !registered(np, record) {
                 return Err(ReparentError::InvalidParent);
             }
+            if would_create_cycle_in(&registry, child_id, np)? {
+                return Err(ReparentError::InvalidParent);
+            }
         }
+        #[cfg(test)]
+        test_hooks::run(test_hooks::Point::AfterCycleCheck);
 
         let parent_locks = match (new_parent, &new_record) {
             (Some(new_id), Some(new_rec)) => {
@@ -2107,10 +2308,12 @@ pub fn reparent_owned_object(
         };
 
         let mut child_parent_guard = child_record.parent.write().map_err(|_| ReparentError::Busy)?;
+        if *child_parent_guard != Some(old_parent_id) {
+            return Err(ReparentError::NotOwned);
+        }
 
-        // Infallible Commit: all locks and borrows held, zero failure risk.
-        let mut owner = {
-            let mut old_data = old_guard.object_data_mut();
+        // Infallible Commit: all locks and borrows held, and no code of an object runs.
+        let owner = {
             old_data.children_mut().retain(|&id| id != child_id);
             old_data.owned_children_mut().remove(pos)
         };
@@ -2119,8 +2322,7 @@ pub fn reparent_owned_object(
             .zip(new_record.as_ref())
             .map(|(id, record)| (id, Arc::clone(&record.liveness)));
         {
-            let mut data = owner.object_data_mut();
-            let raw = data.raw_data_mut();
+            let raw = child_data.raw_data_mut();
             raw.parent = new_parent;
             raw.parent_liveness = new_liveness;
             raw.owned_by_parent = new_parent.is_some();
@@ -2139,9 +2341,8 @@ pub fn reparent_owned_object(
         }
         *child_parent_guard = new_parent;
 
-        let released = match new_guard.as_mut() {
-            Some(guard) => {
-                let mut data = guard.object_data_mut();
+        let released = match new_data.as_mut() {
+            Some(data) => {
                 if !data.children.contains(&child_id) {
                     data.children_mut().push(child_id);
                 }
@@ -2153,6 +2354,7 @@ pub fn reparent_owned_object(
 
         drop(child_parent_guard);
         drop(registry);
+        drop(hierarchy);
         released
     };
 
@@ -2174,7 +2376,9 @@ pub fn reparent_owned_object(
 ///
 /// Returns the child id. If the parent's thread differs from the child's, returns
 /// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the parent is
-/// borrowed (for example from inside its own callback), returns `Busy`. In every case the `Box` is
+/// borrowed (for example from inside its own callback), returns `Busy`; if the parent is the child
+/// itself or one of its descendants (a child that is registered already can have descendants),
+/// returns `InvalidParent`. In every case the `Box` is
 /// handed back and nothing is attached: the child gets no parent, the parent's children stay as
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
 /// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
@@ -2209,31 +2413,59 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     let mut pending = Some(child);
     let attached = with_object_mut(parent_id, |parent| {
         let mut child = pending.take().expect("closure runs at most once");
+        let parent_liveness = liveness_of(parent_id).map(|alive| (parent_id, alive));
         {
             let mut data = child.object_data_mut();
             let raw = data.raw_data_mut();
             raw.parent = Some(parent_id);
-            raw.parent_liveness = liveness_of(parent_id).map(|alive| (parent_id, alive));
+            raw.parent_liveness = parent_liveness;
             raw.owned_by_parent = true;
         }
-        parent.object_data_mut().add_child(child_id);
         // The parent holds the child through an owner made from the `Box`; the registry gets a
         // copy of the owner's pointer, so moving the owner later invalidates nothing.
-        let owner = OwnedObject::into_dyn(OwnedObject::from_box(child));
-        // SAFETY: the object stays at this address while the owner lives; the rest is delegated
-        // to this function's caller contract.
-        unsafe { register_qobject_ptr(OwnedObject::as_non_null(&owner)) };
-        // The registry's list is what still reaches the child while a running callback of the
-        // parent hides it from the parent's own `children`.
-        list_in_registry(parent_id, child_id);
-        parent.object_data_mut().owned_children_mut().push(owner);
+        let owner = OwnedObject::from_box(child);
+        let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owner);
+        // The accessors of both objects (their own code) run before the registry is touched.
+        let mut parent_data = parent.object_data_mut();
+        // SAFETY: the owner keeps the object alive at this address, and nothing else reaches it.
+        let child_data = unsafe { (*ptr.as_ptr()).object_data() };
+        // The registration checks that the parent is not a descendant of the child, records the
+        // child and lists it in the registry's list of the parent, all under
+        // `HIERARCHY_MUTATION`. That list is what still reaches the child while a running
+        // callback of the parent hides it from the parent's own `children`.
+        match register_record(child_data, ptr.as_ptr(), Some(parent_id)) {
+            Ok(()) => {
+                parent_data.add_child(child_id);
+                parent_data.owned_children_mut().push(OwnedObject::into_dyn(owner));
+                Ok(())
+            }
+            Err(error) => {
+                // Nothing was inserted, so the registry holds no pointer made from this owner.
+                // SAFETY: see above; the object goes back to the caller as it came.
+                let mut child = unsafe { OwnedObject::into_box(owner) };
+                {
+                    let mut data = child.object_data_mut();
+                    let raw = data.raw_data_mut();
+                    raw.clear_parent();
+                    raw.owned_by_parent = false;
+                }
+                pending = Some(child);
+                Err(error)
+            }
+        }
     });
     match attached {
-        Some(()) => {
+        Some(Ok(())) => {
             let mut added = Event::new(EventKind::ChildAdded { child_id });
             crate::event_loop::notify_helper(parent_id, &mut added);
             Ok(child_id)
         }
+        Some(Err(error)) => Err((
+            error,
+            pending
+                .take()
+                .expect("the closure gave the Box back with the error"),
+        )),
         None => Err((
             ReparentError::Busy,
             pending
@@ -2243,6 +2475,11 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
     }
 }
 
+/// Sets the links of the three objects it is given and nothing else: it takes no registry lock,
+/// sends no event and does not look at the registry. A registered object's registry record and
+/// its parent's registry list stay as they were; use [`set_parent`] or [`reparent_owned_object`]
+/// for those. Since it only edits the objects' own links it cannot make the registry cyclic: a
+/// cycle built out of such links is not recorded when the objects are registered.
 pub fn reparent(
     child: &mut ObjectData,
     old_parent: Option<&mut ObjectData>,
@@ -2788,6 +3025,62 @@ pub fn send_event(receiver: ObjectId, event: &mut Event) -> bool {
     crate::event_loop::notify_helper(receiver, event)
 }
 
+/// Test-only fixed points inside the hierarchy operations, and switches that bring back defects
+/// these operations once had. A test installs a hook on its own thread to hold an operation at a
+/// point where another thread can then act; a test child process (see `mutant_run` in the tests)
+/// names a defect in its environment to check that the tests notice it.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Point {
+        /// After the check that the new parent is not a descendant, before any list is locked
+        /// (`set_parent`, `reparent_owned_object`, `swap_hierarchy_and_ownership`). Everything
+        /// the operation serialises on is held.
+        AfterCycleCheck,
+        /// `unregister_qobject`: after the child's parent link has been read and let go, before the
+        /// parent's list is locked.
+        AfterLinkRead,
+        /// `swap_hierarchy_and_ownership` with the `swap_prevalidates_children` defect: between
+        /// the two read locks of the lists.
+        BetweenChildrenReads,
+    }
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static HOOKS: RefCell<Vec<(Point, Hook)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Runs `hook` once, the next time the calling thread reaches `point`.
+    pub(crate) fn on_next(point: Point, hook: impl FnOnce() + 'static) {
+        HOOKS.with(|hooks| hooks.borrow_mut().push((point, Box::new(hook))));
+    }
+
+    pub(crate) fn run(point: Point) {
+        let hook = HOOKS.with(|hooks| {
+            let mut hooks = hooks.borrow_mut();
+            let index = hooks.iter().position(|(at, _)| *at == point)?;
+            Some(hooks.remove(index).1)
+        });
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Whether the defect `name` is switched on by the environment of this (child) process, which
+    /// lists the defects it wants, separated by commas.
+    pub(crate) fn mutant(name: &str) -> bool {
+        static ACTIVE: OnceLock<Option<String>> = OnceLock::new();
+        ACTIVE
+            .get_or_init(|| std::env::var("FERROKIT_TEST_MUTANT").ok())
+            .as_deref()
+            .is_some_and(|names| names.split(',').any(|listed| listed == name))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3206,8 +3499,10 @@ mod tests {
         assert!(record_a.children.is_poisoned());
 
         // Attempt swap - must return Err(ReparentError::Busy) without panicking
+        let before = states(&[&a.0, &b.0]);
         let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
         assert_eq!(res, Err(ReparentError::Busy));
+        assert_eq!(states(&[&a.0, &b.0]), before, "a refused swap changed something");
 
         unsafe {
             unregister_qobject(a_id);
@@ -3261,8 +3556,10 @@ mod tests {
         // Attempt swap between a and b:
         // would_create_cycle(b_id, a_id) will inspect a's parent chain, encountering ancestor's poisoned parent lock.
         // It must return Err(ReparentError::Busy) without panicking!
+        let before = states(&[&a.0, &b.0, &ancestor.0]);
         let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
         assert_eq!(res, Err(ReparentError::Busy));
+        assert_eq!(states(&[&a.0, &b.0, &ancestor.0]), before, "a refused swap changed something");
 
         unsafe {
             unregister_qobject(a_id);
@@ -3302,8 +3599,10 @@ mod tests {
         }
 
         // Registry parent of c is None, which mismatches Some(a_id)!
+        let before = states(&[&a.0, &b.0, &c.0]);
         let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
         assert_eq!(res, Err(ReparentError::InvalidParent));
+        assert_eq!(states(&[&a.0, &b.0, &c.0]), before, "a refused swap changed something");
 
         // Cleanup
         a.0.children.retain(|&id| id != c_id);
@@ -3344,8 +3643,10 @@ mod tests {
         assert!(record_p.children.is_poisoned());
 
         // Attempt set_parent - must fail with Busy, child must stay parentless
+        let before = states(&[&child.0, &parent.0]);
         let res = set_parent(&mut child.0, Some(parent_id));
         assert_eq!(res, Err(ReparentError::Busy));
+        assert_eq!(states(&[&child.0, &parent.0]), before, "a refused set_parent changed something");
         assert_eq!(child.0.parent(), None);
 
         unsafe {
@@ -3387,8 +3688,11 @@ mod tests {
         assert!(record_p2.children.is_poisoned());
 
         // Attempt reparent_owned_object to p2 - must fail with Busy, p1 must still own child
+        let snapshot = || states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
+        let before = snapshot();
         let res = reparent_owned_object(child_id, Some(p2_id));
         assert!(matches!(res, Err(ReparentError::Busy)));
+        assert_eq!(snapshot(), before, "a refused reparent changed something");
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
         assert!(p1.0.owned_children.iter().any(|c| OwnedObject::object_id(c) == child_id));
 
@@ -3422,8 +3726,11 @@ mod tests {
         let child_guard = borrow_registered(child_id).unwrap();
 
         // Attempt reparent - must reject with Busy
+        let snapshot = || states(&[&p1.0, &p2.0, p1.0.owned_children[0].object_data()]);
+        let before = snapshot();
         let res = reparent_owned_object(child_id, Some(p2_id));
         assert!(matches!(res, Err(ReparentError::Busy)));
+        assert_eq!(snapshot(), before, "a refused reparent changed something");
         drop(child_guard);
 
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
@@ -3435,16 +3742,47 @@ mod tests {
         }
     }
 
-    /// Object whose `event` runs a hook on child events, to see what a handler can do while a
-    /// hierarchy change is being finished.
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    struct Plain(ObjectData);
+
+    impl QObject for Plain {
+        fn object_data(&self) -> &ObjectData {
+            &self.0
+        }
+        fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+            ObjectDataMut::new(&mut self.0)
+        }
+    }
+
+    /// A child event that a [`Handler`] got, with what the receiver's own `children()` and the
+    /// registry's parent of the child were at that moment.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Delivered {
+        receiver: ObjectId,
+        what: &'static str,
+        child: ObjectId,
+        own_children: Vec<ObjectId>,
+        registry_parent: Option<Option<ObjectId>>,
+    }
+
+    type Log = Rc<RefCell<Vec<Delivered>>>;
+    type OnChildEvent = Box<dyn FnMut(&Delivered)>;
+
+    /// Object that logs the child events it gets and runs a hook on each, to see what a handler can
+    /// do and see while a hierarchy change is being finished.
     struct Handler {
         data: ObjectData,
-        on_child_event: Option<Box<dyn FnMut()>>,
+        log: Log,
+        on_event: Option<OnChildEvent>,
     }
 
     impl Handler {
-        fn new(on_child_event: Option<Box<dyn FnMut()>>) -> Self {
-            Self { data: ObjectData::new(ObjectId::next()), on_child_event }
+        fn new(log: &Log, on_event: Option<OnChildEvent>) -> Self {
+            Self { data: ObjectData::new(ObjectId::next()), log: Rc::clone(log), on_event }
         }
     }
 
@@ -3456,155 +3794,969 @@ mod tests {
             ObjectDataMut::new(&mut self.data)
         }
         fn event(&mut self, event: &mut Event) -> bool {
-            if matches!(event.kind, EventKind::ChildAdded { .. } | EventKind::ChildRemoved { .. }) {
-                if let Some(hook) = self.on_child_event.as_mut() {
-                    hook();
-                }
+            let (what, child) = match &event.kind {
+                EventKind::ChildAdded { child_id } => ("added", *child_id),
+                EventKind::ChildRemoved { child_id } => ("removed", *child_id),
+                _ => return true,
+            };
+            let delivered = Delivered {
+                receiver: self.data.id(),
+                what,
+                child,
+                own_children: self.data.children().to_vec(),
+                registry_parent: query_object_parent(child),
+            };
+            self.log.borrow_mut().push(delivered.clone());
+            if let Some(hook) = self.on_event.as_mut() {
+                hook(&delivered);
             }
             true
         }
     }
 
-    /// Runs `body` on a thread of its own and fails, instead of hanging, when it does not end.
-    fn finishes_within(limit: std::time::Duration, body: impl FnOnce() + Send + 'static) {
-        let (done, wait) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            body();
-            let _ = done.send(());
-        });
-        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(limit) {
-            panic!("did not finish within {limit:?}: a lock is held that the code after it needs");
-        }
-        if let Err(payload) = thread.join() {
-            std::panic::resume_unwind(payload);
+    /// Tests that hold the registry or `HIERARCHY_MUTATION` for a while, or probe them, take this
+    /// one, so that they do not meet.
+    fn serial() -> MutexGuard<'static, ()> {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        lock_unpoisoned(&SERIAL)
+    }
+
+    const PROBE_WINDOW: Duration = Duration::from_secs(5);
+
+    /// How long a test lets a thread that must be blocked try to get on. Only a defective version
+    /// gets on; the outcome that is checked afterwards does not depend on this time.
+    fn settle() -> Duration {
+        Duration::from_millis(if cfg!(miri) { 2000 } else { 300 })
+    }
+
+    /// Whether `probe` succeeds once within [`PROBE_WINDOW`]. Another test may hold a global lock
+    /// for an instant, so a failed probe is tried again; a lock that the calling thread holds fails
+    /// it for the whole window.
+    fn free_within(mut probe: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + PROBE_WINDOW;
+        loop {
+            if probe() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    /// A handler of `ChildAdded` runs with no registry lock held: it registers and drops an
-    /// object (the registry is written) while `set_parent` delivers the event.
-    #[test]
-    fn test_set_parent_delivers_events_without_holding_the_registry() {
-        finishes_within(std::time::Duration::from_secs(20), || {
-            let ran = std::rc::Rc::new(std::cell::Cell::new(0usize));
-            let hook_ran = std::rc::Rc::clone(&ran);
-            // SAFETY: the extra object is owned and dropped inside the hook, on this thread.
-            let hook = move || {
-                let extra = unsafe { register_owned_qobject(Handler::new(None)) };
-                assert_eq!(query_object_parent(OwnedObject::object_id(&extra)), Some(None));
-                drop(extra);
-                hook_ran.set(hook_ran.get() + 1);
-            };
-            // SAFETY: the parent is owned here and dropped at the end, on this thread.
-            let parent = unsafe { register_owned_qobject(Handler::new(Some(Box::new(hook)))) };
-            let parent_id = OwnedObject::object_id(&parent);
+    fn record(id: ObjectId) -> Arc<ObjectRecord> {
+        Arc::clone(&GLOBAL_OBJECT_REGISTRY.read().unwrap()[&id])
+    }
 
-            let mut child = ObjectData::new(ObjectId::next());
-            assert_eq!(set_parent(&mut child, Some(parent_id)), Ok(()));
-            assert_eq!(ran.get(), 1);
-            assert_eq!(child.parent(), Some(parent_id));
-            drop(parent);
+    /// None of the locks of a hierarchy change is held by the calling thread (a handler runs on
+    /// it): the lists and links of the given records, the registry, and `HIERARCHY_MUTATION`.
+    fn assert_hierarchy_unlocked(records: &[Arc<ObjectRecord>]) {
+        for record in records {
+            assert!(record.children.try_write().is_ok(), "the `children` lock of {:?} is held", record.id);
+            assert!(record.parent.try_write().is_ok(), "the `parent` lock of {:?} is held", record.id);
+        }
+        assert!(free_within(|| GLOBAL_OBJECT_REGISTRY.try_write().is_ok()), "the registry is held");
+        assert!(free_within(|| HIERARCHY_MUTATION.try_lock().is_ok()), "`HIERARCHY_MUTATION` is held");
+    }
+
+    /// What a hierarchy change that fails must leave as it was, for each object: its own links,
+    /// lists, ownership, and what the registry records for it with its borrow flag.
+    #[derive(Debug, PartialEq)]
+    struct State {
+        id: ObjectId,
+        own: (Option<ObjectId>, Option<ObjectId>, Vec<ObjectId>, Vec<ObjectId>, bool),
+        registry: Option<(Option<ObjectId>, Vec<ObjectId>, bool, bool)>,
+    }
+
+    fn states(objects: &[&ObjectData]) -> Vec<State> {
+        let registry = GLOBAL_OBJECT_REGISTRY.read().unwrap();
+        objects
+            .iter()
+            .map(|data| State {
+                id: data.id,
+                own: (
+                    data.parent,
+                    data.parent_liveness.as_ref().map(|(id, _)| *id),
+                    data.children.clone(),
+                    data.owned_children.iter().map(OwnedObject::object_id).collect(),
+                    data.owned_by_parent,
+                ),
+                registry: registry.get(&data.id).map(|r| {
+                    (
+                        *read_unpoisoned(&r.parent),
+                        read_unpoisoned(&r.children).clone(),
+                        r.borrow_state.borrow_flag.load(Ordering::Acquire),
+                        r.liveness.load(Ordering::Acquire),
+                    )
+                }),
+            })
+            .collect()
+    }
+
+    /// No object among `ids` is its own ancestor in the registry.
+    fn registry_has_no_cycle(ids: &[ObjectId]) -> bool {
+        ids.iter().all(|&start| {
+            let mut cursor = query_object_parent(start).flatten();
+            for _ in 0..64 {
+                match cursor {
+                    None => return true,
+                    Some(id) if id == start => return false,
+                    Some(id) => cursor = query_object_parent(id).flatten(),
+                }
+            }
+            false
+        })
+    }
+
+    /// Poisons a lock of `record` by panicking on another thread while holding it for writing.
+    fn poison(record: &Arc<ObjectRecord>, hold: fn(&ObjectRecord)) {
+        let record = Arc::clone(record);
+        let _ = std::thread::spawn(move || hold(&record)).join();
+    }
+
+    /// A thread that creates what it works on (`setup` runs on it, so its objects belong to it),
+    /// reports that it is ready, waits for `start`, runs `act` once and sends the result, and keeps
+    /// what it created alive until `finish`. Dropping a `Side` lets its thread go on and end.
+    struct Side<R> {
+        ready: mpsc::Receiver<()>,
+        go: mpsc::Sender<()>,
+        result: mpsc::Receiver<R>,
+        end: mpsc::Sender<()>,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    fn side<S: 'static, R: Send + 'static>(
+        setup: impl FnOnce() -> S + Send + 'static,
+        act: impl FnOnce(&mut S) -> R + Send + 'static,
+    ) -> Side<R> {
+        let (ready_tx, ready) = mpsc::channel();
+        let (go, go_rx) = mpsc::channel();
+        let (result_tx, result) = mpsc::channel();
+        let (end, end_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let mut state = setup();
+            let _ = ready_tx.send(());
+            if go_rx.recv().is_ok() {
+                let _ = result_tx.send(act(&mut state));
+            }
+            let _ = end_rx.recv();
+            drop(state);
         });
+        Side { ready, go, result, end, handle }
+    }
+
+    impl<R> Side<R> {
+        fn wait_ready(&self) {
+            self.ready.recv().expect("a thread did not get ready");
+        }
+        fn start(&self) {
+            let _ = self.go.send(());
+        }
+        fn finish(self) {
+            let _ = self.end.send(());
+            self.handle.join().expect("a thread panicked");
+        }
+    }
+
+    /// Holds the next hierarchy operation of the calling thread at the first of `points` it
+    /// reaches: `reached` is signalled, and the operation goes on when `resume` gets a signal or
+    /// its sender is dropped.
+    fn hold_next_operation(
+        reached: mpsc::Sender<()>,
+        resume: mpsc::Receiver<()>,
+        points: &[test_hooks::Point],
+    ) {
+        let resume = Rc::new(resume);
+        let armed = Rc::new(Cell::new(true));
+        for &point in points {
+            let reached = reached.clone();
+            let resume = Rc::clone(&resume);
+            let armed = Rc::clone(&armed);
+            test_hooks::on_next(point, move || {
+                if armed.replace(false) {
+                    let _ = reached.send(());
+                    let _ = resume.recv();
+                }
+            });
+        }
+    }
+
+    /// The child process a test uses to check that it notices a defect (see `test_hooks::mutant`).
+    #[derive(Debug, PartialEq)]
+    enum ChildRun {
+        Passed,
+        Failed,
+        /// Killed after `limit`: a deadlock ends here.
+        TimedOut,
+    }
+
+    /// Runs the test `name` of this binary again in a child process with the defects `mutants`
+    /// (comma separated) switched on, and reports how it ended. The child is killed when it has
+    /// not ended within `limit`.
+    fn run_in_child(name: &str, mutants: &str, limit: Duration) -> ChildRun {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("{module}::{name}"), "--test-threads=1"])
+            .env("FERROKIT_TEST_MUTANT", mutants)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stdout.read_to_string(&mut text);
+            text
+        });
+        let deadline = Instant::now() + limit;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let text = reader.join().unwrap();
+        match status {
+            None => ChildRun::TimedOut,
+            Some(status) if status.success() && text.contains("1 passed") => ChildRun::Passed,
+            Some(_) if text.contains("1 failed") => ChildRun::Failed,
+            Some(status) => panic!("the child did not run the test `{name}` ({status}): {text}"),
+        }
+    }
+
+    /// Backstop for a child that deadlocks.
+    const CHILD_LIMIT: Duration = Duration::from_secs(90);
+
+    fn noticed(run: ChildRun) -> bool {
+        run != ChildRun::Passed
+    }
+
+    /// A handler of `ChildAdded` runs with no lock of the change held, and can register and drop
+    /// objects and change other links while `set_parent` delivers the event.
+    #[test]
+    fn test_set_parent_delivers_events_with_no_hierarchy_lock_held() {
+        let _serial = serial();
+        let log = Log::default();
+        let records: Rc<RefCell<Vec<Arc<ObjectRecord>>>> = Rc::default();
+        let ran = Rc::new(Cell::new(0usize));
+        let hook: OnChildEvent = {
+            let records = Rc::clone(&records);
+            let ran = Rc::clone(&ran);
+            Box::new(move |_| {
+                assert_hierarchy_unlocked(&records.borrow());
+                // SAFETY: the extra object is owned and dropped right here, on this thread.
+                let extra = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+                let mut other = ObjectData::new(ObjectId::next());
+                assert_eq!(set_parent(&mut other, Some(OwnedObject::object_id(&extra))), Ok(()));
+                drop(other);
+                drop(extra);
+                ran.set(ran.get() + 1);
+            })
+        };
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        records.borrow_mut().push(record(parent_id));
+
+        let mut child = ObjectData::new(ObjectId::next());
+        assert_eq!(set_parent(&mut child, Some(parent_id)), Ok(()));
+        assert_eq!(ran.get(), 1);
+        assert_eq!(
+            *log.borrow(),
+            vec![Delivered {
+                receiver: parent_id,
+                what: "added",
+                child: child.id(),
+                own_children: vec![child.id()],
+                registry_parent: None,
+            }]
+        );
+        assert_eq!(child.parent(), Some(parent_id));
+        assert_eq!(query_object_children(parent_id), Some(vec![child.id()]));
+        drop(child);
+        drop(parent);
+    }
+
+    /// A registered child moves between two parents. Both handlers run with every lock of the
+    /// change free, including the lists and links of all three records, and see the registry as
+    /// the finished change: `ChildRemoved` goes to the old parent, whose own list has lost the
+    /// child; `ChildAdded` to the new one, whose own list has it.
+    #[test]
+    fn test_set_parent_of_a_registered_child_delivers_events_in_order_with_no_lock_held() {
+        let _serial = serial();
+        let log = Log::default();
+        let records: Rc<RefCell<Vec<Arc<ObjectRecord>>>> = Rc::default();
+        let probe = || -> OnChildEvent {
+            let records = Rc::clone(&records);
+            Box::new(move |_| assert_hierarchy_unlocked(&records.borrow()))
+        };
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        records.borrow_mut().extend([record(p1_id), record(p2_id), record(child_id)]);
+
+        assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
+        assert_eq!(set_parent(&mut child.0, Some(p2_id)), Ok(()));
+
+        let delivered = |receiver, what, own_children, parent| Delivered {
+            receiver,
+            what,
+            child: child_id,
+            own_children,
+            registry_parent: Some(Some(parent)),
+        };
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                delivered(p1_id, "added", vec![child_id], p1_id),
+                delivered(p1_id, "removed", vec![], p2_id),
+                delivered(p2_id, "added", vec![child_id], p2_id),
+            ]
+        );
+        assert_eq!(child.0.parent(), Some(p2_id));
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+
+    /// A panic in the old parent's `ChildRemoved` handler does not leave the objects behind the
+    /// registry: the child's parent and the new parent's list are brought in line first, `ChildAdded`
+    /// is not sent, and the panic then continues. Nothing stays locked or borrowed.
+    #[test]
+    fn test_set_parent_finishes_the_change_when_the_old_parents_handler_panics() {
+        let _serial = serial();
+        let log = Log::default();
+        let panicking: OnChildEvent = Box::new(|delivered| {
+            if delivered.what == "removed" {
+                panic!("handler of the old parent panics");
+            }
+        });
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(panicking))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            set_parent(&mut child.0, Some(p2_id))
+        }));
+        let payload = outcome.expect_err("the panic of the handler continues after the change is finished");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"handler of the old parent panics"));
+
+        assert_eq!(child.0.parent(), Some(p2_id));
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+        assert_eq!(with_object(p2_id, |p| p.object_data().children().to_vec()), Some(vec![child_id]));
+        assert!(!log.borrow().iter().any(|d| d.receiver == p2_id), "`ChildAdded` was sent after a panic");
+
+        let records = [record(p1_id), record(p2_id), record(child_id)];
+        assert_hierarchy_unlocked(&records);
+        for record in &records {
+            assert!(!record.borrow_state.borrow_flag.load(Ordering::Acquire), "{:?} stays borrowed", record.id);
+        }
+        assert_eq!(set_parent(&mut child.0, None), Ok(()), "the child cannot be moved again");
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+
+    /// A parent of another thread: as in Qt, the child is taken from its old parent, which gets
+    /// `ChildRemoved`, and is left without a parent, in the registry too; the call reports it.
+    #[test]
+    fn test_set_parent_to_a_parent_of_another_thread_detaches_the_child_and_reports_it() {
+        let _serial = serial();
+        let log = Log::default();
+        let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let p2 = unsafe {
+            register_owned_qobject(Handler {
+                data: ObjectData::with_thread(ObjectId::next(), elsewhere),
+                log: Rc::clone(&log),
+                on_event: None,
+            })
+        };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
+        log.borrow_mut().clear();
+
+        assert_eq!(set_parent(&mut child.0, Some(p2_id)), Err(ReparentError::DifferentThread));
+
+        assert_eq!(child.0.parent(), None);
+        assert_eq!(query_object_parent(child_id), Some(None));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(Vec::new()));
+        assert_eq!(
+            *log.borrow(),
+            vec![Delivered {
+                receiver: p1_id,
+                what: "removed",
+                child: child_id,
+                own_children: vec![],
+                registry_parent: Some(None),
+            }]
+        );
+        drop(child);
+        drop(p2);
+        drop(p1);
     }
 
     /// `ChildRemoved` and `ChildAdded` of `reparent_owned_object` are delivered after its locks
-    /// are let go: the handlers read the child's `parent` (a lock the change itself writes) and
-    /// write the registry, and see the finished change.
+    /// are let go: the handlers find every lock of the change free, and see the finished change.
     #[test]
     fn test_reparent_owned_delivers_events_after_the_locks_are_released() {
-        finishes_within(std::time::Duration::from_secs(20), || {
-            use std::cell::{Cell, RefCell};
-            use std::rc::Rc;
-            let child_id = Rc::new(Cell::new(ObjectId(0)));
-            let seen: Rc<RefCell<Vec<Option<Option<ObjectId>>>>> = Rc::new(RefCell::new(Vec::new()));
-            let make_hook = || -> Option<Box<dyn FnMut()>> {
-                let child_id = Rc::clone(&child_id);
-                let seen = Rc::clone(&seen);
-                Some(Box::new(move || {
-                    seen.borrow_mut().push(query_object_parent(child_id.get()));
-                    // SAFETY: the extra object is owned and dropped right here, on this thread.
-                    let extra = unsafe { register_owned_qobject(Handler::new(None)) };
-                    drop(extra);
-                }))
-            };
-            // SAFETY: both parents are owned here and dropped at the end, on this thread.
-            let p1 = unsafe { register_owned_qobject(Handler::new(make_hook())) };
-            let p2 = unsafe { register_owned_qobject(Handler::new(make_hook())) };
-            let p1_id = OwnedObject::object_id(&p1);
-            let p2_id = OwnedObject::object_id(&p2);
-            // SAFETY: the child is handed over to its parent, which keeps it at its address.
-            let cid = unsafe { add_owned_child(p1_id, Box::new(Handler::new(None))) }
-                .map_err(|(e, _)| e)
-                .unwrap();
-            child_id.set(cid);
-            seen.borrow_mut().clear();
+        let _serial = serial();
+        let log = Log::default();
+        let records: Rc<RefCell<Vec<Arc<ObjectRecord>>>> = Rc::default();
+        let probe = || -> OnChildEvent {
+            let records = Rc::clone(&records);
+            Box::new(move |_| {
+                assert_hierarchy_unlocked(&records.borrow());
+                // SAFETY: the extra object is owned and dropped right here, on this thread.
+                drop(unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) });
+            })
+        };
+        // SAFETY: both parents are owned here and dropped at the end, on this thread.
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        let (p1_id, p2_id) = (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2));
+        // SAFETY: the child is handed over to its parent, which keeps it at its address.
+        let child_id = unsafe { add_owned_child(p1_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(e, _)| e)
+            .unwrap();
+        records.borrow_mut().extend([record(p1_id), record(p2_id), record(child_id)]);
+        log.borrow_mut().clear();
 
-            let res = reparent_owned_object(cid, Some(p2_id));
-            assert!(matches!(res, Ok(None)), "{:?}", res.as_ref().err());
-            assert_eq!(*seen.borrow(), vec![Some(Some(p2_id)), Some(Some(p2_id))]);
-            assert_eq!(query_object_children(p2_id), Some(vec![cid]));
-            assert_eq!(query_object_children(p1_id), Some(Vec::new()));
-            drop(p2);
-            drop(p1);
-        });
+        let res = reparent_owned_object(child_id, Some(p2_id));
+        assert!(matches!(res, Ok(None)), "{:?}", res.as_ref().err());
+        let delivered = |receiver, what, own_children| Delivered {
+            receiver,
+            what,
+            child: child_id,
+            own_children,
+            registry_parent: Some(Some(p2_id)),
+        };
+        assert_eq!(
+            *log.borrow(),
+            vec![delivered(p1_id, "removed", vec![]), delivered(p2_id, "added", vec![child_id])]
+        );
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        drop(p2);
+        drop(p1);
     }
 
     /// Unregistering an object unlists it from its parent without holding the object's own
     /// `parent` lock while it waits for the parent's `children` lock. `set_parent` takes them in
     /// the other order (parent's list, then child's link), so holding both ways round could
     /// deadlock.
+    ///
+    /// The unregistering thread is held at a fixed point (the link has been read and let go, the
+    /// parent's list is not locked yet), where this thread holds the parent's list, as a thread
+    /// inside `set_parent` would, and takes the link. Nothing here depends on time.
     #[test]
     fn test_unregister_does_not_hold_the_childs_parent_link_while_waiting_for_the_parents_list() {
-        struct Node(ObjectData);
-        impl QObject for Node {
-            fn object_data(&self) -> &ObjectData {
-                &self.0
-            }
-            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
-                ObjectDataMut::new(&mut self.0)
-            }
-        }
-
-        let (records_tx, records_rx) = std::sync::mpsc::channel();
-        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let _serial = serial();
+        let (records_tx, records_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (reached_tx, reached_rx) = mpsc::channel::<()>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         let unregistering = std::thread::spawn(move || {
             // SAFETY: the parent is owned here and dropped at the end, on this thread.
-            let parent = unsafe { register_owned_qobject(Node(ObjectData::new(ObjectId::next()))) };
+            let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
             let parent_id = OwnedObject::object_id(&parent);
             // SAFETY: the child is handed over to its parent, which keeps it at its address.
-            let child_id = unsafe { add_owned_child(parent_id, Box::new(Node(ObjectData::new(ObjectId::next())))) }
+            let child_id = unsafe { add_owned_child(parent_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
                 .map_err(|(e, _)| e)
                 .unwrap();
-            let records = {
-                let registry = GLOBAL_OBJECT_REGISTRY.read().unwrap();
-                (Arc::clone(&registry[&parent_id]), Arc::clone(&registry[&child_id]))
-            };
-            records_tx.send(records).unwrap();
+            records_tx.send((record(parent_id), record(child_id), parent_id)).unwrap();
             go_rx.recv().unwrap();
+            test_hooks::on_next(test_hooks::Point::AfterLinkRead, move || {
+                let _ = reached_tx.send(());
+                let _ = resume_rx.recv();
+            });
             // SAFETY: no callback of the child runs; this is its registration thread.
             unsafe { unregister_qobject(child_id) };
             assert_eq!(query_object_children(parent_id), Some(Vec::new()));
             drop(parent);
+            let _ = done_tx.send(());
         });
 
-        let (parent_record, child_record) = records_rx.recv().unwrap();
-        let parent_list = parent_record.children.write().unwrap();
-        go_tx.send(()).unwrap();
-        // The other thread now unregisters the child and waits for `parent_list`. Where it waits
-        // cannot be observed, so the link is probed over a stretch of time that is long enough for
-        // it to get there (Miri's clock only moves with the work done, so it is given longer).
-        // Holding the link for an instant, to read the parent's id, is fine and is probed again;
-        // holding it for as long as the wait is the fault, and no probe succeeds then.
-        let settle_ms: u64 = if cfg!(miri) { 2000 } else { 300 };
-        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
-        let link_is_free = (0..100).any(|_| {
-            let free = child_record.parent.try_write().is_ok();
-            if !free {
-                std::thread::sleep(std::time::Duration::from_millis(settle_ms / 100));
+        let (parent_record, child_record, _parent_id) = records_rx.recv().unwrap();
+        // (a) This thread holds the parent's list. `Release` lets the other thread go on, and then
+        // frees the list, on every exit, so that a failed check ends this test and not the run.
+        struct Release<'a>(Option<mpsc::Sender<()>>, Option<std::sync::RwLockWriteGuard<'a, Vec<ObjectId>>>);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                drop(self.0.take());
+                drop(self.1.take());
             }
-            free
-        });
-        drop(parent_list);
+        }
+        let mut release = Release(Some(resume_tx), Some(parent_record.children.write().unwrap()));
+        go_tx.send(()).unwrap();
+        // (b) The other thread has read the child's link, let it go, and stops.
+        reached_rx.recv().expect("unregister did not get to the point after reading the link");
+        // (c) It holds nothing of the child's, so the link is free for a thread that holds the
+        // parent's list and needs the link.
+        assert!(
+            child_record.parent.try_write().is_ok(),
+            "unregister held the child's `parent` lock while it waits for the parent's list"
+        );
+        // (d) It goes on, and now needs the parent's list, which this thread holds. (e) This thread
+        // frees the list, and the other one finishes its cleanup.
+        drop(release.0.take());
+        drop(release.1.take());
+        done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("unregister did not finish once the parent's list was free");
         unregistering.join().unwrap();
-        assert!(link_is_free, "unregister held the child's `parent` lock while waiting for the parent's list");
+    }
+
+    /// The tests above notice the defects they are for: each defect is switched on in a child
+    /// process (`test_hooks::mutant`), where the test must not pass. A deadlock ends at the limit.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_unregister_test_notices_a_link_held_while_waiting() {
+        let name = "test_unregister_does_not_hold_the_childs_parent_link_while_waiting_for_the_parents_list";
+        assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed);
+        assert!(noticed(run_in_child(name, "unregister_holds_link", CHILD_LIMIT)));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_event_test_notices_the_registry_held_during_the_events() {
+        let name = "test_set_parent_of_a_registered_child_delivers_events_in_order_with_no_lock_held";
+        assert!(noticed(run_in_child(name, "set_parent_holds_registry", CHILD_LIMIT)));
+    }
+
+    /// A hierarchy change that is held between its cycle check and its commit while a second one
+    /// runs. With `HIERARCHY_MUTATION` the second one waits and sees the first one's link (and is
+    /// refused when it would close a ring); without it, both are accepted. The thread of the
+    /// second one is not the thread of the objects the first one works on, as `ObjectData::with_thread`
+    /// allows: each thread only changes its own objects.
+    #[test]
+    fn test_two_set_parent_calls_cannot_close_a_cycle() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let (x_id, y_id) = (ObjectId::next(), ObjectId::next());
+        let (reached_tx, reached) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let x = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(x_id, affinity))) },
+            move |x| {
+                hold_next_operation(reached_tx, resume_rx, &[test_hooks::Point::AfterCycleCheck]);
+                set_parent(&mut x.0, Some(y_id))
+            },
+        );
+        let y = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(y_id, affinity))) },
+            move |y| set_parent(&mut y.0, Some(x_id)),
+        );
+        x.wait_ready();
+        y.wait_ready();
+        x.start();
+        reached.recv().expect("the first call did not reach its check");
+        let held = HIERARCHY_MUTATION.try_lock().is_err();
+        y.start();
+        let early = y.result.recv_timeout(settle());
+        resume.send(()).unwrap();
+        let from_x = x.result.recv().expect("the first call did not return");
+        let from_y = early.or_else(|_| y.result.recv()).expect("the second call did not return");
+        let acyclic = registry_has_no_cycle(&[x_id, y_id]);
+        x.finish();
+        y.finish();
+        assert_eq!(from_x, Ok(()));
+        assert_eq!(from_y, Err(ReparentError::InvalidParent), "the second link closes a ring and was accepted");
+        assert!(acyclic);
+        assert!(held, "`HIERARCHY_MUTATION` is not held between the check and the commit");
+    }
+
+    /// As above, for `reparent_owned_object` (on the objects of its own thread) against a
+    /// `set_parent` of an object of another thread: x moves under y while w, an ancestor of y,
+    /// is put under x.
+    #[test]
+    fn test_reparent_owned_object_and_set_parent_cannot_close_a_cycle() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let (w_id, x_id, y_id) = (ObjectId::next(), ObjectId::next(), ObjectId::next());
+        let (reached_tx, reached) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let w = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(w_id, affinity))) },
+            move |w| set_parent(&mut w.0, Some(x_id)),
+        );
+        w.wait_ready();
+        let r = side(
+            move || {
+                // SAFETY: the objects are owned here and dropped at the end, on this thread.
+                let p = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity))) };
+                let mut y = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(y_id, affinity))) };
+                assert_eq!(set_parent(&mut y.0, Some(w_id)), Ok(()));
+                let added = unsafe {
+                    add_owned_child(OwnedObject::object_id(&p), Box::new(Plain(ObjectData::with_thread(x_id, affinity))))
+                }
+                .map_err(|(e, _)| e)
+                .unwrap();
+                assert_eq!(added, x_id);
+                (p, y)
+            },
+            move |_| {
+                hold_next_operation(reached_tx, resume_rx, &[test_hooks::Point::AfterCycleCheck]);
+                reparent_owned_object(x_id, Some(y_id)).map(|released| assert!(released.is_none()))
+            },
+        );
+        r.wait_ready();
+        r.start();
+        reached.recv().expect("the reparenting did not reach its check");
+        let held = HIERARCHY_MUTATION.try_lock().is_err();
+        w.start();
+        let early = w.result.recv_timeout(settle());
+        resume.send(()).unwrap();
+        let from_r = r.result.recv().expect("the reparenting did not return");
+        let from_w = early.or_else(|_| w.result.recv()).expect("the second call did not return");
+        let acyclic = registry_has_no_cycle(&[w_id, x_id, y_id]);
+        r.finish();
+        w.finish();
+        assert_eq!(from_r, Ok(()));
+        assert_eq!(from_w, Err(ReparentError::InvalidParent), "the link closes a ring and was accepted");
+        assert!(acyclic);
+        assert!(held, "`HIERARCHY_MUTATION` is not held between the check and the commit");
+    }
+
+    /// As above, for `swap_hierarchy_and_ownership`: it moves c from p to q while w, which q is
+    /// under, is put under c.
+    #[test]
+    fn test_swap_hierarchy_and_set_parent_cannot_close_a_cycle() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let (w_id, c_id, p_id, q_id) = (ObjectId::next(), ObjectId::next(), ObjectId::next(), ObjectId::next());
+        let (reached_tx, reached) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let w = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(w_id, affinity))) },
+            move |w| set_parent(&mut w.0, Some(c_id)),
+        );
+        w.wait_ready();
+        let s = side(
+            move || {
+                // SAFETY: the objects are owned here and dropped at the end, on this thread.
+                let p = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(p_id, affinity))) };
+                let mut q = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(q_id, affinity))) };
+                assert_eq!(set_parent(&mut q.0, Some(w_id)), Ok(()));
+                let added = unsafe { add_owned_child(p_id, Box::new(Plain(ObjectData::with_thread(c_id, affinity)))) }
+                    .map_err(|(e, _)| e)
+                    .unwrap();
+                assert_eq!(added, c_id);
+                (p, q)
+            },
+            move |state| {
+                let (p, q) = state;
+                hold_next_operation(reached_tx, resume_rx, &[test_hooks::Point::AfterCycleCheck]);
+                p.object_data_mut().swap_hierarchy_and_ownership(&mut q.object_data_mut())
+            },
+        );
+        s.wait_ready();
+        s.start();
+        reached.recv().expect("the swap did not reach its check");
+        let held = HIERARCHY_MUTATION.try_lock().is_err();
+        w.start();
+        let early = w.result.recv_timeout(settle());
+        resume.send(()).unwrap();
+        let from_s = s.result.recv().expect("the swap did not return");
+        let from_w = early.or_else(|_| w.result.recv()).expect("the second call did not return");
+        let acyclic = registry_has_no_cycle(&[w_id, c_id, p_id, q_id]);
+        s.finish();
+        w.finish();
+        assert_eq!(from_s, Ok(()));
+        assert_eq!(from_w, Err(ReparentError::InvalidParent), "the link closes a ring and was accepted");
+        assert!(acyclic);
+        assert!(held, "`HIERARCHY_MUTATION` is not held between the check and the commit");
+    }
+
+    /// `swap_hierarchy_and_ownership` holds neither list while it waits for the other: a thread
+    /// that takes the two lists in ascending order, as every list writer does, finds both free
+    /// while the swap, whose first argument has the higher id, is held before it locks them.
+    #[test]
+    fn test_swap_does_not_hold_one_parents_list_while_it_waits_for_the_other() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let (ids_tx, ids) = mpsc::channel();
+        let (reached_tx, reached) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let swapper = side(
+            move || {
+                // SAFETY: the objects are owned here and dropped at the end, on this thread.
+                let q = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity))) };
+                let p = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity))) };
+                ids_tx.send((OwnedObject::object_id(&p), OwnedObject::object_id(&q))).unwrap();
+                (p, q)
+            },
+            move |state| {
+                let (p, q) = state;
+                hold_next_operation(
+                    reached_tx,
+                    resume_rx,
+                    &[test_hooks::Point::BetweenChildrenReads, test_hooks::Point::AfterCycleCheck],
+                );
+                p.object_data_mut().swap_hierarchy_and_ownership(&mut q.object_data_mut())
+            },
+        );
+        swapper.wait_ready();
+        let (p_id, q_id) = ids.recv().unwrap();
+        assert!(q_id < p_id);
+        let (low, high) = (record(q_id), record(p_id));
+        let holder = side(
+            || (),
+            move |_| {
+                let first = low.children.write().unwrap();
+                let second = high.children.write().unwrap();
+                drop(second);
+                drop(first);
+            },
+        );
+        holder.wait_ready();
+        swapper.start();
+        reached.recv().expect("the swap did not reach its hold point");
+        holder.start();
+        let took_both = holder.result.recv_timeout(PROBE_WINDOW);
+        let _ = resume.send(());
+        assert!(took_both.is_ok(), "the swap held a list that a writer in ascending order needs");
+        assert_eq!(swapper.result.recv().expect("the swap did not return"), Ok(()));
+        swapper.finish();
+        holder.finish();
+    }
+
+    /// A list that changed while `swap_hierarchy_and_ownership` was on its way is not overwritten
+    /// by the swap: whatever order the two run in, the child that was added is in the list of its
+    /// parent afterwards.
+    #[test]
+    fn test_swap_does_not_overwrite_a_list_that_changed_while_it_waited() {
+        let _serial = serial();
+        let affinity = ThreadId::current();
+        let (p_id, q_id, c_id) = (ObjectId::next(), ObjectId::next(), ObjectId::next());
+        let (reached_tx, reached) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel();
+        let swapper = side(
+            move || {
+                // SAFETY: the objects are owned here and dropped at the end, on this thread.
+                let p = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(p_id, affinity))) };
+                let q = unsafe { register_owned_qobject(Plain(ObjectData::with_thread(q_id, affinity))) };
+                (p, q)
+            },
+            move |state| {
+                let (p, q) = state;
+                hold_next_operation(reached_tx, resume_rx, &[test_hooks::Point::AfterCycleCheck]);
+                p.object_data_mut().swap_hierarchy_and_ownership(&mut q.object_data_mut())
+            },
+        );
+        let adder = side(
+            move || unsafe { register_owned_qobject(Plain(ObjectData::with_thread(c_id, affinity))) },
+            move |c| set_parent(&mut c.0, Some(p_id)),
+        );
+        swapper.wait_ready();
+        adder.wait_ready();
+        swapper.start();
+        reached.recv().expect("the swap did not reach its check");
+        adder.start();
+        let early = adder.result.recv_timeout(settle());
+        resume.send(()).unwrap();
+        let from_swap = swapper.result.recv().expect("the swap did not return");
+        let from_adder = early.or_else(|_| adder.result.recv()).expect("the adder did not return");
+        let parent_of_c = query_object_parent(c_id);
+        let list_of_p = query_object_children(p_id);
+        swapper.finish();
+        adder.finish();
+        assert_eq!(from_adder, Ok(()));
+        assert_eq!(from_swap, Ok(()));
+        assert_eq!(parent_of_c, Some(Some(p_id)));
+        assert!(
+            list_of_p.is_some_and(|list| list.contains(&c_id)),
+            "the child was added to its parent and the swap wrote the old list over it"
+        );
+    }
+
+    /// The race tests notice the missing lock and the old pre-validation: each defect is switched
+    /// on in a child process (see `test_hooks::mutant`), where the test must fail.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_race_tests_notice_a_missing_hierarchy_lock() {
+        for name in [
+            "test_two_set_parent_calls_cannot_close_a_cycle",
+            "test_reparent_owned_object_and_set_parent_cannot_close_a_cycle",
+            "test_swap_hierarchy_and_set_parent_cannot_close_a_cycle",
+        ] {
+            assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed, "{name}");
+            assert!(noticed(run_in_child(name, "skip_hierarchy_lock", CHILD_LIMIT)), "{name}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_swap_tests_notice_the_old_pre_validation() {
+        let old = "skip_hierarchy_lock,swap_prevalidates_children";
+        for name in [
+            "test_swap_does_not_hold_one_parents_list_while_it_waits_for_the_other",
+            "test_swap_does_not_overwrite_a_list_that_changed_while_it_waited",
+        ] {
+            assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed, "{name}");
+            assert!(noticed(run_in_child(name, old, CHILD_LIMIT)), "{name}");
+        }
+    }
+
+    /// `set_parent` does not let a registered child have a parent that is not registered, and
+    /// changes nothing when it refuses. (Two unregistered objects can be linked; see the test
+    /// above.)
+    #[test]
+    fn test_set_parent_refuses_an_unregistered_parent_for_a_registered_child() {
+        let parent = ObjectData::new(ObjectId::next());
+        // SAFETY: the child is owned here and dropped at the end, on this thread.
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let before = states(&[&child.0, &parent]);
+        assert_eq!(set_parent(&mut child.0, Some(parent.id())), Err(ReparentError::InvalidParent));
+        assert_eq!(states(&[&child.0, &parent]), before);
+        assert_eq!(child.0.parent(), None);
+    }
+
+    /// Objects that were linked while unregistered can form a ring that no registry walk saw; the
+    /// registration that would close it leaves its link out, so the registry never holds a cycle.
+    #[test]
+    fn test_registering_objects_that_were_linked_in_a_ring_keeps_the_registry_acyclic() {
+        let mut a = Plain(ObjectData::new(ObjectId::next()));
+        let mut b = Plain(ObjectData::new(ObjectId::next()));
+        let (a_id, b_id) = (a.0.id(), b.0.id());
+        assert_eq!(set_parent(&mut a.0, Some(b_id)), Ok(()));
+        assert_eq!(set_parent(&mut b.0, Some(a_id)), Ok(()));
+
+        let ptr_a = &raw mut a as *mut dyn QObject;
+        register_object_metadata(&a.0, ptr_a);
+        let ptr_b = &raw mut b as *mut dyn QObject;
+        register_object_metadata(&b.0, ptr_b);
+
+        assert_eq!(query_object_parent(a_id), Some(Some(b_id)));
+        assert_eq!(query_object_parent(b_id), Some(None));
+        assert!(registry_has_no_cycle(&[a_id, b_id]));
+        unsafe {
+            unregister_qobject(a_id);
+            unregister_qobject(b_id);
+        }
+    }
+
+    /// `add_owned_child` refuses a parent that is a descendant of the child. Only a child that is
+    /// registered already can have descendants; the deprecated `Box` registration lets one reach
+    /// the function. The `Box` comes back unchanged.
+    #[test]
+    #[allow(deprecated)]
+    #[cfg_attr(miri, ignore = "the deprecated Box registration breaks the aliasing rules by design")]
+    fn test_add_owned_child_refuses_a_parent_that_is_a_descendant_of_the_child() {
+        // SAFETY: the box is kept and not used between the calls below.
+        let (b_id, boxed) = unsafe { register_boxed_qobject(Box::new(Plain(ObjectData::new(ObjectId::next())))) };
+        let mut d = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let d_id = OwnedObject::object_id(&d);
+        assert_eq!(set_parent(&mut d.0, Some(b_id)), Ok(()));
+
+        let (error, returned) = unsafe { add_owned_child(d_id, boxed) }.unwrap_err();
+        assert_eq!(error, ReparentError::InvalidParent);
+        assert_eq!(query_object_parent(b_id), Some(None));
+        assert_eq!(query_object_parent(d_id), Some(Some(b_id)));
+        assert_eq!(query_object_children(d_id), Some(Vec::new()));
+        assert_eq!(returned.0.parent(), None);
+        assert!(!returned.0.is_owned_by_parent());
+        assert!(registry_has_no_cycle(&[b_id, d_id]));
+        // SAFETY: no callback of `b` runs.
+        unsafe { unregister_qobject(b_id) };
+        drop(returned);
+        drop(d);
+    }
+
+    /// Cleanup of a destroyed object cannot report an error, and skipping a step leaves an id in a
+    /// parent's list or a record that points to freed memory: it finishes although every lock on
+    /// its way is poisoned (a poisoned lock here guards a plain list or link).
+    #[test]
+    fn test_unregister_finishes_its_cleanup_when_the_locks_of_its_records_are_poisoned() {
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        // SAFETY: the child is handed over to its parent, which keeps it at its address.
+        let child_id = unsafe { add_owned_child(parent_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let (parent_record, child_record) = (record(parent_id), record(child_id));
+        poison(&parent_record, |r| {
+            let _held = r.children.write().unwrap();
+            panic!("poison on purpose");
+        });
+        poison(&child_record, |r| {
+            let _held = r.parent.write().unwrap();
+            panic!("poison on purpose");
+        });
+        poison(&child_record, |r| {
+            let _held = r.children.write().unwrap();
+            panic!("poison on purpose");
+        });
+        assert!(parent_record.children.is_poisoned() && child_record.parent.is_poisoned());
+
+        // SAFETY: no callback of the child runs; this is its registration thread.
+        unsafe { unregister_qobject(child_id) };
+        assert_eq!(query_object_parent(child_id), None);
+        assert!(!read_unpoisoned(&parent_record.children).contains(&child_id));
+        assert!(!child_record.liveness.load(Ordering::Acquire));
+        drop(parent);
+    }
+
+    /// A poisoned thread-affinity lock (a plain `ThreadId`, replaced by one store) does not turn
+    /// the calls that read it into panics: the queries answer, `set_parent` works, and the calls
+    /// that need the lock to borrow an object say `Busy`.
+    #[test]
+    fn test_poisoned_thread_affinity_locks_do_not_panic_the_hierarchy_calls() {
+        // SAFETY: the objects are owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (parent_id, child_id) = (OwnedObject::object_id(&parent), OwnedObject::object_id(&child));
+        let parent_record = record(parent_id);
+        poison(&parent_record, |r| {
+            let _held = r.thread_id.write().unwrap();
+            panic!("poison on purpose");
+        });
+        poison(&parent_record, |r| {
+            let _held = r.registration_thread.write().unwrap();
+            panic!("poison on purpose");
+        });
+        assert!(parent_record.thread_id.is_poisoned() && parent_record.registration_thread.is_poisoned());
+
+        assert!(registered_on_current_thread(parent_id));
+        assert_eq!(registration_thread_of(parent_id), Some(ThreadId::current()));
+        assert_eq!(query_object_thread(parent_id), Some(ThreadId::current()));
+        assert_eq!(set_parent(&mut child.0, Some(parent_id)), Ok(()));
+        assert_eq!(query_object_children(parent_id), Some(vec![child_id]));
+        assert_eq!(set_parent(&mut child.0, None), Ok(()));
+        // SAFETY: the grandchild is handed over to its parent, which keeps it at its address.
+        let owned_id = unsafe { add_owned_child(child_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let before = states(&[&child.0]);
+        assert!(matches!(reparent_owned_object(owned_id, Some(parent_id)), Err(ReparentError::Busy)));
+        assert_eq!(states(&[&child.0]), before);
+        drop(child);
+        drop(parent);
     }
 }

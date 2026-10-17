@@ -188,13 +188,13 @@ impl ThreadContext {
     /// `QCoreApplicationPrivate::mainThread` (qcoreapplication.cpp:475, 531-537). Overwrites on
     /// each call and is not cleared on drop.
     pub(crate) fn set_main_thread_id(id: ThreadId) {
-        *GLOBAL_MAIN_THREAD_ID.write().unwrap() = Some(id);
+        *crate::poison::write_unpoisoned(&GLOBAL_MAIN_THREAD_ID) = Some(id);
     }
 
     /// The application's main thread, or `None` before any application has been constructed.
     /// Never inferred from whichever thread asks first.
     pub fn main_thread_id() -> Option<ThreadId> {
-        *GLOBAL_MAIN_THREAD_ID.read().unwrap()
+        *crate::poison::read_unpoisoned(&GLOBAL_MAIN_THREAD_ID)
     }
 
     pub fn is_main_thread() -> bool {
