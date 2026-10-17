@@ -14,9 +14,10 @@ use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, query_object_children, query_object_parent,
-    register_owned_qobject, with_object, with_object_mut, ObjectData, ObjectId,
-    OwnedObject, QObject,
+    add_owned_child, dispatch_to_object, move_to_thread_by_id, query_object_children,
+    query_object_parent, register_owned_qobject, with_object,
+    with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
+    ThreadId,
 };
 
 type Hook = Box<dyn FnOnce(&mut EncapsulatedNode)>;
@@ -344,4 +345,138 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
     assert!(with_object(peer_id, |_| ()).is_none());
     assert!(with_object(child_id, |_| ()).is_none());
     assert!(with_object(grandchild_id, |_| ()).is_none());
+}
+
+
+#[test]
+fn test_swap_hierarchy_with_non_owned_child() {
+    let freed_a = Arc::new(AtomicBool::new(false));
+    let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
+    let a_id = OwnedObject::object_id(&a);
+
+    let freed_b = Arc::new(AtomicBool::new(false));
+    let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
+    let b_id = OwnedObject::object_id(&b);
+
+    let freed_c = Arc::new(AtomicBool::new(false));
+    let mut c = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c))) };
+    let c_id = OwnedObject::object_id(&c);
+
+    // Attach C as a non-owned child to A
+    c.object_data_mut().set_parent(Some(a_id)).expect("set parent");
+
+    // Bidirectional Registry & Local checks before swap
+    assert_eq!(c.object_data().parent(), Some(a_id));
+    assert_eq!(query_object_parent(c_id), Some(Some(a_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&c_id));
+    assert!(!query_object_children(b_id).unwrap().contains(&c_id));
+    assert!(a.object_data().children().contains(&c_id));
+    assert!(!b.object_data().children().contains(&c_id));
+
+    // Swap hierarchy between A (holds non-owned C) and B (empty)
+    a.object_data_mut()
+        .swap_hierarchy_and_ownership(&mut b.object_data_mut())
+        .expect("swap hierarchy must succeed for non-owned child");
+
+    // Bidirectional Registry & Local checks after swap
+    assert_eq!(c.object_data().parent(), Some(b_id), "non-owned child C local parent must be Some(b_id)");
+    with_object(c_id, |obj| {
+        assert_eq!(obj.object_data().parent(), Some(b_id), "non-owned child C via with_object must be Some(b_id)");
+    });
+    assert_eq!(query_object_parent(c_id), Some(Some(b_id)), "Registry parent of C must be Some(b_id)");
+    assert!(query_object_children(b_id).unwrap().contains(&c_id), "Registry children of B must contain C");
+    assert!(!query_object_children(a_id).unwrap().contains(&c_id), "Registry children of A must NOT contain C");
+    assert!(b.object_data().children().contains(&c_id), "B local children must contain C");
+    assert!(!a.object_data().children().contains(&c_id), "A local children must NOT contain C");
+
+    // Drop A only: A is deallocated; C was not owned by A, so C survives under B!
+    drop(a);
+    assert!(freed_a.load(Ordering::Acquire), "A is dropped");
+    assert!(!freed_b.load(Ordering::Acquire), "B is alive");
+    assert!(!freed_c.load(Ordering::Acquire), "non-owned child C remains alive");
+
+    // Post drop(A) checks: C's relationship to surviving B is preserved
+    assert_eq!(c.object_data().parent(), Some(b_id));
+    assert_eq!(query_object_parent(c_id), Some(Some(b_id)));
+    assert!(query_object_children(b_id).unwrap().contains(&c_id));
+
+    // Drop B: B is deallocated; C is a non-owned child held by caller
+    drop(b);
+    assert!(freed_b.load(Ordering::Acquire), "B is dropped");
+    assert!(!freed_c.load(Ordering::Acquire), "C still alive as held by outer OwnedObject");
+    assert_eq!(c.object_data().parent(), None);
+
+    // Drop C: cleanly unregistered
+    drop(c);
+    assert!(freed_c.load(Ordering::Acquire), "C is dropped");
+    assert!(with_object(c_id, |_| ()).is_none());
+}
+
+#[test]
+fn test_swap_hierarchy_rejects_cross_thread() {
+    let freed_a = Arc::new(AtomicBool::new(false));
+    let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
+    let a_id = OwnedObject::object_id(&a);
+
+    let freed_b = Arc::new(AtomicBool::new(false));
+    let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
+    let b_id = OwnedObject::object_id(&b);
+
+    // Move B to a remote thread
+    let remote_thread = std::thread::spawn(|| ThreadId::current()).join().unwrap();
+    move_to_thread_by_id(b_id, remote_thread, ThreadId::current()).expect("move B to remote thread");
+    assert_eq!(b.object_data().thread(), remote_thread);
+
+    let child_a_freed = Arc::new(AtomicBool::new(false));
+    let child_a = Box::new(make_node(Arc::clone(&child_a_freed)));
+    let child_a_id = child_a.data.id();
+    unsafe { add_owned_child(a_id, child_a) }
+        .map_err(|(e, _)| e)
+        .expect("attach child_a");
+
+    // Attempting to swap hierarchy across different thread affinities must be rejected!
+    let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+    assert_eq!(res, Err(ReparentError::DifferentThread));
+
+    // Verify zero state mutation
+    assert_eq!(a.object_data().owned_children().len(), 1);
+    assert!(b.object_data().owned_children().is_empty());
+    assert_eq!(query_object_parent(child_a_id), Some(Some(a_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&child_a_id));
+    assert!(query_object_children(b_id).unwrap().is_empty());
+
+    // Clean drop
+    drop(a);
+    drop(b);
+}
+
+#[test]
+fn test_swap_hierarchy_rejects_cycle() {
+    let freed_a = Arc::new(AtomicBool::new(false));
+    let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
+    let a_id = OwnedObject::object_id(&a);
+
+    let freed_b = Arc::new(AtomicBool::new(false));
+    let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
+    let b_id = OwnedObject::object_id(&b);
+
+    // Make B a child of A
+    b.object_data_mut().set_parent(Some(a_id)).expect("set parent");
+    assert_eq!(b.object_data().parent(), Some(a_id));
+    assert_eq!(query_object_parent(b_id), Some(Some(a_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&b_id));
+
+    // Attempting to swap hierarchy between parent A and its own descendant B must be rejected!
+    let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
+    assert_eq!(res, Err(ReparentError::InvalidParent));
+
+    // Verify zero state mutation
+    assert_eq!(b.object_data().parent(), Some(a_id));
+    assert_eq!(query_object_parent(b_id), Some(Some(a_id)));
+    assert!(query_object_children(a_id).unwrap().contains(&b_id));
+    assert!(b.object_data().children().is_empty());
+
+    // Clean drop
+    drop(b);
+    drop(a);
 }
