@@ -495,6 +495,12 @@ pub(crate) fn prepare_move_to_thread(
 /// Queries the target object's thread affinity across threads.
 /// Queries the parent ObjectId recorded in the global object registry for `id`, or `None` if
 /// `id` is not registered. Returns `Some(None)` if registered but parent is `None`.
+///
+/// # Atomicity Boundary
+/// This query guarantees single-record read atomicity protected by the target object's `parent` lock.
+/// Calling this function independently multiple times across different objects does NOT constitute
+/// a cross-object consistent snapshot: concurrent hierarchy operations may interleave between individual
+/// calls. For multi-record cross-object parent consistency, use [`query_object_parents_snapshot`].
 pub fn query_object_parent(id: ObjectId) -> Option<Option<ObjectId>> {
     let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
     let record = registry.get(&id)?;
@@ -504,6 +510,11 @@ pub fn query_object_parent(id: ObjectId) -> Option<Option<ObjectId>> {
 
 /// Queries the list of children recorded in the global object registry for `id`, or `None` if
 /// `id` is not registered.
+///
+/// # Atomicity Boundary
+/// This query guarantees single-record read atomicity protected by the target object's `children` lock.
+/// Querying multiple parent objects independently does NOT provide cross-object snapshot consistency;
+/// concurrent hierarchy operations may interleave between calls to different objects.
 pub fn query_object_children(id: ObjectId) -> Option<Vec<ObjectId>> {
     let registry = GLOBAL_OBJECT_REGISTRY.read().ok()?;
     let record = registry.get(&id)?;
@@ -511,9 +522,13 @@ pub fn query_object_children(id: ObjectId) -> Option<Vec<ObjectId>> {
     Some(children)
 }
 
-/// Queries the parent ObjectIds of two objects simultaneously in a consistent snapshot,
-/// acquiring their parent read locks in a fixed order (ascending ObjectId).
+/// Queries the parent ObjectIds of two objects simultaneously in a consistent multi-record snapshot,
+/// acquiring their parent read locks in a fixed global order (ascending ObjectId).
 /// Returns `None` if either object is not registered or a lock is poisoned.
+///
+/// # Atomicity Boundary
+/// Unlike separate invocations of [`query_object_parent`], this function provides cross-object snapshot
+/// consistency across both objects by holding their read locks concurrently.
 pub fn query_object_parents_snapshot(id1: ObjectId, id2: ObjectId) -> Option<(Option<ObjectId>, Option<ObjectId>)> {
     if id1 == id2 {
         let p = query_object_parent(id1)?;
@@ -1205,12 +1220,17 @@ impl<'a> ObjectDataMut<'a> {
     /// synchronizing both owned and non-owned transferred children's local parent ID,
     /// parent liveness token, and the global object registry.
     ///
-    /// Atomic transaction with all pre-validation performed upfront:
-    /// - Identity and cycle validation;
-    /// - Thread affinity validation across all children;
-    /// - Availability validation for non-owned children;
-    /// - Registry lock acquisition without unwraps;
-    /// - Full rollback fallback if any step fails before local commit.
+    /// # Atomicity and Locking Strategy
+    /// - Level 0: Global object registry read lock is acquired first.
+    /// - Level 1: Both parents' `children` write locks are acquired in ascending `ObjectId` order.
+    /// - Level 2: All transferred children's borrow guards and `parent` write locks are acquired in ascending `ObjectId` order.
+    ///
+    /// # Atomicity Boundary
+    /// During the commit phase, all write locks and borrow guards are held simultaneously, guaranteeing
+    /// that intermediate states cannot be observed via synchronized cross-object snapshot queries
+    /// (such as [`query_object_parents_snapshot`]). Note that independent single-record queries
+    /// (such as [`query_object_parent`]) are protected individually by single locks, but do not provide
+    /// cross-record snapshot atomicity.
     pub fn swap_hierarchy_and_ownership(&mut self, other: &mut ObjectDataMut<'_>) -> Result<(), ReparentError> {
         let self_id = self.data.id;
         let other_id = other.data.id;
@@ -1794,22 +1814,65 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     let refused_thread = new_parent.is_some_and(|np| in_different_thread(child.thread_id, np));
     let new_parent = if refused_thread { None } else { new_parent };
 
-    // Update global registry parent/children records.
+    // Update global registry parent/children records following global lock hierarchy:
+    // Tier 1: Update parents' `children` records in ascending ObjectId order.
+    // Tier 2: Update `child_record.parent` record.
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(old_record) = old_parent.and_then(|id| registry.get(&id)) {
-            old_record
-                .children
-                .write()
-                .unwrap()
-                .retain(|&id| id != child_id);
+        match (old_parent, new_parent) {
+            (Some(old_id), Some(new_id)) if old_id != new_id => {
+                let old_rec = registry.get(&old_id);
+                let new_rec = registry.get(&new_id);
+                if old_id < new_id {
+                    if let Some(r) = old_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            ch.retain(|&id| id != child_id);
+                        }
+                    }
+                    if let Some(r) = new_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            if !ch.contains(&child_id) {
+                                ch.push(child_id);
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(r) = new_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            if !ch.contains(&child_id) {
+                                ch.push(child_id);
+                            }
+                        }
+                    }
+                    if let Some(r) = old_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            ch.retain(|&id| id != child_id);
+                        }
+                    }
+                }
+            }
+            (Some(old_id), _) => {
+                if let Some(r) = registry.get(&old_id) {
+                    if let Ok(mut ch) = r.children.write() {
+                        ch.retain(|&id| id != child_id);
+                    }
+                }
+            }
+            (_, Some(new_id)) => {
+                if let Some(r) = registry.get(&new_id) {
+                    if let Ok(mut ch) = r.children.write() {
+                        if !ch.contains(&child_id) {
+                            ch.push(child_id);
+                        }
+                    }
+                }
+            }
+            (None, None) => {}
         }
+
+        // Tier 2: Update child's parent record.
         if let Some(child_record) = registry.get(&child_id) {
-            *child_record.parent.write().unwrap() = new_parent;
-        }
-        if let Some(new_record) = new_parent.and_then(|id| registry.get(&id)) {
-            let mut children = new_record.children.write().unwrap();
-            if !children.contains(&child_id) {
-                children.push(child_id);
+            if let Ok(mut p) = child_record.parent.write() {
+                *p = new_parent;
             }
         }
     }
@@ -1913,20 +1976,54 @@ pub fn reparent_owned_object(
         raw.owned_by_parent = new_parent.is_some();
     }
 
+    // Update global registry parent/children records following global lock hierarchy:
+    // Tier 1: Update parents' `children` records in ascending ObjectId order.
+    // Tier 2: Update `child_record.parent` record.
     if let Ok(registry) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(old_record) = registry.get(&old_parent_id) {
-            old_record
-                .children
-                .write()
-                .unwrap()
-                .retain(|&id| id != child_id);
-        }
-        *child_record.parent.write().unwrap() = new_parent;
-        if let Some(new_record) = new_parent.and_then(|id| registry.get(&id)) {
-            let mut children = new_record.children.write().unwrap();
-            if !children.contains(&child_id) {
-                children.push(child_id);
+        match new_parent {
+            Some(new_id) if new_id != old_parent_id => {
+                let old_rec = registry.get(&old_parent_id);
+                let new_rec = registry.get(&new_id);
+                if old_parent_id < new_id {
+                    if let Some(r) = old_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            ch.retain(|&id| id != child_id);
+                        }
+                    }
+                    if let Some(r) = new_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            if !ch.contains(&child_id) {
+                                ch.push(child_id);
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(r) = new_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            if !ch.contains(&child_id) {
+                                ch.push(child_id);
+                            }
+                        }
+                    }
+                    if let Some(r) = old_rec {
+                        if let Ok(mut ch) = r.children.write() {
+                            ch.retain(|&id| id != child_id);
+                        }
+                    }
+                }
             }
+            _ => {
+                if let Some(r) = registry.get(&old_parent_id) {
+                    if let Ok(mut ch) = r.children.write() {
+                        ch.retain(|&id| id != child_id);
+                    }
+                }
+            }
+        }
+
+        // Tier 2: Update child's parent record.
+        if let Ok(mut p) = child_record.parent.write() {
+            *p = new_parent;
         }
     }
 

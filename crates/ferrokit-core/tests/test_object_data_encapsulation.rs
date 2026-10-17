@@ -581,24 +581,36 @@ fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
     // Background reader continuously checks registry visibility
     let stop = Arc::new(AtomicBool::new(false));
     let inconsistencies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = Arc::new(AtomicBool::new(false));
 
     let reader = std::thread::spawn({
         let stop = Arc::clone(&stop);
         let inconsistencies = Arc::clone(&inconsistencies);
+        let read_count = Arc::clone(&read_count);
+        let started = Arc::clone(&started);
         move || {
             while !stop.load(Ordering::Acquire) {
-                if let Some((Some(p1), Some(p2))) = query_object_parents_snapshot(c1_id, c2_id) {
-                    // Valid states:
-                    // State 0: p1 == a_id && p2 == b_id
-                    // State 1: p1 == b_id && p2 == a_id
-                    // Any intermediate state (e.g. p1 == b_id && p2 == b_id or p1 == a_id && p2 == a_id) is an invariant violation!
-                    if (p1 == a_id && p2 != b_id) || (p1 == b_id && p2 != a_id) {
+                read_count.fetch_add(1, Ordering::Relaxed);
+                let snapshot = query_object_parents_snapshot(c1_id, c2_id);
+                match snapshot {
+                    Some((Some(p1), Some(p2))) if (p1 == a_id && p2 == b_id) || (p1 == b_id && p2 == a_id) => {
+                        // Exactly valid pre-swap or post-swap consistent state.
+                    }
+                    _ => {
+                        // Any None, missing parent, intermediate, or unexpected state is an invariant violation!
                         inconsistencies.fetch_add(1, Ordering::SeqCst);
                     }
                 }
+                started.store(true, Ordering::Release);
             }
         }
     });
+
+    // Wait until background reader has begun running and read at least one snapshot
+    while !started.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
 
     // Execute swap on main thread
     let res = a.object_data_mut().swap_hierarchy_and_ownership(&mut b.object_data_mut());
@@ -607,12 +619,15 @@ fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
     stop.store(true, Ordering::Release);
     reader.join().unwrap();
 
+    assert!(
+        read_count.load(Ordering::SeqCst) > 0,
+        "Reader thread did not execute any snapshot reads!"
+    );
     assert_eq!(
         inconsistencies.load(Ordering::SeqCst),
         0,
-        "Concurrent reader observed an inconsistent intermediate hierarchy state!"
+        "Concurrent reader observed illegal or inconsistent snapshot state!"
     );
-
     // Verify post-swap state
     assert_eq!(c1.object_data().parent(), Some(b_id));
     assert_eq!(c2.object_data().parent(), Some(a_id));
