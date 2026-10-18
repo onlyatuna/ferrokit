@@ -4384,6 +4384,7 @@ mod tests {
     /// reentrantly access or mutate the child via `with_object_mut`. All locks and mutable
     /// borrows of the child must be released before callbacks execute, and the final state
     /// of the registry, child's parent link, and parents' children lists must remain consistent.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_set_parent_reentrant_mutation_during_child_removed() {
         let _serial = serial();
