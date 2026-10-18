@@ -163,9 +163,17 @@ impl Drop for ReleaseBorrowFlag<'_> {
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
         {
-            // The flag is released when this block ends, also when the object's own accessor
-            // panics while the edits queued during the callback are applied: the object would
-            // stay borrowed for ever otherwise.
+            // The borrow flag is released when this block ends (via RAII `ReleaseBorrowFlag`), even if
+            // a custom `QObject::object_data_mut()` accessor panics while queued child edits or pending
+            // parent syncs are applied: the object would stay borrowed forever otherwise.
+            //
+            // CONTRACT / EXCLUSION:
+            // If a custom `QObject::object_data_mut()` accessor panics during `ObjectBorrowGuard::drop`,
+            // `ReleaseBorrowFlag` guarantees that the borrow flag is safely released to prevent borrow leaks
+            // and deadlocks. However, any `pending_child_changes` or `pending_parent_sync` extracted after
+            // swapping their pending flags are consumed and will not be restored or reapplied on unwind.
+            // This custom accessor panic scenario is strictly excluded from the transactional recovery
+            // guarantees provided for `ChildRemoved` user callback panics.
             let _release = ReleaseBorrowFlag(&self.borrow_state);
             if self
                 ._entry
