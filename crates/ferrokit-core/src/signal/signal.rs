@@ -1100,6 +1100,9 @@ mod tests {
         signal.emit(&2);
         assert_eq!(*round1_count.lock(), 2);
         assert!(dynamic_called.load(Ordering::Acquire));
+
+        // Break strong reference cycle formed by subscriber closure capturing signal_clone
+        signal.disconnect_all();
     }
 
     #[test]

@@ -55,6 +55,9 @@ fn slot_disconnected_during_emit_is_not_called() {
     );
     signal.emit(&2);
     assert_eq!(calls.load(Ordering::SeqCst), 0, "and stays disconnected");
+
+    // Break strong reference cycle between killer closure capturing signal and SignalInner
+    signal.disconnect_all();
 }
 
 #[test]
@@ -179,6 +182,9 @@ fn slot_connected_during_emit_does_not_run_in_that_emit() {
 
     signal.emit(&2);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "part of the next emission");
+
+    // Break strong reference cycle between dynamic connector closure and SignalInner
+    signal.disconnect_all();
 }
 
 #[test]

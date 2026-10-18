@@ -334,6 +334,10 @@ fn test_qt6_reactive_property_bindings_and_cycle_prevention() {
 
     // Recompute safely breaks loop without stack overflow
     let _ = p_a.get();
+
+    // Break strong reference cycle formed by circular bindings capturing Property clones
+    p_a.set(0);
+    p_b.set(0);
 }
 
 // -----------------------------------------------------------------------------
