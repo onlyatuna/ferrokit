@@ -64,15 +64,15 @@ fn start_timer(
     ty: TimerType,
     interval_ms: u64,
     fired: &Arc<AtomicU32>,
-) -> std::pin::Pin<Box<Timer>> {
-    let mut timer = Timer::new();
+) -> Timer {
+    let timer = Timer::new();
     timer.set_timer_type(ty);
     let counter = Arc::clone(fired);
     timer.timeout.connect(move |()| {
         counter.fetch_add(1, Ordering::SeqCst);
     });
     let started = catch_unwind(AssertUnwindSafe(|| {
-        timer.as_mut().start_with_interval(interval_ms)
+        timer.start_with_interval(interval_ms)
     }));
     if started.is_err() {
         // Dropping a timer whose start panicked could panic again while unwinding.
@@ -92,7 +92,7 @@ fn a_huge_interval_neither_panics_nor_poisons_and_later_destruction_completes() 
         for interval in HUGE_INTERVALS {
             let timer = start_timer(ty, interval, &fired);
             assert!(timer.is_active(), "{ty:?} {interval}");
-            let timer_id = timer.object_data().id();
+            let timer_id = timer.object_id();
 
             // Destroying another object after this start must run to the end and free it.
             let owned = unsafe { register_owned_qobject(Node::new(&dropped)) };

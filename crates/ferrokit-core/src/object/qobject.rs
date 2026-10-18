@@ -228,14 +228,21 @@ thread_local! {
     static PARKED_CHILDREN: RefCell<Vec<ParkedChild>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Destroys an owned child whose callback is still running, because its parent is being dropped
-/// from inside it. For everything else the child is destroyed at once, and so is everything the
+/// Destroys an owner whose object has a callback still running: an owned child whose parent is
+/// being dropped from inside that callback, or an owner (such as a `Timer` handle) dropped by
+/// one of its own slots. An owner whose object runs no callback is simply dropped. Otherwise the
+/// object is destroyed at once, and so is everything the
 /// registry lists below it: it is unregistered, so it is no longer alive, gets no events or
 /// timers, and its connections to other objects are gone. Its memory is kept until the callback
 /// returns, since that callback still runs on `&mut self`; the guard of the callback frees it
-/// (`free_parked_children`), and with it the memory of the objects below it. The child is not
+/// (`free_parked_children`), and with it the memory of the objects below it. The object is not
 /// read here: its id comes from its owner.
-fn destroy_when_released(child: OwnedObject<dyn QObject>) {
+///
+/// The steps, in order: the borrow flag is read (the only read of the borrow state), the
+/// allocation is parked and flagged `free_when_released`, the registry-listed descendants are
+/// unregistered, then the object itself. Only the guard of the running callback frees the
+/// parked allocation, after it has released the borrow flag.
+pub(crate) fn destroy_when_released(child: OwnedObject<dyn QObject>) {
     let child_id = OwnedObject::object_id(&child);
     let borrow_state = Arc::clone(OwnedObject::borrow_state(&child));
     if !borrow_state.borrow_flag.load(Ordering::Acquire) {
@@ -930,11 +937,16 @@ pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObjec
 
 /// Unregisters an object from all registries and cleans up active timers and connections.
 ///
+/// This is memory-neutral: it works from the registry record and ids and never reads, writes or
+/// forms a reference to the object. It may be called while a callback of the object runs, which
+/// is how `destroy_when_released` uses it. Freeing the object is a separate step.
+///
 /// # Safety
-/// The caller must ensure that no callback currently holds a borrow of this object, and that
-/// no concurrent registry callback can begin until this call completes. The object must remain
-/// alive through this call. Invoke on the object's physical registration thread so its timers
-/// are stopped from that thread's timer registry.
+/// The object's memory must stay valid, unmoved and undropped until every callback of the object
+/// that was running when this is called has returned (until its `ObjectBorrowGuard` is dropped).
+/// No concurrent registry callback can begin: callbacks run only on the registration thread and
+/// `registered_ptr` rejects an unregistered id. Invoke on the object's physical registration
+/// thread so its timers are stopped from that thread's timer registry.
 pub unsafe fn unregister_qobject(id: ObjectId) {
     // This cleanup cannot report a failure, and a step that is skipped leaves a record that
     // points to freed memory, an id in a parent's list, or a child with a dead parent. The locks

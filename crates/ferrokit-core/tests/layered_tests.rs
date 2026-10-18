@@ -272,7 +272,7 @@ fn test_level3_timer_and_event_loop_exit() {
     });
 
     // Create 50ms single-shot timer
-    let mut timer = Timer::new();
+    let timer = Timer::new();
     timer.set_single_shot(true);
     timer.set_interval(50);
 
@@ -282,7 +282,7 @@ fn test_level3_timer_and_event_loop_exit() {
         loop_handle.post_quit(ObjectId(0), 0); // Quit event loop
     });
 
-    timer.as_mut().start();
+    timer.start();
 
     // Start event loop
     let exit_code = event_loop.exec();

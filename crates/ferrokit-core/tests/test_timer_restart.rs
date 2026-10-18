@@ -10,15 +10,14 @@
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+    register_owned_qobject, unregister_qobject, with_object, ObjectData, ObjectId, QObject,
 };
 use ferrokit_core::timer::{Timer, TimerType};
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn counting_timer(interval_ms: u64, single_shot: bool) -> (Pin<Box<Timer>>, Arc<AtomicU32>) {
+fn counting_timer(interval_ms: u64, single_shot: bool) -> (Timer, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&count);
     let timer = Timer::new();
@@ -46,10 +45,10 @@ fn pump_until(el: &mut EventLoop, limit: Duration, cond: impl Fn() -> bool) -> b
 #[test]
 fn restarted_single_shot_timer_still_fires() {
     let mut el = EventLoop::new();
-    let (mut timer, count) = counting_timer(40, true);
+    let (timer, count) = counting_timer(40, true);
 
-    timer.as_mut().start();
-    timer.as_mut().start();
+    timer.start();
+    timer.start();
 
     assert!(
         pump_until(&mut el, Duration::from_millis(500), || count
@@ -64,11 +63,11 @@ fn restarted_single_shot_timer_still_fires() {
 #[test]
 fn stop_then_start_fires() {
     let mut el = EventLoop::new();
-    let (mut timer, count) = counting_timer(40, true);
+    let (timer, count) = counting_timer(40, true);
 
-    timer.as_mut().start();
+    timer.start();
     timer.stop();
-    timer.as_mut().start();
+    timer.start();
 
     assert!(
         pump_until(&mut el, Duration::from_millis(500), || count
@@ -83,16 +82,16 @@ fn restart_postpones_the_deadline() {
     // This is how the tooltip wake-up timer is used: every mouse move restarts it, and the
     // timeout must be measured from the *last* start.
     let mut el = EventLoop::new();
-    let (mut timer, count) = counting_timer(120, true);
+    let (timer, count) = counting_timer(120, true);
 
-    timer.as_mut().start();
+    timer.start();
     let first = Instant::now();
     assert!(
         !pump_until(&mut el, Duration::from_millis(70), || count
             .load(Ordering::SeqCst)
             >= 1)
     );
-    timer.as_mut().start();
+    timer.start();
     let restarted = Instant::now();
 
     // Past the first deadline (120 ms after `first`) but before the restarted one.
@@ -119,10 +118,10 @@ fn restart_postpones_the_deadline() {
 #[test]
 fn restarted_repeating_timer_keeps_firing() {
     let mut el = EventLoop::new();
-    let (mut timer, count) = counting_timer(25, false);
+    let (timer, count) = counting_timer(25, false);
 
-    timer.as_mut().start();
-    timer.as_mut().start();
+    timer.start();
+    timer.start();
 
     assert!(
         pump_until(&mut el, Duration::from_millis(600), || count
@@ -137,14 +136,15 @@ fn restarted_repeating_timer_keeps_firing() {
 #[test]
 fn restarting_a_timer_keeps_the_object_alive() {
     let _el = EventLoop::new();
-    let (mut timer, _count) = counting_timer(1000, true);
+    let (timer, _count) = counting_timer(1000, true);
+    let id = timer.object_id();
 
-    timer.as_mut().start();
-    assert!(timer.object_data().is_alive());
-    timer.as_mut().start();
+    timer.start();
+    assert!(with_object(id, |_| ()).is_some());
+    timer.start();
     assert!(
-        timer.object_data().is_alive(),
-        "re-registering an object must not kill its own liveness token"
+        with_object(id, |_| ()).is_some(),
+        "restarting a timer must not unregister its object"
     );
     timer.stop();
 }

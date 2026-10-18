@@ -98,10 +98,10 @@ fn the_compressor_panic_case() {
 
     // Starting a zero-interval timer posts a `ZeroTimer` to its own object while the timer
     // registry lock is held, so the same panic unwinds through that lock too.
-    let mut timer = Timer::new();
-    let timer_id = timer.object_data().id();
+    let timer = Timer::new();
+    let timer_id = timer.object_id();
     post_event_to_thread(thread, timer_id, update_request());
-    let started = catch_unwind(AssertUnwindSafe(|| timer.as_mut().start_with_interval(0)));
+    let started = catch_unwind(AssertUnwindSafe(|| timer.start_with_interval(0)));
     assert!(
         started.is_err(),
         "starting the zero timer did not reach the compressor"

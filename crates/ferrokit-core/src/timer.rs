@@ -3,8 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::marker::PhantomPinned;
-use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
@@ -14,7 +13,7 @@ use windows_sys::Win32::Foundation::HWND;
 #[cfg(not(windows))]
 pub type HWND = *mut std::ffi::c_void;
 
-use crate::object::{ObjectData, ObjectId, QObject};
+use crate::object::{ObjectData, ObjectId, OwnedObject, QObject};
 use crate::poison::lock_unpoisoned;
 use crate::signal::Signal;
 
@@ -542,63 +541,45 @@ impl TimerEvent {
     }
 }
 
-/// High-level timer object matching `QTimer`.
-///
-/// A started timer is registered at its address, so a `Timer` is always heap-pinned: see
-/// [`Timer::new`]. Qt: `QTimer` is a heap `QObject` whose address is stable for its lifetime.
-pub struct Timer {
-    data: ObjectData,
+/// Scheduling state of a [`Timer`], shared by the handle and the object that receives the ticks
+/// (`Rc`, one thread). A slot that stops, restarts or reconfigures its own timer, or drops its
+/// handle, works on this state and never reaches the object a running callback has borrowed.
+struct TimerControl {
+    object_id: ObjectId,
     id: Cell<TimerId>,
     interval_ms: Cell<u64>,
     single_shot: Cell<bool>,
     timer_type: Cell<TimerType>,
-    pub timeout: Signal<()>,
-    _pinned: PhantomPinned,
+    retired: Cell<bool>,
+    timeout: Signal<()>,
 }
 
-impl Timer {
-    /// Heap-pins a new timer (`new QTimer`).
-    ///
-    /// The timer cannot be moved out of its box, because it may be registered at its address:
-    ///
-    /// ```compile_fail
-    /// let t = ferrokit_core::timer::Timer::new();
-    /// let _moved = std::pin::Pin::into_inner(t); // `Timer: !Unpin`, so this does not compile
-    /// ```
-    pub fn new() -> Pin<Box<Self>> {
-        let data = ObjectData::new(ObjectId::next());
-        let timeout = Signal::with_owner(&data);
-        Box::pin(Self {
-            data,
-            id: Cell::new(TimerId::INVALID),
-            interval_ms: Cell::new(0),
-            single_shot: Cell::new(false),
-            timer_type: Cell::new(TimerType::Coarse),
-            timeout,
-            _pinned: PhantomPinned,
-        })
+impl TimerControl {
+    fn is_active(&self) -> bool {
+        self.id.get().is_valid()
     }
 
-    /// Starts the timer with its configured interval (`QTimer::start`).
-    ///
-    /// Safe: a timer is only reachable as `Pin<Box<Timer>>`, so its registered address cannot
-    /// change, and `Drop` unregisters it before the memory is freed.
-    pub fn start(mut self: Pin<&mut Self>) -> TimerId {
+    /// Marks the control retired and disarms the scheduled timer. One way: a retired control
+    /// starts nothing and emits nothing.
+    fn retire(&self) {
+        self.retired.set(true);
+        self.stop();
+    }
+
+    fn start(&self) -> TimerId {
+        if self.retired.get() {
+            return TimerId::INVALID;
+        }
         if self.is_active() {
             self.stop();
         }
-
-        // SAFETY: `self` is pinned and never leaves its heap box except through `Drop`, which
-        // unregisters the address first. The registry therefore never holds a stale pointer.
-        unsafe { crate::object::register_pinned_qobject(self.as_mut()) };
-
         self.rearm()
     }
 
     /// Registers this timer's current configuration with the thread timer context and records
     /// the new id. Callers must have stopped the timer first, or it must never have been started.
     fn rearm(&self) -> TimerId {
-        let receiver = self.data.id();
+        let receiver = self.object_id;
         let interval_ms = self.interval_ms.get();
         let timer_type = self.timer_type.get();
         let single_shot = self.single_shot.get();
@@ -615,14 +596,7 @@ impl Timer {
         id
     }
 
-    /// Starts the timer with the specified interval (`QTimer::start(msec)`).
-    pub fn start_with_interval(self: Pin<&mut Self>, ms: u64) -> TimerId {
-        self.interval_ms.set(ms);
-        self.start()
-    }
-
-    /// Stops the timer (`QTimer::stop`).
-    pub fn stop(&self) {
+    fn stop(&self) {
         if self.is_active() {
             let id = self.id.get();
             let _ = THREAD_TIMER_CONTEXT.try_with(|ctx| {
@@ -636,12 +610,7 @@ impl Timer {
         }
     }
 
-    pub fn is_active(&self) -> bool {
-        self.id.get().is_valid()
-    }
-
-    /// Sets the interval (`QTimer::setInterval`); an active timer is restarted with it.
-    pub fn set_interval(&self, ms: u64) {
+    fn set_interval(&self, ms: u64) {
         if self.is_active() {
             self.stop();
             self.interval_ms.set(ms);
@@ -651,12 +620,7 @@ impl Timer {
         }
     }
 
-    pub fn interval(&self) -> u64 {
-        self.interval_ms.get()
-    }
-
-    /// Sets single-shot mode; an active timer's registry entry is updated to match.
-    pub fn set_single_shot(&self, v: bool) {
+    fn set_single_shot(&self, v: bool) {
         self.single_shot.set(v);
         if self.is_active() {
             let id = self.id.get();
@@ -668,20 +632,179 @@ impl Timer {
         }
     }
 
+    fn start_with_registry(&self, registry: &mut TimerRegistry) -> TimerId {
+        if self.retired.get() {
+            return TimerId::INVALID;
+        }
+        if self.is_active() {
+            self.stop_with_registry(registry);
+        }
+        let id = registry.register(
+            self.object_id,
+            self.interval_ms.get(),
+            self.timer_type.get(),
+            self.single_shot.get(),
+        );
+        self.id.set(id);
+        id
+    }
+
+    fn start_with<D: crate::event_loop::EventDispatcher + ?Sized>(
+        &self,
+        registry: &mut TimerRegistry,
+        dispatcher: &mut D,
+    ) -> TimerId {
+        if self.retired.get() {
+            return TimerId::INVALID;
+        }
+        if self.is_active() {
+            self.stop_with(registry, dispatcher);
+        }
+        let id = registry.register(
+            self.object_id,
+            self.interval_ms.get(),
+            self.timer_type.get(),
+            self.single_shot.get(),
+        );
+        self.id.set(id);
+        if let Some(entry) = registry.get(id) {
+            dispatcher.register_timer(entry);
+        }
+        id
+    }
+
+    fn stop_with<D: crate::event_loop::EventDispatcher + ?Sized>(
+        &self,
+        registry: &mut TimerRegistry,
+        dispatcher: &mut D,
+    ) {
+        if self.is_active() {
+            if let Some(entry) = registry.unregister(self.id.get()) {
+                dispatcher.unregister_timer(&entry);
+            }
+            self.id.set(TimerId::INVALID);
+        }
+    }
+
+    fn stop_with_registry(&self, registry: &mut TimerRegistry) {
+        if self.is_active() {
+            registry.unregister(self.id.get());
+            self.id.set(TimerId::INVALID);
+        }
+    }
+}
+
+/// High-level timer object matching `QTimer`.
+///
+/// `Timer` is the owner handle. The object the registry calls is a private `TimerCore`, registered
+/// once by [`Timer::new`] at an address that never changes; the handle and the registry share the
+/// one pointer to it, and the handle never forms a reference to the object. Everything the handle
+/// does goes through shared scheduling state, so it is safe to call from a slot of its own
+/// `timeout`. Dropping the handle from such a slot unregisters the timer at once and frees its
+/// memory when the running callback returns. A `Timer` stays on the thread that created it.
+///
+/// ```compile_fail
+/// let t = ferrokit_core::timer::Timer::new();
+/// let _ = &*t; // no `Deref`: the object is never reachable from the handle
+/// ```
+///
+/// ```compile_fail
+/// fn needs_send<T: Send>(_: T) {}
+/// needs_send(ferrokit_core::timer::Timer::new()); // `Timer` stays on its thread
+/// ```
+pub struct Timer {
+    _root: TimerRoot,
+    control: Rc<TimerControl>,
+    pub timeout: Signal<()>,
+}
+
+impl Timer {
+    /// Creates a timer and registers its object (`new QTimer`). Nothing is scheduled until
+    /// [`Timer::start`].
+    pub fn new() -> Self {
+        let data = ObjectData::new(ObjectId::next());
+        let object_id = data.id();
+        let timeout = Signal::with_owner(&data);
+        let control = Rc::new(TimerControl {
+            object_id,
+            id: Cell::new(TimerId::INVALID),
+            interval_ms: Cell::new(0),
+            single_shot: Cell::new(false),
+            timer_type: Cell::new(TimerType::Coarse),
+            retired: Cell::new(false),
+            timeout: timeout.clone(),
+        });
+        let core = TimerCore {
+            data,
+            control: Rc::clone(&control),
+        };
+        // SAFETY: the owner is private to `Timer`, which is `!Send` and never forms a reference
+        // to the object. While a callback of the object runs it is not accessed or freed by the
+        // owner: dropping the owner parks the memory (`TimerRoot::drop`).
+        let owner = unsafe { crate::object::register_owned_qobject(core) };
+        Self {
+            _root: TimerRoot { owner: Some(owner) },
+            control,
+            timeout,
+        }
+    }
+
+    /// The identity of the timer's object (`QObject` identity). It is stable for the handle's
+    /// lifetime and is not the id of a scheduled timer: see [`Timer::timer_id`].
+    pub fn object_id(&self) -> ObjectId {
+        self.control.object_id
+    }
+
+    /// Starts the timer with its configured interval (`QTimer::start`).
+    pub fn start(&self) -> TimerId {
+        self.control.start()
+    }
+
+    /// Starts the timer with the specified interval (`QTimer::start(msec)`).
+    pub fn start_with_interval(&self, ms: u64) -> TimerId {
+        self.control.interval_ms.set(ms);
+        self.control.start()
+    }
+
+    /// Stops the timer (`QTimer::stop`).
+    pub fn stop(&self) {
+        self.control.stop();
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.control.is_active()
+    }
+
+    /// Sets the interval (`QTimer::setInterval`); an active timer is restarted with it.
+    pub fn set_interval(&self, ms: u64) {
+        self.control.set_interval(ms);
+    }
+
+    pub fn interval(&self) -> u64 {
+        self.control.interval_ms.get()
+    }
+
+    /// Sets single-shot mode; an active timer's registry entry is updated to match.
+    pub fn set_single_shot(&self, v: bool) {
+        self.control.set_single_shot(v);
+    }
+
     pub fn is_single_shot(&self) -> bool {
-        self.single_shot.get()
+        self.control.single_shot.get()
     }
 
     pub fn set_timer_type(&self, t: TimerType) {
-        self.timer_type.set(t);
+        self.control.timer_type.set(t);
     }
 
     pub fn timer_type(&self) -> TimerType {
-        self.timer_type.get()
+        self.control.timer_type.get()
     }
 
+    /// The id of the currently scheduled timer, `TimerId::INVALID` when stopped. It changes on
+    /// every start. It is not the identity of the object: see [`Timer::object_id`].
     pub fn timer_id(&self) -> TimerId {
-        self.id.get()
+        self.control.id.get()
     }
 
     /// Returns remaining time in milliseconds (`QTimer::remainingTime`).
@@ -692,7 +815,7 @@ impl Timer {
         let now = current_time_ms();
         let deadline_opt = with_thread_timer_context(|ctx| {
             lock_unpoisoned(&ctx.registry)
-                .get(self.id.get())
+                .get(self.control.id.get())
                 .map(|e| e.next_fire_ms)
         })
         .flatten();
@@ -709,52 +832,17 @@ impl Timer {
     }
 
     /// Starts a timer in a caller-supplied registry.
-    ///
-    /// The timer is heap-pinned (see [`Timer::new`]), so its registered address stays valid
-    /// until `Drop` unregisters it.
-    pub fn start_with_registry(mut self: Pin<&mut Self>, registry: &mut TimerRegistry) -> TimerId {
-        if self.is_active() {
-            self.stop_with_registry(registry);
-        }
-        // SAFETY: `self` is pinned in its heap box; `Drop` unregisters the address before the
-        // box is freed, so the registry never holds a stale pointer (see `Timer::start`).
-        unsafe { crate::object::register_pinned_qobject(self.as_mut()) };
-        let id = registry.register(
-            self.data.id(),
-            self.interval_ms.get(),
-            self.timer_type.get(),
-            self.single_shot.get(),
-        );
-        self.id.set(id);
-        id
+    pub fn start_with_registry(&self, registry: &mut TimerRegistry) -> TimerId {
+        self.control.start_with_registry(registry)
     }
 
     /// Starts a timer in a caller-supplied registry and dispatcher.
-    ///
-    /// The timer is heap-pinned (see [`Timer::new`]), so its registered address stays valid
-    /// until `Drop` unregisters it.
     pub fn start_with<D: crate::event_loop::EventDispatcher + ?Sized>(
-        mut self: Pin<&mut Self>,
+        &self,
         registry: &mut TimerRegistry,
         dispatcher: &mut D,
     ) -> TimerId {
-        if self.is_active() {
-            self.stop_with(registry, dispatcher);
-        }
-        // SAFETY: `self` is pinned in its heap box; `Drop` unregisters the address before the
-        // box is freed, so the registry never holds a stale pointer (see `Timer::start`).
-        unsafe { crate::object::register_pinned_qobject(self.as_mut()) };
-        let id = registry.register(
-            self.data.id(),
-            self.interval_ms.get(),
-            self.timer_type.get(),
-            self.single_shot.get(),
-        );
-        self.id.set(id);
-        if let Some(entry) = registry.get(id) {
-            dispatcher.register_timer(entry);
-        }
-        id
+        self.control.start_with(registry, dispatcher)
     }
 
     /// Timer registry matching Qt `WinTimerDict`.
@@ -763,31 +851,22 @@ impl Timer {
         registry: &mut TimerRegistry,
         dispatcher: &mut D,
     ) {
-        if self.is_active() {
-            if let Some(entry) = registry.unregister(self.id.get()) {
-                dispatcher.unregister_timer(&entry);
-            }
-            self.id.set(TimerId::INVALID);
-        }
+        self.control.stop_with(registry, dispatcher);
     }
 
     /// Timer registry matching Qt `WinTimerDict`.
     pub fn stop_with_registry(&self, registry: &mut TimerRegistry) {
-        if self.is_active() {
-            registry.unregister(self.id.get());
-            self.id.set(TimerId::INVALID);
-        }
+        self.control.stop_with_registry(registry);
     }
 
     pub fn timer_event_with_registry(&self, event: &TimerEvent, registry: &mut TimerRegistry) {
-        if event.timer_id == self.id.get() {
-            if self.single_shot.get() {
-                self.stop_with_registry(registry);
+        if event.timer_id == self.control.id.get() {
+            if self.control.single_shot.get() {
+                self.control.stop_with_registry(registry);
             }
             self.timeout.emit(&());
         }
     }
-
     /// Fires a single-shot timer callback (`QTimer::singleShot`).
     pub fn single_shot(interval_ms: u64, callback: impl FnOnce() + Send + 'static) {
         let thread_id = crate::object::ThreadId::current();
@@ -856,7 +935,27 @@ pub fn repost_zero_timer(receiver: ObjectId, timer_id: u64) {
     }
 }
 
-impl QObject for Timer {
+/// The object the registry calls for a [`Timer`]. It is private: only a registry callback ever
+/// holds a `&mut` to it, and the owner side never forms a reference to it.
+struct TimerCore {
+    data: ObjectData,
+    control: Rc<TimerControl>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Counts destructor runs of `TimerCore` on this thread (lifecycle tests).
+    static CORE_DROPS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+impl Drop for TimerCore {
+    fn drop(&mut self) {
+        CORE_DROPS.with(|drops| drops.set(drops.get() + 1));
+    }
+}
+
+impl QObject for TimerCore {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -865,29 +964,55 @@ impl QObject for Timer {
         crate::object::ObjectDataMut::new(&mut self.data)
     }
 
-    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
     /// Handles timer events for this object (`QObject::timerEvent`).
+    ///
+    /// A slot may drop the owning [`Timer`] while this runs. The control and the signal are
+    /// therefore cloned into locals first and the emission goes through the local clone, so
+    /// `emit` never borrows a field of this object; the object's memory itself is kept until
+    /// this callback returns (see `TimerRoot`).
     fn timer_event(&mut self, timer_id: u64) {
-        if timer_id == self.id.get().0 as u64 {
-            if self.single_shot.get() {
-                self.stop();
+        let control = Rc::clone(&self.control);
+        if control.retired.get() {
+            return;
+        }
+        if timer_id == control.id.get().0 as u64 {
+            if control.single_shot.get() {
+                control.stop();
             }
-            self.timeout.emit(&());
+            let timeout = control.timeout.clone();
+            timeout.emit(&());
+        }
+    }
+}
+
+// `TimerCore` is `Unpin`, so Miri checks that the `&mut` handed to a callback is unique.
+const _: () = {
+    const fn assert_unpin<T: Unpin>() {}
+    assert_unpin::<TimerCore>();
+};
+
+/// Owner of the `TimerCore` allocation. It has no `Deref`: the owner side never reads or writes
+/// the object. Dropping it destroys the object at once when no callback of it runs; otherwise the
+/// object is unregistered at once and its memory is parked until the running callback returns
+/// (`destroy_when_released`).
+struct TimerRoot {
+    owner: Option<OwnedObject<TimerCore>>,
+}
+
+impl Drop for TimerRoot {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            crate::object::qobject::destroy_when_released(OwnedObject::into_dyn(owner));
         }
     }
 }
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        self.stop();
-        // SAFETY: Drop occurs after the timer's event callbacks have completed.
-        unsafe { crate::object::unregister_qobject(self.data.id()) };
+        // Runs before the fields drop, so before the root: mark the control retired and disarm
+        // the scheduled timer. `unregister_qobject`, run by the root, removes any registry entry
+        // this `stop` could not reach.
+        self.control.retire();
     }
 }
 
@@ -1095,7 +1220,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mut registry = TimerRegistry::new();
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(100);
         timer.set_single_shot(true);
 
@@ -1105,7 +1230,7 @@ mod tests {
             log2.lock().unwrap().push("timeout");
         });
 
-        timer.as_mut().start_with_registry(&mut registry);
+        timer.start_with_registry(&mut registry);
         assert!(timer.is_active());
         let id = timer.timer_id();
         assert!(registry.get(id).is_some());
@@ -1123,7 +1248,7 @@ mod tests {
         use std::time::Duration;
 
         let event_loop = EventLoop::new();
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(10);
         timer.set_single_shot(true);
 
@@ -1133,7 +1258,7 @@ mod tests {
             f_clone.store(true, Ordering::SeqCst);
         });
 
-        timer.as_mut().start();
+        timer.start();
         assert!(timer.is_active());
 
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
@@ -1177,16 +1302,14 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_single_shot(true);
         timer.set_interval(30);
         timer.timeout.connect(move |_| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        timer
-            .as_mut()
-            .start_with(&mut registry.lock().unwrap(), &mut dispatcher);
+        timer.start_with(&mut registry.lock().unwrap(), &mut dispatcher);
         assert!(timer.is_active());
 
         let ok = spin_until(
@@ -1221,15 +1344,13 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(50);
         timer.timeout.connect(move |_| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        timer
-            .as_mut()
-            .start_with(&mut registry.lock().unwrap(), &mut dispatcher);
+        timer.start_with(&mut registry.lock().unwrap(), &mut dispatcher);
 
         timer.stop_with(&mut registry.lock().unwrap(), &mut dispatcher);
         assert!(!timer.is_active());
@@ -1249,7 +1370,7 @@ mod tests {
 
         let event_loop = EventLoop::new();
 
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(0);
         timer.set_single_shot(true);
 
@@ -1259,7 +1380,7 @@ mod tests {
             f_clone.store(true, Ordering::SeqCst);
         });
 
-        timer.as_mut().start();
+        timer.start();
         assert!(timer.is_active());
 
         assert!(!fired.load(Ordering::SeqCst));
@@ -1289,13 +1410,13 @@ mod tests {
         let el = EventLoop::new();
         let fired = Arc::new(AtomicBool::new(false));
         let f = Arc::clone(&fired);
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(0);
         timer.set_single_shot(true);
         timer.timeout.connect(move |_| {
             f.store(true, Ordering::SeqCst);
         });
-        timer.as_mut().start();
+        timer.start();
         el.process_events(false);
         assert!(fired.load(Ordering::SeqCst));
         assert_eq!(
@@ -1318,12 +1439,12 @@ mod tests {
         let el = EventLoop::new();
         let count = Arc::new(AtomicU32::new(0));
         let c = Arc::clone(&count);
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(0);
         timer.timeout.connect(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
         });
-        timer.as_mut().start();
+        timer.start();
         for _ in 0..100 {
             if count.load(Ordering::SeqCst) >= 5 {
                 break;
@@ -1346,12 +1467,12 @@ mod tests {
         let el = EventLoop::new();
         let count = Arc::new(AtomicU32::new(0));
         let c = Arc::clone(&count);
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(60_000);
         timer.timeout.connect(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
         });
-        timer.as_mut().start();
+        timer.start();
         timer.set_interval(0);
         for _ in 0..100 {
             if count.load(Ordering::SeqCst) >= 1 {
@@ -1387,12 +1508,12 @@ mod tests {
         let mut el = crate::event_loop::EventLoop::new();
         let count = Arc::new(AtomicU32::new(0));
         let c = Arc::clone(&count);
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(15);
         timer.timeout.connect(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
         });
-        timer.as_mut().start();
+        timer.start();
         timer.set_single_shot(true);
         // QTimer::timerEvent reads `single` at fire time (qtimer.cpp:330-331).
         assert_eq!(pump_for(&mut el, 300, &count), 1);
@@ -1406,13 +1527,13 @@ mod tests {
         let mut el = crate::event_loop::EventLoop::new();
         let count = Arc::new(AtomicU32::new(0));
         let c = Arc::clone(&count);
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(15);
         timer.set_single_shot(true);
         timer.timeout.connect(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
         });
-        timer.as_mut().start();
+        timer.start();
         timer.set_single_shot(false);
         let fired = pump_for(&mut el, 300, &count);
         assert!(
@@ -1427,13 +1548,13 @@ mod tests {
     fn test_timer_remaining_time() {
         use crate::event_loop::EventLoop;
 
-        let mut timer = Timer::new();
+        let timer = Timer::new();
         timer.set_interval(1000);
 
         assert_eq!(timer.remaining_time(), -1);
 
         let _event_loop = EventLoop::new();
-        timer.as_mut().start();
+        timer.start();
         assert!(timer.is_active());
 
         let rem = timer.remaining_time();
@@ -1464,5 +1585,239 @@ mod tests {
         let processed = event_loop.process_events(false);
         assert!(processed);
         assert!(executed.load(Ordering::SeqCst));
+    }
+
+    // ---- Lifecycle of a `Timer` whose owner is dropped by one of its own slots.
+    //
+    // `Signal::emit` contains a panicking slot, so a slot never asserts: it records what it saw
+    // and the test asserts afterwards.
+
+    use std::sync::atomic::AtomicUsize;
+
+    thread_local! {
+        static HOLD: RefCell<Option<Timer>> = const { RefCell::new(None) };
+    }
+
+    fn core_drops() -> usize {
+        CORE_DROPS.with(|drops| drops.get())
+    }
+
+    fn hold(timer: Timer) {
+        HOLD.with(|h| *h.borrow_mut() = Some(timer));
+    }
+
+    fn take_held() -> Option<Timer> {
+        HOLD.with(|h| h.borrow_mut().take())
+    }
+
+    /// A thread timer context with no event loop: `start` arms the returned registry.
+    fn test_context() -> Arc<Mutex<TimerRegistry>> {
+        let registry = Arc::new(Mutex::new(TimerRegistry::new()));
+        #[cfg(windows)]
+        register_thread_timer_context(Arc::clone(&registry), std::ptr::null_mut());
+        #[cfg(not(windows))]
+        register_thread_timer_context(Arc::clone(&registry));
+        registry
+    }
+
+    fn deliver(timer_object: ObjectId, timer_id: TimerId) -> crate::event_loop::TimerDelivery {
+        crate::event_loop::deliver_timer_event(timer_object, timer_id.0 as u64)
+    }
+
+    #[test]
+    fn owner_dropped_by_its_own_slot_is_freed_after_the_callback_returns() {
+        use crate::event_loop::TimerDelivery;
+        use crate::object::qobject::registered_on_current_thread;
+
+        let registry = test_context();
+        let timer = Timer::new();
+        let id = timer.object_id();
+        timer.set_interval(1000);
+        let timer_id = timer.start();
+        assert!(timer_id.is_valid());
+        assert!(registered_on_current_thread(id));
+        assert_eq!(registry.lock().unwrap().len(), 1);
+
+        let retained = timer.timeout.clone();
+        let in_slot_drops = Arc::new(AtomicUsize::new(usize::MAX));
+        let in_slot_registered = Arc::new(AtomicUsize::new(usize::MAX));
+        let in_slot_timers = Arc::new(AtomicUsize::new(usize::MAX));
+        let second = Arc::new(AtomicUsize::new(0));
+        {
+            let (d, r, t, reg) = (
+                Arc::clone(&in_slot_drops),
+                Arc::clone(&in_slot_registered),
+                Arc::clone(&in_slot_timers),
+                Arc::clone(&registry),
+            );
+            timer.timeout.connect(move |_| {
+                drop(take_held());
+                d.store(core_drops(), Ordering::SeqCst);
+                r.store(registered_on_current_thread(id) as usize, Ordering::SeqCst);
+                t.store(reg.lock().unwrap().len(), Ordering::SeqCst);
+            });
+            let s = Arc::clone(&second);
+            timer.timeout.connect(move |_| {
+                s.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        hold(timer);
+
+        assert!(matches!(deliver(id, timer_id), TimerDelivery::Delivered));
+
+        assert_eq!(in_slot_drops.load(Ordering::SeqCst), 0, "object destroyed inside its callback");
+        assert_eq!(in_slot_registered.load(Ordering::SeqCst), 0, "still registered after the drop");
+        assert_eq!(in_slot_timers.load(Ordering::SeqCst), 0, "timer still scheduled after the drop");
+        assert_eq!(second.load(Ordering::SeqCst), 0, "a slot ran for a destroyed owner");
+        assert_eq!(core_drops(), 1, "object not freed once the callback returned");
+        assert!(!registered_on_current_thread(id));
+        assert!(matches!(deliver(id, timer_id), TimerDelivery::NotDeliverable));
+        retained.emit(&());
+        assert_eq!(second.load(Ordering::SeqCst), 0, "a retained signal still reaches slots");
+        assert_eq!(registry.lock().unwrap().len(), 0);
+        unregister_thread_timer_context();
+    }
+
+    #[test]
+    fn slot_may_restart_stop_and_reconfigure_its_own_timer() {
+        use crate::event_loop::TimerDelivery;
+
+        let registry = test_context();
+        let timer = Timer::new();
+        let id = timer.object_id();
+        timer.set_interval(1000);
+        let first = timer.start();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        timer.timeout.connect(move |_| {
+            HOLD.with(|h| {
+                let h = h.borrow();
+                let t = h.as_ref().expect("held");
+                t.stop();
+                t.set_interval(500);
+                t.set_single_shot(false);
+                t.start();
+            });
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        hold(timer);
+
+        assert!(matches!(deliver(id, first), TimerDelivery::Delivered));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let timer = take_held().expect("held");
+        assert!(timer.is_active());
+        assert_ne!(timer.timer_id(), first, "restart must schedule a new timer");
+        assert_eq!(timer.interval(), 500);
+        assert_eq!(registry.lock().unwrap().len(), 1);
+        assert_eq!(core_drops(), 0);
+        drop(timer);
+        assert_eq!(core_drops(), 1);
+        assert_eq!(registry.lock().unwrap().len(), 0);
+        unregister_thread_timer_context();
+    }
+
+    #[test]
+    fn single_shot_slot_may_restart_and_then_drop_its_owner() {
+        use crate::event_loop::TimerDelivery;
+
+        let registry = test_context();
+        let timer = Timer::new();
+        let id = timer.object_id();
+        timer.set_interval(1000);
+        timer.set_single_shot(true);
+        let first = timer.start();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        timer.timeout.connect(move |_| {
+            if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                HOLD.with(|h| {
+                    h.borrow().as_ref().expect("held").start();
+                });
+            } else {
+                drop(take_held());
+            }
+        });
+        hold(timer);
+
+        assert!(matches!(deliver(id, first), TimerDelivery::Delivered));
+        let second_id = HOLD.with(|h| h.borrow().as_ref().expect("held").timer_id());
+        assert!(second_id.is_valid() && second_id != first);
+        assert_eq!(registry.lock().unwrap().len(), 1, "single-shot stop ran before the slot");
+        assert_eq!(core_drops(), 0);
+
+        assert!(matches!(deliver(id, second_id), TimerDelivery::Delivered));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(core_drops(), 1);
+        assert_eq!(registry.lock().unwrap().len(), 0);
+        unregister_thread_timer_context();
+    }
+
+    #[test]
+    fn owner_dropped_outside_a_callback_is_freed_at_once() {
+        use crate::object::qobject::registered_on_current_thread;
+
+        let registry = test_context();
+        let never_started = Timer::new();
+        let id = never_started.object_id();
+        assert!(registered_on_current_thread(id), "registered by `new`");
+        drop(never_started);
+        assert_eq!(core_drops(), 1);
+        assert!(!registered_on_current_thread(id));
+
+        let started = Timer::new();
+        started.set_interval(1000);
+        assert!(started.start().is_valid());
+        assert_eq!(registry.lock().unwrap().len(), 1);
+        drop(started);
+        assert_eq!(core_drops(), 2);
+        assert_eq!(registry.lock().unwrap().len(), 0);
+        unregister_thread_timer_context();
+    }
+
+    #[test]
+    fn unregister_removes_the_timer_when_stop_was_blocked_by_a_context_borrow() {
+        let registry = test_context();
+        let timer = Timer::new();
+        timer.set_interval(1000);
+        assert!(timer.start().is_valid());
+        assert_eq!(registry.lock().unwrap().len(), 1);
+
+        // `stop` cannot reach the context while it is mutably borrowed: it skips the disarm and
+        // still marks the timer inactive.
+        THREAD_TIMER_CONTEXT.with(|ctx| {
+            let _held = ctx.borrow_mut();
+            timer.stop();
+        });
+        assert!(!timer.is_active());
+        assert_eq!(registry.lock().unwrap().len(), 1, "the blocked stop must not reach the registry");
+
+        drop(timer);
+        assert_eq!(core_drops(), 1);
+        assert_eq!(
+            registry.lock().unwrap().len(),
+            0,
+            "unregistering the object must remove the entry `stop` could not"
+        );
+        unregister_thread_timer_context();
+    }
+
+    #[test]
+    fn panicking_slot_after_the_owner_was_dropped_still_frees_the_object_once() {
+        use crate::event_loop::TimerDelivery;
+
+        let _registry = test_context();
+        let timer = Timer::new();
+        let id = timer.object_id();
+        timer.set_interval(1000);
+        let timer_id = timer.start();
+        timer.timeout.connect(|_| {
+            drop(take_held());
+            panic!("slot panics after dropping its owner");
+        });
+        hold(timer);
+
+        assert!(matches!(deliver(id, timer_id), TimerDelivery::Delivered));
+        assert_eq!(core_drops(), 1);
+        unregister_thread_timer_context();
     }
 }
