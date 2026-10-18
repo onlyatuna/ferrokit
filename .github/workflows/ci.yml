@@ -107,3 +107,51 @@ jobs:
           --fail-on-regression
           --summary "$GITHUB_STEP_SUMMARY"
           --out miri_results.json
+
+  model:
+    name: Concurrency Model Tests (${{ matrix.suite.name }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: std
+            args: ""
+          - name: loom
+            args: "--features loom --test loom_tests"
+          - name: shuttle
+            args: "--features shuttle --test shuttle_tests"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust version
+        run: rustc -V && cargo -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Model Test (${{ matrix.suite.name }})
+        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml ${{ matrix.suite.args }}
+
+  model-tsan:
+    name: Concurrency Model ThreadSanitizer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly toolchain with rust-src
+        run: |
+          rustup toolchain install nightly --profile minimal -c rust-src
+          rustc +nightly -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Native Stress with ThreadSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=thread"
+        run: |
+          cargo +nightly test --target x86_64-unknown-linux-gnu -Zbuild-std \
+            --manifest-path crates/ferrokit-model/Cargo.toml --test stress_tests -- --nocapture

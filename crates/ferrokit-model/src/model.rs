@@ -1,5 +1,22 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Scaled-down hierarchy transaction model for Loom and Shuttle.
+//!
+//! # Model Scope and Limitations
+//!
+//! **IMPORTANT**: This crate provides an **abstract simplified model** to verify scheduling
+//! interleavings, lock-ordering protocols (H -> L0 -> L1 -> L2), cycle detection, and snapshot
+//! revalidation. It is **NOT** a direct verification of `crates/ferrokit-core/src/object/qobject.rs`.
+//!
+//! Specifically, this model deliberately abstracts away:
+//! 1. `OwnedObject` memory management and ownership transfer mechanics.
+//! 2. `_old_parent` re-validation in `reparent_owned_object`.
+//! 3. External borrow flag CAS (`ObjectBorrowGuard`) and `pending_child_changes`.
+//! 4. Event loop queueing, posted events dispatch, and timer integrations.
+//! 5. Direct `QObject` destructors and foreign thread affinity migrations.
+//!
+//! Production hierarchy invariants are verified through a combination of this abstract model,
+//! ThreadSanitizer native stress testing, production lockdep instrumentation, subprocess mutant
+//! failure injections, and snapshot invariance tests on `qobject.rs`.
 
 use crate::sync::sys::*;
 
