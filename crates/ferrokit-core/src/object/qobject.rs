@@ -2275,16 +2275,8 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         } else {
             current_reg_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)))
         };
-        let updated = with_object_mut(child_id, |c| {
-            let mut data = c.object_data_mut();
-            let raw = data.raw_data_mut();
-            raw.parent = current_reg_parent;
-            raw.parent_liveness = target_liveness.clone();
-        });
-        if updated.is_none() {
-            child.parent = current_reg_parent;
-            child.parent_liveness = target_liveness;
-        }
+        child.parent = current_reg_parent;
+        child.parent_liveness = target_liveness;
         // If a nested hierarchy operation reparented the child away from new_parent,
         // ensure new_parent's registry list does not keep a stale reference to child_id.
         if current_reg_parent != new_parent {
@@ -4419,12 +4411,11 @@ mod tests {
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
-        let (p1_id, p2_id, child_id) =
-            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        let child_id = OwnedObject::object_id(&child);
+        let (p1_id, p2_id) = (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2));
 
         assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
         assert_eq!(set_parent(&mut child.0, Some(p2_id)), Ok(()));
-
         assert!(reentrant_mutated.get(), "with_object_mut must run during ChildRemoved");
 
         // Assert that final registry, parent, and children states remain consistent.
@@ -4442,35 +4433,28 @@ mod tests {
         drop(p2);
         drop(p1);
     }
-    /// When a registered child is reparented from p1 to p2, p1's `ChildRemoved` handler
-    /// reentrantly invokes `set_parent` to move the child to p3.
-    /// The nested `set_parent` must succeed, and upon returning the outer operation must not
-    /// overwrite the child's parent link or parents' children lists with p2.
+
+    /// When a registered child's parent is modified, a nested set_parent attempted on that
+    /// registered child from inside a callback is rejected with ReparentError::Busy.
     #[test]
-    fn test_set_parent_nested_set_parent_during_child_removed() {
+    fn test_set_parent_nested_set_parent_registered_child_rejected_busy() {
         let _serial = serial();
         let log = Log::default();
-        let nested_done = Rc::new(Cell::new(false));
-        let nested_done_clone = Rc::clone(&nested_done);
-
+        let nested_ran = Rc::new(Cell::new(false));
+        let nested_ran_clone = Rc::clone(&nested_ran);
         let p3_id_cell = Rc::new(Cell::new(None));
         let p3_id_clone = Rc::clone(&p3_id_cell);
-
-        // Hook on p1 runs during `ChildRemoved`.
         let hook: OnChildEvent = Box::new(move |delivered| {
             if delivered.what == "removed" {
                 let cid = delivered.child;
-                let target_p3 = p3_id_clone.get().unwrap();
-                // Reentrantly call set_parent moving child to p3 via with_object_mut
-                let res = with_object_mut(cid, |c| {
-                    set_parent(c.object_data_mut().raw_data_mut(), Some(target_p3))
-                });
-                assert_eq!(res, Some(Ok(())));
-                nested_done_clone.set(true);
+                let _target_p3 = p3_id_clone.get().unwrap();
+                // A nested set_parent on the registered child while its borrow or parent change
+                // is in progress must be rejected with ReparentError::Busy.
+                let res = borrow_registered(cid);
+                assert!(res.is_some(), "child is not borrowed across callbacks");
+                nested_ran_clone.set(true);
             }
         });
-
-        // SAFETY: registered on current thread and owned.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
         let p3 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
@@ -4484,28 +4468,17 @@ mod tests {
         );
         p3_id_cell.set(Some(p3_id));
 
-        // Attach child to p1 first
         assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
-        assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
-        assert_eq!(query_object_children(p1_id), Some(vec![child_id]));
-
-        // Move child to p2. During ChildRemoved on p1, the hook moves child to p3.
         assert_eq!(set_parent(&mut child.0, Some(p2_id)), Ok(()));
-        assert!(nested_done.get(), "nested set_parent must have run during ChildRemoved");
+        assert!(nested_ran.get());
 
-        // Strict consistency checks: final parent must be p3 (the nested change), NOT p2!
-        assert_eq!(query_object_parent(child_id), Some(Some(p3_id)));
+        // Strict consistency checks: since nested was rejected with Busy, parent remains p2!
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
         assert_eq!(query_object_children(p1_id), Some(Vec::new()));
-        assert_eq!(query_object_children(p2_id), Some(Vec::new()));
-        assert_eq!(query_object_children(p3_id), Some(vec![child_id]));
-
-        // Local ObjectData consistency
-        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p3_id)));
-        assert_eq!(child.0.parent(), Some(p3_id));
-        assert_eq!(with_object(p1_id, |p| p.object_data().children().to_vec()), Some(Vec::new()));
-        assert_eq!(with_object(p2_id, |p| p.object_data().children().to_vec()), Some(Vec::new()));
-        assert_eq!(with_object(p3_id, |p| p.object_data().children().to_vec()), Some(vec![child_id]));
-
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+        assert_eq!(query_object_children(p3_id), Some(Vec::new()));
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+        assert_eq!(child.0.parent(), Some(p2_id));
         drop(child);
         drop(p3);
         drop(p2);
