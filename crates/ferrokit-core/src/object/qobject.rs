@@ -1246,22 +1246,6 @@ impl ObjectData {
         self.parent = None;
         self.parent_liveness = None;
     }
-    /// Synchronizes local parent and parent liveness information from the registry if a post-commit
-    /// parent sync is pending (for example, if a reparenting operation completed while this object
-    /// was borrowed by a callback). Returns `true` if a pending synchronization was applied.
-    pub fn sync_parent_from_registry(&mut self) -> bool {
-        if let Some((entry, _)) = registered_ptr(self.id) {
-            if entry.has_pending_parent_sync.swap(false, Ordering::AcqRel) {
-                let sync = lock_unpoisoned(&entry.pending_parent_sync).take();
-                if let Some((new_parent, target_liveness)) = sync {
-                    self.parent = new_parent;
-                    self.parent_liveness = target_liveness;
-                    return true;
-                }
-            }
-        }
-        false
-    }
 
     /// Returns a slice of direct children object IDs (`QObject::children`).
     ///
@@ -2146,8 +2130,12 @@ fn ancestors_in(
 /// the receiver directly, so its object event filters do not see them, unlike those of
 /// [`reparent_owned_object`] and [`add_owned_child`].
 ///
-/// If the `ChildRemoved` handler panics, the child and the new parent's list are still brought
-/// in line with the registry, `ChildAdded` is not sent, and the panic then continues.
+/// If the `ChildRemoved` handler panics, the registry hierarchy lists and child parent link in
+/// the registry are repaired prior to `resume_unwind`, and `ChildAdded` is suppressed. If the
+/// child's borrow was not retained across the panic, its local `ObjectData` parent is also
+/// synchronized prior to `resume_unwind`; however, if an `ObjectBorrowGuard` on the child remains
+/// alive across the panic, local parent data synchronization is deferred until that guard drops,
+/// rather than being applied prior to `resume_unwind`.
 struct ReparentGuard<'a>(&'a AtomicBool);
 impl<'a> Drop for ReparentGuard<'a> {
     fn drop(&mut self) {
@@ -2224,6 +2212,11 @@ pub fn query_pending_parent_sync(child_id: ObjectId) -> Option<bool> {
 /// child and parent data without post-commit `Busy` aborts. If the child is actively borrowed by
 /// an ongoing callback, the parent update is queued via a pending sync record and applied
 /// deterministically upon release of that borrow.
+///
+/// If a `ChildRemoved` handler panics while retaining an `ObjectBorrowGuard` on the child,
+/// the global registry and hierarchy lists are repaired before `resume_unwind`, but local
+/// parent data synchronization remains pending and is deferred until that `ObjectBorrowGuard`
+/// drops.
 pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
     if child_record
@@ -4866,6 +4859,81 @@ mod tests {
 
         // Now pending parent sync has been applied
         assert_eq!(query_pending_parent_sync(child_id), Some(false));
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+    /// When a ChildRemoved handler retains an ObjectBorrowGuard on the child and panics,
+    /// sync_child_local_parent records PostCommitSyncStatus::DeferredToPending before resume_unwind.
+    /// Prior to resume_unwind, registry and hierarchy lists are fully repaired and ChildAdded
+    /// is suppressed, while local parent synchronization remains pending and completes deterministically
+    /// upon release of that ObjectBorrowGuard.
+    #[test]
+    fn test_set_parent_by_id_panic_with_retained_child_borrow_defers_local_sync_until_guard_drop() {
+        let _serial = serial();
+        let log = Log::default();
+        let held_guard: Rc<RefCell<Option<ObjectBorrowGuard>>> = Rc::new(RefCell::new(None));
+        let held_guard_clone = Rc::clone(&held_guard);
+
+        let hook: OnChildEvent = Box::new(move |delivered| {
+            if delivered.what == "removed" {
+                // Retain child borrow externally
+                let guard = borrow_registered(delivered.child).expect("child should be borrowable during callback");
+                *held_guard_clone.borrow_mut() = Some(guard);
+                // Then panic in the handler
+                panic!("handler panics after retaining child borrow");
+            }
+        });
+
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) = (
+            OwnedObject::object_id(&p1),
+            OwnedObject::object_id(&p2),
+            OwnedObject::object_id(&child),
+        );
+
+        assert_eq!(set_parent_by_id(child_id, Some(p1_id)), Ok(()));
+        assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
+        assert_eq!(query_pending_parent_sync(child_id), Some(false));
+
+        // Invoke set_parent_by_id, which must panic and propagate resume_unwind
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            set_parent_by_id(child_id, Some(p2_id))
+        }));
+        let payload = outcome.expect_err("handler panic must resume unwind");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"handler panics after retaining child borrow")
+        );
+
+        // Verification PRIOR to dropping held_guard:
+        // 1. Global registry and hierarchy lists are repaired and consistent:
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+
+        // 2. ChildAdded was suppressed on panic:
+        assert!(!log.borrow().iter().any(|d| d.receiver == p2_id), "`ChildAdded` must be suppressed on panic");
+
+        // 3. Local parent sync remains pending because ObjectBorrowGuard was held across the panic:
+        assert_eq!(query_pending_parent_sync(child_id), Some(true));
+
+        // 4. Reparenting flag on child is released by ReparentGuard drop during unwind:
+        let records = [record(p1_id), record(p2_id), record(child_id)];
+        assert_hierarchy_unlocked(&records);
+        assert!(!records[2].reparenting.load(Ordering::Acquire), "child reparenting flag must be released");
+
+        // Now drop the retained ObjectBorrowGuard:
+        drop(held_guard.borrow_mut().take());
+
+        // Verification AFTER dropping held_guard:
+        // 1. Pending sync is applied deterministically:
+        assert_eq!(query_pending_parent_sync(child_id), Some(false));
+        // 2. Local child parent is now in complete agreement with the registry:
         assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
 
         drop(child);
