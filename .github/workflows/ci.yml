@@ -94,6 +94,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Run Miri sweep tool unit tests
+        run: python -m unittest tools/test_miri_sweep.py
+
       - name: Run Miri sweep (SB & TB, baseline diff, isolation allowlist)
         run: >-
           python tools/miri_sweep.py

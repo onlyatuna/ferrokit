@@ -48,7 +48,20 @@ FORBIDDEN_FLAGS = {
     "-Zmiri-disable-isolation",
 }
 
-
+ALLOWED_STATUS_TRANSITIONS = {
+    # Baseline expected status -> set of allowed current statuses (excluding identity exp == cur).
+    # A test in baseline can only transition to 'pass' (an improvement), or stay the same.
+    # Any other transition (e.g. panic -> timeout, unsupported -> panic, panic -> deadlock) is a regression.
+    "pass": set(),
+    "ignored": {"pass"},
+    "unsupported": {"pass"},
+    "panic": {"pass"},
+    "deadlock": {"pass"},
+    "leak": {"pass"},
+    "timeout": {"pass"},
+    "error": {"pass"},
+    "UB": {"pass"},
+}
 def target_args(target):
     return ["--lib"] if target == "lib" else ["--test", target]
 
@@ -311,13 +324,15 @@ def compare_with_baseline(results, iso_results, baseline, swept_targets, models)
             if cur_kind not in ("pass", "ignored"):
                 regressions.append(f"{key}: new test not in baseline failed with {cur_kind}")
             continue
-        if exp_kind == "pass" and cur_kind != "pass":
-            regressions.append(f"{key}: baseline pass -> {cur_kind}")
-        elif exp_kind != "UB" and cur_kind == "UB":
-            regressions.append(f"{key}: baseline {exp_kind} -> UB")
-        elif exp_kind in ("UB", "panic") and cur_kind == "pass":
-            improvements.append(f"{key}: baseline {exp_kind} -> pass")
+        if cur_kind == exp_kind:
+            continue
 
+        allowed = ALLOWED_STATUS_TRANSITIONS.get(exp_kind, {"pass"})
+        if cur_kind in allowed:
+            if cur_kind == "pass":
+                improvements.append(f"{key}: baseline {exp_kind} -> pass")
+        else:
+            regressions.append(f"{key}: baseline {exp_kind} -> {cur_kind}")
     for key, exp_kind in sorted(base_res.items()):
         target = key.split("::", 1)[0]
         model = key.rsplit("::", 1)[-1]

@@ -109,8 +109,11 @@ pub struct ObjectRecord {
     /// held its borrow; the guard of that callback applies them when it ends.
     pending_child_changes: Mutex<Vec<ChildListChange>>,
     has_pending_child_changes: AtomicBool,
+    /// Pending post-commit parent sync that arrived while a callback held the child's borrow;
+    /// the guard of that callback applies it when it ends.
+    pending_parent_sync: Mutex<Option<(Option<ObjectId>, Option<(ObjectId, Arc<AtomicBool>)>)>>,
+    has_pending_parent_sync: AtomicBool,
 }
-
 /// One edit to the `children` list in an object's own `ObjectData`.
 enum ChildListChange {
     Add(ObjectId),
@@ -178,6 +181,21 @@ impl Drop for ObjectBorrowGuard {
                     let mut data = unsafe { (*self.ptr).object_data_mut() };
                     for change in &changes {
                         change.apply(ObjectDataMut::new(data.raw_data_mut()));
+                    }
+                }
+            }
+            if self
+                ._entry
+                .has_pending_parent_sync
+                .swap(false, Ordering::AcqRel)
+            {
+                let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
+                if let Some((new_parent, target_liveness)) = sync {
+                    if self._entry.liveness.load(Ordering::Acquire) {
+                        let mut data = unsafe { (*self.ptr).object_data_mut() };
+                        let raw = data.raw_data_mut();
+                        raw.parent = new_parent;
+                        raw.parent_liveness = target_liveness;
                     }
                 }
             }
@@ -767,6 +785,8 @@ fn register_record(
             reparenting: AtomicBool::new(false),
             pending_child_changes: Mutex::new(Vec::new()),
             has_pending_child_changes: AtomicBool::new(false),
+            pending_parent_sync: Mutex::new(None),
+            has_pending_parent_sync: AtomicBool::new(false),
         });
         if let Some(previous) = registry.insert(id, record) {
             // Re-registering the same object (e.g. `Timer::start` after `stop`, possibly at a new
@@ -1225,6 +1245,22 @@ impl ObjectData {
     fn clear_parent(&mut self) {
         self.parent = None;
         self.parent_liveness = None;
+    }
+    /// Synchronizes local parent and parent liveness information from the registry if a post-commit
+    /// parent sync is pending (for example, if a reparenting operation completed while this object
+    /// was borrowed by a callback). Returns `true` if a pending synchronization was applied.
+    pub fn sync_parent_from_registry(&mut self) -> bool {
+        if let Some((entry, _)) = registered_ptr(self.id) {
+            if entry.has_pending_parent_sync.swap(false, Ordering::AcqRel) {
+                let sync = lock_unpoisoned(&entry.pending_parent_sync).take();
+                if let Some((new_parent, target_liveness)) = sync {
+                    self.parent = new_parent;
+                    self.parent_liveness = target_liveness;
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Returns a slice of direct children object IDs (`QObject::children`).
@@ -1881,7 +1917,8 @@ pub fn remove_event_filter(target: &mut ObjectData, filter: ObjectId) {
 }
 
 /// Why a parent change was refused. Nothing is changed when an error is returned, except for
-/// [`ReparentError::DifferentThread`] from [`set_parent`].
+/// [`ReparentError::DifferentThread`] from [`set_parent`] and [`set_parent_by_id`], where
+/// the child is detached from its old parent (matching Qt `setParent(nullptr)` detach semantics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReparentError {
     /// [`set_parent`]: the object is held by its parent's `owned_children`. Detaching it there
@@ -1911,9 +1948,11 @@ pub enum ReparentError {
     /// The new parent belongs to a different thread than the child: their thread affinities
     /// (`ObjectData::thread_id`) differ, and a parent and its children share one thread. What is
     /// left behind depends on the call:
-    /// - [`set_parent`] does what Qt's `setParent` does. The child has already been removed from
-    ///   its old parent, which received `ChildRemoved`, so it is left without a parent, and Qt's
-    ///   warning goes to stderr.
+    /// - [`set_parent`] and [`set_parent_by_id`] do what Qt's `setParent` does. The child is removed
+    ///   from its old parent in both the registry and local data, the old parent receives `ChildRemoved`,
+    ///   the child is left without a parent (`parent() == None`), and Qt's warning goes to stderr.
+    ///   This detach behavior is an explicit, documented exception to the general "zero state mutation
+    ///   on failure" rule of other reparent errors.
     /// - [`reparent_owned_object`] changes nothing and prints nothing: the child stays with its old
     ///   parent, which still owns it. Qt would detach the child.
     /// - [`add_owned_child`] attaches nothing and prints nothing, and hands the `Box` back: the
@@ -2122,11 +2161,69 @@ impl<'a> Drop for ShortTermBorrowGuard<'a> {
         self.0.store(false, Ordering::Release);
     }
 }
+/// Status of post-commit synchronization of local parent data with the registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostCommitSyncStatus {
+    /// Synchronized directly to local ObjectData via with_object_mut.
+    AppliedDirectly,
+    /// Direct borrow could not be acquired (held by active callback); queued in ObjectRecord
+    /// for deterministic application upon release of that borrow.
+    DeferredToPending,
+    /// Object is unregistered or dead; no local synchronization needed.
+    DeadOrUnregistered,
+}
+
+pub(crate) fn sync_child_local_parent(
+    child_id: ObjectId,
+    child_record: &Arc<ObjectRecord>,
+    current_reg_parent: Option<ObjectId>,
+    target_liveness: Option<(ObjectId, Arc<AtomicBool>)>,
+) -> PostCommitSyncStatus {
+    if !child_record.liveness.load(Ordering::Acquire) {
+        return PostCommitSyncStatus::DeadOrUnregistered;
+    }
+    let applied = with_object_mut(child_id, |c| {
+        let mut data = c.object_data_mut();
+        let raw = data.raw_data_mut();
+        raw.parent = current_reg_parent;
+        raw.parent_liveness = target_liveness.clone();
+    });
+    if applied.is_some() {
+        *lock_unpoisoned(&child_record.pending_parent_sync) = None;
+        child_record.has_pending_parent_sync.store(false, Ordering::Release);
+        PostCommitSyncStatus::AppliedDirectly
+    } else {
+        *lock_unpoisoned(&child_record.pending_parent_sync) = Some((current_reg_parent, target_liveness));
+        child_record.has_pending_parent_sync.store(true, Ordering::Release);
+        PostCommitSyncStatus::DeferredToPending
+    }
+}
+
+/// Returns whether a registered object has a pending post-commit parent sync queued.
+pub fn query_pending_parent_sync(child_id: ObjectId) -> Option<bool> {
+    registered_ptr(child_id).map(|(rec, _)| rec.has_pending_parent_sync.load(Ordering::Acquire))
+}
 
 /// Sets a registered object's parent by its [`ObjectId`].
 ///
 /// This id-based interface eliminates `&mut ObjectData` aliasing across callbacks,
 /// and rejects conflicting nested hierarchy mutations on the same object with [`ReparentError::Busy`].
+///
+/// # Thread affinity and DifferentThread detach exception
+///
+/// When `new_parent` belongs to a different thread affinity than `child_id`, `set_parent_by_id`
+/// follows Qt `setParent` semantics: the child is detached from its old parent in both registry
+/// and local data (the old parent receives `ChildRemoved`), left parentless (`parent() == None`),
+/// a warning is printed to stderr, and `Err(ReparentError::DifferentThread)` is returned.
+/// This detach behavior is an explicit, documented exception to the general "zero state mutation
+/// on failure" guarantee of other reparent errors.
+///
+/// # Post-commit synchronization guarantee
+///
+/// Once registry and hierarchy write locks are committed, `set_parent_by_id` synchronizes local
+/// child and parent data without post-commit `Busy` aborts. If the child is actively borrowed by
+/// an ongoing callback, the parent update is queued via a pending sync record and applied
+/// deterministically upon release of that borrow.
 pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
     if child_record
@@ -2299,14 +2396,12 @@ pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Res
     } else {
         current_reg_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)))
     };
-    if child_record.liveness.load(Ordering::Acquire) {
-        let _ = with_object_mut(child_id, |c| {
-            let mut data = c.object_data_mut();
-            let raw = data.raw_data_mut();
-            raw.parent = current_reg_parent;
-            raw.parent_liveness = target_liveness;
-        });
-    }
+    let _sync_status = sync_child_local_parent(
+        child_id,
+        &child_record,
+        current_reg_parent,
+        target_liveness,
+    );
     if current_reg_parent != new_parent {
         if let Some(np) = new_parent {
             if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
@@ -4723,6 +4818,60 @@ mod tests {
         drop(p1);
     }
 
+    /// When set_parent_by_id completes its registry and hierarchy commit while the child object
+    /// is actively borrowed by a callback that retained a borrow guard across the event,
+    /// post-commit sync must NOT return Busy or drop the update silently. Instead, the sync
+    /// is recorded as pending and deterministically applied when that borrow guard drops.
+    #[test]
+    fn test_set_parent_by_id_post_commit_sync_deferred_when_child_borrow_held() {
+        let _serial = serial();
+        let log = Log::default();
+        let held_guard: Rc<RefCell<Option<ObjectBorrowGuard>>> = Rc::new(RefCell::new(None));
+        let held_guard_clone = Rc::clone(&held_guard);
+
+        let hook: OnChildEvent = Box::new(move |delivered| {
+            if delivered.what == "removed" {
+                // Borrow the child during ChildRemoved and retain the guard
+                let guard = borrow_registered(delivered.child).expect("child should be borrowable during callback");
+                *held_guard_clone.borrow_mut() = Some(guard);
+            }
+        });
+
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) = (
+            OwnedObject::object_id(&p1),
+            OwnedObject::object_id(&p2),
+            OwnedObject::object_id(&child),
+        );
+
+        assert_eq!(set_parent_by_id(child_id, Some(p1_id)), Ok(()));
+        assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
+        assert_eq!(query_pending_parent_sync(child_id), Some(false));
+
+        // Now reparent to p2. ChildRemoved on p1 will hold child's borrow guard across return.
+        assert_eq!(set_parent_by_id(child_id, Some(p2_id)), Ok(()));
+
+        // Registry and hierarchy committed successfully
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+
+        // Post-commit sync could not directly borrow child, so it was deferred
+        assert_eq!(query_pending_parent_sync(child_id), Some(true));
+
+        // Release the held borrow guard: ObjectBorrowGuard::drop must apply the pending sync!
+        drop(held_guard.borrow_mut().take());
+
+        // Now pending parent sync has been applied
+        assert_eq!(query_pending_parent_sync(child_id), Some(false));
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
     /// When set_parent_by_id is invoked while the child is actively borrowed via with_object_mut,
     /// it must be rejected with ReparentError::Busy and perform zero state mutation.
     #[test]

@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, register_owned_qobject, reparent_owned_object,
-    set_parent, ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
+    add_owned_child, move_to_thread_by_id, query_object_parent, register_owned_qobject,
+    reparent_owned_object, set_parent, set_parent_by_id, ObjectData, ObjectId, OwnedObject,
+    QObject, ReparentError, ThreadId,
 };
 
 struct Node {
@@ -138,6 +139,49 @@ fn a_parent_in_another_thread_is_refused_for_a_child_that_had_no_parent() {
     let result = set_parent(&mut child.data, Some(remote.id));
 
     assert_eq!(result, Err(ReparentError::DifferentThread));
+    assert_eq!(child.data.parent(), None);
+    assert!(remote.finish().children.is_empty());
+}
+#[test]
+fn set_parent_by_id_refuses_parent_in_another_thread_and_detaches_child_from_old_parent() {
+    let old = Node::registered();
+    let old_id = old.data.id();
+    let child = Node::registered();
+    let child_id = child.data.id();
+    set_parent_by_id(child_id, Some(old_id)).unwrap();
+    let remote = Remote::start();
+
+    let result = set_parent_by_id(child_id, Some(remote.id));
+
+    assert_eq!(result, Err(ReparentError::DifferentThread));
+    assert_eq!(query_object_parent(child_id), Some(None));
+    assert_eq!(child.data.parent(), None);
+    assert!(
+        old.data.children().is_empty(),
+        "the old parent no longer lists the child"
+    );
+    assert_eq!(
+        old.seen,
+        vec![
+            format!("added {}", child_id.0),
+            format!("removed {}", child_id.0)
+        ]
+    );
+    let report = remote.finish();
+    assert!(report.children.is_empty(), "the new parent gained no child");
+    assert!(report.seen.is_empty(), "the new parent heard nothing");
+}
+
+#[test]
+fn set_parent_by_id_refuses_parent_in_another_thread_for_parentless_child() {
+    let child = Node::registered();
+    let child_id = child.data.id();
+    let remote = Remote::start();
+
+    let result = set_parent_by_id(child_id, Some(remote.id));
+
+    assert_eq!(result, Err(ReparentError::DifferentThread));
+    assert_eq!(query_object_parent(child_id), Some(None));
     assert_eq!(child.data.parent(), None);
     assert!(remote.finish().children.is_empty());
 }
