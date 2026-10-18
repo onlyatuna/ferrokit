@@ -2622,10 +2622,30 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
 
     // Following Qt's setParent_helper ordering: child.parent is updated after ChildRemoved is
     // dispatched, and reconciled on panic before resuming unwind.
-    child.parent = new_parent;
-    child.parent_liveness = new_liveness.clone();
+    let pending_sync = if let Some(ref rec) = child_rec {
+        if rec.has_pending_parent_sync.swap(false, Ordering::AcqRel) {
+            lock_unpoisoned(&rec.pending_parent_sync).take()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    let current_reg_parent = new_parent;
+    let (effective_parent, effective_liveness) = if let Some((synced_parent, synced_liveness)) = pending_sync {
+        (synced_parent, synced_liveness)
+    } else if child_rec.is_some() && query_object_parent(child_id).flatten() != new_parent {
+        let current_reg = query_object_parent(child_id).flatten();
+        let target_liveness = current_reg.and_then(|id| liveness_of(id).map(|alive| (id, alive)));
+        (current_reg, target_liveness)
+    } else {
+        (new_parent, new_liveness.clone())
+    };
+
+    child.parent = effective_parent;
+    child.parent_liveness = effective_liveness;
+
+    let current_reg_parent = effective_parent;
     if let Some(target_parent_id) = current_reg_parent {
         edit_child_list(target_parent_id, ChildListChange::Add(child_id));
         if removed_panic.is_none() {
@@ -6030,7 +6050,8 @@ mod tests {
         *p_b_cell.borrow_mut() = Some(p_b);
 
         assert_eq!(set_parent_by_id(child_id, Some(b_id)), Ok(()));
-        assert_eq!(query_object_parent(child_id).flatten(), None, "registry parent should be None");
+        assert_eq!(query_object_parent(child_id), Some(None), "registry parent should be Some(None)");
+        assert!(with_object(child_id, |_| ()).is_some(), "child must remain alive and registered");
         assert_eq!(child.object_data().parent(), None, "child local parent should be None");
 
         // Now drop child: A must NOT receive a duplicate ChildRemoved
@@ -6044,8 +6065,8 @@ mod tests {
     fn test_reentrant_new_parent_deletion_direct_pointer_path_a() {
         let _serial = serial();
         let log_a = Rc::new(RefCell::new(Vec::new()));
-        let p_b_cell = Rc::new(RefCell::new(None));
-        let p_b_clone = Rc::clone(&p_b_cell);
+        let p_b_ptr_cell: Rc<RefCell<Option<*mut ProbeDirectParent>>> = Rc::new(RefCell::new(None));
+        let p_b_clone = Rc::clone(&p_b_ptr_cell);
         let child_id_cell = Rc::new(Cell::new(ObjectId(0)));
         let child_id_clone = Rc::clone(&child_id_cell);
 
@@ -6053,8 +6074,11 @@ mod tests {
             if delivered.what == "removed" {
                 let cid = child_id_clone.get();
                 with_object(cid, |_| {
-                    let b_opt = p_b_clone.borrow_mut().take();
-                    drop(b_opt);
+                    let b_ptr = p_b_clone.borrow_mut().take().unwrap();
+                    unsafe {
+                        std::ptr::drop_in_place(b_ptr);
+                        std::alloc::dealloc(b_ptr as *mut u8, std::alloc::Layout::new::<ProbeDirectParent>());
+                    }
                 });
             }
         });
@@ -6068,11 +6092,12 @@ mod tests {
         assert_eq!(set_parent_by_id(child_id, Some(a_id)), Ok(()));
         log_a.borrow_mut().clear();
 
-        let p_b = Box::new(ProbeDirectParent(ObjectData::new(ObjectId::next())));
-        let b_id = p_b.0.id();
-        let p_raw = Box::into_raw(p_b);
-        unsafe { register_object_metadata(&(*p_raw).0, p_raw as *mut ProbeDirectParent as *mut dyn QObject) };
-        *p_b_cell.borrow_mut() = Some(unsafe { Box::from_raw(p_raw) });
+        let b_layout = std::alloc::Layout::new::<ProbeDirectParent>();
+        let p_raw = unsafe { std::alloc::alloc(b_layout) as *mut ProbeDirectParent };
+        unsafe { std::ptr::write(p_raw, ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
+        let b_id = unsafe { (*p_raw).0.id() };
+        unsafe { register_object_metadata(&(*p_raw).0, p_raw as *mut dyn QObject) };
+        *p_b_ptr_cell.borrow_mut() = Some(p_raw);
 
         assert_eq!(set_parent_by_id(child_id, Some(b_id)), Ok(()));
         assert_eq!(query_object_parent(child_id), None, "registry parent should be None");
@@ -6082,6 +6107,56 @@ mod tests {
         drop(child);
         let removed_count = log_a.borrow().iter().filter(|d| d.what == "removed" && d.child == child_id).count();
         assert_eq!(removed_count, 1, "A must receive exactly one ChildRemoved event, no duplicate on child drop");
+        drop(p_a);
+    }
+
+    #[test]
+    fn test_set_parent_reentrant_new_parent_deletion_clears_local_state() {
+        let _serial = serial();
+        let log_a = Rc::new(RefCell::new(Vec::new()));
+        let p_b_ptr_cell: Rc<RefCell<Option<*mut ProbeDirectParent>>> = Rc::new(RefCell::new(None));
+        let p_b_clone = Rc::clone(&p_b_ptr_cell);
+
+        let on_event: OnChildEvent = Box::new(move |delivered: &Delivered| {
+            if delivered.what == "removed" {
+                let b_ptr = p_b_clone.borrow_mut().take().unwrap();
+                unsafe {
+                    std::ptr::drop_in_place(b_ptr);
+                    std::alloc::dealloc(b_ptr as *mut u8, std::alloc::Layout::new::<ProbeDirectParent>());
+                }
+            }
+        });
+
+        let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
+        let a_id = OwnedObject::object_id(&p_a);
+
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let child_id = OwnedObject::object_id(&child);
+        assert_eq!(set_parent(&mut child.0, Some(a_id)), Ok(()));
+        log_a.borrow_mut().clear();
+
+        let b_layout = std::alloc::Layout::new::<ProbeDirectParent>();
+        let b_raw = unsafe { std::alloc::alloc(b_layout) as *mut ProbeDirectParent };
+        unsafe { std::ptr::write(b_raw, ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
+        let b_id = unsafe { (*b_raw).0.id() };
+        unsafe { register_object_metadata(&(*b_raw).0, b_raw as *mut dyn QObject) };
+        *p_b_ptr_cell.borrow_mut() = Some(b_raw);
+        let child_rec = record(child_id);
+
+        // Call set_parent(&mut child.0, Some(b_id)):
+        assert_eq!(set_parent(&mut child.0, Some(b_id)), Ok(()));
+        // 1. Raw parent field must be None
+        assert_eq!(child.0.parent, None, "raw parent field must be None");
+        assert_eq!(child.0.parent(), None, "child.parent() must be None");
+
+        // 2. Liveness token must be None
+        assert!(child.0.parent_liveness.is_none(), "parent_liveness token must be None");
+        assert_eq!(query_object_parent(child_id), None, "child was unregistered so query_object_parent is None");
+
+        // 4. pending_parent_sync state must be cleared and applied
+        assert!(!child_rec.has_pending_parent_sync.load(Ordering::Acquire), "has_pending_parent_sync must be false");
+        assert!(lock_unpoisoned(&child_rec.pending_parent_sync).is_none(), "pending_parent_sync record must be None");
+        drop(child);
         drop(p_a);
     }
 }
