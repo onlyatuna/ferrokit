@@ -2136,11 +2136,11 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     #[cfg(test)]
     test_hooks::run(test_hooks::Point::AfterCycleCheck);
 
-    let child_record = registry.get(&child_id);
+    let child_is_registered = registry.contains_key(&child_id);
     let old_rec = old_parent.and_then(|id| registry.get(&id));
     let new_rec = new_parent.and_then(|id| registry.get(&id));
 
-    if child_record.is_some() {
+    if child_is_registered {
         if let Some(_) = new_parent {
             if new_rec.is_none() {
                 return Err(ReparentError::InvalidParent);
@@ -2203,8 +2203,8 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     };
 
     // Tier 2: Acquire child's `record.parent` write lock if child is registered.
-    let child_parent_guard = if let Some(rec) = child_record {
-        Some(rec.parent.write().map_err(|_| ReparentError::Busy)?)
+    let child_parent_guard = if child_is_registered {
+        Some(registry.get(&child_id).unwrap().parent.write().map_err(|_| ReparentError::Busy)?)
     } else {
         None
     };
@@ -2249,6 +2249,12 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     let _held_by_mutant =
         test_hooks::mutant("set_parent_holds_registry").then(|| GLOBAL_OBJECT_REGISTRY.read());
 
+    // If the child is not registered, update caller's child data directly.
+    if !child_is_registered {
+        child.parent = new_parent;
+        child.parent_liveness = new_liveness.clone();
+    }
+
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks. A
     // panic of the old parent's handler is held back until the child and the new parent's list
     // agree with the registry, and then continues.
@@ -2262,8 +2268,14 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }))
         .err()
     });
-    child.parent = new_parent;
-    child.parent_liveness = new_liveness;
+    if child_is_registered {
+        let _ = with_object_mut(child_id, |c| {
+            let mut data = c.object_data_mut();
+            let raw = data.raw_data_mut();
+            raw.parent = new_parent;
+            raw.parent_liveness = new_liveness;
+        });
+    }
     if let Some(new_parent_id) = new_parent {
         edit_child_list(new_parent_id, ChildListChange::Add(child_id));
         if removed_panic.is_none() {
@@ -4348,6 +4360,61 @@ mod tests {
         drop(p2);
         drop(p1);
     }
+    /// When a registered child is reparented, the old parent's `ChildRemoved` handler can
+    /// reentrantly access or mutate the child via `with_object_mut`. All locks and mutable
+    /// borrows of the child must be released before callbacks execute, and the final state
+    /// of the registry, child's parent link, and parents' children lists must remain consistent.
+    #[test]
+    fn test_set_parent_reentrant_mutation_during_child_removed() {
+        let _serial = serial();
+        let log = Log::default();
+        let reentrant_mutated = Rc::new(Cell::new(false));
+        let reentrant_mutated_clone = Rc::clone(&reentrant_mutated);
+
+        // The hook runs during `ChildRemoved` on the old parent.
+        let hook: OnChildEvent = Box::new(move |delivered| {
+            if delivered.what == "removed" {
+                let cid = delivered.child;
+                // Verify with_object_mut succeeds reentrantly without aliasing or deadlock.
+                let mutated = with_object_mut(cid, |c| {
+                    let mut data = c.object_data_mut();
+                    data.set_object_name("reentrantly_mutated_child");
+                    true
+                });
+                if mutated == Some(true) {
+                    reentrant_mutated_clone.set(true);
+                }
+            }
+        });
+
+        // SAFETY: registered on current thread and owned.
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+
+        assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
+        assert_eq!(set_parent(&mut child.0, Some(p2_id)), Ok(()));
+
+        assert!(reentrant_mutated.get(), "with_object_mut must run during ChildRemoved");
+
+        // Assert that final registry, parent, and children states remain consistent.
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+
+        // Assert child local state through with_object and through owned object
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+        assert_eq!(with_object(child_id, |c| c.object_data().object_name().map(|s| s.to_string())), Some(Some("reentrantly_mutated_child".to_string())));
+        assert_eq!(with_object(p1_id, |p| p.object_data().children().to_vec()), Some(Vec::new()));
+        assert_eq!(with_object(p2_id, |p| p.object_data().children().to_vec()), Some(vec![child_id]));
+
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+
 
     /// A parent of another thread: as in Qt, the child is taken from its old parent, which gets
     /// `ChildRemoved`, and is left without a parent, in the registry too; the call reports it.
