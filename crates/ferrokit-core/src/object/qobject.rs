@@ -806,9 +806,9 @@ fn register_record(
             has_pending_parent_sync: AtomicBool::new(false),
         });
         if let Some(previous) = registry.insert(id, record) {
-            // Re-registering the same object (e.g. `Timer::start` after `stop`, possibly at a new
-            // address) shares the liveness token with the replaced record. Killing it would
-            // mark the live object dead and null every `QPointer` to it. Only a different
+            // Re-registering the same object (a second registration of a live object, possibly
+            // at a new address) shares the liveness token with the replaced record. Killing it
+            // would mark the live object dead and null every `QPointer` to it. Only a different
             // object that reused the id is retired.
             if !Arc::ptr_eq(&previous.liveness, &data.liveness) {
                 previous.liveness.store(false, Ordering::Release);
@@ -830,8 +830,7 @@ fn register_record(
 /// object through another path invalidates it (rule 1 in the [`crate::object`] module
 /// documentation). Miri does not check that for `!Unpin` types, so a `!Unpin` object passing
 /// under Miri is no evidence that the use is sound. There is no pointer-based form for pinned
-/// objects yet; the only caller, `Timer`, reaches its object only through the registry between
-/// registrations.
+/// objects yet. No type in this crate is registered through this function.
 ///
 /// # Safety
 /// The pinned object must remain alive and at its pinned address until unregistered. The thread
@@ -906,8 +905,12 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
 ///   it, as described above.
 /// - While a callback of the object runs, nothing else accesses the object, not even to read it.
 /// - Registering the object again, while it is registered, gives the registry the new pointer, and
-///   nothing uses the old one afterwards. That does not happen, and neither does unregistering
-///   the object, while a callback of the object runs.
+///   nothing uses the old one afterwards. That does not happen while a callback of the object
+///   runs.
+/// - Unregistering the object while a callback of it runs is allowed only if its memory stays
+///   valid and unmoved until that callback returns (see [`unregister_qobject`]). An owner type
+///   whose drop calls `destroy_when_released` does this; any other owner does not unregister or
+///   drop the object during a callback.
 /// - The thread rules of [`crate::object`] apply.
 pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
     let raw = ptr.as_ptr();
@@ -924,8 +927,11 @@ pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
 ///
 /// # Safety
 /// While a callback of the object runs, the owner does not access the object, not even to read
-/// it, and is not dropped. The owner is used and dropped on the registration thread. The thread
-/// rules of [`crate::object`] apply.
+/// it, and does not drop it. The one exception is an owner type whose drop calls
+/// `destroy_when_released`: that unregisters the object at once and frees its memory only after
+/// the running callback returns, so such an owner may be dropped from inside the callback. The
+/// owner is used and dropped on the registration thread. The thread rules of [`crate::object`]
+/// apply.
 pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObject<T> {
     let owned = OwnedObject::new(obj);
     let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owned);

@@ -16,7 +16,7 @@
 //! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through the `OwnedObject`, and move the `OwnedObject` |
 //! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | read the variable or field directly; write it only through the pointer that was registered (rule 7) |
 //! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent, or through the `OwnedObject` that `reparent_owned_object` returns |
-//! | pinned (`!Unpin`, like `Timer`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
+//! | pinned (`!Unpin`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
 //!
 //! `register_qobject` and `register_boxed_qobject` are deprecated: they build the registry's
 //! pointer from a reference or a `Box`, which is where rule 1 below is broken.
@@ -146,8 +146,11 @@
 //! [`move_to_thread_by_id`] moves that registration to the target thread together with the thread
 //! affinity. Between callbacks the owner uses the object directly only on the registration
 //! thread; any other thread reaches it through the registry, which runs the callback on the
-//! registration thread. An object is neither unregistered nor registered again while one of its
-//! callbacks runs.
+//! registration thread. An owner neither unregisters, registers again nor drops an object while
+//! one of its callbacks runs. The exception is an owner type that destroys the object through the
+//! crate's deferred destruction (an owned child whose parent is dropped, or a `Timer` handle
+//! dropped by its own slot): that unregisters the object at once and frees its memory only after
+//! the running callback returns.
 //!
 //! # Synchronization and locking contract
 //!

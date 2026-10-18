@@ -509,7 +509,7 @@ fn test_qpointer_and_generational_liveness() {
     unsafe { unregister_qobject(id) };
 }
 
-/// Re-registering a live object (Qt re-registration path, e.g. Timer restart) must
+/// Re-registering a live object (Qt re-registration path) must
 /// keep it reachable. `register_object_metadata` only retires the previous record when the
 /// liveness token differs, so the same object registered twice must still be `Some` in the registry.
 #[test]
