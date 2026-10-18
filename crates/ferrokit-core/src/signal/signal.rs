@@ -320,18 +320,19 @@ struct SignalInner<T> {
 
 impl<T> SignalInner<T> {
     /// Removes every subscriber matching `pred` and marks it severed, so an emission that already
-    /// snapshotted it skips it. Returns how many were removed.
-    fn remove_where(&mut self, mut pred: impl FnMut(&Subscriber<T>) -> bool) -> usize {
-        let before = self.subscribers.len();
-        self.subscribers.retain(|sub| {
-            if pred(sub) {
-                sub.connected.store(false, Ordering::Release);
-                false
-            } else {
-                true
-            }
-        });
-        before - self.subscribers.len()
+    /// snapshotted it skips it. Returns the removed subscribers: the caller drops them after it
+    /// has released the signal's lock, because a subscriber's captured state may use the signal
+    /// when it is dropped.
+    #[must_use]
+    fn remove_where(&mut self, mut pred: impl FnMut(&Subscriber<T>) -> bool) -> Vec<Subscriber<T>> {
+        let (removed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.subscribers)
+            .into_iter()
+            .partition(|sub| pred(sub));
+        for sub in &removed {
+            sub.connected.store(false, Ordering::Release);
+        }
+        self.subscribers = kept;
+        removed
     }
 }
 
@@ -468,27 +469,31 @@ impl<T> Signal<T> {
 
     /// Disconnects a connection by its ID.
     pub fn disconnect(&self, id: ConnectionId) -> bool {
-        let removed = {
-            let mut inner = self.inner.lock();
-            inner.remove_where(|sub| sub.id == id) > 0
-        };
+        // The removed subscribers are dropped after the lock is released: a captured value's
+        // destructor may use this signal.
+        let removed = self.inner.lock().remove_where(|sub| sub.id == id);
+        let found = !removed.is_empty();
+        drop(removed);
         // Only the owner of a connection may retire its registry entry.
-        if removed {
+        if found {
             unregister_connection(id);
         }
-        removed
+        found
     }
 
     /// Disconnects all connections bound to a given receiver object ID.
     pub fn disconnect_receiver(&self, receiver_id: ObjectId) -> usize {
-        let mut inner = self.inner.lock();
-        inner.remove_where(|sub| sub.receiver_id == Some(receiver_id))
+        let removed = self
+            .inner
+            .lock()
+            .remove_where(|sub| sub.receiver_id == Some(receiver_id));
+        removed.len()
     }
 
     /// Disconnects all connections from this signal.
     pub fn disconnect_all(&self) {
-        let mut inner = self.inner.lock();
-        inner.remove_where(|_| true);
+        let removed = self.inner.lock().remove_where(|_| true);
+        drop(removed);
     }
 
     /// Emits the signal to all connected subscribers.
@@ -590,8 +595,8 @@ impl<T: 'static> Signal<T> {
         let signal_weak = Arc::downgrade(&self.inner);
         ScopedConnection::new(id, move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == conn_id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == conn_id);
+                drop(removed);
             }
         })
     }
@@ -618,8 +623,8 @@ impl<T: 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -801,8 +806,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -912,8 +917,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
