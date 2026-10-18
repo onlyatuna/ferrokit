@@ -77,11 +77,9 @@ jobs:
         run: cargo test --workspace --doc
 
   miri:
-    name: Nightly Miri (SB & TB, non-blocking)
+    name: Nightly Miri (SB & TB)
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-    # Non-blocking initially while open aliasing defects remain tracked in the baseline.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 

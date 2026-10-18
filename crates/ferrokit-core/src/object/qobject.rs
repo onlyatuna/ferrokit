@@ -2299,13 +2299,14 @@ pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Res
     } else {
         current_reg_parent.and_then(|id| liveness_of(id).map(|alive| (id, alive)))
     };
-    with_object_mut(child_id, |c| {
-        let mut data = c.object_data_mut();
-        let raw = data.raw_data_mut();
-        raw.parent = current_reg_parent;
-        raw.parent_liveness = target_liveness;
-    })
-    .ok_or(ReparentError::Busy)?;
+    if child_record.liveness.load(Ordering::Acquire) {
+        let _ = with_object_mut(child_id, |c| {
+            let mut data = c.object_data_mut();
+            let raw = data.raw_data_mut();
+            raw.parent = current_reg_parent;
+            raw.parent_liveness = target_liveness;
+        });
+    }
     if current_reg_parent != new_parent {
         if let Some(np) = new_parent {
             if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
@@ -4596,6 +4597,55 @@ mod tests {
             assert!(!record.borrow_state.borrow_flag.load(Ordering::Acquire), "{:?} stays borrowed", record.id);
         }
         assert_eq!(set_parent(&mut child.0, None), Ok(()), "the child cannot be moved again");
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+    /// When the old parent's ChildRemoved handler panics during set_parent_by_id,
+    /// the child's local parent and the new parent's children list are still brought
+    /// in line with the registry before the panic resumes, and ChildAdded is suppressed.
+    #[test]
+    fn test_set_parent_by_id_finishes_the_change_when_the_old_parents_handler_panics() {
+        let _serial = serial();
+        let log = Log::default();
+        let panicking: OnChildEvent = Box::new(|delivered| {
+            if delivered.what == "removed" {
+                panic!("handler of the old parent panics during set_parent_by_id");
+            }
+        });
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(panicking))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        assert_eq!(set_parent_by_id(child_id, Some(p1_id)), Ok(()));
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            set_parent_by_id(child_id, Some(p2_id))
+        }));
+        let payload = outcome.expect_err("the panic of the handler must resume after the change is finished");
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"handler of the old parent panics during set_parent_by_id")
+        );
+
+        // Strict consistency checks:
+        assert_eq!(query_object_parent(child_id), Some(Some(p2_id)));
+        assert_eq!(query_object_children(p1_id), Some(Vec::new()));
+        assert_eq!(query_object_children(p2_id), Some(vec![child_id]));
+
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+        assert_eq!(with_object(p1_id, |p| p.object_data().children().to_vec()), Some(Vec::new()));
+        assert_eq!(with_object(p2_id, |p| p.object_data().children().to_vec()), Some(vec![child_id]));
+        assert!(!log.borrow().iter().any(|d| d.receiver == p2_id), "`ChildAdded` was sent after a panic");
+
+        let records = [record(p1_id), record(p2_id), record(child_id)];
+        assert_hierarchy_unlocked(&records);
+        for record in &records {
+            assert!(!record.borrow_state.borrow_flag.load(Ordering::Acquire), "{:?} stays borrowed", record.id);
+            assert!(!record.reparenting.load(Ordering::Acquire), "{:?} stays reparenting", record.id);
+        }
+
         drop(child);
         drop(p2);
         drop(p1);
