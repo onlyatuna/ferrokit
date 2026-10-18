@@ -90,6 +90,8 @@ pub(crate) struct ObjectBorrowState {
     /// Set when an owned child was destroyed while this object's callback was running: the guard
     /// of that callback then frees the memory it kept (see `destroy_when_released`).
     pub(crate) free_when_released: AtomicBool,
+    /// Set when the underlying object memory is deallocated or its destructor has begun.
+    pub(crate) memory_destroyed: AtomicBool,
 }
 
 /// Registry record for a QObject. The stored pointer is dereferenced only on the registration
@@ -199,7 +201,7 @@ impl Drop for ObjectBorrowGuard {
             {
                 let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
                 if let Some((new_parent, target_liveness)) = sync {
-                    if self._entry.liveness.load(Ordering::Acquire) {
+                    if !self.borrow_state.memory_destroyed.load(Ordering::Acquire) {
                         let mut data = unsafe { (*self.ptr).object_data_mut() };
                         let raw = data.raw_data_mut();
                         raw.parent = new_parent;
@@ -1822,7 +1824,7 @@ impl Drop for ObjectData {
         // no slot. Qt `~QObject` disconnects every receiver before `deleteChildren`
         // (qobject.cpp:1086-1178), and `QPointer` is cleared before anything else is destroyed.
         self.liveness.store(false, Ordering::Release);
-
+        self.borrow_state.memory_destroyed.store(true, Ordering::Release);
         // 1. If we have a parent, unlink from parent and notify it
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
@@ -1975,7 +1977,12 @@ fn release_child(child_id: ObjectId, parent_id: ObjectId) {
     if belongs_elsewhere == Some(true) {
         return;
     }
-    // SAFETY: the child may be borrowed by a running callback. It is not written to or freed here:
+    if belongs_elsewhere.is_none() {
+        if let Some((child_record, _)) = registered_ptr(child_id) {
+            *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
+            child_record.has_pending_parent_sync.store(true, Ordering::Release);
+        }
+    }
     // whoever owns it frees it, and the callback's guard keeps its own `Arc` to the record.
     unsafe { unregister_qobject(child_id) };
 }
@@ -2170,21 +2177,25 @@ pub enum PostCommitSyncStatus {
 }
 
 pub(crate) fn sync_child_local_parent(
-    child_id: ObjectId,
+    _child_id: ObjectId,
     child_record: &Arc<ObjectRecord>,
     current_reg_parent: Option<ObjectId>,
     target_liveness: Option<(ObjectId, Arc<AtomicBool>)>,
 ) -> PostCommitSyncStatus {
-    if !child_record.liveness.load(Ordering::Acquire) {
+    if child_record.borrow_state.memory_destroyed.load(Ordering::Acquire) {
         return PostCommitSyncStatus::DeadOrUnregistered;
     }
-    let applied = with_object_mut(child_id, |c| {
-        let mut data = c.object_data_mut();
+    if child_record
+        .borrow_state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        let _release = ReleaseBorrowFlag(&child_record.borrow_state);
+        let mut data = unsafe { (*child_record.ptr.0).object_data_mut() };
         let raw = data.raw_data_mut();
         raw.parent = current_reg_parent;
-        raw.parent_liveness = target_liveness.clone();
-    });
-    if applied.is_some() {
+        raw.parent_liveness = target_liveness;
         *lock_unpoisoned(&child_record.pending_parent_sync) = None;
         child_record.has_pending_parent_sync.store(false, Ordering::Release);
         PostCommitSyncStatus::AppliedDirectly
@@ -2595,9 +2606,6 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
     #[cfg(test)]
     let _held_by_mutant =
         test_hooks::mutant("set_parent_holds_registry").then(|| GLOBAL_OBJECT_REGISTRY.read());
-    child.parent = new_parent;
-    child.parent_liveness = new_liveness.clone();
-    drop(short_term_borrow);
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks. A
     // panic of the old parent's handler is held back until the child and the new parent's list
     // agree with the registry, and then continues.
@@ -2612,6 +2620,11 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         .err()
     });
 
+    // Following Qt's setParent_helper ordering: child.parent is updated after ChildRemoved is
+    // dispatched, and reconciled on panic before resuming unwind.
+    child.parent = new_parent;
+    child.parent_liveness = new_liveness.clone();
+
     let current_reg_parent = new_parent;
     if let Some(target_parent_id) = current_reg_parent {
         edit_child_list(target_parent_id, ChildListChange::Add(child_id));
@@ -2622,6 +2635,7 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
             }
         }
     }
+    drop(short_term_borrow);
     if let Some(payload) = removed_panic {
         std::panic::resume_unwind(payload);
     }
@@ -4654,6 +4668,42 @@ mod tests {
         drop(p1);
     }
 
+    #[test]
+    fn test_set_parent_rejects_reentrant_borrow_during_callbacks() {
+        let _serial = serial();
+        let log = Log::default();
+        let attempted_reborrow_success = Rc::new(Cell::new(false));
+        let attempted_clone = Rc::clone(&attempted_reborrow_success);
+        let child_id_cell = Rc::new(Cell::new(ObjectId(0)));
+        let child_id_clone = Rc::clone(&child_id_cell);
+
+        let probe: OnChildEvent = Box::new(move |delivered| {
+            if delivered.what == "removed" {
+                let cid = child_id_clone.get();
+                // Attempting to re-acquire mutable access to child via the registry during ChildRemoved
+                // must be rejected because short_term_borrow is held across the callback.
+                if with_object_mut(cid, |_| ()).is_some() {
+                    attempted_clone.set(true);
+                }
+            }
+        });
+
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        child_id_cell.set(child_id);
+
+        assert_eq!(set_parent(&mut child.0, Some(p1_id)), Ok(()));
+        assert_eq!(set_parent(&mut child.0, Some(p2_id)), Ok(()));
+
+        assert!(!attempted_reborrow_success.get(), "reentrant mutable borrow via registry must be rejected during ChildRemoved callback");
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+
     /// A panic in the old parent's `ChildRemoved` handler does not leave the objects behind the
     /// registry: the child's parent and the new parent's list are brought in line first, `ChildAdded`
     /// is not sent, and the panic then continues. Nothing stays locked or borrowed.
@@ -5939,5 +5989,99 @@ mod tests {
         assert!(with_object(parent_id, |_| ()).is_some(), "the parent stays borrowed");
         drop(child);
         drop(parent);
+    }
+
+    struct ProbeDirectParent(ObjectData);
+    impl QObject for ProbeDirectParent {
+        fn object_data(&self) -> &ObjectData { &self.0 }
+        fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+    }
+
+    #[test]
+    fn test_reentrant_new_parent_deletion_owned_object_path_b() {
+        let _serial = serial();
+        let log_a = Rc::new(RefCell::new(Vec::new()));
+        let p_b_cell = Rc::new(RefCell::new(None));
+        let p_b_clone = Rc::clone(&p_b_cell);
+        let child_id_cell = Rc::new(Cell::new(ObjectId(0)));
+        let child_id_clone = Rc::clone(&child_id_cell);
+
+        let on_event: OnChildEvent = Box::new(move |delivered: &Delivered| {
+            if delivered.what == "removed" {
+                let cid = child_id_clone.get();
+                with_object(cid, |_| {
+                    let b_opt = p_b_clone.borrow_mut().take();
+                    drop(b_opt);
+                });
+            }
+        });
+
+        let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
+        let a_id = OwnedObject::object_id(&p_a);
+
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let child_id = OwnedObject::object_id(&child);
+        child_id_cell.set(child_id);
+        assert_eq!(set_parent_by_id(child_id, Some(a_id)), Ok(()));
+        log_a.borrow_mut().clear();
+
+        let p_b = unsafe { register_owned_qobject(ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
+        let b_id = OwnedObject::object_id(&p_b);
+        *p_b_cell.borrow_mut() = Some(p_b);
+
+        assert_eq!(set_parent_by_id(child_id, Some(b_id)), Ok(()));
+        assert_eq!(query_object_parent(child_id).flatten(), None, "registry parent should be None");
+        assert_eq!(child.object_data().parent(), None, "child local parent should be None");
+
+        // Now drop child: A must NOT receive a duplicate ChildRemoved
+        drop(child);
+        let removed_count = log_a.borrow().iter().filter(|d| d.what == "removed" && d.child == child_id).count();
+        assert_eq!(removed_count, 1, "A must receive exactly one ChildRemoved event, no duplicate on child drop");
+        drop(p_a);
+    }
+
+    #[test]
+    fn test_reentrant_new_parent_deletion_direct_pointer_path_a() {
+        let _serial = serial();
+        let log_a = Rc::new(RefCell::new(Vec::new()));
+        let p_b_cell = Rc::new(RefCell::new(None));
+        let p_b_clone = Rc::clone(&p_b_cell);
+        let child_id_cell = Rc::new(Cell::new(ObjectId(0)));
+        let child_id_clone = Rc::clone(&child_id_cell);
+
+        let on_event: OnChildEvent = Box::new(move |delivered: &Delivered| {
+            if delivered.what == "removed" {
+                let cid = child_id_clone.get();
+                with_object(cid, |_| {
+                    let b_opt = p_b_clone.borrow_mut().take();
+                    drop(b_opt);
+                });
+            }
+        });
+
+        let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
+        let a_id = OwnedObject::object_id(&p_a);
+
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let child_id = OwnedObject::object_id(&child);
+        child_id_cell.set(child_id);
+        assert_eq!(set_parent_by_id(child_id, Some(a_id)), Ok(()));
+        log_a.borrow_mut().clear();
+
+        let p_b = Box::new(ProbeDirectParent(ObjectData::new(ObjectId::next())));
+        let b_id = p_b.0.id();
+        let p_raw = Box::into_raw(p_b);
+        unsafe { register_object_metadata(&(*p_raw).0, p_raw as *mut ProbeDirectParent as *mut dyn QObject) };
+        *p_b_cell.borrow_mut() = Some(unsafe { Box::from_raw(p_raw) });
+
+        assert_eq!(set_parent_by_id(child_id, Some(b_id)), Ok(()));
+        assert_eq!(query_object_parent(child_id), None, "registry parent should be None");
+        assert_eq!(child.object_data().parent(), None, "child local parent should be None");
+
+        // Now drop child: A must NOT receive a duplicate ChildRemoved
+        drop(child);
+        let removed_count = log_a.borrow().iter().filter(|d| d.what == "removed" && d.child == child_id).count();
+        assert_eq!(removed_count, 1, "A must receive exactly one ChildRemoved event, no duplicate on child drop");
+        drop(p_a);
     }
 }

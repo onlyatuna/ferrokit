@@ -137,6 +137,7 @@ impl<T: QObject + ?Sized> std::ops::DerefMut for OwnedObject<T> {
 
 impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
     fn drop(&mut self) {
+        self.borrow_state.memory_destroyed.store(true, std::sync::atomic::Ordering::Release);
         // SAFETY: unregister the object's registration before deallocating memory.
         unsafe { crate::object::unregister_qobject(self.id) };
         // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is turned back
