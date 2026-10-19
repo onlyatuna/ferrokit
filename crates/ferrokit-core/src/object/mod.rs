@@ -152,6 +152,11 @@
 //! dropped by its own slot): that unregisters the object at once and frees its memory only after
 //! the running callback returns.
 //!
+//! An object that answers `false` to [`QObject::can_move_to_thread`] keeps its registration
+//! thread: a move of it, or of an ancestor, is refused with [`MoveByIdError::NotMovable`] before
+//! an event is sent or anything changes. The object of a `Timer` does, because its `!Send` handle
+//! shares state with it that only the creating thread may use.
+//!
 //! # Synchronization and locking contract
 //!
 //! Cross-object hierarchy operations (`set_parent`, `reparent_owned_object`,

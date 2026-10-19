@@ -33,7 +33,8 @@
     "test_unique_connection_slot_identity",
     "test_signal_owner_liveness",
     "test_move_to_thread_with_borrowed_data",
-    "test_object_data_encapsulation"
+    "test_object_data_encapsulation",
+    "test_timer_thread_affinity"
   ],
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
@@ -567,6 +568,22 @@
     "test_object_data_encapsulation::test_running_child_cannot_be_cleared_by_safe_code:SB": "pass",
     "test_object_data_encapsulation::test_running_child_cannot_be_cleared_by_safe_code:TB": "pass",
     "test_object_data_encapsulation::test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf:SB": "pass",
-    "test_object_data_encapsulation::test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf:TB": "pass"
+    "test_object_data_encapsulation::test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf:TB": "pass",
+    "test_timer_thread_affinity::a_subtree_without_a_refusing_object_still_moves_as_a_whole::SB": "pass",
+    "test_timer_thread_affinity::a_subtree_without_a_refusing_object_still_moves_as_a_whole::TB": "pass",
+    "test_timer_thread_affinity::a_timer_in_the_subtree_refuses_the_whole_move_before_any_event::SB": "pass",
+    "test_timer_thread_affinity::a_timer_in_the_subtree_refuses_the_whole_move_before_any_event::TB": "pass",
+    "test_timer_thread_affinity::a_timer_refuses_a_thread_move_and_keeps_ticking_where_it_is::SB": "pass",
+    "test_timer_thread_affinity::a_timer_refuses_a_thread_move_and_keeps_ticking_where_it_is::TB": "pass",
+    "test_timer_thread_affinity::a_timer_works_on_its_own_thread_after_a_refused_move::SB": "pass",
+    "test_timer_thread_affinity::a_timer_works_on_its_own_thread_after_a_refused_move::TB": "pass",
+    "test_timer_thread_affinity::an_idle_timer_is_refused_too::SB": "pass",
+    "test_timer_thread_affinity::an_idle_timer_is_refused_too::TB": "pass",
+    "test_timer_thread_affinity::an_object_moves_unless_it_refuses::SB": "pass",
+    "test_timer_thread_affinity::an_object_moves_unless_it_refuses::TB": "pass",
+    "test_timer_thread_affinity::moving_a_timer_to_the_thread_it_is_on_is_a_no_op::SB": "pass",
+    "test_timer_thread_affinity::moving_a_timer_to_the_thread_it_is_on_is_a_no_op::TB": "pass",
+    "test_timer_thread_affinity::the_deprecated_move_refuses_a_subtree_with_a_timer_too::SB": "pass",
+    "test_timer_thread_affinity::the_deprecated_move_refuses_a_subtree_with_a_timer_too::TB": "pass"
   }
 }

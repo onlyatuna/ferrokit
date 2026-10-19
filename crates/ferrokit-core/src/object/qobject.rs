@@ -535,7 +535,10 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
 /// Stage A of [`crate::object::move_to_thread_by_id`]: validates `id` and collects the full
 /// registered subtree (`all_ids`, root first), releasing every borrow before returning.
 ///
-/// Returns `Ok(None)` when `id` is already on `target_thread`.
+/// Returns `Ok(None)` when `id` is already on `target_thread`. Refuses with
+/// `MoveByIdError::NotMovable` when `id` or any descendant answers `false` to
+/// `QObject::can_move_to_thread`. This stage sends nothing and changes nothing, so every refusal
+/// happens before the first `ThreadChange`.
 pub(crate) fn prepare_move_to_thread(
     id: ObjectId,
     target_thread: ThreadId,
@@ -577,6 +580,9 @@ pub(crate) fn prepare_move_to_thread(
         if data.thread_id() == target_thread {
             return Ok(None);
         }
+        if !obj.can_move_to_thread() {
+            return Err(MoveByIdError::NotMovable);
+        }
         Ok(Some(data.children.clone()))
     })
     .ok_or(MoveByIdError::Busy)??;
@@ -595,8 +601,13 @@ pub(crate) fn prepare_move_to_thread(
             return Err(MoveByIdError::Busy);
         }
         all_ids.push(child_id);
-        let more = with_object(child_id, |obj| obj.object_data().children.clone())
-            .unwrap_or_else(|| registered_children_of(child_id));
+        let more = match with_object(child_id, |obj| {
+            (obj.can_move_to_thread(), obj.object_data().children.clone())
+        }) {
+            Some((false, _)) => return Err(MoveByIdError::NotMovable),
+            Some((true, children)) => children,
+            None => registered_children_of(child_id),
+        };
         queue.extend(more);
     }
 
@@ -3091,6 +3102,24 @@ pub trait QObject: std::any::Any {
     /// Returns the thread affinity of this object (`QObject::thread`).
     fn thread(&self) -> ThreadId {
         self.object_data().thread()
+    }
+
+    /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
+    /// object's thread (`QObject::moveToThread`). The default is `true`.
+    ///
+    /// Return `false` when state of the object is also reached through handles that never leave
+    /// the creating thread, such as an `Rc` shared with a `!Send` owner. After a move the
+    /// registry would run the object's callbacks on the target thread while the owner keeps using
+    /// that state on the old one. The move is refused with
+    /// [`MoveByIdError::NotMovable`](crate::object::MoveByIdError::NotMovable) before an event is
+    /// sent or any state changes. A move takes the whole subtree, so the same answer from a
+    /// descendant refuses the move of every ancestor.
+    ///
+    /// Called on the registration thread while the registry holds the object's borrow: it must not
+    /// call back into the registry for this object, and its answer must not change while the
+    /// object is registered.
+    fn can_move_to_thread(&self) -> bool {
+        true
     }
 
     /// Blocks or unblocks signals emitted by this object (`QObject::blockSignals`).

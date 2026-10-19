@@ -229,11 +229,16 @@ impl ThreadContext {
 }
 
 /// Thread migration error matching QObject::moveToThread rules.
-
+///
+/// `NotMovable` was added after `HasParent` and `WrongThread`. The enum is not
+/// `#[non_exhaustive]`, so a downstream `match` that names every variant and has no wildcard arm
+/// stops compiling until it handles `NotMovable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveError {
     HasParent,
     WrongThread,
+    /// A descendant answers `false` to [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread).
+    NotMovable,
 }
 
 impl std::fmt::Display for MoveError {
@@ -241,6 +246,7 @@ impl std::fmt::Display for MoveError {
         match self {
             Self::HasParent => write!(f, "cannot move object with parent to thread"),
             Self::WrongThread => write!(f, "cannot move object from different thread"),
+            Self::NotMovable => write!(f, "object or one of its descendants cannot change thread"),
         }
     }
 }
@@ -248,12 +254,20 @@ impl std::fmt::Display for MoveError {
 impl std::error::Error for MoveError {}
 
 /// Thread migration error matching QObject::moveToThread rules by ObjectId.
+///
+/// `NotMovable` was added after `HasParent`, `WrongThread`, `UnknownObject` and `Busy`. The enum is
+/// not `#[non_exhaustive]`, so a downstream `match` that names every variant and has no wildcard
+/// arm stops compiling until it handles `NotMovable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveByIdError {
     HasParent,
     WrongThread,
     UnknownObject,
     Busy,
+    /// The object or a descendant answers `false` to
+    /// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread). Nothing was
+    /// sent or changed.
+    NotMovable,
 }
 
 impl std::fmt::Display for MoveByIdError {
@@ -263,6 +277,7 @@ impl std::fmt::Display for MoveByIdError {
             Self::WrongThread => write!(f, "cannot move object from different thread"),
             Self::UnknownObject => write!(f, "object is not registered or no longer alive"),
             Self::Busy => write!(f, "cannot move object while it is currently borrowed"),
+            Self::NotMovable => write!(f, "object or one of its descendants cannot change thread"),
         }
     }
 }
@@ -274,6 +289,7 @@ impl From<MoveError> for MoveByIdError {
         match err {
             MoveError::HasParent => Self::HasParent,
             MoveError::WrongThread => Self::WrongThread,
+            MoveError::NotMovable => Self::NotMovable,
         }
     }
 }
@@ -308,8 +324,11 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 ///
 /// Cascading actions, in Qt order (`qobject.cpp:1782-1792`):
 /// 1. Validates that `id` is registered and alive, has no parent, belongs to
-///    `current_caller_thread`, and has no active callback borrow in its subtree; releases that
-///    inspection borrow before step 2.
+///    `current_caller_thread`, has no active callback borrow in its subtree, and that no object of
+///    the subtree answers `false` to
+///    [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread) (a
+///    [`Timer`](crate::timer::Timer) is such an object); a failure returns the error with nothing
+///    sent or changed. The inspection borrows are released before step 2.
 /// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change.
 /// 3. Detaches their timers from the source thread and updates each node's `ObjectData.thread_id`
 ///    through a separate short-lived registry borrow (`qobject.cpp:1490-1502`).
@@ -373,6 +392,12 @@ pub fn move_to_thread_by_id(
 /// through the registry (`send_event`) and recursively mutating `owned_children` creates
 /// overlapping mutable borrows under Stacked Borrows and Tree Borrows. Use
 /// [`move_to_thread_by_id`] instead.
+///
+/// Refuses with [`MoveError::NotMovable`] when a descendant answers `false` to
+/// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread), before anything is
+/// sent or changed. The root is not asked: only its `ObjectData` is available here, and reaching
+/// the object through the registry would overlap that `&mut`. [`move_to_thread_by_id`] asks the
+/// root too.
 #[deprecated(
     note = "holding `&mut ObjectData` across `ThreadChange` delivery and recursive child updates \
             overlaps the registry's callback borrow; use `move_to_thread_by_id`"
@@ -394,6 +419,14 @@ pub fn move_to_thread(
 
     let mut all_ids = vec![object_data.id()];
     all_ids.extend(collect_descendants(object_data.children()));
+
+    // A descendant that must stay on its thread refuses the whole move, before any event is sent.
+    if all_ids[1..]
+        .iter()
+        .any(|&id| crate::object::with_object(id, |obj| !obj.can_move_to_thread()).unwrap_or(false))
+    {
+        return Err(MoveError::NotMovable);
+    }
 
     // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
     for &id in &all_ids {

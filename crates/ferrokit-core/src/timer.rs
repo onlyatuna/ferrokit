@@ -701,7 +701,10 @@ impl TimerControl {
 /// one pointer to it, and the handle never forms a reference to the object. Everything the handle
 /// does goes through shared scheduling state, so it is safe to call from a slot of its own
 /// `timeout`. Dropping the handle from such a slot unregisters the timer at once and frees its
-/// memory when the running callback returns. A `Timer` stays on the thread that created it.
+/// memory when the running callback returns. A `Timer` stays on the thread that created it: the
+/// handle is `!Send`, and [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) refuses
+/// the timer's object, and any ancestor of it, with
+/// [`MoveByIdError::NotMovable`](crate::object::MoveByIdError::NotMovable).
 ///
 /// ```compile_fail
 /// let t = ferrokit_core::timer::Timer::new();
@@ -962,6 +965,14 @@ impl QObject for TimerCore {
 
     fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
         crate::object::ObjectDataMut::new(&mut self.data)
+    }
+
+    /// A `Timer` stays on the thread that made it. Its owner handle is `!Send` and shares the
+    /// `Rc`-held `TimerControl` with this object: after a move the registry would run
+    /// `timer_event` on the target thread while the handle reads and writes that state on this
+    /// one, and the handle would drop the object from the wrong thread.
+    fn can_move_to_thread(&self) -> bool {
+        false
     }
 
     /// Handles timer events for this object (`QObject::timerEvent`).
