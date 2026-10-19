@@ -9,6 +9,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 #[cfg(windows)]
+#[doc(hidden)]
+pub mod precise;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
 #[cfg(not(windows))]
 pub type HWND = *mut std::ffi::c_void;
@@ -325,22 +328,95 @@ pub fn with_thread_timer_context<R>(f: impl FnOnce(&ThreadTimerContext) -> R) ->
         .flatten()
 }
 
-/// Arms one single-shot timer for `receiver` on this thread's registry (Windows: also `SetTimer`
-/// on the internal window, as `Timer::single_shot` always did).
+/// Arms one single-shot timer for `receiver` on this thread's registry (Windows: also its native
+/// source on the internal window, the same one every other start route uses).
 fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u64) {
     let _timer_id =
         lock_unpoisoned(&ctx.registry).register(receiver, interval_ms, TimerType::Coarse, true);
     #[cfg(windows)]
     if !ctx.internal_hwnd.is_null() {
+        arm_native(ctx.internal_hwnd, _timer_id, interval_ms, TimerType::Coarse);
+    }
+}
+
+/// Stops the native source of timer `id`: its multimedia timer if it has one, else its `SetTimer`.
+#[cfg(windows)]
+pub(crate) fn kill_native(hwnd: HWND, id: TimerId) {
+    if !precise::disarm(id) {
         unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
-                ctx.internal_hwnd,
-                _timer_id.0 as usize,
-                win32_timer_elapse(interval_ms),
-                None,
-            );
+            windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, id.0 as usize);
         }
     }
+}
+
+/// Whether the ticks of timer `raw_id` come from a multimedia timer on this thread.
+#[cfg(windows)]
+pub(crate) fn is_precise_source(raw_id: u32) -> bool {
+    precise::is_precise(raw_id)
+}
+#[cfg(not(windows))]
+pub(crate) fn is_precise_source(_raw_id: u32) -> bool {
+    false
+}
+
+/// A message for `raw_id` is being handled: a multimedia timer may queue the next one.
+#[cfg(windows)]
+pub(crate) fn acknowledge_source(raw_id: u32) {
+    precise::acknowledge(raw_id);
+}
+#[cfg(not(windows))]
+pub(crate) fn acknowledge_source(_raw_id: u32) {}
+
+/// What to do with a multimedia tick that arrives before the timer's expiry.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EarlyTick {
+    /// It is the tick of the expiry, a little early: hold it and deliver at the expiry. A timer
+    /// never fires before its expiry, and the tick is not lost.
+    Defer,
+    /// It belongs to a grid point a late callback already consumed (the expiry is more than half
+    /// an interval away): ignore it, so an overrun gives one callback and not a second one right
+    /// behind it.
+    Stale,
+}
+
+/// Classifies a tick with `now_ms < expiry_ms` by whether it is nearer the expiry or the grid
+/// point before it.
+pub(crate) fn classify_early_tick(now_ms: u64, expiry_ms: u64, interval_ms: u64) -> EarlyTick {
+    if expiry_ms.saturating_sub(now_ms) <= (interval_ms / 2).max(1) {
+        EarlyTick::Defer
+    } else {
+        EarlyTick::Stale
+    }
+}
+
+/// Holds the early tick of `raw_id` until the loop next runs the timers.
+#[cfg(windows)]
+pub(crate) fn defer_source(raw_id: u32) {
+    precise::defer(raw_id);
+}
+#[cfg(not(windows))]
+pub(crate) fn defer_source(_raw_id: u32) {}
+
+/// Ticks held by [`defer_source`], to be delivered when due.
+#[cfg(windows)]
+pub(crate) fn take_deferred_sources() -> Vec<u32> {
+    precise::take_deferred()
+}
+#[cfg(not(windows))]
+pub(crate) fn take_deferred_sources() -> Vec<u32> {
+    Vec::new()
+}
+
+/// Next expiry of a timer whose ticks come from a fixed grid: the first grid point after `now_ms`
+/// that follows `expiry`. Grid points missed while the loop was busy are skipped, so an overrun
+/// gives one callback and the grid resumes.
+pub(crate) fn next_grid_deadline(interval_ms: u64, expiry_ms: u64, now_ms: u64) -> (u64, u64) {
+    let interval = interval_ms.max(1);
+    let steps = now_ms.saturating_sub(expiry_ms) / interval + 1;
+    (
+        interval_ms,
+        expiry_ms.saturating_add(steps.saturating_mul(interval)),
+    )
 }
 
 /// Stops and unregisters all active timers registered to the specified receiver object.
@@ -363,12 +439,7 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
             #[cfg(windows)]
             if let Some(entry) = _entry {
                 if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                            ctx.internal_hwnd,
-                            id.0 as usize,
-                        );
-                    }
+                    kill_native(ctx.internal_hwnd, id);
                 }
             }
         }
@@ -398,12 +469,7 @@ pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> Vec<TimerEntr
             #[cfg(windows)]
             {
                 if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                            ctx.internal_hwnd,
-                            id.0 as usize,
-                        );
-                    }
+                    kill_native(ctx.internal_hwnd, id);
                 }
             }
             detached.push(entry);
@@ -447,7 +513,7 @@ pub(crate) fn adopt_timers(entries: Vec<TimerEntry>) {
                 entry.timer_type,
                 entry.single_shot,
             );
-            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms);
+            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
     if armed.is_none() {
@@ -467,13 +533,39 @@ fn arm_in_context(
 ) -> TimerId {
     let mut reg = lock_unpoisoned(&ctx.registry);
     let timer_id = reg.register(receiver, interval_ms, timer_type, single_shot);
-    arm_source(ctx, timer_id, receiver, interval_ms);
+    arm_source(ctx, timer_id, receiver, interval_ms, timer_type);
     timer_id
 }
 
+/// Arms the native source of a timer on `hwnd`: a multimedia timer for `Precise` timers, else (or
+/// when none can be created) `SetTimer`. Every route that starts a timer on Windows ends here, so
+/// a timer type has one meaning whichever way the timer was started.
+#[cfg(windows)]
+pub(crate) fn arm_native(hwnd: HWND, timer_id: TimerId, interval_ms: u64, timer_type: TimerType) {
+    if precise::wanted(timer_type, interval_ms) && precise::arm(hwnd, timer_id, interval_ms) {
+        return;
+    }
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
+            hwnd,
+            timer_id.0 as usize,
+            win32_timer_elapse(interval_ms),
+            None,
+        );
+    }
+}
+
 /// Arms the delivery source of a registered timer: a zero interval posts `ZeroTimer`, otherwise
-/// `SetTimer` on Windows.
-fn arm_source(ctx: &ThreadTimerContext, timer_id: TimerId, receiver: ObjectId, interval_ms: u64) {
+/// the native source on Windows.
+fn arm_source(
+    ctx: &ThreadTimerContext,
+    timer_id: TimerId,
+    receiver: ObjectId,
+    interval_ms: u64,
+    timer_type: TimerType,
+) {
+    #[cfg(not(windows))]
+    let _ = timer_type;
     #[cfg(not(windows))]
     let _ = ctx;
     if interval_ms == 0 {
@@ -488,15 +580,7 @@ fn arm_source(ctx: &ThreadTimerContext, timer_id: TimerId, receiver: ObjectId, i
         #[cfg(windows)]
         {
             if !ctx.internal_hwnd.is_null() {
-                let interval = win32_timer_elapse(interval_ms);
-                unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
-                        ctx.internal_hwnd,
-                        timer_id.0 as usize,
-                        interval,
-                        None,
-                    );
-                }
+                arm_native(ctx.internal_hwnd, timer_id, interval_ms, timer_type);
             }
         }
     }
@@ -512,12 +596,7 @@ fn disarm_in_context(ctx: &ThreadTimerContext, id: TimerId) -> bool {
     #[cfg(windows)]
     {
         if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-            unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                    ctx.internal_hwnd,
-                    id.0 as usize,
-                );
-            }
+            kill_native(ctx.internal_hwnd, id);
         }
     }
     #[cfg(not(windows))]
@@ -932,12 +1011,25 @@ pub(crate) fn begin_timer_delivery(
 ) -> Option<(ObjectId, bool)> {
     let mut reg = lock_unpoisoned(registry);
     let entry = reg.get_mut(id)?;
-    if entry.in_timer_event || now_ms < entry.next_fire_ms {
+    let precise = is_precise_source(id.0);
+    if entry.in_timer_event {
+        return None;
+    }
+    if now_ms < entry.next_fire_ms {
+        if precise
+            && classify_early_tick(now_ms, entry.next_fire_ms, entry.interval_ms) == EarlyTick::Defer
+        {
+            defer_source(id.0);
+        }
         return None;
     }
     entry.in_timer_event = true;
     let mut timer_type = entry.timer_type;
-    let (adjusted, next_fire) = calculate_next_timeout(&mut timer_type, entry.interval_ms, now_ms);
+    let (adjusted, next_fire) = if precise {
+        next_grid_deadline(entry.interval_ms, entry.next_fire_ms, now_ms)
+    } else {
+        calculate_next_timeout(&mut timer_type, entry.interval_ms, now_ms)
+    };
     entry.timer_type = timer_type;
     entry.interval_ms = adjusted;
     entry.next_fire_ms = next_fire;
@@ -1892,5 +1984,22 @@ mod tests {
             begin_timer_delivery(&registry, id, u64::MAX),
             Some((ObjectId(99), true))
         );
+    }
+}
+
+#[cfg(test)]
+mod early_tick_tests {
+    use super::{classify_early_tick, EarlyTick};
+
+    #[test]
+    fn a_tick_near_its_expiry_is_held_and_one_a_grid_point_early_is_dropped() {
+        // 20 ms timer, expiry at 100.
+        assert_eq!(classify_early_tick(99, 100, 20), EarlyTick::Defer);
+        assert_eq!(classify_early_tick(90, 100, 20), EarlyTick::Defer);
+        assert_eq!(classify_early_tick(89, 100, 20), EarlyTick::Stale);
+        // The tick of a grid point a late callback already consumed.
+        assert_eq!(classify_early_tick(81, 100, 20), EarlyTick::Stale);
+        // A 1 ms timer still holds a tick 1 ms early.
+        assert_eq!(classify_early_tick(9, 10, 1), EarlyTick::Defer);
     }
 }

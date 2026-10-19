@@ -129,10 +129,14 @@ impl Fixture {
     }
 }
 
-/// `KillTimer` returns nonzero only for a native timer that existed. It also removes that timer,
-/// so call it last.
+/// Whether a native timer of `id` still exists: a multimedia timer (`Precise` timers) or a
+/// `SetTimer` timer. `KillTimer` returns nonzero only for a `SetTimer` timer that existed; it also
+/// removes that timer, so call this last.
 fn native_timer_existed(id: TimerId) -> bool {
-    with_thread_timer_context(|ctx| unsafe { KillTimer(ctx.internal_hwnd, id.0 as usize) != 0 })
+    ferrokit_core::timer::precise::native_handle(id).is_some()
+        || with_thread_timer_context(|ctx| unsafe {
+            KillTimer(ctx.internal_hwnd, id.0 as usize) != 0
+        })
         .expect("this thread has a loop")
 }
 
