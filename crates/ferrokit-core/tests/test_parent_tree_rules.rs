@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    dispatch_to_object, move_to_thread_by_id, register_owned_qobject, set_parent,
+    dispatch_to_object, move_to_thread_by_id, register_owned_qobject, set_parent, set_parent_by_id,
     unregister_qobject, MoveByIdError, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
     ThreadId,
 };
@@ -53,22 +53,36 @@ impl QObject for Node {
     }
 }
 
+fn id_of(o: &OwnedObject<Node>) -> ObjectId {
+    OwnedObject::object_id(o)
+}
+
+fn parent_of(o: &OwnedObject<Node>) -> Option<ObjectId> {
+    o.with(|n| n.data.parent()).unwrap()
+}
+
+fn reparent(o: &mut OwnedObject<Node>, parent: Option<ObjectId>) -> Result<(), ReparentError> {
+    set_parent_by_id(OwnedObject::object_id(o), parent)
+}
+
+fn seen_len(o: &OwnedObject<Node>) -> usize {
+    o.with(|n| n.seen.len()).unwrap()
+}
+
 #[test]
 fn an_object_cannot_be_its_own_parent() {
     let mut a = Node::registered();
-    let id = a.data.id();
+    let id = id_of(&a);
 
-    assert_eq!(
-        set_parent(&mut a.data, Some(id)),
-        Err(ReparentError::InvalidParent)
-    );
+    assert_eq!(reparent(&mut a, Some(id)), Err(ReparentError::InvalidParent));
 
-    assert_eq!(a.data.parent(), None);
-    assert!(a.data.children().is_empty());
+    assert_eq!(parent_of(&a), None);
+    assert!(a.with(|n| n.data.children().is_empty()).unwrap());
+    let seen = a.with(|n| n.seen.clone()).unwrap();
     assert!(
-        a.seen.is_empty(),
+        seen.is_empty(),
         "a refused change sends no event: {:?}",
-        a.seen
+        seen
     );
 }
 
@@ -77,60 +91,51 @@ fn a_descendant_cannot_become_the_parent() {
     let mut a = Node::registered();
     let mut b = Node::registered();
     let mut c = Node::registered();
-    let (aid, bid, cid) = (a.data.id(), b.data.id(), c.data.id());
-    set_parent(&mut b.data, Some(aid)).unwrap();
-    set_parent(&mut c.data, Some(bid)).unwrap();
-    let events_before = (a.seen.len(), b.seen.len(), c.seen.len());
+    let (aid, bid, cid) = (id_of(&a), id_of(&b), id_of(&c));
+    reparent(&mut b, Some(aid)).unwrap();
+    reparent(&mut c, Some(bid)).unwrap();
+    let events_before = (seen_len(&a), seen_len(&b), seen_len(&c));
 
     // a -> b -> c: neither the child nor the grandchild may become a's parent.
-    assert_eq!(
-        set_parent(&mut a.data, Some(bid)),
-        Err(ReparentError::InvalidParent)
-    );
-    assert_eq!(
-        set_parent(&mut a.data, Some(cid)),
-        Err(ReparentError::InvalidParent)
-    );
+    assert_eq!(reparent(&mut a, Some(bid)), Err(ReparentError::InvalidParent));
+    assert_eq!(reparent(&mut a, Some(cid)), Err(ReparentError::InvalidParent));
 
-    assert_eq!(a.data.parent(), None);
-    assert_eq!(b.data.parent(), Some(aid));
-    assert_eq!(c.data.parent(), Some(bid));
-    assert_eq!(a.data.children(), &[bid]);
-    assert_eq!(b.data.children(), &[cid]);
-    assert_eq!((a.seen.len(), b.seen.len(), c.seen.len()), events_before);
+    assert_eq!(parent_of(&a), None);
+    assert_eq!(parent_of(&b), Some(aid));
+    assert_eq!(parent_of(&c), Some(bid));
+    assert_eq!(a.with(|n| n.data.children().to_vec()).unwrap(), vec![bid]);
+    assert_eq!(b.with(|n| n.data.children().to_vec()).unwrap(), vec![cid]);
+    assert_eq!((seen_len(&a), seen_len(&b), seen_len(&c)), events_before);
 }
 
 #[test]
 fn the_cycle_check_follows_the_tree_as_it_is_now() {
     let mut a = Node::registered();
     let mut b = Node::registered();
-    let (aid, bid) = (a.data.id(), b.data.id());
-    set_parent(&mut b.data, Some(aid)).unwrap();
-    assert_eq!(
-        set_parent(&mut a.data, Some(bid)),
-        Err(ReparentError::InvalidParent)
-    );
+    let (aid, bid) = (id_of(&a), id_of(&b));
+    reparent(&mut b, Some(aid)).unwrap();
+    assert_eq!(reparent(&mut a, Some(bid)), Err(ReparentError::InvalidParent));
 
     // Once b is detached it is not a's descendant any more, so the same call is allowed.
-    set_parent(&mut b.data, None).unwrap();
-    set_parent(&mut a.data, Some(bid)).unwrap();
+    reparent(&mut b, None).unwrap();
+    reparent(&mut a, Some(bid)).unwrap();
 
-    assert_eq!(a.data.parent(), Some(bid));
-    assert_eq!(b.data.parent(), None);
+    assert_eq!(parent_of(&a), Some(bid));
+    assert_eq!(parent_of(&b), None);
 }
 
 #[test]
 fn dropping_a_parent_leaves_a_non_owned_child_without_a_parent() {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = id_of(&parent);
     let mut child = Node::registered();
-    set_parent(&mut child.data, Some(parent_id)).unwrap();
-    assert_eq!(child.data.parent(), Some(parent_id));
+    reparent(&mut child, Some(parent_id)).unwrap();
+    assert_eq!(parent_of(&child), Some(parent_id));
 
     drop(parent);
 
     assert_eq!(
-        child.data.parent(),
+        parent_of(&child),
         None,
         "the child's own parent still names the dead parent"
     );
@@ -140,13 +145,13 @@ fn dropping_a_parent_leaves_a_non_owned_child_without_a_parent() {
 fn dropping_a_parent_does_not_touch_the_parent_of_an_unrelated_child() {
     let doomed = Node::registered();
     let kept = Node::registered();
-    let kept_id = kept.data.id();
+    let kept_id = id_of(&kept);
     let mut child = Node::registered();
-    set_parent(&mut child.data, Some(kept_id)).unwrap();
+    reparent(&mut child, Some(kept_id)).unwrap();
 
     drop(doomed);
 
-    assert_eq!(child.data.parent(), Some(kept_id));
+    assert_eq!(parent_of(&child), Some(kept_id));
 }
 
 /// Drops the parent it is given from inside its own `event`, so the parent goes away while this
@@ -190,13 +195,13 @@ impl QObject for Reactor {
 /// A registered child whose callback drops its own parent, and that callback's observations.
 fn child_that_drops_its_parent() -> (OwnedObject<Reactor>, ObjectId) {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     let victim = Rc::new(RefCell::new(Some(parent)));
-    let mut child = Reactor::registered(Rc::clone(&victim));
-    set_parent(&mut child.data, Some(parent_id)).unwrap();
+    let child = Reactor::registered(Rc::clone(&victim));
+    set_parent_by_id(OwnedObject::object_id(&child), Some(parent_id)).unwrap();
 
     let mut event = Event::new(EventKind::UpdateRequest);
-    dispatch_to_object(child.data.id(), &mut event);
+    dispatch_to_object(OwnedObject::object_id(&child), &mut event);
 
     assert!(victim.borrow().is_none(), "the callback dropped the parent");
     (child, parent_id)
@@ -207,17 +212,21 @@ fn a_child_borrowed_while_its_parent_is_dropped_is_left_without_a_parent() {
     let (child, parent_id) = child_that_drops_its_parent();
 
     assert_eq!(
-        child.parent_seen,
+        child.with(|c| c.parent_seen.clone()).unwrap(),
         vec![Some(parent_id), None],
         "inside the callback: the parent before it is dropped, none right after"
     );
-    assert_eq!(child.data.parent(), None, "once the callback has returned");
+    assert_eq!(
+        child.with(|c| c.data.parent()).unwrap(),
+        None,
+        "once the callback has returned"
+    );
 }
 
 #[test]
 fn a_child_that_was_never_registered_is_left_without_a_parent() {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     let mut child = ObjectData::new(ObjectId::next());
     set_parent(&mut child, Some(parent_id)).unwrap();
     assert_eq!(child.parent(), Some(parent_id));
@@ -232,7 +241,7 @@ fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
     let (child, _) = child_that_drops_its_parent();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
 
-    let moved = move_to_thread_by_id(child.data.id(), elsewhere, ThreadId::current());
+    let moved = move_to_thread_by_id(OwnedObject::object_id(&child), elsewhere, ThreadId::current());
 
     assert_ne!(moved, Err(MoveByIdError::HasParent));
 }
@@ -254,7 +263,7 @@ impl QObject for Adopter {
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
             let id = self.data.id();
-            set_parent(&mut self.child.borrow_mut().data, Some(id)).unwrap();
+            set_parent_by_id(OwnedObject::object_id(&self.child.borrow()), Some(id)).unwrap();
         }
         false
     }
@@ -270,26 +279,26 @@ fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
             child: Rc::clone(&adopted),
         })
     };
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     let mut event = Event::new(EventKind::UpdateRequest);
     dispatch_to_object(parent_id, &mut event);
-    assert_eq!(adopted.borrow().data.parent(), Some(parent_id));
+    assert_eq!(parent_of(&adopted.borrow()), Some(parent_id));
 
     // Attached from outside any callback, for comparison.
     let mut plain = Node::registered();
-    set_parent(&mut plain.data, Some(parent_id)).unwrap();
+    reparent(&mut plain, Some(parent_id)).unwrap();
 
     drop(parent);
 
-    assert_eq!(plain.data.parent(), None);
+    assert_eq!(parent_of(&plain), None);
     assert!(
-        !plain.data.is_alive(),
+        !plain.with(|n| n.data.is_alive()).unwrap(),
         "a child in the parent's list is unregistered"
     );
     let adopted = adopted.borrow();
-    assert_eq!(adopted.data.parent(), None);
+    assert_eq!(parent_of(&adopted), None);
     assert!(
-        !adopted.data.is_alive(),
+        !adopted.with(|n| n.data.is_alive()).unwrap(),
         "a child attached during a callback is unregistered too"
     );
 }
@@ -297,13 +306,13 @@ fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
 #[test]
 fn unregistering_a_parent_ends_its_children_links_like_dropping_it() {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = id_of(&parent);
     let mut child = Node::registered();
-    set_parent(&mut child.data, Some(parent_id)).unwrap();
-    assert_eq!(child.data.parent(), Some(parent_id));
+    reparent(&mut child, Some(parent_id)).unwrap();
+    assert_eq!(parent_of(&child), Some(parent_id));
 
     // SAFETY: no callback is active on this thread.
     unsafe { unregister_qobject(parent_id) };
 
-    assert_eq!(child.data.parent(), None);
+    assert_eq!(parent_of(&child), None);
 }

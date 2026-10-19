@@ -96,7 +96,7 @@ fn a_huge_interval_neither_panics_nor_poisons_and_later_destruction_completes() 
 
             // Destroying another object after this start must run to the end and free it.
             let owned = unsafe { register_owned_qobject(Node::new(&dropped)) };
-            let owned_id = owned.object_data().id();
+            let owned_id = owned.with(|o| o.object_data().id()).unwrap();
             let before = dropped.load(Ordering::SeqCst);
             let destroyed = catch_unwind(AssertUnwindSafe(|| drop(owned)));
             assert!(

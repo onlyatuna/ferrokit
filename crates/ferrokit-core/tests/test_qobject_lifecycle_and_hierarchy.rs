@@ -237,36 +237,39 @@ fn test_object_hierarchy_search_find_child() {
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
     // Query by specific name and type
-    let ok_btn = root.find_child::<MockButton>("ok_button");
+    let ok_btn = root.with_child::<MockButton, _>("ok_button", |b| b.text.clone());
     assert!(ok_btn.is_some());
-    assert_eq!(ok_btn.unwrap().text, "OK");
+    assert_eq!(ok_btn.unwrap(), "OK");
 
-    let cancel_btn = root.find_child::<MockButton>("cancel_button");
+    let cancel_btn = root.with_child::<MockButton, _>("cancel_button", |b| b.text.clone());
     assert!(cancel_btn.is_some());
-    assert_eq!(cancel_btn.unwrap().text, "Cancel");
+    assert_eq!(cancel_btn.unwrap(), "Cancel");
 
-    let status_lbl = root.find_child::<MockLabel>("status_label");
+    let status_lbl = root.with_child::<MockLabel, _>("status_label", |l| l.text.clone());
     assert!(status_lbl.is_some());
-    assert_eq!(status_lbl.unwrap().text, "Ready");
+    assert_eq!(status_lbl.unwrap(), "Ready");
 
     // Query non-existent name
-    let missing = root.find_child::<MockButton>("non_existent");
+    let missing = root.with_child::<MockButton, _>("non_existent", |_| ());
     assert!(missing.is_none());
 
     // Query with empty name matches first child of type
-    let first_btn = root.find_child::<MockButton>("");
+    let first_btn = root.with_child::<MockButton, _>("", |_| ());
     assert!(first_btn.is_some());
 
     // Query all children of type MockButton
-    let all_buttons = root.find_children::<MockButton>(None);
-    assert_eq!(all_buttons.len(), 2);
+    let mut all_buttons = 0;
+    root.for_each_child::<MockButton>(None, |_| all_buttons += 1);
+    assert_eq!(all_buttons, 2);
 
     // Mutable find_child_mut
-    if let Some(btn) = root.find_child_mut::<MockButton>("ok_button") {
+    root.with_child_mut::<MockButton, _>("ok_button", |btn| {
         btn.text = "Confirmed".to_string();
-    }
-    let updated_ok = root.find_child::<MockButton>("ok_button").unwrap();
-    assert_eq!(updated_ok.text, "Confirmed");
+    });
+    let updated_ok = root
+        .with_child::<MockButton, _>("ok_button", |b| b.text.clone())
+        .unwrap();
+    assert_eq!(updated_ok, "Confirmed");
 }
 
 #[test]
@@ -288,10 +291,10 @@ fn test_find_child_searches_direct_children_before_descendants() {
         add_owned_child(root.data.id(), direct_btn).ok().unwrap();
     }
 
-    let found = root.find_child::<MockButton>("action_btn");
+    let found = root.with_child::<MockButton, _>("action_btn", |b| b.text.clone());
     assert!(found.is_some());
     assert_eq!(
-        found.unwrap().text,
+        found.unwrap(),
         "from_direct_child",
         "find_child must return shallowest matching child (qt_qFindChild_helper)"
     );
@@ -303,10 +306,10 @@ fn test_find_child_searches_direct_children_before_descendants() {
         "find_child_id must return shallowest matching child ID"
     );
 
-    let found_mut = root.find_child_mut::<MockButton>("action_btn");
+    let found_mut = root.with_child_mut::<MockButton, _>("action_btn", |b| b.text.clone());
     assert!(found_mut.is_some());
     assert_eq!(
-        found_mut.unwrap().text,
+        found_mut.unwrap(),
         "from_direct_child",
         "find_child_mut must return shallowest matching child"
     );
@@ -349,9 +352,9 @@ fn test_qobject_hierarchy_accessors() {
 
     child.object_data_mut().set_parent(Some(parent_id)).unwrap();
     assert_eq!(child.parent(), Some(parent_id));
-    assert_eq!(parent.children_ids(), vec![child_id]);
-    assert_eq!(parent.object_data().children(), &[child_id]);
-    assert_eq!(parent.thread(), ThreadId::current());
+    assert_eq!(parent.with(|p| p.children_ids()).unwrap(), vec![child_id]);
+    assert_eq!(parent.with(|p| p.object_data().children().to_vec()).unwrap(), vec![child_id]);
+    assert_eq!(parent.with(|p| p.thread()).unwrap(), ThreadId::current());
 }
 
 // --- 3. Thread Migration Cascading Tests ---
@@ -399,7 +402,7 @@ fn test_move_to_thread_cascades_children_and_events() {
     // Affinity and ThreadChange.
     assert_eq!(parent.data.thread_id(), target);
     assert_eq!(
-        parent.data.owned_children()[0].object_data().thread_id(),
+        parent.data.owned_children()[0].with(|c| c.object_data().thread_id()).unwrap(),
         target
     );
     assert_eq!(query_object_thread(child_id), Some(target));
@@ -487,13 +490,13 @@ fn test_qpointer_and_generational_liveness() {
     let registered = unsafe { register_owned_qobject(MockButton::new("guarded_btn", "Submit")) };
     let id = OwnedObject::object_id(&registered);
 
-    let qptr: QPointer<MockButton> = QPointer::new(&*registered);
+    let qptr: QPointer<MockButton> = registered.with(|r| QPointer::new(r)).unwrap();
     assert!(!qptr.is_null());
     assert!(qptr.is_valid());
     assert_eq!(qptr.id(), Some(id));
 
     // Generational identity before drop
-    let gen_id_before = registered.data.generational_id();
+    let gen_id_before = registered.with(|r| r.data.generational_id()).unwrap();
     assert_eq!(gen_id_before.id, id);
     assert_eq!(gen_id_before.generation, 1);
 
@@ -518,7 +521,7 @@ fn test_double_register_keeps_object_reachable() {
     let registered =
         unsafe { register_owned_qobject(MockButton::new("double_reg_btn", "Again")) };
     let id = OwnedObject::object_id(&registered);
-    let qptr: QPointer<MockButton> = QPointer::new(&*registered);
+    let qptr: QPointer<MockButton> = registered.with(|r| QPointer::new(r)).unwrap();
 
     // SAFETY: the object stays at this address while `registered` lives, and the pointer is the
     // owner's own, the one the first registration used.

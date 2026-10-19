@@ -71,26 +71,38 @@ fn move_to_thread_three_levels_updates_all_thread_id_fields() {
     assert_eq!(root.data.thread_id(), target_thread);
 
     // Verify child, grandchild, and great-grandchild ObjectData.thread_id via owned hierarchy
-    let child_ref = root.data.owned_children()[0].object_data();
-    assert_eq!(child_ref.id(), child_id);
-    assert_eq!(
-        child_ref.thread_id(), target_thread,
-        "child ObjectData.thread_id must be updated"
-    );
+    root.data.owned_children()[0]
+        .with(|child_ref| {
+                assert_eq!(child_ref.object_data().id(), child_id);
+                assert_eq!(
+                    child_ref.object_data().thread_id(),
+                    target_thread,
+                    "child ObjectData.thread_id must be updated"
+                );
 
-    let grand_ref = child_ref.owned_children()[0].object_data();
-    assert_eq!(grand_ref.id(), grand_id);
-    assert_eq!(
-        grand_ref.thread_id(), target_thread,
-        "grandchild ObjectData.thread_id must be updated to target_thread"
-    );
+                child_ref.object_data().owned_children()[0]
+                    .with(|grand_ref| {
+                        assert_eq!(grand_ref.object_data().id(), grand_id);
+                        assert_eq!(
+                            grand_ref.object_data().thread_id(),
+                            target_thread,
+                            "grandchild ObjectData.thread_id must be updated to target_thread"
+                        );
 
-    let great_grand_ref = grand_ref.owned_children()[0].object_data();
-    assert_eq!(great_grand_ref.id(), great_grand_id);
-    assert_eq!(
-        great_grand_ref.thread_id(), target_thread,
-        "great-grandchild ObjectData.thread_id must be updated to target_thread"
-    );
+                        grand_ref.object_data().owned_children()[0]
+                            .with(|great_grand_ref| {
+                                assert_eq!(great_grand_ref.object_data().id(), great_grand_id);
+                                assert_eq!(
+                                    great_grand_ref.object_data().thread_id(),
+                                    target_thread,
+                                    "great-grandchild ObjectData.thread_id must be updated to target_thread"
+                                );
+                            })
+                            .unwrap();
+                    })
+                    .unwrap();
+            })
+            .unwrap();
 
     // Clean up
     unsafe {

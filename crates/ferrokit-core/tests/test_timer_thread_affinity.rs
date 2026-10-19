@@ -73,6 +73,58 @@ fn probe(movable: bool) -> OwnedObject<Probe> {
     }
 }
 
+/// A registered `Probe` whose `ObjectData` the test must lend as `&mut` to the deprecated
+/// by-reference APIs (`move_to_thread`, `reparent`). An `OwnedObject` only lends it through
+/// `with_mut`, which marks the object borrowed and so changes what those APIs answer. The box is
+/// registered by pointer and every access goes through that pointer, scoped to one call; the test
+/// never holds a reference across a callback.
+struct RawRoot(NonNull<Probe>);
+
+impl RawRoot {
+    fn new(movable: bool) -> Self {
+        let ptr = Box::into_raw(Box::new(Probe {
+            data: ObjectData::new(ObjectId::next()),
+            movable,
+            thread_changes: 0,
+        }));
+        // SAFETY: the allocation is owned by this `RawRoot` until `drop`, never moves, and is
+        // accessed only through `ptr`.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(ptr as *mut dyn QObject));
+            Self(NonNull::new_unchecked(ptr))
+        }
+    }
+
+    fn read<R>(&self, f: impl FnOnce(&Probe) -> R) -> R {
+        // SAFETY: no callback of the object runs while `f` does, and no other reference is live.
+        unsafe { f(&*self.0.as_ptr()) }
+    }
+
+    fn with_data<R>(&self, f: impl FnOnce(&mut ObjectData) -> R) -> R {
+        // SAFETY: as in `read`; the borrow ends with `f`.
+        unsafe { f(&mut (*self.0.as_ptr()).data) }
+    }
+
+    fn id(&self) -> ObjectId {
+        self.read(|p| p.data.id())
+    }
+
+    fn changes(&self) -> u32 {
+        self.read(|p| p.thread_changes)
+    }
+
+    fn thread_id(&self) -> ThreadId {
+        self.read(|p| p.data.thread_id())
+    }
+}
+
+impl Drop for RawRoot {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `Box::into_raw` and is dropped once.
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
 /// A second thread with its own event loop. It reports its id, waits for `go`, pumps for a while
 /// and reports how many timers its registry then holds.
 struct Watcher {
@@ -236,8 +288,12 @@ fn a_timer_in_the_subtree_refuses_the_whole_move_before_any_event() {
         let last = probe(true);
         let (timer, ticks) = counting_timer(5);
         timer.start();
-        let (root_id, timer_id) = (root.data.id(), timer.object_id());
-        let ids = [first.data.id(), middle.data.id(), last.data.id()];
+        let (root_id, timer_id) = (OwnedObject::object_id(&root), timer.object_id());
+        let ids = [
+            OwnedObject::object_id(&first),
+            OwnedObject::object_id(&middle),
+            OwnedObject::object_id(&last),
+        ];
 
         match layout {
             "timer first" => {
@@ -274,11 +330,11 @@ fn a_timer_in_the_subtree_refuses_the_whole_move_before_any_event() {
             ("last", &last),
         ] {
             assert_eq!(
-                node.thread_changes, 0,
+                node.with(|n| n.thread_changes).unwrap(), 0,
                 "{layout}: {name} got a ThreadChange"
             );
             assert_eq!(
-                query_object_thread(node.data.id()),
+                query_object_thread(OwnedObject::object_id(node)),
                 Some(here),
                 "{layout}: {name} changed thread"
             );
@@ -301,26 +357,26 @@ fn an_object_moves_unless_it_refuses() {
     let target = another_thread();
 
     let plain = probe(true);
-    let plain_id = plain.data.id();
+    let plain_id = OwnedObject::object_id(&plain);
     assert_eq!(move_to_thread_by_id(plain_id, target, here), Ok(()));
     assert_eq!(
-        plain.thread_changes, 1,
+        plain.with(|p| p.thread_changes).unwrap(), 1,
         "ThreadChange must reach a moved object"
     );
     assert_eq!(query_object_thread(plain_id), Some(target));
-    assert_eq!(plain.data.thread_id(), target);
+    assert_eq!(plain.with(|p| p.data.thread_id()).unwrap(), target);
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(plain_id) };
 
     let pinned = probe(false);
-    let pinned_id = pinned.data.id();
+    let pinned_id = OwnedObject::object_id(&pinned);
     assert_eq!(
         move_to_thread_by_id(pinned_id, target, here),
         Err(MoveByIdError::NotMovable)
     );
-    assert_eq!(pinned.thread_changes, 0);
+    assert_eq!(pinned.with(|p| p.thread_changes).unwrap(), 0);
     assert_eq!(query_object_thread(pinned_id), Some(here));
-    assert_eq!(pinned.data.thread_id(), here);
+    assert_eq!(pinned.with(|p| p.data.thread_id()).unwrap(), here);
 }
 
 /// A parent whose subtree is movable still moves, and takes its children along.
@@ -330,12 +386,18 @@ fn a_subtree_without_a_refusing_object_still_moves_as_a_whole() {
     let target = another_thread();
     let root = probe(true);
     let child = probe(true);
-    let (root_id, child_id) = (root.data.id(), child.data.id());
+    let (root_id, child_id) = (OwnedObject::object_id(&root), OwnedObject::object_id(&child));
     set_parent_by_id(child_id, Some(root_id)).unwrap();
 
     assert_eq!(move_to_thread_by_id(root_id, target, here), Ok(()));
 
-    assert_eq!((root.thread_changes, child.thread_changes), (1, 1));
+    assert_eq!(
+        (
+            root.with(|r| r.thread_changes).unwrap(),
+            child.with(|c| c.thread_changes).unwrap()
+        ),
+        (1, 1)
+    );
     assert_eq!(query_object_thread(root_id), Some(target));
     assert_eq!(query_object_thread(child_id), Some(target));
     // SAFETY: no callback of the objects runs.
@@ -425,19 +487,19 @@ fn a_timer_works_on_its_own_thread_after_a_refused_move() {
 fn the_deprecated_move_refuses_a_subtree_with_a_timer_too() {
     let here = ThreadId::current();
     let _el = EventLoop::new();
-    let mut root = probe(true);
-    let root_id = root.data.id();
+    let root = RawRoot::new(true);
+    let root_id = root.id();
     let (timer, _ticks) = counting_timer(5);
     timer.start();
     set_parent_by_id(timer.object_id(), Some(root_id)).unwrap();
 
     assert_eq!(
-        move_to_thread(&mut root.data, another_thread(), here),
+        root.with_data(|d| move_to_thread(d, another_thread(), here)),
         Err(MoveError::NotMovable)
     );
 
-    assert_eq!(root.thread_changes, 0, "no ThreadChange before the refusal");
-    assert_eq!(root.data.thread_id(), here);
+    assert_eq!(root.changes(), 0, "no ThreadChange before the refusal");
+    assert_eq!(root.thread_id(), here);
     assert_eq!(query_object_thread(timer.object_id()), Some(here));
     assert!(timer.is_active());
 }
@@ -474,7 +536,7 @@ impl QObject for BorrowedMid {
 }
 
 thread_local! {
-    static ROOT_FOR_SLOT: RefCell<Option<OwnedObject<Probe>>> = const { RefCell::new(None) };
+    static ROOT_FOR_SLOT: RefCell<Option<RawRoot>> = const { RefCell::new(None) };
     static OUTCOME_IN_SLOT: Cell<Option<Result<(), MoveError>>> = const { Cell::new(None) };
 }
 
@@ -491,8 +553,8 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
     let watcher = Watcher::spawn();
     let watcher_tid = watcher.tid;
 
-    let root = probe(true);
-    let root_id = root.data.id();
+    let root = RawRoot::new(true);
+    let root_id = root.id();
     let timer = Timer::new();
     timer.set_interval(5);
     let timer_id = timer.object_id();
@@ -506,9 +568,9 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
         OUTCOME_IN_SLOT.with(|out| {
             if out.get().is_none() {
                 ROOT_FOR_SLOT.with(|slot| {
-                    let mut borrow = slot.borrow_mut();
-                    let root = borrow.as_mut().expect("root stays in thread-local");
-                    let res = move_to_thread(&mut root.data, watcher_tid, here);
+                    let borrow = slot.borrow();
+                    let root = borrow.as_ref().expect("root stays in thread-local");
+                    let res = root.with_data(|d| move_to_thread(d, watcher_tid, here));
                     out.set(Some(res));
                 });
             }
@@ -537,10 +599,10 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
         .with(|slot| slot.borrow_mut().take())
         .expect("root must still be present");
     assert_eq!(
-        root.thread_changes, 0,
+        root.changes(), 0,
         "no ThreadChange may be sent before the refusal"
     );
-    assert_eq!(root.data.thread_id(), here);
+    assert_eq!(root.thread_id(), here);
     assert_eq!(query_object_thread(root_id), Some(here));
     assert_eq!(query_object_thread(timer_id), Some(here));
     assert_eq!(with_object(timer_id, |obj| obj.thread()), Some(here));
@@ -554,8 +616,8 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
     );
     // Also cover a Timer deeper in the subtree when an intermediate ancestor holds a callback borrow.
     let target = another_thread();
-    let root2 = Rc::new(RefCell::new(probe(true)));
-    let root2_id = root2.borrow().data.id();
+    let root2 = Rc::new(RawRoot::new(true));
+    let root2_id = root2.id();
     let mid_outcome: Rc<Cell<Option<Result<(), MoveError>>>> = Rc::new(Cell::new(None));
     let mid_outcome_in_cb = Rc::clone(&mid_outcome);
     let root2_in_cb = Rc::clone(&root2);
@@ -566,12 +628,12 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
             data: ObjectData::new(ObjectId::next()),
             thread_changes: 0,
             on_update: Some(Box::new(move || {
-                let res = move_to_thread(&mut root2_in_cb.borrow_mut().data, target, here);
+                let res = root2_in_cb.with_data(|d| move_to_thread(d, target, here));
                 mid_outcome_in_cb.set(Some(res));
             })),
         })
     };
-    let mid_id = mid.data.id();
+    let mid_id = OwnedObject::object_id(&mid);
     let (nested_timer, _nested_ticks) = counting_timer(5);
     nested_timer.start();
     set_parent_by_id(mid_id, Some(root2_id)).unwrap();
@@ -582,9 +644,9 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
         &mut Event::new(EventKind::UpdateRequest)
     ));
     assert_eq!(mid_outcome.get(), Some(Err(MoveError::Busy)));
-    assert_eq!(root2.borrow().thread_changes, 0);
-    assert_eq!(mid.thread_changes, 0);
-    assert_eq!(root2.borrow().data.thread_id(), here);
+    assert_eq!(root2.changes(), 0);
+    assert_eq!(mid.with(|m| m.thread_changes).unwrap(), 0);
+    assert_eq!(root2.thread_id(), here);
     assert_eq!(query_object_thread(root2_id), Some(here));
     assert_eq!(query_object_thread(mid_id), Some(here));
     assert_eq!(query_object_thread(nested_timer.object_id()), Some(here));
@@ -600,8 +662,8 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     let here = ThreadId::current();
     let target = another_thread();
 
-    let mut root = probe(true);
-    let root_id = root.data.id();
+    let root = RawRoot::new(true);
+    let root_id = root.id();
     let child = Box::new(Probe {
         data: ObjectData::new(ObjectId::next()),
         movable: true,
@@ -629,17 +691,25 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     assert!(with_object(child_id, |_| ()).is_none());
     assert!(with_object(grand_id, |_| ()).is_none());
 
-    assert_eq!(move_to_thread(&mut root.data, target, here), Ok(()));
-    assert_eq!(root.data.thread_id(), target);
-    let child_data = root.data.owned_children()[0].object_data();
-    assert_eq!(child_data.thread_id(), target);
-    assert_eq!(
-        child_data.owned_children()[0].object_data().thread_id(),
-        target
-    );
+    assert_eq!(root.with_data(|d| move_to_thread(d, target, here)), Ok(()));
+    assert_eq!(root.thread_id(), target);
+    let (child_thread, grand_thread) = root.with_data(|d| {
+        d.owned_children()[0]
+            .with(|c| {
+                (
+                    c.object_data().thread_id(),
+                    c.object_data().owned_children()[0]
+                        .with(|g| g.object_data().thread_id())
+                        .unwrap(),
+                )
+            })
+            .unwrap()
+    });
+    assert_eq!(child_thread, target);
+    assert_eq!(grand_thread, target);
     // An unregistered owned descendant that answers `false` to `can_move_to_thread` still refuses.
-    let mut root_pinned = probe(true);
-    let root_pinned_id = root_pinned.data.id();
+    let root_pinned = RawRoot::new(true);
+    let root_pinned_id = root_pinned.id();
     let pinned_child = Box::new(Probe {
         data: ObjectData::new(ObjectId::next()),
         movable: false,
@@ -654,22 +724,22 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     assert!(with_object(pinned_child_id, |_| ()).is_none());
 
     assert_eq!(
-        move_to_thread(&mut root_pinned.data, target, here),
+        root_pinned.with_data(|d| move_to_thread(d, target, here)),
         Err(MoveError::NotMovable)
     );
-    assert_eq!(root_pinned.thread_changes, 0);
-    assert_eq!(root_pinned.data.thread_id(), here);
+    assert_eq!(root_pinned.changes(), 0);
+    assert_eq!(root_pinned.thread_id(), here);
     assert_eq!(
-        root_pinned.data.owned_children()[0]
-            .object_data()
-            .thread_id(),
+        root_pinned.with_data(|d| d.owned_children()[0]
+            .with(|c| c.object_data().thread_id())
+            .unwrap()),
         here
     );
 
     // A Timer attached below an owned child that is later unregistered is still reached through
     // `owned_children` and refuses the move.
-    let mut root_with_timer = probe(true);
-    let root_with_timer_id = root_with_timer.data.id();
+    let root_with_timer = RawRoot::new(true);
+    let root_with_timer_id = root_with_timer.id();
     let mid_child = Box::new(Probe {
         data: ObjectData::new(ObjectId::next()),
         movable: true,
@@ -686,15 +756,15 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     assert!(with_object(mid_child_id, |_| ()).is_none());
 
     assert_eq!(
-        move_to_thread(&mut root_with_timer.data, target, here),
+        root_with_timer.with_data(|d| move_to_thread(d, target, here)),
         Err(MoveError::NotMovable)
     );
-    assert_eq!(root_with_timer.thread_changes, 0);
-    assert_eq!(root_with_timer.data.thread_id(), here);
+    assert_eq!(root_with_timer.changes(), 0);
+    assert_eq!(root_with_timer.thread_id(), here);
     assert_eq!(
-        root_with_timer.data.owned_children()[0]
-            .object_data()
-            .thread_id(),
+        root_with_timer.with_data(|d| d.owned_children()[0]
+            .with(|c| c.object_data().thread_id())
+            .unwrap()),
         here
     );
     assert_eq!(query_object_thread(timer.object_id()), Some(here));
@@ -739,11 +809,11 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     let watcher_tid = watcher.tid;
 
     // 1. Intermediate node was never registered, and a registered holder + Timer sit below it.
-    let mut root = probe(true);
-    let root_id = root.data.id();
+    let root = RawRoot::new(true);
+    let root_id = root.id();
     let mut mid = ObjectData::new(ObjectId::next());
     let mid_id = mid.id();
-    reparent(&mut mid, None, Some(&mut root.data));
+    root.with_data(|d| reparent(&mut mid, None, Some(d)));
     assert!(with_object(mid_id, |_| ()).is_none());
 
     let mut holder_raw = Probe {
@@ -754,7 +824,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     set_parent(&mut holder_raw.data, Some(mid_id)).unwrap();
     // SAFETY: `holder` stays on this thread and is only used between callbacks.
     let holder = unsafe { register_owned_qobject(holder_raw) };
-    let holder_id = holder.data.id();
+    let holder_id = OwnedObject::object_id(&holder);
 
     let (timer, ticks) = counting_timer(5);
     let armed = timer.start();
@@ -768,13 +838,13 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         Err(MoveByIdError::NotMovable)
     );
     assert_eq!(
-        move_to_thread(&mut root.data, watcher_tid, here),
+        root.with_data(|d| move_to_thread(d, watcher_tid, here)),
         Err(MoveError::NotMovable)
     );
-    assert_eq!(root.thread_changes, 0);
-    assert_eq!(holder.thread_changes, 0);
-    assert_eq!(root.data.thread_id(), here);
-    assert_eq!(holder.data.thread_id(), here);
+    assert_eq!(root.changes(), 0);
+    assert_eq!(holder.with(|h| h.thread_changes).unwrap(), 0);
+    assert_eq!(root.thread_id(), here);
+    assert_eq!(holder.with(|h| h.data.thread_id()).unwrap(), here);
     assert_eq!(query_object_thread(root_id), Some(here));
     assert_eq!(query_object_thread(holder_id), Some(here));
     assert_eq!(query_object_thread(timer_id), Some(here));
@@ -790,11 +860,11 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     // 2. When the registered descendant below the unregistered intermediate node is in a callback
     //    borrow, both APIs refuse with `Busy` before any event or state change.
     let target = another_thread();
-    let root_busy = Rc::new(RefCell::new(probe(true)));
-    let root_busy_id = root_busy.borrow().data.id();
+    let root_busy = Rc::new(RawRoot::new(true));
+    let root_busy_id = root_busy.id();
     let mut mid_busy = ObjectData::new(ObjectId::next());
     let mid_busy_id = mid_busy.id();
-    reparent(&mut mid_busy, None, Some(&mut root_busy.borrow_mut().data));
+    root_busy.with_data(|d| reparent(&mut mid_busy, None, Some(d)));
 
     let by_id_res: Rc<Cell<Option<Result<(), MoveByIdError>>>> = Rc::new(Cell::new(None));
     let by_ref_res: Rc<Cell<Option<Result<(), MoveError>>>> = Rc::new(Cell::new(None));
@@ -806,17 +876,15 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         thread_changes: 0,
         on_update: Some(Box::new(move || {
             by_id_in_cb.set(Some(move_to_thread_by_id(root_busy_id, target, here)));
-            by_ref_in_cb.set(Some(move_to_thread(
-                &mut root_in_cb.borrow_mut().data,
-                target,
-                here,
-            )));
+            by_ref_in_cb.set(Some(
+                root_in_cb.with_data(|d| move_to_thread(d, target, here)),
+            ));
         })),
     };
     set_parent(&mut busy_child_raw.data, Some(mid_busy_id)).unwrap();
     // SAFETY: `busy_child` stays on this thread and is only touched after its callback returns.
     let busy_child = unsafe { register_owned_qobject(busy_child_raw) };
-    let busy_child_id = busy_child.data.id();
+    let busy_child_id = OwnedObject::object_id(&busy_child);
     let (timer_busy, _ticks_busy) = counting_timer(5);
     timer_busy.start();
     set_parent_by_id(timer_busy.object_id(), Some(busy_child_id)).unwrap();
@@ -827,8 +895,8 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     ));
     assert_eq!(by_id_res.get(), Some(Err(MoveByIdError::Busy)));
     assert_eq!(by_ref_res.get(), Some(Err(MoveError::Busy)));
-    assert_eq!(root_busy.borrow().thread_changes, 0);
-    assert_eq!(busy_child.thread_changes, 0);
+    assert_eq!(root_busy.changes(), 0);
+    assert_eq!(busy_child.with(|b| b.thread_changes).unwrap(), 0);
     assert_eq!(query_object_thread(root_busy_id), Some(here));
     assert_eq!(query_object_thread(busy_child_id), Some(here));
     assert_eq!(query_object_thread(timer_busy.object_id()), Some(here));
@@ -836,8 +904,8 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     // 3. Intermediate node HAS a registry record whose `liveness` is `false` (observed during its
     //    `Drop` after `liveness` is cleared and before `unregister_qobject` removes the record),
     //    with a direct `Timer` child in `record.children` (`registered_children_of(dying_id)`).
-    let root_dead = Rc::new(RefCell::new(probe(true)));
-    let root_dead_id = root_dead.borrow().data.id();
+    let root_dead = Rc::new(RawRoot::new(true));
+    let root_dead_id = root_dead.id();
     let (timer_under_dying, _ticks_dying) = counting_timer(5);
     timer_under_dying.start();
     let timer_under_dying_id = timer_under_dying.object_id();
@@ -854,11 +922,9 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
             data: ObjectData::new(ObjectId::next()),
             on_removed: Some(Box::new(move || {
                 dead_by_id_cb.set(Some(move_to_thread_by_id(root_dead_id, target, here)));
-                dead_by_ref_cb.set(Some(move_to_thread(
-                    &mut root_dead_cb.borrow_mut().data,
-                    target,
-                    here,
-                )));
+                dead_by_ref_cb.set(Some(
+                    root_dead_cb.with_data(|d| move_to_thread(d, target, here)),
+                ));
                 timer_thread_cb.set(query_object_thread(timer_under_dying_id));
             })),
         })
@@ -877,11 +943,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     // fires `notifier`'s `ChildRemoved` while `dying_mid`'s record still exists in the registry
     // with `liveness == false` and `children == [timer]`.
     unsafe {
-        reparent(
-            &mut (*dying_mid_ptr).data,
-            None,
-            Some(&mut root_dead.borrow_mut().data),
-        );
+        root_dead.with_data(|d| reparent(&mut (*dying_mid_ptr).data, None, Some(d)));
         reparent(&mut (*dying_mid_ptr).data, None, None);
     }
     // SAFETY: `dying_mid` stays in place at `dying_mid_ptr` in `ManuallyDrop` until after
@@ -890,7 +952,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(dying_mid_ptr as *mut dyn QObject));
     }
-    set_parent_by_id(dying_mid_id, Some(notifier.data.id())).unwrap();
+    set_parent_by_id(dying_mid_id, Some(OwnedObject::object_id(&notifier))).unwrap();
     set_parent_by_id(timer_under_dying_id, Some(dying_mid_id)).unwrap();
     assert_eq!(
         with_object(dying_mid_id, |obj| obj.can_move_to_thread()),
@@ -906,17 +968,17 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     assert_eq!(query_object_thread(dying_mid_id), None);
     assert_eq!(dead_by_id.get(), Some(Err(MoveByIdError::NotMovable)));
     assert_eq!(dead_by_ref.get(), Some(Err(MoveError::NotMovable)));
-    assert_eq!(root_dead.borrow().thread_changes, 0);
+    assert_eq!(root_dead.changes(), 0);
     assert_eq!(query_object_thread(root_dead_id), Some(here));
     assert_eq!(timer_thread_in_cb.get(), Some(here));
 
     // 4. A movable subtree with an unregistered intermediate node and a movable registered
     //    descendant below it still moves as a whole.
-    let mut root_ok = probe(true);
-    let root_ok_id = root_ok.data.id();
+    let root_ok = RawRoot::new(true);
+    let root_ok_id = root_ok.id();
     let mut mid_ok = ObjectData::new(ObjectId::next());
     let mid_ok_id = mid_ok.id();
-    reparent(&mut mid_ok, None, Some(&mut root_ok.data));
+    root_ok.with_data(|d| reparent(&mut mid_ok, None, Some(d)));
     let mut leaf_ok_raw = Probe {
         data: ObjectData::new(ObjectId::next()),
         movable: true,
@@ -925,10 +987,13 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     set_parent(&mut leaf_ok_raw.data, Some(mid_ok_id)).unwrap();
     // SAFETY: `leaf_ok` stays on this thread and is unregistered below.
     let leaf_ok = unsafe { register_owned_qobject(leaf_ok_raw) };
-    let leaf_ok_id = leaf_ok.data.id();
+    let leaf_ok_id = OwnedObject::object_id(&leaf_ok);
 
     assert_eq!(move_to_thread_by_id(root_ok_id, target, here), Ok(()));
-    assert_eq!((root_ok.thread_changes, leaf_ok.thread_changes), (1, 1));
+    assert_eq!(
+        (root_ok.changes(), leaf_ok.with(|l| l.thread_changes).unwrap()),
+        (1, 1)
+    );
     assert_eq!(query_object_thread(root_ok_id), Some(target));
     assert_eq!(query_object_thread(leaf_ok_id), Some(target));
     // SAFETY: no callback of `root_ok` or `leaf_ok` runs.

@@ -90,11 +90,11 @@ fn add(parent: ObjectId) -> ObjectId {
 #[test]
 fn the_owner_and_the_callbacks_see_each_others_writes() {
     let mut owner = root();
-    let id = owner.data.id();
+    let id = OwnedObject::object_id(&owner);
     touch(id);
-    assert_eq!(owner.bump(), 2);
+    assert_eq!(owner.with_mut(|o| o.bump()), Some(2));
     touch(id);
-    assert_eq!(owner.n, 3);
+    assert_eq!(owner.with(|o| o.n), Some(3));
     assert_eq!(count(id), 3);
     drop(owner);
     assert!(gone(id));
@@ -103,27 +103,37 @@ fn the_owner_and_the_callbacks_see_each_others_writes() {
 #[test]
 fn a_moved_owner_still_reaches_the_object_the_registry_calls() {
     let owner = root();
-    let id = owner.data.id();
+    let id = OwnedObject::object_id(&owner);
     touch(id);
     let mut moved = vec![owner];
     let mut owner = moved.pop().expect("one owner");
-    assert_eq!(owner.bump(), 2);
+    assert_eq!(owner.with_mut(|o| o.bump()), Some(2));
     touch(id);
-    assert_eq!(owner.n, 3);
+    assert_eq!(owner.with(|o| o.n), Some(3));
 }
 
 #[test]
 fn three_owned_levels_are_called_and_read_by_the_owner() {
     let owner = root();
-    let (pid, cid) = (owner.data.id(), add(owner.data.id()));
+    let pid = OwnedObject::object_id(&owner);
+    let cid = add(pid);
     let gid = add(cid);
     touch(gid);
     touch(cid);
     touch(gid);
 
-    let child = &owner.data.owned_children()[0];
-    assert_eq!(OwnedObject::object_id(child), cid);
-    assert_eq!(child.object_data().owned_children().len(), 1);
+    owner
+        .with(|p| {
+            let child = &p.data.owned_children()[0];
+            assert_eq!(OwnedObject::object_id(child), cid);
+            assert_eq!(
+                child
+                    .with(|c| c.object_data().owned_children().len())
+                    .unwrap(),
+                1
+            );
+        })
+        .unwrap();
     assert_eq!(count(gid), 2);
 
     drop(owner);
@@ -134,18 +144,18 @@ fn three_owned_levels_are_called_and_read_by_the_owner() {
 fn an_owned_child_moved_between_parents_stays_callable() {
     let mut a = root();
     let mut b = root();
-    let (aid, bid) = (a.data.id(), b.data.id());
+    let (aid, bid) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
     let cid = add(aid);
     touch(cid);
 
     assert!(reparent_owned_object(cid, Some(bid)).unwrap().is_none());
     touch(cid);
     assert_eq!(count(cid), 2);
-    a.bump();
+    a.with_mut(|o| o.bump()).unwrap();
     drop(a);
     touch(cid);
-    b.bump();
-    assert_eq!(b.data.owned_children().len(), 1);
+    b.with_mut(|o| o.bump()).unwrap();
+    assert_eq!(b.with(|o| o.data.owned_children().len()), Some(1));
 
     drop(b);
     assert!(gone(cid) && gone(aid) && gone(bid));
@@ -154,7 +164,7 @@ fn an_owned_child_moved_between_parents_stays_callable() {
 #[test]
 fn a_child_released_as_an_owner_stays_registered_and_usable() {
     let a = root();
-    let aid = a.data.id();
+    let aid = OwnedObject::object_id(&a);
     let cid = add(aid);
     touch(cid);
 
@@ -162,12 +172,16 @@ fn a_child_released_as_an_owner_stays_registered_and_usable() {
         .unwrap()
         .expect("ownership comes back to the caller");
     assert_eq!(OwnedObject::object_id(&released), cid);
-    assert_eq!(released.object_data().parent(), None);
+    assert_eq!(released.with(|r| r.object_data().parent()), Some(None));
     touch(cid);
     // Through the concrete type: Miri does not check the uniqueness of `&mut dyn QObject`, since
     // `dyn QObject` is not `Unpin`, but it does check `&mut Node`.
-    let any: &mut dyn std::any::Any = &mut *released;
-    any.downcast_mut::<Node>().expect("a Node").bump();
+    released
+        .with_mut(|r| {
+            let any: &mut dyn std::any::Any = r;
+            any.downcast_mut::<Node>().expect("a Node").bump()
+        })
+        .unwrap();
     touch(cid);
     drop(a);
     assert!(!gone(cid), "the old parent no longer owns it");
@@ -197,14 +211,14 @@ fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_read_between_callb
 #[test]
 fn registering_again_with_the_owners_pointer_keeps_the_object_alive() {
     let mut owner = root();
-    let id = owner.data.id();
-    let alive = owner.data.liveness();
+    let id = OwnedObject::object_id(&owner);
+    let alive = owner.with(|o| o.data.liveness()).unwrap();
     touch(id);
     // SAFETY: the object stays in place while `owner` lives, and no callback of it runs.
     unsafe { register_qobject_ptr(OwnedObject::<Node>::as_non_null(&owner)) };
     assert!(alive.load(std::sync::atomic::Ordering::SeqCst));
     touch(id);
-    assert_eq!(owner.bump(), 3);
+    assert_eq!(owner.with_mut(|o| o.bump()), Some(3));
     drop(owner);
     assert!(gone(id));
 }
@@ -245,7 +259,7 @@ fn a_registered_parent_dropped_in_its_childs_callback_frees_the_child_afterwards
     let freed = Rc::new(Cell::new(false));
     let seen = Rc::new(Cell::new(None));
     let owner = root();
-    let pid = owner.data.id();
+    let pid = OwnedObject::object_id(&owner);
     parent.set(Some(owner));
     let reactor = Box::new(Reactor {
         data: ObjectData::new(ObjectId::next()),
@@ -315,7 +329,7 @@ impl QObject for SelfDropper {
 #[test]
 fn a_released_owned_child_dropped_in_its_own_callback_is_freed_afterwards() {
     let parent = root();
-    let pid = parent.data.id();
+    let pid = OwnedObject::object_id(&parent);
     let released_slot = Rc::new(Cell::new(None));
     let freed = Rc::new(Cell::new(false));
     let seen = Rc::new(Cell::new(None));
@@ -475,7 +489,10 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
     };
     let cid = OwnedObject::object_id(&child);
     set_parent_by_id(cid, Some(pid)).unwrap();
-    assert_eq!(non_owning_parent.data.children(), &[cid]);
+    assert_eq!(
+        non_owning_parent.with(|p| p.data.children().to_vec()).unwrap(),
+        [cid]
+    );
     self_slot.set(Some(child));
 
     assert!(dispatch_to_object(
@@ -493,7 +510,9 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
         "ObjectData::drop must deliver ChildRemoved to the live non-owning parent"
     );
     assert!(
-        non_owning_parent.data.children().is_empty(),
+        non_owning_parent
+            .with(|p| p.data.children().is_empty())
+            .unwrap(),
         "ObjectData::drop must remove the child id from the live non-owning parent's children list"
     );
     drop(non_owning_parent);
@@ -537,4 +556,56 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
         Some(None),
         "an owned child parked by its dying parent's delete_children clears parent before Drop"
     );
+}
+
+/// Asks its own owner, from inside its callback, whether `with` and `is_borrowed` see the object.
+struct Gate {
+    data: ObjectData,
+    owner: Rc<Cell<*const OwnedObject<Gate>>>,
+    seen: Rc<Cell<Option<(bool, bool)>>>,
+}
+
+impl QObject for Gate {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
+    fn event(&mut self, _event: &mut Event) -> bool {
+        // SAFETY: the test keeps the owner in place, and only a shared reference to the owner
+        // (not to the object) is made.
+        let owner = unsafe { &*self.owner.get() };
+        self.seen.set(Some((
+            owner.with(|_| ()).is_none(),
+            OwnedObject::is_borrowed(owner),
+        )));
+        true
+    }
+}
+
+#[test]
+fn the_owner_cannot_be_used_while_the_objects_callback_runs() {
+    let slot = Rc::new(Cell::new(std::ptr::null()));
+    let seen = Rc::new(Cell::new(None));
+    // SAFETY: the owner stays on this thread and is dropped when no callback of it runs.
+    let mut owner = unsafe {
+        register_owned_qobject(Gate {
+            data: ObjectData::new(ObjectId::next()),
+            owner: Rc::clone(&slot),
+            seen: Rc::clone(&seen),
+        })
+    };
+    slot.set(&owner as *const OwnedObject<Gate>);
+    let id = OwnedObject::object_id(&owner);
+
+    assert!(dispatch_to_object(
+        id,
+        &mut Event::new(EventKind::UpdateRequest)
+    ));
+
+    assert_eq!(seen.get(), Some((true, true)), "no access during the callback");
+    assert!(!OwnedObject::is_borrowed(&owner));
+    assert_eq!(owner.with(|_| 1), Some(1));
+    assert_eq!(owner.with_mut(|_| 2), Some(2));
 }

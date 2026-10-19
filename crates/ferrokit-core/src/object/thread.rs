@@ -303,7 +303,10 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
     data.set_thread_id(target_thread);
     visited.push(data.id());
     for child in data.owned_children_mut() {
-        flip_owned(child.object_data_mut().raw_data_mut(), target_thread, visited);
+        // SAFETY: the move inspected the owned tree first and refused one with a running callback
+        // (`inspect_owned_tree`); callbacks of these objects run on this thread only, which is
+        // inside this move.
+        flip_owned(unsafe { child.as_mut_unchecked() }.object_data_mut().raw_data_mut(), target_thread, visited);
     }
 }
 
@@ -532,12 +535,12 @@ mod tests {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),
             })
         };
-        let id = obj.data.id();
-        assert_eq!(obj.data.thread_id(), thread_a);
+        let id = crate::object::OwnedObject::object_id(&obj);
+        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_a);
 
         let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert!(res.is_ok());
-        assert_eq!(obj.data.thread_id(), thread_b);
+        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_b);
     }
 
     #[test]
@@ -548,11 +551,11 @@ mod tests {
         let mut data = ObjectData::with_thread(ObjectId::next(), thread_a);
         data.set_parent(Some(ObjectId(1))).unwrap();
         let obj = unsafe { crate::object::register_owned_qobject(UnitProbe { data }) };
-        let id = obj.data.id();
+        let id = crate::object::OwnedObject::object_id(&obj);
 
         let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert_eq!(res, Err(MoveByIdError::HasParent));
-        assert_eq!(obj.data.thread_id(), thread_a);
+        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_a);
     }
 
     #[test]
@@ -565,10 +568,10 @@ mod tests {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),
             })
         };
-        let id = obj.data.id();
+        let id = crate::object::OwnedObject::object_id(&obj);
 
         let res = move_to_thread_by_id(id, thread_b, thread_b);
         assert_eq!(res, Err(MoveByIdError::WrongThread));
-        assert_eq!(obj.data.thread_id(), thread_a);
+        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_a);
     }
 }

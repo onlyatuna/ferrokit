@@ -59,15 +59,19 @@ fn an_owned_object_moved_to_another_thread() {
     // SAFETY: the owner stays on this thread; the only callback that runs is the one
     // `move_to_thread_by_id` causes.
     let probe = unsafe { register_owned_qobject(Probe::new()) };
-    let id = probe.data.id();
+    let id = probe.with(|p| p.data.id()).unwrap();
 
     assert_eq!(
         move_to_thread_by_id(id, target, ThreadId::current()),
         Ok(())
     );
 
-    assert_eq!(probe.thread_changes, 1, "ThreadChange reached the object");
-    assert_eq!(probe.data.thread_id(), target);
+    assert_eq!(
+        probe.with(|p| p.thread_changes).unwrap(),
+        1,
+        "ThreadChange reached the object"
+    );
+    assert_eq!(probe.with(|p| p.data.thread_id()).unwrap(), target);
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(id) };
 }
@@ -131,7 +135,7 @@ fn move_to_thread_by_id_rejects_unknown_and_busy_objects() {
             result: Rc::clone(&result),
         })
     };
-    let id = probe.data.id();
+    let id = probe.with(|p| p.data.id()).unwrap();
 
     dispatch_to_object(id, &mut Event::new(EventKind::UpdateRequest));
     assert_eq!(

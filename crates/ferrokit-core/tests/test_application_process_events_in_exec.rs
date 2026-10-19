@@ -9,7 +9,8 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ThreadId,
 };
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -125,7 +126,7 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
             log: Arc::clone(&log),
         })
     };
-    let sink_id = sink.data.id();
+    let sink_id = OwnedObject::object_id(&sink);
     // SAFETY: as above.
     let trigger = unsafe {
         register_owned_qobject(Trigger {
@@ -134,7 +135,7 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
             log: Arc::clone(&log),
         })
     };
-    let trigger_id = trigger.data.id();
+    let trigger_id = OwnedObject::object_id(&trigger);
     post_event_to_thread(
         ThreadId::current(),
         trigger_id,

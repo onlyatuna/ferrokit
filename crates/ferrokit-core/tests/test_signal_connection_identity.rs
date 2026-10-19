@@ -28,10 +28,6 @@ impl Receiver {
             })
         }
     }
-
-    fn id(&self) -> ObjectId {
-        self.data.id()
-    }
 }
 
 impl QObject for Receiver {
@@ -54,7 +50,7 @@ impl QObject for Receiver {
 
 /// Destroys a receiver the way its owner does: unregister (which severs its connections), drop.
 fn destroy(receiver: OwnedObject<Receiver>) {
-    let id = receiver.id();
+    let id = OwnedObject::object_id(&receiver);
     // SAFETY: no callback is running; the object is still alive for this call.
     unsafe { unregister_qobject(id) };
     drop(receiver);
@@ -76,8 +72,8 @@ fn receiver_destroyed_disconnects_from_every_signal() {
     let r2 = Receiver::owned();
     let (calls_r1, slot_r1) = counter();
     let (calls_r2, slot_r2) = counter();
-    a.connect_to(&*r1, slot_r1);
-    b.connect_to(&*r2, slot_r2);
+    r1.with(|r| a.connect_to(r, slot_r1)).unwrap();
+    r2.with(|r| b.connect_to(r, slot_r2)).unwrap();
 
     a.emit(&1);
     b.emit(&1);
@@ -107,7 +103,7 @@ fn disconnect_with_another_signals_id_leaves_that_connection_intact() {
     let b: Signal<i32> = Signal::new();
     let r = Receiver::owned();
     let (calls, slot) = counter();
-    let id_a = a.connect_to(&*r, slot);
+    let id_a = r.with(|r| a.connect_to(r, slot)).unwrap();
 
     assert!(!b.disconnect(id_a), "b never owned this connection");
     a.emit(&1);
@@ -131,8 +127,8 @@ fn disconnect_removes_only_its_own_connection() {
     let rb = Receiver::owned();
     let (calls_a, slot_a) = counter();
     let (calls_b, slot_b) = counter();
-    let id_a = a.connect_to(&*ra, slot_a);
-    b.connect_to(&*rb, slot_b);
+    let id_a = ra.with(|r| a.connect_to(r, slot_a)).unwrap();
+    rb.with(|r| b.connect_to(r, slot_b)).unwrap();
 
     assert!(a.disconnect(id_a));
     a.emit(&1);

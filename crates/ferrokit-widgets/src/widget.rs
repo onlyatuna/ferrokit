@@ -102,10 +102,7 @@ pub fn set_owned_widget_tool_tip<W: Widget + ?Sized>(
     widget: &ferrokit_core::object::OwnedObject<W>,
     text: &str,
 ) -> bool {
-    {
-        let w: &W = widget;
-        w.set_tool_tip_text(text);
-    }
+    widget.with(|w| w.set_tool_tip_text(text));
     let id = ferrokit_core::object::OwnedObject::object_id(widget);
     let mut ev = Event::new(EventKind::ToolTipChange);
     ferrokit_core::object::send_event(id, &mut ev)
