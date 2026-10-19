@@ -528,7 +528,19 @@ mod tests {
     #[test]
     fn test_move_to_thread_success() {
         let thread_a = ThreadId::current();
-        let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
+        // The owner refuses access from this thread once the object is moved, so the data is
+        // read on the thread the object now lives on.
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<ObjectId>();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tid_tx.send(ThreadId::current()).unwrap();
+            let id = go_rx.recv().unwrap();
+            seen_tx
+                .send(crate::object::with_object(id, |o| o.object_data().thread_id()))
+                .unwrap();
+        });
+        let thread_b = tid_rx.recv().unwrap();
 
         let obj = unsafe {
             crate::object::register_owned_qobject(UnitProbe {
@@ -540,7 +552,14 @@ mod tests {
 
         let res = move_to_thread_by_id(id, thread_b, thread_a);
         assert!(res.is_ok());
-        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_b);
+        go_tx.send(id).unwrap();
+        assert_eq!(
+            seen_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker must report"),
+            Some(thread_b)
+        );
+        worker.join().unwrap();
     }
 
     #[test]

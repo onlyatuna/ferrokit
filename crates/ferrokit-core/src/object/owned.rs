@@ -142,11 +142,14 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
         if let Some(guard) = super::qobject::borrow_registered(self.id) {
             return Some(Held::Registered(guard));
         }
-        if super::qobject::registered_and_borrowed(self.id) {
+        // Registered, but not borrowable here: a callback of it runs, or its registration thread
+        // is another one (the owner stays where it is when the object is moved to a thread). The
+        // object is not reachable from this thread then.
+        if super::qobject::registration_thread_of(self.id).is_some() {
             return None;
         }
-        // Not registered (or registered elsewhere): the flag is still the one a callback of this
-        // object would take, so take it here the same way.
+        // Not registered: the flag is still the one a callback of this object would take, so
+        // take it here the same way.
         self.borrow_state
             .borrow_flag
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)

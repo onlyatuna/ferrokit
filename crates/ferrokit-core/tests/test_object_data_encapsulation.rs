@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, set_parent_by_id, dispatch_to_object, move_to_thread_by_id, query_object_children,
+    add_owned_child, set_parent_by_id, dispatch_to_object, query_object_children,
     query_object_parent, query_object_parents_snapshot, register_owned_qobject, reparent_owned_object,
     with_object, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
     ThreadId,
@@ -461,13 +461,19 @@ fn test_swap_hierarchy_rejects_cross_thread() {
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
-    let freed_b = Arc::new(AtomicBool::new(false));
-    let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
-    let b_id = OwnedObject::object_id(&b);
-
-    // Move B to a remote thread
+    // B has a different thread affinity than A. A moved object cannot be built here: an owner
+    // refuses access to its object from a thread the object is not registered on, and the swap
+    // needs both objects borrowed at once. So B is created with the remote affinity already set.
     let remote_thread = std::thread::spawn(|| ThreadId::current()).join().unwrap();
-    move_to_thread_by_id(b_id, remote_thread, ThreadId::current()).expect("move B to remote thread");
+    let freed_b = Arc::new(AtomicBool::new(false));
+    let mut b = unsafe {
+        register_owned_qobject(EncapsulatedNode {
+            data: ObjectData::with_thread(ObjectId::next(), remote_thread),
+            freed: Arc::clone(&freed_b),
+            on_user: None,
+        })
+    };
+    let b_id = OwnedObject::object_id(&b);
     assert_eq!(data(&b, |d| d.thread()), remote_thread);
 
     let child_a_freed = Arc::new(AtomicBool::new(false));

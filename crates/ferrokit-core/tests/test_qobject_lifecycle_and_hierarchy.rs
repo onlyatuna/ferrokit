@@ -3,6 +3,7 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject,
+    with_object,
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
     QObjectExt, QPointer, SignalBlocker, ThreadId,
 };
@@ -381,12 +382,15 @@ fn test_move_to_thread_cascades_children_and_events() {
     let (tid_tx, tid_rx) = channel();
     let (go_tx, go_rx) = channel::<()>();
     let (done_tx, done_rx) = channel::<()>();
+    let (child_thread_tx, child_thread_rx) = channel::<Option<ThreadId>>();
     let worker = std::thread::spawn(move || {
         tid_tx.send(ThreadId::current()).unwrap();
         go_rx.recv().unwrap();
         // The target thread has no loop until now: the moved event waits in its queue.
         let el = EventLoop::new();
         el.process_events(false);
+        let child_thread = with_object(child_id, |c| c.object_data().thread_id());
+        child_thread_tx.send(child_thread).unwrap();
         // SAFETY: after the move this thread is the registration thread of both objects, and
         // the test thread keeps them alive until `done` is received.
         unsafe { unregister_qobject(child_id) };
@@ -401,10 +405,6 @@ fn test_move_to_thread_cascades_children_and_events() {
 
     // Affinity and ThreadChange.
     assert_eq!(parent.data.thread_id(), target);
-    assert_eq!(
-        parent.data.owned_children()[0].with(|c| c.object_data().thread_id()).unwrap(),
-        target
-    );
     assert_eq!(query_object_thread(child_id), Some(target));
     assert!(parent.thread_changed.load(Ordering::SeqCst));
 
@@ -414,6 +414,13 @@ fn test_move_to_thread_cascades_children_and_events() {
         .recv_timeout(Duration::from_secs(10))
         .expect("moved event must run on the target thread");
     assert_eq!(ran_on, target);
+    // Child ObjectData.thread_id, read on the thread the subtree now lives on.
+    assert_eq!(
+        child_thread_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker must report the child's thread_id"),
+        Some(target)
+    );
     done_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("worker thread must finish");

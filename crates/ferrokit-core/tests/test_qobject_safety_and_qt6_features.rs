@@ -80,11 +80,22 @@ impl QObject for TestWidget {
 fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     ThreadContext::init_current(true, None);
     let current_thread = ThreadId::current();
-    let target_thread = ThreadId(
-        std::thread::spawn(|| std::thread::current().id())
-            .join()
-            .unwrap(),
-    );
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<(ObjectId, ObjectId)>();
+    let (result_tx, result_rx) =
+        std::sync::mpsc::channel::<(Option<ThreadId>, Option<ThreadId>)>();
+    let worker = std::thread::spawn(move || {
+        tid_tx.send(ThreadId::current()).unwrap();
+        let (parent_id, child_id) = go_rx.recv().unwrap();
+        let parent_thread = ferrokit_core::object::with_object(parent_id, |o| {
+            o.object_data().thread_id()
+        });
+        let child_thread = ferrokit_core::object::with_object(child_id, |o| {
+            o.object_data().thread_id()
+        });
+        result_tx.send((parent_thread, child_thread)).unwrap();
+    });
+    let target_thread = tid_rx.recv().unwrap();
 
     // SAFETY: the owner stays on this registration thread; nothing touches the parent while a
     // callback of it runs.
@@ -104,16 +115,20 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     );
 
     // Moving root cascades to all children
-    let parent_move_res =
-        move_to_thread_by_id(OwnedObject::object_id(&parent), target_thread, current_thread);
+    let parent_id = OwnedObject::object_id(&parent);
+    let parent_move_res = move_to_thread_by_id(parent_id, target_thread, current_thread);
     assert_eq!(parent_move_res, Ok(()));
 
-    assert_eq!(parent.with(|p| p.data.thread_id()).unwrap(), target_thread);
+    // The owner refuses access from this thread now; read the data on the thread the subtree
+    // lives on.
+    go_tx.send((parent_id, child_id)).unwrap();
+    let (parent_thread, child_thread) = result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("worker must report the thread_id fields");
+    worker.join().unwrap();
+    assert_eq!(parent_thread, Some(target_thread));
     assert_eq!(query_object_thread(child_id), Some(target_thread));
-    assert_eq!(
-        parent.with(|p| p.data.owned_children()[0].with(|c| c.object_data().thread_id()).unwrap()).unwrap(),
-        target_thread
-    );
+    assert_eq!(child_thread, Some(target_thread));
 
     // SAFETY: parent callbacks have ended on its registration thread.
     unsafe { unregister_qobject(OwnedObject::object_id(&parent)) };

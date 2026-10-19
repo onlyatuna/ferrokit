@@ -3,9 +3,10 @@
 //! which take the object's callback-borrow flag. A running callback and an access of the owner
 //! therefore never hold references to the object at once. Run under Miri (Stacked Borrows and Tree
 //! Borrows) to check that no overlap is left.
+use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, with_object, with_object_mut, ObjectData, ObjectDataMut, ObjectId,
-    OwnedObject, QObject,
+    move_to_thread_by_id, register_owned_qobject, with_object, with_object_mut, ObjectData,
+    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 
 struct Counter {
@@ -145,4 +146,49 @@ fn an_unregistered_owner_is_guarded_too() {
     assert_eq!(outcome, Some(()));
     assert_eq!(owner.with(|c| c.hits), Some(1));
     assert!(!OwnedObject::is_borrowed(&owner));
+}
+
+/// An object registered on another thread is not reachable through its owner, which stays on the
+/// thread it was made on; it is again once the object is back.
+#[test]
+fn the_owner_is_refused_while_its_object_is_registered_on_another_thread() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let here = ThreadId::current();
+    let _el = EventLoop::new();
+    // SAFETY: the owner is used only through `with` and `with_mut`.
+    let mut owner = unsafe { register_owned_qobject(Counter::new()) };
+    let id = OwnedObject::object_id(&owner);
+    assert_eq!(owner.with_mut(|c| c.hits += 1), Some(()));
+
+    let (tid_tx, tid_rx) = channel();
+    let (moved_tx, moved_rx) = channel::<()>();
+    let (back_tx, back_rx) = channel::<()>();
+    let other = std::thread::spawn(move || {
+        let _el = EventLoop::new();
+        tid_tx.send(ThreadId::current()).unwrap();
+        moved_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        move_to_thread_by_id(id, here, ThreadId::current()).expect("the object goes back");
+        back_tx.send(()).unwrap();
+    });
+    let there = tid_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(move_to_thread_by_id(id, there, here), Ok(()));
+
+    assert_eq!(
+        owner.with(|c| c.hits),
+        None,
+        "read refused: the object lives on another thread"
+    );
+    assert_eq!(owner.with_mut(|c| c.hits += 10), None, "write refused");
+    moved_tx.send(()).unwrap();
+    back_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    other.join().unwrap();
+
+    assert_eq!(
+        owner.with(|c| c.hits),
+        Some(1),
+        "the refused write changed nothing"
+    );
+    assert_eq!(owner.with_mut(|c| c.hits += 10), Some(()));
 }

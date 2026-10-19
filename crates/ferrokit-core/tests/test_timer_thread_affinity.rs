@@ -174,6 +174,71 @@ impl Watcher {
     }
 }
 
+/// A live thread that runs closures on request. An object moved to its id belongs to it, so the
+/// owner here no longer lends the object's data (`OwnedObject::with` answers `None` off the
+/// registration thread); the tests read it through the registry on this thread instead.
+struct Host {
+    tid: ThreadId,
+    jobs: Option<Sender<Box<dyn FnOnce() + Send>>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl Host {
+    fn spawn() -> Self {
+        let (tid_tx, tid_rx) = channel();
+        let (jobs, jobs_rx) = channel::<Box<dyn FnOnce() + Send>>();
+        let join = std::thread::spawn(move || {
+            tid_tx.send(ThreadId::current()).unwrap();
+            while let Ok(job) = jobs_rx.recv() {
+                job();
+            }
+        });
+        let tid = tid_rx
+            .recv_timeout(WATCHDOG)
+            .expect("host thread must report its id");
+        Self {
+            tid,
+            jobs: Some(jobs),
+            join: Some(join),
+        }
+    }
+
+    fn run<R: Send + 'static>(&self, f: impl FnOnce() -> R + Send + 'static) -> R {
+        let (tx, rx) = channel();
+        self.jobs
+            .as_ref()
+            .unwrap()
+            .send(Box::new(move || {
+                let _ = tx.send(f());
+            }))
+            .unwrap();
+        rx.recv_timeout(WATCHDOG)
+            .expect("host thread must answer within the watchdog")
+    }
+
+    /// `(thread_changes, ObjectData::thread_id)` of the `Probe` registered as `id`, read on this
+    /// thread, which the object lives on.
+    fn probe_state(&self, id: ObjectId) -> (u32, ThreadId) {
+        self.run(move || {
+            with_object(id, |o| {
+                // SAFETY: the tests register only `Probe`s under the ids they pass here.
+                let p = unsafe { &*(o as *const dyn QObject as *const Probe) };
+                (p.thread_changes, p.data.thread_id())
+            })
+            .expect("the object must be readable on its own thread")
+        })
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.jobs.take();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
 fn pump_until(el: &EventLoop, mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + WATCHDOG;
     while !done() {
@@ -354,17 +419,19 @@ fn a_timer_in_the_subtree_refuses_the_whole_move_before_any_event() {
 #[test]
 fn an_object_moves_unless_it_refuses() {
     let here = ThreadId::current();
-    let target = another_thread();
+    let host = Host::spawn();
+    let target = host.tid;
 
     let plain = probe(true);
     let plain_id = OwnedObject::object_id(&plain);
     assert_eq!(move_to_thread_by_id(plain_id, target, here), Ok(()));
+    assert_eq!(query_object_thread(plain_id), Some(target));
     assert_eq!(
-        plain.with(|p| p.thread_changes).unwrap(), 1,
+        host.probe_state(plain_id),
+        (1, target),
         "ThreadChange must reach a moved object"
     );
-    assert_eq!(query_object_thread(plain_id), Some(target));
-    assert_eq!(plain.with(|p| p.data.thread_id()).unwrap(), target);
+    assert!(plain.with(|_| ()).is_none());
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(plain_id) };
 
@@ -383,7 +450,8 @@ fn an_object_moves_unless_it_refuses() {
 #[test]
 fn a_subtree_without_a_refusing_object_still_moves_as_a_whole() {
     let here = ThreadId::current();
-    let target = another_thread();
+    let host = Host::spawn();
+    let target = host.tid;
     let root = probe(true);
     let child = probe(true);
     let (root_id, child_id) = (OwnedObject::object_id(&root), OwnedObject::object_id(&child));
@@ -392,11 +460,8 @@ fn a_subtree_without_a_refusing_object_still_moves_as_a_whole() {
     assert_eq!(move_to_thread_by_id(root_id, target, here), Ok(()));
 
     assert_eq!(
-        (
-            root.with(|r| r.thread_changes).unwrap(),
-            child.with(|c| c.thread_changes).unwrap()
-        ),
-        (1, 1)
+        (host.probe_state(root_id), host.probe_state(child_id)),
+        ((1, target), (1, target))
     );
     assert_eq!(query_object_thread(root_id), Some(target));
     assert_eq!(query_object_thread(child_id), Some(target));
@@ -989,13 +1054,14 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     let leaf_ok = unsafe { register_owned_qobject(leaf_ok_raw) };
     let leaf_ok_id = OwnedObject::object_id(&leaf_ok);
 
-    assert_eq!(move_to_thread_by_id(root_ok_id, target, here), Ok(()));
+    let host_ok = Host::spawn();
+    assert_eq!(move_to_thread_by_id(root_ok_id, host_ok.tid, here), Ok(()));
     assert_eq!(
-        (root_ok.changes(), leaf_ok.with(|l| l.thread_changes).unwrap()),
-        (1, 1)
+        (root_ok.changes(), host_ok.probe_state(leaf_ok_id)),
+        (1, (1, host_ok.tid))
     );
-    assert_eq!(query_object_thread(root_ok_id), Some(target));
-    assert_eq!(query_object_thread(leaf_ok_id), Some(target));
+    assert_eq!(query_object_thread(root_ok_id), Some(host_ok.tid));
+    assert_eq!(query_object_thread(leaf_ok_id), Some(host_ok.tid));
     // SAFETY: no callback of `root_ok` or `leaf_ok` runs.
     unsafe {
         unregister_qobject(leaf_ok_id);

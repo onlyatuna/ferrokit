@@ -13,7 +13,7 @@ use std::rc::Rc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     dispatch_to_object, move_to_thread_by_id, register_owned_qobject, register_qobject_ptr,
-    unregister_qobject, MoveByIdError, ObjectData, ObjectId, QObject, ThreadId,
+    unregister_qobject, with_object, MoveByIdError, ObjectData, ObjectId, QObject, ThreadId,
 };
 
 struct Probe {
@@ -37,6 +37,9 @@ impl QObject for Probe {
     fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
         ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
+    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::ThreadChange) {
             self.thread_changes += 1;
@@ -55,7 +58,24 @@ fn another_thread() -> ThreadId {
 
 #[test]
 fn an_owned_object_moved_to_another_thread() {
-    let target = another_thread();
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<ObjectId>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(Option<u32>, Option<ThreadId>)>();
+    // The owner refuses access from this thread once the object is moved, so the data is read
+    // on the thread the object now lives on.
+    let worker = std::thread::spawn(move || {
+        tid_tx.send(ThreadId::current()).unwrap();
+        let id = go_rx.recv().unwrap();
+        let thread_changes = with_object(id, |o| {
+            o.as_qobject_any()
+                .and_then(|a| a.downcast_ref::<Probe>())
+                .map(|p| p.thread_changes)
+        })
+        .flatten();
+        let thread = with_object(id, |o| o.object_data().thread_id());
+        result_tx.send((thread_changes, thread)).unwrap();
+    });
+    let target = tid_rx.recv().unwrap();
     // SAFETY: the owner stays on this thread; the only callback that runs is the one
     // `move_to_thread_by_id` causes.
     let probe = unsafe { register_owned_qobject(Probe::new()) };
@@ -65,13 +85,15 @@ fn an_owned_object_moved_to_another_thread() {
         move_to_thread_by_id(id, target, ThreadId::current()),
         Ok(())
     );
+    assert!(probe.with(|p| p.data.id()).is_none(), "owner refuses access off-thread");
 
-    assert_eq!(
-        probe.with(|p| p.thread_changes).unwrap(),
-        1,
-        "ThreadChange reached the object"
-    );
-    assert_eq!(probe.with(|p| p.data.thread_id()).unwrap(), target);
+    go_tx.send(id).unwrap();
+    let (thread_changes, thread) = result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("worker must report");
+    worker.join().unwrap();
+    assert_eq!(thread_changes, Some(1), "ThreadChange reached the object");
+    assert_eq!(thread, Some(target));
     // SAFETY: no callback of the object runs.
     unsafe { unregister_qobject(id) };
 }
