@@ -6,13 +6,14 @@
 //!   `QWidget::update` posts `UpdateRequest` via `QCoreApplication::postEvent`,
 //!   which posts to the receiver's thread (`d->threadData`), never the caller's thread.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget};
 
@@ -34,8 +35,8 @@ impl QObject for SpyFilter {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, _watched: ObjectId, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
@@ -55,13 +56,16 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
 
     let seen = Arc::new(AtomicBool::new(false));
     let mut filter = SpyFilter::new(Arc::clone(&seen));
-    let filter_id = filter.data.id;
+    let filter_id = filter.data.id();
 
-    unsafe {
-        register_qobject(&mut widget);
-        register_qobject(&mut filter);
-    }
+    // Set up before registering, as the module documentation of `ferrokit_core::object` advises
+    // (rule 7): a use of the variable after that can invalidate the pointer the registry holds.
     widget.object_data_mut().install_event_filter(filter_id);
+    // SAFETY: both stay on this thread, unmoved, until unregistered below.
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut widget));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+    }
 
     // Call update() from a background worker thread
     let widget_ptr = &widget as *const EmptyWidget as usize;
@@ -91,7 +95,7 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
 fn worker_thread_calling_unregistered_widget_update_posts_to_widget_affinity_thread() {
     let el = EventLoop::new();
 
-    // An unregistered widget created on the main thread has object_data.thread_id = main_thread
+    // An unregistered widget created on the main thread has object_data.thread_id() = main_thread
     let mut widget = EmptyWidget::new();
     widget.set_visible(true);
     let widget_id = widget.id();

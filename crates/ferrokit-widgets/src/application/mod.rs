@@ -418,7 +418,7 @@ impl QObject for Application {
         self.gui_app.object_data()
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
         self.gui_app.object_data_mut()
     }
 

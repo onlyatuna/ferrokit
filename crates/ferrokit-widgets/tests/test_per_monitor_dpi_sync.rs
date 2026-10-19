@@ -31,8 +31,8 @@ impl QObject for DpiObserverWidget {
     fn object_data(&self) -> &ferrokit_core::object::ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         false
@@ -45,7 +45,7 @@ impl Widget for DpiObserverWidget {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()

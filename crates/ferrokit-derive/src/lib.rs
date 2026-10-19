@@ -337,8 +337,8 @@ pub fn derive_qobject(input: TokenStream) -> TokenStream {
                 #data_access
             }
 
-            fn object_data_mut(&mut self) -> &mut ::ferrokit_core::object::ObjectData {
-                #data_access_mut
+            fn object_data_mut(&mut self) -> ::ferrokit_core::object::ObjectDataMut<'_> {
+                ::ferrokit_core::object::ObjectDataMut::new(#data_access_mut)
             }
 
             fn as_qobject_any(&self) -> Option<&dyn ::std::any::Any> {
@@ -467,7 +467,7 @@ fn generate_property_accessors(
         Some(notify_ident) => (
             quote! { let changed = s.#field_ident != converted; },
             quote! {
-                if changed && !s.#data_ident.signals_blocked.load(::std::sync::atomic::Ordering::Acquire) {
+                if changed && !s.#data_ident.signals_blocked() {
                     let new_value = s.#field_ident.clone();
                     s.#notify_ident.emit(&new_value);
                 }
