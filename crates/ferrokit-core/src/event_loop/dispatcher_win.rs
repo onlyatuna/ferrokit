@@ -136,9 +136,7 @@ impl Drop for InTimerGuard<'_> {
                 }
             });
             if should_kill {
-                unsafe {
-                    KillTimer(self.internal_hwnd, self.raw_id as usize);
-                }
+                crate::timer::kill_native(self.internal_hwnd, self.id);
             } else if let Some(elapse) = rearm_elapse {
                 self.rearmed_elapse.set(Some(elapse));
                 if !self.internal_hwnd.is_null() {
@@ -181,6 +179,8 @@ fn dispatch_thread_timer_impl(
     rearm_now_ms: Option<u64>,
 ) -> Option<u32> {
     let id = TimerId(raw_id);
+    let precise = crate::timer::is_precise_source(raw_id);
+    crate::timer::acknowledge_source(raw_id);
     let mut receiver_opt = None;
     let mut single_shot = false;
     let mut unexpired_elapse: Option<u32> = None;
@@ -189,14 +189,32 @@ fn dispatch_thread_timer_impl(
         let mut reg = lock_unpoisoned(&ctx.registry);
         if let Some(entry) = reg.get_mut(id) {
             if !entry.in_timer_event {
-                if now_ms < entry.next_fire_ms {
+                if precise && now_ms < entry.next_fire_ms {
+                    // A multimedia tick before the expiry: hold it if it is the tick of this
+                    // expiry, drop it if it is a grid point a late callback already consumed.
+                    if crate::timer::classify_early_tick(
+                        now_ms,
+                        entry.next_fire_ms,
+                        entry.interval_ms,
+                    ) == crate::timer::EarlyTick::Defer
+                    {
+                        crate::timer::defer_source(raw_id);
+                    }
+                } else if !precise && now_ms < entry.next_fire_ms {
                     unexpired_elapse = Some(crate::timer::win32_timer_elapse(
                         entry.next_fire_ms - now_ms,
                     ));
                 } else {
                     entry.in_timer_event = true;
-                    let (adjusted, next_fire) =
-                        calculate_next_timeout(&mut entry.timer_type, entry.interval_ms, now_ms);
+                    let (adjusted, next_fire) = if precise {
+                        crate::timer::next_grid_deadline(
+                            entry.interval_ms,
+                            entry.next_fire_ms,
+                            now_ms,
+                        )
+                    } else {
+                        calculate_next_timeout(&mut entry.timer_type, entry.interval_ms, now_ms)
+                    };
                     entry.interval_ms = adjusted;
                     entry.next_fire_ms = next_fire;
                     single_shot = entry.single_shot;
@@ -233,9 +251,7 @@ fn dispatch_thread_timer_impl(
         };
 
         if single_shot {
-            unsafe {
-                KillTimer(internal_hwnd, raw_id as usize);
-            }
+            crate::timer::kill_native(internal_hwnd, id);
             remove_posted_timer_event(internal_hwnd, raw_id);
         }
 
@@ -457,11 +473,12 @@ impl Win32EventDispatcher {
         if entry.interval_ms == 0 {
             return;
         }
-        let id = entry.id.0 as usize;
-        let interval = crate::timer::win32_timer_elapse(entry.interval_ms);
-        unsafe {
-            SetTimer(self.internal_hwnd, id, interval, None);
-        }
+        crate::timer::arm_native(
+            self.internal_hwnd,
+            entry.id,
+            entry.interval_ms,
+            entry.timer_type,
+        );
     }
 
     pub fn unregister_timer(&self, entry: &TimerEntry) {
@@ -473,9 +490,7 @@ impl Win32EventDispatcher {
         } else {
             entry.id.0 as usize
         };
-        unsafe {
-            KillTimer(self.internal_hwnd, id);
-        }
+        crate::timer::kill_native(self.internal_hwnd, TimerId(id as u32));
     }
 
     pub fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
@@ -497,15 +512,24 @@ impl Win32EventDispatcher {
         mut pre_clock: impl FnMut() -> u64,
         mut post_clock: impl FnMut() -> u64,
     ) -> Vec<u32> {
-        let pending = PENDING_WM_TIMERS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        let mut pending = PENDING_WM_TIMERS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        for raw_id in crate::timer::take_deferred_sources() {
+            if !pending.contains(&raw_id) {
+                pending.push(raw_id);
+            }
+        }
         let mut rearmed = Vec::new();
         for raw_id in pending {
             let id = TimerId(raw_id);
+            crate::timer::acknowledge_source(raw_id);
             let now_ms = pre_clock();
             let unexpired_elapse = {
                 let reg = lock_unpoisoned(registry);
                 reg.get(id).and_then(|entry| {
-                    if !entry.in_timer_event && now_ms < entry.next_fire_ms {
+                    if !entry.in_timer_event
+                        && !crate::timer::is_precise_source(raw_id)
+                        && now_ms < entry.next_fire_ms
+                    {
                         Some(crate::timer::win32_timer_elapse(
                             entry.next_fire_ms - now_ms,
                         ))
@@ -531,9 +555,7 @@ impl Win32EventDispatcher {
             };
             if single_shot {
                 lock_unpoisoned(registry).unregister(id);
-                unsafe {
-                    KillTimer(self.internal_hwnd, raw_id as usize);
-                }
+                crate::timer::kill_native(self.internal_hwnd, id);
                 remove_posted_timer_event(self.internal_hwnd, raw_id);
             }
 
@@ -559,9 +581,7 @@ impl Win32EventDispatcher {
                     })
                     .is_some();
                 if !still_registered {
-                    unsafe {
-                        KillTimer(self.internal_hwnd, raw_id as usize);
-                    }
+                    crate::timer::kill_native(self.internal_hwnd, id);
                 } else if let Some(elapse) = rearm_elapse {
                     rearmed.push(elapse);
                     if !self.internal_hwnd.is_null() {
@@ -653,6 +673,7 @@ impl Drop for Win32EventDispatcher {
             let _ = WAKEUP_FLAGS.try_with(|flags| {
                 flags.borrow_mut().remove(&key);
             });
+            crate::timer::precise::disarm_all_for(self.internal_hwnd);
             unsafe {
                 DestroyWindow(self.internal_hwnd);
             }
@@ -796,6 +817,45 @@ mod tests {
             dispatcher.unregister_timer(&entry);
             registry.lock().unwrap().unregister(id);
         }
+    }
+
+    /// The raw route (`Timer::start_with`, `EventDispatcher::register_timer`) gives a timer the
+    /// same native source as the thread-context route: a multimedia timer for `Precise`, a
+    /// `SetTimer` timer for the coarse types.
+    #[test]
+    fn test_register_timer_native_source_follows_the_timer_type() {
+        use crate::object::ObjectId;
+        use crate::timer::{precise, TimerType};
+        use windows_sys::Win32::Media::timeKillEvent;
+        use windows_sys::Win32::UI::WindowsAndMessaging::KillTimer;
+
+        let dispatcher = Win32EventDispatcher::new();
+        let mut registry = TimerRegistry::new();
+
+        let precise_id = registry.register(ObjectId(1), 20, TimerType::Precise, false);
+        let precise_entry = registry.get(precise_id).unwrap().clone();
+        dispatcher.register_timer(&precise_entry);
+        let handle = precise::native_handle(precise_id)
+            .expect("a Precise timer started on the raw route is a multimedia timer");
+        assert_eq!(
+            unsafe { KillTimer(dispatcher.internal_hwnd, precise_id.0 as usize) },
+            0,
+            "and not also a SetTimer timer"
+        );
+        dispatcher.unregister_timer(&precise_entry);
+        assert_eq!(precise::native_handle(precise_id), None);
+        // TIMERR_NOCANDO: the multimedia timer is gone.
+        assert_eq!(unsafe { timeKillEvent(handle) }, 97);
+
+        let coarse_id = registry.register(ObjectId(1), 100, TimerType::Coarse, false);
+        let coarse_entry = registry.get(coarse_id).unwrap().clone();
+        dispatcher.register_timer(&coarse_entry);
+        assert_eq!(precise::native_handle(coarse_id), None);
+        assert_ne!(
+            unsafe { KillTimer(dispatcher.internal_hwnd, coarse_id.0 as usize) },
+            0,
+            "a coarse timer keeps its SetTimer timer"
+        );
     }
 
     #[test]
