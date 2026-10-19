@@ -1,0 +1,63 @@
+# One-off stability check. Lives only on the branch verify-settimer-cross-thread-50; never merged.
+# Runs the real-clock test binary 50 times on windows-latest and records every run.
+name: verify-settimer-cross-thread-50
+
+on:
+  push:
+    branches: [verify-settimer-cross-thread-50]
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Record what is tested
+        shell: pwsh
+        run: |
+          "workflow commit : $(git rev-parse HEAD)"
+          "tested code     : $(git rev-parse HEAD~1)"
+          git diff --stat HEAD~1 HEAD
+          rustc -V; cargo -V
+          (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String)
+          "logical cpus    : $([Environment]::ProcessorCount)"
+
+      - name: Build the test binary once
+        shell: pwsh
+        run: |
+          $json = cargo test -p ferrokit-core --test test_settimer_cross_thread --no-run --message-format=json
+          $exe = $json | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction SilentlyContinue } |
+            Where-Object { $_.executable -and $_.target.name -eq 'test_settimer_cross_thread' } |
+            Select-Object -Last 1 -ExpandProperty executable
+          if (-not $exe) { throw 'test binary not found' }
+          "TEST_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $exe
+
+      - name: Run 50 times, record every run
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runs | Out-Null
+          "run,exit,seconds,started_utc" | Out-File runs\summary.csv -Encoding utf8
+          $failed = 0
+          1..50 | ForEach-Object {
+            $n = '{0:D2}' -f $_
+            $t0 = Get-Date
+            & $env:TEST_EXE *> "runs\run_$n.txt"
+            $code = $LASTEXITCODE
+            $secs = [math]::Round(((Get-Date) - $t0).TotalSeconds, 2)
+            "$n,$code,$secs,$($t0.ToUniversalTime().ToString('o'))" | Out-File runs\summary.csv -Append -Encoding utf8
+            if ($code -ne 0) { $failed++; "run $n FAILED (exit $code)" }
+          }
+          "runs=50 failed=$failed passed=$(50 - $failed)" | Tee-Object runs\result.txt
+          if ($failed -ne 0) { exit 1 }
+
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: settimer-cross-thread-50-runs
+          path: runs/
