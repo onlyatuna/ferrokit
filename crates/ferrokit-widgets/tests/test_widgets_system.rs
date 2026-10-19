@@ -135,7 +135,7 @@ fn test_top_level_window_rendering() {
 
 #[test]
 fn test_asynchronous_update_request_and_event_loop_compression() {
-    use ferrokit_core::object::register_boxed_qobject;
+    use ferrokit_core::object::register_owned_qobject;
 
     let el = EventLoop::new();
 
@@ -146,8 +146,9 @@ fn test_asynchronous_update_request_and_event_loop_compression() {
     )
     .expect("failed to create top-level window");
 
-    // SAFETY: test-only; boxed_win outlives this scope and no concurrent aliases exist.
-    let (_win_id, boxed_win) = unsafe { register_boxed_qobject(Box::new(win)) };
+    // SAFETY: test-only; the owner outlives this scope on this thread, and nothing touches the
+    // window while a callback of it runs.
+    let boxed_win = unsafe { register_owned_qobject(win) };
 
     let root = boxed_win.root_widget();
     let child1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
@@ -202,8 +203,8 @@ impl ferrokit_core::object::QObject for HoverButton {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
@@ -237,7 +238,7 @@ impl Widget for HoverButton {
     }
 
     fn id(&self) -> ferrokit_core::object::ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {
@@ -461,16 +462,16 @@ fn test_dirty_region_culling_skips_non_intersecting_widgets() {
         fn object_data(&self) -> &ferrokit_core::object::ObjectData {
             &self.base.object_data
         }
-        fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-            &mut self.base.object_data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
+    }
     }
     impl Widget for TestWidget {
         fn widget_base(&self) -> &ferrokit_widgets::widget::WidgetBase {
             &self.base
         }
 
-        fn id(&self) -> ferrokit_core::object::ObjectId { self.base.object_data.id }
+        fn id(&self) -> ferrokit_core::object::ObjectId { self.base.object_data.id() }
         fn is_visible(&self) -> bool { self.base.is_visible() }
         fn set_visible(&self, v: bool) { self.base.set_visible(v); }
         fn is_enabled(&self) -> bool { true }

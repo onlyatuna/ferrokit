@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
-use ferrokit_core::signal::Signal;
+use ferrokit_core::object::{
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+};
+use ferrokit_core::signal::{Signal, SlotId};
 
 struct Receiver {
     data: ObjectData,
@@ -13,8 +16,8 @@ impl QObject for Receiver {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 }
 
@@ -32,12 +35,12 @@ fn unique_to_rejects_duplicate_receiver_slot_pair() {
         data: ObjectData::new(id),
     };
     // SAFETY: `rcv` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut rcv) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
-    let first = signal.connect_unique_to(&rcv, slot_count);
-    let second = signal.connect_unique_to(&rcv, slot_count);
-
+    let slot_id = SlotId::next();
+    let first = signal.connect_unique_with_key(&rcv, slot_id, slot_count);
+    let second = signal.connect_unique_with_key(&rcv, slot_id, slot_count);
     assert!(first.is_some(), "first unique connection must be made");
     assert!(second.is_none(), "duplicate receiver+slot must be rejected");
 
@@ -90,7 +93,7 @@ fn single_shot_to_receiver_fires_once() {
         data: ObjectData::new(id),
     };
     // SAFETY: `rcv` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut rcv) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
     signal.connect_single_shot_to(&rcv, slot_count);

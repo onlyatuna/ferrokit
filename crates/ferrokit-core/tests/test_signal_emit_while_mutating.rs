@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::Event;
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+};
 use ferrokit_core::signal::{ConnectionId, Signal};
 
 fn counter() -> (Arc<AtomicUsize>, impl Fn(&i32) + Send + Sync + 'static) {
@@ -53,6 +55,9 @@ fn slot_disconnected_during_emit_is_not_called() {
     );
     signal.emit(&2);
     assert_eq!(calls.load(Ordering::SeqCst), 0, "and stays disconnected");
+
+    // Break strong reference cycle between killer closure capturing signal and SignalInner
+    signal.disconnect_all();
 }
 
 #[test]
@@ -114,8 +119,8 @@ impl QObject for Receiver {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -131,12 +136,14 @@ impl QObject for Receiver {
 #[test]
 fn receiver_destroyed_during_emit_is_not_called() {
     let signal = Signal::<i32>::new();
-    let mut receiver = Box::new(Receiver {
-        data: ObjectData::with_auto_id(),
-    });
-    let receiver_id = receiver.data.id;
-    // SAFETY: boxed, never moved, accessed only on this thread until unregistered below.
-    unsafe { register_qobject(&mut *receiver) };
+    // SAFETY: the owner stays on this thread; nothing touches the object while a callback of it
+    // runs, and the slot below unregisters it before the owner is dropped.
+    let receiver = unsafe {
+        register_owned_qobject(Receiver {
+            data: ObjectData::with_auto_id(),
+        })
+    };
+    let receiver_id = receiver.data.id();
 
     let (calls, slot) = counter();
     signal.connect(move |_| {
@@ -175,6 +182,9 @@ fn slot_connected_during_emit_does_not_run_in_that_emit() {
 
     signal.emit(&2);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "part of the next emission");
+
+    // Break strong reference cycle between dynamic connector closure and SignalInner
+    signal.disconnect_all();
 }
 
 #[test]

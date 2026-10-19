@@ -7,7 +7,7 @@
 
 use parking_lot::Mutex;
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::object::{register_boxed_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::paint::Painter;
@@ -43,8 +43,8 @@ impl QObject for Spy {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         false
@@ -55,17 +55,18 @@ impl QObject for Spy {
     }
 }
 
-/// Registers a spy filter. The returned box keeps the filter alive for the test body.
-fn register_spy(consume_paint: bool) -> (ObjectId, Seen, Box<Spy>) {
+/// Registers a spy filter. The returned owner keeps the filter alive for the test body.
+fn register_spy(consume_paint: bool) -> (ObjectId, Seen, OwnedObject<Spy>) {
     let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-    let spy = Box::new(Spy {
+    let spy = Spy {
         data: ObjectData::with_auto_id(),
         seen: Arc::clone(&seen),
         consume_paint,
-    });
-    // SAFETY: test-only; the returned box is kept alive by the caller for the whole test.
-    let (id, pin) = unsafe { register_boxed_qobject(spy) };
-    (id, seen, pin)
+    };
+    // SAFETY: test-only; the caller keeps the owner on this thread for the whole test, and
+    // nothing touches the spy while a callback of it runs.
+    let pin = unsafe { register_owned_qobject(spy) };
+    (OwnedObject::object_id(&pin), seen, pin)
 }
 
 fn saw(seen: &Seen, watched: ObjectId, kind: &str) -> bool {
@@ -92,8 +93,8 @@ impl QObject for Probe {
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 }
 
@@ -102,7 +103,7 @@ impl Widget for Probe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -193,7 +194,7 @@ fn font_change_reaches_object_filter_on_button_set_font() {
     let (filter_id, seen, _pin) = register_spy(false);
     let mut button = Button::new("b");
     button.object_data_mut().install_event_filter(filter_id);
-    let id = button.object_data().id;
+    let id = button.object_data().id();
 
     button.set_font(Font::new("Consolas", 9.0));
 
@@ -259,7 +260,7 @@ fn paint_goes_through_filters_and_a_consuming_filter_skips_paint_event() {
             paints: Arc::clone(&paints),
         };
         widget.object_data_mut().install_event_filter(filter_id);
-        let id = widget.object_data().id;
+        let id = widget.object_data().id();
 
         let mut pixmap = Pixmap::with_dpr(10, 10, 1.0).expect("pixmap");
         let mut painter = Painter::begin(&mut pixmap);

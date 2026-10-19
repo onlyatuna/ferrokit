@@ -12,7 +12,8 @@ use ferrokit_core::animation::{
 };
 use ferrokit_core::fs::FileSystemWatcher;
 use ferrokit_core::object::{
-    move_to_thread, query_object_thread, ObjectData, ObjectId, QObject, ThreadId,
+    move_to_thread_by_id, query_object_thread, register_owned_qobject, ObjectData, ObjectId,
+    QObject, ThreadId,
 };
 use ferrokit_core::settings::Settings;
 use ferrokit_core::signal::Signal;
@@ -42,8 +43,8 @@ impl QObject for DynamicMockObject {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn dynamic_property_change(&mut self, property_name: &str) {
         *self.last_changed_property.borrow_mut() = Some(property_name.to_string());
@@ -156,8 +157,10 @@ fn test_qobject_dynamic_properties_and_events() {
 fn test_signal_auto_thread_affinity() {
     let last_prop = Rc::new(RefCell::new(None));
     let count = Rc::new(RefCell::new(0));
-    let mut obj = DynamicMockObject::new(ObjectId::next(), last_prop, count);
-    let id = obj.object_data().id;
+    let obj = unsafe {
+        register_owned_qobject(DynamicMockObject::new(ObjectId::next(), last_prop, count))
+    };
+    let id = obj.object_data().id();
 
     // Verify initial registered thread matches current
     assert_eq!(query_object_thread(id), Some(ThreadId::current()));
@@ -167,7 +170,7 @@ fn test_signal_auto_thread_affinity() {
     let rec_clone = Arc::clone(&received);
 
     // Connect automatically tracking target QObject
-    let _conn = signal.connect_to(&obj, move |val: &i32| {
+    let _conn = signal.connect_to(&*obj, move |val: &i32| {
         rec_clone.store(*val as u32, Ordering::SeqCst);
     });
 
@@ -181,7 +184,7 @@ fn test_signal_auto_thread_affinity() {
             .join()
             .unwrap(),
     );
-    let res = move_to_thread(obj.object_data_mut(), foreign_thread, ThreadId::current());
+    let res = move_to_thread_by_id(id, foreign_thread, ThreadId::current());
     assert!(res.is_ok());
 
     // Query global registry to verify new thread affinity

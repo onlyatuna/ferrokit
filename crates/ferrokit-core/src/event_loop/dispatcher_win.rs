@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 #![allow(unused_imports, dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -46,6 +46,7 @@ use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 pub use crate::event_loop::dispatcher::DispatchResult;
 use crate::event_loop::dispatcher::{EventDispatcher, EventDispatcherHandle};
 use crate::object::{ObjectId, QObject};
+use crate::poison::lock_unpoisoned;
 use crate::timer::{calculate_next_timeout, current_time_ms, TimerEntry, TimerId, TimerRegistry};
 
 thread_local! {
@@ -106,82 +107,149 @@ unsafe fn internal_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 /// Restores `in_timer_event` (and the single-shot/KillTimer bookkeeping) on every exit path,
 /// including unwinding out of a raising timer slot.
-struct InTimerGuard {
+struct InTimerGuard<'a> {
     id: TimerId,
     raw_id: u32,
     internal_hwnd: HWND,
     single_shot: bool,
+    rearm_now_ms: Option<u64>,
+    rearmed_elapse: &'a Cell<Option<u32>>,
 }
 
-impl Drop for InTimerGuard {
+impl Drop for InTimerGuard<'_> {
     fn drop(&mut self) {
         if !self.single_shot {
+            let rearm_now_ms = self.rearm_now_ms.unwrap_or_else(current_time_ms);
+            let mut rearm_elapse: Option<u32> = None;
+            let mut should_kill = false;
             crate::timer::with_thread_timer_context(|ctx| {
-                let mut reg = ctx.registry.lock().unwrap();
+                let mut reg = lock_unpoisoned(&ctx.registry);
                 if let Some(entry) = reg.get_mut(self.id) {
                     entry.in_timer_event = false;
-                } else {
-                    unsafe {
-                        KillTimer(self.internal_hwnd, self.raw_id as usize);
+                    if entry.interval_ms > crate::timer::WIN32_TIMER_MAX_MS {
+                        rearm_elapse = Some(crate::timer::win32_timer_elapse(
+                            entry.next_fire_ms.saturating_sub(rearm_now_ms).max(1),
+                        ));
                     }
+                } else {
+                    should_kill = true;
                 }
             });
+            if should_kill {
+                unsafe {
+                    KillTimer(self.internal_hwnd, self.raw_id as usize);
+                }
+            } else if let Some(elapse) = rearm_elapse {
+                self.rearmed_elapse.set(Some(elapse));
+                if !self.internal_hwnd.is_null() {
+                    unsafe {
+                        SetTimer(self.internal_hwnd, self.raw_id as usize, elapse, None);
+                    }
+                }
+            }
         }
     }
 }
 
 fn dispatch_thread_timer(raw_id: u32, internal_hwnd: HWND) {
+    let _ = dispatch_thread_timer_impl(raw_id, internal_hwnd, current_time_ms(), None);
+}
+
+/// Processes a `WM_TIMER` notification for `raw_id` with explicit pre-callback (`now_ms`) and
+/// post-callback (`rearm_now_ms`) timestamps.
+///
+/// Because Win32 `SetTimer` caps `uElapse` at `USER_TIMER_MAXIMUM` (`0x7FFF_FFFF` ms ≈ 24.85 days),
+/// a timer whose `next_fire_ms` is further in the future receives an intermediate `WM_TIMER`
+/// while `now_ms < entry.next_fire_ms`. That tick must neither fire the callback nor consume a
+/// single-shot timer; instead it re-arms `SetTimer` for the remaining wait
+/// (`(entry.next_fire_ms - now_ms).min(WIN32_TIMER_MAX_MS)`). When a repeating multi-slice timer
+/// does fire (`now_ms >= entry.next_fire_ms`), the post-callback re-arm deducts the callback's
+/// execution time via `entry.next_fire_ms.saturating_sub(rearm_now_ms).max(1)`.
+pub(crate) fn dispatch_thread_timer_at(
+    raw_id: u32,
+    internal_hwnd: HWND,
+    now_ms: u64,
+    rearm_now_ms: u64,
+) -> Option<u32> {
+    dispatch_thread_timer_impl(raw_id, internal_hwnd, now_ms, Some(rearm_now_ms))
+}
+
+fn dispatch_thread_timer_impl(
+    raw_id: u32,
+    internal_hwnd: HWND,
+    now_ms: u64,
+    rearm_now_ms: Option<u64>,
+) -> Option<u32> {
     let id = TimerId(raw_id);
     let mut receiver_opt = None;
     let mut single_shot = false;
+    let mut unexpired_elapse: Option<u32> = None;
 
     crate::timer::with_thread_timer_context(|ctx| {
-        let mut reg = ctx.registry.lock().unwrap();
+        let mut reg = lock_unpoisoned(&ctx.registry);
         if let Some(entry) = reg.get_mut(id) {
             if !entry.in_timer_event {
-                entry.in_timer_event = true;
-                let (adjusted, next_fire) = calculate_next_timeout(
-                    &mut entry.timer_type,
-                    entry.interval_ms,
-                    current_time_ms(),
-                );
-                entry.interval_ms = adjusted;
-                entry.next_fire_ms = next_fire;
-                single_shot = entry.single_shot;
-                receiver_opt = Some(entry.receiver);
-                if single_shot {
-                    reg.unregister(id);
+                if now_ms < entry.next_fire_ms {
+                    unexpired_elapse = Some(crate::timer::win32_timer_elapse(
+                        entry.next_fire_ms - now_ms,
+                    ));
+                } else {
+                    entry.in_timer_event = true;
+                    let (adjusted, next_fire) =
+                        calculate_next_timeout(&mut entry.timer_type, entry.interval_ms, now_ms);
+                    entry.interval_ms = adjusted;
+                    entry.next_fire_ms = next_fire;
+                    single_shot = entry.single_shot;
+                    receiver_opt = Some(entry.receiver);
+                    if single_shot {
+                        reg.unregister(id);
+                    }
                 }
             }
         }
     });
 
-    let Some(receiver) = receiver_opt else {
-        return;
-    };
-    let _in_timer = InTimerGuard {
-        id,
-        raw_id,
-        internal_hwnd,
-        single_shot,
-    };
-
-    if single_shot {
-        unsafe {
-            KillTimer(internal_hwnd, raw_id as usize);
+    if let Some(elapse) = unexpired_elapse {
+        if !internal_hwnd.is_null() {
+            unsafe {
+                SetTimer(internal_hwnd, raw_id as usize, elapse, None);
+            }
         }
-        remove_posted_timer_event(internal_hwnd, raw_id);
+        return Some(elapse);
     }
 
-    // Python/PySide6 contains a raising timer slot and keeps the loop and other timers running.
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        if matches!(
-            crate::event_loop::deliver_timer_event(receiver, raw_id as u64),
-            crate::event_loop::TimerDelivery::NotDeliverable
-        ) {
-            crate::timer::dispatch_single_shot_callback(receiver);
+    let Some(receiver) = receiver_opt else {
+        return None;
+    };
+    let rearmed_elapse = Cell::new(None);
+    {
+        let _in_timer = InTimerGuard {
+            id,
+            raw_id,
+            internal_hwnd,
+            single_shot,
+            rearm_now_ms,
+            rearmed_elapse: &rearmed_elapse,
+        };
+
+        if single_shot {
+            unsafe {
+                KillTimer(internal_hwnd, raw_id as usize);
+            }
+            remove_posted_timer_event(internal_hwnd, raw_id);
         }
-    }));
+
+        // Python/PySide6 contains a raising timer slot and keeps the loop and other timers running.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            if matches!(
+                crate::event_loop::deliver_timer_event(receiver, raw_id as u64),
+                crate::event_loop::TimerDelivery::NotDeliverable
+            ) {
+                crate::timer::dispatch_single_shot_callback(receiver);
+            }
+        }));
+    }
+    rearmed_elapse.get()
 }
 
 static REGISTER_CLASS_ONCE: Once = Once::new();
@@ -390,7 +458,7 @@ impl Win32EventDispatcher {
             return;
         }
         let id = entry.id.0 as usize;
-        let interval = entry.interval_ms.min(u32::MAX as u64) as u32;
+        let interval = crate::timer::win32_timer_elapse(entry.interval_ms);
         unsafe {
             SetTimer(self.internal_hwnd, id, interval, None);
         }
@@ -411,17 +479,58 @@ impl Win32EventDispatcher {
     }
 
     pub fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
+        let _ = self.send_timer_events_with_clock(registry, current_time_ms, current_time_ms);
+    }
+
+    pub fn send_timer_events_at(
+        &self,
+        registry: &Mutex<TimerRegistry>,
+        now_ms: u64,
+        rearm_now_ms: u64,
+    ) -> Vec<u32> {
+        self.send_timer_events_with_clock(registry, || now_ms, || rearm_now_ms)
+    }
+
+    fn send_timer_events_with_clock(
+        &self,
+        registry: &Mutex<TimerRegistry>,
+        mut pre_clock: impl FnMut() -> u64,
+        mut post_clock: impl FnMut() -> u64,
+    ) -> Vec<u32> {
         let pending = PENDING_WM_TIMERS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        let mut rearmed = Vec::new();
         for raw_id in pending {
             let id = TimerId(raw_id);
+            let now_ms = pre_clock();
+            let unexpired_elapse = {
+                let reg = lock_unpoisoned(registry);
+                reg.get(id).and_then(|entry| {
+                    if !entry.in_timer_event && now_ms < entry.next_fire_ms {
+                        Some(crate::timer::win32_timer_elapse(
+                            entry.next_fire_ms - now_ms,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+            };
+            if let Some(elapse) = unexpired_elapse {
+                rearmed.push(elapse);
+                if !self.internal_hwnd.is_null() {
+                    unsafe {
+                        SetTimer(self.internal_hwnd, raw_id as usize, elapse, None);
+                    }
+                }
+                continue;
+            }
+
             let Some((receiver, single_shot)) =
-                crate::timer::begin_timer_delivery(registry, id, current_time_ms())
+                crate::timer::begin_timer_delivery(registry, id, now_ms)
             else {
                 continue;
             };
-
             if single_shot {
-                registry.lock().unwrap().unregister(id);
+                lock_unpoisoned(registry).unregister(id);
                 unsafe {
                     KillTimer(self.internal_hwnd, raw_id as usize);
                 }
@@ -436,19 +545,34 @@ impl Win32EventDispatcher {
             }
 
             if !single_shot {
-                let still_registered = registry
-                    .lock()
-                    .unwrap()
+                let rearm_now_ms = post_clock();
+                let mut rearm_elapse: Option<u32> = None;
+                let still_registered = lock_unpoisoned(registry)
                     .get_mut(id)
-                    .map(|entry| entry.in_timer_event = false)
+                    .map(|entry| {
+                        entry.in_timer_event = false;
+                        if entry.interval_ms > crate::timer::WIN32_TIMER_MAX_MS {
+                            rearm_elapse = Some(crate::timer::win32_timer_elapse(
+                                entry.next_fire_ms.saturating_sub(rearm_now_ms).max(1),
+                            ));
+                        }
+                    })
                     .is_some();
                 if !still_registered {
                     unsafe {
                         KillTimer(self.internal_hwnd, raw_id as usize);
                     }
+                } else if let Some(elapse) = rearm_elapse {
+                    rearmed.push(elapse);
+                    if !self.internal_hwnd.is_null() {
+                        unsafe {
+                            SetTimer(self.internal_hwnd, raw_id as usize, elapse, None);
+                        }
+                    }
                 }
             }
         }
+        rearmed
     }
 }
 
@@ -540,6 +664,7 @@ impl Drop for Win32EventDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
 
     #[test]
     fn test_cross_thread_wakeup() {
@@ -629,9 +754,9 @@ mod tests {
                 &self.data
             }
 
-            fn object_data_mut(&mut self) -> &mut ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
             fn timer_event(&mut self, timer_id: u64) {
                 self.hits.lock().unwrap().push(timer_id);
             }
@@ -651,7 +776,7 @@ mod tests {
 
         let dispatcher = Win32EventDispatcher::new();
         dispatcher.register_timer(&entry);
-        unsafe { crate::object::register_qobject(&mut receiver) };
+        unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
         let deadline = std::time::Instant::now() + Duration::from_millis(1500);
         while hits.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
@@ -875,5 +1000,369 @@ mod tests {
             "a loop-blocked deferred delete must not re-arm the wake-up (no busy spin)"
         );
         crate::object::ThreadContext::set_current_loop_level(0);
+    }
+
+    #[test]
+    fn early_wm_timer_for_u64_max_does_not_fire_or_consume_single_shot_and_keeps_waiting() {
+        use crate::timer::{Timer, TimerType, WIN32_TIMER_MAX_MS};
+        use std::sync::atomic::AtomicUsize;
+
+        let el = crate::event_loop::EventLoop::new();
+        let hwnd = el.dispatcher().internal_hwnd;
+
+        let rep_hits = Arc::new(AtomicUsize::new(0));
+        let single_hits = Arc::new(AtomicUsize::new(0));
+        let fn_single_hits = Arc::new(AtomicUsize::new(0));
+
+        let rep_timer = Timer::new();
+        rep_timer.set_timer_type(TimerType::Precise);
+        {
+            let h = Arc::clone(&rep_hits);
+            rep_timer.timeout.connect(move |()| {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let rep_id = rep_timer.start_with_interval(u64::MAX);
+
+        let single_timer = Timer::new();
+        single_timer.set_timer_type(TimerType::Precise);
+        single_timer.set_single_shot(true);
+        {
+            let h = Arc::clone(&single_hits);
+            single_timer.timeout.connect(move |()| {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let single_id = single_timer.start_with_interval(u64::MAX);
+
+        {
+            let h = Arc::clone(&fn_single_hits);
+            Timer::single_shot(u64::MAX, move || {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let (fn_single_id, fn_single_deadline) = {
+            let reg = el.timer_registry().lock().unwrap();
+            assert_eq!(reg.len(), 3);
+            let id = reg
+                .expired_timers(u64::MAX)
+                .into_iter()
+                .find(|&id| id != rep_id && id != single_id)
+                .expect("Timer::single_shot entry must be registered");
+            let deadline = reg.get(id).unwrap().next_fire_ms;
+            (id, deadline)
+        };
+
+        // Simulate early WM_TIMER notifications at USER_TIMER_MAXIMUM (0x7FFF_FFFF) and
+        // 2 * USER_TIMER_MAXIMUM (where >= WIN32_TIMER_MAX_MS remains for all three timers),
+        // and then 1 ms before each timer's deadline (`u64::MAX - 1` for Precise, and
+        // `fn_single_deadline - 1` for VeryCoarse `Timer::single_shot`).
+        for &now_ms in &[WIN32_TIMER_MAX_MS, WIN32_TIMER_MAX_MS * 2] {
+            assert_eq!(
+                dispatch_thread_timer_at(rep_id.0, hwnd, now_ms, now_ms),
+                Some(WIN32_TIMER_MAX_MS as u32)
+            );
+            assert_eq!(
+                dispatch_thread_timer_at(single_id.0, hwnd, now_ms, now_ms),
+                Some(WIN32_TIMER_MAX_MS as u32)
+            );
+            assert_eq!(
+                dispatch_thread_timer_at(fn_single_id.0, hwnd, now_ms, now_ms),
+                Some(WIN32_TIMER_MAX_MS as u32)
+            );
+        }
+        assert_eq!(
+            dispatch_thread_timer_at(rep_id.0, hwnd, u64::MAX - 1, u64::MAX - 1),
+            Some(1)
+        );
+        assert_eq!(
+            dispatch_thread_timer_at(single_id.0, hwnd, u64::MAX - 1, u64::MAX - 1),
+            Some(1)
+        );
+        assert_eq!(
+            dispatch_thread_timer_at(
+                fn_single_id.0,
+                hwnd,
+                fn_single_deadline - 1,
+                fn_single_deadline - 1,
+            ),
+            Some(1)
+        );
+
+        assert_eq!(rep_hits.load(Ordering::SeqCst), 0);
+        assert_eq!(single_hits.load(Ordering::SeqCst), 0);
+        assert_eq!(fn_single_hits.load(Ordering::SeqCst), 0);
+        assert!(rep_timer.is_active());
+        assert!(single_timer.is_active());
+        assert_eq!(el.timer_registry().lock().unwrap().len(), 3);
+        assert!(
+            el.next_timeout().is_some(),
+            "event loop must keep waiting for the remaining interval"
+        );
+
+        // Also verify `send_timer_events_at` on `PENDING_WM_TIMERS` ignores an unexpired tick
+        // without consuming the single-shot timer.
+        PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(single_id.0));
+        assert_eq!(
+            el.dispatcher().send_timer_events_at(
+                el.timer_registry(),
+                WIN32_TIMER_MAX_MS,
+                WIN32_TIMER_MAX_MS,
+            ),
+            vec![WIN32_TIMER_MAX_MS as u32]
+        );
+        assert_eq!(single_hits.load(Ordering::SeqCst), 0);
+        assert!(single_timer.is_active());
+
+        drop(rep_timer);
+        drop(single_timer);
+        el.timer_registry().lock().unwrap().unregister(fn_single_id);
+    }
+
+    #[test]
+    fn multi_slice_wm_timer_waits_for_remaining_interval_then_fires_at_deadline() {
+        use crate::timer::{Timer, TimerType, WIN32_TIMER_MAX_MS};
+        use std::sync::atomic::AtomicUsize;
+
+        let el = crate::event_loop::EventLoop::new();
+        let hwnd = el.dispatcher().internal_hwnd;
+        let long_interval: u64 = 3_000_000_000; // > USER_TIMER_MAXIMUM (2_147_483_647)
+
+        let rep_hits = Arc::new(AtomicUsize::new(0));
+        let single_hits = Arc::new(AtomicUsize::new(0));
+
+        let rep_timer = Timer::new();
+        rep_timer.set_timer_type(TimerType::Precise);
+        {
+            let h = Arc::clone(&rep_hits);
+            rep_timer.timeout.connect(move |()| {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let rep_id = rep_timer.start_with_interval(long_interval);
+
+        let single_timer = Timer::new();
+        single_timer.set_timer_type(TimerType::Precise);
+        single_timer.set_single_shot(true);
+        {
+            let h = Arc::clone(&single_hits);
+            single_timer.timeout.connect(move |()| {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let single_id = single_timer.start_with_interval(long_interval);
+
+        let (rep_deadline, single_deadline) = {
+            let reg = el.timer_registry().lock().unwrap();
+            (
+                reg.get(rep_id).unwrap().next_fire_ms,
+                reg.get(single_id).unwrap().next_fire_ms,
+            )
+        };
+
+        // 1. First WM_TIMER arrives after the initial 0x7FFF_FFFF cap: 852,516,353 ms remain.
+        let remaining: u64 = long_interval - WIN32_TIMER_MAX_MS;
+        assert_eq!(remaining, 852_516_353);
+        assert_eq!(
+            dispatch_thread_timer_at(
+                rep_id.0,
+                hwnd,
+                rep_deadline - remaining,
+                rep_deadline - remaining,
+            ),
+            Some(remaining as u32),
+            "repeating timer must re-arm SetTimer for the remaining 852,516,353 ms"
+        );
+        assert_eq!(
+            dispatch_thread_timer_at(
+                single_id.0,
+                hwnd,
+                single_deadline - remaining,
+                single_deadline - remaining,
+            ),
+            Some(remaining as u32),
+            "single-shot timer must re-arm SetTimer for the remaining 852,516,353 ms without being consumed"
+        );
+        assert_eq!(rep_hits.load(Ordering::SeqCst), 0);
+        assert_eq!(single_hits.load(Ordering::SeqCst), 0);
+        assert!(rep_timer.is_active());
+        assert!(single_timer.is_active());
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(rep_id)
+                .unwrap()
+                .next_fire_ms,
+            rep_deadline
+        );
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(single_id)
+                .unwrap()
+                .next_fire_ms,
+            single_deadline
+        );
+
+        // 2. Second WM_TIMER arrives at the deadline: both callbacks fire once, single-shot is
+        //    consumed, and repeating timer advances to `rep_deadline + long_interval` and re-arms
+        //    SetTimer back to `WIN32_TIMER_MAX_MS`.
+        assert_eq!(
+            dispatch_thread_timer_at(rep_id.0, hwnd, rep_deadline, rep_deadline),
+            Some(WIN32_TIMER_MAX_MS as u32)
+        );
+        assert_eq!(
+            dispatch_thread_timer_at(single_id.0, hwnd, single_deadline, single_deadline),
+            None
+        );
+        assert_eq!(rep_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(single_hits.load(Ordering::SeqCst), 1);
+        assert!(rep_timer.is_active());
+        assert!(
+            !single_timer.is_active()
+                && el.timer_registry().lock().unwrap().get(single_id).is_none(),
+            "single-shot timer is unregistered only after reaching its deadline"
+        );
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(rep_id)
+                .unwrap()
+                .next_fire_ms,
+            rep_deadline + long_interval
+        );
+
+        // 3. Intermediate WM_TIMER during the second period is again ignored and re-armed for the
+        //    remaining slice, then fires on the second deadline.
+        let second_deadline = rep_deadline + long_interval;
+        assert_eq!(
+            dispatch_thread_timer_at(
+                rep_id.0,
+                hwnd,
+                second_deadline - remaining,
+                second_deadline - remaining,
+            ),
+            Some(remaining as u32)
+        );
+        assert_eq!(rep_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            dispatch_thread_timer_at(rep_id.0, hwnd, second_deadline, second_deadline),
+            Some(WIN32_TIMER_MAX_MS as u32)
+        );
+        assert_eq!(rep_hits.load(Ordering::SeqCst), 2);
+
+        drop(rep_timer);
+    }
+
+    #[test]
+    fn post_callback_rearm_deducts_callback_duration_from_next_wait_interval() {
+        use crate::timer::{Timer, TimerType};
+        use std::sync::atomic::AtomicUsize;
+
+        let el = crate::event_loop::EventLoop::new();
+        let hwnd = el.dispatcher().internal_hwnd;
+        let long_interval: u64 = 3_000_000_000; // > USER_TIMER_MAXIMUM (2_147_483_647)
+        let callback_duration: u64 = 900_000_000;
+        // Remaining wait after a 900,000,000 ms callback: 3,000,000,000 - 900,000,000 = 2,100,000,000 ms
+        // (< WIN32_TIMER_MAX_MS = 2,147_483,647 ms). Reusing pre-callback `now_ms` would wrongly
+        // re-arm for WIN32_TIMER_MAX_MS instead of 2,100,000,000 ms.
+        let expected_post_cb_wait: u32 = (long_interval - callback_duration) as u32;
+        assert_eq!(expected_post_cb_wait, 2_100_000_000);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let timer = Timer::new();
+        timer.set_timer_type(TimerType::Precise);
+        {
+            let h = Arc::clone(&hits);
+            timer.timeout.connect(move |()| {
+                h.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let id = timer.start_with_interval(long_interval);
+        let first_deadline = el
+            .timer_registry()
+            .lock()
+            .unwrap()
+            .get(id)
+            .unwrap()
+            .next_fire_ms;
+
+        // 1. `dispatch_thread_timer_at`: pre-callback `now_ms = first_deadline`, post-callback
+        //    `rearm_now_ms = first_deadline + callback_duration`.
+        let rearmed = dispatch_thread_timer_at(
+            id.0,
+            hwnd,
+            first_deadline,
+            first_deadline + callback_duration,
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .next_fire_ms,
+            first_deadline + long_interval
+        );
+        assert_eq!(
+            rearmed,
+            Some(expected_post_cb_wait),
+            "dispatch_thread_timer_at must deduct callback duration using post-callback timestamp"
+        );
+
+        // 2. `Win32EventDispatcher::send_timer_events_at`: pre-callback `now_ms = second_deadline`,
+        //    post-callback `rearm_now_ms = second_deadline + callback_duration`.
+        let second_deadline = first_deadline + long_interval;
+        PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(id.0));
+        let rearmed_vec = el.dispatcher().send_timer_events_at(
+            el.timer_registry(),
+            second_deadline,
+            second_deadline + callback_duration,
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .next_fire_ms,
+            second_deadline + long_interval
+        );
+        assert_eq!(
+            rearmed_vec,
+            vec![expected_post_cb_wait],
+            "send_timer_events_at must deduct callback duration using post-callback timestamp"
+        );
+
+        // 3. When the callback duration exceeds the entire next period (`rearm_now_ms >= next_fire_ms`),
+        //    the re-armed delay clamps to `1` ms (`saturating_sub(rearm_now_ms).max(1)`).
+        let third_deadline = second_deadline + long_interval;
+        let fourth_deadline = third_deadline + long_interval;
+        PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(id.0));
+        let overrun_vec = el.dispatcher().send_timer_events_at(
+            el.timer_registry(),
+            third_deadline,
+            fourth_deadline + 500,
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        assert_eq!(overrun_vec, vec![1]);
+        // The callback's duration is deducted from the wait once: the absolute deadline
+        // stays based on the pre-callback timestamp, so it is never pushed back by it.
+        assert_eq!(
+            el.timer_registry()
+                .lock()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .next_fire_ms,
+            fourth_deadline
+        );
+
+        drop(timer);
     }
 }

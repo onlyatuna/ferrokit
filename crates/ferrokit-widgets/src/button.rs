@@ -145,7 +145,7 @@ impl Button {
         );
         let ctx = crate::style::stylesheet::WidgetStyleContext {
             type_name: "QPushButton",
-            object_name: self.base.object_data.object_name.as_deref().unwrap_or(""),
+            object_name: self.base.object_data.object_name().unwrap_or(""),
             pseudo_states: pseudo,
             sub_control: None,
             attributes: props.as_slice(),
@@ -211,8 +211,8 @@ impl QObject for Button {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
@@ -279,7 +279,7 @@ impl Widget for Button {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
 
     fn geometry(&self) -> Rect {

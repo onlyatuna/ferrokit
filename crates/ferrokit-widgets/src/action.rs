@@ -314,7 +314,7 @@ impl Action {
     }
 
     pub fn id(&self) -> ObjectId {
-        self.object_data.id
+        self.object_data.id()
     }
 
     pub fn text(&self) -> &str {
@@ -565,8 +565,8 @@ impl QObject for Action {
         &self.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.object_data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
@@ -733,8 +733,8 @@ impl QObject for ActionGroup {
         &self.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.object_data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {

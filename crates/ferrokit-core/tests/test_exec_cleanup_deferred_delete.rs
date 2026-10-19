@@ -6,7 +6,7 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    query_object_thread, register_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    query_object_thread, register_owned_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 
 struct Victim {
@@ -18,8 +18,8 @@ impl QObject for Victim {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
@@ -37,12 +37,14 @@ impl QObject for Victim {
 #[test]
 fn test_exec_flushes_deferred_delete_requested_by_last_handler() {
     let mut app = CoreApplication::new(vec!["test".to_string()]);
-    let mut victim = Box::new(Victim {
-        data: ObjectData::new(ObjectId::next()),
-    });
-    let wid = victim.data.id;
-    // SAFETY: victim stays boxed until exec returns and the flush unregisters it.
-    unsafe { register_qobject(&mut *victim) };
+    // SAFETY: the owner stays on this thread until exec returns and the flush unregisters the
+    // object; nothing touches the object while a handler runs.
+    let victim = unsafe {
+        register_owned_qobject(Victim {
+            data: ObjectData::new(ObjectId::next()),
+        })
+    };
+    let wid = victim.data.id();
 
     let ev = Event::new_spontaneous(EventKind::MouseButtonPress {
         x: 0,

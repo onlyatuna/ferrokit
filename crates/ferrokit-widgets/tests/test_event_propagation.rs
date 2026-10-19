@@ -51,8 +51,8 @@ impl QObject for Probe {
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         let (desc, uses_resp) = match &event.kind {
@@ -90,7 +90,7 @@ impl Widget for Probe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -326,7 +326,7 @@ impl QObject for PressOnlyProbe {
     fn object_data(&self) -> &ObjectData {
         self.0.object_data()
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
         self.0.object_data_mut()
     }
     fn event(&mut self, event: &mut Event) -> bool {
@@ -910,8 +910,8 @@ impl QObject for Tracker {
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
         let (desc, uses_resp) = match &event.kind {
@@ -945,7 +945,7 @@ impl Widget for Tracker {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()

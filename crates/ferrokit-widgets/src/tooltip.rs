@@ -35,7 +35,6 @@ use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
 use ferrokit_gui::text::Font;
 use ferrokit_platform::window::WindowFlags;
 use std::cell::{Cell, RefCell};
-use std::pin::Pin;
 
 /// `SH_ToolTip_WakeUpDelay` (qcommonstyle.cpp:5348-5350).
 pub const WAKE_UP_DELAY_MS: u64 = 700;
@@ -143,34 +142,34 @@ struct Controller {
     tool_tip_widget: RefCell<Option<WidgetWeak>>,
     tool_tip_pos: Cell<Point>,
     tool_tip_global_pos: Cell<Point>,
-    wake_up: RefCell<Pin<Box<Timer>>>,
-    fall_asleep: RefCell<Pin<Box<Timer>>>,
+    wake_up: RefCell<Timer>,
+    fall_asleep: RefCell<Timer>,
     tip: RefCell<Option<Tip>>,
-    expire: RefCell<Pin<Box<Timer>>>,
-    hide: RefCell<Pin<Box<Timer>>>,
+    expire: RefCell<Timer>,
+    hide: RefCell<Timer>,
     custom_font: RefCell<Option<Font>>,
     custom_palette: RefCell<Option<Palette>>,
 }
 
-fn single_shot_timer(on_timeout: fn()) -> RefCell<Pin<Box<Timer>>> {
+fn single_shot_timer(on_timeout: fn()) -> RefCell<Timer> {
     let timer = Timer::new();
     timer.set_single_shot(true);
     timer.timeout.connect(move |()| on_timeout());
     RefCell::new(timer)
 }
 
-fn start_timer(timer: &RefCell<Pin<Box<Timer>>>, ms: u64) {
-    let mut timer = timer.borrow_mut();
-    timer.as_mut().start_with_interval(ms);
+fn start_timer(timer: &RefCell<Timer>, ms: u64) {
+    let timer = timer.borrow_mut();
+    timer.start_with_interval(ms);
 }
 
-fn stop_timer(timer: &RefCell<Pin<Box<Timer>>>) {
+fn stop_timer(timer: &RefCell<Timer>) {
     if let Ok(timer) = timer.try_borrow_mut() {
         timer.stop();
     }
 }
 
-fn timer_active(timer: &RefCell<Pin<Box<Timer>>>) -> bool {
+fn timer_active(timer: &RefCell<Timer>) -> bool {
     timer.try_borrow().map(|t| t.is_active()).unwrap_or(false)
 }
 

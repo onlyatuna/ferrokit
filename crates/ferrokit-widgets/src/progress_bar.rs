@@ -369,7 +369,7 @@ impl ProgressBar {
         let props = self.base.properties.borrow();
         let ctx = crate::style::stylesheet::WidgetStyleContext {
             type_name: "QProgressBar",
-            object_name: self.base.object_data.object_name.as_deref().unwrap_or(""),
+            object_name: self.base.object_data.object_name().unwrap_or(""),
             pseudo_states: self.base.style_pseudo_states(false, false, &mut buf),
             sub_control: None,
             attributes: props.as_slice(),
@@ -382,7 +382,7 @@ impl ProgressBar {
         let props = self.base.properties.borrow();
         let ctx = crate::style::stylesheet::WidgetStyleContext {
             type_name: "QProgressBar",
-            object_name: self.base.object_data.object_name.as_deref().unwrap_or(""),
+            object_name: self.base.object_data.object_name().unwrap_or(""),
             pseudo_states: self.base.style_pseudo_states(false, false, &mut buf),
             sub_control: Some("chunk"),
             attributes: props.as_slice(),
@@ -401,7 +401,7 @@ impl Drop for ProgressBar {
     fn drop(&mut self) {
         // Registry cleanup only touches thread-locals through `try_with`.
         // SAFETY: Drop runs on the registration thread; no callbacks are active at this point.
-        unsafe { ferrokit_core::object::unregister_qobject(self.base.object_data.id) };
+        unsafe { ferrokit_core::object::unregister_qobject(self.base.object_data.id()) };
     }
 }
 

@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Parity tests for `ToolTipChange` event.
 
+use std::cell::RefCell;
+use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::object::{register_qobject, unregister_qobject, ObjectId};
+use ferrokit_core::object::{
+    register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectId,
+};
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_widgets::widget::Widget;
-
+use ferrokit_widgets::widget::{
+    set_owned_widget_tool_tip, set_widget_ptr_tool_tip, set_widget_tool_tip, Widget, WidgetRef,
+};
 struct ToolTipProbe {
     base: ferrokit_widgets::widget::WidgetBase,
     change_seen: Arc<AtomicBool>,
@@ -18,8 +24,8 @@ impl ferrokit_core::object::QObject for ToolTipProbe {
     fn object_data(&self) -> &ferrokit_core::object::ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> &mut ferrokit_core::object::ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, ev: &mut Event) -> bool {
         if matches!(ev.kind, EventKind::ToolTipChange) {
@@ -35,7 +41,7 @@ impl Widget for ToolTipProbe {
         &self.base
     }
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry()
@@ -103,24 +109,82 @@ impl Widget for ToolTipProbe {
 
 #[test]
 fn set_tool_tip_delivers_tool_tip_change_event() {
+    // 1. Pointer-registered stack widget using two-phase `set_widget_ptr_tool_tip`.
     let seen = Arc::new(AtomicBool::new(false));
     let mut probe = ToolTipProbe {
         base: ferrokit_widgets::widget::WidgetBase::new(),
         change_seen: Arc::clone(&seen),
     };
     let id = probe.id();
+    let probe_ptr = &raw mut probe;
     unsafe {
-        register_qobject(&mut probe);
+        register_qobject_ptr(NonNull::new_unchecked(probe_ptr));
     }
 
     assert!(!seen.load(Ordering::SeqCst));
-    probe.set_tool_tip("Hello Tooltip");
+    assert!(unsafe { set_widget_ptr_tool_tip(probe_ptr, "Hello Tooltip") });
     assert!(
         seen.load(Ordering::SeqCst),
-        "set_tool_tip must send ToolTipChange event"
+        "set_widget_ptr_tool_tip must send ToolTipChange event"
     );
+    assert_eq!(probe.tool_tip(), "Hello Tooltip");
 
     unsafe {
         unregister_qobject(id);
     }
+
+    // 2. Heap-owned registered widget using two-phase `set_owned_widget_tool_tip`.
+    let seen_owned = Arc::new(AtomicBool::new(false));
+    let owned = unsafe {
+        register_owned_qobject(ToolTipProbe {
+            base: ferrokit_widgets::widget::WidgetBase::new(),
+            change_seen: Arc::clone(&seen_owned),
+        })
+    };
+    assert!(set_owned_widget_tool_tip(&owned, "Owned Tooltip"));
+    assert!(seen_owned.load(Ordering::SeqCst));
+    assert_eq!(owned.tool_tip(), "Owned Tooltip");
+    drop(owned);
+
+    // 3. Direct `set_tool_tip` on an unregistered widget updates text without UB.
+    let seen_unreg = Arc::new(AtomicBool::new(false));
+    let unreg = ToolTipProbe {
+        base: ferrokit_widgets::widget::WidgetBase::new(),
+        change_seen: Arc::clone(&seen_unreg),
+    };
+    unreg.set_tool_tip("Direct Unregistered");
+    assert_eq!(unreg.tool_tip(), "Direct Unregistered");
+    assert!(!seen_unreg.load(Ordering::SeqCst));
+
+    // 4. Direct `set_tool_tip` on a registered widget updates text without taking an overlapping
+    //    mutable borrow through the registry, passing Stacked Borrows and Tree Borrows.
+    let seen_reg = Arc::new(AtomicBool::new(false));
+    let mut reg_probe = ToolTipProbe {
+        base: ferrokit_widgets::widget::WidgetBase::new(),
+        change_seen: Arc::clone(&seen_reg),
+    };
+    let reg_id = reg_probe.id();
+    let reg_ptr = &raw mut reg_probe;
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(reg_ptr));
+    }
+    reg_probe.set_tool_tip("Direct Registered");
+    assert_eq!(reg_probe.tool_tip(), "Direct Registered");
+    assert!(
+        !seen_reg.load(Ordering::SeqCst),
+        "set_tool_tip(&self) avoids synchronous send_event to eliminate alias conflicts"
+    );
+    unsafe {
+        unregister_qobject(reg_id);
+    }
+
+    // 5. `WidgetRef` using two-phase `set_widget_tool_tip` for event delivery.
+    let seen_ref = Arc::new(AtomicBool::new(false));
+    let widget_ref: WidgetRef = Rc::new(RefCell::new(Box::new(ToolTipProbe {
+        base: ferrokit_widgets::widget::WidgetBase::new(),
+        change_seen: Arc::clone(&seen_ref),
+    })));
+    set_widget_tool_tip(&widget_ref, "Ref Tooltip");
+    assert!(seen_ref.load(Ordering::SeqCst));
+    assert_eq!(widget_ref.borrow().tool_tip(), "Ref Tooltip");
 }
