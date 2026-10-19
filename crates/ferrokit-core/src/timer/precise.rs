@@ -51,8 +51,11 @@ thread_local! {
 
 unsafe extern "system" fn callback(_id: u32, _msg: u32, user: usize, _dw1: usize, _dw2: usize) {
     let posted = &*(user as *const Posted);
-    if !posted.queued.swap(true, Ordering::AcqRel) {
-        PostMessageW(posted.hwnd as HWND, WM_TIMER, posted.id as usize, 0);
+    if !posted.queued.swap(true, Ordering::AcqRel)
+        && PostMessageW(posted.hwnd as HWND, WM_TIMER, posted.id as usize, 0) == 0
+    {
+        // Not queued after all (quota exhausted or window gone): allow the next tick to post.
+        posted.queued.store(false, Ordering::Release);
     }
 }
 

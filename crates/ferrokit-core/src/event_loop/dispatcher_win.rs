@@ -403,6 +403,10 @@ impl Win32EventDispatcher {
                         &NativeMessage::Windows(&msg),
                         &mut native_result,
                     ) {
+                        if msg.hwnd == self.internal_hwnd && msg.message == WM_TIMER {
+                            // The filter consumed this tick; the multimedia timer may post again.
+                            crate::timer::acknowledge_source(msg.wParam as u32);
+                        }
                         processed_ui_message = true;
                         continue;
                     }

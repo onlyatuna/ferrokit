@@ -128,8 +128,10 @@ fn a_moved_timer_is_one_native_timer_on_the_target_and_none_on_the_source() {
     let (id, ticks) = register_probe();
     let timer = start_object_timer(id, 5, TimerType::Precise);
     assert!(timer.is_valid());
-    let source_handle =
-        native_handle(timer).expect("a Precise timer is a multimedia timer on its thread");
+    assert!(
+        native_handle(timer).is_some(),
+        "a Precise timer is a multimedia timer on its thread"
+    );
 
     let (tid_tx, tid_rx) = channel();
     let (report_tx, report_rx) = channel();
@@ -162,7 +164,8 @@ fn a_moved_timer_is_one_native_timer_on_the_target_and_none_on_the_source() {
         None,
         "the source thread keeps no native timer after the move"
     );
-    assert!(released(source_handle), "the source's native timer is gone");
+    // `native_handle` above is the record of the source thread's timer. The numeric handle is not
+    // probed: the target may already have created a timer that reuses it.
     assert!(
         !kill_object_timer(timer),
         "the old thread no longer owns the timer, so its stop finds nothing"
@@ -287,4 +290,42 @@ fn handoffs_that_overtake_each_other_end_with_one_native_timer_that_keeps_tickin
         "the native timer is on the thread that owns the object"
     );
     assert!(!mine.native_after_destroy && !theirs.native_after_destroy);
+}
+
+/// Swallows the first `WM_TIMER` the window receives.
+struct SwallowFirstTick(bool);
+
+impl ferrokit_core::event::NativeEventFilter for SwallowFirstTick {
+    fn native_event_filter(
+        &mut self,
+        event_type: &str,
+        msg: &ferrokit_core::event::NativeMessage,
+        _result: &mut isize,
+    ) -> bool {
+        if event_type == "windows_generic_MSG" && !self.0 {
+            if let ferrokit_core::event::NativeMessage::Windows(m) = msg {
+                if m.message == windows_sys::Win32::UI::WindowsAndMessaging::WM_TIMER {
+                    self.0 = true;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+#[test]
+fn a_tick_swallowed_by_a_native_filter_does_not_silence_the_timer() {
+    let _serial = serial();
+    let el = EventLoop::new();
+    el.install_native_event_filter(Box::new(SwallowFirstTick(false)));
+    let (id, ticks) = register_probe();
+    let timer = start_object_timer(id, 5, TimerType::Precise);
+    assert!(timer.is_valid());
+    let here = ThreadId::current();
+    assert!(
+        pump_until(&el, || ticks_on(&ticks, here) >= 3),
+        "the timer keeps ticking after one of its messages was swallowed"
+    );
+    assert!(kill_object_timer(timer));
 }

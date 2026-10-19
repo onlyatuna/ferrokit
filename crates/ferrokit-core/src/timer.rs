@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 #[cfg(windows)]
+#[doc(hidden)]
 pub mod precise;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
@@ -327,21 +328,14 @@ pub fn with_thread_timer_context<R>(f: impl FnOnce(&ThreadTimerContext) -> R) ->
         .flatten()
 }
 
-/// Arms one single-shot timer for `receiver` on this thread's registry (Windows: also `SetTimer`
-/// on the internal window, as `Timer::single_shot` always did).
+/// Arms one single-shot timer for `receiver` on this thread's registry (Windows: also its native
+/// source on the internal window, the same one every other start route uses).
 fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u64) {
     let _timer_id =
         lock_unpoisoned(&ctx.registry).register(receiver, interval_ms, TimerType::Coarse, true);
     #[cfg(windows)]
     if !ctx.internal_hwnd.is_null() {
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
-                ctx.internal_hwnd,
-                _timer_id.0 as usize,
-                win32_timer_elapse(interval_ms),
-                None,
-            );
-        }
+        arm_native(ctx.internal_hwnd, _timer_id, interval_ms, TimerType::Coarse);
     }
 }
 
