@@ -2003,3 +2003,63 @@ mod early_tick_tests {
         assert_eq!(classify_early_tick(9, 10, 1), EarlyTick::Defer);
     }
 }
+
+#[cfg(all(test, windows))]
+mod single_shot_source_tests {
+    use super::{precise, with_thread_timer_context, Timer};
+    use crate::event_loop::EventLoop;
+
+    /// A short `Timer::single_shot` is driven by the same native source as every other `Precise`
+    /// timer, and the source is gone once the loop is.
+    #[test]
+    fn a_short_single_shot_is_a_multimedia_timer() {
+        let _el = EventLoop::new();
+        Timer::single_shot(10, || {});
+        let ids: Vec<_> = with_thread_timer_context(|ctx| {
+            super::lock_unpoisoned(&ctx.registry)
+                .entries
+                .keys()
+                .copied()
+                .collect()
+        })
+        .unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(precise::native_handle(ids[0]).is_some());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod precise_delivery_tests {
+    use super::{begin_timer_delivery, lock_unpoisoned, start_object_timer, with_thread_timer_context};
+    use super::{ObjectId, TimerType};
+    use crate::event_loop::EventLoop;
+
+    /// With the clock fixed by the test: no delivery before the expiry, and after an overrun one
+    /// delivery whose next deadline is the first grid point after now (missed points are skipped).
+    #[test]
+    fn a_precise_timer_is_not_delivered_early_and_skips_missed_grid_points() {
+        const INTERVAL: u64 = 50;
+        let _el = EventLoop::new();
+        let id = start_object_timer(ObjectId::next(), INTERVAL, TimerType::Precise);
+        assert!(id.is_valid());
+        with_thread_timer_context(|ctx| {
+            let expiry = lock_unpoisoned(&ctx.registry).get(id).unwrap().next_fire_ms;
+
+            assert!(begin_timer_delivery(&ctx.registry, id, expiry - 1).is_none());
+            assert_eq!(
+                lock_unpoisoned(&ctx.registry).get(id).unwrap().next_fire_ms,
+                expiry,
+                "an early tick leaves the deadline alone"
+            );
+
+            let late = expiry + 3 * INTERVAL + 7;
+            assert!(begin_timer_delivery(&ctx.registry, id, late).is_some());
+            assert_eq!(
+                lock_unpoisoned(&ctx.registry).get(id).unwrap().next_fire_ms,
+                expiry + 4 * INTERVAL,
+                "the three missed grid points are skipped"
+            );
+        })
+        .unwrap();
+    }
+}
