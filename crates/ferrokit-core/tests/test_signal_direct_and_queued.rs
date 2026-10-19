@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_core::signal::{ConnectionType, QueuedSignal, Signal};
+use std::ptr::NonNull;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -41,8 +42,8 @@ impl QObject for MockReceiverWidget {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 }
 
@@ -108,7 +109,7 @@ fn test_direct_to_qobject_lifecycle_auto_disconnect() {
     let counter = Arc::new(AtomicI32::new(0));
 
     let receiver = MockReceiverWidget::new(ObjectId::next(), Arc::clone(&counter));
-    let receiver_id = receiver.object_data().id;
+    let receiver_id = receiver.object_data().id();
 
     let cnt = Arc::clone(&counter);
     signal.connect_direct_to(&receiver, move |_| {
@@ -172,8 +173,8 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
     let mut receiver = Probe {
         data: ObjectData::new(ObjectId::next()),
     };
-    let receiver_id = receiver.data.id;
-    unsafe { register_qobject(&mut receiver) };
+    let receiver_id = receiver.data.id();
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let processed = Arc::new(AtomicBool::new(false));
     let proc_clone = Arc::clone(&processed);
@@ -219,8 +220,8 @@ impl QObject for Probe {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 }
 
@@ -231,8 +232,8 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     let mut receiver = Probe {
         data: ObjectData::new(ObjectId::next()),
     };
-    let receiver_id = receiver.data.id;
-    unsafe { register_qobject(&mut receiver) };
+    let receiver_id = receiver.data.id();
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let ran = Arc::new(AtomicBool::new(false));
     let ran_clone = Arc::clone(&ran);

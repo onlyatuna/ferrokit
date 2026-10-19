@@ -78,6 +78,57 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
+/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) with state update and `ToolTipChange`
+/// delivery separated into two non-overlapping phases for a [`WidgetRef`].
+pub fn set_widget_tool_tip(widget: &WidgetRef, text: &str) {
+    let id = {
+        let w = widget.borrow();
+        w.set_tool_tip_text(text);
+        w.id()
+    };
+    let mut ev = Event::new(EventKind::ToolTipChange);
+    if !ferrokit_core::object::send_event(id, &mut ev) {
+        if let Ok(mut w) = widget.try_borrow_mut() {
+            notify_borrowed(&mut **w, &mut ev);
+        }
+    }
+}
+
+/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) for a registered [`OwnedObject`](ferrokit_core::object::OwnedObject)
+/// widget: updates the tooltip text in a short-lived shared borrow and dispatches
+/// `EventKind::ToolTipChange` after that borrow has ended, avoiding a Stacked Borrows conflict
+/// between `&W` and the `&mut W` callback borrow created by `send_event`.
+pub fn set_owned_widget_tool_tip<W: Widget + ?Sized>(
+    widget: &ferrokit_core::object::OwnedObject<W>,
+    text: &str,
+) -> bool {
+    {
+        let w: &W = widget;
+        w.set_tool_tip_text(text);
+    }
+    let id = ferrokit_core::object::OwnedObject::object_id(widget);
+    let mut ev = Event::new(EventKind::ToolTipChange);
+    ferrokit_core::object::send_event(id, &mut ev)
+}
+
+/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) for a widget registered via
+/// [`register_qobject_ptr`](ferrokit_core::object::register_qobject_ptr): updates the tooltip text
+/// in a short-lived borrow derived from `widget` and dispatches `EventKind::ToolTipChange` after
+/// that borrow has ended.
+///
+/// # Safety
+/// `widget` must point to a valid, initialized `W` on the current thread, and no callback or
+/// conflicting mutable reference to `*widget` may be active when this function is called.
+pub unsafe fn set_widget_ptr_tool_tip<W: Widget + ?Sized>(widget: *const W, text: &str) -> bool {
+    let id = {
+        let w = unsafe { &*widget };
+        w.set_tool_tip_text(text);
+        w.id()
+    };
+    let mut ev = Event::new(EventKind::ToolTipChange);
+    ferrokit_core::object::send_event(id, &mut ev)
+}
+
 /// `QWidget::isVisible`: the widget and its ancestors are shown, and so is the window it belongs
 /// to. A widget that belongs to no window counts as shown when it is visible.
 fn is_shown(widget: &WidgetRef) -> bool {
@@ -628,11 +679,23 @@ pub trait Widget: QObject + 'static {
         self.widget_base().tool_tip.borrow().clone()
     }
 
-    /// `QWidget::setToolTip` (`qwidget.cpp:11793-11800` sends `QEvent::ToolTipChange`).
-    fn set_tool_tip(&self, text: &str) {
+    /// Updates the stored tooltip text without sending `EventKind::ToolTipChange`.
+    ///
+    /// For a registered widget, prefer [`set_owned_widget_tool_tip`], [`set_widget_ptr_tool_tip`],
+    /// or [`set_widget_tool_tip`] so the `&self` borrow ends before `send_event` borrows the
+    /// widget as `&mut self`.
+    fn set_tool_tip_text(&self, text: &str) {
         *self.widget_base().tool_tip.borrow_mut() = text.to_string();
-        let mut ev = Event::new(EventKind::ToolTipChange);
-        ferrokit_core::object::send_event(self.id(), &mut ev);
+    }
+
+    /// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`): updates the tooltip text.
+    ///
+    /// This method updates the tooltip text in place without synchronously invoking
+    /// `send_event`, avoiding alias conflicts with the registry while `&self` is held.
+    /// To deliver `EventKind::ToolTipChange` to a registered widget or `WidgetRef`, use
+    /// [`set_widget_tool_tip`], [`set_owned_widget_tool_tip`], or [`set_widget_ptr_tool_tip`].
+    fn set_tool_tip(&self, text: &str) {
+        self.set_tool_tip_text(text);
     }
 
     /// `QWidget::toolTipDuration`: how long the tip stays, in ms; -1 (the default) derives it from
@@ -737,6 +800,12 @@ impl WidgetBase {
             explicit_max: Cell::new((false, false)),
         }
     }
+    /// Unique object identifier.
+    #[inline]
+    pub fn id(&self) -> ObjectId {
+        self.object_data.id()
+    }
+
 
     pub fn with_geometry(geometry: Rect) -> Self {
         let base = Self::new();
@@ -932,7 +1001,7 @@ impl WidgetBase {
         // could not send them, `FocusManager::process_pending`.
         if !enable {
             if let Some(focus) = self.focus_state.borrow().upgrade() {
-                if focus.lose(self.object_data.id, !parent_disabled) {
+                if focus.lose(self.object_data.id(), !parent_disabled) {
                     self.has_focus.set(false);
                     notices.push(EnabledNotice::FocusLost(focus));
                 }
@@ -974,14 +1043,14 @@ impl WidgetBase {
             None => rect,
         };
         self.dirty.set(Some(pending));
-        let target_receiver = self.window_id.get().unwrap_or(self.object_data.id);
+        let target_receiver = self.window_id.get().unwrap_or(self.object_data.id());
         // Direct path: the window's render state queues its deferred render without a QObject
         // dispatch. Falls back to `UpdateRequest` when this thread has no window render state.
         if crate::window::schedule_widget_update(target_receiver) {
             return;
         }
         let target_thread = ferrokit_core::object::query_object_thread(target_receiver)
-            .unwrap_or(self.object_data.thread_id);
+            .unwrap_or(self.object_data.thread_id());
         post_event_to_thread(
             target_thread,
             target_receiver,
@@ -1238,8 +1307,8 @@ impl QObject for EmptyWidget {
         &self.base.object_data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.base.object_data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
@@ -1327,7 +1396,7 @@ impl Widget for EmptyWidget {
     }
 
     fn id(&self) -> ObjectId {
-        self.base.object_data.id
+        self.base.object_data.id()
     }
     fn geometry(&self) -> Rect {
         self.base.geometry.get()

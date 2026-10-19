@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ferrokit_core::object::ThreadId;
-use ferrokit_core::object::{add_owned_child, register_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{
+    add_owned_child, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+};
 use ferrokit_core::signal::{ConnectionType, Signal};
 
 type Calls = Arc<Mutex<Vec<&'static str>>>;
@@ -54,19 +56,21 @@ struct Node {
 
 impl Node {
     fn new() -> Box<Self> {
-        Box::new(Self {
+        Box::new(Self::unboxed())
+    }
+
+    fn unboxed() -> Self {
+        Self {
             data: ObjectData::new(ObjectId::next()),
             freed: Arc::new(AtomicBool::new(false)),
             on_drop: None,
-        })
+        }
     }
 
-    fn registered() -> Box<Self> {
-        let mut node = Self::new();
-        // SAFETY: the Box stays at this address on this thread until it is dropped, which
-        // unregisters it.
-        unsafe { register_qobject(&mut *node) };
-        node
+    fn registered() -> OwnedObject<Self> {
+        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
+        // when no callback of it runs.
+        unsafe { register_owned_qobject(Self::unboxed()) }
     }
 }
 
@@ -83,15 +87,15 @@ impl QObject for Node {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 }
 
 /// A sender: an owned child of a parent, with a handle to its own signal. Dropping the parent
 /// destroys the sender.
 struct Sender {
-    owner: ThreadBound<Rc<RefCell<Option<Box<Node>>>>>,
+    owner: ThreadBound<Rc<RefCell<Option<OwnedObject<Node>>>>>,
     signal: Signal<String>,
     freed: Arc<AtomicBool>,
 }
@@ -99,9 +103,9 @@ struct Sender {
 impl Sender {
     fn new() -> Self {
         let parent = Node::registered();
-        let parent_id = parent.data.id;
+        let parent_id = parent.data.id();
         let child = Node::new();
-        let signal = child.data.object_name_changed.clone();
+        let signal = child.data.object_name_changed().clone();
         let freed = Arc::clone(&child.freed);
         // SAFETY: the parent owns the Box from here on and is dropped on this thread.
         unsafe { add_owned_child(parent_id, child) }
@@ -158,13 +162,13 @@ fn slots_after_the_one_that_destroyed_the_sender_are_not_called() {
     sender.signal.connect(sender.destroyer(&calls, "destroy"));
     sender.signal.connect(record(&calls, "plain after"));
     sender.signal.connect_object(
-        observer.data.id,
+        observer.data.id(),
         ThreadId::current(),
         ConnectionType::Direct,
         record(&calls, "object after"),
     );
     sender.signal.connect_object(
-        observer.data.id,
+        observer.data.id(),
         ThreadId::current(),
         ConnectionType::Auto,
         record(&calls, "auto after"),
@@ -183,7 +187,7 @@ fn every_slot_runs_when_no_slot_destroys_the_sender() {
     let observer = Node::registered();
     sender.signal.connect(record(&calls, "plain"));
     sender.signal.connect_object(
-        observer.data.id,
+        observer.data.id(),
         ThreadId::current(),
         ConnectionType::Direct,
         record(&calls, "object"),
@@ -320,8 +324,8 @@ fn a_signal_emitted_while_its_owner_is_being_destroyed_reaches_no_slot() {
     // emits its parent's signal from its own destructor reaches nothing (qobject.cpp:1086-1178).
     let calls = calls();
     let parent = Node::registered();
-    let parent_id = parent.data.id;
-    let signal = parent.data.object_name_changed.clone();
+    let parent_id = parent.data.id();
+    let signal = parent.data.object_name_changed().clone();
     signal.connect(record(&calls, "slot of the parent's signal"));
     let mut child = Node::new();
     let emitter = signal.clone();

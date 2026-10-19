@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::object::query_object_thread;
 use crate::object::{ObjectData, ObjectId, QObject, ThreadId};
+use crate::poison::write_unpoisoned;
 
 use crate::event::{Event, EventKind};
 use crate::event_loop::post_event_to_thread;
@@ -80,7 +81,6 @@ impl ConnectionType {
     }
 }
 /// Unique connection identifier: ConnectionId.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(pub u64);
 
@@ -92,6 +92,48 @@ impl ConnectionId {
     }
 }
 
+/// Unique slot identifier for [`SlotKey::Id`], allocated by an atomic counter rather than a
+/// function pointer address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SlotId(pub u64);
+
+impl SlotId {
+    /// Allocates a new process-unique slot identifier.
+    pub fn next() -> Self {
+        static NEXT_SLOT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        SlotId(NEXT_SLOT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// Explicit slot identity key for `UniqueConnection` deduplication
+/// ([`Signal::connect_unique_with_key`]).
+///
+/// Comparing function pointer addresses (`fn(&T) as usize`) is not reliable in Rust: release
+/// builds with identical-code folding (such as MSVC `/OPT:ICF`) can give two distinct functions
+/// the same address, and Miri or multiple codegen units can give one function distinct addresses
+/// across casts. `SlotKey` compares explicit values instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotKey {
+    /// Process-unique numeric slot token (for example from [`SlotId::next`]).
+    Id(SlotId),
+    /// Named slot key compared by string content (`"ClassName::slot_name"`).
+    Named(&'static str),
+    /// Legacy function-pointer address key used only by deprecated [`Signal::connect_unique_to`].
+    #[doc(hidden)]
+    FnAddr(usize),
+}
+
+impl From<SlotId> for SlotKey {
+    fn from(id: SlotId) -> Self {
+        SlotKey::Id(id)
+    }
+}
+
+impl From<&'static str> for SlotKey {
+    fn from(name: &'static str) -> Self {
+        SlotKey::Named(name)
+    }
+}
 /// RAII handle that disconnects the connection when dropped (`QMetaObject::Connection`).
 pub struct ScopedConnection {
     id: ConnectionId,
@@ -150,41 +192,34 @@ pub fn register_connection(
     receiver_id: Option<ObjectId>,
     disconnect_fn: Arc<dyn Fn() + Send + Sync>,
 ) {
-    if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-        conns.insert(
+    write_unpoisoned(&GLOBAL_CONNECTIONS).insert(
+        id,
+        ConnectionRecord {
             id,
-            ConnectionRecord {
-                id,
-                sender_id,
-                receiver_id,
-                disconnect_fn,
-            },
-        );
-    }
+            sender_id,
+            receiver_id,
+            disconnect_fn,
+        },
+    );
 }
 
 pub fn unregister_connection(id: ConnectionId) {
-    if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-        conns.remove(&id);
-    }
+    write_unpoisoned(&GLOBAL_CONNECTIONS).remove(&id);
 }
 
 pub fn disconnect_all_for_object(object_id: ObjectId) {
     let to_disconnect: Vec<Arc<dyn Fn() + Send + Sync>> = {
-        if let Ok(mut conns) = GLOBAL_CONNECTIONS.write() {
-            let mut matched = Vec::new();
-            conns.retain(|_, record| {
-                if record.sender_id == Some(object_id) || record.receiver_id == Some(object_id) {
-                    matched.push(Arc::clone(&record.disconnect_fn));
-                    false
-                } else {
-                    true
-                }
-            });
-            matched
-        } else {
-            Vec::new()
-        }
+        let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
+        let mut matched = Vec::new();
+        conns.retain(|_, record| {
+            if record.sender_id == Some(object_id) || record.receiver_id == Some(object_id) {
+                matched.push(Arc::clone(&record.disconnect_fn));
+                false
+            } else {
+                true
+            }
+        });
+        matched
     };
 
     for disc in to_disconnect {
@@ -231,9 +266,8 @@ struct Subscriber<T> {
     /// Cleared the moment the connection is severed. `emit` re-checks it before every call,
     /// like `doActivate` re-checks `c->receiver` (qobject.cpp:4269).
     connected: Arc<AtomicBool>,
-    /// Qt `UniqueConnection` key: the slot's function-pointer identity; `None` for other connections.
-    slot_key: Option<usize>,
-    /// Qt `SingleShotConnection`: the connection is removed before its slot runs.
+    /// Qt `UniqueConnection` key: explicit [`SlotKey`] identity; `None` for other connections.
+    slot_key: Option<SlotKey>,
     single_shot: bool,
 }
 
@@ -286,18 +320,19 @@ struct SignalInner<T> {
 
 impl<T> SignalInner<T> {
     /// Removes every subscriber matching `pred` and marks it severed, so an emission that already
-    /// snapshotted it skips it. Returns how many were removed.
-    fn remove_where(&mut self, mut pred: impl FnMut(&Subscriber<T>) -> bool) -> usize {
-        let before = self.subscribers.len();
-        self.subscribers.retain(|sub| {
-            if pred(sub) {
-                sub.connected.store(false, Ordering::Release);
-                false
-            } else {
-                true
-            }
-        });
-        before - self.subscribers.len()
+    /// snapshotted it skips it. Returns the removed subscribers: the caller drops them after it
+    /// has released the signal's lock, because a subscriber's captured state may use the signal
+    /// when it is dropped.
+    #[must_use]
+    fn remove_where(&mut self, mut pred: impl FnMut(&Subscriber<T>) -> bool) -> Vec<Subscriber<T>> {
+        let (removed, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.subscribers)
+            .into_iter()
+            .partition(|sub| pred(sub));
+        for sub in &removed {
+            sub.connected.store(false, Ordering::Release);
+        }
+        self.subscribers = kept;
+        removed
     }
 }
 
@@ -332,7 +367,7 @@ impl<T> Signal<T> {
     /// `owner` is destroyed (see [`Signal::emit`]).
     pub fn with_owner(owner: &ObjectData) -> Self {
         Self::with_owner_parts(
-            owner.id,
+            owner.id(),
             Arc::clone(&owner.signals_blocked),
             Arc::clone(&owner.liveness),
         )
@@ -434,27 +469,31 @@ impl<T> Signal<T> {
 
     /// Disconnects a connection by its ID.
     pub fn disconnect(&self, id: ConnectionId) -> bool {
-        let removed = {
-            let mut inner = self.inner.lock();
-            inner.remove_where(|sub| sub.id == id) > 0
-        };
+        // The removed subscribers are dropped after the lock is released: a captured value's
+        // destructor may use this signal.
+        let removed = self.inner.lock().remove_where(|sub| sub.id == id);
+        let found = !removed.is_empty();
+        drop(removed);
         // Only the owner of a connection may retire its registry entry.
-        if removed {
+        if found {
             unregister_connection(id);
         }
-        removed
+        found
     }
 
     /// Disconnects all connections bound to a given receiver object ID.
     pub fn disconnect_receiver(&self, receiver_id: ObjectId) -> usize {
-        let mut inner = self.inner.lock();
-        inner.remove_where(|sub| sub.receiver_id == Some(receiver_id))
+        let removed = self
+            .inner
+            .lock()
+            .remove_where(|sub| sub.receiver_id == Some(receiver_id));
+        removed.len()
     }
 
     /// Disconnects all connections from this signal.
     pub fn disconnect_all(&self) {
-        let mut inner = self.inner.lock();
-        inner.remove_where(|_| true);
+        let removed = self.inner.lock().remove_where(|_| true);
+        drop(removed);
     }
 
     /// Emits the signal to all connected subscribers.
@@ -471,13 +510,22 @@ impl<T> Signal<T> {
     ///
     /// Once the owner is found gone `self` is not read again: the slot that destroyed it may have
     /// freed the object this signal is a field of.
+    ///
+    /// # Owner already destroyed before `emit` starts
+    /// When a cloned `Signal<T>` outlives its owner (after `ObjectData::drop` or
+    /// `unregister_qobject` sets the shared `liveness` token to `false`), calling `emit` invokes
+    /// no slot and returns `()` silently without panicking. This differs from PySide6 6.11.2,
+    /// which raises `RuntimeError: Signal source has been deleted` when `.emit()` is called on a
+    /// `SignalInstance` whose C++ `QObject` has been deleted (while C++ Qt has no safe way to call
+    /// a member on a deleted `QObject*`). Returning `()` keeps `emit(&self, &T)` infallible across
+    /// all callers and is identical on Windows, macOS, and Linux because `liveness` is an
+    /// OS-independent `Arc<AtomicBool>`.
     pub fn emit(&self, value: &T) {
         if let Some(emitter) = &self.emitter {
-            if emitter.blocked.load(Ordering::Acquire) {
+            if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire) {
                 return;
             }
         }
-
         let emitter_id = self.emitter_id();
         let owner_alive = self.emitter.as_ref().map(|e| Arc::clone(&e.alive));
         let _sender_guard = SenderGuard::new(emitter_id);
@@ -547,8 +595,8 @@ impl<T: 'static> Signal<T> {
         let signal_weak = Arc::downgrade(&self.inner);
         ScopedConnection::new(id, move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == conn_id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == conn_id);
+                drop(removed);
             }
         })
     }
@@ -575,8 +623,8 @@ impl<T: 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -590,7 +638,7 @@ impl<T: 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let id = receiver.object_data().id;
+        let id = receiver.object_data().id();
         self.connect_direct_object(id, slot)
     }
 
@@ -622,27 +670,56 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .expect("a non-unique connection is always established")
     }
 
-    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`): when `receiver` already has this `slot`
-    /// connected to this signal, nothing is connected and `None` is returned. Qt only accepts
-    /// unique connections with a receiver and a member slot (`qobject.cpp:5510-5513`); a function
-    /// pointer plays the member-slot role here.
-    pub fn connect_unique_to<R: QObject + ?Sized>(
+    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`) using an explicit [`SlotKey`] instead of a
+    /// function-pointer address: when `receiver` already has `key` connected to this signal,
+    /// nothing is connected and `None` is returned.
+    pub fn connect_unique_with_key<R: QObject + ?Sized, K: Into<SlotKey>, F>(
         &self,
         receiver: &R,
-        slot: fn(&T),
-    ) -> Option<ConnectionId> {
-        let receiver_id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        key: K,
+        slot: F,
+    ) -> Option<ConnectionId>
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object_impl(
             receiver_id,
             thread,
             ConnectionType::Auto,
-            Some(slot as usize),
+            Some(key.into()),
             false,
             slot,
         )
     }
 
+    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`): when `receiver` already has this `slot`
+    /// connected to this signal, nothing is connected and `None` is returned. Qt only accepts
+    /// unique connections with a receiver and a member slot (`qobject.cpp:5510-5513`); a function
+    /// pointer plays the member-slot role here.
+    #[deprecated(
+        note = "comparing function pointers by address (`fn(&T) as usize`) can merge distinct \
+                functions under release identical-code folding (such as MSVC `/OPT:ICF`) and can \
+                produce different addresses across casts under Miri; use \
+                `connect_unique_with_key` with an explicit `SlotId` or `SlotKey`"
+    )]
+    pub fn connect_unique_to<R: QObject + ?Sized>(
+        &self,
+        receiver: &R,
+        slot: fn(&T),
+    ) -> Option<ConnectionId> {
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
+        self.connect_object_impl(
+            receiver_id,
+            thread,
+            ConnectionType::Auto,
+            Some(SlotKey::FnAddr(slot as usize)),
+            false,
+            slot,
+        )
+    }
     /// Qt `SingleShotConnection` with a receiver: removed before its slot runs, so a re-entrant
     /// emit cannot invoke it twice (`qobject.cpp:4362-4382`).
     pub fn connect_single_shot_to<R: QObject + ?Sized, F>(
@@ -653,8 +730,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let receiver_id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let receiver_id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object_impl(receiver_id, thread, ConnectionType::Auto, None, true, slot)
             .expect("a single-shot connection is never rejected as duplicate")
     }
@@ -666,7 +743,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         receiver_id: ObjectId,
         receiver_thread: ThreadId,
         conn_type: ConnectionType,
-        unique: Option<usize>,
+        unique: Option<SlotKey>,
         single_shot: bool,
         slot: F,
     ) -> Option<ConnectionId>
@@ -729,8 +806,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -746,8 +823,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let id = receiver.object_data().id;
-        let thread = receiver.object_data().thread_id;
+        let id = receiver.object_data().id();
+        let thread = receiver.object_data().thread_id();
         self.connect_object(id, thread, ConnectionType::Auto, slot)
     }
 
@@ -840,8 +917,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let inner_weak = Arc::downgrade(&self.inner);
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
-                let mut inner = inner_arc.lock();
-                inner.remove_where(|sub| sub.id == id);
+                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
+                drop(removed);
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -853,6 +930,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1027,6 +1105,9 @@ mod tests {
         signal.emit(&2);
         assert_eq!(*round1_count.lock(), 2);
         assert!(dynamic_called.load(Ordering::Acquire));
+
+        // Break strong reference cycle formed by subscriber closure capturing signal_clone
+        signal.disconnect_all();
     }
 
     #[test]
@@ -1041,16 +1122,16 @@ mod tests {
             fn object_data(&self) -> &crate::object::ObjectData {
                 &self.data
             }
-            fn object_data_mut(&mut self) -> &mut crate::object::ObjectData {
-                &mut self.data
-            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+        crate::object::ObjectDataMut::new(&mut self.data)
+    }
         }
         let mut receiver = Receiver {
             data: crate::object::ObjectData::new(ObjectId::next()),
         };
-        let receiver_id = receiver.data.id;
+        let receiver_id = receiver.data.id();
         // SAFETY: registered for the test; unregistered before it returns.
-        unsafe { crate::object::register_qobject(&mut receiver) };
+        unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
         let target_thread = ThreadId::current();
 
         let received_msg = Arc::new(Mutex::new(String::new()));
