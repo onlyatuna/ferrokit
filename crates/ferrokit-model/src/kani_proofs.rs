@@ -1,5 +1,17 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Bounded state model verification harnesses for Kani.
+//!
+//! **Experimental and unverified.** Nothing builds these harnesses: no CI job runs Kani, and none of
+//! them is a verified result for this repository.
+//!
+//! - The two hierarchy harnesses use a fixed three-node scenario with no symbolic input. Under
+//!   Kani 0.68.0 (CBMC 6.11.0) on Linux they did not finish: the SAT stage ran out of memory, with
+//!   the run killed at a sampled peak of about 51.9 GiB under a 52 GiB limit.
+//! - The timer harness passes, but it re-types the rounding formula instead of calling the
+//!   function in `ferrokit-core`. It does not check production code and is not a proof about it.
+//! - The harnesses model `ferrokit-model`, a standalone simplified model, not the hierarchy in
+//!   `ferrokit-core`.
+//!
 //! Note: Kani is restricted strictly to bounded sequential state invariants
 //! (error return zero state change, parent/child list consistency, arithmetic non-overflow)
 //! and is NEVER used to claim concurrency safety of the H/L0/L1/L2 lock graph.
