@@ -579,6 +579,8 @@
     "test_timer_thread_affinity::a_timer_works_on_its_own_thread_after_a_refused_move::TB": "pass",
     "test_timer_thread_affinity::an_idle_timer_is_refused_too::SB": "pass",
     "test_timer_thread_affinity::an_idle_timer_is_refused_too::TB": "pass",
+    "test_timer_thread_affinity::an_intermediate_node_without_a_live_record_still_exposes_its_registered_descendants::SB": "pass",
+    "test_timer_thread_affinity::an_intermediate_node_without_a_live_record_still_exposes_its_registered_descendants::TB": "pass",
     "test_timer_thread_affinity::an_object_moves_unless_it_refuses::SB": "pass",
     "test_timer_thread_affinity::an_object_moves_unless_it_refuses::TB": "pass",
     "test_timer_thread_affinity::moving_a_timer_to_the_thread_it_is_on_is_a_no_op::SB": "pass",

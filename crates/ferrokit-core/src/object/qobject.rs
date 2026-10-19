@@ -532,6 +532,21 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     }
 }
 
+/// Registered children of `id` according to the global registry: first the validated entries of
+/// `id`'s own registry record (`registered_children_of`), and then any registered object whose own
+/// record names `id` as its parent (covering an intermediate `id` that has no record in the
+/// registry, or a child linked while unregistered and registered afterwards).
+fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
+    let mut children = registered_children_of(id);
+    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    for (&child_id, record) in registry.iter() {
+        if *read_unpoisoned(&record.parent) == Some(id) && !children.contains(&child_id) {
+            children.push(child_id);
+        }
+    }
+    children
+}
+
 /// Walks `data` and its unregistered `owned_children`, checking that no owned child is borrowed by
 /// a running callback and that every unregistered owned descendant allows moving to another
 /// thread, while queuing registered children for registry-backed inspection.
@@ -579,7 +594,7 @@ fn inspect_owned_tree(
             queue.push(child_id);
         }
     }
-    for child_id in registered_children_of(data.id()) {
+    for child_id in registered_children_below(data.id()) {
         if !all_ids.contains(&child_id) && !queue.contains(&child_id) {
             queue.push(child_id);
         }
@@ -589,7 +604,8 @@ fn inspect_owned_tree(
 
 /// Drains `queue`, requiring every live registered descendant to be unborrowed on the current
 /// thread and to answer `true` to `QObject::can_move_to_thread`. An id that has no live record in
-/// the registry (such as an unregistered non-owned child) is kept in `all_ids` without failing.
+/// the registry (such as an unregistered non-owned child, or a record whose liveness is already
+/// false) is kept in `all_ids` and its registered children are still queued for inspection.
 fn collect_queued_descendants(
     all_ids: &mut Vec<ObjectId>,
     queue: &mut Vec<ObjectId>,
@@ -623,6 +639,11 @@ fn collect_queued_descendants(
             .ok_or(MoveError::Busy)??;
         } else {
             all_ids.push(child_id);
+            for descendant_id in registered_children_below(child_id) {
+                if !all_ids.contains(&descendant_id) && !queue.contains(&descendant_id) {
+                    queue.push(descendant_id);
+                }
+            }
         }
     }
     Ok(())
