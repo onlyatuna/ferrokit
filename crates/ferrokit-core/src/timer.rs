@@ -9,6 +9,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 #[cfg(windows)]
+pub mod precise;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
 #[cfg(not(windows))]
 pub type HWND = *mut std::ffi::c_void;
@@ -343,6 +345,61 @@ fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u6
     }
 }
 
+/// Stops the native source of timer `id`: its multimedia timer if it has one, else its `SetTimer`.
+#[cfg(windows)]
+pub(crate) fn kill_native(hwnd: HWND, id: TimerId) {
+    if !precise::disarm(id) {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, id.0 as usize);
+        }
+    }
+}
+
+/// Whether the ticks of timer `raw_id` come from a multimedia timer on this thread.
+#[cfg(windows)]
+pub(crate) fn is_precise_source(raw_id: u32) -> bool {
+    precise::is_precise(raw_id)
+}
+#[cfg(not(windows))]
+pub(crate) fn is_precise_source(_raw_id: u32) -> bool {
+    false
+}
+
+/// A message for `raw_id` is being handled: a multimedia timer may queue the next one.
+#[cfg(windows)]
+pub(crate) fn acknowledge_source(raw_id: u32) {
+    precise::acknowledge(raw_id);
+}
+#[cfg(not(windows))]
+pub(crate) fn acknowledge_source(_raw_id: u32) {}
+
+/// Slack for the whole-millisecond clock: a multimedia tick read as `now_ms` can sit one
+/// millisecond below the expiry it belongs to because both values are truncated.
+const PRECISE_CLOCK_SLACK_MS: u64 = 1;
+
+/// Whether a tick arrived before the timer's expiry. A multimedia tick is early only when its grid
+/// point was already consumed by a late callback; it is then ignored, so an overrun gives one
+/// callback and not a second one right behind it.
+pub(crate) fn tick_is_early(precise: bool, now_ms: u64, expiry_ms: u64) -> bool {
+    if precise {
+        now_ms.saturating_add(PRECISE_CLOCK_SLACK_MS) < expiry_ms
+    } else {
+        now_ms < expiry_ms
+    }
+}
+
+/// Next expiry of a timer whose ticks come from a fixed grid: the first grid point after `now_ms`
+/// that follows `expiry`. Grid points missed while the loop was busy are skipped, so an overrun
+/// gives one callback and the grid resumes.
+pub(crate) fn next_grid_deadline(interval_ms: u64, expiry_ms: u64, now_ms: u64) -> (u64, u64) {
+    let interval = interval_ms.max(1);
+    let steps = now_ms.saturating_sub(expiry_ms) / interval + 1;
+    (
+        interval_ms,
+        expiry_ms.saturating_add(steps.saturating_mul(interval)),
+    )
+}
+
 /// Stops and unregisters all active timers registered to the specified receiver object.
 /// Modeled after Qt's QObjectPrivate::moveToThread_helper timer cleanup.
 ///
@@ -363,12 +420,7 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
             #[cfg(windows)]
             if let Some(entry) = _entry {
                 if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                            ctx.internal_hwnd,
-                            id.0 as usize,
-                        );
-                    }
+                    kill_native(ctx.internal_hwnd, id);
                 }
             }
         }
@@ -398,12 +450,7 @@ pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> Vec<TimerEntr
             #[cfg(windows)]
             {
                 if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                            ctx.internal_hwnd,
-                            id.0 as usize,
-                        );
-                    }
+                    kill_native(ctx.internal_hwnd, id);
                 }
             }
             detached.push(entry);
@@ -447,7 +494,7 @@ pub(crate) fn adopt_timers(entries: Vec<TimerEntry>) {
                 entry.timer_type,
                 entry.single_shot,
             );
-            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms);
+            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
     if armed.is_none() {
@@ -467,13 +514,21 @@ fn arm_in_context(
 ) -> TimerId {
     let mut reg = lock_unpoisoned(&ctx.registry);
     let timer_id = reg.register(receiver, interval_ms, timer_type, single_shot);
-    arm_source(ctx, timer_id, receiver, interval_ms);
+    arm_source(ctx, timer_id, receiver, interval_ms, timer_type);
     timer_id
 }
 
 /// Arms the delivery source of a registered timer: a zero interval posts `ZeroTimer`, otherwise
 /// `SetTimer` on Windows.
-fn arm_source(ctx: &ThreadTimerContext, timer_id: TimerId, receiver: ObjectId, interval_ms: u64) {
+fn arm_source(
+    ctx: &ThreadTimerContext,
+    timer_id: TimerId,
+    receiver: ObjectId,
+    interval_ms: u64,
+    timer_type: TimerType,
+) {
+    #[cfg(not(windows))]
+    let _ = timer_type;
     #[cfg(not(windows))]
     let _ = ctx;
     if interval_ms == 0 {
@@ -488,14 +543,18 @@ fn arm_source(ctx: &ThreadTimerContext, timer_id: TimerId, receiver: ObjectId, i
         #[cfg(windows)]
         {
             if !ctx.internal_hwnd.is_null() {
-                let interval = win32_timer_elapse(interval_ms);
-                unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
-                        ctx.internal_hwnd,
-                        timer_id.0 as usize,
-                        interval,
-                        None,
-                    );
+                if !(precise::wanted(timer_type, interval_ms)
+                    && precise::arm(ctx.internal_hwnd, timer_id, interval_ms))
+                {
+                    let interval = win32_timer_elapse(interval_ms);
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
+                            ctx.internal_hwnd,
+                            timer_id.0 as usize,
+                            interval,
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -512,12 +571,7 @@ fn disarm_in_context(ctx: &ThreadTimerContext, id: TimerId) -> bool {
     #[cfg(windows)]
     {
         if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-            unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
-                    ctx.internal_hwnd,
-                    id.0 as usize,
-                );
-            }
+            kill_native(ctx.internal_hwnd, id);
         }
     }
     #[cfg(not(windows))]
@@ -932,12 +986,17 @@ pub(crate) fn begin_timer_delivery(
 ) -> Option<(ObjectId, bool)> {
     let mut reg = lock_unpoisoned(registry);
     let entry = reg.get_mut(id)?;
-    if entry.in_timer_event || now_ms < entry.next_fire_ms {
+    let precise = is_precise_source(id.0);
+    if entry.in_timer_event || tick_is_early(precise, now_ms, entry.next_fire_ms) {
         return None;
     }
     entry.in_timer_event = true;
     let mut timer_type = entry.timer_type;
-    let (adjusted, next_fire) = calculate_next_timeout(&mut timer_type, entry.interval_ms, now_ms);
+    let (adjusted, next_fire) = if precise {
+        next_grid_deadline(entry.interval_ms, entry.next_fire_ms, now_ms)
+    } else {
+        calculate_next_timeout(&mut timer_type, entry.interval_ms, now_ms)
+    };
     entry.timer_type = timer_type;
     entry.interval_ms = adjusted;
     entry.next_fire_ms = next_fire;
