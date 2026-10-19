@@ -473,11 +473,12 @@ impl Win32EventDispatcher {
         if entry.interval_ms == 0 {
             return;
         }
-        let id = entry.id.0 as usize;
-        let interval = crate::timer::win32_timer_elapse(entry.interval_ms);
-        unsafe {
-            SetTimer(self.internal_hwnd, id, interval, None);
-        }
+        crate::timer::arm_native(
+            self.internal_hwnd,
+            entry.id,
+            entry.interval_ms,
+            entry.timer_type,
+        );
     }
 
     pub fn unregister_timer(&self, entry: &TimerEntry) {
@@ -816,6 +817,45 @@ mod tests {
             dispatcher.unregister_timer(&entry);
             registry.lock().unwrap().unregister(id);
         }
+    }
+
+    /// The raw route (`Timer::start_with`, `EventDispatcher::register_timer`) gives a timer the
+    /// same native source as the thread-context route: a multimedia timer for `Precise`, a
+    /// `SetTimer` timer for the coarse types.
+    #[test]
+    fn test_register_timer_native_source_follows_the_timer_type() {
+        use crate::object::ObjectId;
+        use crate::timer::{precise, TimerType};
+        use windows_sys::Win32::Media::timeKillEvent;
+        use windows_sys::Win32::UI::WindowsAndMessaging::KillTimer;
+
+        let dispatcher = Win32EventDispatcher::new();
+        let mut registry = TimerRegistry::new();
+
+        let precise_id = registry.register(ObjectId(1), 20, TimerType::Precise, false);
+        let precise_entry = registry.get(precise_id).unwrap().clone();
+        dispatcher.register_timer(&precise_entry);
+        let handle = precise::native_handle(precise_id)
+            .expect("a Precise timer started on the raw route is a multimedia timer");
+        assert_eq!(
+            unsafe { KillTimer(dispatcher.internal_hwnd, precise_id.0 as usize) },
+            0,
+            "and not also a SetTimer timer"
+        );
+        dispatcher.unregister_timer(&precise_entry);
+        assert_eq!(precise::native_handle(precise_id), None);
+        // TIMERR_NOCANDO: the multimedia timer is gone.
+        assert_eq!(unsafe { timeKillEvent(handle) }, 97);
+
+        let coarse_id = registry.register(ObjectId(1), 100, TimerType::Coarse, false);
+        let coarse_entry = registry.get(coarse_id).unwrap().clone();
+        dispatcher.register_timer(&coarse_entry);
+        assert_eq!(precise::native_handle(coarse_id), None);
+        assert_ne!(
+            unsafe { KillTimer(dispatcher.internal_hwnd, coarse_id.0 as usize) },
+            0,
+            "a coarse timer keeps its SetTimer timer"
+        );
     }
 
     #[test]

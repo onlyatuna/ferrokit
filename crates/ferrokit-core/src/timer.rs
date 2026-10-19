@@ -543,8 +543,26 @@ fn arm_in_context(
     timer_id
 }
 
+/// Arms the native source of a timer on `hwnd`: a multimedia timer for `Precise` timers, else (or
+/// when none can be created) `SetTimer`. Every route that starts a timer on Windows ends here, so
+/// a timer type has one meaning whichever way the timer was started.
+#[cfg(windows)]
+pub(crate) fn arm_native(hwnd: HWND, timer_id: TimerId, interval_ms: u64, timer_type: TimerType) {
+    if precise::wanted(timer_type, interval_ms) && precise::arm(hwnd, timer_id, interval_ms) {
+        return;
+    }
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
+            hwnd,
+            timer_id.0 as usize,
+            win32_timer_elapse(interval_ms),
+            None,
+        );
+    }
+}
+
 /// Arms the delivery source of a registered timer: a zero interval posts `ZeroTimer`, otherwise
-/// `SetTimer` on Windows.
+/// the native source on Windows.
 fn arm_source(
     ctx: &ThreadTimerContext,
     timer_id: TimerId,
@@ -568,19 +586,7 @@ fn arm_source(
         #[cfg(windows)]
         {
             if !ctx.internal_hwnd.is_null() {
-                if !(precise::wanted(timer_type, interval_ms)
-                    && precise::arm(ctx.internal_hwnd, timer_id, interval_ms))
-                {
-                    let interval = win32_timer_elapse(interval_ms);
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
-                            ctx.internal_hwnd,
-                            timer_id.0 as usize,
-                            interval,
-                            None,
-                        );
-                    }
-                }
+                arm_native(ctx.internal_hwnd, timer_id, interval_ms, timer_type);
             }
         }
     }
