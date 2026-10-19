@@ -162,6 +162,51 @@ impl Drop for ReleaseBorrowFlag<'_> {
     }
 }
 
+/// Child-list edits taken from an object's pending queue. Dropped while still holding them (the
+/// accessor that was to receive them panicked), it puts them back in front of any that arrived
+/// since and raises the pending flag again, so the next guard of the object applies them.
+struct TakenChildChanges<'a> {
+    entry: &'a ObjectRecord,
+    changes: Vec<ChildListChange>,
+}
+
+impl Drop for TakenChildChanges<'_> {
+    fn drop(&mut self) {
+        if self.changes.is_empty() {
+            return;
+        }
+        let mut queue = lock_unpoisoned(&self.entry.pending_child_changes);
+        self.changes.append(&mut queue);
+        *queue = std::mem::take(&mut self.changes);
+        drop(queue);
+        self.entry
+            .has_pending_child_changes
+            .store(true, Ordering::Release);
+    }
+}
+
+/// A pending parent sync taken from an object's record; restored on drop like
+/// [`TakenChildChanges`] unless a newer sync has been recorded meanwhile, which supersedes it.
+struct TakenParentSync<'a> {
+    entry: &'a ObjectRecord,
+    sync: Option<(Option<ObjectId>, Option<(ObjectId, Arc<AtomicBool>)>)>,
+}
+
+impl Drop for TakenParentSync<'_> {
+    fn drop(&mut self) {
+        if let Some(sync) = self.sync.take() {
+            let mut slot = lock_unpoisoned(&self.entry.pending_parent_sync);
+            if slot.is_none() {
+                *slot = Some(sync);
+                drop(slot);
+                self.entry
+                    .has_pending_parent_sync
+                    .store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
         {
@@ -169,29 +214,32 @@ impl Drop for ObjectBorrowGuard {
             // a custom `QObject::object_data_mut()` accessor panics while queued child edits or pending
             // parent syncs are applied: the object would stay borrowed forever otherwise.
             //
-            // CONTRACT / EXCLUSION:
-            // If a custom `QObject::object_data_mut()` accessor panics during `ObjectBorrowGuard::drop`,
-            // `ReleaseBorrowFlag` guarantees that the borrow flag is safely released to prevent borrow leaks
-            // and deadlocks. However, any `pending_child_changes` or `pending_parent_sync` extracted after
-            // swapping their pending flags are consumed and will not be restored or reapplied on unwind.
-            // This custom accessor panic scenario is strictly excluded from the transactional recovery
-            // guarantees provided for `ChildRemoved` user callback panics.
+            // The accessor is the only user code that runs here, and it runs before anything is
+            // written. If it panics, the edits or the sync taken from the pending state are put back
+            // (`TakenChildChanges`, `TakenParentSync`) and applied by the next guard of the object, so
+            // an unwind leaves the object with its pending state intact, not half consumed. A pending
+            // parent sync that was not reached stays pending as it was.
             let _release = ReleaseBorrowFlag(&self.borrow_state);
             if self
                 ._entry
                 .has_pending_child_changes
                 .swap(false, Ordering::AcqRel)
             {
-                let changes = std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
+                let mut taken = TakenChildChanges {
+                    entry: &self._entry,
+                    changes: std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes)),
+                };
                 // A dead object is not written to: its memory may already be freed. Every drop of a
                 // registered object marks the shared liveness token dead before the memory goes.
                 if self._entry.liveness.load(Ordering::Acquire) {
                     // SAFETY: the callback that held this borrow has returned, so no reference into
                     // the object is live, and the object is alive.
                     let mut data = unsafe { (*self.ptr).object_data_mut() };
-                    for change in &changes {
+                    for change in std::mem::take(&mut taken.changes) {
                         change.apply(ObjectDataMut::new(data.raw_data_mut()));
                     }
+                } else {
+                    taken.changes.clear();
                 }
             }
             if self
@@ -199,8 +247,11 @@ impl Drop for ObjectBorrowGuard {
                 .has_pending_parent_sync
                 .swap(false, Ordering::AcqRel)
             {
-                let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
-                if let Some((new_parent, target_liveness)) = sync {
+                let mut taken = TakenParentSync {
+                    entry: &self._entry,
+                    sync: lock_unpoisoned(&self._entry.pending_parent_sync).take(),
+                };
+                if let Some((new_parent, target_liveness)) = taken.sync.clone() {
                     if !self.borrow_state.memory_destroyed.load(Ordering::Acquire) {
                         let mut data = unsafe { (*self.ptr).object_data_mut() };
                         let raw = data.raw_data_mut();
@@ -208,6 +259,7 @@ impl Drop for ObjectBorrowGuard {
                         raw.parent_liveness = target_liveness;
                     }
                 }
+                taken.sync = None;
             }
         }
         if self
@@ -3195,6 +3247,12 @@ pub fn reparent(
 pub trait QObject: std::any::Any {
     /// Core object metadata: ObjectData (`QObjectData` equivalent).
     fn object_data(&self) -> &ObjectData;
+    /// Mutable access to the object's metadata, through the [`ObjectDataMut`] proxy.
+    ///
+    /// The library calls this when a callback that held the object's borrow returns, to apply the
+    /// child-list edits and the parent sync queued meanwhile. If the accessor panics there, the
+    /// object is released from its borrow, the queued edits and sync stay pending, and the next
+    /// borrow of the object applies them.
     fn object_data_mut(&mut self) -> ObjectDataMut<'_>;
     /// Returns the static MetaObject reflection structure for this class (`QObject::metaObject`).
     fn meta_object(&self) -> &'static crate::meta::MetaObject {
@@ -5125,6 +5183,106 @@ mod tests {
         drop(held_guard.borrow_mut().take());
 
         // Now pending parent sync has been applied
+        assert_eq!(query_pending_parent_sync(child_id), Some(false));
+        assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
+
+        drop(child);
+        drop(p2);
+        drop(p1);
+    }
+
+    /// An object whose accessor panics once when armed.
+    struct Fragile {
+        data: ObjectData,
+        armed: Rc<Cell<bool>>,
+    }
+
+    impl QObject for Fragile {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+            if self.armed.replace(false) {
+                panic!("accessor panic");
+            }
+            ObjectDataMut::new(&mut self.data)
+        }
+        fn event(&mut self, _event: &mut Event) -> bool {
+            false
+        }
+    }
+
+    /// A panic of the accessor while a guard applies queued child-list edits releases the borrow
+    /// and leaves the edits queued; the next guard of the object applies them.
+    #[test]
+    fn test_guard_drop_with_panicking_accessor_keeps_queued_child_edits() {
+        let _serial = serial();
+        let armed = Rc::new(Cell::new(false));
+        let parent = unsafe {
+            register_owned_qobject(Fragile { data: ObjectData::new(ObjectId::next()), armed: Rc::clone(&armed) })
+        };
+        let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (parent_id, child_id) = (OwnedObject::object_id(&parent), OwnedObject::object_id(&child));
+        let (record, _) = registered_ptr(parent_id).unwrap();
+
+        let held = borrow_registered(parent_id).expect("parent is borrowable");
+        assert_eq!(set_parent_by_id(child_id, Some(parent_id)), Ok(()));
+        assert!(record.has_pending_child_changes.load(Ordering::Acquire));
+
+        armed.set(true);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(held)));
+        assert!(outcome.is_err(), "the accessor panic reaches the dropper");
+
+        assert!(!record.borrow_state.borrow_flag.load(Ordering::Acquire), "the borrow is released");
+        assert!(record.has_pending_child_changes.load(Ordering::Acquire), "the edit is still pending");
+        assert_eq!(lock_unpoisoned(&record.pending_child_changes).len(), 1);
+
+        drop(borrow_registered(parent_id).expect("the parent is borrowable again"));
+        assert!(!record.has_pending_child_changes.load(Ordering::Acquire));
+        assert!(lock_unpoisoned(&record.pending_child_changes).is_empty());
+        assert_eq!(with_object(parent_id, |p| p.object_data().children().to_vec()), Some(vec![child_id]));
+
+        drop(child);
+        drop(parent);
+    }
+
+    /// Likewise for a pending parent sync: after the accessor panic it is still pending, and the
+    /// next guard applies it.
+    #[test]
+    fn test_guard_drop_with_panicking_accessor_keeps_pending_parent_sync() {
+        let _serial = serial();
+        let log = Log::default();
+        let armed = Rc::new(Cell::new(false));
+        let held_guard: Rc<RefCell<Option<ObjectBorrowGuard>>> = Rc::new(RefCell::new(None));
+        let held_guard_clone = Rc::clone(&held_guard);
+        let hook: OnChildEvent = Box::new(move |delivered| {
+            if delivered.what == "removed" {
+                *held_guard_clone.borrow_mut() = borrow_registered(delivered.child);
+            }
+        });
+
+        let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        let child = unsafe {
+            register_owned_qobject(Fragile { data: ObjectData::new(ObjectId::next()), armed: Rc::clone(&armed) })
+        };
+        let (p1_id, p2_id, child_id) =
+            (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2), OwnedObject::object_id(&child));
+        let (record, _) = registered_ptr(child_id).unwrap();
+
+        assert_eq!(set_parent_by_id(child_id, Some(p1_id)), Ok(()));
+        assert_eq!(set_parent_by_id(child_id, Some(p2_id)), Ok(()));
+        assert_eq!(query_pending_parent_sync(child_id), Some(true));
+
+        armed.set(true);
+        let held = held_guard.borrow_mut().take().expect("the hook kept the child's guard");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(held)));
+        assert!(outcome.is_err(), "the accessor panic reaches the dropper");
+
+        assert!(!record.borrow_state.borrow_flag.load(Ordering::Acquire), "the borrow is released");
+        assert_eq!(query_pending_parent_sync(child_id), Some(true), "the sync is still pending");
+
+        drop(borrow_registered(child_id).expect("the child is borrowable again"));
         assert_eq!(query_pending_parent_sync(child_id), Some(false));
         assert_eq!(with_object(child_id, |c| c.object_data().parent()), Some(Some(p2_id)));
 
