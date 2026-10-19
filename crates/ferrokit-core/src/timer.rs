@@ -345,6 +345,9 @@ fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u6
 
 /// Stops and unregisters all active timers registered to the specified receiver object.
 /// Modeled after Qt's QObjectPrivate::moveToThread_helper timer cleanup.
+///
+/// On Windows the native timer of each removed entry is killed as well; it would otherwise keep
+/// posting `WM_TIMER` to the loop's window until the window is destroyed.
 pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
@@ -356,7 +359,18 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
             .collect();
         let count = to_remove.len();
         for id in to_remove {
-            reg.unregister(id);
+            let _entry = reg.unregister(id);
+            #[cfg(windows)]
+            if let Some(entry) = _entry {
+                if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(
+                            ctx.internal_hwnd,
+                            id.0 as usize,
+                        );
+                    }
+                }
+            }
         }
         count
     })
