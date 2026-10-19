@@ -1,0 +1,19 @@
+[package]
+name = "ferrokit-model"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+loom = { version = "0.7", optional = true }
+shuttle = { version = "0.8", optional = true }
+
+[features]
+default = []
+loom = ["dep:loom"]
+shuttle = ["dep:shuttle"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
