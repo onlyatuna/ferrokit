@@ -189,8 +189,17 @@ fn dispatch_thread_timer_impl(
         let mut reg = lock_unpoisoned(&ctx.registry);
         if let Some(entry) = reg.get_mut(id) {
             if !entry.in_timer_event {
-                if precise && crate::timer::tick_is_early(true, now_ms, entry.next_fire_ms) {
-                    // A multimedia tick for a grid point a late callback already consumed.
+                if precise && now_ms < entry.next_fire_ms {
+                    // A multimedia tick before the expiry: hold it if it is the tick of this
+                    // expiry, drop it if it is a grid point a late callback already consumed.
+                    if crate::timer::classify_early_tick(
+                        now_ms,
+                        entry.next_fire_ms,
+                        entry.interval_ms,
+                    ) == crate::timer::EarlyTick::Defer
+                    {
+                        crate::timer::defer_source(raw_id);
+                    }
                 } else if !precise && now_ms < entry.next_fire_ms {
                     unexpired_elapse = Some(crate::timer::win32_timer_elapse(
                         entry.next_fire_ms - now_ms,
@@ -502,7 +511,12 @@ impl Win32EventDispatcher {
         mut pre_clock: impl FnMut() -> u64,
         mut post_clock: impl FnMut() -> u64,
     ) -> Vec<u32> {
-        let pending = PENDING_WM_TIMERS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        let mut pending = PENDING_WM_TIMERS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        for raw_id in crate::timer::take_deferred_sources() {
+            if !pending.contains(&raw_id) {
+                pending.push(raw_id);
+            }
+        }
         let mut rearmed = Vec::new();
         for raw_id in pending {
             let id = TimerId(raw_id);

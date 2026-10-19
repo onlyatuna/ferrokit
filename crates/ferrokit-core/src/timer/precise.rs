@@ -46,6 +46,7 @@ impl Drop for Active {
 
 thread_local! {
     static ACTIVE: RefCell<HashMap<u32, Active>> = RefCell::new(HashMap::new());
+    static DEFERRED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
 unsafe extern "system" fn callback(_id: u32, _msg: u32, user: usize, _dw1: usize, _dw2: usize) {
@@ -106,11 +107,29 @@ pub(crate) fn arm(hwnd: HWND, id: TimerId, interval_ms: u64) -> bool {
 
 /// Stops the multimedia timer of `id`. Returns whether there was one.
 pub(crate) fn disarm(id: TimerId) -> bool {
+    let _ = DEFERRED.try_with(|deferred| deferred.borrow_mut().retain(|d| *d != id.0));
     let removed = ACTIVE
         .try_with(|active| active.borrow_mut().remove(&id.0))
         .ok()
         .flatten();
     removed.is_some()
+}
+
+/// Holds a tick that arrived a little before its timer's expiry; it is delivered once due.
+pub(crate) fn defer(id: u32) {
+    let _ = DEFERRED.try_with(|deferred| {
+        let mut deferred = deferred.borrow_mut();
+        if !deferred.contains(&id) {
+            deferred.push(id);
+        }
+    });
+}
+
+/// The ticks held by [`defer`]; the caller re-defers those that are still early.
+pub(crate) fn take_deferred() -> Vec<u32> {
+    DEFERRED
+        .try_with(|deferred| std::mem::take(&mut *deferred.borrow_mut()))
+        .unwrap_or_default()
 }
 
 /// Whether `id` is driven by a multimedia timer on this thread.

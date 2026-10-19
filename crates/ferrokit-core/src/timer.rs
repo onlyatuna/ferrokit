@@ -373,19 +373,44 @@ pub(crate) fn acknowledge_source(raw_id: u32) {
 #[cfg(not(windows))]
 pub(crate) fn acknowledge_source(_raw_id: u32) {}
 
-/// Slack for the whole-millisecond clock: a multimedia tick read as `now_ms` can sit one
-/// millisecond below the expiry it belongs to because both values are truncated.
-const PRECISE_CLOCK_SLACK_MS: u64 = 1;
+/// What to do with a multimedia tick that arrives before the timer's expiry.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EarlyTick {
+    /// It is the tick of the expiry, a little early: hold it and deliver at the expiry. A timer
+    /// never fires before its expiry, and the tick is not lost.
+    Defer,
+    /// It belongs to a grid point a late callback already consumed (the expiry is more than half
+    /// an interval away): ignore it, so an overrun gives one callback and not a second one right
+    /// behind it.
+    Stale,
+}
 
-/// Whether a tick arrived before the timer's expiry. A multimedia tick is early only when its grid
-/// point was already consumed by a late callback; it is then ignored, so an overrun gives one
-/// callback and not a second one right behind it.
-pub(crate) fn tick_is_early(precise: bool, now_ms: u64, expiry_ms: u64) -> bool {
-    if precise {
-        now_ms.saturating_add(PRECISE_CLOCK_SLACK_MS) < expiry_ms
+/// Classifies a tick with `now_ms < expiry_ms` by whether it is nearer the expiry or the grid
+/// point before it.
+pub(crate) fn classify_early_tick(now_ms: u64, expiry_ms: u64, interval_ms: u64) -> EarlyTick {
+    if expiry_ms.saturating_sub(now_ms) <= (interval_ms / 2).max(1) {
+        EarlyTick::Defer
     } else {
-        now_ms < expiry_ms
+        EarlyTick::Stale
     }
+}
+
+/// Holds the early tick of `raw_id` until the loop next runs the timers.
+#[cfg(windows)]
+pub(crate) fn defer_source(raw_id: u32) {
+    precise::defer(raw_id);
+}
+#[cfg(not(windows))]
+pub(crate) fn defer_source(_raw_id: u32) {}
+
+/// Ticks held by [`defer_source`], to be delivered when due.
+#[cfg(windows)]
+pub(crate) fn take_deferred_sources() -> Vec<u32> {
+    precise::take_deferred()
+}
+#[cfg(not(windows))]
+pub(crate) fn take_deferred_sources() -> Vec<u32> {
+    Vec::new()
 }
 
 /// Next expiry of a timer whose ticks come from a fixed grid: the first grid point after `now_ms`
@@ -987,7 +1012,15 @@ pub(crate) fn begin_timer_delivery(
     let mut reg = lock_unpoisoned(registry);
     let entry = reg.get_mut(id)?;
     let precise = is_precise_source(id.0);
-    if entry.in_timer_event || tick_is_early(precise, now_ms, entry.next_fire_ms) {
+    if entry.in_timer_event {
+        return None;
+    }
+    if now_ms < entry.next_fire_ms {
+        if precise
+            && classify_early_tick(now_ms, entry.next_fire_ms, entry.interval_ms) == EarlyTick::Defer
+        {
+            defer_source(id.0);
+        }
         return None;
     }
     entry.in_timer_event = true;
@@ -1951,5 +1984,22 @@ mod tests {
             begin_timer_delivery(&registry, id, u64::MAX),
             Some((ObjectId(99), true))
         );
+    }
+}
+
+#[cfg(test)]
+mod early_tick_tests {
+    use super::{classify_early_tick, EarlyTick};
+
+    #[test]
+    fn a_tick_near_its_expiry_is_held_and_one_a_grid_point_early_is_dropped() {
+        // 20 ms timer, expiry at 100.
+        assert_eq!(classify_early_tick(99, 100, 20), EarlyTick::Defer);
+        assert_eq!(classify_early_tick(90, 100, 20), EarlyTick::Defer);
+        assert_eq!(classify_early_tick(89, 100, 20), EarlyTick::Stale);
+        // The tick of a grid point a late callback already consumed.
+        assert_eq!(classify_early_tick(81, 100, 20), EarlyTick::Stale);
+        // A 1 ms timer still holds a tick 1 ms early.
+        assert_eq!(classify_early_tick(9, 10, 1), EarlyTick::Defer);
     }
 }
