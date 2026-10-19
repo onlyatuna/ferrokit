@@ -230,13 +230,15 @@ impl ThreadContext {
 
 /// Thread migration error matching QObject::moveToThread rules.
 ///
-/// `NotMovable` was added after `HasParent` and `WrongThread`. The enum is not
+/// `Busy` and `NotMovable` were added after `HasParent` and `WrongThread`. The enum is not
 /// `#[non_exhaustive]`, so a downstream `match` that names every variant and has no wildcard arm
-/// stops compiling until it handles `NotMovable`.
+/// stops compiling until it handles the new variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveError {
     HasParent,
     WrongThread,
+    /// The object or a descendant is currently borrowed by a running callback.
+    Busy,
     /// A descendant answers `false` to [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread).
     NotMovable,
 }
@@ -246,6 +248,7 @@ impl std::fmt::Display for MoveError {
         match self {
             Self::HasParent => write!(f, "cannot move object with parent to thread"),
             Self::WrongThread => write!(f, "cannot move object from different thread"),
+            Self::Busy => write!(f, "cannot move object while it is currently borrowed"),
             Self::NotMovable => write!(f, "object or one of its descendants cannot change thread"),
         }
     }
@@ -289,24 +292,10 @@ impl From<MoveError> for MoveByIdError {
         match err {
             MoveError::HasParent => Self::HasParent,
             MoveError::WrongThread => Self::WrongThread,
+            MoveError::Busy => Self::Busy,
             MoveError::NotMovable => Self::NotMovable,
         }
     }
-}
-
-fn collect_descendants(initial_children: &[ObjectId]) -> Vec<ObjectId> {
-    let mut result = Vec::new();
-    let mut queue: Vec<ObjectId> = initial_children.to_vec();
-
-    while let Some(child_id) = queue.pop() {
-        if !result.contains(&child_id) {
-            result.push(child_id);
-            crate::object::with_object(child_id, |obj| {
-                queue.extend_from_slice(obj.object_data().children());
-            });
-        }
-    }
-    result
 }
 
 /// Sets affinity on `data` and on its owned descendants (`owned_children`), recording visited ids.
@@ -393,11 +382,12 @@ pub fn move_to_thread_by_id(
 /// overlapping mutable borrows under Stacked Borrows and Tree Borrows. Use
 /// [`move_to_thread_by_id`] instead.
 ///
-/// Refuses with [`MoveError::NotMovable`] when a descendant answers `false` to
+/// Refuses with [`MoveError::Busy`] when the root or any descendant is currently borrowed by a
+/// running callback, and with [`MoveError::NotMovable`] when a descendant answers `false` to
 /// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread), before anything is
-/// sent or changed. The root is not asked: only its `ObjectData` is available here, and reaching
-/// the object through the registry would overlap that `&mut`. [`move_to_thread_by_id`] asks the
-/// root too.
+/// sent or changed. The root is not asked [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread):
+/// only its `ObjectData` is available here, and reaching the object through the registry would
+/// overlap that `&mut`. [`move_to_thread_by_id`] asks the root too.
 #[deprecated(
     note = "holding `&mut ObjectData` across `ThreadChange` delivery and recursive child updates \
             overlaps the registry's callback borrow; use `move_to_thread_by_id`"
@@ -407,27 +397,14 @@ pub fn move_to_thread(
     target_thread: ThreadId,
     current_caller_thread: ThreadId,
 ) -> Result<(), MoveError> {
-    if object_data.parent().is_some() {
-        return Err(MoveError::HasParent);
-    }
-    if object_data.thread_id() != current_caller_thread {
-        return Err(MoveError::WrongThread);
-    }
-    if object_data.thread_id() == target_thread {
+    let Some(all_ids) = crate::object::qobject::prepare_move_to_thread_from_data(
+        object_data,
+        target_thread,
+        current_caller_thread,
+    )?
+    else {
         return Ok(());
-    }
-
-    let mut all_ids = vec![object_data.id()];
-    all_ids.extend(collect_descendants(object_data.children()));
-
-    // A descendant that must stay on its thread refuses the whole move, before any event is sent.
-    if all_ids[1..]
-        .iter()
-        .any(|&id| crate::object::with_object(id, |obj| !obj.can_move_to_thread()).unwrap_or(false))
-    {
-        return Err(MoveError::NotMovable);
-    }
-
+    };
     // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
     for &id in &all_ids {
         let mut ev = Event::new(EventKind::ThreadChange);

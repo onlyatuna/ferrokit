@@ -532,6 +532,102 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     }
 }
 
+/// Walks `data` and its unregistered `owned_children`, checking that no owned child is borrowed by
+/// a running callback and that every unregistered owned descendant allows moving to another
+/// thread, while queuing registered children for registry-backed inspection.
+fn inspect_owned_tree(
+    data: &ObjectData,
+    all_ids: &mut Vec<ObjectId>,
+    queue: &mut Vec<ObjectId>,
+) -> Result<(), super::thread::MoveError> {
+    use super::thread::MoveError;
+    if !all_ids.contains(&data.id()) {
+        all_ids.push(data.id());
+    }
+    for owned in data.owned_children() {
+        if OwnedObject::is_borrowed(owned) {
+            return Err(MoveError::Busy);
+        }
+        let owned_id = OwnedObject::object_id(owned);
+        let live_entry = {
+            let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() else {
+                return Err(MoveError::Busy);
+            };
+            reg.get(&owned_id)
+                .filter(|e| e.liveness.load(Ordering::Acquire))
+                .cloned()
+        };
+        if let Some(entry) = live_entry {
+            if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
+                return Err(MoveError::Busy);
+            }
+            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+                return Err(MoveError::WrongThread);
+            }
+            if !all_ids.contains(&owned_id) && !queue.contains(&owned_id) {
+                queue.push(owned_id);
+            }
+        } else {
+            if !owned.can_move_to_thread() {
+                return Err(MoveError::NotMovable);
+            }
+            inspect_owned_tree(owned.object_data(), all_ids, queue)?;
+        }
+    }
+    for &child_id in data.children() {
+        if !all_ids.contains(&child_id) && !queue.contains(&child_id) {
+            queue.push(child_id);
+        }
+    }
+    for child_id in registered_children_of(data.id()) {
+        if !all_ids.contains(&child_id) && !queue.contains(&child_id) {
+            queue.push(child_id);
+        }
+    }
+    Ok(())
+}
+
+/// Drains `queue`, requiring every live registered descendant to be unborrowed on the current
+/// thread and to answer `true` to `QObject::can_move_to_thread`. An id that has no live record in
+/// the registry (such as an unregistered non-owned child) is kept in `all_ids` without failing.
+fn collect_queued_descendants(
+    all_ids: &mut Vec<ObjectId>,
+    queue: &mut Vec<ObjectId>,
+) -> Result<(), super::thread::MoveError> {
+    use super::thread::MoveError;
+    while let Some(child_id) = queue.pop() {
+        if all_ids.contains(&child_id) {
+            continue;
+        }
+        let live_entry = {
+            let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() else {
+                return Err(MoveError::Busy);
+            };
+            reg.get(&child_id)
+                .filter(|e| e.liveness.load(Ordering::Acquire))
+                .cloned()
+        };
+        if let Some(entry) = live_entry {
+            if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
+                return Err(MoveError::Busy);
+            }
+            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+                return Err(MoveError::WrongThread);
+            }
+            with_object(child_id, |obj| {
+                if !obj.can_move_to_thread() {
+                    return Err(MoveError::NotMovable);
+                }
+                inspect_owned_tree(obj.object_data(), all_ids, queue)
+            })
+            .ok_or(MoveError::Busy)??;
+        } else {
+            all_ids.push(child_id);
+        }
+    }
+    Ok(())
+}
+
 /// Stage A of [`crate::object::move_to_thread_by_id`]: validates `id` and collects the full
 /// registered subtree (`all_ids`, root first), releasing every borrow before returning.
 ///
@@ -583,34 +679,65 @@ pub(crate) fn prepare_move_to_thread(
         if !obj.can_move_to_thread() {
             return Err(MoveByIdError::NotMovable);
         }
-        Ok(Some(data.children.clone()))
+        let mut all_ids = Vec::new();
+        let mut queue = Vec::new();
+        inspect_owned_tree(data, &mut all_ids, &mut queue)?;
+        Ok(Some((all_ids, queue)))
     })
     .ok_or(MoveByIdError::Busy)??;
 
-    let Some(initial_children) = initial else {
+    let Some((mut all_ids, mut queue)) = initial else {
         return Ok(None);
     };
+    collect_queued_descendants(&mut all_ids, &mut queue)?;
+    Ok(Some(all_ids))
+}
 
-    let mut all_ids = vec![id];
-    let mut queue = initial_children;
-    while let Some(child_id) = queue.pop() {
-        if all_ids.contains(&child_id) {
-            continue;
-        }
-        if registered_and_borrowed(child_id) {
-            return Err(MoveByIdError::Busy);
-        }
-        all_ids.push(child_id);
-        let more = match with_object(child_id, |obj| {
-            (obj.can_move_to_thread(), obj.object_data().children.clone())
-        }) {
-            Some((false, _)) => return Err(MoveByIdError::NotMovable),
-            Some((true, children)) => children,
-            None => registered_children_of(child_id),
+/// Pre-validation and subtree collection for the deprecated [`crate::object::move_to_thread`].
+///
+/// Checks the root `object_data` and every owned or registered descendant before any
+/// `ThreadChange` is sent or any state is modified. A registered descendant that cannot be
+/// borrowed on the current thread is refused instead of being assumed movable, while unregistered
+/// owned descendants are inspected through `owned_children`.
+pub(crate) fn prepare_move_to_thread_from_data(
+    object_data: &ObjectData,
+    target_thread: ThreadId,
+    current_caller_thread: ThreadId,
+) -> Result<Option<Vec<ObjectId>>, super::thread::MoveError> {
+    use super::thread::MoveError;
+    if object_data.parent().is_some() {
+        return Err(MoveError::HasParent);
+    }
+    if object_data.thread_id() != current_caller_thread {
+        return Err(MoveError::WrongThread);
+    }
+    if object_data.borrow_state.borrow_flag.load(Ordering::Acquire) {
+        return Err(MoveError::Busy);
+    }
+    {
+        let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() else {
+            return Err(MoveError::Busy);
         };
-        queue.extend(more);
+        if let Some(entry) = reg
+            .get(&object_data.id())
+            .filter(|e| e.liveness.load(Ordering::Acquire))
+        {
+            if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
+                return Err(MoveError::Busy);
+            }
+            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+                return Err(MoveError::WrongThread);
+            }
+        }
+    }
+    if object_data.thread_id() == target_thread {
+        return Ok(None);
     }
 
+    let mut all_ids = Vec::new();
+    let mut queue = Vec::new();
+    inspect_owned_tree(object_data, &mut all_ids, &mut queue)?;
+    collect_queued_descendants(&mut all_ids, &mut queue)?;
     Ok(Some(all_ids))
 }
 

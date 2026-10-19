@@ -7,7 +7,8 @@
 //! (`QObject::can_move_to_thread`). A refusal sends no event, changes no affinity and re-arms
 //! nothing on the target thread.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -19,9 +20,9 @@ use ferrokit_core::event_loop::EventLoop;
 #[allow(deprecated)]
 use ferrokit_core::object::move_to_thread;
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_children, query_object_thread, register_owned_qobject,
-    set_parent_by_id, unregister_qobject, with_object, MoveByIdError, MoveError, ObjectData,
-    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    add_owned_child, dispatch_to_object, move_to_thread_by_id, query_object_children,
+    query_object_thread, register_owned_qobject, set_parent_by_id, unregister_qobject, with_object,
+    MoveByIdError, MoveError, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::timer::Timer;
 
@@ -436,4 +437,262 @@ fn the_deprecated_move_refuses_a_subtree_with_a_timer_too() {
     assert_eq!(root.data.thread_id(), here);
     assert_eq!(query_object_thread(timer.object_id()), Some(here));
     assert!(timer.is_active());
+}
+
+/// Runs a one-shot callback from `event` while the registry holds this object's callback borrow.
+struct BorrowedMid {
+    data: ObjectData,
+    thread_changes: u32,
+    on_update: Option<Box<dyn FnOnce()>>,
+}
+
+impl QObject for BorrowedMid {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
+    fn event(&mut self, event: &mut Event) -> bool {
+        match event.kind {
+            EventKind::ThreadChange => {
+                self.thread_changes += 1;
+                false
+            }
+            EventKind::UpdateRequest => {
+                if let Some(run) = self.on_update.take() {
+                    run();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+thread_local! {
+    static ROOT_FOR_SLOT: RefCell<Option<OwnedObject<Probe>>> = const { RefCell::new(None) };
+    static OUTCOME_IN_SLOT: Cell<Option<Result<(), MoveError>>> = const { Cell::new(None) };
+}
+
+/// When a `Timer` descendant (or an ancestor between the root and the `Timer`) is currently
+/// borrowed by a running callback, `with_object` cannot borrow it again. The deprecated
+/// `move_to_thread` must refuse the move with `MoveError::Busy` before sending any event,
+/// detaching any timer or changing any affinity or registration thread, rather than treating the
+/// failed inspection borrow as permission to move.
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
+    let here = ThreadId::current();
+    let el = EventLoop::new();
+    let watcher = Watcher::spawn();
+    let watcher_tid = watcher.tid;
+
+    let root = probe(true);
+    let root_id = root.data.id();
+    let timer = Timer::new();
+    timer.set_interval(5);
+    let timer_id = timer.object_id();
+    set_parent_by_id(timer_id, Some(root_id)).unwrap();
+    ROOT_FOR_SLOT.with(|slot| *slot.borrow_mut() = Some(root));
+    OUTCOME_IN_SLOT.with(|out| out.set(None));
+
+    let ticks = Arc::new(AtomicU32::new(0));
+    let ticks_in_slot = Arc::clone(&ticks);
+    timer.timeout.connect(move |()| {
+        OUTCOME_IN_SLOT.with(|out| {
+            if out.get().is_none() {
+                ROOT_FOR_SLOT.with(|slot| {
+                    let mut borrow = slot.borrow_mut();
+                    let root = borrow.as_mut().expect("root stays in thread-local");
+                    let res = move_to_thread(&mut root.data, watcher_tid, here);
+                    out.set(Some(res));
+                });
+            }
+        });
+        ticks_in_slot.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let armed = timer.start();
+    assert!(armed.is_valid());
+    let scheduled_here = el.timer_registry().lock().unwrap().len();
+
+    assert!(
+        pump_until(&el, || OUTCOME_IN_SLOT.with(|out| out.get().is_some())),
+        "the timer must fire its first callback"
+    );
+    assert_eq!(
+        OUTCOME_IN_SLOT.with(|out| out.get()),
+        Some(Err(MoveError::Busy)),
+        "a timer child in its callback borrow must refuse the move"
+    );
+    assert!(
+        pump_until(&el, || ticks.load(Ordering::SeqCst) >= 2),
+        "the timer must keep ticking on its creating thread"
+    );
+    let root = ROOT_FOR_SLOT
+        .with(|slot| slot.borrow_mut().take())
+        .expect("root must still be present");
+    assert_eq!(
+        root.thread_changes, 0,
+        "no ThreadChange may be sent before the refusal"
+    );
+    assert_eq!(root.data.thread_id(), here);
+    assert_eq!(query_object_thread(root_id), Some(here));
+    assert_eq!(query_object_thread(timer_id), Some(here));
+    assert_eq!(with_object(timer_id, |obj| obj.thread()), Some(here));
+    assert_eq!(timer.timer_id(), armed);
+    assert!(timer.is_active());
+    assert_eq!(el.timer_registry().lock().unwrap().len(), scheduled_here);
+    assert_eq!(
+        watcher.timers_after_pumping(),
+        0,
+        "nothing may be re-armed on the target thread"
+    );
+    // Also cover a Timer deeper in the subtree when an intermediate ancestor holds a callback borrow.
+    let target = another_thread();
+    let root2 = Rc::new(RefCell::new(probe(true)));
+    let root2_id = root2.borrow().data.id();
+    let mid_outcome: Rc<Cell<Option<Result<(), MoveError>>>> = Rc::new(Cell::new(None));
+    let mid_outcome_in_cb = Rc::clone(&mid_outcome);
+    let root2_in_cb = Rc::clone(&root2);
+    // SAFETY: `mid` stays on this thread and is only touched through `OwnedObject` after the
+    // callback returns.
+    let mid = unsafe {
+        register_owned_qobject(BorrowedMid {
+            data: ObjectData::new(ObjectId::next()),
+            thread_changes: 0,
+            on_update: Some(Box::new(move || {
+                let res = move_to_thread(&mut root2_in_cb.borrow_mut().data, target, here);
+                mid_outcome_in_cb.set(Some(res));
+            })),
+        })
+    };
+    let mid_id = mid.data.id();
+    let (nested_timer, _nested_ticks) = counting_timer(5);
+    nested_timer.start();
+    set_parent_by_id(mid_id, Some(root2_id)).unwrap();
+    set_parent_by_id(nested_timer.object_id(), Some(mid_id)).unwrap();
+
+    assert!(dispatch_to_object(
+        mid_id,
+        &mut Event::new(EventKind::UpdateRequest)
+    ));
+    assert_eq!(mid_outcome.get(), Some(Err(MoveError::Busy)));
+    assert_eq!(root2.borrow().thread_changes, 0);
+    assert_eq!(mid.thread_changes, 0);
+    assert_eq!(root2.borrow().data.thread_id(), here);
+    assert_eq!(query_object_thread(root2_id), Some(here));
+    assert_eq!(query_object_thread(mid_id), Some(here));
+    assert_eq!(query_object_thread(nested_timer.object_id()), Some(here));
+    assert!(nested_timer.is_active());
+}
+
+/// Unregistered owned descendants (for which `with_object` returns `None` because they are not in
+/// the global registry) keep working with `move_to_thread` when they are movable, while still
+/// refusing when an unregistered owned descendant or a child below it cannot move.
+#[test]
+#[allow(deprecated)]
+fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
+    let here = ThreadId::current();
+    let target = another_thread();
+
+    let mut root = probe(true);
+    let root_id = root.data.id();
+    let child = Box::new(Probe {
+        data: ObjectData::new(ObjectId::next()),
+        movable: true,
+        thread_changes: 0,
+    });
+    let child_id = child.data.id();
+    // SAFETY: `root` owns `child` at a stable heap address on this thread.
+    unsafe { add_owned_child(root_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
+    let grand = Box::new(Probe {
+        data: ObjectData::new(ObjectId::next()),
+        movable: true,
+        thread_changes: 0,
+    });
+    let grand_id = grand.data.id();
+    // SAFETY: `child` owns `grand` at a stable heap address on this thread.
+    unsafe { add_owned_child(child_id, grand) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
+    // SAFETY: no callback is running; unregister `root`, `child` and `grand` so the successful
+    // deprecated `move_to_thread(&mut root.data, ...)` does not also deliver `ThreadChange` to
+    // `root_id` through the registry while `&mut root.data` is held.
+    unsafe {
+        unregister_qobject(grand_id);
+        unregister_qobject(child_id);
+        unregister_qobject(root_id);
+    }
+    assert!(with_object(child_id, |_| ()).is_none());
+    assert!(with_object(grand_id, |_| ()).is_none());
+
+    assert_eq!(move_to_thread(&mut root.data, target, here), Ok(()));
+    assert_eq!(root.data.thread_id(), target);
+    let child_data = root.data.owned_children()[0].object_data();
+    assert_eq!(child_data.thread_id(), target);
+    assert_eq!(
+        child_data.owned_children()[0].object_data().thread_id(),
+        target
+    );
+    // An unregistered owned descendant that answers `false` to `can_move_to_thread` still refuses.
+    let mut root_pinned = probe(true);
+    let root_pinned_id = root_pinned.data.id();
+    let pinned_child = Box::new(Probe {
+        data: ObjectData::new(ObjectId::next()),
+        movable: false,
+        thread_changes: 0,
+    });
+    let pinned_child_id = pinned_child.data.id();
+    // SAFETY: `root_pinned` owns `pinned_child` on this thread.
+    unsafe { add_owned_child(root_pinned_id, pinned_child) }
+        .unwrap_or_else(|(e, _)| panic!("{e:?}"));
+    // SAFETY: no callback runs on `pinned_child`.
+    unsafe { unregister_qobject(pinned_child_id) };
+    assert!(with_object(pinned_child_id, |_| ()).is_none());
+
+    assert_eq!(
+        move_to_thread(&mut root_pinned.data, target, here),
+        Err(MoveError::NotMovable)
+    );
+    assert_eq!(root_pinned.thread_changes, 0);
+    assert_eq!(root_pinned.data.thread_id(), here);
+    assert_eq!(
+        root_pinned.data.owned_children()[0]
+            .object_data()
+            .thread_id(),
+        here
+    );
+
+    // A Timer attached below an owned child that is later unregistered is still reached through
+    // `owned_children` and refuses the move.
+    let mut root_with_timer = probe(true);
+    let root_with_timer_id = root_with_timer.data.id();
+    let mid_child = Box::new(Probe {
+        data: ObjectData::new(ObjectId::next()),
+        movable: true,
+        thread_changes: 0,
+    });
+    let mid_child_id = mid_child.data.id();
+    // SAFETY: `root_with_timer` owns `mid_child` on this thread.
+    unsafe { add_owned_child(root_with_timer_id, mid_child) }
+        .unwrap_or_else(|(e, _)| panic!("{e:?}"));
+    let timer = Timer::new();
+    set_parent_by_id(timer.object_id(), Some(mid_child_id)).unwrap();
+    // SAFETY: no callback runs on `mid_child`.
+    unsafe { unregister_qobject(mid_child_id) };
+    assert!(with_object(mid_child_id, |_| ()).is_none());
+
+    assert_eq!(
+        move_to_thread(&mut root_with_timer.data, target, here),
+        Err(MoveError::NotMovable)
+    );
+    assert_eq!(root_with_timer.thread_changes, 0);
+    assert_eq!(root_with_timer.data.thread_id(), here);
+    assert_eq!(
+        root_with_timer.data.owned_children()[0]
+            .object_data()
+            .thread_id(),
+        here
+    );
+    assert_eq!(query_object_thread(timer.object_id()), Some(here));
 }
