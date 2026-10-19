@@ -75,3 +75,84 @@ jobs:
       - name: Run doc tests
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
+
+  miri:
+    name: Nightly Miri (SB & TB)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly Miri toolchain
+        run: |
+          rustup toolchain install nightly-2026-10-16 --profile minimal -c miri -c rust-src
+          cargo +nightly-2026-10-16 miri setup
+          rustc +nightly-2026-10-16 -V
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run Miri sweep tool unit tests
+        run: python -m unittest tools/test_miri_sweep.py
+
+      - name: Run Miri sweep (SB & TB, baseline diff, isolation allowlist)
+        run: >-
+          python tools/miri_sweep.py
+          --crate ferrokit-core
+          --toolchain nightly-2026-10-16
+          --models SB,TB
+          --baseline tools/miri_baseline.json
+          --run-isolation-allowlist
+          --fail-on-regression
+          --summary "$GITHUB_STEP_SUMMARY"
+          --out miri_results.json
+
+  model:
+    name: Concurrency Model Tests (${{ matrix.suite.name }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: std
+            args: ""
+          - name: loom
+            args: "--features loom --test loom_tests"
+          - name: shuttle
+            args: "--features shuttle --test shuttle_tests"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rust version
+        run: rustc -V && cargo -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Model Test (${{ matrix.suite.name }})
+        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml ${{ matrix.suite.args }}
+
+  model-tsan:
+    name: Concurrency Model ThreadSanitizer
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly toolchain with rust-src
+        run: |
+          rustup toolchain install nightly --profile minimal -c rust-src
+          rustc +nightly -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Native Stress with ThreadSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=thread"
+        run: |
+          cargo +nightly test --target x86_64-unknown-linux-gnu -Zbuild-std \
+            --manifest-path crates/ferrokit-model/Cargo.toml --test stress_tests -- --nocapture
