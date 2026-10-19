@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use ferrokit_core::event::{compress_event, CoreCompressor, Event, EventFilterChain, EventKind};
 use ferrokit_core::event_loop::{EventLoop, PostedEvent};
 use ferrokit_core::object::{
-    register_qobject, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext,
 };
 use ferrokit_core::signal::Signal;
 use ferrokit_core::timer::Timer;
@@ -96,9 +97,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
             self.intercept
         }
@@ -112,9 +113,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.event_called = true;
             true
@@ -126,18 +127,21 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         intercept: true, // Intercept
     };
     // SAFETY: both objects remain alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut filter_b_obj) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter_b_obj)) };
 
     let mut target = TargetWidget {
         data: ObjectData::new(ObjectId(300)),
         event_called: false,
     };
-    // SAFETY: target remains alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut target) };
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the registry's pointer.
     target.object_data_mut().install_event_filter(id_b);
+    let target_ptr = &raw mut target;
+    // SAFETY: target remains alive and unmoved on this thread until unregistered below.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(target_ptr)) };
 
     let mut ev = Event::new(EventKind::UpdateRequest);
-    let handled = ferrokit_core::object::send_event(target.data.id, &mut ev);
+    let handled = ferrokit_core::object::send_event(target.data.id(), &mut ev);
 
     assert!(
         handled,
@@ -146,13 +150,14 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     assert!(!target.event_called, "Target event() must not be called");
 
     // 2.3 Tombstone test: remove_event_filter() inside filter callback should not crash iteration
-    target.object_data_mut().remove_event_filter(id_b);
-    assert_eq!(target.object_data().event_filters.snapshot(), vec![]);
+    // SAFETY: no callback of `target` runs; `target_ptr` is the registered pointer.
+    unsafe { (*target_ptr).object_data_mut().remove_event_filter(id_b) };
+    assert_eq!(target.object_data().event_filters().snapshot(), vec![]);
 
     // SAFETY: the callbacks have returned and these registrations are owner-thread.
     unsafe {
         unregister_qobject(id_b);
-        unregister_qobject(target.data.id);
+        unregister_qobject(target.data.id());
     }
 }
 
@@ -208,14 +213,14 @@ fn test_level2_loop_livelock_protection() {
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
-        fn object_data_mut(&mut self) -> &mut ObjectData {
-            &mut self.data
-        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+    }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.counter.fetch_add(1, Ordering::SeqCst);
             // When receiving an event, post another event inside callback
             self.loop_handle
-                .post_event(self.data.id, Event::new(EventKind::User(Box::new(()))));
+                .post_event(self.data.id(), Event::new(EventKind::User(Box::new(()))));
             true
         }
     }
@@ -229,8 +234,8 @@ fn test_level2_loop_livelock_protection() {
         loop_handle: event_loop.handle(),
     };
     // SAFETY: receiver remains alive and unmoved on this thread until unregistered below.
-    unsafe { register_qobject(&mut receiver) };
-    let r_id = receiver.data.id;
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
+    let r_id = receiver.data.id();
 
     event_loop.post_event(r_id, Event::new(EventKind::User(Box::new(()))));
 
@@ -267,7 +272,7 @@ fn test_level3_timer_and_event_loop_exit() {
     });
 
     // Create 50ms single-shot timer
-    let mut timer = Timer::new();
+    let timer = Timer::new();
     timer.set_single_shot(true);
     timer.set_interval(50);
 
@@ -277,7 +282,7 @@ fn test_level3_timer_and_event_loop_exit() {
         loop_handle.post_quit(ObjectId(0), 0); // Quit event loop
     });
 
-    timer.as_mut().start();
+    timer.start();
 
     // Start event loop
     let exit_code = event_loop.exec();

@@ -34,7 +34,9 @@ pub use task::*;
 pub use thread::*;
 
 // Re-export thread affinity and context primitives from object::thread for unified access
+#[allow(deprecated)]
+pub use crate::object::move_to_thread;
 pub use crate::object::{
-    move_to_thread, query_object_thread, query_thread_sender, register_thread_sender,
+    move_to_thread_by_id, query_object_thread, query_thread_sender, register_thread_sender,
     unregister_thread_sender, EventSender, ThreadContext, ThreadId,
 };

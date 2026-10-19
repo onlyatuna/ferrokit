@@ -9,6 +9,7 @@ pub mod io;
 pub mod json;
 pub mod meta;
 pub mod object;
+mod poison;
 pub mod property;
 pub mod serialize;
 pub mod settings;
