@@ -6,13 +6,14 @@
 //!   `QObject::installEventFilter` does not reject self (`obj == this`) or direct cycles.
 //!   It only validates thread affinity, removes existing entry, and prepends to the filter list.
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    install_event_filter, register_qobject, send_event, unregister_qobject, ObjectData, ObjectId,
-    QObject,
+    install_event_filter, register_qobject_ptr, send_event, unregister_qobject, ObjectData,
+    ObjectId, QObject,
 };
 
 struct SelfFilterWidget {
@@ -37,11 +38,11 @@ impl QObject for SelfFilterWidget {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, watched: ObjectId, _event: &mut Event) -> bool {
-        if watched == self.data.id {
+        if watched == self.data.id() {
             self.filter_called.fetch_add(1, Ordering::SeqCst);
         }
         self.consume
@@ -59,16 +60,18 @@ fn install_event_filter_allows_self() {
         Arc::new(AtomicU32::new(0)),
         false,
     );
-    let id = obj.data.id;
-    unsafe { register_qobject(&mut obj) };
+    let id = obj.data.id();
+    let obj_ptr = &raw mut obj;
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
-    let ok = install_event_filter(&mut obj.data, id);
+    // SAFETY: no callback of `obj` runs; `obj_ptr` is the registered pointer.
+    let ok = install_event_filter(unsafe { &mut (*obj_ptr).data }, id);
     assert!(
         ok,
         "install_event_filter must allow installing self as filter (qobject.cpp:2407-2423)"
     );
     assert!(
-        obj.data.event_filters.contains(id),
+        obj.data.event_filters().contains(id),
         "filter chain must contain self id"
     );
 
@@ -87,16 +90,19 @@ fn install_event_filter_allows_mutual_cycle() {
         Arc::new(AtomicU32::new(0)),
         false,
     );
-    let a_id = obj_a.data.id;
-    let b_id = obj_b.data.id;
+    let a_id = obj_a.data.id();
+    let b_id = obj_b.data.id();
+    let a_ptr = &raw mut obj_a;
+    let b_ptr = &raw mut obj_b;
 
     unsafe {
-        register_qobject(&mut obj_a);
-        register_qobject(&mut obj_b);
+        register_qobject_ptr(NonNull::new_unchecked(a_ptr));
+        register_qobject_ptr(NonNull::new_unchecked(b_ptr));
     }
 
-    let ok_a = install_event_filter(&mut obj_a.data, b_id);
-    let ok_b = install_event_filter(&mut obj_b.data, a_id);
+    // SAFETY: no callback of either object runs; the pointers are the registered ones.
+    let ok_a = install_event_filter(unsafe { &mut (*a_ptr).data }, b_id);
+    let ok_b = install_event_filter(unsafe { &mut (*b_ptr).data }, a_id);
 
     assert!(ok_a, "obj_a installing obj_b must succeed");
     assert!(
@@ -118,10 +124,14 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     // 1. Pass-through mode: filter returns false -> event() is called
     let mut obj =
         SelfFilterWidget::new(Arc::clone(&filter_called), Arc::clone(&event_called), false);
-    let id = obj.data.id;
-    unsafe { register_qobject(&mut obj) };
-
+    let id = obj.data.id();
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the pointer the registry holds.
     install_event_filter(&mut obj.data, id);
+    let obj_ptr = &raw mut obj;
+    // SAFETY: `obj` stays on this thread, unmoved and alive, until unregistered below, and only
+    // `obj_ptr` is used to reach it from here on.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
     let mut ev1 = Event::new(EventKind::UpdateRequest);
     let res1 = send_event(id, &mut ev1);
@@ -131,7 +141,8 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     assert_eq!(event_called.load(Ordering::SeqCst), 1);
 
     // 2. Consume mode: filter returns true -> event() is NOT called, send_event returns true
-    obj.consume = true;
+    // SAFETY: no callback is active, and `obj_ptr` is the pointer that was registered.
+    unsafe { (*obj_ptr).consume = true };
     let mut ev2 = Event::new(EventKind::UpdateRequest);
     let res2 = send_event(id, &mut ev2);
 

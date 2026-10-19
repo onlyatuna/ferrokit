@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::any::Any;
+use std::ptr::NonNull;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -11,7 +12,8 @@ use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{
-    invoke_method_on_thread, register_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+    invoke_method_on_thread, register_qobject_ptr, unregister_qobject, with_object, ObjectData,
+    ObjectId, QObject,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 use ferrokit_core::variant::Variant;
@@ -28,8 +30,8 @@ impl QObject for TagWidget {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn Any> {
@@ -108,6 +110,18 @@ struct QueuedSignalProbe {
     changed: Signal<String>,
 }
 
+/// What the registered widget `id` ran, read through the registry. The predicate given to
+/// `pump_until` uses this, not a reference to the widget: a reference held while the loop runs
+/// would still be live when a queued invoke writes through the registry's pointer.
+fn ran_of(id: ObjectId) -> Option<i32> {
+    with_object(id, |o| {
+        o.as_qobject_any()
+            .and_then(|any| any.downcast_ref::<TagWidget>())
+            .map(|w| w.ran)
+    })
+    .flatten()
+}
+
 /// Pumps the loop on this thread until `done` holds; panics if it never does (watchdog).
 fn pump_until(el: &EventLoop, what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -129,10 +143,10 @@ fn queued_name_only_invoke_runs_first_compatible_overload() {
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let posted = w.invoke_method_with_type("tag", &[Variant::I64(3)], ConnectionType::Queued);
-    pump_until(&el, "queued tag", || w.ran != 0);
+    pump_until(&el, "queued tag", || ran_of(id).is_some_and(|ran| ran != 0));
     let ran = w.ran;
 
     // SAFETY: `w` was registered above and is still alive.
@@ -152,7 +166,7 @@ fn queued_signature_invoke_rejects_wrong_argument_type_without_posting() {
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let r = w.invoke_method_with_type("tag(QString)", &[Variant::I64(3)], ConnectionType::Queued);
     el.process_events(false);
@@ -179,7 +193,7 @@ fn queued_name_only_with_no_compatible_overload_is_method_not_found_without_post
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let r = w.invoke_method_with_type("tag", &[Variant::F64(1.5)], ConnectionType::Queued);
     el.process_events(false);
@@ -201,13 +215,13 @@ fn queued_signal_invoke_emits_on_owner_loop() {
         data: ObjectData::with_auto_id(),
         changed: Signal::new(),
     };
-    let id = probe.data.id;
+    let id = probe.data.id();
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
     probe.changed.connect(move |v| s.lock().push(v.clone()));
 
     // SAFETY: `probe` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut probe) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
     let posted = probe.invoke_method_with_type(
         "changed(String)",
         &[Variant::String("q".into())],
@@ -236,7 +250,7 @@ fn cross_thread_queued_signature_rejects_wrong_argument_type_without_posting() {
     let mut w = new_tag_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
     // the receiver id and the static MetaObject, never the object itself.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn(move || {

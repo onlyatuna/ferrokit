@@ -6,13 +6,14 @@
 //!   If an application or object event filter consumes an event, `filtered = true`
 //!   and `notify_helper` returns `filtered` (`true`).
 
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{clear_application_event_filters, install_application_event_filter};
 use ferrokit_core::object::{
-    register_qobject, send_event, unregister_qobject, ObjectData, ObjectId, QObject,
+    register_qobject_ptr, send_event, unregister_qobject, ObjectData, ObjectId, QObject,
 };
 struct ConsumingFilter {
     data: ObjectData,
@@ -30,8 +31,8 @@ impl QObject for ConsumingFilter {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
         true // consume the event
@@ -56,8 +57,8 @@ impl QObject for Receiver {
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
         self.reached.store(true, Ordering::SeqCst);
@@ -73,18 +74,18 @@ fn application_filter_consumed_event_returns_true() {
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
     unsafe {
-        register_qobject(&mut filter);
-        register_qobject(&mut receiver);
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
     }
-    install_application_event_filter(filter.data.id);
+    install_application_event_filter(filter.data.id());
 
     let mut event = Event::new(EventKind::UpdateRequest);
-    let handled = send_event(receiver.data.id, &mut event);
+    let handled = send_event(receiver.data.id(), &mut event);
 
     clear_application_event_filters();
     unsafe {
-        unregister_qobject(filter.data.id);
-        unregister_qobject(receiver.data.id);
+        unregister_qobject(filter.data.id());
+        unregister_qobject(receiver.data.id());
     }
 
     assert!(
@@ -104,20 +105,22 @@ fn object_filter_consumed_event_returns_true() {
     let mut filter = ConsumingFilter::new();
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
-    unsafe {
-        register_qobject(&mut filter);
-        register_qobject(&mut receiver);
-    }
+    // Installed before registering: a `&mut` through the variable after that would invalidate
+    // the registry's pointer.
     receiver
         .object_data_mut()
-        .install_event_filter(filter.data.id);
+        .install_event_filter(filter.data.id());
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+        register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
+    }
 
     let mut event = Event::new(EventKind::UpdateRequest);
-    let handled = send_event(receiver.data.id, &mut event);
+    let handled = send_event(receiver.data.id(), &mut event);
 
     unsafe {
-        unregister_qobject(filter.data.id);
-        unregister_qobject(receiver.data.id);
+        unregister_qobject(filter.data.id());
+        unregister_qobject(receiver.data.id());
     }
 
     assert!(

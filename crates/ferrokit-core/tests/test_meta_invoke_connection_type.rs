@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::any::Any;
+use std::ptr::NonNull;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,7 +10,8 @@ use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{
-    invoke_method_on_thread, register_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+    invoke_method_on_thread, register_qobject_ptr, unregister_qobject, with_object, ObjectData,
+    ObjectId, QObject,
 };
 use ferrokit_core::signal::ConnectionType;
 use ferrokit_core::variant::Variant;
@@ -26,8 +28,8 @@ impl QObject for InvokeWidget {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 
     fn as_qobject_any(&self) -> Option<&dyn Any> {
@@ -85,6 +87,18 @@ fn new_widget(id: ObjectId) -> InvokeWidget {
     }
 }
 
+/// The width of the registered widget `id`, read through the registry. The predicate given to
+/// `pump_until` uses this, not a reference to the widget: a reference held while the loop runs
+/// would still be live when a queued invoke writes through the registry's pointer.
+fn width_of(id: ObjectId) -> Option<i32> {
+    with_object(id, |o| {
+        o.as_qobject_any()
+            .and_then(|any| any.downcast_ref::<InvokeWidget>())
+            .map(|w| w.width)
+    })
+    .flatten()
+}
+
 /// Pumps the loop on this thread until `done` holds; panics if it never does (watchdog).
 fn pump_until(el: &EventLoop, what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -103,7 +117,7 @@ fn direct_and_auto_on_owner_thread_invoke_immediately() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let direct =
         w.invoke_method_with_type(ADD_WIDTH, &[Variant::from(5i32)], ConnectionType::Direct);
@@ -124,12 +138,12 @@ fn queued_on_owner_thread_is_deferred_until_loop_runs() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let posted =
         w.invoke_method_with_type(ADD_WIDTH, &[Variant::from(3i32)], ConnectionType::Queued);
     let width_before_loop = w.width;
-    pump_until(&el, "queued invoke", || w.width == 3);
+    pump_until(&el, "queued invoke", || width_of(id) == Some(3));
     let width_after = w.width;
 
     // SAFETY: `w` was registered above and is still alive.
@@ -152,7 +166,7 @@ fn blocking_queued_on_owner_thread_is_refused_without_hanging() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let result = w.invoke_method_with_type(
         ADD_WIDTH,
@@ -177,7 +191,7 @@ fn queued_rejects_unknown_member_and_bad_arity_synchronously() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let unknown = w.invoke_method_with_type("nonExistent()", &[], ConnectionType::Queued);
     let bad_arity = w.invoke_method_with_type(ADD_WIDTH, &[], ConnectionType::Queued);
@@ -217,7 +231,7 @@ fn cross_thread_blocking_queued_returns_owner_thread_result() {
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
     // the receiver id and the static MetaObject, never the object itself.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn(move || {
@@ -260,7 +274,7 @@ fn cross_thread_queued_returns_at_once_and_applies_on_owner_loop() {
     let mut w = new_widget(id);
     // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
     // the receiver id and the static MetaObject, never the object itself.
-    unsafe { register_qobject(&mut w) };
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
     let worker = thread::spawn(move || {
@@ -279,7 +293,7 @@ fn cross_thread_queued_returns_at_once_and_applies_on_owner_loop() {
         .expect("watchdog: queued invoke must return without waiting for the owner loop");
     worker.join().expect("worker thread must not panic");
     let width_before_loop = w.width;
-    pump_until(&el, "cross-thread queued invoke", || w.width == 6);
+    pump_until(&el, "cross-thread queued invoke", || width_of(id) == Some(6));
     let width_after = w.width;
 
     // SAFETY: `w` was registered above and is still alive.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event::*;
-use ferrokit_core::object::{register_boxed_qobject, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
@@ -47,8 +47,8 @@ impl QObject for EventSpyWidget {
         &self.data
     }
 
-    fn object_data_mut(&mut self) -> &mut ObjectData {
-        &mut self.data
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
@@ -198,7 +198,7 @@ fn test_advanced_event_dispatch_to_qobject() {
     let gesture = Arc::new(AtomicBool::new(false));
     let hover = Arc::new(AtomicBool::new(false));
 
-    let spy = Box::new(EventSpyWidget::new(
+    let spy = EventSpyWidget::new(
         ObjectId::next(),
         Arc::clone(&dbl_click),
         Arc::clone(&context_menu),
@@ -207,10 +207,11 @@ fn test_advanced_event_dispatch_to_qobject() {
         Arc::clone(&tablet),
         Arc::clone(&gesture),
         Arc::clone(&hover),
-    ));
+    );
 
-    // SAFETY: the returned Box stays at this address until after it is unregistered.
-    let (spy_id, mut pinned) = unsafe { register_boxed_qobject(spy) };
+    // SAFETY: the owner stays on this thread; no callback of the spy runs in this test.
+    let mut pinned = unsafe { register_owned_qobject(spy) };
+    let spy_id = OwnedObject::object_id(&pinned);
 
     // 1. Mouse Button Double Click
     let mut ev_dbl = Event::new(EventKind::MouseButtonDblClick {
