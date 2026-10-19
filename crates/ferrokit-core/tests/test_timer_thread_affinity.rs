@@ -8,6 +8,7 @@
 //! nothing on the target thread.
 
 use std::cell::{Cell, RefCell};
+use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -862,32 +863,47 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
             })),
         })
     };
-    let mut dying_mid = Probe {
+    let mut dying_mid = ManuallyDrop::new(Probe {
         data: ObjectData::new(ObjectId::next()),
         movable: true,
         thread_changes: 0,
-    };
-    let dying_mid_id = dying_mid.data.id();
+    });
+    let dying_mid_ptr: *mut Probe = (&raw mut dying_mid).cast::<Probe>();
+    // SAFETY: `dying_mid` stays in `ManuallyDrop` on this stack frame and is not registered yet;
+    // every access goes through `dying_mid_ptr`.
+    let dying_mid_id = unsafe { (*dying_mid_ptr).data.id() };
     // List `dying_mid_id` in `root_dead.data.children` while leaving `dying_mid.data.parent` clear
-    // before registration; then attach `dying_mid` to `notifier` so `drop(dying_mid)` fires
-    // `notifier`'s `ChildRemoved` while `dying_mid`'s record still exists in the registry with
-    // `liveness == false` and `children == [timer]`.
-    reparent(
-        &mut dying_mid.data,
-        None,
-        Some(&mut root_dead.borrow_mut().data),
-    );
-    reparent(&mut dying_mid.data, None, None);
-    // SAFETY: `dying_mid` stays at this stack address until `drop(dying_mid)` unregisters it.
+    // before registration; then attach `dying_mid` to `notifier` so dropping `dying_mid` in place
+    // fires `notifier`'s `ChildRemoved` while `dying_mid`'s record still exists in the registry
+    // with `liveness == false` and `children == [timer]`.
     unsafe {
-        register_qobject_ptr(NonNull::new_unchecked(
-            &raw mut dying_mid as *mut dyn QObject,
-        ));
+        reparent(
+            &mut (*dying_mid_ptr).data,
+            None,
+            Some(&mut root_dead.borrow_mut().data),
+        );
+        reparent(&mut (*dying_mid_ptr).data, None, None);
+    }
+    // SAFETY: `dying_mid` stays in place at `dying_mid_ptr` in `ManuallyDrop` until after
+    // `ObjectData::drop` finishes `unregister_qobject(dying_mid_id)` inside `drop_in_place` below,
+    // and every owner access goes through `dying_mid_ptr`.
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(dying_mid_ptr as *mut dyn QObject));
     }
     set_parent_by_id(dying_mid_id, Some(notifier.data.id())).unwrap();
     set_parent_by_id(timer_under_dying_id, Some(dying_mid_id)).unwrap();
-    drop(dying_mid);
+    assert_eq!(
+        with_object(dying_mid_id, |obj| obj.can_move_to_thread()),
+        Some(true)
+    );
+    // SAFETY: `dying_mid_ptr` is the registered pointer, no callback on `dying_mid` is running,
+    // `ObjectData::drop` unregisters `dying_mid_id` before returning while the object remains at
+    // `dying_mid_ptr`, and `ManuallyDrop` prevents a second drop when `dying_mid` leaves scope.
+    unsafe {
+        std::ptr::drop_in_place(dying_mid_ptr);
+    }
 
+    assert_eq!(query_object_thread(dying_mid_id), None);
     assert_eq!(dead_by_id.get(), Some(Err(MoveByIdError::NotMovable)));
     assert_eq!(dead_by_ref.get(), Some(Err(MoveError::NotMovable)));
     assert_eq!(root_dead.borrow().thread_changes, 0);
