@@ -269,7 +269,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
 ///
 /// let m = RecursiveMutex::new(0_i32);
 /// let mut g = m.lock();
-/// let r: &mut i32 = &mut g; // no DerefMut
+/// let r: &mut i32 = &mut *g; // no DerefMut
 /// *r += 1;
 /// ```
 ///

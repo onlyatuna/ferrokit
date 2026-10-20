@@ -1,13 +1,32 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `RecursiveMutexGuard` must not allow aliasing `&mut T` or cross-thread release. Those
-//! properties are enforced at compile time by the `compile_fail` doctests on
-//! `RecursiveMutexGuard`; the tests here cover the runtime behaviour that remains valid.
+//! Runtime and compile-time tests for `RecursiveMutex` and `RecursiveMutexGuard`.
+//!
+//! Covered here: re-entrant lock behaviour on the owner thread, and that a timed lock attempt
+//! from another thread fails while the owner holds the lock. Covered here as well: positive
+//! compile-time checks of the auto-trait impls (`Sync`/`Send`).
+//!
+//! The negative guarantees (no `&mut T` through the guard without `DerefMut`, and the guard is
+//! `!Send`) are NOT tested here; they live in the `compile_fail` doctests on
+//! `RecursiveMutexGuard` in `src/thread/sync.rs`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::thread;
 use std::time::Duration;
 
-use ferrokit_core::thread::RecursiveMutex;
+use ferrokit_core::thread::{RecursiveMutex, RecursiveMutexGuard};
+
+fn assert_sync<T: Sync>() {}
+fn assert_send<T: Send>() {}
+fn assert_send_sync<T: Send + Sync>() {}
+
+/// Positive compile-time controls: these must keep compiling.
+#[test]
+fn auto_trait_impls_hold() {
+    assert_sync::<RecursiveMutexGuard<'static, i32>>();
+    assert_sync::<RecursiveMutex<Cell<i32>>>();
+    assert_send_sync::<RecursiveMutex<i32>>();
+    assert_send::<RecursiveMutex<i32>>();
+}
 
 /// Re-entrant guards on one thread observe the same value, and mutation goes through interior
 /// mutability so no two `&mut` ever exist.
