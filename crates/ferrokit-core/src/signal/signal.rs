@@ -775,7 +775,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 let slot = Arc::clone(&slot_for_queued);
                 let receiver_id = target_receiver.unwrap_or(ObjectId(0));
 
-                let meta_event = Event::new(EventKind::MetaCall(Box::new(move |_| {
+                let meta_event = Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
                     let _inner_guard = SenderGuard::new(emitter);
                     slot(&value_clone);
                 })));
@@ -882,7 +882,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
                     let receiver_id = target_receiver.unwrap_or(ObjectId(0));
                     let (tx, rx) = std::sync::mpsc::channel();
 
-                    let meta_event = Event::new(EventKind::MetaCall(Box::new(move |_| {
+                    let meta_event = Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
                         let _inner_guard = SenderGuard::new(emitter);
                         slot(&value_clone);
                         let _ = tx.send(());
