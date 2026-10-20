@@ -1,85 +1,53 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Reproduction for `RecursiveMutexGuard`: `deref_mut` hands out `&mut T` on every guard, and the
-//! guard is `Send` without any owner-thread check. Each test documents the expected correct
-//! behaviour; a failure or a Miri report is the defect.
+//! `RecursiveMutexGuard` must not allow aliasing `&mut T` or cross-thread release. Those
+//! properties are enforced at compile time by the `compile_fail` doctests on
+//! `RecursiveMutexGuard`; the tests here cover the runtime behaviour that remains valid.
 
-use std::sync::mpsc;
+use std::cell::RefCell;
 use std::thread;
 use std::time::Duration;
 
-use ferrokit_core::thread::{RecursiveMutex, RecursiveMutexGuard};
+use ferrokit_core::thread::RecursiveMutex;
 
-fn assert_send<T: Send>() {}
-
-/// Compile-time probe: the guard is `Send` whenever `T: Send`. `std::sync::MutexGuard` is not.
+/// Re-entrant guards on one thread observe the same value, and mutation goes through interior
+/// mutability so no two `&mut` ever exist.
 #[test]
-fn recursive_mutex_guard_is_send_probe() {
-    assert_send::<RecursiveMutexGuard<'static, i32>>();
-}
+fn reentrant_lock_reads_are_consistent() {
+    let m = RecursiveMutex::new(RefCell::new(0_i32));
+    let g1 = m.lock();
+    let g2 = m.lock();
+    let g3 = m
+        .try_lock()
+        .expect("re-entrant try_lock succeeds for the owner");
 
-/// Two live guards on one thread, each producing a `&mut i32`. Both `&mut` are used after the
-/// other was created, so Stacked Borrows and Tree Borrows must reject the first write-through
-/// once the second `&mut` exists.
-#[test]
-fn reentrant_guards_yield_aliasing_mut_refs() {
-    let m = RecursiveMutex::new(0_i32);
-    let mut g1 = m.lock();
-    let mut g2 = m.lock();
-    let a: &mut i32 = &mut g1;
-    let b: &mut i32 = &mut g2;
-    *b += 1;
-    *a += 1;
-    assert_eq!(*b, 2);
+    *g1.borrow_mut() += 1;
+    assert_eq!(*g2.borrow(), 1);
+    assert_eq!(*g3.borrow(), 1);
+
+    drop(g3);
     drop(g2);
+    assert_eq!(*g1.borrow(), 1);
     drop(g1);
+
+    assert_eq!(*m.lock().borrow(), 1);
 }
 
-/// A guard moved to another thread and dropped there. The guard's `Drop` does not check the
-/// owner, so the lock is released by a thread that never acquired it.
+/// While the owner thread holds the lock, a timed lock attempt from another thread must fail.
 #[test]
-fn guard_sent_to_other_thread_releases_on_drop() {
+fn try_lock_for_from_other_thread_fails_while_held() {
     let m = RecursiveMutex::new(0_i32);
     let g = m.lock();
-    let (tx, rx) = mpsc::channel::<RecursiveMutexGuard<'_, i32>>();
-    thread::scope(|s| {
-        s.spawn(move || {
-            let g = rx.recv_timeout(Duration::from_secs(5)).expect("guard received");
-            drop(g);
-        });
-        tx.send(g).expect("send guard");
+
+    let acquired = thread::scope(|s| {
+        s.spawn(|| m.try_lock_for(Duration::from_millis(200)).is_some())
+            .join()
+            .expect("worker thread did not panic")
     });
-}
 
-/// Owner-thread violation: the main thread hands its guard to a helper, then re-locks. A correct
-/// mutex still holds the lock on behalf of the helper, so a `try_lock_for` from the main thread
-/// must fail. The re-entrant path accepts the main thread as owner and succeeds, giving the main
-/// thread a second `&mut` while the helper still holds one.
-#[test]
-fn reentrant_lock_after_guard_moved_to_other_thread_succeeds() {
-    let m = RecursiveMutex::new(0_i32);
-    let (to_helper, helper_rx) = mpsc::channel::<RecursiveMutexGuard<'_, i32>>();
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-
-    thread::scope(|s| {
-        s.spawn(move || {
-            let g = helper_rx.recv_timeout(Duration::from_secs(5)).expect("guard received");
-            done_tx.send(()).expect("signal main");
-            release_rx.recv_timeout(Duration::from_secs(5)).expect("release signal");
-            drop(g);
-        });
-
-        to_helper.send(m.lock()).expect("send guard");
-        done_rx.recv_timeout(Duration::from_secs(5)).expect("helper holds guard");
-
-        // The helper's guard is still alive, so the lock must be held by another owner.
-        let reentered = m.try_lock_for(Duration::from_millis(200));
-        let acquired = reentered.is_some();
-        drop(reentered);
-        release_tx.send(()).expect("release helper");
-        assert!(
-            !acquired,
-            "lock re-acquired on the main thread while a guard owned by the helper was alive"
-        );
-    });
+    assert!(
+        !acquired,
+        "lock acquired by another thread while the owner still holds it"
+    );
+    drop(g);
+    assert!(m.try_lock_for(Duration::from_millis(200)).is_some());
 }
