@@ -155,15 +155,17 @@ fn queued_call_receiver_alive(receiver: ObjectId) -> bool {
 /// Runs a `MetaCallNoTarget`. No borrow of `receiver` is held, so the functor can reach its
 /// receiver through `with_object_mut`, as a direct slot can.
 fn run_no_target_call(receiver: ObjectId, task: crate::event::MetaCallNoTargetFn) -> bool {
-    if queued_call_receiver_alive(receiver) {
-        task();
+    if !queued_call_receiver_alive(receiver) {
+        return false;
     }
+    task();
     true
 }
 
 /// Runs a `MetaCall` with its receiver as the target. The receiver is borrowed while the functor
-/// runs. When no borrow is available (`ObjectId(0)`, or the receiver's borrow is held by a running
-/// callback) the functor gets a unit target, so any downcast to a receiver type fails.
+/// runs. Only `ObjectId(0)`, which names no object, gets the unit target, so a downcast to a
+/// receiver type fails. A registered receiver never gets it: `notify_helper` rejects or defers a
+/// receiver that a running callback has borrowed before this call.
 fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
     if !queued_call_receiver_alive(receiver) {
         return false;
