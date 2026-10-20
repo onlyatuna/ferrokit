@@ -26,10 +26,22 @@ use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::tooltip::{expire_time_ms, place_tip, CURSOR_SIZE, FALL_ASLEEP_DELAY_MS};
 use ferrokit_widgets::*;
 
+/// Every test in this binary drives process-wide state (the tip, and for the real windows the
+/// foreground window and the cursor). They run one at a time, so a change of the foreground
+/// window made by this process cannot come from a sibling test.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // ---- pure functions ------------------------------------------------------------------------
 
 #[test]
 fn tip_lifetime_follows_text_length() {
+    let _serial = serial();
     let text = |n: usize| "a".repeat(n);
     assert_eq!(expire_time_ms(&text(0), -1), 10_000);
     assert_eq!(
@@ -70,12 +82,14 @@ const TIP: Size = Size {
 
 #[test]
 fn tip_sits_right_of_and_below_the_cursor() {
+    let _serial = serial();
     let p = place_tip(Point::new(100, 200), TIP, CURSOR_SIZE, SCREEN);
     assert_eq!(p, Point::new(102, 216), "offset (2, cursor height)");
 }
 
 #[test]
 fn tip_flips_left_of_the_cursor_at_the_right_edge() {
+    let _serial = serial();
     // 990 + 2 + 120 overflows: x -= 4 + width, so the tip ends 2 px left of the cursor.
     let p = place_tip(Point::new(990, 200), TIP, CURSOR_SIZE, SCREEN);
     assert_eq!(p.x, 990 + 2 - (4 + 120));
@@ -84,6 +98,7 @@ fn tip_flips_left_of_the_cursor_at_the_right_edge() {
 
 #[test]
 fn tip_flips_above_the_cursor_at_the_bottom_edge() {
+    let _serial = serial();
     // 790 + 16 + 30 overflows: y -= 24 + height.
     let p = place_tip(Point::new(100, 790), TIP, CURSOR_SIZE, SCREEN);
     assert_eq!(p.y, 790 + 16 - (24 + 30));
@@ -92,6 +107,7 @@ fn tip_flips_above_the_cursor_at_the_bottom_edge() {
 
 #[test]
 fn tip_is_clamped_into_the_screen() {
+    let _serial = serial();
     // Flipped left (x -= 4 + 1100) the tip would start at 10 + 2 - 1104 < 0.
     let p = place_tip(
         Point::new(10, 790),
@@ -119,6 +135,7 @@ fn tip_is_clamped_into_the_screen() {
 
 #[test]
 fn a_large_cursor_puts_the_tip_beside_it() {
+    let _serial = serial();
     // A cursor taller than twice the tip moves the tip sideways, not below.
     let p = place_tip(Point::new(100, 200), TIP, Size::new(64, 64), SCREEN);
     assert_eq!(p, Point::new(100 + 32, 200));
@@ -186,6 +203,7 @@ fn visible() -> bool {
 
 #[test]
 fn hover_shows_the_widgets_tool_tip_after_the_wake_up_delay() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -206,6 +224,7 @@ fn hover_shows_the_widgets_tool_tip_after_the_wake_up_delay() {
 
 #[test]
 fn a_move_with_a_button_down_does_not_start_the_wake_up() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -222,6 +241,7 @@ fn a_move_with_a_button_down_does_not_start_the_wake_up() {
 
 #[test]
 fn leaving_the_window_cancels_the_pending_wake_up() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -235,6 +255,7 @@ fn leaving_the_window_cancels_the_pending_wake_up() {
 
 #[test]
 fn moving_to_another_widget_restarts_the_wake_up_for_that_widget() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -253,6 +274,7 @@ fn moving_to_another_widget_restarts_the_wake_up_for_that_widget() {
 
 #[test]
 fn user_input_cancels_the_wake_up_and_hides_a_visible_tip() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -294,6 +316,7 @@ fn user_input_cancels_the_wake_up_and_hides_a_visible_tip() {
 
 #[test]
 fn leaving_hides_the_tip_after_the_hide_delay() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -314,6 +337,7 @@ fn leaving_hides_the_tip_after_the_hide_delay() {
 
 #[test]
 fn after_an_accepted_tip_the_next_widget_wakes_up_quickly() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -335,6 +359,7 @@ fn after_an_accepted_tip_the_next_widget_wakes_up_quickly() {
 
 #[test]
 fn the_tip_falls_asleep_after_two_seconds() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -361,6 +386,7 @@ fn the_tip_falls_asleep_after_two_seconds() {
 
 #[test]
 fn user_input_puts_tool_tips_to_sleep() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let (root, _a, _b) = two_leaves();
     let mut d = EventTreeDispatcher::new();
@@ -539,6 +565,7 @@ fn wake_up(el: &mut EventLoop, d: &mut EventTreeDispatcher, root: &WidgetRef, lo
 
 #[test]
 fn an_ignored_tool_tip_bubbles_to_each_parent_in_its_own_coordinates() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let log: Log = Default::default();
     let root = probe_tree(Resp::Ignore, Resp::Ignore, Resp::Accept, &log);
@@ -559,6 +586,7 @@ fn an_ignored_tool_tip_bubbles_to_each_parent_in_its_own_coordinates() {
 
 #[test]
 fn an_accepted_tool_tip_stops_at_the_accepting_widget() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let log: Log = Default::default();
     let root = probe_tree(Resp::Ignore, Resp::Accept, Resp::Accept, &log);
@@ -575,6 +603,7 @@ fn an_accepted_tool_tip_stops_at_the_accepting_widget() {
 
 #[test]
 fn a_widget_that_does_not_handle_the_event_gets_the_default_tool_tip_behaviour() {
+    let _serial = serial();
     // `QWidget::event(ToolTip)`: show the widget's own toolTip; with none, ignore, so it bubbles.
     let mut el = EventLoop::new();
     let (root, a, _b) = two_leaves();
@@ -596,6 +625,7 @@ fn a_widget_that_does_not_handle_the_event_gets_the_default_tool_tip_behaviour()
 
 #[test]
 fn a_tool_tip_that_nobody_accepts_does_not_start_the_quick_wake_up() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     let log: Log = Default::default();
     let root = probe_tree(Resp::Ignore, Resp::Ignore, Resp::Ignore, &log);
@@ -616,6 +646,7 @@ fn a_tool_tip_that_nobody_accepts_does_not_start_the_quick_wake_up() {
 
 #[test]
 fn show_text_places_and_replaces_the_tip() {
+    let _serial = serial();
     let _el = EventLoop::new();
     let p1 = Point::new(300, 300);
     let p2 = Point::new(340, 330);
@@ -668,6 +699,7 @@ fn show_text_places_and_replaces_the_tip() {
 
 #[test]
 fn a_tip_shown_near_the_screen_corner_flips_inside_the_screen() {
+    let _serial = serial();
     let _el = EventLoop::new();
     let screen = ferrokit_platform::integration::platform()
         .primary_screen()
@@ -697,6 +729,7 @@ fn a_tip_shown_near_the_screen_corner_flips_inside_the_screen() {
 
 #[test]
 fn an_explicit_duration_ends_the_tip() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     ToolTip::show_text(Point::new(300, 300), "short lived", None, 400);
     assert!(ToolTip::is_visible());
@@ -714,6 +747,7 @@ fn an_explicit_duration_ends_the_tip() {
 
 #[test]
 fn an_empty_text_hides_the_tip_after_the_hide_delay() {
+    let _serial = serial();
     let mut el = EventLoop::new();
     ToolTip::show_text(Point::new(300, 300), "bye", None, -1);
     ToolTip::show_text(Point::new(300, 300), "", None, -1);
@@ -731,6 +765,7 @@ fn tip_height(text: &str) -> i32 {
 
 #[test]
 fn a_long_plain_tip_word_wraps() {
+    let _serial = serial();
     let _el = EventLoop::new();
     let one = tip_height("word");
     let line = one - 4;
@@ -743,6 +778,7 @@ fn a_long_plain_tip_word_wraps() {
 
 #[test]
 fn a_long_rich_tip_word_wraps() {
+    let _serial = serial();
     let _el = EventLoop::new();
     let one = tip_height("word");
     let line = one - 4;
@@ -755,6 +791,7 @@ fn a_long_rich_tip_word_wraps() {
 
 #[test]
 fn a_multi_line_tip_is_as_tall_as_its_lines() {
+    let _serial = serial();
     let _el = EventLoop::new();
     let one = tip_height("a");
     let line = one - 4;
@@ -769,6 +806,7 @@ fn a_multi_line_tip_is_as_tall_as_its_lines() {
 
 mod real_windows {
     use super::*;
+    use std::cell::Cell;
     use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
@@ -776,13 +814,13 @@ mod real_windows {
         AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, TrackMouseEvent, KEYEVENTF_KEYUP, TME_LEAVE, TME_QUERY, TRACKMOUSEEVENT,
-        VK_MENU,
+        keybd_event, GetLastInputInfo, TrackMouseEvent, KEYEVENTF_KEYUP, LASTINPUTINFO, TME_LEAVE,
+        TME_QUERY, TRACKMOUSEEVENT, VK_MENU,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, GetCursorPos, GetForegroundWindow, GetWindowRect,
-        GetWindowThreadProcessId, SendMessageW, SetCursorPos, SetForegroundWindow, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MOUSEMOVE,
+        GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageW, SetCursorPos,
+        SetForegroundWindow, WindowFromPoint, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     };
 
     /// Puts the real cursor over a window for as long as it lives, then puts it back. A native
@@ -833,20 +871,94 @@ mod real_windows {
         Interfered(String),
     }
 
-    /// What outside the process has changed the preconditions of a scenario: the foreground
-    /// window is another program's (a window of this process, such as the tip itself, is not
-    /// outside interference) or the cursor is not where `CursorOver` left it over `hwnd`.
-    fn interference(hwnd: isize) -> Option<String> {
+    /// How the desktop looks to the scenario, for the report of a failure with no interference.
+    fn snapshot(hwnd: isize) -> String {
         unsafe {
             let fg = GetForegroundWindow();
             let mut pid = 0u32;
             if !fg.is_null() {
                 GetWindowThreadProcessId(fg, &mut pid);
             }
+            let mut r = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let mut at = POINT { x: 0, y: 0 };
+            GetWindowRect(hwnd as _, &mut r);
+            GetCursorPos(&mut at);
+            let (top, top_pid) = window_at(at);
+            format!(
+                "window exists {}, visible {}, rect ({}, {}); foreground {:#x} of process {pid} \
+                 (this process is {}); cursor ({}, {}) is over window {top:#x} of process \
+                 {top_pid}",
+                IsWindow(hwnd as _) != 0,
+                IsWindowVisible(hwnd as _) != 0,
+                r.left,
+                r.top,
+                fg as usize,
+                GetCurrentProcessId(),
+                at.x,
+                at.y
+            )
+        }
+    }
+
+    /// The window at a screen point and the process it belongs to (0 for none).
+    fn window_at(at: POINT) -> (usize, u32) {
+        unsafe {
+            let top = WindowFromPoint(at);
+            let mut pid = 0u32;
+            if !top.is_null() {
+                GetWindowThreadProcessId(top, &mut pid);
+            }
+            (top as usize, pid)
+        }
+    }
+
+    /// What outside the process has changed the preconditions of a scenario: `Ok` names it when
+    /// the foreground window is another program's (a window of this process, such as the tip
+    /// itself, is not outside interference), the cursor is not where `CursorOver` left it over
+    /// `hwnd`, or another program's window covers that spot. `Err` is the snapshot when nothing
+    /// outside is to blame, which includes the test's own window being gone or hidden: nothing in
+    /// a scenario destroys or hides it, so another program did not, and whatever the foreground is
+    /// then says nothing about who is to blame.
+    fn interference(hwnd: isize) -> Result<String, String> {
+        unsafe {
+            if IsWindow(hwnd as _) == 0 || IsWindowVisible(hwnd as _) == 0 {
+                return Err(snapshot(hwnd));
+            }
+            let fg = GetForegroundWindow();
+            let mut pid = 0u32;
+            if !fg.is_null() {
+                GetWindowThreadProcessId(fg, &mut pid);
+            }
             if pid != GetCurrentProcessId() {
-                return Some(format!(
+                return Ok(format!(
                     "the foreground window {:#x} belongs to process {pid}",
                     fg as usize
+                ));
+            }
+            // The scenario puts exactly one of its windows in the foreground at a time; when
+            // another one of its windows is there instead, something activated it. Nothing in the
+            // scenario does (a click on it from outside does), so it is outside input.
+            let expected = EXPECTED_FOREGROUND.get();
+            let fixture = FIXTURE_WINDOWS.with_borrow(|windows| windows.contains(&(fg as isize)));
+            if expected != 0 && fg as isize != expected && fixture {
+                return Ok(format!(
+                    "the window {:#x} of the test was activated while {expected:#x} was in the foreground",
+                    fg as usize
+                ));
+            }
+            // The system-wide time of the last keyboard or mouse input, injected input included,
+            // moves on when anyone but the scenario types or clicks. Its own inputs are the Alt
+            // press of `take_foreground`, after which `mark_input` takes the time again.
+            let marked = INPUT_MARK.get();
+            if marked != 0 && last_input() != marked {
+                return Ok(format!(
+                    "keyboard or mouse input arrived from outside (at tick {} after {marked})",
+                    last_input()
                 ));
             }
             let mut r = RECT {
@@ -863,23 +975,31 @@ mod real_windows {
                 at.y - (r.top + CURSOR_ANCHOR),
             );
             if dx.abs() > CURSOR_NUDGE || dy.abs() > CURSOR_NUDGE {
-                return Some(format!(
+                return Ok(format!(
                     "the cursor is at ({}, {}), off its place over the window",
                     at.x, at.y
                 ));
             }
+            // Another program's window on top of the spot gets the cursor's messages instead.
+            let (top, top_pid) = window_at(at);
+            if top_pid != 0 && top_pid != GetCurrentProcessId() {
+                return Ok(format!(
+                    "the window {top:#x} of process {top_pid} covers the cursor at ({}, {})",
+                    at.x, at.y
+                ));
+            }
         }
-        None
+        Err(snapshot(hwnd))
     }
 
     /// Fails the scenario: as `Interrupted` when `why` names outside interference, otherwise as a
-    /// real failure.
-    fn fail(why: Option<String>, message: String) -> ! {
+    /// real failure with the state of the desktop.
+    fn fail(why: Result<String, String>, message: String) -> ! {
         match why {
-            Some(why) => resume_unwind(Box::new(Interrupted::Interfered(format!(
+            Ok(why) => resume_unwind(Box::new(Interrupted::Interfered(format!(
                 "{why} ({message})"
             )))),
-            None => panic!("{message}"),
+            Err(state) => panic!("{message} [no outside interference: {state}]"),
         }
     }
 
@@ -893,6 +1013,29 @@ mod real_windows {
         };
     }
 
+    thread_local! {
+        /// The window of the scenario that `require_foreground` last put in the foreground (0
+        /// before it did), and every window the scenario has opened.
+        static EXPECTED_FOREGROUND: Cell<isize> = const { Cell::new(0) };
+        static FIXTURE_WINDOWS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+        /// `last_input` as of the scenario's own last input (0 before the first).
+        static INPUT_MARK: Cell<u32> = const { Cell::new(0) };
+    }
+
+    fn last_input() -> u32 {
+        let mut info = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        unsafe { GetLastInputInfo(&mut info) };
+        info.dwTime
+    }
+
+    /// Takes `last_input` as the baseline that later input is compared with.
+    fn mark_input() {
+        INPUT_MARK.set(last_input());
+    }
+
     const SCENARIO_ATTEMPTS: usize = 6;
 
     /// Runs `scenario` until it ends without outside interference. A failure with no
@@ -903,6 +1046,9 @@ mod real_windows {
         let mut el = EventLoop::new();
         let mut interruptions = Vec::new();
         for _ in 0..SCENARIO_ATTEMPTS {
+            EXPECTED_FOREGROUND.set(0);
+            FIXTURE_WINDOWS.with_borrow_mut(Vec::clear);
+            INPUT_MARK.set(0);
             ToolTip::hide_text();
             pump_for(&mut el, 100);
             match catch_unwind(AssertUnwindSafe(|| scenario(&mut el))) {
@@ -934,6 +1080,8 @@ mod real_windows {
         if !take_foreground(hwnd) {
             resume_unwind(Box::new(Interrupted::Refused));
         }
+        EXPECTED_FOREGROUND.set(hwnd);
+        mark_input();
     }
 
     struct Fixture {
@@ -952,6 +1100,7 @@ mod real_windows {
         win.set_root_widget(root.clone());
         win.show();
         let hwnd = win.native_handle();
+        FIXTURE_WINDOWS.with_borrow_mut(|windows| windows.push(hwnd));
         Fixture { win, hwnd, root }
     }
 
@@ -1025,7 +1174,12 @@ mod real_windows {
             SendMessageW(f.hwnd as _, WM_LBUTTONUP, 0, at);
         }
         pump_for(el, 20);
-        assert!(!visible());
+        ensure!(
+            f.hwnd,
+            !visible(),
+            "precondition: the click did not cancel the wake-up"
+        );
+        mark_input();
     }
 
     /// A `WM_MOUSEMOVE` at the client position `(x, y)` (physical pixels).
@@ -1048,6 +1202,7 @@ mod real_windows {
 
     #[test]
     fn the_button_state_of_a_native_mouse_move_reaches_the_wake_up_gate() {
+        let _serial = serial();
         run_scenario(|el| {
             let f = open("tip-buttons", "tip", 200);
             require_foreground(f.hwnd);
@@ -1073,12 +1228,18 @@ mod real_windows {
                 pump_until(el, Duration::from_millis(3000), visible),
                 "a plain native move never showed the tip"
             );
-            assert_eq!(ToolTip::text(), "tip");
+            ensure!(
+                f.hwnd,
+                ToolTip::text() == "tip",
+                "the tip text is {:?}, not the widget's",
+                ToolTip::text()
+            );
         });
     }
 
     #[test]
     fn showing_the_tip_does_not_take_the_foreground_and_is_placed_at_the_cursor() {
+        let _serial = serial();
         run_scenario(|el| {
             let f = open("tip-focus", "tip", 200);
             require_foreground(f.hwnd);
@@ -1106,13 +1267,19 @@ mod real_windows {
             unsafe { GetCursorPos(&mut pt) };
             let cursor =
                 ferrokit_platform::high_dpi::from_native_point(Point::new(pt.x, pt.y), dpr);
-            let tip = ToolTip::geometry().expect("visible");
+            let Some(tip) = ToolTip::geometry() else {
+                fail(
+                    interference(f.hwnd),
+                    "the tip has no geometry: it is not visible".to_string(),
+                )
+            };
             let primary = ferrokit_platform::integration::platform().primary_screen();
             let screen = primary.geometry();
             // `QHighDpi::fromNativePixels(cursor->size(), screen)`: 16 native px at dpr 1.25 is
             // 13.
             let cursor_h = ferrokit_widgets::tooltip::cursor_size(dpr as f64, dpr as f64).height;
-            assert!(
+            ensure!(
+                f.hwnd,
                 cursor.x + 2 + tip.width <= screen.x + screen.width
                     && cursor.y + cursor_h + tip.height <= screen.y + screen.height,
                 "precondition: the cursor is far enough from the screen edge that the tip is not flipped"
@@ -1131,11 +1298,16 @@ mod real_windows {
 
     #[test]
     fn an_inactive_window_shows_tool_tips_only_with_always_show() {
+        let _serial = serial();
         run_scenario(|el| {
             let owner = open("tip-owner", "owner tip", 200);
             let other = open("tip-other", "other tip", 700);
             require_foreground(other.hwnd);
-            assert_ne!(foreground(), owner.hwnd);
+            ensure!(
+                owner.hwnd,
+                foreground() != owner.hwnd,
+                "precondition: the owner window is not in the foreground"
+            );
             let _cursor = CursorOver::new(owner.hwnd);
             settle(el, &owner);
 
@@ -1160,9 +1332,11 @@ mod real_windows {
                 "the tip changed the foreground window"
             );
             ToolTip::hide_text();
-            assert!(pump_until(el, Duration::from_millis(1500), || {
-                !visible()
-            }));
+            ensure!(
+                owner.hwnd,
+                pump_until(el, Duration::from_millis(1500), || !visible()),
+                "the tip was not hidden by hide_text"
+            );
 
             // Without the attribute the window shows tips once it is active.
             owner.root.borrow().set_always_show_tool_tips(false);
