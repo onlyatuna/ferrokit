@@ -769,15 +769,20 @@ fn a_multi_line_tip_is_as_tall_as_its_lines() {
 
 mod real_windows {
     use super::*;
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::System::Threading::{
+        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         keybd_event, TrackMouseEvent, KEYEVENTF_KEYUP, TME_LEAVE, TME_QUERY, TRACKMOUSEEVENT,
         VK_MENU,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetForegroundWindow, GetWindowRect, SendMessageW, SetCursorPos,
-        SetForegroundWindow, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        BringWindowToTop, GetCursorPos, GetForegroundWindow, GetWindowRect,
+        GetWindowThreadProcessId, SendMessageW, SetCursorPos, SetForegroundWindow, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MOUSEMOVE,
     };
 
     /// Puts the real cursor over a window for as long as it lives, then puts it back. A native
@@ -812,6 +817,125 @@ mod real_windows {
 
     const MK_LBUTTON: usize = 1;
 
+    /// Where `CursorOver` puts the cursor, in screen pixels, and how far the tests themselves
+    /// nudge it from there (`settle`).
+    const CURSOR_ANCHOR: i32 = 150;
+    const CURSOR_NUDGE: i32 = 2;
+
+    /// These scenarios drive the real cursor and the real foreground window, which every other
+    /// program on a shared desktop can also change. When one does, the scenario cannot say
+    /// anything about the tool tip and is run again. This is the payload that unwinds the
+    /// scenario then (`resume_unwind` does not run the panic hook, so it is silent).
+    enum Interrupted {
+        /// The desktop session refused to give this process the foreground.
+        Refused,
+        /// Another program changed the foreground window or moved the cursor mid-scenario.
+        Interfered(String),
+    }
+
+    /// What outside the process has changed the preconditions of a scenario: the foreground
+    /// window is another program's (a window of this process, such as the tip itself, is not
+    /// outside interference) or the cursor is not where `CursorOver` left it over `hwnd`.
+    fn interference(hwnd: isize) -> Option<String> {
+        unsafe {
+            let fg = GetForegroundWindow();
+            let mut pid = 0u32;
+            if !fg.is_null() {
+                GetWindowThreadProcessId(fg, &mut pid);
+            }
+            if pid != GetCurrentProcessId() {
+                return Some(format!(
+                    "the foreground window {:#x} belongs to process {pid}",
+                    fg as usize
+                ));
+            }
+            let mut r = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let mut at = POINT { x: 0, y: 0 };
+            GetWindowRect(hwnd as _, &mut r);
+            GetCursorPos(&mut at);
+            let (dx, dy) = (
+                at.x - (r.left + CURSOR_ANCHOR),
+                at.y - (r.top + CURSOR_ANCHOR),
+            );
+            if dx.abs() > CURSOR_NUDGE || dy.abs() > CURSOR_NUDGE {
+                return Some(format!(
+                    "the cursor is at ({}, {}), off its place over the window",
+                    at.x, at.y
+                ));
+            }
+        }
+        None
+    }
+
+    /// Fails the scenario: as `Interrupted` when `why` names outside interference, otherwise as a
+    /// real failure.
+    fn fail(why: Option<String>, message: String) -> ! {
+        match why {
+            Some(why) => resume_unwind(Box::new(Interrupted::Interfered(format!(
+                "{why} ({message})"
+            )))),
+            None => panic!("{message}"),
+        }
+    }
+
+    /// `assert!(cond, ...)` for a check that outside interference could also fail: `$hwnd` is the
+    /// window the cursor was put over.
+    macro_rules! ensure {
+        ($hwnd:expr, $cond:expr, $($message:tt)+) => {
+            if !$cond {
+                fail(interference($hwnd), format!($($message)+));
+            }
+        };
+    }
+
+    const SCENARIO_ATTEMPTS: usize = 6;
+
+    /// Runs `scenario` until it ends without outside interference. A failure with no
+    /// interference present is the test's failure at once; failing to get a clean run in every
+    /// attempt is one too, except when Windows only ever refused the foreground, which is a
+    /// skip as before.
+    fn run_scenario(mut scenario: impl FnMut(&mut EventLoop)) {
+        let mut el = EventLoop::new();
+        let mut interruptions = Vec::new();
+        for _ in 0..SCENARIO_ATTEMPTS {
+            ToolTip::hide_text();
+            pump_for(&mut el, 100);
+            match catch_unwind(AssertUnwindSafe(|| scenario(&mut el))) {
+                Ok(()) => return,
+                Err(payload) => match payload.downcast::<Interrupted>() {
+                    Ok(interrupted) => {
+                        let why = match *interrupted {
+                            Interrupted::Refused => None,
+                            Interrupted::Interfered(why) => Some(why),
+                        };
+                        eprintln!("scenario interrupted by the desktop session: {why:?}");
+                        interruptions.push(why);
+                    }
+                    Err(payload) => resume_unwind(payload),
+                },
+            }
+        }
+        if interruptions.iter().all(Option::is_none) {
+            eprintln!("{SKIP}");
+            return;
+        }
+        panic!(
+            "the desktop session interfered in all {SCENARIO_ATTEMPTS} attempts: {interruptions:?}"
+        );
+    }
+
+    /// Puts `hwnd` in the foreground or abandons the attempt.
+    fn require_foreground(hwnd: isize) {
+        if !take_foreground(hwnd) {
+            resume_unwind(Box::new(Interrupted::Refused));
+        }
+    }
+
     struct Fixture {
         win: Box<Window>,
         hwnd: isize,
@@ -835,6 +959,9 @@ mod real_windows {
         unsafe { GetForegroundWindow() as isize }
     }
 
+    /// Asks Windows for the foreground three ways, as a user's own input would get it: directly;
+    /// with the synthetic Alt press that lets a background process take it; and sharing the input
+    /// queue of the current foreground thread. `false` if the session refused all of them.
     fn take_foreground(hwnd: isize) -> bool {
         unsafe {
             SetForegroundWindow(hwnd as _);
@@ -842,6 +969,16 @@ mod real_windows {
                 keybd_event(VK_MENU as u8, 0, 0, 0);
                 keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
                 SetForegroundWindow(hwnd as _);
+            }
+            let current = GetForegroundWindow();
+            if foreground() != hwnd && !current.is_null() {
+                let theirs = GetWindowThreadProcessId(current, std::ptr::null_mut());
+                let ours = GetCurrentThreadId();
+                if AttachThreadInput(ours, theirs, 1) != 0 {
+                    SetForegroundWindow(hwnd as _);
+                    BringWindowToTop(hwnd as _);
+                    AttachThreadInput(ours, theirs, 0);
+                }
             }
         }
         foreground() == hwnd
@@ -877,7 +1014,8 @@ mod real_windows {
             unsafe { SetCursorPos(at.x + dx, at.y) };
             pump_for(el, 200);
         }
-        assert!(
+        ensure!(
+            f.hwnd,
             tracks_the_cursor(f.hwnd),
             "precondition: Windows never tracked the cursor as inside the window"
         );
@@ -910,123 +1048,137 @@ mod real_windows {
 
     #[test]
     fn the_button_state_of_a_native_mouse_move_reaches_the_wake_up_gate() {
-        let mut el = EventLoop::new();
-        let f = open("tip-buttons", "tip", 200);
-        if !take_foreground(f.hwnd) {
-            eprintln!("{SKIP}");
-            return;
-        }
-        let _cursor = CursorOver::new(f.hwnd);
-        settle(&mut el, &f);
+        run_scenario(|el| {
+            let f = open("tip-buttons", "tip", 200);
+            require_foreground(f.hwnd);
+            let _cursor = CursorOver::new(f.hwnd);
+            settle(el, &f);
 
-        // The messages carry the real cursor position. Windows also sends buttonless
-        // `WM_MOUSEMOVE`s of its own at the real cursor position (e.g. after a capture is released);
-        // the platform layer drops those as Qt does when they repeat the last position
-        // (qwindowspointerhandler.cpp:800-809). A test move elsewhere would make such a move look
-        // like real motion that starts the wake-up timer.
-        let (x, y) = cursor_in_client(&f);
-        mouse_move(&f, x, y, MK_LBUTTON);
-        assert!(
-            !pump_until(&mut el, Duration::from_millis(1200), visible),
-            "MK_LBUTTON move started a tip"
-        );
+            // The messages carry the real cursor position. Windows also sends buttonless
+            // `WM_MOUSEMOVE`s of its own at the real cursor position (e.g. after a capture is
+            // released); the platform layer drops those as Qt does when they repeat the last
+            // position (qwindowspointerhandler.cpp:800-809). A test move elsewhere would make
+            // such a move look like real motion that starts the wake-up timer.
+            let (x, y) = cursor_in_client(&f);
+            mouse_move(&f, x, y, MK_LBUTTON);
+            ensure!(
+                f.hwnd,
+                !pump_until(el, Duration::from_millis(1200), visible),
+                "MK_LBUTTON move started a tip"
+            );
 
-        mouse_move(&f, x + 2, y, 0);
-        assert!(
-            pump_until(&mut el, Duration::from_millis(3000), visible),
-            "a plain native move never showed the tip"
-        );
-        assert_eq!(ToolTip::text(), "tip");
+            mouse_move(&f, x + 2, y, 0);
+            ensure!(
+                f.hwnd,
+                pump_until(el, Duration::from_millis(3000), visible),
+                "a plain native move never showed the tip"
+            );
+            assert_eq!(ToolTip::text(), "tip");
+        });
     }
 
     #[test]
     fn showing_the_tip_does_not_take_the_foreground_and_is_placed_at_the_cursor() {
-        let mut el = EventLoop::new();
-        let f = open("tip-focus", "tip", 200);
-        if !take_foreground(f.hwnd) {
-            eprintln!("{SKIP}");
-            return;
-        }
-        let _cursor = CursorOver::new(f.hwnd);
-        settle(&mut el, &f);
+        run_scenario(|el| {
+            let f = open("tip-focus", "tip", 200);
+            require_foreground(f.hwnd);
+            let _cursor = CursorOver::new(f.hwnd);
+            settle(el, &f);
 
-        mouse_move(&f, 50, 50, 0);
-        assert!(pump_until(&mut el, Duration::from_millis(3000), visible));
+            mouse_move(&f, 50, 50, 0);
+            ensure!(
+                f.hwnd,
+                pump_until(el, Duration::from_millis(3000), visible),
+                "the tip was not shown"
+            );
 
-        assert_eq!(
-            foreground(),
-            f.hwnd,
-            "showing the tool tip took the foreground from its window"
-        );
-        // Wiring only: the native cursor position reaches the help event and `showText`. The
-        // expected value is spelled out here, not recomputed with `place_tip`; Qt-geometry parity
-        // is established by the hand-derived pure `place_tip` tests above, not by this test.
-        let dpr = f.win.device_pixel_ratio();
-        let mut pt = POINT { x: 0, y: 0 };
-        unsafe { GetCursorPos(&mut pt) };
-        let cursor = ferrokit_platform::high_dpi::from_native_point(Point::new(pt.x, pt.y), dpr);
-        let tip = ToolTip::geometry().expect("visible");
-        let primary = ferrokit_platform::integration::platform().primary_screen();
-        let screen = primary.geometry();
-        // `QHighDpi::fromNativePixels(cursor->size(), screen)`: 16 native px at dpr 1.25 is 13.
-        let cursor_h = ferrokit_widgets::tooltip::cursor_size(dpr as f64, dpr as f64).height;
-        assert!(
-            cursor.x + 2 + tip.width <= screen.x + screen.width
-                && cursor.y + cursor_h + tip.height <= screen.y + screen.height,
-            "precondition: the cursor is far enough from the screen edge that the tip is not flipped"
-        );
-        assert_eq!(
-            Point::new(tip.x, tip.y),
-            Point::new(cursor.x + 2, cursor.y + cursor_h),
-            "the tip sits at the cursor + (2, cursor height)"
-        );
+            ensure!(
+                f.hwnd,
+                foreground() == f.hwnd,
+                "showing the tool tip took the foreground from its window"
+            );
+            // Wiring only: the native cursor position reaches the help event and `showText`. The
+            // expected value is spelled out here, not recomputed with `place_tip`; Qt-geometry
+            // parity is established by the hand-derived pure `place_tip` tests above, not by this
+            // test.
+            let dpr = f.win.device_pixel_ratio();
+            let mut pt = POINT { x: 0, y: 0 };
+            unsafe { GetCursorPos(&mut pt) };
+            let cursor =
+                ferrokit_platform::high_dpi::from_native_point(Point::new(pt.x, pt.y), dpr);
+            let tip = ToolTip::geometry().expect("visible");
+            let primary = ferrokit_platform::integration::platform().primary_screen();
+            let screen = primary.geometry();
+            // `QHighDpi::fromNativePixels(cursor->size(), screen)`: 16 native px at dpr 1.25 is
+            // 13.
+            let cursor_h = ferrokit_widgets::tooltip::cursor_size(dpr as f64, dpr as f64).height;
+            assert!(
+                cursor.x + 2 + tip.width <= screen.x + screen.width
+                    && cursor.y + cursor_h + tip.height <= screen.y + screen.height,
+                "precondition: the cursor is far enough from the screen edge that the tip is not flipped"
+            );
+            ensure!(
+                f.hwnd,
+                Point::new(tip.x, tip.y) == Point::new(cursor.x + 2, cursor.y + cursor_h),
+                "the tip sits at the cursor + (2, cursor height): tip at ({}, {}), cursor at ({}, {}), cursor height {cursor_h}",
+                tip.x,
+                tip.y,
+                cursor.x,
+                cursor.y
+            );
+        });
     }
 
     #[test]
     fn an_inactive_window_shows_tool_tips_only_with_always_show() {
-        let mut el = EventLoop::new();
-        let owner = open("tip-owner", "owner tip", 200);
-        let other = open("tip-other", "other tip", 700);
-        if !take_foreground(other.hwnd) {
-            eprintln!("{SKIP}");
-            return;
-        }
-        assert_ne!(foreground(), owner.hwnd);
-        let _cursor = CursorOver::new(owner.hwnd);
-        settle(&mut el, &owner);
+        run_scenario(|el| {
+            let owner = open("tip-owner", "owner tip", 200);
+            let other = open("tip-other", "other tip", 700);
+            require_foreground(other.hwnd);
+            assert_ne!(foreground(), owner.hwnd);
+            let _cursor = CursorOver::new(owner.hwnd);
+            settle(el, &owner);
 
-        mouse_move(&owner, 50, 50, 0);
-        assert!(
-            !pump_until(&mut el, Duration::from_millis(1200), visible),
-            "an inactive window showed a tip"
-        );
+            mouse_move(&owner, 50, 50, 0);
+            ensure!(
+                owner.hwnd,
+                !pump_until(el, Duration::from_millis(1200), visible),
+                "an inactive window showed a tip"
+            );
 
-        // `WA_AlwaysShowToolTips` on the window widget.
-        owner.root.borrow().set_always_show_tool_tips(true);
-        mouse_move(&owner, 52, 50, 0);
-        assert!(
-            pump_until(&mut el, Duration::from_millis(3000), visible),
-            "WA_AlwaysShowToolTips was ignored"
-        );
-        assert_eq!(
-            foreground(),
-            other.hwnd,
-            "the tip changed the foreground window"
-        );
-        ToolTip::hide_text();
-        assert!(pump_until(&mut el, Duration::from_millis(1500), || {
-            !visible()
-        }));
+            // `WA_AlwaysShowToolTips` on the window widget.
+            owner.root.borrow().set_always_show_tool_tips(true);
+            mouse_move(&owner, 52, 50, 0);
+            ensure!(
+                owner.hwnd,
+                pump_until(el, Duration::from_millis(3000), visible),
+                "WA_AlwaysShowToolTips was ignored"
+            );
+            ensure!(
+                owner.hwnd,
+                foreground() == other.hwnd,
+                "the tip changed the foreground window"
+            );
+            ToolTip::hide_text();
+            assert!(pump_until(el, Duration::from_millis(1500), || {
+                !visible()
+            }));
 
-        // Without the attribute the window shows tips once it is active.
-        owner.root.borrow().set_always_show_tool_tips(false);
-        assert!(take_foreground(owner.hwnd));
-        mouse_move(&owner, 54, 50, 0);
-        assert!(
-            pump_until(&mut el, Duration::from_millis(3000), visible),
-            "the active window showed no tip"
-        );
-        assert_eq!(foreground(), owner.hwnd);
-        drop((owner.win, other.win));
+            // Without the attribute the window shows tips once it is active.
+            owner.root.borrow().set_always_show_tool_tips(false);
+            require_foreground(owner.hwnd);
+            mouse_move(&owner, 54, 50, 0);
+            ensure!(
+                owner.hwnd,
+                pump_until(el, Duration::from_millis(3000), visible),
+                "the active window showed no tip"
+            );
+            ensure!(
+                owner.hwnd,
+                foreground() == owner.hwnd,
+                "the tip changed the foreground window"
+            );
+            drop((owner.win, other.win));
+        });
     }
 }
