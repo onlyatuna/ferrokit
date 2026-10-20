@@ -184,8 +184,40 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
 
 # libtest tags `#[should_panic]` tests as `test <name> - should panic ... <outcome>`. The bare name is
 # the key; the suffix is only a marker.
-TEST_HEAD = r"^test (\S+)(?: - should panic)? \.\.\. "
-OUTCOME_RE = re.compile(TEST_HEAD + r"(ok|FAILED|ignored)(?:, [^\n]*)?\s*$", re.M)
+HEAD_RE = re.compile(r"^test (\S+)(?: - should panic)? \.\.\.(?: (.*))?$")
+OUTCOME_TAIL_RE = re.compile(r"(ok|FAILED|ignored)(?:, .*)?")
+# libtest can print stderr between `test <name> ... ` and its outcome. The outcome then lands on a
+# bare line, which belongs to the most recent start that still has no outcome.
+CONTINUATION_RE = re.compile(r"(ok|FAILED|ignored)(?:, .*)?")
+
+
+def scan_outcomes(text):
+    """Return (outcomes, unresolved): (name, outcome) pairs, and names started with no outcome."""
+    starts = []  # [name, outcome-or-None], in start order
+    unresolved_idx = []  # indexes into starts that still have no outcome, in start order
+    for line in text.splitlines():
+        line = line.rstrip()
+        head = HEAD_RE.match(line)
+        if head:
+            tail = OUTCOME_TAIL_RE.fullmatch(head.group(2) or "")
+            starts.append([head.group(1), tail.group(1) if tail else None])
+            if tail is None:
+                unresolved_idx.append(len(starts) - 1)
+            continue
+        cont = CONTINUATION_RE.fullmatch(line)
+        if cont and unresolved_idx:
+            starts[unresolved_idx.pop()][1] = cont.group(1)
+    outcomes = [(name, outcome) for name, outcome in starts if outcome is not None]
+    unresolved = [name for name, outcome in starts if outcome is None]
+    return outcomes, unresolved
+
+
+def isolation_outcome(text, test_name):
+    """Outcome (ok/FAILED/ignored) libtest reported for `test_name` in `text`, or None."""
+    for name, outcome in scan_outcomes(text)[0]:
+        if name == test_name:
+            return outcome
+    return None
 
 
 def failure_section(text, name):
@@ -209,7 +241,8 @@ def sweep_target(args, target, names, model, results, excerpts):
         if len(done) == len(names):
             break
         text, timed_out = run_miri(args, target, model, done)
-        for name, outcome in OUTCOME_RE.findall(text):
+        outcomes, unresolved = scan_outcomes(text)
+        for name, outcome in outcomes:
             if name in done or name not in names:
                 continue
             key = f"{target}::{name}::{model}"
@@ -229,7 +262,7 @@ def sweep_target(args, target, names, model, results, excerpts):
                 results[key] = {"kind": kind, "bucket": bucket_of(kind), "sig": None}
             done.add(name)
         # A test that started and never reported is what stopped the run.
-        started_names = re.findall(TEST_HEAD + r"(?!(?:ok|FAILED|ignored)(?:, [^\n]*)?\s*$)", text, re.M)
+        started_names = unresolved
         stopper = next((n for n in reversed(started_names) if n in names and n not in done), None)
         if stopper:
             tail = text[last_start(text, stopper) :]
@@ -295,14 +328,14 @@ def run_isolation_allowlist(args, allowlist, swept_targets, models):
                 extra_miri_flags=["-Zmiri-disable-isolation"],
             )
             key = f"{target}::{test_name}::{model}"
-            m = re.search(r"^test " + re.escape(test_name) + r"(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:, [^\n]*)?\s*$", text, re.M)
+            outcome = isolation_outcome(text, test_name)
             if timed_out:
                 kind, sig = "timeout", None
-            elif m and m.group(1) == "ok":
+            elif outcome == "ok":
                 kind, sig = "pass", None
-            elif m and m.group(1) == "ignored":
+            elif outcome == "ignored":
                 kind, sig = "ignored", None
-            elif m and m.group(1) == "FAILED":
+            elif outcome == "FAILED":
                 sec = failure_section(text, test_name) or text
                 kind, sig = classify(sec)
             else:
