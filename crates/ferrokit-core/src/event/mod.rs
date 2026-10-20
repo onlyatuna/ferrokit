@@ -30,6 +30,9 @@ pub enum FocusReason {
 /// Cross-thread queued functor for `EventKind::MetaCall`.
 pub type MetaCallFn = Box<dyn FnOnce(&mut dyn Any) + Send + 'static>;
 
+/// Cross-thread queued functor for `EventKind::MetaCallNoTarget`.
+pub type MetaCallNoTargetFn = Box<dyn FnOnce() + Send + 'static>;
+
 /// Event type and payload enumeration: `EventKind`.
 /// Modeled after Qt `QEvent::Type` and derived event classes.
 pub enum EventKind {
@@ -61,8 +64,13 @@ pub enum EventKind {
         exit_code: i32,
     },
 
-    /// Cross-thread queued functor execution (`QMetaCallEvent`).
+    /// Cross-thread queued functor execution (`QMetaCallEvent`) that needs the receiver as its
+    /// target. The receiver stays borrowed while it runs.
     MetaCall(MetaCallFn),
+
+    /// Cross-thread queued functor that does not use its receiver. The receiver is not borrowed
+    /// while it runs, so the functor may reach that receiver through `with_object_mut`.
+    MetaCallNoTarget(MetaCallNoTargetFn),
 
     /// Custom user event (`QEvent::User`).
     User(Box<dyn Any + Send + 'static>),
@@ -394,6 +402,7 @@ impl fmt::Debug for EventKind {
                 .field("exit_code", exit_code)
                 .finish(),
             EventKind::MetaCall(_) => write!(f, "MetaCall(<FnOnce>)"),
+            EventKind::MetaCallNoTarget(_) => write!(f, "MetaCallNoTarget(<FnOnce>)"),
             EventKind::User(_) => write!(f, "User(<Any>)"),
             EventKind::Close => write!(f, "Close"),
             EventKind::MouseMove { x, y } => write!(f, "MouseMove({}, {})", x, y),
@@ -735,7 +744,7 @@ impl EventKind {
             EventKind::LayoutRequest => EventType::LayoutRequest,
             EventKind::UpdateRequest => EventType::UpdateRequest,
             EventKind::Quit { .. } => EventType::Quit,
-            EventKind::MetaCall(_) => EventType::MetaCall,
+            EventKind::MetaCall(_) | EventKind::MetaCallNoTarget(_) => EventType::MetaCall,
             EventKind::User(_) => EventType::User,
             EventKind::Close => EventType::Close,
             EventKind::MouseMove { .. } => EventType::MouseMove,

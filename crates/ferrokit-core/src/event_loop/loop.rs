@@ -141,6 +141,49 @@ pub(crate) fn borrowed_send_rejections() -> usize {
     BORROWED_SEND_REJECTIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether a queued call may run for `receiver`. A non-zero receiver that is not registered on this
+/// thread was destroyed or moved away; Qt never delivers posted events to a destroyed object
+/// (qobject.cpp:206-207). `ObjectId(0)` names no object and is always allowed.
+fn queued_call_receiver_alive(receiver: ObjectId) -> bool {
+    if receiver == ObjectId(0) || crate::object::qobject::registered_on_current_thread(receiver) {
+        return true;
+    }
+    eprintln!("ferrokit: dropped posted call to unregistered object {receiver:?}");
+    false
+}
+
+/// Runs a `MetaCallNoTarget`. No borrow of `receiver` is held, so the functor can reach its
+/// receiver through `with_object_mut`, as a direct slot can.
+fn run_no_target_call(receiver: ObjectId, task: crate::event::MetaCallNoTargetFn) -> bool {
+    if !queued_call_receiver_alive(receiver) {
+        return false;
+    }
+    task();
+    true
+}
+
+/// Runs a `MetaCall` with its receiver as the target. The receiver is borrowed while the functor
+/// runs. Only `ObjectId(0)`, which names no object, gets the unit target, so a downcast to a
+/// receiver type fails. A registered receiver never gets it: `notify_helper` rejects or defers a
+/// receiver that a running callback has borrowed before this call.
+fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
+    if !queued_call_receiver_alive(receiver) {
+        return false;
+    }
+    let mut task_opt = Some(task);
+    let handled = crate::object::with_object_mut(receiver, |obj| {
+        if let Some(task) = task_opt.take() {
+            task(obj);
+        }
+    });
+    if handled.is_none() {
+        if let Some(task) = task_opt.take() {
+            task(&mut ());
+        }
+    }
+    true
+}
+
 pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     // QScopedScopeLevelCounter in QCoreApplication::notify (qcoreapplication.cpp:1118).
     let _scope = ScopeLevelGuard::enter();
@@ -196,45 +239,19 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         return true;
     }
 
+    if matches!(&event.kind, EventKind::MetaCallNoTarget(_)) {
+        if let EventKind::MetaCallNoTarget(task) =
+            std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
+        {
+            return run_no_target_call(receiver, task);
+        }
+    }
+
     if matches!(&event.kind, EventKind::MetaCall(_)) {
         if let EventKind::MetaCall(task) =
             std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
         {
-            // Try dispatch via registered receiver first.
-            let mut task_opt = Some(task);
-            let handled = crate::object::with_object_mut(receiver, |obj| {
-                if let Some(task) = task_opt.take() {
-                    task(obj);
-                }
-            });
-            if handled.is_some() {
-                return true;
-            }
-            // Only the ObjectId(0) sentinel (fire-and-forget calls) may run without a registered
-            // receiver. A non-zero receiver that is not registered on this thread was destroyed or
-            // moved away; Qt never delivers posted events to a destroyed object (qobject.cpp:206-207).
-            if receiver != ObjectId(0)
-                && !crate::object::qobject::registered_on_current_thread(receiver)
-            {
-                eprintln!("ferrokit: dropped posted call to unregistered object {receiver:?}");
-                return false;
-            }
-            // Sentinel, or a registered receiver whose borrow is held by a running callback: the
-            // closure runs on a stub (pre-existing fallback, see residuals).
-            struct NullObj(ObjectData);
-            impl QObject for NullObj {
-                fn object_data(&self) -> &ObjectData {
-                    &self.0
-                }
-                fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.0)
-    }
-            }
-            let mut stub = NullObj(ObjectData::new(receiver));
-            if let Some(task) = task_opt.take() {
-                task(&mut stub);
-            }
-            return true;
+            return run_target_call(receiver, task);
         }
     }
 
