@@ -380,6 +380,108 @@ fn run_parked(state: &ObjectBorrowState) {
 static GLOBAL_OBJECT_REGISTRY: std::sync::LazyLock<RwLock<HashMap<ObjectId, Arc<ObjectRecord>>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Reverse of the `parent` links of the records in [`GLOBAL_OBJECT_REGISTRY`]: for every registered
+/// object whose record links to a parent, which parent. It answers "which registered objects name
+/// `id` as their parent" without a walk over the registry, so what a thread move or a drop inspects
+/// depends on the subtree and not on the number of registered objects. The parent need not be
+/// registered: a child can name an id that has no record.
+///
+/// The index is a leaf lock (see "Global locking hierarchy" in the [`crate::object`] module
+/// documentation): it is taken last and nothing is requested while it is held. It changes together
+/// with what it mirrors. A `parent` link (L2) is written through [`store_link`], which updates the
+/// index while the link's write guard and the registry (L0) are held; `register_record` and
+/// `unregister_qobject` add and remove a record with the registry held for writing, and update the
+/// index before they let it go. A reader that holds L0 therefore finds no entry of an object that
+/// is not registered, and each entry is the link of the current record.
+#[derive(Default)]
+struct ParentLinkIndex {
+    /// Parent id to the registered objects that link to it, in the order they were linked.
+    children: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Registered object to the parent its record links to; absent when it has none.
+    parent_of: HashMap<ObjectId, ObjectId>,
+}
+
+impl ParentLinkIndex {
+    /// Records that `child`'s link is now `parent`, whatever it was.
+    fn relink(&mut self, child: ObjectId, parent: Option<ObjectId>) {
+        if self.parent_of.get(&child).copied() == parent {
+            return;
+        }
+        if let Some(old) = self.parent_of.remove(&child) {
+            if let Some(list) = self.children.get_mut(&old) {
+                if let Some(at) = list.iter().position(|&listed| listed == child) {
+                    list.remove(at);
+                }
+                if list.is_empty() {
+                    self.children.remove(&old);
+                }
+            }
+        }
+        if let Some(parent) = parent {
+            self.parent_of.insert(child, parent);
+            self.children.entry(parent).or_default().push(child);
+        }
+    }
+}
+
+static PARENT_LINK_INDEX: std::sync::LazyLock<Mutex<ParentLinkIndex>> =
+    std::sync::LazyLock::new(|| Mutex::new(ParentLinkIndex::default()));
+
+/// Writes `new` into the `parent` link of `record`, held through `link` (its L2 write guard), and
+/// into [`PARENT_LINK_INDEX`]. The caller holds the registry (L0) and passes it: a record that the
+/// registry no longer holds, or holds as another record under its id, is not the one the index
+/// mirrors, and its link is written without touching the index.
+fn store_link(
+    registry: &HashMap<ObjectId, Arc<ObjectRecord>>,
+    record: &Arc<ObjectRecord>,
+    link: &mut Option<ObjectId>,
+    new: Option<ObjectId>,
+) {
+    if registry.get(&record.id).is_some_and(|current| Arc::ptr_eq(current, record)) {
+        lock_unpoisoned(&PARENT_LINK_INDEX).relink(record.id, new);
+    }
+    *link = new;
+}
+
+/// Checks that [`PARENT_LINK_INDEX`] is exactly the relation a walk over the registry derives: the
+/// `parent` link of every record. For tests: it walks the whole registry, and it is exact only
+/// while no other thread changes a link.
+#[doc(hidden)]
+pub fn verify_parent_link_index() -> Result<(), String> {
+    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    // The links are read before the index is locked: a link (L2) is never requested while the
+    // index, a leaf, is held.
+    let mut derived: HashMap<ObjectId, ObjectId> = HashMap::new();
+    for (&id, record) in registry.iter() {
+        if let Some(parent) = *read_unpoisoned(&record.parent) {
+            derived.insert(id, parent);
+        }
+    }
+    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    if derived != index.parent_of {
+        return Err(format!(
+            "links of the registry {derived:?} differ from the index's {:?}",
+            index.parent_of
+        ));
+    }
+    let mut listed = 0;
+    for (parent, list) in &index.children {
+        if list.is_empty() {
+            return Err(format!("{parent:?} has an empty list in the index"));
+        }
+        for (at, child) in list.iter().enumerate() {
+            if index.parent_of.get(child) != Some(parent) || list[..at].contains(child) {
+                return Err(format!("{child:?} is listed wrongly under {parent:?}"));
+            }
+        }
+        listed += list.len();
+    }
+    if listed != index.parent_of.len() {
+        return Err(format!("the index lists {listed} children for {} links", index.parent_of.len()));
+    }
+    Ok(())
+}
+
 fn registered_ptr(id: ObjectId) -> Option<(Arc<ObjectRecord>, *mut dyn QObject)> {
     let entry = GLOBAL_OBJECT_REGISTRY.read().ok()?.get(&id)?.clone();
     if *read_unpoisoned(&entry.registration_thread) != ThreadId::current()
@@ -607,19 +709,15 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     }
 }
 
-/// Registered children of `id` according to the global registry: first the validated entries of
-/// `id`'s own registry record (`registered_children_of`), and then any registered object whose own
-/// record names `id` as its parent (covering an intermediate `id` that has no record in the
-/// registry, or a child linked while unregistered and registered afterwards).
+/// Registered children of `id` according to the global registry: every registered object whose own
+/// record names `id` as its parent (this covers an intermediate `id` that has no record in the
+/// registry, and a child linked while unregistered and registered afterwards). It is read from
+/// [`PARENT_LINK_INDEX`] under the registry's read lock, so it holds for the registered objects at
+/// that moment and costs what `id` has below it, not what is registered.
 fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
-    let mut children = registered_children_of(id);
-    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
-    for (&child_id, record) in registry.iter() {
-        if *read_unpoisoned(&record.parent) == Some(id) && !children.contains(&child_id) {
-            children.push(child_id);
-        }
-    }
-    children
+    let _registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    index.children.get(&id).cloned().unwrap_or_default()
 }
 
 /// The thread of an owned child: the registry's record when it has one (readable while a callback
@@ -1058,6 +1156,7 @@ fn register_record(
                 previous.liveness.store(false, Ordering::Release);
             }
         }
+        lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, parent);
         if let Some(list) = parent_list.as_mut() {
             if !list.contains(&id) {
                 list.push(id);
@@ -1201,7 +1300,14 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     // points to freed memory, an id in a parent's list, or a child with a dead parent. The locks
     // below guard single stores and plain container edits, which a panic cannot leave half done,
     // so a poisoned lock is used as it is (see `read_unpoisoned`).
-    let removed = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY).remove(&id);
+    let removed = {
+        let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let removed = registry.remove(&id);
+        if removed.is_some() {
+            lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, None);
+        }
+        removed
+    };
     if let Some(entry) = removed {
         entry.liveness.store(false, Ordering::Release);
         // Lock order: the registry (L0), then the `children` of a parent (L1), then the `parent`
@@ -1233,7 +1339,7 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         }
         for child_id in read_unpoisoned(&entry.children).iter() {
             if let Some(child) = registry.get(child_id) {
-                *write_unpoisoned(&child.parent) = None;
+                store_link(&registry, child, &mut write_unpoisoned(&child.parent), None);
             }
         }
     }
@@ -1975,10 +2081,11 @@ impl<'a> ObjectDataMut<'a> {
 
         // Step C: Update Registry `record.parent` for all children under the held write locks.
         for (t, guard) in transfers.iter().zip(child_parent_guards.iter_mut()) {
-            **guard = Some(match t.target {
+            let new_parent = match t.target {
                 TransferTarget::ToOther => other_id,
                 TransferTarget::ToSelf => self_id,
-            });
+            };
+            store_link(&registry, &t.record, guard, Some(new_parent));
         }
 
         // Step D: Update Registry `record.children` for both parents under the held write locks.
@@ -2653,7 +2760,7 @@ pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Res
             ParentLockPair::None => {}
         }
 
-        *child_parent_guard = new_parent;
+        store_link(&registry, &child_record, &mut child_parent_guard, new_parent);
     }
 
     let new_liveness = new_parent.and_then(|id| registry.get(&id).map(|rec| (id, Arc::clone(&rec.liveness))));
@@ -2863,7 +2970,9 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }
 
         if let Some(mut p_guard) = child_parent_guard {
-            *p_guard = new_parent;
+            if let Some(record) = registry.get(&child_id) {
+                store_link(&registry, record, &mut p_guard, new_parent);
+            }
         }
     }
 
@@ -3126,7 +3235,7 @@ pub fn reparent_owned_object(
                 old_guard.retain(|&id| id != child_id);
             }
         }
-        *child_parent_guard = new_parent;
+        store_link(&registry, &child_record, &mut child_parent_guard, new_parent);
 
         let released = match new_data.as_mut() {
             Some(data) => {
@@ -4359,8 +4468,7 @@ mod tests {
         register_object_metadata(&b.0, ptr_b);
 
         // Make ancestor the parent of a in the registry
-        let record_a = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&a_id).unwrap().clone();
-        *record_a.parent.write().unwrap() = Some(ancestor_id);
+        link(a_id, Some(ancestor_id));
         a.0.parent = Some(ancestor_id);
 
         let record_ancestor = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&ancestor_id).unwrap().clone();
@@ -4764,6 +4872,13 @@ mod tests {
 
     fn record(id: ObjectId) -> Arc<ObjectRecord> {
         Arc::clone(&GLOBAL_OBJECT_REGISTRY.read().unwrap()[&id])
+    }
+
+    /// Sets the `parent` link of a registered object, as a commit does (the index follows).
+    fn link(id: ObjectId, parent: Option<ObjectId>) {
+        let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let record = &registry[&id];
+        store_link(&registry, record, &mut write_unpoisoned(&record.parent), parent);
     }
 
     /// None of the locks of a hierarchy change is held by the calling thread (a handler runs on
@@ -6145,7 +6260,7 @@ mod tests {
         let (a_id, b_id, c_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b), OwnedObject::object_id(&c));
         for (parent, child) in [(a_id, b_id), (b_id, c_id), (c_id, a_id)] {
             record(parent).children.write().unwrap().push(child);
-            *record(child).parent.write().unwrap() = Some(parent);
+            link(child, Some(parent));
         }
 
         unregister_descendants(a_id);
@@ -6154,7 +6269,7 @@ mod tests {
         assert_eq!(query_object_parent(c_id), None);
         assert!(query_object_parent(a_id).is_some(), "the object itself stays registered");
         record(a_id).children.write().unwrap().clear();
-        *record(a_id).parent.write().unwrap() = None;
+        link(a_id, None);
         drop(c);
         drop(b);
         drop(a);

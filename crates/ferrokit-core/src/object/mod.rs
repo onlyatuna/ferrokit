@@ -181,7 +181,11 @@
 //! 7. **L1**: `ObjectRecord::children` (RwLock guarding direct child IDs of a parent record).
 //! 8. **L2**: `ObjectRecord::parent` (RwLock guarding direct parent `Option<ObjectId>` of a child record).
 //! 9. **Leaves**: Leaf synchronization points (`thread_id`, `registration_thread`,
-//!    `pending_child_changes`) protecting single atomic values or statement-level queues.
+//!    `pending_child_changes`, and `PARENT_LINK_INDEX`, the parent → registered-children index that
+//!    mirrors the `parent` links of the registry) protecting single atomic values, statement-level
+//!    queues, or a container edited together with the link it mirrors. `PARENT_LINK_INDEX` is
+//!    updated with the `parent` link (L2) write guard and L0 held, or with L0 held for writing
+//!    when a record is added or removed, and nothing is requested while it is held.
 //!
 //! ### Same-level ordering rules
 //!
