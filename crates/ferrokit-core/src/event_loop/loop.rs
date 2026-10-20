@@ -1100,6 +1100,9 @@ pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) 
     {
         let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        // A loop that starts on a thread already reported as ended (during the destruction of
+        // its locals) can turn its queue again: posts must reach it.
+        reg.ended.remove(&thread_id);
         if let Some(buffered) = reg.pending.remove(&thread_id) {
             for posted in buffered.events {
                 let mut event = Some(posted.event);
@@ -1187,6 +1190,9 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 /// (Qt `setThreadData_helper`, qobject.cpp:1805-1815, under the locks of qobject.cpp:1757-1758).
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
     let mut woken = None;
+    // Events moved to a thread that has ended; dropped after the registry lock is released, as a
+    // payload's `Drop` may post events or unregister objects.
+    let mut discarded = Vec::new();
     {
         let mut guard = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = guard.get_or_insert_with(ThreadEventRegistry::new);
@@ -1221,6 +1227,11 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
                     }
                     woken = Some(handle.clone());
                 }
+                None if reg.ended.contains(&to) => {
+                    // No loop can turn that queue: the events go with the thread, and their
+                    // payloads are dropped after the lock is released.
+                    discarded.extend(moved);
+                }
                 None => {
                     let queue = reg.pending.entry(to).or_default();
                     for posted in moved {
@@ -1230,6 +1241,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
             }
         }
     }
+    drop(discarded);
     if let Some(handle) = woken {
         handle.wake_up();
     }
@@ -3012,5 +3024,25 @@ mod tests {
             "the outer loop must end with the cross-thread code"
         );
         assert_eq!(*log.lock().unwrap(), vec!["inner-3".to_string()]);
+    }
+
+    /// A loop that registers on a thread already reported as ended (one that starts while the
+    /// thread's locals are destroyed) gets the posts made after it registered; the ones made
+    /// while the thread counted as ended were dropped.
+    #[test]
+    fn registering_a_loop_on_an_ended_thread_makes_it_receive_posts_again() {
+        let delivered = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+        let event = |name: &'static str| {
+            let log = Arc::clone(&delivered);
+            Event::new(EventKind::MetaCall(Box::new(move |_| log.lock().push(name))))
+        };
+        let el = EventLoop::new();
+        let thread = ThreadId::current();
+        mark_thread_ended(thread);
+        post_event_to_thread(thread, ObjectId(0), event("while-ended"));
+        register_thread_event_loop(thread, el.handle());
+        post_event_to_thread(thread, ObjectId(0), event("after-register"));
+        el.process_events(false);
+        assert_eq!(*delivered.lock(), vec!["after-register"]);
     }
 }

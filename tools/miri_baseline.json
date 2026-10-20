@@ -656,6 +656,8 @@
     "test_registry_child_index::owned_children_moved_between_parents_are_indexed_under_the_new_parent::SB": "pass",
     "test_registry_child_index::owned_children_moved_between_parents_are_indexed_under_the_new_parent::TB": "pass",
     "test_registry_child_index::the_index_follows_registration_reparenting_and_unregistration::SB": "pass",
-    "test_registry_child_index::the_index_follows_registration_reparenting_and_unregistration::TB": "pass"
+    "test_registry_child_index::the_index_follows_registration_reparenting_and_unregistration::TB": "pass",
+    "test_owned_drop_forwarded::events_moved_with_an_object_to_an_ended_thread_are_dropped_not_held::SB": "pass",
+    "test_owned_drop_forwarded::events_moved_with_an_object_to_an_ended_thread_are_dropped_not_held::TB": "pass"
   }
 }

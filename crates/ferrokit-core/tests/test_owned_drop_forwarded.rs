@@ -8,7 +8,8 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferrokit_core::event_loop::EventLoop;
+use ferrokit_core::event::{Event, EventKind};
+use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
     move_to_thread_by_id, query_object_thread, register_owned_qobject, with_object, ObjectData,
     ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
@@ -204,5 +205,48 @@ fn a_registration_thread_without_a_loop_keeps_the_object_until_it_ends() {
     assert!(alive_rx.recv_timeout(WAIT).unwrap(), "no loop ran the call: the object stays");
     let worker_thread = worker.join().unwrap();
     assert_eq!(*dropped_on.lock(), Some(worker_thread), "destroyed on its own thread as it ended");
+    assert_eq!(query_object_thread(id), None);
+}
+
+/// Sets a flag when it is dropped.
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+fn event_holding(flag: DropFlag) -> Event {
+    Event::new(EventKind::MetaCall(Box::new(move |_| {
+        let _keep = &flag;
+    })))
+}
+
+/// An object with an event queued for it is moved to a thread that has ended. The event goes with
+/// that thread: it is dropped by the move (not held for a loop that cannot start), and the
+/// object, whose owner is then dropped, is destroyed on the owner's thread.
+#[test]
+fn events_moved_with_an_object_to_an_ended_thread_are_dropped_not_held() {
+    let here = ThreadId::current();
+    let _el = EventLoop::new();
+    let dropped_on = Arc::new(Mutex::new(None));
+    // SAFETY: as above.
+    let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
+    let id = OwnedObject::object_id(&owner);
+
+    let payload_dropped = Arc::new(AtomicBool::new(false));
+    post_event_to_thread(here, id, event_holding(DropFlag(Arc::clone(&payload_dropped))));
+    assert!(!payload_dropped.load(Ordering::SeqCst), "the event is queued here");
+
+    let there = std::thread::spawn(ThreadId::current).join().unwrap();
+    assert_eq!(move_to_thread_by_id(id, there, here), Ok(()));
+    assert!(
+        payload_dropped.load(Ordering::SeqCst),
+        "the queued event was held for a thread that has ended"
+    );
+
+    drop(owner);
+    assert_eq!(*dropped_on.lock(), Some(std::thread::current().id()));
     assert_eq!(query_object_thread(id), None);
 }
