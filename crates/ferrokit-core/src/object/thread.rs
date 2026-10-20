@@ -37,7 +37,7 @@ impl EventSender {
     pub fn send(&self, event: PostedEvent) {
         {
             let mut q = lock_unpoisoned(&self.queue);
-            q.events.push(event);
+            q.push_back(event);
         }
 
         (self.wakeup)();
@@ -529,7 +529,7 @@ mod tests {
 
         assert!(woken.load(Ordering::Acquire));
         assert_eq!(queue.lock().unwrap().len(), 1);
-        assert_eq!(queue.lock().unwrap().events[0].receiver, ObjectId(42));
+        assert_eq!(queue.lock().unwrap().events()[0].receiver, ObjectId(42));
     }
 
     struct UnitProbe {
