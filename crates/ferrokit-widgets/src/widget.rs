@@ -98,6 +98,12 @@ pub fn set_widget_tool_tip(widget: &WidgetRef, text: &str) {
 /// widget: updates the tooltip text in a short-lived shared borrow and dispatches
 /// `EventKind::ToolTipChange` after that borrow has ended, avoiding a Stacked Borrows conflict
 /// between `&W` and the `&mut W` callback borrow created by `send_event`.
+///
+/// Returns what `send_event` returns, as the other tool-tip functions do (whether the event was
+/// handled), not whether the text was stored. If the widget cannot be reached now (a callback of
+/// it is running, or it is registered on another thread; see
+/// [`OwnedObject::with`](ferrokit_core::object::OwnedObject::with)), the text is left as it was,
+/// and the event is still sent.
 pub fn set_owned_widget_tool_tip<W: Widget + ?Sized>(
     widget: &ferrokit_core::object::OwnedObject<W>,
     text: &str,

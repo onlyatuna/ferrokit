@@ -51,6 +51,9 @@ impl QObject for Probe {
     fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
         ObjectDataMut::new(&mut self.data)
     }
+    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn can_move_to_thread(&self) -> bool {
         self.movable
     }
@@ -221,8 +224,10 @@ impl Host {
     fn probe_state(&self, id: ObjectId) -> (u32, ThreadId) {
         self.run(move || {
             with_object(id, |o| {
-                // SAFETY: the tests register only `Probe`s under the ids they pass here.
-                let p = unsafe { &*(o as *const dyn QObject as *const Probe) };
+                let p = o
+                    .as_qobject_any()
+                    .and_then(|any| any.downcast_ref::<Probe>())
+                    .expect("the id names a Probe");
                 (p.thread_changes, p.data.thread_id())
             })
             .expect("the object must be readable on its own thread")

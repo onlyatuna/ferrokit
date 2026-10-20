@@ -192,3 +192,43 @@ fn the_owner_is_refused_while_its_object_is_registered_on_another_thread() {
     );
     assert_eq!(owner.with_mut(|c| c.hits += 10), Some(()));
 }
+
+/// For an owner with no registry record the owner's own compare-and-swap is the only exclusion:
+/// an access inside an access is refused, not admitted.
+#[test]
+fn nested_access_of_an_unregistered_owner_is_refused() {
+    let mut owner = OwnedObject::new(Counter::new());
+    assert_eq!(owner.with(|_| owner.with(|c| c.hits)), Some(None));
+    assert_eq!(
+        owner.with_mut(|c| c.hits += 1),
+        Some(()),
+        "the flag was released"
+    );
+    assert_eq!(owner.with(|c| c.hits), Some(1));
+}
+
+/// A panic in the closure releases the borrow, for a registered and for an unregistered owner.
+#[test]
+fn a_panic_in_the_closure_releases_the_borrow() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    // SAFETY: the owner is used only through `with` and `with_mut`.
+    let mut registered = unsafe { register_owned_qobject(Counter::new()) };
+    let id = OwnedObject::object_id(&registered);
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        registered.with_mut(|_| panic!("on purpose"))
+    }));
+    assert!(outcome.is_err());
+    assert!(!OwnedObject::is_borrowed(&registered));
+    assert!(
+        with_object(id, |_| ()).is_some(),
+        "a callback can start again"
+    );
+    assert_eq!(registered.with_mut(|c| c.hits += 1), Some(()));
+
+    let mut plain = OwnedObject::new(Counter::new());
+    let outcome = catch_unwind(AssertUnwindSafe(|| plain.with(|_| panic!("on purpose"))));
+    assert!(outcome.is_err());
+    assert!(!OwnedObject::is_borrowed(&plain));
+    assert_eq!(plain.with_mut(|c| c.hits += 1), Some(()));
+}

@@ -34,7 +34,8 @@
     "test_signal_owner_liveness",
     "test_move_to_thread_with_borrowed_data",
     "test_object_data_encapsulation",
-    "test_timer_thread_affinity"
+    "test_timer_thread_affinity",
+    "test_owned_closure_access"
   ],
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
@@ -598,6 +599,28 @@
     "test_timer_thread_affinity::the_deprecated_move_refuses_a_subtree_with_a_timer_too::SB": "pass",
     "test_timer_thread_affinity::the_deprecated_move_refuses_a_subtree_with_a_timer_too::TB": "pass",
     "test_timer_thread_affinity::the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback::SB": "pass",
-    "test_timer_thread_affinity::the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback::TB": "pass"
+    "test_timer_thread_affinity::the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback::TB": "pass",
+    "lib::object::qobject::tests::test_swap_with_an_object_registered_on_another_thread_is_refused::SB": "pass",
+    "lib::object::qobject::tests::test_swap_with_an_object_registered_on_another_thread_is_refused::TB": "pass",
+    "test_owned_closure_access::a_callback_is_refused_while_the_owner_has_the_object::SB": "pass",
+    "test_owned_closure_access::a_callback_is_refused_while_the_owner_has_the_object::TB": "pass",
+    "test_owned_closure_access::a_panic_in_the_closure_releases_the_borrow::SB": "pass",
+    "test_owned_closure_access::a_panic_in_the_closure_releases_the_borrow::TB": "pass",
+    "test_owned_closure_access::an_unregistered_owner_is_guarded_too::SB": "pass",
+    "test_owned_closure_access::an_unregistered_owner_is_guarded_too::TB": "pass",
+    "test_owned_closure_access::nested_access_of_an_unregistered_owner_is_refused::SB": "pass",
+    "test_owned_closure_access::nested_access_of_an_unregistered_owner_is_refused::TB": "pass",
+    "test_owned_closure_access::nested_access_of_one_object_is_refused::SB": "pass",
+    "test_owned_closure_access::nested_access_of_one_object_is_refused::TB": "pass",
+    "test_owned_closure_access::the_owner_between_callbacks_reads_and_writes::SB": "pass",
+    "test_owned_closure_access::the_owner_between_callbacks_reads_and_writes::TB": "pass",
+    "test_owned_closure_access::the_owner_has_no_deref::SB": "pass",
+    "test_owned_closure_access::the_owner_has_no_deref::TB": "pass",
+    "test_owned_closure_access::the_owner_is_refused_inside_a_callback_of_its_object::SB": "pass",
+    "test_owned_closure_access::the_owner_is_refused_inside_a_callback_of_its_object::TB": "pass",
+    "test_owned_closure_access::the_owner_is_refused_while_its_object_is_registered_on_another_thread::SB": "pass",
+    "test_owned_closure_access::the_owner_is_refused_while_its_object_is_registered_on_another_thread::TB": "pass",
+    "test_owned_object::the_owner_cannot_be_used_while_the_objects_callback_runs::SB": "pass",
+    "test_owned_object::the_owner_cannot_be_used_while_the_objects_callback_runs::TB": "pass"
   }
 }

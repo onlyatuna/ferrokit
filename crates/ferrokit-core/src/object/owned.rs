@@ -159,10 +159,20 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
 
     /// Calls `f` with the object, unless a callback of it is running.
     ///
-    /// Returns `None` without calling `f` when the object's borrow is held (a callback of it is
-    /// running, or an access through another call of this kind is still open): the reference given
-    /// to `f` is then never alive together with another reference to the object. A callback that
-    /// starts while `f` runs finds the object borrowed, as it would during another callback.
+    /// Returns `None` without calling `f` when the object cannot be reached from this thread now:
+    /// - its borrow is held (a callback of it is running, or an access through another call of
+    ///   this kind is still open);
+    /// - it is registered on another thread. The owner stays on the thread it was made on when
+    ///   the object is moved with `move_to_thread_by_id`, and does not reach the object there; use
+    ///   [`with_object`](super::with_object) on the thread the object lives on.
+    ///
+    /// The reference given to `f` is never alive together with another reference to the object.
+    /// A callback that starts while `f` runs finds the object borrowed, as it would during another
+    /// callback. `f` holds the object's borrow, so a call that needs the object's borrow itself
+    /// fails with `Busy` inside `f`: that includes [`set_parent`](super::set_parent) and the
+    /// `set_parent` methods of the object's data (use
+    /// [`set_parent_by_id`](super::set_parent_by_id) with [`OwnedObject::object_id`] from outside
+    /// the closure).
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
         let _held = self.hold()?;
         // SAFETY: the object lives as long as its owner, and the borrow flag is held until `f`
@@ -170,8 +180,9 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
         Some(f(unsafe { self.ptr.as_ref() }))
     }
 
-    /// Calls `f` with the object mutably, unless a callback of it is running. See
-    /// [`OwnedObject::with`].
+    /// Calls `f` with the object mutably, unless a callback of it is running or the object is
+    /// registered on another thread. See [`OwnedObject::with`], including what fails with `Busy`
+    /// inside `f` (`set_parent` and the other calls that take the object's own borrow).
     pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let _held = self.hold()?;
         // SAFETY: as for `with`, and the owner is borrowed exclusively.

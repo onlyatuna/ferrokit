@@ -542,9 +542,6 @@ fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
     children
 }
 
-/// Walks `data` and its unregistered `owned_children`, checking that no owned child is borrowed by
-/// a running callback and that every unregistered owned descendant allows moving to another
-/// thread, while queuing registered children for registry-backed inspection.
 /// The thread of an owned child: the registry's record when it has one (readable while a callback
 /// of the child runs), else the object's own data.
 fn owned_thread(child: &OwnedObject<dyn QObject>) -> Option<ThreadId> {
@@ -552,6 +549,9 @@ fn owned_thread(child: &OwnedObject<dyn QObject>) -> Option<ThreadId> {
         .or_else(|| child.with(|c| c.object_data().thread()))
 }
 
+/// Walks `data` and its unregistered `owned_children`, checking that no owned child is borrowed by
+/// a running callback and that every unregistered owned descendant allows moving to another
+/// thread, while queuing registered children for registry-backed inspection.
 fn inspect_owned_tree(
     data: &ObjectData,
     all_ids: &mut Vec<ObjectId>,
@@ -4500,12 +4500,16 @@ mod tests {
 
         let child_box = Box::new(Node(ObjectData::new(ObjectId::next())));
         let child_id = unsafe { add_owned_child(p1_id, child_box).map_err(|(e, _)| e).unwrap() };
+        // The child's state is read before it is borrowed, and again after the borrow is
+        // released: while a callback of it runs, nothing may read it.
+        let child_before = p1.0.owned_children[0]
+            .with(|c| states(&[c.object_data()]))
+            .expect("the child is idle");
         // Borrow child exclusively via borrow_registered
         let child_guard = borrow_registered(child_id).unwrap();
 
         // Attempt reparent - must reject with Busy
-        // The child is borrowed, so only the parents' state can be read; the child's registry
-        // parent is checked below.
+        // The child is borrowed, so only the parents' state can be read here.
         let before = states(&[&p1.0, &p2.0]);
         let res = reparent_owned_object(child_id, Some(p2_id));
         assert!(matches!(res, Err(ReparentError::Busy)));
@@ -4515,6 +4519,11 @@ mod tests {
             "a refused reparent changed something"
         );
         drop(child_guard);
+        assert_eq!(
+            p1.0.owned_children[0].with(|c| states(&[c.object_data()])),
+            Some(child_before),
+            "a refused reparent changed the child"
+        );
 
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
         assert!(p1.0.owned_children.iter().any(|c| OwnedObject::object_id(c) == child_id));
@@ -4539,6 +4548,41 @@ mod tests {
         fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
             ObjectDataMut::new(&mut self.0)
         }
+    }
+
+    /// A swap with an object that is really registered on another thread (moved with
+    /// `move_to_thread_by_id`) is refused, and nothing changes. The owner cannot lend such an
+    /// object (its `with_mut` refuses), so the data handle is taken unchecked: no callback can run
+    /// on the thread the object was moved to, which has ended.
+    #[test]
+    fn test_swap_with_an_object_registered_on_another_thread_is_refused() {
+        let _serial = serial();
+        let mut a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let mut b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
+        let child = Box::new(Plain(ObjectData::new(ObjectId::next())));
+        let child_id_attached = child.0.id();
+        unsafe { add_owned_child(a_id, child) }.map_err(|(e, _)| e).expect("attach a child to a");
+
+        let remote = std::thread::spawn(ThreadId::current).join().unwrap();
+        assert_eq!(super::super::thread::move_to_thread_by_id(b_id, remote, ThreadId::current()), Ok(()));
+        assert_eq!(query_object_thread(b_id), Some(remote));
+        assert_eq!(b.with_mut(|_| ()), None, "the owner does not reach an object that lives elsewhere");
+
+        // SAFETY: the thread `b` was moved to has ended, so no callback of it can run, and nothing
+        // else holds a reference to it.
+        let mut b_data = unsafe { b.as_mut_unchecked() }.object_data_mut();
+        let res = a.with_mut(|a| a.object_data_mut().swap_hierarchy_and_ownership(&mut b_data)).unwrap();
+        assert_eq!(res, Err(ReparentError::DifferentThread));
+        drop(b_data);
+
+        assert_eq!(query_object_parent(child_id_attached), Some(Some(a_id)));
+        assert!(query_object_children(a_id).unwrap().contains(&child_id_attached));
+        assert!(query_object_children(b_id).unwrap().is_empty());
+        assert_eq!(a.with(|a| a.object_data().owned_children().len()), Some(1));
+        drop(a);
+        // `b` is registered on another thread: its owner is dropped here, which unregisters it.
+        drop(b);
     }
 
     /// `set_parent` on the data of an owned [`Plain`]. `set_parent` takes the child's borrow itself
