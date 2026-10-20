@@ -251,9 +251,16 @@ impl SendFree {
 ///   thread as a queued call (as `deleteLater` posts a `DeferredDelete`), where it takes the
 ///   branch above: the timers are stopped in that thread's registry and no callback overlaps. The
 ///   object stays registered and usable by its callbacks until that call runs. If the call is
-///   discarded unrun because the thread's event queue went away (thread ended), the object is
-///   destroyed where the queue was dropped. A thread that is alive but never runs its event loop
-///   keeps the object until its queue goes away.
+///   discarded unrun, the object is destroyed where it was dropped (see [`ForwardedDestroy`]):
+///   * the registration thread has already ended, so the post itself is dropped (see
+///     [`post_event_to_thread`](crate::event_loop::post_event_to_thread)), and the object is
+///     destroyed on the owner's thread, since no other thread can;
+///   * the thread's event queue went away (its loop ended) and the call was dropped with it;
+///   * the thread ends while the call is still held for a loop it never started: the object is
+///     then destroyed on that thread, as its locals are destroyed.
+///
+///   A thread that is alive but never runs its event loop (or whose loop ended while the thread
+///   goes on without one) keeps the object until it ends or starts a loop.
 pub(crate) fn destroy_owned(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
     match registration_thread_of(id) {
         Some(thread) if thread != ThreadId::current() => {
@@ -273,7 +280,15 @@ pub(crate) fn destroy_owned(id: ObjectId, state: Arc<ObjectBorrowState>, free: S
 }
 
 /// A destruction forwarded to the registration thread. Dropped without having been delivered, the
-/// event queue that held it is gone, and the object is destroyed on the dropping thread.
+/// event queue that held it is gone (or the registration thread has ended), and the object is
+/// destroyed on the dropping thread.
+///
+/// Timers: they live in the thread-local timer registry of the registration thread (on Windows
+/// with a native source that only that thread can kill), so another thread cannot stop them and
+/// `unregister_qobject` stops none from here. Nothing is lost when the registration thread has
+/// ended or its loop, and with it its timer context, is gone: the registry went away. Only a
+/// queue dropped by a different thread while the registration thread's timer context is alive
+/// leaves the object's timer entries there, until that thread's registry is dropped.
 struct ForwardedDestroy {
     id: ObjectId,
     state: Option<Arc<ObjectBorrowState>>,
@@ -717,7 +732,23 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
 fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
     let _registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
     let index = lock_unpoisoned(&PARENT_LINK_INDEX);
-    index.children.get(&id).cloned().unwrap_or_default()
+    let children = index.children.get(&id).cloned().unwrap_or_default();
+    INDEX_ENTRIES_READ.with(|read| read.set(read.get() + children.len()));
+    children
+}
+
+thread_local! {
+    /// Entries `registered_children_below` read from the index on this thread, in total.
+    static INDEX_ENTRIES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many child entries the calling thread has read from the parent-link index so far. For tests
+/// of the cost of a thread move: the difference across a call is the number of index entries the
+/// call read, which is what lies below the objects it walked, whatever else is registered. It is
+/// per thread, so the activity of other threads does not enter it.
+#[doc(hidden)]
+pub fn child_index_entries_read() -> usize {
+    INDEX_ENTRIES_READ.with(std::cell::Cell::get)
 }
 
 /// The thread of an owned child: the registry's record when it has one (readable while a callback
@@ -4769,8 +4800,10 @@ mod tests {
         assert!(query_object_children(b_id).unwrap().is_empty());
         assert_eq!(a.with(|a| a.object_data().owned_children().len()), Some(1));
         drop(a);
-        // `b` is registered on another thread: its owner is dropped here, which unregisters it.
+        // `b` is registered on a thread that has ended, which can no longer run the destruction
+        // forwarded to it: the owner's drop destroys it here instead.
         drop(b);
+        assert_eq!(query_object_thread(b_id), None, "the drop unregistered the object");
     }
 
     /// `set_parent` on the data of an owned [`Plain`]. `set_parent` takes the child's borrow itself

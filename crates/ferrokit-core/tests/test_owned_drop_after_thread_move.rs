@@ -4,19 +4,26 @@
 //! on a thread that is not the registration thread, while callbacks of the object run on the
 //! registration thread.
 //!
-//! Three scenarios, each expecting the behaviour the owner's documentation promises (a callback
+//! Scenarios, each expecting the behaviour the owner's documentation promises (a callback
 //! never overlaps the destruction of its object; the destruction happens once the callback
 //! returned; the timers of a destroyed object are gone). They are meant to fail on a library that
 //! does not synchronise the owner's drop with the registration thread.
 //!
 //! * `the_object_is_freed_when_its_callback_on_the_other_thread_returns`: deterministic. Another
-//!   thread is inside a callback when the owner is dropped; the allocation is parked in the
-//!   dropping thread's list, but the callback's guard drains the list of its own thread.
-//! * `the_owner_drop_does_not_overlap_a_callback_that_starts_during_it`: a race. Run it under Miri
-//!   (`-Zmiri-ignore-leaks`, several seeds) to see the use after free.
+//!   thread is inside a callback when the owner is dropped; the owner's drop is forwarded to that
+//!   thread, and the object is freed once the callback returned.
+//! * `the_owner_drop_does_not_overlap_a_callback_that_starts_during_it`: a race. The owner's drop
+//!   is always forwarded (its thread is not the registration thread), so the callback never meets
+//!   the destruction. It reproduced a use after free on a library that destroyed the object on the
+//!   owner's thread after only loading the borrow flag (run it under Miri with
+//!   `-Zmiri-ignore-leaks`, several seeds, to see that). The race on one thread is covered by the
+//!   last two tests of this file.
 //! * `the_timers_of_the_object_are_removed_when_the_owner_is_dropped`: deterministic. The object's
 //!   timer lives in the registry of the thread it was moved to, but the drop clears the registry
 //!   of the dropping thread.
+//! * `an_owner_dropped_by_a_callback_on_the_registration_thread_parks_until_the_callback_returns`
+//!   and `owner_drops_on_the_registration_thread_destroy_each_object_once_in_or_out_of_a_callback`:
+//!   deterministic. Owner and callback on one thread, where the borrow flag decides the order.
 
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +33,8 @@ use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_owned_qobject, with_object_mut, ObjectData, ObjectDataMut,
-    ObjectId, OwnedObject, QObject, ThreadId,
+    move_to_thread_by_id, query_object_thread, register_owned_qobject, with_object_mut, ObjectData,
+    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::timer::{start_object_timer, with_thread_timer_context, TimerType};
 
@@ -184,9 +191,11 @@ fn worker_loop(jobs: Receiver<Job>, outcomes: Sender<Outcome>, tid: Sender<Threa
     }
 }
 
-/// The owner is dropped while the registration thread starts a callback on the object. The owner
-/// only loads the borrow flag, so a callback that takes the flag after that load runs on an object
-/// the owner then destroys.
+/// The owner is dropped while the registration thread starts a callback on the object. The drop
+/// is forwarded to the registration thread, which runs it only between callbacks (here when the
+/// worker's loop ends), so no callback meets the destruction. A destruction that only loaded the
+/// borrow flag on the owner's thread would let a callback that takes the flag after that load run
+/// on an object the owner then destroys.
 #[test]
 fn the_owner_drop_does_not_overlap_a_callback_that_starts_during_it() {
     let iterations: u32 = if cfg!(miri) { 40 } else { 20_000 };
@@ -319,4 +328,76 @@ fn the_timers_of_the_object_are_removed_when_the_owner_is_dropped() {
         "the destroyed object's timer is still registered on the thread it was moved to: the \
          owner's drop stopped timers in its own thread's registry"
     );
+}
+
+/// The owner and a callback of its object are on the same thread (the registration thread): the
+/// callback drops the owner. Nothing is forwarded; the owner finds the borrow flag held, so it
+/// unregisters the object at once and parks the allocation, and the callback's guard frees it
+/// when the callback returns. The callback can still use the object after the drop.
+#[test]
+fn an_owner_dropped_by_a_callback_on_the_registration_thread_parks_until_the_callback_returns() {
+    let _el = EventLoop::new();
+    let dropped = Arc::new(AtomicBool::new(false));
+    // SAFETY: the owner is dropped on this thread only, by the callback below.
+    let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
+    let id = OwnedObject::object_id(&owner);
+
+    let (unregistered_inside, dropped_inside, hits) = with_object_mut(id, |obj| {
+        *hits_of(obj) += 1;
+        drop(owner);
+        let unregistered_inside = query_object_thread(id).is_none();
+        let dropped_inside = dropped.load(Ordering::SeqCst);
+        // The allocation is parked, not freed: the object is still usable here (Miri reports a
+        // use after free otherwise).
+        *hits_of(obj) += 1;
+        (unregistered_inside, dropped_inside, *hits_of(obj))
+    })
+    .expect("the callback runs on the registration thread");
+
+    assert!(
+        unregistered_inside,
+        "the owner's drop unregisters the object at once"
+    );
+    assert!(
+        !dropped_inside,
+        "the object must not be destroyed while its callback runs"
+    );
+    assert_eq!(hits, 2);
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "the callback's guard frees the parked allocation when the callback returns"
+    );
+}
+
+/// Owner drops on the registration thread, with no callback running, take the borrow flag with the
+/// compare-and-swap and free the object at once; interleaved with drops from inside a callback
+/// they still destroy every object exactly once.
+#[test]
+fn owner_drops_on_the_registration_thread_destroy_each_object_once_in_or_out_of_a_callback() {
+    let _el = EventLoop::new();
+    for i in 0..200u32 {
+        let dropped = Arc::new(AtomicBool::new(false));
+        // SAFETY: as above.
+        let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
+        let id = OwnedObject::object_id(&owner);
+        if i % 2 == 0 {
+            drop(owner);
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "no callback runs: freed at once"
+            );
+        } else {
+            let dropped_inside = with_object_mut(id, |_| {
+                drop(owner);
+                dropped.load(Ordering::SeqCst)
+            })
+            .unwrap();
+            assert!(!dropped_inside, "a callback runs: the free waits for it");
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "and happens when it returns"
+            );
+        }
+        assert_eq!(query_object_thread(id), None);
+    }
 }

@@ -16,9 +16,10 @@ use parking_lot::Mutex;
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, query_object_parent, query_object_thread,
-    register_owned_qobject, reparent_owned_object, set_parent_by_id, verify_parent_link_index,
-    with_object_mut, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    add_owned_child, child_index_entries_read, move_to_thread_by_id, query_object_parent,
+    query_object_thread, register_owned_qobject, reparent_owned_object, set_parent_by_id,
+    verify_parent_link_index, with_object_mut, ObjectData, ObjectDataMut, ObjectId, OwnedObject,
+    QObject, ThreadId,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -320,9 +321,11 @@ fn wait_until_gone(id: ObjectId) {
     }
 }
 
-/// Moves small subtrees while many unrelated objects are registered. Nothing is asserted about the
-/// time (the answer is in the printed lines, `--nocapture`); the point is that what a move
-/// inspects is the subtree. The same moves with and without the unrelated objects are timed.
+/// Moves small subtrees while many unrelated objects are registered. What a move inspects is
+/// counted: the index entries it reads (`child_index_entries_read`, per calling thread). The count
+/// for the same moves must be the same with and without the unrelated objects, and it must be
+/// bounded by the size of the subtree, so a walk over the registry would fail it. The time is only
+/// printed (`--nocapture`).
 #[test]
 fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
     let _serial = SERIAL.lock();
@@ -330,15 +333,18 @@ fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
     let _el = EventLoop::new();
 
     let (unrelated_count, moves) = if cfg!(miri) { (40, 4) } else { (20_000, 2_000) };
+    const SUBTREE: usize = 4;
 
     let (tid_tx, tid_rx) = channel();
     let stop = Arc::new(AtomicBool::new(false));
     let worker = spawn_pumping_worker(tid_tx, &stop);
     let there = tid_rx.recv_timeout(WAIT).unwrap();
 
-    let run = |label: &str| {
-        let mut owners = Vec::with_capacity(moves * 4);
-        let mut ids = Vec::with_capacity(moves * 4);
+    // Returns the index entries the moves read.
+    let run = |label: &str| -> usize {
+        let mut owners = Vec::with_capacity(moves * SUBTREE);
+        let mut ids = Vec::with_capacity(moves * SUBTREE);
+        let mut entries_read = 0;
         let start = Instant::now();
         for _ in 0..moves {
             let root = registered();
@@ -348,13 +354,16 @@ fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
             set_parent_by_id(id_of(&child_a), Some(root_id)).unwrap();
             set_parent_by_id(id_of(&child_b), Some(root_id)).unwrap();
             set_parent_by_id(id_of(&grandchild), Some(id_of(&child_a))).unwrap();
+            let before = child_index_entries_read();
             assert_eq!(move_to_thread_by_id(root_id, there, here), Ok(()));
+            entries_read += child_index_entries_read() - before;
             ids.extend([root_id, id_of(&child_a), id_of(&child_b), id_of(&grandchild)]);
             owners.extend([root, child_a, child_b, grandchild]);
         }
         let elapsed = start.elapsed();
         eprintln!(
-            "{label}: {moves} moves of a 4-object subtree in {elapsed:?} ({:?} per move)",
+            "{label}: {moves} moves of a {SUBTREE}-object subtree in {elapsed:?} ({:?} per move), \
+             {entries_read} index entries read",
             elapsed / moves as u32
         );
         check();
@@ -363,15 +372,26 @@ fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
             wait_until_gone(id);
         }
         check();
+        entries_read
     };
 
-    run("no unrelated objects");
+    let alone = run("no unrelated objects");
     let unrelated: Vec<_> = (0..unrelated_count).map(|_| registered()).collect();
     check();
-    run(&format!("{unrelated_count} unrelated objects"));
+    let crowded = run(&format!("{unrelated_count} unrelated objects"));
     drop(unrelated);
     check();
 
     stop.store(true, Ordering::Release);
     worker.join().unwrap();
+
+    assert!(alone > 0, "the counter saw no read: the move no longer goes through the index");
+    assert_eq!(
+        alone, crowded,
+        "the unrelated registered objects changed what the moves inspected"
+    );
+    assert!(
+        alone <= moves * SUBTREE,
+        "a move read {alone} entries for {moves} subtrees of {SUBTREE} objects"
+    );
 }
