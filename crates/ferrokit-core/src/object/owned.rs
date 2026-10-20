@@ -168,8 +168,8 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     ///
     /// The reference given to `f` is never alive together with another reference to the object.
     /// A callback that starts while `f` runs finds the object borrowed, as it would during another
-    /// callback. `f` holds the object's borrow, so a call that needs the object's borrow itself
-    /// fails with `Busy` inside `f`: that includes [`set_parent`](super::set_parent) and the
+    /// callback. For a registered object `f` holds the object's borrow, so a call that needs the
+    /// object's borrow itself fails with `Busy` inside `f`: that includes [`set_parent`](super::set_parent) and the
     /// `set_parent` methods of the object's data (use
     /// [`set_parent_by_id`](super::set_parent_by_id) with [`OwnedObject::object_id`] from outside
     /// the closure).
@@ -182,7 +182,8 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
 
     /// Calls `f` with the object mutably, unless a callback of it is running or the object is
     /// registered on another thread. See [`OwnedObject::with`], including what fails with `Busy`
-    /// inside `f` (`set_parent` and the other calls that take the object's own borrow).
+    /// inside `f` for a registered object (`set_parent` and the other calls that take the object's
+    /// own borrow).
     pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let _held = self.hold()?;
         // SAFETY: as for `with`, and the owner is borrowed exclusively.
@@ -193,8 +194,8 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     ///
     /// # Safety
     /// No callback of the object runs or can start while the reference lives, and no other
-    /// reference to it is live: the caller holds the object's borrow flag, or knows the object has
-    /// no live registry entry.
+    /// reference to it is live: the caller holds the object's borrow flag, or knows that the
+    /// object has no live registry entry, or that the thread it is registered on has ended.
     pub(crate) unsafe fn as_ref_unchecked(&self) -> &T {
         // SAFETY: the object lives as long as its owner; the rest is the caller's contract.
         unsafe { self.ptr.as_ref() }
