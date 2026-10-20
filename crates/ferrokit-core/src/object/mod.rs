@@ -241,7 +241,7 @@
 //! ### Why borrow guards and owners must be dropped after H and L0
 //!
 //! Dropping an [`ObjectBorrowGuard`] flushes queued child list edits (`pending_child_changes`) and
-//! may trigger [`free_parked_children`] when an owned child was marked for destruction during the
+//! may trigger the destruction parked by [`OwnedObject`] when an owned child was marked for destruction during the
 //! borrow. Destroying a parked child executes [`unregister_qobject`], which acquires the `L0`
 //! registry lock for writing.
 //!

@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use super::qobject::{ObjectBorrowState, ObjectId, QObject};
+use super::qobject::{ObjectBorrowState, ObjectId, QObject, SendFree};
 
 /// Owner of a heap object whose pointer the registry shares.
 ///
@@ -22,6 +22,14 @@ use super::qobject::{ObjectBorrowState, ObjectId, QObject};
 /// Dropping it drops the object, which unregisters it, and frees the memory. When a callback of
 /// the object is currently running, dropping the owner unregisters the object (and its
 /// registry-listed descendants) at once and parks the allocation until that callback returns.
+///
+/// The owner of an object moved with `move_to_thread_by_id` stays on its thread. Dropping it
+/// there does not touch the object: the destruction is posted to the registration thread as a
+/// queued call, as `deleteLater` posts a `DeferredDelete`, and unregisters the object (stopping
+/// its timers in that thread's registry) and frees it there once no callback runs. Until that
+/// call is delivered the object stays registered and its callbacks keep running. If the thread
+/// never runs its event loop again, the object lives until the thread's event queue is dropped
+/// (when the thread ends), where it is destroyed.
 ///
 /// The rules in the [`crate::object`] module documentation still hold for a registered object:
 /// while one of its callbacks runs, its owner must not access it at all, not even to read it.
@@ -213,38 +221,33 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
 }
 
 impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
+    /// Destroys the object; see [`destroy_owned`](super::qobject::destroy_owned) for what
+    /// happens on the registration thread, while a callback runs, and on another thread (the
+    /// destruction is then posted to the registration thread, like `deleteLater`).
     fn drop(&mut self) {
-        self.borrow_state.memory_destroyed.store(true, std::sync::atomic::Ordering::Release);
         let ptr = self.ptr;
-        if self.borrow_state.borrow_flag.load(Ordering::Acquire) {
-            let borrow_state = Arc::clone(&self.borrow_state);
-            super::qobject::park_owned_drop(
-                self.id,
-                borrow_state,
-                Box::new(move || {
-                    // SAFETY: `ObjectBorrowGuard::drop` runs this closure only after releasing
-                    // `borrow_flag`, so the callback's `&mut` borrow of `*ptr` has ended. `ptr`
-                    // came from `Box::into_raw` in `from_box` and is freed only here.
-                    let mut boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
-                    // Clear `parent` only when the object was parked from its parent's
-                    // `owned_children` (`delete_children` on a dying owning parent). A standalone
-                    // `OwnedObject` attached to a live non-owning parent (`set_parent_by_id`)
-                    // keeps `parent` so `T::drop` can read `object_data().parent()` and
-                    // `ObjectData::drop` unlinks from the parent and sends `ChildRemoved`.
-                    if boxed.object_data().owned_by_parent {
-                        boxed.object_data_mut().clear_parent();
-                    }
-                    drop(boxed);
-                }),
-            );
-            return;
-        }
-        // SAFETY: unregister the object's registration before deallocating memory.
-        unsafe { crate::object::unregister_qobject(self.id) };
-        // SAFETY: `ptr` came from `Box::into_raw` and is freed only here: the owner is turned back
-        // into a `Box` only by `into_box`, for an object that was never registered through it, so
-        // no second pointer that claims unique ownership exists.
-        drop(unsafe { Box::from_raw(ptr.as_ptr()) });
+        super::qobject::destroy_owned(
+            self.id,
+            Arc::clone(&self.borrow_state),
+            SendFree::new(move |parked| {
+                // SAFETY: `destroy_owned` runs this once, after it took the borrow flag (or after
+                // the guard of the callback that held it released it), and after the object was
+                // unregistered, so no callback holds a reference to `*ptr` and none can start.
+                // `ptr` came from `Box::into_raw` in `from_box` and is freed only here: the owner
+                // is turned back into a `Box` only by `into_box`, for an object that was never
+                // registered through it.
+                let mut boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
+                // Clear `parent` only when the object was parked from its parent's
+                // `owned_children` (`delete_children` on a dying owning parent). A standalone
+                // `OwnedObject` attached to a live non-owning parent (`set_parent_by_id`)
+                // keeps `parent` so `T::drop` can read `object_data().parent()` and
+                // `ObjectData::drop` unlinks from the parent and sends `ChildRemoved`.
+                if parked && boxed.object_data().owned_by_parent {
+                    boxed.object_data_mut().clear_parent();
+                }
+                drop(boxed);
+            }),
+        );
     }
 }
 

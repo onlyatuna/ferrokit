@@ -6,6 +6,7 @@ use crate::variant::Variant;
 use super::owned::OwnedObject;
 use super::thread::{ThreadContext, ThreadId};
 use crate::event::{Event, EventKind};
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -90,6 +91,9 @@ pub(crate) struct ObjectBorrowState {
     /// Set when an owned child was destroyed while this object's callback was running: the guard
     /// of that callback then frees the memory it kept (see `destroy_when_released`).
     pub(crate) free_when_released: AtomicBool,
+    /// The allocation parked for the guard of the running callback to free. Held here, not in a
+    /// thread-local list, because the callback may run on another thread than the dropping one.
+    parked: Mutex<Option<SendFree>>,
     /// Set when the underlying object memory is deallocated or its destructor has begun.
     pub(crate) memory_destroyed: AtomicBool,
 }
@@ -215,44 +219,125 @@ impl Drop for ObjectBorrowGuard {
             .free_when_released
             .swap(false, Ordering::AcqRel)
         {
-            free_parked_children(&self.borrow_state);
+            run_parked(&self.borrow_state);
         }
     }
 }
 
-/// A deferred deallocation of an [`OwnedObject`] dropped while a callback of its object was
-/// running, paired with the borrow state of that callback.
-type ParkedChild = (Arc<ObjectBorrowState>, Box<dyn FnOnce()>);
-thread_local! {
-    /// Allocations of [`OwnedObject`]s dropped while a callback of theirs was running. The guard
-    /// of that callback frees them when it ends.
-    static PARKED_CHILDREN: RefCell<Vec<ParkedChild>> = const { RefCell::new(Vec::new()) };
+/// A destruction closure that may run on another thread than the one that built it. The closure
+/// frees an object that only the registration thread (or, once that thread is gone, nobody) can be
+/// running a callback of, and the borrow flag orders it after those callbacks.
+pub(crate) struct SendFree(Box<dyn FnOnce(bool)>);
+// SAFETY: see the type's documentation; the closure's captures are a raw object pointer and ids.
+unsafe impl Send for SendFree {}
+
+impl SendFree {
+    /// `free(parked)` drops the object's memory; `parked` is true when a callback of the object
+    /// had to return first.
+    pub(crate) fn new(free: impl FnOnce(bool) + 'static) -> Self {
+        SendFree(Box::new(free))
+    }
 }
 
-/// Parks `free` until the running callback that holds `borrow_state` releases its borrow flag,
-/// and unregisters `id` and everything the registry lists below it at once.
-pub(crate) fn park_owned_drop(
+/// Destroys the object of an [`OwnedObject`] that is being dropped.
+///
+/// * On the object's registration thread (or when the object is not registered), the owner takes
+///   the borrow flag with a compare-and-swap. If it gets the flag, no callback runs and none can
+///   start (`registered_ptr` callers fail the same compare-and-swap), so the object is
+///   unregistered and freed at once. If a callback holds the flag, the object and everything the
+///   registry lists below it are unregistered at once and the allocation is parked in the
+///   object's [`ObjectBorrowState`]; the guard of that callback frees it when it ends.
+/// * On another thread, the object is not touched. The destruction is posted to the registration
+///   thread as a queued call (as `deleteLater` posts a `DeferredDelete`), where it takes the
+///   branch above: the timers are stopped in that thread's registry and no callback overlaps. The
+///   object stays registered and usable by its callbacks until that call runs. If the call is
+///   discarded unrun because the thread's event queue went away (thread ended), the object is
+///   destroyed where the queue was dropped. A thread that is alive but never runs its event loop
+///   keeps the object until its queue goes away.
+pub(crate) fn destroy_owned(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
+    match registration_thread_of(id) {
+        Some(thread) if thread != ThreadId::current() => {
+            let mut job = ForwardedDestroy {
+                id,
+                state: Some(state),
+                free: Some(free),
+            };
+            crate::event_loop::post_event_to_thread(
+                thread,
+                ObjectId(0),
+                Event::new(EventKind::MetaCall(Box::new(move |_| job.deliver()))),
+            );
+        }
+        _ => destroy_here(id, state, free),
+    }
+}
+
+/// A destruction forwarded to the registration thread. Dropped without having been delivered, the
+/// event queue that held it is gone, and the object is destroyed on the dropping thread.
+struct ForwardedDestroy {
     id: ObjectId,
-    borrow_state: Arc<ObjectBorrowState>,
-    free: Box<dyn FnOnce()>,
-) {
-    borrow_state
-        .free_when_released
-        .store(true, Ordering::Release);
-    PARKED_CHILDREN.with(|parked| {
-        parked.borrow_mut().push((borrow_state, free));
-    });
+    state: Option<Arc<ObjectBorrowState>>,
+    free: Option<SendFree>,
+}
+
+// SAFETY: the payload is a `SendFree` and an `Arc` of atomics and a mutex; see `SendFree`.
+unsafe impl Send for ForwardedDestroy {}
+
+impl ForwardedDestroy {
+    fn deliver(&mut self) {
+        if let (Some(state), Some(free)) = (self.state.take(), self.free.take()) {
+            // The object may have moved again, or been unregistered, since the post.
+            destroy_owned(self.id, state, free);
+        }
+    }
+}
+
+impl Drop for ForwardedDestroy {
+    fn drop(&mut self) {
+        if let (Some(state), Some(free)) = (self.state.take(), self.free.take()) {
+            destroy_here(self.id, state, free);
+        }
+    }
+}
+
+fn destroy_here(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
+    let SendFree(free) = free;
+    if state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        state.memory_destroyed.store(true, Ordering::Release);
+        // SAFETY: the flag is ours, so no callback runs or can start; the object's memory is
+        // freed after the unregistration.
+        unsafe { unregister_qobject(id) };
+        free(false);
+        return;
+    }
+    // A callback holds the flag: park the allocation in the shared slot for its guard.
+    state.memory_destroyed.store(true, Ordering::Release);
+    *lock_unpoisoned(&state.parked) = Some(SendFree(free));
+    state.free_when_released.store(true, Ordering::Release);
     unregister_descendants(id);
     // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
     // memory is not freed until it returns. No other callback can start on an unregistered object.
     unsafe { unregister_qobject(id) };
+    // The callback may have returned before the allocation was parked and so never seen it.
+    if state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        state.free_when_released.store(false, Ordering::Release);
+        run_parked(&state);
+    }
 }
 
 /// Destroys an owner whose object may have a callback still running: an owned child whose parent
 /// is being dropped from inside that callback, or an owner (such as a `Timer` handle) dropped by
 /// one of its own slots. [`OwnedObject::drop`] unregisters the object (and its registry-listed
 /// descendants) at once and parks the allocation when `borrow_flag` is held, freeing it when the
-/// running callback's guard returns (`free_parked_children`).
+/// running callback's guard returns (`run_parked`).
 pub(crate) fn destroy_when_released(child: OwnedObject<dyn QObject>) {
     drop(child);
 }
@@ -282,18 +367,13 @@ fn unregister_descendants(id: ObjectId) {
     }
 }
 
-/// Frees the allocations parked while the callback that held `state` was running.
-fn free_parked_children(state: &Arc<ObjectBorrowState>) {
-    let ready: Vec<Box<dyn FnOnce()>> = PARKED_CHILDREN.with(|parked| {
-        let mut parked = parked.borrow_mut();
-        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *parked)
-            .into_iter()
-            .partition(|(held, _)| Arc::ptr_eq(held, state));
-        *parked = waiting;
-        ready.into_iter().map(|(_, free)| free).collect()
-    });
-    for free in ready {
-        free();
+/// Runs the destruction parked in `state`, if it is still there. The parking thread (when it finds
+/// the borrow flag free after parking) and the callback's guard both call this: the slot is
+/// emptied under its lock, so one of them runs it.
+fn run_parked(state: &ObjectBorrowState) {
+    let free = lock_unpoisoned(&state.parked).take();
+    if let Some(SendFree(free)) = free {
+        free(true);
     }
 }
 
