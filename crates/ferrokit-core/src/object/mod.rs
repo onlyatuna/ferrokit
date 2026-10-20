@@ -181,7 +181,11 @@
 //! 7. **L1**: `ObjectRecord::children` (RwLock guarding direct child IDs of a parent record).
 //! 8. **L2**: `ObjectRecord::parent` (RwLock guarding direct parent `Option<ObjectId>` of a child record).
 //! 9. **Leaves**: Leaf synchronization points (`thread_id`, `registration_thread`,
-//!    `pending_child_changes`) protecting single atomic values or statement-level queues.
+//!    `pending_child_changes`, and `PARENT_LINK_INDEX`, the parent → registered-children index that
+//!    mirrors the `parent` links of the registry) protecting single atomic values, statement-level
+//!    queues, or a container edited together with the link it mirrors. `PARENT_LINK_INDEX` is
+//!    updated with the `parent` link (L2) write guard and L0 held, or with L0 held for writing
+//!    when a record is added or removed, and nothing is requested while it is held.
 //!
 //! ### Same-level ordering rules
 //!
@@ -241,7 +245,7 @@
 //! ### Why borrow guards and owners must be dropped after H and L0
 //!
 //! Dropping an [`ObjectBorrowGuard`] flushes queued child list edits (`pending_child_changes`) and
-//! may trigger [`free_parked_children`] when an owned child was marked for destruction during the
+//! may trigger the destruction parked by [`OwnedObject`] when an owned child was marked for destruction during the
 //! borrow. Destroying a parked child executes [`unregister_qobject`], which acquires the `L0`
 //! registry lock for writing.
 //!

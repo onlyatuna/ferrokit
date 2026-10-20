@@ -1056,6 +1056,9 @@ struct ThreadEventRegistry {
     /// Same ordering and compression rules as a live loop's queue (`EventQueue`), so a thread
     /// that never starts a loop does not accumulate duplicate `UpdateRequest`s.
     pending: HashMap<ThreadId, EventQueue>,
+    /// Threads whose locals have been destroyed (see [`mark_thread_ended`]). A thread id is never
+    /// reused, so an entry stays valid; it costs a few bytes for each thread that used the library.
+    ended: std::collections::HashSet<ThreadId>,
 }
 
 static THREAD_EVENT_HANDLES: Mutex<Option<ThreadEventRegistry>> = Mutex::new(None);
@@ -1065,8 +1068,24 @@ impl ThreadEventRegistry {
         Self {
             handles: HashMap::new(),
             pending: HashMap::new(),
+            ended: std::collections::HashSet::new(),
         }
     }
+}
+
+/// Records that `thread_id` has ended and drops what was held for it. Events posted to it from
+/// now on are dropped (see [`post_event_to_thread`]). Both happen under the registry lock, so
+/// an event is either held and dropped here, or posted after and dropped by the poster: none is
+/// left in a queue that nobody will turn. The dropped events are released after the lock is
+/// released, since a payload's `Drop` may post events or unregister objects.
+pub(crate) fn mark_thread_ended(thread_id: ThreadId) {
+    let held = {
+        let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
+        let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        reg.ended.insert(thread_id);
+        reg.pending.remove(&thread_id)
+    };
+    drop(held);
 }
 
 /// Registers the live loop for `thread_id` and delivers, in posting order, every event that was
@@ -1081,6 +1100,9 @@ pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) 
     {
         let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        // A loop that starts on a thread already reported as ended (during the destruction of
+        // its locals) can turn its queue again: posts must reach it.
+        reg.ended.remove(&thread_id);
         if let Some(buffered) = reg.pending.remove(&thread_id) {
             for posted in buffered.events {
                 let mut event = Some(posted.event);
@@ -1103,7 +1125,11 @@ pub fn unregister_thread_event_loop(thread_id: ThreadId) {
 }
 
 /// Posts `event` to the thread's event queue. If the thread has no event loop yet the event is
-/// held until one registers (see [`register_thread_event_loop`]); it is never dropped.
+/// held until one registers (see [`register_thread_event_loop`]), or until the thread ends, when
+/// it is dropped with the rest of what was held for it. An event posted to a thread that has
+/// already ended is dropped at once, after the registry lock is released: no loop can turn that
+/// queue any more. A thread counts as ended once its locals are destroyed, and only if it asked
+/// for its [`ThreadId::current`](crate::object::ThreadId::current) while it lived.
 pub fn post_event_to_thread(thread_id: ThreadId, receiver: ObjectId, event: Event) {
     post_event_to_thread_with_priority(thread_id, receiver, event, 0);
 }
@@ -1130,6 +1156,9 @@ pub fn post_event_to_thread_with_priority(
     let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
     let thread_id = routed_thread(receiver, thread_id);
+    if reg.ended.contains(&thread_id) {
+        return;
+    }
     match reg.handles.get(&thread_id) {
         Some(handle) => handle.post_from_slot(receiver, &mut event, priority),
         None => reg
@@ -1161,6 +1190,9 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 /// (Qt `setThreadData_helper`, qobject.cpp:1805-1815, under the locks of qobject.cpp:1757-1758).
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
     let mut woken = None;
+    // Events moved to a thread that has ended; dropped after the registry lock is released, as a
+    // payload's `Drop` may post events or unregister objects.
+    let mut discarded = Vec::new();
     {
         let mut guard = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = guard.get_or_insert_with(ThreadEventRegistry::new);
@@ -1195,6 +1227,11 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
                     }
                     woken = Some(handle.clone());
                 }
+                None if reg.ended.contains(&to) => {
+                    // No loop can turn that queue: the events go with the thread, and their
+                    // payloads are dropped after the lock is released.
+                    discarded.extend(moved);
+                }
                 None => {
                     let queue = reg.pending.entry(to).or_default();
                     for posted in moved {
@@ -1204,6 +1241,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
             }
         }
     }
+    drop(discarded);
     if let Some(handle) = woken {
         handle.wake_up();
     }
@@ -2986,5 +3024,25 @@ mod tests {
             "the outer loop must end with the cross-thread code"
         );
         assert_eq!(*log.lock().unwrap(), vec!["inner-3".to_string()]);
+    }
+
+    /// A loop that registers on a thread already reported as ended (one that starts while the
+    /// thread's locals are destroyed) gets the posts made after it registered; the ones made
+    /// while the thread counted as ended were dropped.
+    #[test]
+    fn registering_a_loop_on_an_ended_thread_makes_it_receive_posts_again() {
+        let delivered = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+        let event = |name: &'static str| {
+            let log = Arc::clone(&delivered);
+            Event::new(EventKind::MetaCall(Box::new(move |_| log.lock().push(name))))
+        };
+        let el = EventLoop::new();
+        let thread = ThreadId::current();
+        mark_thread_ended(thread);
+        post_event_to_thread(thread, ObjectId(0), event("while-ended"));
+        register_thread_event_loop(thread, el.handle());
+        post_event_to_thread(thread, ObjectId(0), event("after-register"));
+        el.process_events(false);
+        assert_eq!(*delivered.lock(), vec!["after-register"]);
     }
 }

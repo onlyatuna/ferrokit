@@ -6,6 +6,7 @@ use crate::variant::Variant;
 use super::owned::OwnedObject;
 use super::thread::{ThreadContext, ThreadId};
 use crate::event::{Event, EventKind};
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -90,6 +91,9 @@ pub(crate) struct ObjectBorrowState {
     /// Set when an owned child was destroyed while this object's callback was running: the guard
     /// of that callback then frees the memory it kept (see `destroy_when_released`).
     pub(crate) free_when_released: AtomicBool,
+    /// The allocation parked for the guard of the running callback to free. Held here, not in a
+    /// thread-local list, because the callback may run on another thread than the dropping one.
+    parked: Mutex<Option<SendFree>>,
     /// Set when the underlying object memory is deallocated or its destructor has begun.
     pub(crate) memory_destroyed: AtomicBool,
 }
@@ -215,44 +219,140 @@ impl Drop for ObjectBorrowGuard {
             .free_when_released
             .swap(false, Ordering::AcqRel)
         {
-            free_parked_children(&self.borrow_state);
+            run_parked(&self.borrow_state);
         }
     }
 }
 
-/// A deferred deallocation of an [`OwnedObject`] dropped while a callback of its object was
-/// running, paired with the borrow state of that callback.
-type ParkedChild = (Arc<ObjectBorrowState>, Box<dyn FnOnce()>);
-thread_local! {
-    /// Allocations of [`OwnedObject`]s dropped while a callback of theirs was running. The guard
-    /// of that callback frees them when it ends.
-    static PARKED_CHILDREN: RefCell<Vec<ParkedChild>> = const { RefCell::new(Vec::new()) };
+/// A destruction closure that may run on another thread than the one that built it. The closure
+/// frees an object that only the registration thread (or, once that thread is gone, nobody) can be
+/// running a callback of, and the borrow flag orders it after those callbacks.
+pub(crate) struct SendFree(Box<dyn FnOnce(bool)>);
+// SAFETY: see the type's documentation; the closure's captures are a raw object pointer and ids.
+unsafe impl Send for SendFree {}
+
+impl SendFree {
+    /// `free(parked)` drops the object's memory; `parked` is true when a callback of the object
+    /// had to return first.
+    pub(crate) fn new(free: impl FnOnce(bool) + 'static) -> Self {
+        SendFree(Box::new(free))
+    }
 }
 
-/// Parks `free` until the running callback that holds `borrow_state` releases its borrow flag,
-/// and unregisters `id` and everything the registry lists below it at once.
-pub(crate) fn park_owned_drop(
+/// Destroys the object of an [`OwnedObject`] that is being dropped.
+///
+/// * On the object's registration thread (or when the object is not registered), the owner takes
+///   the borrow flag with a compare-and-swap. If it gets the flag, no callback runs and none can
+///   start (`registered_ptr` callers fail the same compare-and-swap), so the object is
+///   unregistered and freed at once. If a callback holds the flag, the object and everything the
+///   registry lists below it are unregistered at once and the allocation is parked in the
+///   object's [`ObjectBorrowState`]; the guard of that callback frees it when it ends.
+/// * On another thread, the object is not touched. The destruction is posted to the registration
+///   thread as a queued call (as `deleteLater` posts a `DeferredDelete`), where it takes the
+///   branch above: the timers are stopped in that thread's registry and no callback overlaps. The
+///   object stays registered and usable by its callbacks until that call runs. If the call is
+///   discarded unrun, the object is destroyed where it was dropped (see [`ForwardedDestroy`]):
+///   * the registration thread has already ended, so the post itself is dropped (see
+///     [`post_event_to_thread`](crate::event_loop::post_event_to_thread)), and the object is
+///     destroyed on the owner's thread, since no other thread can;
+///   * the thread's event queue went away (its loop ended) and the call was dropped with it;
+///   * the thread ends while the call is still held for a loop it never started: the object is
+///     then destroyed on that thread, as its locals are destroyed.
+///
+///   A thread that is alive but never runs its event loop (or whose loop ended while the thread
+///   goes on without one) keeps the object until it ends or starts a loop.
+pub(crate) fn destroy_owned(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
+    match registration_thread_of(id) {
+        Some(thread) if thread != ThreadId::current() => {
+            let mut job = ForwardedDestroy {
+                id,
+                state: Some(state),
+                free: Some(free),
+            };
+            crate::event_loop::post_event_to_thread(
+                thread,
+                ObjectId(0),
+                Event::new(EventKind::MetaCall(Box::new(move |_| job.deliver()))),
+            );
+        }
+        _ => destroy_here(id, state, free),
+    }
+}
+
+/// A destruction forwarded to the registration thread. Dropped without having been delivered, the
+/// event queue that held it is gone (or the registration thread has ended), and the object is
+/// destroyed on the dropping thread.
+///
+/// Timers: they live in the thread-local timer registry of the registration thread (on Windows
+/// with a native source that only that thread can kill), so another thread cannot stop them and
+/// `unregister_qobject` stops none from here. Nothing is lost when the registration thread has
+/// ended or its loop, and with it its timer context, is gone: the registry went away. Only a
+/// queue dropped by a different thread while the registration thread's timer context is alive
+/// leaves the object's timer entries there, until that thread's registry is dropped.
+struct ForwardedDestroy {
     id: ObjectId,
-    borrow_state: Arc<ObjectBorrowState>,
-    free: Box<dyn FnOnce()>,
-) {
-    borrow_state
-        .free_when_released
-        .store(true, Ordering::Release);
-    PARKED_CHILDREN.with(|parked| {
-        parked.borrow_mut().push((borrow_state, free));
-    });
+    state: Option<Arc<ObjectBorrowState>>,
+    free: Option<SendFree>,
+}
+
+// SAFETY: the payload is a `SendFree` and an `Arc` of atomics and a mutex; see `SendFree`.
+unsafe impl Send for ForwardedDestroy {}
+
+impl ForwardedDestroy {
+    fn deliver(&mut self) {
+        if let (Some(state), Some(free)) = (self.state.take(), self.free.take()) {
+            // The object may have moved again, or been unregistered, since the post.
+            destroy_owned(self.id, state, free);
+        }
+    }
+}
+
+impl Drop for ForwardedDestroy {
+    fn drop(&mut self) {
+        if let (Some(state), Some(free)) = (self.state.take(), self.free.take()) {
+            destroy_here(self.id, state, free);
+        }
+    }
+}
+
+fn destroy_here(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
+    let SendFree(free) = free;
+    if state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        state.memory_destroyed.store(true, Ordering::Release);
+        // SAFETY: the flag is ours, so no callback runs or can start; the object's memory is
+        // freed after the unregistration.
+        unsafe { unregister_qobject(id) };
+        free(false);
+        return;
+    }
+    // A callback holds the flag: park the allocation in the shared slot for its guard.
+    state.memory_destroyed.store(true, Ordering::Release);
+    *lock_unpoisoned(&state.parked) = Some(SendFree(free));
+    state.free_when_released.store(true, Ordering::Release);
     unregister_descendants(id);
     // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
     // memory is not freed until it returns. No other callback can start on an unregistered object.
     unsafe { unregister_qobject(id) };
+    // The callback may have returned before the allocation was parked and so never seen it.
+    if state
+        .borrow_flag
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        state.free_when_released.store(false, Ordering::Release);
+        run_parked(&state);
+    }
 }
 
 /// Destroys an owner whose object may have a callback still running: an owned child whose parent
 /// is being dropped from inside that callback, or an owner (such as a `Timer` handle) dropped by
 /// one of its own slots. [`OwnedObject::drop`] unregisters the object (and its registry-listed
 /// descendants) at once and parks the allocation when `borrow_flag` is held, freeing it when the
-/// running callback's guard returns (`free_parked_children`).
+/// running callback's guard returns (`run_parked`).
 pub(crate) fn destroy_when_released(child: OwnedObject<dyn QObject>) {
     drop(child);
 }
@@ -282,23 +382,120 @@ fn unregister_descendants(id: ObjectId) {
     }
 }
 
-/// Frees the allocations parked while the callback that held `state` was running.
-fn free_parked_children(state: &Arc<ObjectBorrowState>) {
-    let ready: Vec<Box<dyn FnOnce()>> = PARKED_CHILDREN.with(|parked| {
-        let mut parked = parked.borrow_mut();
-        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *parked)
-            .into_iter()
-            .partition(|(held, _)| Arc::ptr_eq(held, state));
-        *parked = waiting;
-        ready.into_iter().map(|(_, free)| free).collect()
-    });
-    for free in ready {
-        free();
+/// Runs the destruction parked in `state`, if it is still there. The parking thread (when it finds
+/// the borrow flag free after parking) and the callback's guard both call this: the slot is
+/// emptied under its lock, so one of them runs it.
+fn run_parked(state: &ObjectBorrowState) {
+    let free = lock_unpoisoned(&state.parked).take();
+    if let Some(SendFree(free)) = free {
+        free(true);
     }
 }
 
 static GLOBAL_OBJECT_REGISTRY: std::sync::LazyLock<RwLock<HashMap<ObjectId, Arc<ObjectRecord>>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Reverse of the `parent` links of the records in [`GLOBAL_OBJECT_REGISTRY`]: for every registered
+/// object whose record links to a parent, which parent. It answers "which registered objects name
+/// `id` as their parent" without a walk over the registry, so what a thread move or a drop inspects
+/// depends on the subtree and not on the number of registered objects. The parent need not be
+/// registered: a child can name an id that has no record.
+///
+/// The index is a leaf lock (see "Global locking hierarchy" in the [`crate::object`] module
+/// documentation): it is taken last and nothing is requested while it is held. It changes together
+/// with what it mirrors. A `parent` link (L2) is written through [`store_link`], which updates the
+/// index while the link's write guard and the registry (L0) are held; `register_record` and
+/// `unregister_qobject` add and remove a record with the registry held for writing, and update the
+/// index before they let it go. A reader that holds L0 therefore finds no entry of an object that
+/// is not registered, and each entry is the link of the current record.
+#[derive(Default)]
+struct ParentLinkIndex {
+    /// Parent id to the registered objects that link to it, in the order they were linked.
+    children: HashMap<ObjectId, Vec<ObjectId>>,
+    /// Registered object to the parent its record links to; absent when it has none.
+    parent_of: HashMap<ObjectId, ObjectId>,
+}
+
+impl ParentLinkIndex {
+    /// Records that `child`'s link is now `parent`, whatever it was.
+    fn relink(&mut self, child: ObjectId, parent: Option<ObjectId>) {
+        if self.parent_of.get(&child).copied() == parent {
+            return;
+        }
+        if let Some(old) = self.parent_of.remove(&child) {
+            if let Some(list) = self.children.get_mut(&old) {
+                if let Some(at) = list.iter().position(|&listed| listed == child) {
+                    list.remove(at);
+                }
+                if list.is_empty() {
+                    self.children.remove(&old);
+                }
+            }
+        }
+        if let Some(parent) = parent {
+            self.parent_of.insert(child, parent);
+            self.children.entry(parent).or_default().push(child);
+        }
+    }
+}
+
+static PARENT_LINK_INDEX: std::sync::LazyLock<Mutex<ParentLinkIndex>> =
+    std::sync::LazyLock::new(|| Mutex::new(ParentLinkIndex::default()));
+
+/// Writes `new` into the `parent` link of `record`, held through `link` (its L2 write guard), and
+/// into [`PARENT_LINK_INDEX`]. The caller holds the registry (L0) and passes it: a record that the
+/// registry no longer holds, or holds as another record under its id, is not the one the index
+/// mirrors, and its link is written without touching the index.
+fn store_link(
+    registry: &HashMap<ObjectId, Arc<ObjectRecord>>,
+    record: &Arc<ObjectRecord>,
+    link: &mut Option<ObjectId>,
+    new: Option<ObjectId>,
+) {
+    if registry.get(&record.id).is_some_and(|current| Arc::ptr_eq(current, record)) {
+        lock_unpoisoned(&PARENT_LINK_INDEX).relink(record.id, new);
+    }
+    *link = new;
+}
+
+/// Checks that [`PARENT_LINK_INDEX`] is exactly the relation a walk over the registry derives: the
+/// `parent` link of every record. For tests: it walks the whole registry, and it is exact only
+/// while no other thread changes a link.
+#[doc(hidden)]
+pub fn verify_parent_link_index() -> Result<(), String> {
+    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    // The links are read before the index is locked: a link (L2) is never requested while the
+    // index, a leaf, is held.
+    let mut derived: HashMap<ObjectId, ObjectId> = HashMap::new();
+    for (&id, record) in registry.iter() {
+        if let Some(parent) = *read_unpoisoned(&record.parent) {
+            derived.insert(id, parent);
+        }
+    }
+    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    if derived != index.parent_of {
+        return Err(format!(
+            "links of the registry {derived:?} differ from the index's {:?}",
+            index.parent_of
+        ));
+    }
+    let mut listed = 0;
+    for (parent, list) in &index.children {
+        if list.is_empty() {
+            return Err(format!("{parent:?} has an empty list in the index"));
+        }
+        for (at, child) in list.iter().enumerate() {
+            if index.parent_of.get(child) != Some(parent) || list[..at].contains(child) {
+                return Err(format!("{child:?} is listed wrongly under {parent:?}"));
+            }
+        }
+        listed += list.len();
+    }
+    if listed != index.parent_of.len() {
+        return Err(format!("the index lists {listed} children for {} links", index.parent_of.len()));
+    }
+    Ok(())
+}
 
 fn registered_ptr(id: ObjectId) -> Option<(Arc<ObjectRecord>, *mut dyn QObject)> {
     let entry = GLOBAL_OBJECT_REGISTRY.read().ok()?.get(&id)?.clone();
@@ -527,19 +724,31 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     }
 }
 
-/// Registered children of `id` according to the global registry: first the validated entries of
-/// `id`'s own registry record (`registered_children_of`), and then any registered object whose own
-/// record names `id` as its parent (covering an intermediate `id` that has no record in the
-/// registry, or a child linked while unregistered and registered afterwards).
+/// Registered children of `id` according to the global registry: every registered object whose own
+/// record names `id` as its parent (this covers an intermediate `id` that has no record in the
+/// registry, and a child linked while unregistered and registered afterwards). It is read from
+/// [`PARENT_LINK_INDEX`] under the registry's read lock, so it holds for the registered objects at
+/// that moment and costs what `id` has below it, not what is registered.
 fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
-    let mut children = registered_children_of(id);
-    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
-    for (&child_id, record) in registry.iter() {
-        if *read_unpoisoned(&record.parent) == Some(id) && !children.contains(&child_id) {
-            children.push(child_id);
-        }
-    }
+    let _registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    let children = index.children.get(&id).cloned().unwrap_or_default();
+    INDEX_ENTRIES_READ.with(|read| read.set(read.get() + children.len()));
     children
+}
+
+thread_local! {
+    /// Entries `registered_children_below` read from the index on this thread, in total.
+    static INDEX_ENTRIES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many child entries the calling thread has read from the parent-link index so far. For tests
+/// of the cost of a thread move: the difference across a call is the number of index entries the
+/// call read, which is what lies below the objects it walked, whatever else is registered. It is
+/// per thread, so the activity of other threads does not enter it.
+#[doc(hidden)]
+pub fn child_index_entries_read() -> usize {
+    INDEX_ENTRIES_READ.with(std::cell::Cell::get)
 }
 
 /// The thread of an owned child: the registry's record when it has one (readable while a callback
@@ -978,6 +1187,7 @@ fn register_record(
                 previous.liveness.store(false, Ordering::Release);
             }
         }
+        lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, parent);
         if let Some(list) = parent_list.as_mut() {
             if !list.contains(&id) {
                 list.push(id);
@@ -1121,7 +1331,14 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     // points to freed memory, an id in a parent's list, or a child with a dead parent. The locks
     // below guard single stores and plain container edits, which a panic cannot leave half done,
     // so a poisoned lock is used as it is (see `read_unpoisoned`).
-    let removed = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY).remove(&id);
+    let removed = {
+        let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let removed = registry.remove(&id);
+        if removed.is_some() {
+            lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, None);
+        }
+        removed
+    };
     if let Some(entry) = removed {
         entry.liveness.store(false, Ordering::Release);
         // Lock order: the registry (L0), then the `children` of a parent (L1), then the `parent`
@@ -1153,7 +1370,7 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         }
         for child_id in read_unpoisoned(&entry.children).iter() {
             if let Some(child) = registry.get(child_id) {
-                *write_unpoisoned(&child.parent) = None;
+                store_link(&registry, child, &mut write_unpoisoned(&child.parent), None);
             }
         }
     }
@@ -1895,10 +2112,11 @@ impl<'a> ObjectDataMut<'a> {
 
         // Step C: Update Registry `record.parent` for all children under the held write locks.
         for (t, guard) in transfers.iter().zip(child_parent_guards.iter_mut()) {
-            **guard = Some(match t.target {
+            let new_parent = match t.target {
                 TransferTarget::ToOther => other_id,
                 TransferTarget::ToSelf => self_id,
-            });
+            };
+            store_link(&registry, &t.record, guard, Some(new_parent));
         }
 
         // Step D: Update Registry `record.children` for both parents under the held write locks.
@@ -2573,7 +2791,7 @@ pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Res
             ParentLockPair::None => {}
         }
 
-        *child_parent_guard = new_parent;
+        store_link(&registry, &child_record, &mut child_parent_guard, new_parent);
     }
 
     let new_liveness = new_parent.and_then(|id| registry.get(&id).map(|rec| (id, Arc::clone(&rec.liveness))));
@@ -2783,7 +3001,9 @@ pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Resul
         }
 
         if let Some(mut p_guard) = child_parent_guard {
-            *p_guard = new_parent;
+            if let Some(record) = registry.get(&child_id) {
+                store_link(&registry, record, &mut p_guard, new_parent);
+            }
         }
     }
 
@@ -3046,7 +3266,7 @@ pub fn reparent_owned_object(
                 old_guard.retain(|&id| id != child_id);
             }
         }
-        *child_parent_guard = new_parent;
+        store_link(&registry, &child_record, &mut child_parent_guard, new_parent);
 
         let released = match new_data.as_mut() {
             Some(data) => {
@@ -4279,8 +4499,7 @@ mod tests {
         register_object_metadata(&b.0, ptr_b);
 
         // Make ancestor the parent of a in the registry
-        let record_a = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&a_id).unwrap().clone();
-        *record_a.parent.write().unwrap() = Some(ancestor_id);
+        link(a_id, Some(ancestor_id));
         a.0.parent = Some(ancestor_id);
 
         let record_ancestor = GLOBAL_OBJECT_REGISTRY.read().unwrap().get(&ancestor_id).unwrap().clone();
@@ -4581,8 +4800,10 @@ mod tests {
         assert!(query_object_children(b_id).unwrap().is_empty());
         assert_eq!(a.with(|a| a.object_data().owned_children().len()), Some(1));
         drop(a);
-        // `b` is registered on another thread: its owner is dropped here, which unregisters it.
+        // `b` is registered on a thread that has ended, which can no longer run the destruction
+        // forwarded to it: the owner's drop destroys it here instead.
         drop(b);
+        assert_eq!(query_object_thread(b_id), None, "the drop unregistered the object");
     }
 
     /// `set_parent` on the data of an owned [`Plain`]. `set_parent` takes the child's borrow itself
@@ -4684,6 +4905,13 @@ mod tests {
 
     fn record(id: ObjectId) -> Arc<ObjectRecord> {
         Arc::clone(&GLOBAL_OBJECT_REGISTRY.read().unwrap()[&id])
+    }
+
+    /// Sets the `parent` link of a registered object, as a commit does (the index follows).
+    fn link(id: ObjectId, parent: Option<ObjectId>) {
+        let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let record = &registry[&id];
+        store_link(&registry, record, &mut write_unpoisoned(&record.parent), parent);
     }
 
     /// None of the locks of a hierarchy change is held by the calling thread (a handler runs on
@@ -6065,7 +6293,7 @@ mod tests {
         let (a_id, b_id, c_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b), OwnedObject::object_id(&c));
         for (parent, child) in [(a_id, b_id), (b_id, c_id), (c_id, a_id)] {
             record(parent).children.write().unwrap().push(child);
-            *record(child).parent.write().unwrap() = Some(parent);
+            link(child, Some(parent));
         }
 
         unregister_descendants(a_id);
@@ -6074,7 +6302,7 @@ mod tests {
         assert_eq!(query_object_parent(c_id), None);
         assert!(query_object_parent(a_id).is_some(), "the object itself stays registered");
         record(a_id).children.write().unwrap().clear();
-        *record(a_id).parent.write().unwrap() = None;
+        link(a_id, None);
         drop(c);
         drop(b);
         drop(a);

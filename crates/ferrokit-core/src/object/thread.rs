@@ -58,9 +58,29 @@ impl EventSender {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ThreadId(pub StdThreadId);
 
+/// Tells the event routing that its thread has ended: events posted to an ended thread are
+/// dropped, not held for a loop that can no longer start. It is created the first time a thread
+/// asks for its [`ThreadId::current`], and its destructor runs when the thread's locals are
+/// destroyed. A thread that never asked (its `ThreadId` came from a `JoinHandle`, say) is never
+/// reported as ended.
+struct ThreadEndSentinel(StdThreadId);
+
+impl Drop for ThreadEndSentinel {
+    fn drop(&mut self) {
+        crate::event_loop::mark_thread_ended(ThreadId(self.0));
+    }
+}
+
+thread_local! {
+    static THREAD_END_SENTINEL: ThreadEndSentinel = ThreadEndSentinel(std::thread::current().id());
+}
+
 impl ThreadId {
     /// Unique thread identifier: ThreadId. Modeled after QThread affinity.
     pub fn current() -> Self {
+        // Creates the sentinel on the first call. Once the thread's locals are being destroyed
+        // the access fails, and the thread is already marked as ended.
+        let _ = THREAD_END_SENTINEL.try_with(|_| ());
         Self(std::thread::current().id())
     }
 
