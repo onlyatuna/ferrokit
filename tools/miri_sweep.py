@@ -182,9 +182,24 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
         return "\n".join(parts), True
 
 
+# libtest tags `#[should_panic]` tests as `test <name> - should panic ... <outcome>`. The bare name is
+# the key; the suffix is only a marker.
+TEST_HEAD = r"^test (\S+)(?: - should panic)? \.\.\. "
+OUTCOME_RE = re.compile(TEST_HEAD + r"(ok|FAILED|ignored)(?:, [^\n]*)?\s*$", re.M)
+
+
 def failure_section(text, name):
-    m = re.search(r"^---- " + re.escape(name) + r" stdout ----\n(.*?)(?=^---- |\nfailures:\n|\Z)", text, re.M | re.S)
+    m = re.search(
+        r"^---- " + re.escape(name) + r"(?: - should panic)? stdout ----\n(.*?)(?=^---- |\nfailures:\n|\Z)",
+        text,
+        re.M | re.S,
+    )
     return m.group(1) if m else ""
+
+
+def last_start(text, name):
+    starts = [m.start() for m in re.finditer(r"^test " + re.escape(name) + r"(?: - should panic)? \.\.\. ", text, re.M)]
+    return starts[-1] if starts else -1
 
 
 def sweep_target(args, target, names, model, results, excerpts):
@@ -194,7 +209,7 @@ def sweep_target(args, target, names, model, results, excerpts):
         if len(done) == len(names):
             break
         text, timed_out = run_miri(args, target, model, done)
-        for name, outcome in re.findall(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$", text, re.M):
+        for name, outcome in OUTCOME_RE.findall(text):
             if name in done or name not in names:
                 continue
             key = f"{target}::{name}::{model}"
@@ -214,10 +229,10 @@ def sweep_target(args, target, names, model, results, excerpts):
                 results[key] = {"kind": kind, "bucket": bucket_of(kind), "sig": None}
             done.add(name)
         # A test that started and never reported is what stopped the run.
-        started_names = re.findall(r"^test (\S+) \.\.\. (?!ok\s*$|FAILED\s*$|ignored\s*$)", text, re.M)
+        started_names = re.findall(TEST_HEAD + r"(?!(?:ok|FAILED|ignored)(?:, [^\n]*)?\s*$)", text, re.M)
         stopper = next((n for n in reversed(started_names) if n in names and n not in done), None)
         if stopper:
-            tail = text[text.rfind(f"test {stopper} ... "):]
+            tail = text[last_start(text, stopper) :]
             key = f"{target}::{stopper}::{model}"
             if timed_out:
                 results[key] = {"kind": "timeout", "bucket": "env_fail", "sig": None}
@@ -280,7 +295,7 @@ def run_isolation_allowlist(args, allowlist, swept_targets, models):
                 extra_miri_flags=["-Zmiri-disable-isolation"],
             )
             key = f"{target}::{test_name}::{model}"
-            m = re.search(r"^test " + re.escape(test_name) + r" \.\.\. (ok|FAILED|ignored)\s*$", text, re.M)
+            m = re.search(r"^test " + re.escape(test_name) + r"(?: - should panic)? \.\.\. (ok|FAILED|ignored)(?:, [^\n]*)?\s*$", text, re.M)
             if timed_out:
                 kind, sig = "timeout", None
             elif m and m.group(1) == "ok":

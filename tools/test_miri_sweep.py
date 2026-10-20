@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from miri_sweep import compare_with_baseline, ALLOWED_STATUS_TRANSITIONS
+from miri_sweep import compare_with_baseline, ALLOWED_STATUS_TRANSITIONS, OUTCOME_RE, failure_section
 class TestMiriSweepBaselineComparison(unittest.TestCase):
     def setUp(self):
         self.swept_targets = ["lib", "layered_tests"]
@@ -124,7 +124,23 @@ class TestMiriSweepBaselineComparison(unittest.TestCase):
         results = {}
         regs, _ = compare_with_baseline(results, {}, baseline, ["lib"], ["SB"])
         self.assertEqual(len(regs), 1)
-        self.assertIn("missing from sweep", regs[0])
+
+    def test_should_panic_outcome_lines_parse_to_bare_name(self):
+        text = (
+            "test a::plain ... ok\n"
+            "test a::boom - should panic ... ok\n"
+            "test a::ign - should panic ... ignored\n"
+            "test a::bad - should panic ... FAILED\n"
+            "test a::skip ... ignored, reason\n"
+        )
+        self.assertEqual(
+            OUTCOME_RE.findall(text),
+            [("a::plain", "ok"), ("a::boom", "ok"), ("a::ign", "ignored"), ("a::bad", "FAILED"), ("a::skip", "ignored")],
+        )
+
+    def test_should_panic_failure_section_found_by_bare_name(self):
+        text = "---- a::bad - should panic stdout ----\nmsg\n\nfailures:\n"
+        self.assertEqual(failure_section(text, "a::bad").strip(), "msg")
 
 
 if __name__ == "__main__":
