@@ -4222,9 +4222,9 @@ mod tests {
 
         let queue = el.queue();
         let queue = queue.lock().unwrap();
-        assert_eq!(queue.events.len(), 1);
+        assert_eq!(queue.events().len(), 1);
         assert!(matches!(
-            queue.events[0].event.kind,
+            queue.events()[0].event.kind,
             EventKind::DeferredDelete {
                 loop_level: 0,
                 scope_level: 0
