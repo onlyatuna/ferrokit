@@ -6,7 +6,8 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    query_object_thread, register_owned_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    query_object_thread, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ThreadId,
 };
 
 struct Victim {
@@ -44,7 +45,7 @@ fn test_exec_flushes_deferred_delete_requested_by_last_handler() {
             data: ObjectData::new(ObjectId::next()),
         })
     };
-    let wid = victim.data.id();
+    let wid = OwnedObject::object_id(&victim);
 
     let ev = Event::new_spontaneous(EventKind::MouseButtonPress {
         x: 0,

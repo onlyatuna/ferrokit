@@ -13,9 +13,9 @@
 //!
 //! | The object lives | Register it with | Between callbacks the owner may |
 //! |---|---|---|
-//! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through the `OwnedObject`, and move the `OwnedObject` |
+//! | on the heap, with one owner | [`register_owned_qobject`], which returns an [`OwnedObject`] | use it through `OwnedObject::with` and `with_mut`, and move the `OwnedObject` |
 //! | in a variable or field that stays in place | [`register_qobject_ptr`], with a pointer taken by `&raw mut` | read the variable or field directly; write it only through the pointer that was registered (rule 7) |
-//! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent, or through the `OwnedObject` that `reparent_owned_object` returns |
+//! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent (`with_child`, `with_child_mut`), or through the `OwnedObject` that `reparent_owned_object` returns |
 //! | pinned (`!Unpin`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
 //!
 //! `register_qobject` and `register_boxed_qobject` are deprecated: they build the registry's
@@ -50,7 +50,7 @@
 //! let mut node = unsafe { register_owned_qobject(node) };
 //! let id = OwnedObject::object_id(&node);
 //!
-//! node.hits += 1; // a direct use between callbacks
+//! node.with_mut(|n| n.hits += 1).unwrap(); // a use between callbacks, through the owner
 //! assert!(with_object(id, |o| o.object_data().id() == id).unwrap()); // the registry still reaches it
 //!
 //! drop(node); // dropping the owner drops the object and unregisters it
@@ -114,7 +114,9 @@
 //!    registry's pointer. Read the state through [`with_object`], or keep it outside the object
 //!    (`Rc<Cell<_>>`, an atomic).
 //! 3. **Touching the object while one of its callbacks runs.** Not even a read is allowed,
-//!    including a read of its id. An owner that needs the id of a child it owns gets it from
+//!    including a read of its id. `OwnedObject` has no `Deref`: `with` and `with_mut` take the
+//!    callback-borrow flag, so while a callback of the object runs they return `None` and call
+//!    nothing. An owner that needs the id of a child it owns gets it from
 //!    [`OwnedObject::object_id`].
 //! 4. **Using a `Box` that stands for a registered object.** A `Box` claims to be the only
 //!    pointer to its object. No function of this crate turns a registered object back into a

@@ -9,7 +9,7 @@ use std::ptr::NonNull;
 
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData,
-    ObjectId, QObject, ThreadId,
+    ObjectId, OwnedObject, QObject, ThreadId, with_object,
 };
 #[derive(Debug)]
 struct SimpleObject {
@@ -36,7 +36,6 @@ impl QObject for SimpleObject {
 #[test]
 fn move_to_thread_three_levels_updates_all_thread_id_fields() {
     let source_thread = ThreadId::current();
-    let target_thread = std::thread::spawn(ThreadId::current).join().unwrap();
 
     let mut root = SimpleObject::new();
     let root_id = root.data.id();
@@ -63,34 +62,45 @@ fn move_to_thread_three_levels_updates_all_thread_id_fields() {
     // Before move, all thread_id fields are source_thread
     assert_eq!(root.data.thread_id(), source_thread);
 
-    // Perform move_to_thread
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let worker = std::thread::spawn(move || {
+        tid_tx.send(ThreadId::current()).unwrap();
+        go_rx.recv().unwrap();
+        let chain = [child_id, grand_id, great_grand_id];
+        let names = ["child", "grandchild", "great-grandchild"];
+        for (i, (&id, name)) in chain.iter().zip(names).enumerate() {
+            let (seen_id, thread, first_child) = with_object(id, |o| {
+                (
+                    o.object_data().id(),
+                    o.object_data().thread_id(),
+                    o.object_data()
+                        .owned_children()
+                        .first()
+                        .map(OwnedObject::object_id),
+                )
+            })
+            .unwrap_or_else(|| panic!("{name} must be reachable on its thread"));
+            assert_eq!(seen_id, id);
+            assert_eq!(
+                thread,
+                ThreadId::current(),
+                "{name} ObjectData.thread_id must be updated"
+            );
+            assert_eq!(first_child, chain.get(i + 1).copied());
+        }
+    });
+    let target_thread = tid_rx.recv().unwrap();
     let res = move_to_thread_by_id(root_id, target_thread, source_thread);
     assert_eq!(res, Ok(()));
 
     // Verify root ObjectData.thread_id
     assert_eq!(root.data.thread_id(), target_thread);
 
-    // Verify child, grandchild, and great-grandchild ObjectData.thread_id via owned hierarchy
-    let child_ref = root.data.owned_children()[0].object_data();
-    assert_eq!(child_ref.id(), child_id);
-    assert_eq!(
-        child_ref.thread_id(), target_thread,
-        "child ObjectData.thread_id must be updated"
-    );
-
-    let grand_ref = child_ref.owned_children()[0].object_data();
-    assert_eq!(grand_ref.id(), grand_id);
-    assert_eq!(
-        grand_ref.thread_id(), target_thread,
-        "grandchild ObjectData.thread_id must be updated to target_thread"
-    );
-
-    let great_grand_ref = grand_ref.owned_children()[0].object_data();
-    assert_eq!(great_grand_ref.id(), great_grand_id);
-    assert_eq!(
-        great_grand_ref.thread_id(), target_thread,
-        "great-grandchild ObjectData.thread_id must be updated to target_thread"
-    );
+    // Verify child, grandchild, and great-grandchild ObjectData.thread_id on the thread the
+    // subtree now lives on (an owner refuses access from any other thread).
+    go_tx.send(()).unwrap();
+    worker.join().expect("worker assertions must hold");
 
     // Clean up
     unsafe {

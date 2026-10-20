@@ -2636,18 +2636,18 @@ mod tests {
                 data: ObjectData::new(ObjectId::next()),
             })
         };
-        let victim_id = victim.data.id();
+        let victim_id = crate::object::OwnedObject::object_id(&victim);
         // SAFETY: as above.
         let driver = unsafe {
             register_owned_qobject(Driver {
                 data: ObjectData::new(ObjectId::next()),
-                victim_data: &victim.data as *const ObjectData as usize,
+                victim_data: victim.with(|v| &v.data as *const ObjectData as usize).unwrap(),
                 victim_id,
                 survived_nested: Arc::clone(&survived_nested),
                 deleted_by_outer: Arc::clone(&deleted_by_outer),
             })
         };
-        let driver_id = driver.data.id();
+        let driver_id = crate::object::OwnedObject::object_id(&driver);
         post_event_to_thread(
             ThreadId::current(),
             driver_id,

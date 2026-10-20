@@ -9,7 +9,7 @@
 use ferrokit_core::event::{Event, EventCompressor, EventKind};
 use ferrokit_core::event_loop::{get_thread_event_sender, post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
-    register_owned_qobject, with_object, ObjectData, ObjectId, QObject, ThreadId,
+    register_owned_qobject, with_object, ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::timer::Timer;
 use std::io::Read;
@@ -72,7 +72,7 @@ fn the_compressor_panic_case() {
             dropped: Arc::clone(&dropped),
         })
     };
-    let id = owned.object_data().id();
+    let id = OwnedObject::object_id(&owned);
 
     // The first post finds nothing to merge with; every later post to the same receiver reaches
     // the compressor, which panics under the queue lock (and the registry lock when posting by

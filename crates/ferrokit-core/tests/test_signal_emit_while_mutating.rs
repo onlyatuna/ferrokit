@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::Event;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, QObject,
+    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
 };
 use ferrokit_core::signal::{ConnectionId, Signal};
 
@@ -143,7 +143,7 @@ fn receiver_destroyed_during_emit_is_not_called() {
             data: ObjectData::with_auto_id(),
         })
     };
-    let receiver_id = receiver.data.id();
+    let receiver_id = OwnedObject::object_id(&receiver);
 
     let (calls, slot) = counter();
     signal.connect(move |_| {

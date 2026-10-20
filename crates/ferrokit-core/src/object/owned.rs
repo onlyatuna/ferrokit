@@ -24,11 +24,13 @@ use super::qobject::{ObjectBorrowState, ObjectId, QObject};
 /// registry-listed descendants) at once and parks the allocation until that callback returns.
 ///
 /// The rules in the [`crate::object`] module documentation still hold for a registered object:
-/// while one of its callbacks runs, its owner must not access (`Deref` or `DerefMut`) it at all,
-/// not even to read it; between callbacks the owner may use it through `Deref` and `DerefMut`.
+/// while one of its callbacks runs, its owner must not access it at all, not even to read it.
+/// The owner reaches the object only through [`OwnedObject::with`] and [`OwnedObject::with_mut`],
+/// which take the object's borrow flag and return `None` instead of calling the closure while a
+/// callback of the object runs. There is no `Deref`: a reference that outlived a call could
+/// overlap the `&mut` of a callback that starts later.
 ///
-/// The functions are associated functions (`OwnedObject::object_id(&owner)`), so they do not hide
-/// methods of `T` reached through `Deref`.
+/// The other functions are associated functions (`OwnedObject::object_id(&owner)`).
 pub struct OwnedObject<T: QObject + ?Sized> {
     ptr: NonNull<T>,
     /// Read once, when the owner is made. A parent decides what to do with a child whose callback
@@ -119,20 +121,93 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     }
 }
 
-impl<T: QObject + ?Sized> std::ops::Deref for OwnedObject<T> {
-    type Target = T;
+/// Keeps the callback-borrow flag of an owner's object set while the owner's closure runs. For a
+/// registered object it is the registry's own guard, which also applies the child-list edits and
+/// the parent sync that queued up meanwhile when it ends.
+enum Held {
+    Registered(#[allow(dead_code)] super::qobject::ObjectBorrowGuard),
+    Unregistered(Arc<ObjectBorrowState>),
+}
 
-    fn deref(&self) -> &T {
-        // SAFETY: the object lives as long as its owner. No `&mut` to it is live while the owner
-        // is borrowed: the registry's callbacks and the owner's use do not overlap (see the type's
-        // documentation and the module documentation of `object`).
-        unsafe { self.ptr.as_ref() }
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Held::Unregistered(state) = self {
+            state.borrow_flag.store(false, Ordering::Release);
+        }
     }
 }
 
-impl<T: QObject + ?Sized> std::ops::DerefMut for OwnedObject<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as for `deref`, and the owner is borrowed exclusively.
+impl<T: QObject + ?Sized> OwnedObject<T> {
+    fn hold(&self) -> Option<Held> {
+        if let Some(guard) = super::qobject::borrow_registered(self.id) {
+            return Some(Held::Registered(guard));
+        }
+        // Registered, but not borrowable here: a callback of it runs, or its registration thread
+        // is another one (the owner stays where it is when the object is moved to a thread). The
+        // object is not reachable from this thread then.
+        if super::qobject::registration_thread_of(self.id).is_some() {
+            return None;
+        }
+        // Not registered: the flag is still the one a callback of this object would take, so
+        // take it here the same way.
+        self.borrow_state
+            .borrow_flag
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Held::Unregistered(Arc::clone(&self.borrow_state)))
+    }
+
+    /// Calls `f` with the object, unless a callback of it is running.
+    ///
+    /// Returns `None` without calling `f` when the object cannot be reached from this thread now:
+    /// - its borrow is held (a callback of it is running, or an access through another call of
+    ///   this kind is still open);
+    /// - it is registered on another thread. The owner stays on the thread it was made on when
+    ///   the object is moved with `move_to_thread_by_id`, and does not reach the object there; use
+    ///   [`with_object`](super::with_object) on the thread the object lives on.
+    ///
+    /// The reference given to `f` is never alive together with another reference to the object.
+    /// A callback that starts while `f` runs finds the object borrowed, as it would during another
+    /// callback. For a registered object `f` holds the object's borrow, so a call that needs the
+    /// object's borrow itself fails with `Busy` inside `f`: that includes [`set_parent`](super::set_parent) and the
+    /// `set_parent` methods of the object's data (use
+    /// [`set_parent_by_id`](super::set_parent_by_id) with [`OwnedObject::object_id`] from outside
+    /// the closure).
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let _held = self.hold()?;
+        // SAFETY: the object lives as long as its owner, and the borrow flag is held until `f`
+        // returns, so no callback (which needs the flag) holds a `&mut` to it meanwhile.
+        Some(f(unsafe { self.ptr.as_ref() }))
+    }
+
+    /// Calls `f` with the object mutably, unless a callback of it is running or the object is
+    /// registered on another thread. See [`OwnedObject::with`], including what fails with `Busy`
+    /// inside `f` for a registered object (`set_parent` and the other calls that take the object's
+    /// own borrow).
+    pub fn with_mut<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let _held = self.hold()?;
+        // SAFETY: as for `with`, and the owner is borrowed exclusively.
+        Some(f(unsafe { self.ptr.as_mut() }))
+    }
+
+    /// The object, without taking its borrow.
+    ///
+    /// # Safety
+    /// No callback of the object runs or can start while the reference lives, and no other
+    /// reference to it is live: the caller holds the object's borrow flag, or knows that the
+    /// object has no live registry entry, or that the thread it is registered on has ended.
+    pub(crate) unsafe fn as_ref_unchecked(&self) -> &T {
+        // SAFETY: the object lives as long as its owner; the rest is the caller's contract.
+        unsafe { self.ptr.as_ref() }
+    }
+
+    /// The object mutably, without taking its borrow. Same contract as
+    /// [`OwnedObject::as_ref_unchecked`].
+    ///
+    /// # Safety
+    /// See [`OwnedObject::as_ref_unchecked`].
+    pub(crate) unsafe fn as_mut_unchecked(&mut self) -> &mut T {
+        // SAFETY: as above, and the owner is borrowed exclusively.
         unsafe { self.ptr.as_mut() }
     }
 }

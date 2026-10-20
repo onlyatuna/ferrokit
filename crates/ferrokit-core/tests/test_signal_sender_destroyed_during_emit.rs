@@ -103,7 +103,7 @@ struct Sender {
 impl Sender {
     fn new() -> Self {
         let parent = Node::registered();
-        let parent_id = parent.data.id();
+        let parent_id = OwnedObject::object_id(&parent);
         let child = Node::new();
         let signal = child.data.object_name_changed().clone();
         let freed = Arc::clone(&child.freed);
@@ -162,13 +162,13 @@ fn slots_after_the_one_that_destroyed_the_sender_are_not_called() {
     sender.signal.connect(sender.destroyer(&calls, "destroy"));
     sender.signal.connect(record(&calls, "plain after"));
     sender.signal.connect_object(
-        observer.data.id(),
+        OwnedObject::object_id(&observer),
         ThreadId::current(),
         ConnectionType::Direct,
         record(&calls, "object after"),
     );
     sender.signal.connect_object(
-        observer.data.id(),
+        OwnedObject::object_id(&observer),
         ThreadId::current(),
         ConnectionType::Auto,
         record(&calls, "auto after"),
@@ -187,7 +187,7 @@ fn every_slot_runs_when_no_slot_destroys_the_sender() {
     let observer = Node::registered();
     sender.signal.connect(record(&calls, "plain"));
     sender.signal.connect_object(
-        observer.data.id(),
+        OwnedObject::object_id(&observer),
         ThreadId::current(),
         ConnectionType::Direct,
         record(&calls, "object"),
@@ -324,8 +324,8 @@ fn a_signal_emitted_while_its_owner_is_being_destroyed_reaches_no_slot() {
     // emits its parent's signal from its own destructor reaches nothing (qobject.cpp:1086-1178).
     let calls = calls();
     let parent = Node::registered();
-    let parent_id = parent.data.id();
-    let signal = parent.data.object_name_changed().clone();
+    let parent_id = OwnedObject::object_id(&parent);
+    let signal = parent.with(|p| p.object_data().object_name_changed().clone()).unwrap();
     signal.connect(record(&calls, "slot of the parent's signal"));
     let mut child = Node::new();
     let emitter = signal.clone();

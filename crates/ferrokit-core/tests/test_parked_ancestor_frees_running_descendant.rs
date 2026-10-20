@@ -106,7 +106,7 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
             data: ObjectData::new(ObjectId::next()),
         })
     };
-    let root_id = root.data.id();
+    let root_id = OwnedObject::object_id(&root);
     root_cell.set(Some(root));
 
     let mid = Box::new(Mid {
@@ -155,14 +155,18 @@ impl QObject for SearchingParent {
     }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::UpdateRequest) {
-            let found_ref = self.find_child::<RunningChild>("running").is_some();
+            let found_ref = self
+                .with_child::<RunningChild, _>("running", |_| ())
+                .is_some();
             let found_id = self
                 .find_child_id("running", std::any::TypeId::of::<RunningChild>())
                 .is_some();
-            let found_vec = !self
-                .find_children::<RunningChild>(Some("running"))
-                .is_empty();
-            let found_mut = self.find_child_mut::<RunningChild>("running").is_some();
+            let mut count = 0;
+            self.for_each_child::<RunningChild>(Some("running"), |_| count += 1);
+            let found_vec = count != 0;
+            let found_mut = self
+                .with_child_mut::<RunningChild, _>("running", |_| ())
+                .is_some();
             self.found_while_child_running
                 .set(Some(found_ref || found_id || found_vec || found_mut));
         }
@@ -207,7 +211,7 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
             found_while_child_running: Rc::clone(&found),
         })
     };
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
 
     let mut child_data = ObjectData::new(ObjectId::next());
     child_data.set_object_name("running");
@@ -221,7 +225,9 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
     unsafe { add_owned_child(parent_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
     assert!(
-        parent.find_child::<RunningChild>("running").is_some(),
+        parent
+            .with(|p| p.with_child::<RunningChild, _>("running", |_| ()).is_some())
+            .unwrap(),
         "between callbacks find_child locates the owned child"
     );
 
@@ -233,8 +239,8 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
     );
     assert_eq!(
         parent
-            .find_child::<RunningChild>("running")
-            .map(|c| c.steps),
+            .with(|p| p.with_child::<RunningChild, _>("running", |c| c.steps))
+            .unwrap(),
         Some(2),
         "after the callback returns, find_child locates the child again"
     );

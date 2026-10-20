@@ -13,7 +13,7 @@ use ferrokit_core::animation::{
 use ferrokit_core::fs::FileSystemWatcher;
 use ferrokit_core::object::{
     move_to_thread_by_id, query_object_thread, register_owned_qobject, ObjectData, ObjectId,
-    QObject, ThreadId,
+    OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::settings::Settings;
 use ferrokit_core::signal::Signal;
@@ -160,7 +160,7 @@ fn test_signal_auto_thread_affinity() {
     let obj = unsafe {
         register_owned_qobject(DynamicMockObject::new(ObjectId::next(), last_prop, count))
     };
-    let id = obj.object_data().id();
+    let id = OwnedObject::object_id(&obj);
 
     // Verify initial registered thread matches current
     assert_eq!(query_object_thread(id), Some(ThreadId::current()));
@@ -170,9 +170,13 @@ fn test_signal_auto_thread_affinity() {
     let rec_clone = Arc::clone(&received);
 
     // Connect automatically tracking target QObject
-    let _conn = signal.connect_to(&*obj, move |val: &i32| {
-        rec_clone.store(*val as u32, Ordering::SeqCst);
-    });
+    let _conn = obj
+        .with(|o| {
+            signal.connect_to(o, move |val: &i32| {
+                rec_clone.store(*val as u32, Ordering::SeqCst);
+            })
+        })
+        .unwrap();
 
     // Emitting on the same thread executes slot directly
     signal.emit(&999);

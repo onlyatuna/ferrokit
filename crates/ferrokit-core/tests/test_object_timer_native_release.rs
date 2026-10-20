@@ -143,40 +143,40 @@ fn native_timer_existed(id: TimerId) -> bool {
 #[test]
 fn a_started_object_timer_exists_natively() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     f.wait_until_running(&[id]);
 
     assert!(
         native_timer_existed(id),
         "the probe must see a live native timer, or it proves nothing below"
     );
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 #[test]
 fn kill_timer_releases_the_native_timer() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     f.wait_until_running(&[id]);
 
-    assert!(obj.kill_timer(id));
+    assert!(obj.with_mut(|o| o.kill_timer(id)).unwrap());
 
     assert_eq!(f.wm_timers_after_the_end(&[id]), 0);
     assert!(!native_timer_existed(id));
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 #[test]
 fn unregistering_an_object_releases_its_native_timers() {
     let (f, mut obj) = Fixture::new();
     let ids = [
-        obj.start_timer(20, TimerType::Precise),
-        obj.start_timer(25, TimerType::Precise),
+        obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap(),
+        obj.with_mut(|o| o.start_timer(25, TimerType::Precise)).unwrap(),
     ];
     f.wait_until_running(&ids);
     let ticks_before = f.ticks.load(Ordering::SeqCst);
 
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 
     assert_eq!(
         f.wm_timers_after_the_end(&ids),
@@ -199,7 +199,7 @@ fn unregistering_an_object_releases_its_native_timers() {
 #[test]
 fn dropping_the_owner_releases_its_native_timers() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     f.wait_until_running(&[id]);
 
     drop(obj);

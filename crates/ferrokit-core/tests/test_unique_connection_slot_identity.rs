@@ -47,13 +47,13 @@ fn slot_b(_: &i32) {}
 #[test]
 fn two_slots_with_equal_code_are_both_connected() {
     let rcv = receiver();
-    let id = rcv.data.id();
+    let id = OwnedObject::object_id(&rcv);
     let signal: Signal<i32> = Signal::new();
 
     let key_a = SlotId::next();
     let key_b = SlotId::next();
-    let first = signal.connect_unique_with_key(&*rcv, key_a, slot_a);
-    let second = signal.connect_unique_with_key(&*rcv, key_b, slot_b);
+    let first = rcv.with(|r| signal.connect_unique_with_key(r, key_a, slot_a)).unwrap();
+    let second = rcv.with(|r| signal.connect_unique_with_key(r, key_b, slot_b)).unwrap();
 
     assert!(first.is_some(), "the first connection is made");
     assert!(
@@ -61,8 +61,12 @@ fn two_slots_with_equal_code_are_both_connected() {
         "slot_b has a distinct SlotId from slot_a and must be connected even under /OPT:ICF"
     );
 
-    let named_first = signal.connect_unique_with_key(&*rcv, SlotKey::Named("Receiver::a"), slot_a);
-    let named_second = signal.connect_unique_with_key(&*rcv, SlotKey::Named("Receiver::b"), slot_b);
+    let named_first = rcv
+        .with(|r| signal.connect_unique_with_key(r, SlotKey::Named("Receiver::a"), slot_a))
+        .unwrap();
+    let named_second = rcv
+        .with(|r| signal.connect_unique_with_key(r, SlotKey::Named("Receiver::b"), slot_b))
+        .unwrap();
     assert!(named_first.is_some());
     assert!(named_second.is_some());
 
@@ -73,19 +77,27 @@ fn two_slots_with_equal_code_are_both_connected() {
 #[test]
 fn the_same_slot_is_refused_a_second_time() {
     let rcv = receiver();
-    let id = rcv.data.id();
+    let id = OwnedObject::object_id(&rcv);
     let signal: Signal<i32> = Signal::new();
     let sum = Arc::new(AtomicI32::new(0));
 
     let slot_id = SlotId::next();
     let sum_first = Arc::clone(&sum);
-    let first = signal.connect_unique_with_key(&*rcv, slot_id, move |v: &i32| {
-        sum_first.fetch_add(*v, Ordering::SeqCst);
-    });
+    let first = rcv
+        .with(|r| {
+            signal.connect_unique_with_key(r, slot_id, move |v: &i32| {
+                sum_first.fetch_add(*v, Ordering::SeqCst);
+            })
+        })
+        .unwrap();
     let sum_second = Arc::clone(&sum);
-    let second = signal.connect_unique_with_key(&*rcv, slot_id, move |v: &i32| {
-        sum_second.fetch_add(*v * 10, Ordering::SeqCst);
-    });
+    let second = rcv
+        .with(|r| {
+            signal.connect_unique_with_key(r, slot_id, move |v: &i32| {
+                sum_second.fetch_add(*v * 10, Ordering::SeqCst);
+            })
+        })
+        .unwrap();
 
     assert!(first.is_some(), "the first connection is made");
     assert!(
@@ -93,8 +105,12 @@ fn the_same_slot_is_refused_a_second_time() {
         "the same receiver and SlotId is rejected as a duplicate"
     );
 
-    let named_first = signal.connect_unique_with_key(&*rcv, "Receiver::slot_a", slot_a);
-    let named_dup = signal.connect_unique_with_key(&*rcv, "Receiver::slot_a", slot_a);
+    let named_first = rcv
+        .with(|r| signal.connect_unique_with_key(r, "Receiver::slot_a", slot_a))
+        .unwrap();
+    let named_dup = rcv
+        .with(|r| signal.connect_unique_with_key(r, "Receiver::slot_a", slot_a))
+        .unwrap();
     assert!(named_first.is_some());
     assert!(named_dup.is_none());
 
@@ -103,7 +119,9 @@ fn the_same_slot_is_refused_a_second_time() {
 
     // Disconnecting the first connection allows re-connecting the same SlotId.
     assert!(signal.disconnect(first.unwrap()));
-    let reconnected = signal.connect_unique_with_key(&*rcv, slot_id, slot_a);
+    let reconnected = rcv
+        .with(|r| signal.connect_unique_with_key(r, slot_id, slot_a))
+        .unwrap();
     assert!(
         reconnected.is_some(),
         "after disconnect, the same SlotId can be connected again"
