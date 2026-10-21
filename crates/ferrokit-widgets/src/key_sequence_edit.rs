@@ -361,7 +361,9 @@ pub fn normalize_key(key: u32, modifiers: u32) -> (u32, bool) {
         0x26 => qt_key::UP,
         0x27 => qt_key::RIGHT,
         0x28 => qt_key::DOWN,
+        0x2D => qt_key::INSERT,
         0x2E => qt_key::DELETE,
+        0x5D => qt_key::MENU,
         // VK_LWIN / VK_RWIN arrive with the Meta modifier held.
         0x5B | 0x5C if meta_held => qt_key::META,
         0x60..=0x69 => return (key - 0x60 + '0' as u32, true),

@@ -343,7 +343,8 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 ///    [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread) (a
 ///    [`Timer`](crate::timer::Timer) is such an object); a failure returns the error with nothing
 ///    sent or changed. The inspection borrows are released before step 2.
-/// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change.
+/// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change, then
+///    collects the subtree again: a child a handler attached moves too, one it destroyed is left out.
 /// 3. Detaches their timers from the source thread and updates each node's `ObjectData.thread_id`
 ///    through a separate short-lived registry borrow (`qobject.cpp:1490-1502`).
 /// 4. Flips the physical registration thread and moves queued posted events to the target queue
@@ -364,17 +365,62 @@ pub fn move_to_thread_by_id(
         let mut ev = Event::new(EventKind::ThreadChange);
         crate::object::send_event(node_id, &mut ev);
     }
+    // A handler may have attached children, so the subtree is collected again while a node lists
+    // an object that was not in it (Qt walks the children after the event, qobject.cpp:1782-1792),
+    // and each object found that way gets its own `ThreadChange` (Qt `setThreadData_helper`). If
+    // it can't be collected now (a handler made a part of it busy or unmovable), the objects found
+    // before are moved. One that a handler destroyed is left out below.
+    let mut all_ids = all_ids;
+    let mut known: std::collections::HashSet<ObjectId> = all_ids.iter().copied().collect();
+    loop {
+        let grown = all_ids.iter().any(|&node_id| {
+            crate::object::query_object_children(node_id)
+                .is_some_and(|children| children.iter().any(|child| !known.contains(child)))
+        });
+        if !grown {
+            break;
+        }
+        let ids = match crate::object::qobject::prepare_move_to_thread(
+            id,
+            target_thread,
+            current_caller_thread,
+        ) {
+            Ok(Some(ids)) => ids,
+            Ok(None) => return Ok(()),
+            Err(_) => break,
+        };
+        let added: Vec<ObjectId> = ids.iter().copied().filter(|n| !known.contains(n)).collect();
+        known.extend(added.iter().copied());
+        all_ids = ids;
+        if added.is_empty() {
+            break;
+        }
+        for node_id in added {
+            let mut ev = Event::new(EventKind::ThreadChange);
+            crate::object::send_event(node_id, &mut ev);
+        }
+    }
+    // The handlers have returned. A node that one of them left borrowed can't change its affinity
+    // now: nothing is changed and the move reports `Busy` (the `ThreadChange` events were sent).
+    if all_ids
+        .iter()
+        .any(|&node_id| crate::object::qobject::registered_and_borrowed(node_id))
+    {
+        return Err(MoveByIdError::Busy);
+    }
 
     // 2. Detach timers from the source thread (`qobject.cpp:1490-1502`).
     let timers = crate::timer::detach_timers_for_objects(&all_ids);
 
     // 3. Affinity. Each node in the subtree is updated through its own short-lived registry borrow
-    //    before the physical registration thread is flipped.
-    for &node_id in &all_ids {
+    //    before the physical registration thread is flipped. A node that is not registered any
+    //    more (destroyed by a handler) is left out of every later step.
+    all_ids.retain(|&node_id| {
         crate::object::with_object_mut(node_id, |obj| {
             obj.object_data_mut().set_thread_id(target_thread);
-        });
-    }
+        })
+        .is_some()
+    });
 
     // 4. Physical registration flip and queued-event transfer, in one critical section.
     crate::event_loop::move_receivers_to_thread(&all_ids, target_thread, || {

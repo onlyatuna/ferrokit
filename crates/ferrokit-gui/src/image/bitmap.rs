@@ -86,17 +86,13 @@ impl Bitmap {
         }
         let mut img = Image::new(self.width, self.height, ImageFormat::Mono);
         for y in 0..self.height {
-            for x in 0..self.width {
-                let bit = self.bit(x, y);
-                img.set_pixel_color(
-                    x,
-                    y,
-                    if bit {
-                        tiny_skia::Color::WHITE
-                    } else {
-                        tiny_skia::Color::BLACK
-                    },
-                );
+            let start = y as usize * self.bytes_per_line;
+            let end = start + self.bytes_per_line;
+            if let (Some(src), Some(dst)) = (
+                self.data.get(start..end),
+                img.scan_line_mut(y),
+            ) {
+                dst.copy_from_slice(src);
             }
         }
         img
@@ -236,5 +232,21 @@ impl Not for Bitmap {
             *b = !*b;
         }
         self
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiny_skia::Color;
+
+    #[test]
+    fn bitmap_image_preserves_mono_bits() {
+        let mut bitmap = Bitmap::new(9, 1);
+        bitmap.set_bit(0, 0, true);
+        bitmap.set_bit(8, 0, true);
+        let image = bitmap.to_image();
+        assert_eq!(image.pixel_color(0, 0), Some(Color::WHITE));
+        assert_eq!(image.pixel_color(1, 0), Some(Color::BLACK));
+        assert_eq!(image.pixel_color(8, 0), Some(Color::WHITE));
     }
 }

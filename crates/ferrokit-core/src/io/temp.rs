@@ -3,14 +3,13 @@
 //!
 //! Provides automatic cleanup of uniquely named temporary files and directories upon drop.
 
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use super::device::{IODevice, OpenMode};
-use super::file::File;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -27,7 +26,9 @@ fn generate_temp_name(prefix: &str, suffix: &str) -> String {
 /// Automatically cleaned temporary file (`QTemporaryFile` equivalent).
 #[derive(Debug)]
 pub struct TemporaryFile {
-    file: File,
+    path: PathBuf,
+    file: Option<fs::File>,
+    pos: u64,
     auto_remove: bool,
 }
 
@@ -40,21 +41,33 @@ impl TemporaryFile {
     /// Creates a new temporary file with custom prefix and suffix.
     pub fn with_prefix_and_suffix(prefix: &str, suffix: &str) -> io::Result<Self> {
         let temp_dir = std::env::temp_dir();
-        let name = generate_temp_name(prefix, suffix);
-        let path = temp_dir.join(name);
-
-        let mut file = File::new(&path);
-        file.open(OpenMode::READ_WRITE | OpenMode::NEW_ONLY)?;
-
-        Ok(Self {
-            file,
-            auto_remove: true,
-        })
+        loop {
+            let path = temp_dir.join(generate_temp_name(prefix, suffix));
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                        pos: 0,
+                        auto_remove: true,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Returns the temporary file path.
     pub fn file_path(&self) -> &Path {
-        self.file.path()
+        &self.path
     }
 
     /// Returns `true` if this file will be automatically removed on drop.
@@ -75,44 +88,65 @@ impl TemporaryFile {
 
 impl IODevice for TemporaryFile {
     fn open_mode(&self) -> OpenMode {
-        self.file.open_mode()
+        if self.file.is_some() {
+            OpenMode::READ_WRITE
+        } else {
+            OpenMode::NOT_OPEN
+        }
     }
 
     fn pos(&self) -> u64 {
-        self.file.pos()
+        self.pos
     }
 
     fn size(&self) -> u64 {
-        self.file.size()
+        self.file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
     }
 
     fn seek(&mut self, pos: u64) -> io::Result<()> {
-        self.file.seek(pos)
+        let file = self.file.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
+        })?;
+        self.pos = file.seek(SeekFrom::Start(pos))?;
+        Ok(())
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf)
+        let count = self.file.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
+        })?.read(buf)?;
+        self.pos += count as u64;
+        Ok(count)
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.file.write(data)
+        let count = self.file.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
+        })?.write(data)?;
+        self.pos += count as u64;
+        Ok(count)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.file.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
+        })?.flush()
     }
 
     fn close(&mut self) {
-        self.file.close();
+        self.file = None;
     }
 }
 
 impl Drop for TemporaryFile {
     fn drop(&mut self) {
-        let path = self.file.path().to_path_buf();
-        self.file.close();
+        self.close();
         if self.auto_remove {
-            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
@@ -143,16 +177,33 @@ impl TemporaryDir {
     /// Creates a new temporary directory with custom prefix.
     pub fn with_prefix(prefix: &str) -> io::Result<Self> {
         let temp_dir = std::env::temp_dir();
-        let name = generate_temp_name(prefix, "");
-        let path = temp_dir.join(name);
-        fs::create_dir_all(&path)?;
-
-        Ok(Self {
-            path,
-            auto_remove: true,
-        })
+        loop {
+            let path = temp_dir.join(generate_temp_name(prefix, ""));
+            let result = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    let mut builder = fs::DirBuilder::new();
+                    builder.mode(0o700);
+                    builder.create(&path)
+                }
+                #[cfg(not(unix))]
+                {
+                    fs::create_dir(&path)
+                }
+            };
+            match result {
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        auto_remove: true,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
     }
-
     /// Returns the directory path.
     pub fn path(&self) -> &Path {
         &self.path

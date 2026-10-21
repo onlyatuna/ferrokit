@@ -4,11 +4,16 @@ use ferrokit_core::object::ObjectId;
 use ferrokit_gui::geometry::primitives::Point;
 
 /// Manages mouse grabbing and popup auto-dismissal (`QWidget::grabMouse` & Popups).
-#[derive(Default)]
 pub struct PopupManager {
     active_popup: Option<WidgetRef>,
     mouse_grabber: Option<ObjectId>,
     auto_dismiss: bool,
+}
+
+impl Default for PopupManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PopupManager {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::signal::Signal;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub type SocketDescriptor = i32;
 
@@ -10,10 +11,16 @@ pub enum SocketEvent {
     Exception,
 }
 
+/// Called after a notifier is enabled or disabled, so the dispatcher that polls its descriptor
+/// can stop or resume polling it (`QSocketNotifier::setEnabled` → `registerSocketNotifier` /
+/// `unregisterSocketNotifier`).
+pub(crate) type EnableHook = Arc<dyn Fn() + Send + Sync>;
+
 pub struct SocketNotifier {
     descriptor: SocketDescriptor,
     event_type: SocketEvent,
     enabled: AtomicBool,
+    enable_hook: Mutex<Option<EnableHook>>,
     activated: Signal<SocketDescriptor>,
 }
 
@@ -23,6 +30,7 @@ impl SocketNotifier {
             descriptor,
             event_type,
             enabled: AtomicBool::new(true),
+            enable_hook: Mutex::new(None),
             activated: Signal::new(),
         }
     }
@@ -42,9 +50,27 @@ impl SocketNotifier {
         self.enabled.load(Ordering::Acquire)
     }
 
-    #[inline]
     pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Release);
+        if self.enabled.swap(enabled, Ordering::AcqRel) == enabled {
+            return;
+        }
+        // Cloned out so the hook runs without the lock: it takes the dispatcher's locks.
+        let hook = self
+            .enable_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Sets the hook the dispatcher that polls this notifier uses to follow `set_enabled`.
+    pub(crate) fn set_enable_hook(&self, hook: Option<EnableHook>) {
+        *self
+            .enable_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     #[inline]

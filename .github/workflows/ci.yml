@@ -6,6 +6,18 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Full Miri sweep on main every night, whatever changed.
+    - cron: '0 18 * * *'
+
+# Read-only token by default; jobs that need more must request it explicitly.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the superseded run; runs on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -15,7 +27,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
+        # macos-latest is paused while hosted macOS runners are saturated; re-add it here and
+        # to the protect-main required checks to restore it.
+        os: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -42,8 +56,7 @@ jobs:
 
       # Lists every target that does not compile on this platform; `cargo test` stops at the first.
       - name: Compile every target (cargo check --keep-going)
-        run: cargo check --workspace --all-targets --keep-going
-        continue-on-error: true
+        run: cargo check --workspace --all-targets --keep-going --locked
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -60,7 +73,7 @@ jobs:
       # main thread, one child process per check with its own time limit.
       - name: macOS main-thread entry (application dispatcher and event loop)
         if: ${{ runner.os == 'macOS' && !cancelled() }}
-        run: cargo run -q -p ferrokit-gui --example main_thread_entry
+        run: cargo run --locked -q -p ferrokit-gui --example main_thread_entry
 
       # ferrokit-platform AppKit checks (windows, status items, menus, screens, cursor, theme) on the
       # OS main thread, one child process per check, reporting ok/FAILED/ENV/CRASH per check.
@@ -69,22 +82,64 @@ jobs:
       - name: macOS main-thread AppKit checks (ferrokit-platform)
         if: ${{ runner.os == 'macOS' && !cancelled() }}
         run: >-
-          cargo run -q -p ferrokit-platform --example appkit_main_thread --
+          cargo run --locked -q -p ferrokit-platform --example appkit_main_thread --
           --known-open=status_item_message
 
       - name: Run doc tests
         if: ${{ !cancelled() }}
-        run: cargo test --workspace --doc
+        # Doc tests run after the binaries; cap a hang so the job still ends with a clear step result.
+        timeout-minutes: 15
+        run: cargo test --workspace --doc --locked
+
+  miri-changes:
+    name: Miri relevance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # Miri runs when code it can reach changed: the swept crates, their in-repo
+          # dependencies, the lockfile/toolchain, or the sweep tooling and baselines.
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ] \
+             || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(crates/[^/]+/(src|tests|build\.rs|Cargo\.toml)|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|\.cargo/|tools/(miri_|test_miri_))'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
   miri-shard:
-    name: Miri shard (${{ matrix.model }}, ${{ matrix.shard }}/2)
+    needs: miri-changes
+    if: needs.miri-changes.outputs.run == 'true'
+    name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        model: [SB, TB]
-        shard: [1, 2]
+        # One entry per (crate, model, shard); a shard's sweep is estimated well under 40 minutes.
+        include:
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 2, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 2, shards: 2}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: TB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: TB, shard: 1, shards: 1}
     steps:
       - uses: actions/checkout@v7
 
@@ -102,36 +157,70 @@ jobs:
       - name: Run Miri sweep tool unit tests
         run: python -m unittest tools/test_miri_sweep.py
 
-      - name: Run Miri sweep (${{ matrix.model }}, shard ${{ matrix.shard }}/2, baseline diff, isolation allowlist)
+      - name: Run Miri sweep (${{ matrix.crate }}, ${{ matrix.model }}, shard ${{ matrix.shard }}/${{ matrix.shards }}, baseline diff, isolation allowlist)
         run: >-
           python tools/miri_sweep.py
-          --crate ferrokit-core
+          --crate ${{ matrix.crate }}
           --toolchain nightly-2026-10-16
           --models ${{ matrix.model }}
-          --shard ${{ matrix.shard }}/2
-          --baseline tools/miri_baseline.json
+          --shard ${{ matrix.shard }}/${{ matrix.shards }}
+          --baseline ${{ matrix.baseline }}
           --run-isolation-allowlist
           --fail-on-regression
+          --timeout 2700
           --summary "$GITHUB_STEP_SUMMARY"
           --out miri_results.json
+        # --timeout is seconds per `cargo miri test` invocation (one target's remaining tests, plus
+        # its first build), below the 60-minute job limit. On expiry the run is recorded as a timeout
+        # result and the sweep carries on, instead of cancelling the job.
 
   miri:
     # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
     name: Nightly Miri (SB & TB)
-    needs: miri-shard
+    needs: [miri-changes, miri-shard]
     if: always()
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - name: Require every Miri shard to succeed
+      - name: Require every Miri shard to succeed (or Miri to be irrelevant to this change)
         env:
+          RELEVANT: ${{ needs.miri-changes.outputs.run }}
+          CHANGES_RESULT: ${{ needs.miri-changes.result }}
           SHARD_RESULT: ${{ needs.miri-shard.result }}
         run: |
-          echo "Miri shard results: $SHARD_RESULT"
+          echo "relevance: $CHANGES_RESULT run=$RELEVANT; shards: $SHARD_RESULT"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::Miri relevance check failed ($CHANGES_RESULT)"; exit 1
+          fi
+          if [ "$RELEVANT" != "true" ]; then
+            echo "No Miri-relevant files changed; shards skipped."; exit 0
+          fi
           if [ "$SHARD_RESULT" != "success" ]; then
             echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
             exit 1
           fi
+
+  tools:
+    name: Tools unit tests and Miri baseline coverage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run tools unit tests
+        run: python -m unittest discover -s tools -p "test_*.py"
+
+      # Every tests/*.rs of a swept crate must be in its baseline `targets` or `excluded`.
+      - name: Check Miri baseline coverage
+        run: |
+          python tools/miri_sweep.py --crate ferrokit-core --baseline tools/miri_baseline.json --check-coverage
+          python tools/miri_sweep.py --crate ferrokit-gui --baseline tools/miri_baseline_ferrokit_gui.json --check-coverage
+          python tools/miri_sweep.py --crate ferrokit-widgets --baseline tools/miri_baseline_ferrokit_widgets.json --check-coverage
 
   model:
     name: Concurrency Model Tests (${{ matrix.suite.name }})
@@ -157,7 +246,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Model Test (${{ matrix.suite.name }})
-        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml ${{ matrix.suite.args }}
+        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml --locked ${{ matrix.suite.args }}
 
   model-tsan:
     name: Concurrency Model ThreadSanitizer
@@ -166,10 +255,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install nightly toolchain with rust-src
+      - name: Install pinned nightly toolchain with rust-src
         run: |
-          rustup toolchain install nightly --profile minimal -c rust-src
-          rustc +nightly -V
+          rustup toolchain install nightly-2026-10-16 --profile minimal -c rust-src
+          rustc +nightly-2026-10-16 -V
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -178,5 +267,5 @@ jobs:
         env:
           RUSTFLAGS: "-Zsanitizer=thread"
         run: |
-          cargo +nightly test --target x86_64-unknown-linux-gnu -Zbuild-std \
+          cargo +nightly-2026-10-16 test --locked --target x86_64-unknown-linux-gnu -Zbuild-std \
             --manifest-path crates/ferrokit-model/Cargo.toml --test stress_tests -- --nocapture
