@@ -117,7 +117,8 @@ fn a_horizontal_wheel_message_is_delivered_with_its_own_axis() {
             _ => None,
         })
         .expect("a Wheel event");
-    assert_eq!((wheel.x, wheel.y), (120, 0));
+    // Qt negates WM_MOUSEHWHEEL (positive Win32 = scroll right; Qt positive = scroll left).
+    assert_eq!((wheel.x, wheel.y), (-120, 0));
 }
 
 #[test]
