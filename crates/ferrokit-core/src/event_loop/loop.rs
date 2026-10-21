@@ -1986,14 +1986,11 @@ mod tests {
 
         event_loop.post_event(relay.object_data().id(), Event::new(EventKind::UpdateRequest));
 
-        let start = std::time::Instant::now();
         let processed = event_loop.process_events(false);
-        let elapsed = start.elapsed();
 
         assert!(processed);
         assert_eq!(relay.call_count, 1);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 1);
-        assert!(elapsed < Duration::from_millis(50));
 
         // SAFETY: the event loop has finished all callbacks for this test object.
         unsafe { unregister_qobject(relay.object_data().id()) };

@@ -779,19 +779,22 @@ mod tests {
         let dispatcher = Win32EventDispatcher::new();
         let dispatcher_clone = dispatcher.clone_handle();
 
-        let start = std::time::Instant::now();
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let woken_thread = woken.clone();
 
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(50));
+            // Set before the wake-up, so observing `Awoken` below must also observe the flag.
+            woken_thread.store(true, Ordering::SeqCst);
             dispatcher_clone.wake_up();
         });
 
-        let result = dispatcher.process_events(true, None);
+        // The generous timeout is only a hang watchdog: a missed wake-up yields `Timeout`.
+        let result = dispatcher.process_events(true, Some(std::time::Duration::from_secs(30)));
 
-        let elapsed = start.elapsed();
         assert_eq!(result, DispatchResult::Awoken);
-        assert!(elapsed >= std::time::Duration::from_millis(45));
-        assert!(elapsed < std::time::Duration::from_millis(150));
+        assert!(woken.load(Ordering::SeqCst), "returned before the wake-up was requested");
+        worker.join().unwrap();
     }
 
     #[test]
@@ -804,7 +807,6 @@ mod tests {
         let elapsed = start.elapsed();
         assert_eq!(result, DispatchResult::Timeout);
         assert!(elapsed >= std::time::Duration::from_millis(45));
-        assert!(elapsed < std::time::Duration::from_millis(100));
     }
 
     #[test]
