@@ -53,9 +53,6 @@ pub struct DbusStatusNotifierItem {
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
 }
 
-unsafe impl Send for DbusStatusNotifierItem {}
-unsafe impl Sync for DbusStatusNotifierItem {}
-
 impl DbusStatusNotifierItem {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {

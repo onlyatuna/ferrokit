@@ -129,8 +129,8 @@ pub struct Win32LayeredSurface {
     stats: LayeredStats,
 }
 
-unsafe impl Send for Win32LayeredSurface {}
-unsafe impl Sync for Win32LayeredSurface {}
+// Deliberately neither `Send` nor `Sync`: owns GDI device contexts and a DIB-section pointer
+// that are used with the window's `HWND` on the window's thread only.
 
 impl Win32LayeredSurface {
     /// Creates layered surface for given window and dimensions.

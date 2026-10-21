@@ -12,9 +12,6 @@ pub struct WaylandShmSurface {
     is_busy: AtomicBool,
 }
 
-unsafe impl Send for WaylandShmSurface {}
-unsafe impl Sync for WaylandShmSurface {}
-
 impl WaylandShmSurface {
     pub fn new(surface_id: u32, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {

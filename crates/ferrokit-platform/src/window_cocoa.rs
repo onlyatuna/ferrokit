@@ -103,8 +103,8 @@ pub struct CocoaNativeWindow {
     backdrop_view: Option<Id>,
 }
 
-unsafe impl Send for CocoaNativeWindow {}
-unsafe impl Sync for CocoaNativeWindow {}
+// Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
+// thread, and the boxed `WindowSystemEventHandler` has no thread-safety bound.
 
 impl CocoaNativeWindow {
     pub fn new(title: &str, rect: Rect, flags: WindowFlags) -> Result<Self, &'static str> {

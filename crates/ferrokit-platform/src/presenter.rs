@@ -11,7 +11,7 @@ use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Pixmap;
 
 /// Unified abstraction for presenting surface pixels to the native window system.
-pub trait SurfacePresenter: Send + Sync {
+pub trait SurfacePresenter {
     /// Presents the specified dirty region of the surface to the native window.
     fn present(&mut self, surface: &Pixmap, dirty: &Region) -> Result<(), &'static str>;
 
@@ -50,8 +50,8 @@ pub mod win32 {
         bits: *mut u8,
     }
 
-    unsafe impl Send for Win32DcPresenter {}
-    unsafe impl Sync for Win32DcPresenter {}
+    // Deliberately neither `Send` nor `Sync`: owns GDI handles and a DIB-section pointer that
+    // are used with the window's device context on the window's thread only.
 
     impl Win32DcPresenter {
         pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self, &'static str> {

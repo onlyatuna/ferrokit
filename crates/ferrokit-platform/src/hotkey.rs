@@ -12,7 +12,7 @@ bitflags! {
     }
 }
 
-pub trait PlatformHotkeyManager: Send + Sync {
+pub trait PlatformHotkeyManager {
     fn register_hotkey(
         &mut self,
         id: u32,
@@ -37,8 +37,8 @@ pub mod win32_hotkey {
         registered_ids: HashSet<u32>,
     }
 
-    unsafe impl Send for Win32HotkeyManager {}
-    unsafe impl Sync for Win32HotkeyManager {}
+    // Deliberately neither `Send` nor `Sync` (raw `HWND`): `RegisterHotKey`/`UnregisterHotKey`
+    // bind a hotkey to the thread that owns `hwnd`, so the manager stays on that thread.
 
     impl Win32HotkeyManager {
         pub fn new(hwnd: HWND) -> Self {
@@ -133,9 +133,6 @@ pub mod cocoa_hotkey {
         registered_ids: HashSet<u32>,
     }
 
-    unsafe impl Send for CocoaHotkeyManager {}
-    unsafe impl Sync for CocoaHotkeyManager {}
-
     impl CocoaHotkeyManager {
         pub fn new() -> Self {
             Self::default()
@@ -207,9 +204,6 @@ pub mod unix_hotkey {
     pub struct UnixHotkeyManager {
         registered_ids: HashSet<u32>,
     }
-
-    unsafe impl Send for UnixHotkeyManager {}
-    unsafe impl Sync for UnixHotkeyManager {}
 
     impl UnixHotkeyManager {
         pub fn new() -> Self {

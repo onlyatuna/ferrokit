@@ -31,7 +31,10 @@ pub trait EventDispatcherHandle: Send + Sync {
     fn wake_up(&self);
 }
 
-pub trait EventDispatcher: Send + Sync {
+/// The thread-owned half of an event loop: implementations are not required to be `Send` or
+/// `Sync` (the Win32 one owns a window that only its creating thread may destroy). Other threads
+/// wake the loop through an [`EventDispatcherHandle`] from [`clone_handle`](Self::clone_handle).
+pub trait EventDispatcher {
     fn wake_up(&self);
     fn clone_handle(&self) -> Arc<dyn EventDispatcherHandle>;
     fn install_native_event_filter(&self, filter: Box<dyn NativeEventFilter>);
