@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -41,19 +42,19 @@ fn test_sync_mutex_timed_locking() {
 
 #[test]
 fn test_sync_recursive_mutex() {
-    let rec_mutex = RecursiveMutex::new(100);
+    let rec_mutex = RecursiveMutex::new(RefCell::new(100));
 
     // Re-entrant locking on the same thread
     let g1 = rec_mutex.lock();
-    assert_eq!(*g1, 100);
+    assert_eq!(*g1.borrow(), 100);
 
     let g2 = rec_mutex.lock();
-    assert_eq!(*g2, 100);
+    assert_eq!(*g2.borrow(), 100);
 
     let g3 = rec_mutex
         .try_lock()
         .expect("re-entrant try_lock should succeed");
-    assert_eq!(*g3, 100);
+    assert_eq!(*g3.borrow(), 100);
 
     drop(g3);
     drop(g2);
@@ -63,12 +64,11 @@ fn test_sync_recursive_mutex() {
     let rec_arc = Arc::new(rec_mutex);
     let rec_clone = Arc::clone(&rec_arc);
     let handle = std::thread::spawn(move || {
-        let mut g = rec_clone.lock();
-        *g = 200;
+        *rec_clone.lock().borrow_mut() = 200;
     });
     handle.join().unwrap();
 
-    assert_eq!(*rec_arc.lock(), 200);
+    assert_eq!(*rec_arc.lock().borrow(), 200);
 }
 
 #[test]

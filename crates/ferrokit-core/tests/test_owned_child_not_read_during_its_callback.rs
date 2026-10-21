@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object, set_parent,
+    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object, set_parent_by_id,
     with_object, ObjectData, ObjectId, OwnedObject, QObject,
 };
 
@@ -123,7 +123,7 @@ fn gone(id: ObjectId) -> bool {
 fn dropping_the_parent_from_the_childs_callback_does_not_read_the_child() {
     let slot: Rc<Cell<Option<OwnedObject<Node>>>> = Rc::new(Cell::new(None));
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     slot.set(Some(parent));
     let hook_slot = Rc::clone(&slot);
     let (probe_id, reads) = attach_probe(parent_id, Box::new(move |_| drop(hook_slot.take())));
@@ -143,7 +143,10 @@ fn dropping_the_parent_from_the_childs_callback_does_not_read_the_child() {
 fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
     let other = Node::registered();
-    let (parent_id, other_id) = (parent.data.id(), other.data.id());
+    let (parent_id, other_id) = (
+        OwnedObject::object_id(&parent),
+        OwnedObject::object_id(&other),
+    );
     let sibling = Rc::new(Cell::new(ObjectId(0)));
     let target = Rc::clone(&sibling);
     // Attached first, so a search of the parent's owned children meets it before the sibling.
@@ -166,9 +169,14 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
         0,
         "the running child was read while a sibling moved"
     );
-    assert_eq!(parent.data.owned_children().len(), 1);
     assert_eq!(
-        OwnedObject::object_id(&other.data.owned_children()[0]),
+        parent.with(|p| p.data.owned_children().len()).unwrap(),
+        1
+    );
+    assert_eq!(
+        other
+            .with(|o| OwnedObject::object_id(&o.data.owned_children()[0]))
+            .unwrap(),
         sibling.get()
     );
 }
@@ -176,7 +184,7 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
 #[test]
 fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     let sibling = Rc::new(Cell::new(ObjectId(0)));
     let target = Rc::clone(&sibling);
     let (probe_id, reads) = attach_probe(
@@ -198,16 +206,19 @@ fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_rea
         0,
         "the running child was read while its parent was searched"
     );
-    assert_eq!(parent.data.owned_children().len(), 2);
+    assert_eq!(
+        parent.with(|p| p.data.owned_children().len()).unwrap(),
+        2
+    );
 }
 
 #[test]
 fn dropping_a_non_owned_sibling_from_the_childs_callback_does_not_read_the_child() {
     let parent = Node::registered();
-    let parent_id = parent.data.id();
-    let mut loose = Node::registered();
-    let loose_id = loose.data.id();
-    set_parent(&mut loose.data, Some(parent_id)).unwrap();
+    let parent_id = OwnedObject::object_id(&parent);
+    let loose = Node::registered();
+    let loose_id = OwnedObject::object_id(&loose);
+    set_parent_by_id(loose_id, Some(parent_id)).unwrap();
     let slot = Rc::new(Cell::new(Some(loose)));
     let hook_slot = Rc::clone(&slot);
     let (probe_id, reads) = attach_probe(parent_id, Box::new(move |_| drop(hook_slot.take())));
@@ -220,6 +231,10 @@ fn dropping_a_non_owned_sibling_from_the_childs_callback_does_not_read_the_child
         "the running child was read while a sibling unlinked itself"
     );
     assert!(gone(loose_id));
-    assert!(!parent.data.children().contains(&loose_id));
-    assert!(parent.data.children().contains(&probe_id));
+    parent
+        .with(|p| {
+            assert!(!p.data.children().contains(&loose_id));
+            assert!(p.data.children().contains(&probe_id));
+        })
+        .unwrap();
 }

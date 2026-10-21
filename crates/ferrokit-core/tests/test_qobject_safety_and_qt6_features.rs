@@ -6,7 +6,8 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject, sender,
-    unregister_qobject, MoveByIdError, ObjectData, ObjectId, QObject, ScopeLevelGuard, ThreadContext,
+    unregister_qobject, MoveByIdError, ObjectData, ObjectId, OwnedObject, QObject, ScopeLevelGuard,
+    ThreadContext,
     ThreadId,
 };
 use ferrokit_core::property::Property;
@@ -79,11 +80,22 @@ impl QObject for TestWidget {
 fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     ThreadContext::init_current(true, None);
     let current_thread = ThreadId::current();
-    let target_thread = ThreadId(
-        std::thread::spawn(|| std::thread::current().id())
-            .join()
-            .unwrap(),
-    );
+    let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<(ObjectId, ObjectId)>();
+    let (result_tx, result_rx) =
+        std::sync::mpsc::channel::<(Option<ThreadId>, Option<ThreadId>)>();
+    let worker = std::thread::spawn(move || {
+        tid_tx.send(ThreadId::current()).unwrap();
+        let (parent_id, child_id) = go_rx.recv().unwrap();
+        let parent_thread = ferrokit_core::object::with_object(parent_id, |o| {
+            o.object_data().thread_id()
+        });
+        let child_thread = ferrokit_core::object::with_object(child_id, |o| {
+            o.object_data().thread_id()
+        });
+        result_tx.send((parent_thread, child_thread)).unwrap();
+    });
+    let target_thread = tid_rx.recv().unwrap();
 
     // SAFETY: the owner stays on this registration thread; nothing touches the parent while a
     // callback of it runs.
@@ -91,7 +103,7 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
 
     let child = Box::new(TestWidget::new("worker_child"));
     // SAFETY: child remains boxed and owned at a stable address by parent.
-    let child_id = unsafe { add_owned_child(parent.data.id(), child) }
+    let child_id = unsafe { add_owned_child(OwnedObject::object_id(&parent), child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
     // Qt rule: Child with parent CANNOT be moved to another thread directly!
@@ -103,18 +115,23 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     );
 
     // Moving root cascades to all children
-    let parent_move_res = move_to_thread_by_id(parent.data.id(), target_thread, current_thread);
+    let parent_id = OwnedObject::object_id(&parent);
+    let parent_move_res = move_to_thread_by_id(parent_id, target_thread, current_thread);
     assert_eq!(parent_move_res, Ok(()));
 
-    assert_eq!(parent.data.thread_id(), target_thread);
+    // The owner refuses access from this thread now; read the data on the thread the subtree
+    // lives on.
+    go_tx.send((parent_id, child_id)).unwrap();
+    let (parent_thread, child_thread) = result_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("worker must report the thread_id fields");
+    worker.join().unwrap();
+    assert_eq!(parent_thread, Some(target_thread));
     assert_eq!(query_object_thread(child_id), Some(target_thread));
-    assert_eq!(
-        parent.data.owned_children()[0].object_data().thread_id(),
-        target_thread
-    );
+    assert_eq!(child_thread, Some(target_thread));
 
     // SAFETY: parent callbacks have ended on its registration thread.
-    unsafe { unregister_qobject(parent.data.id()) };
+    unsafe { unregister_qobject(OwnedObject::object_id(&parent)) };
     ThreadContext::clear_current();
 }
 
@@ -127,9 +144,9 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
     // SAFETY: the owner stays on this thread through the signal's lifetime; nothing touches the
     // emitter while a callback of it runs.
     let emitter = unsafe { register_owned_qobject(TestWidget::new("emitter")) };
-    let emitter_id = emitter.data.id();
+    let emitter_id = OwnedObject::object_id(&emitter);
 
-    let sig: Signal<i32> = Signal::with_owner(&emitter.data);
+    let sig: Signal<i32> = emitter.with(|e| Signal::with_owner(&e.data)).unwrap();
     let captured_sender = Arc::new(Mutex::new(None));
     let captured_clone = Arc::clone(&captured_sender);
 
@@ -153,13 +170,17 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
         // SAFETY: the owner stays on this thread until it is dropped below; nothing touches the
         // receiver while a callback of it runs.
         let receiver = unsafe { register_owned_qobject(TestWidget::new("receiver")) };
-        let r_id = receiver.data.id();
+        let r_id = OwnedObject::object_id(&receiver);
 
         let rc_clone = Arc::clone(&recv_count);
 
-        sig.connect_to(&*receiver, move |_| {
-            rc_clone.fetch_add(1, Ordering::SeqCst);
-        });
+        receiver
+            .with(|r| {
+                sig.connect_to(r, move |_| {
+                    rc_clone.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+            .unwrap();
 
         sig.emit(&1);
         assert_eq!(recv_count.load(Ordering::SeqCst), 1);
@@ -198,21 +219,21 @@ fn test_qobject_start_and_kill_timer() {
     #[cfg(not(windows))]
     ferrokit_core::timer::register_thread_timer_context(registry.clone());
 
-    let t1 = widget.start_timer(100, TimerType::Coarse);
+    let t1 = widget.with_mut(|w| w.start_timer(100, TimerType::Coarse)).unwrap();
     assert!(t1.is_valid());
-    assert_eq!(widget.data.timers().len(), 1);
+    assert_eq!(widget.with(|w| w.data.timers().len()).unwrap(), 1);
 
-    let t2 = widget.start_timer(200, TimerType::Precise);
+    let t2 = widget.with_mut(|w| w.start_timer(200, TimerType::Precise)).unwrap();
     assert!(t2.is_valid());
-    assert_eq!(widget.data.timers().len(), 2);
+    assert_eq!(widget.with(|w| w.data.timers().len()).unwrap(), 2);
 
-    let killed = widget.kill_timer(t1);
+    let killed = widget.with_mut(|w| w.kill_timer(t1)).unwrap();
     assert!(killed);
-    assert_eq!(widget.data.timers().len(), 1);
-    assert_eq!(widget.data.timers()[0], t2);
+    assert_eq!(widget.with(|w| w.data.timers().len()).unwrap(), 1);
+    assert_eq!(widget.with(|w| w.data.timers()[0]).unwrap(), t2);
 
     // Dropping widget kills remaining timers
-    let wid = widget.data.id();
+    let wid = OwnedObject::object_id(&widget);
     drop(widget);
     // SAFETY: widget destruction ended its callback lifetime on this thread.
     unsafe { unregister_qobject(wid) };
@@ -231,13 +252,13 @@ fn test_delete_later_posts_one_deferred_delete_and_debounces() {
     // SAFETY: the owner stays on this thread until the unregister below; nothing touches the
     // widget while a callback of it runs.
     let widget = unsafe { register_owned_qobject(TestWidget::new("self_post")) };
-    let wid = widget.data.id();
+    let wid = OwnedObject::object_id(&widget);
 
     ThreadContext::set_current_loop_level(1);
     {
         let _scope = ScopeLevelGuard::enter();
-        widget.delete_later();
-        widget.delete_later(); // qobject.cpp:2531-2534: second call is a no-op
+        widget.with(|w| w.delete_later()).unwrap();
+        widget.with(|w| w.delete_later()).unwrap(); // qobject.cpp:2531-2534: second call is a no-op
     }
     let queued = event_loop.queue().lock().unwrap().len();
     assert_eq!(
@@ -256,13 +277,13 @@ fn test_delete_later_inside_handler_scope_survives_nested_pump() {
     // SAFETY: the owner stays on this thread until delivery unregisters the object; nothing
     // touches the widget while a callback of it runs.
     let widget = unsafe { register_owned_qobject(TestWidget::new("nested_pump")) };
-    let wid = widget.data.id();
+    let wid = OwnedObject::object_id(&widget);
 
     ThreadContext::set_current_loop_level(1);
     let scope = ScopeLevelGuard::enter();
     // Stamped (1, 1). qcoreapplication.cpp:1882: E.L+E.S (2) > cur.L+cur.S (2) is false, so the
     // DeferredDelete is not delivered by a nested pump.
-    widget.delete_later();
+    widget.with(|w| w.delete_later()).unwrap();
     event_loop.process_events(false);
     assert!(
         query_object_thread(wid).is_some(),
@@ -352,23 +373,30 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
     let mut obj_b = unsafe { register_owned_qobject(TestWidget::new("obj_b")) };
 
     // 1. Qt allows installing self as event filter (qobject.cpp:2407-2423)
-    let a_id = obj_a.data.id();
-    let self_filter = ferrokit_core::object::install_event_filter(&mut obj_a.data, a_id);
+    let a_id = OwnedObject::object_id(&obj_a);
+    let b_id = OwnedObject::object_id(&obj_b);
+    let self_filter = obj_a
+        .with_mut(|a| ferrokit_core::object::install_event_filter(&mut a.data, a_id))
+        .unwrap();
     assert!(
         self_filter,
         "Qt allows installing object as its own event filter"
     );
     // 2. Normal installation succeeds
-    let ok = ferrokit_core::object::install_event_filter(&mut obj_a.data, obj_b.data.id());
+    let ok = obj_a
+        .with_mut(|a| ferrokit_core::object::install_event_filter(&mut a.data, b_id))
+        .unwrap();
     assert!(ok);
-    assert!(obj_a.data.event_filters().contains(obj_b.data.id()));
+    assert!(obj_a.with(|a| a.data.event_filters().contains(b_id)).unwrap());
 
     // 3. Qt allows mutual event filters (qobject.cpp:2407-2423)
-    let cycle = ferrokit_core::object::install_event_filter(&mut obj_b.data, obj_a.data.id());
+    let cycle = obj_b
+        .with_mut(|b| ferrokit_core::object::install_event_filter(&mut b.data, a_id))
+        .unwrap();
     assert!(cycle, "Mutual filter installation succeeds in Qt");
     // SAFETY: neither registered object has an active callback.
     unsafe {
-        unregister_qobject(obj_a.data.id());
-        unregister_qobject(obj_b.data.id());
+        unregister_qobject(a_id);
+        unregister_qobject(b_id);
     }
 }

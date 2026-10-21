@@ -143,7 +143,7 @@ fn set_tool_tip_delivers_tool_tip_change_event() {
     };
     assert!(set_owned_widget_tool_tip(&owned, "Owned Tooltip"));
     assert!(seen_owned.load(Ordering::SeqCst));
-    assert_eq!(owned.tool_tip(), "Owned Tooltip");
+    assert_eq!(owned.with(|o| o.tool_tip().to_string()).as_deref(), Some("Owned Tooltip"));
     drop(owned);
 
     // 3. Direct `set_tool_tip` on an unregistered widget updates text without UB.
