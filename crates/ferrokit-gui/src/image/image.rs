@@ -638,3 +638,21 @@ impl Image {
         dest
     }
 }
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn mono_and_indexed_set_pixel_color_store_values() {
+        let mut mono = Image::new(2, 1, ImageFormat::Mono);
+        assert!(mono.set_pixel_color(0, 0, tiny_skia::Color::WHITE));
+        assert!(mono.set_pixel_color(1, 0, tiny_skia::Color::BLACK));
+        assert_eq!(mono.pixel_color(0, 0), Some(tiny_skia::Color::WHITE));
+        assert_eq!(mono.pixel_color(1, 0), Some(tiny_skia::Color::BLACK));
+
+        let mut indexed = Image::new(1, 1, ImageFormat::Indexed8);
+        indexed.set_color_table(vec![0xff000000, 0xffffffff]);
+        assert!(indexed.set_pixel_color(0, 0, tiny_skia::Color::WHITE));
+        assert_eq!(indexed.pixel_color(0, 0), Some(tiny_skia::Color::WHITE));
+    }
+}
