@@ -632,6 +632,9 @@ pub trait Widget: QObject + 'static {
     /// `ToolTipChange`, even when the text is unchanged. The event goes through the object
     /// filters and then [`event`](QObject::event) like `FontChange` does in `Button::set_font`,
     /// and needs `&mut self` for that, so no shared borrow of the widget is alive while it runs.
+    ///
+    /// Calling it from a `ToolTipChange` handler with a different text sends the event again and
+    /// recurses, as in Qt; the handler has to stop on its own.
     fn set_tool_tip(&mut self, text: &str) {
         *self.widget_base().tool_tip.borrow_mut() = text.to_string();
         notify_borrowed(self, &mut Event::new(EventKind::ToolTipChange));
