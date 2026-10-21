@@ -7,6 +7,8 @@
 //! parent and its children share one thread.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
@@ -39,6 +41,7 @@ impl QObject for Root {
 
 struct Leaf {
     data: ObjectData,
+    thread_changes: Arc<AtomicUsize>,
 }
 
 impl QObject for Leaf {
@@ -48,6 +51,12 @@ impl QObject for Leaf {
     fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
         ObjectDataMut::new(&mut self.data)
     }
+    fn event(&mut self, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::ThreadChange) {
+            self.thread_changes.fetch_add(1, Ordering::SeqCst);
+        }
+        false
+    }
 }
 
 #[test]
@@ -55,8 +64,10 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
     let source = ThreadId::current();
     let target = std::thread::spawn(ThreadId::current).join().unwrap();
 
+    let thread_changes = Arc::new(AtomicUsize::new(0));
     let mut late = Leaf {
         data: ObjectData::new(ObjectId::next()),
+        thread_changes: Arc::clone(&thread_changes),
     };
     let late_id = late.data.id();
     let root = Root {
@@ -80,6 +91,12 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
         query_object_thread(late_id),
         Some(target),
         "the child attached during the move follows its parent"
+    );
+
+    assert_eq!(
+        thread_changes.load(Ordering::SeqCst),
+        1,
+        "the attached child gets its own ThreadChange (Qt setThreadData_helper)"
     );
 
     // SAFETY: no callback runs; the root was made by `Box::into_raw` above.

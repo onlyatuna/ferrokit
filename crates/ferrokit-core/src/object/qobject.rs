@@ -170,7 +170,13 @@ impl ChildListChange {
         match *self {
             ChildListChange::Add(id) => data.add_child(id),
             ChildListChange::Remove(id) => data.remove_child(id),
-            ChildListChange::DeleteOwned(id) => return data.take_owned_child(id),
+            ChildListChange::DeleteOwned(id) => {
+                let owner = data.take_owned_child(id);
+                if owner.is_none() {
+                    data.remove_child(id);
+                }
+                return owner;
+            }
         }
         None
     }
@@ -1494,24 +1500,24 @@ pub(crate) fn destroy_deferred(id: ObjectId) {
         return;
     };
     let parent = *read_unpoisoned(&record.parent);
-    // `owned_by_parent` is read through the object, which is only possible when no callback of it
-    // runs; a borrowed object is treated as not owned (and so only unregistered).
-    let owned = with_object(id, |o| o.object_data().owned_by_parent).unwrap_or(false);
-    if let (Some(parent_id), true) = (parent, owned) {
+    // Ownership is read from the parent's list: the object itself may be borrowed by a callback
+    // further up the stack, which its own flag would hide.
+    if let Some(parent_id) = parent {
         match with_object_mut(parent_id, |p| p.object_data_mut().take_owned_child(id)) {
             Some(Some(owner)) => {
                 drop(owner);
                 return;
             }
             None if registered_and_borrowed(parent_id) => {
-                unregister_deferred_subtree(id);
+                // Whether the parent owns it is settled when its callback returns.
+                unregister_deferred_subtree(id, &record.borrow_state);
                 edit_child_list(parent_id, ChildListChange::DeleteOwned(id));
                 return;
             }
             _ => {}
         }
     }
-    unregister_deferred_subtree(id);
+    unregister_deferred_subtree(id, &record.borrow_state);
     if let Some(parent_id) = parent {
         edit_child_list(parent_id, ChildListChange::Remove(id));
     }
@@ -1530,8 +1536,10 @@ fn unowned_child_ids(data: &ObjectData) -> Vec<ObjectId> {
         .filter(|id| !owned.contains(id))
         .collect()
 }
-/// Unregisters `id` and everything the registry lists below it, the deepest first.
-fn unregister_deferred_subtree(id: ObjectId) {
+/// Unregisters `id` and everything the registry lists below it, the deepest first; `destroyed` of
+/// `id` goes out before any descendant is unregistered (and so before theirs).
+fn unregister_deferred_subtree(id: ObjectId, state: &ObjectBorrowState) {
+    state.emit_destroyed_once(id);
     unregister_descendants(id);
     // SAFETY: the delivery that ran this has returned, so no callback of the object runs (a
     // callback further up the stack keeps its own `Arc` to the record, and the memory stays until
@@ -2394,14 +2402,15 @@ impl<'a> ObjectDataMut<'a> {
         &mut self.data.owned_children
     }
 
-    /// Takes the owner of the child `id` out of the list, and the id out of `children`.
+    /// Takes the owner of the child `id` out of the list, and the id out of `children`. Nothing
+    /// changes when this object does not own `id`.
     pub(crate) fn take_owned_child(&mut self, id: ObjectId) -> Option<OwnedObject<dyn QObject>> {
-        self.data.children.retain(|&c| c != id);
         let index = self
             .data
             .owned_children
             .iter()
             .position(|c| OwnedObject::object_id(c) == id)?;
+        self.data.children.retain(|&c| c != id);
         Some(self.data.owned_children.remove(index))
     }
 
@@ -6586,6 +6595,24 @@ mod tests {
         drop(returned);
     }
 
+    /// A `DeferredDelete` finished for an owned child that a callback further up the stack still
+    /// borrows: its owner leaves the parent's list all the same, and the memory is freed when that
+    /// callback returns.
+    #[test]
+    fn test_destroy_deferred_of_an_owned_child_borrowed_by_an_outer_frame_takes_its_owner() {
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        // SAFETY: the child is not used directly; the parent owns it.
+        let child_id = unsafe { add_owned_child(parent_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(error, _)| error)
+            .unwrap();
+
+        with_object_mut(child_id, |_| destroy_deferred(child_id)).unwrap();
+
+        assert!(parent.with(|p| p.0.owned_children().is_empty() && p.0.children().is_empty()).unwrap());
+        assert!(with_object(child_id, |_| ()).is_none());
+    }
     /// Objects whose own lists name each other (the safe `reparent` builds that without any
     /// parent link) are registered: a child that is registered under another parent is not listed,
     /// so the registry's lists do not form a ring, and dropping the parent of such an object from

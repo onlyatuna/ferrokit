@@ -281,3 +281,50 @@ fn find_child_sees_children_attached_without_ownership() {
     parent.with(|p| p.find_children_any(Some("kid"), probe, &mut |_| all += 1)).unwrap();
     assert_eq!(all, 1);
 }
+
+// ---- `destroyed` of the deleted object goes out before its descendants' ----
+
+fn log_destroyed(id: ObjectId, label: &'static str, log: &Log) {
+    let log = Arc::clone(log);
+    with_object(id, |o| {
+        o.destroyed().connect(move |_: &ObjectId| log.lock().push(format!("destroyed {label}")));
+    })
+    .expect("registered");
+}
+
+#[test]
+fn deferred_delete_of_an_unowned_object_emits_destroyed_parent_first() {
+    let log = new_log();
+    let el = EventLoop::new();
+    let top = owned("top", &log);
+    let top_id = OwnedObject::object_id(&top);
+    let kid = owned("kid", &log);
+    let kid_id = OwnedObject::object_id(&kid);
+    set_parent_by_id(kid_id, Some(top_id)).unwrap();
+    log_destroyed(top_id, "top", &log);
+    log_destroyed(kid_id, "kid", &log);
+
+    delete_later(top_id);
+    el.flush_deferred_deletes();
+
+    let seen: Vec<_> = entries(&log).into_iter().filter(|e| e.starts_with("destroyed")).collect();
+    assert_eq!(seen, vec!["destroyed top", "destroyed kid"]);
+}
+
+#[test]
+fn deferred_delete_with_the_parent_borrowed_emits_destroyed_parent_first() {
+    let log = new_log();
+    let el = EventLoop::new();
+    let mut parent = owned("parent", &log);
+    let parent_id = OwnedObject::object_id(&parent);
+    let child_id = owned_child(parent_id, "child", &log);
+    let grand_id = owned_child(child_id, "grand", &log);
+    log_destroyed(child_id, "child", &log);
+    log_destroyed(grand_id, "grand", &log);
+    delete_later(child_id);
+
+    parent.with_mut(|_| el.flush_deferred_deletes()).unwrap();
+
+    let seen: Vec<_> = entries(&log).into_iter().filter(|e| e.starts_with("destroyed")).collect();
+    assert_eq!(seen, vec!["destroyed child", "destroyed grand"]);
+}
