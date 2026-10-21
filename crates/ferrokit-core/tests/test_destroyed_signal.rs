@@ -11,9 +11,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferrokit_core::event_loop::EventLoop;
+use ferrokit_core::event::{Event, EventKind};
+use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, register_owned_qobject, with_object, with_object_mut,
+    add_owned_child, move_to_thread_by_id, register_owned_qobject, set_parent_by_id, with_object,
+    with_object_mut,
     ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
@@ -397,4 +399,138 @@ fn a_destruction_forwarded_to_the_registration_thread_emits_there() {
         ]
     );
     drop(receiver);
+}
+
+/// The parent's owner is dropped inside a callback of the parent, so the destruction is parked and
+/// the descendants are unregistered at once. The parent's `destroyed` still goes out first, and
+/// the parent is already dead when a descendant's slot runs.
+#[test]
+fn a_parked_parent_emits_before_its_descendants() {
+    let log = new_log();
+    let parent = owned("parent", &log);
+    let parent_id = OwnedObject::object_id(&parent);
+    let parent_alive = parent.with(|p| p.data.liveness()).unwrap();
+    let child = Probe::new("child", &log);
+    let child_id = child.data.id();
+    child.data.destroyed().connect({
+        let log = Arc::clone(&log);
+        let parent_alive = Arc::clone(&parent_alive);
+        move |id| {
+            assert!(
+                !parent_alive.load(Ordering::Acquire),
+                "the parent is already dead when a descendant's slot runs"
+            );
+            log.lock().push(format!("child destroyed {}", id.0));
+        }
+    });
+    parent.with(|p| p.destroyed().connect(log_id(&log, "parent destroyed"))).unwrap();
+    // SAFETY: the child is not used again outside the registry.
+    let added = unsafe { add_owned_child(parent_id, Box::new(child)) };
+    assert_eq!(added.map_err(|(e, _)| e), Ok(child_id));
+
+    let log_in_callback = Arc::clone(&log);
+    with_object_mut(parent_id, move |_object| {
+        drop(parent);
+        log_in_callback.lock().push("callback goes on".to_string());
+    })
+    .unwrap();
+
+    assert_eq!(
+        entries(&log),
+        vec![
+            format!("parent destroyed {}", parent_id.0),
+            format!("child destroyed {}", child_id.0),
+            "callback goes on".to_string(),
+            "parent dropped".to_string(),
+            "child dropped".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_panicking_slot_is_contained_and_the_teardown_completes() {
+    let log = new_log();
+    let owner = owned("a", &log);
+    let id = OwnedObject::object_id(&owner);
+    owner
+        .with(|p| {
+            p.destroyed().connect(|_| panic!("destroyed slot panics on purpose"));
+            p.destroyed().connect(log_id(&log, "after the panic"));
+        })
+        .unwrap();
+    drop(owner);
+    assert_eq!(
+        entries(&log),
+        vec![format!("after the panic {}", id.0), "a dropped".to_string()]
+    );
+}
+
+/// A slot that calls back into the object by its id finds nothing to act on, and does not panic or
+/// deadlock.
+#[test]
+fn a_slot_acting_on_the_dying_id_has_no_effect() {
+    let log = new_log();
+    let el = EventLoop::new();
+    let owner = owned("a", &log);
+    let other = owned("other", &log);
+    let other_id = OwnedObject::object_id(&other);
+    let signal: Signal<ObjectId> = owner.with(|p| p.destroyed().clone()).unwrap();
+    signal.connect({
+        let log = Arc::clone(&log);
+        let signal = signal.clone();
+        move |dying| {
+            let late = signal.connect({
+                let log = Arc::clone(&log);
+                move |_| log.lock().push("connected from the slot".to_string())
+            });
+            let child_result = set_parent_by_id(*dying, Some(other_id));
+            let parent_result = set_parent_by_id(other_id, Some(*dying));
+            post_event_to_thread(
+                ThreadId::current(),
+                *dying,
+                Event::new(EventKind::DeferredDelete {
+                    loop_level: 0,
+                    scope_level: 0,
+                }),
+            );
+            log.lock().push(format!(
+                "reparent refused {} {} {:?}",
+                child_result.is_err(),
+                parent_result.is_err(),
+                late.0 > 0
+            ));
+        }
+    });
+
+    drop(owner);
+
+    assert_eq!(
+        entries(&log),
+        vec!["reparent refused true true true".to_string(), "a dropped".to_string()],
+        "the slot connected during the emission does not run in it"
+    );
+    assert_eq!(
+        el.flush_deferred_deletes(),
+        0,
+        "a deferred delete posted to the dying id is purged"
+    );
+    assert_eq!(other.with(|p| p.parent()).unwrap(), None);
+}
+
+/// Unregistering a live object is its destruction for connections and pointers, so it emits
+/// `destroyed` once; the later drop does not emit again.
+#[test]
+fn unregistering_a_live_object_emits_destroyed_once() {
+    let log = new_log();
+    let mut owner = owned("a", &log);
+    let id = OwnedObject::object_id(&owner);
+    owner.with(|p| p.destroyed().connect(log_id(&log, "destroyed"))).unwrap();
+    // SAFETY: no callback of the object runs.
+    owner.with_mut(|p| unsafe { p.data.unregister() }).unwrap();
+    assert_eq!(entries(&log), vec![format!("destroyed {}", id.0)]);
+    drop(owner);
+    assert_eq!(
+        entries(&log),
+        vec![format!("destroyed {}", id.0), "a dropped".to_string()]
+    );
 }

@@ -99,28 +99,34 @@ pub(crate) struct ObjectBorrowState {
     /// share, so that the destruction can emit it without reading the object: a callback of the
     /// object may still be running when its owner is dropped (see `destroy_here`).
     destroyed: Signal<ObjectId>,
+    /// The object's liveness token (shared with its record): false makes the object unreachable
+    /// through the registry (`registered_ptr`), which `emit_destroyed_once` does first.
+    liveness: Arc<AtomicBool>,
     /// Set by the one emission of `destroyed`, whichever teardown step comes first.
     destroyed_emitted: AtomicBool,
 }
 
 impl ObjectBorrowState {
-    fn new(destroyed: Signal<ObjectId>) -> Self {
+    fn new(destroyed: Signal<ObjectId>, liveness: Arc<AtomicBool>) -> Self {
         Self {
             borrow_flag: AtomicBool::new(false),
             free_when_released: AtomicBool::new(false),
             parked: Mutex::new(None),
             memory_destroyed: AtomicBool::new(false),
             destroyed,
+            liveness,
             destroyed_emitted: AtomicBool::new(false),
         }
     }
 
-    /// Emits `destroyed(id)` once, the first time it is called for this object. Qt `~QObject`
-    /// emits it first, before it disconnects anything and before `deleteChildren`
-    /// (qobject.cpp:1086-1105). The caller has already marked the object dead (liveness false,
-    /// unregistered or borrowed), so no slot can reach the object through the registry: the
-    /// receivers get the id and nothing else.
+    /// Marks the object dead, then emits `destroyed(id)` once, the first time it is called for
+    /// this object. Qt `~QObject` emits it first, before it disconnects anything and before
+    /// `deleteChildren` (qobject.cpp:1086-1105). The object is unreachable through the registry
+    /// from the first step (liveness false), so a slot cannot get at it, and the receivers get the
+    /// id and nothing else. Callers run it before any descendant is unregistered, so a parent's
+    /// `destroyed` always goes out before its descendants'.
     fn emit_destroyed_once(&self, id: ObjectId) {
+        self.liveness.store(false, Ordering::Release);
         if !self.destroyed_emitted.swap(true, Ordering::AcqRel) {
             self.destroyed.emit_while_owner_dying(&id);
         }
@@ -360,6 +366,9 @@ fn destroy_here(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
     }
     // A callback holds the flag: park the allocation in the shared slot for its guard.
     state.memory_destroyed.store(true, Ordering::Release);
+    // The object is dead from here on, and `destroyed` goes out before any descendant is
+    // unregistered (and so before theirs).
+    state.emit_destroyed_once(id);
     *lock_unpoisoned(&state.parked) = Some(SendFree(free));
     state.free_when_released.store(true, Ordering::Release);
     unregister_descendants(id);
@@ -1539,11 +1548,10 @@ impl ObjectData {
         let liveness = Arc::new(AtomicBool::new(true));
         let object_name_changed =
             Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
-        let borrow_state = Arc::new(ObjectBorrowState::new(Signal::with_owner_parts(
-            id,
-            Arc::clone(&signals_blocked),
+        let borrow_state = Arc::new(ObjectBorrowState::new(
+            Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness)),
             Arc::clone(&liveness),
-        )));
+        ));
         Self {
             id,
             parent: None,
@@ -1649,11 +1657,10 @@ impl ObjectData {
         let liveness = Arc::new(AtomicBool::new(true));
         let object_name_changed =
             Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
-        let borrow_state = Arc::new(ObjectBorrowState::new(Signal::with_owner_parts(
-            id,
-            Arc::clone(&signals_blocked),
+        let borrow_state = Arc::new(ObjectBorrowState::new(
+            Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness)),
             Arc::clone(&liveness),
-        )));
+        ));
         Self {
             id,
             parent: None,
@@ -1806,6 +1813,12 @@ impl ObjectData {
     }
 
     /// Unregisters this object from dispatch and global metadata.
+    ///
+    /// Unregistration is the object's destruction as far as connections, timers, posted events and
+    /// `QPointer` are concerned, so this emits [`ObjectData::destroyed`] (once; the emission is
+    /// not repeated when the object is dropped later, and registering the object again does not
+    /// re-arm it, since the object stays dead). The same holds for the children a dropped parent
+    /// does not own: they are unregistered, and emit `destroyed`, when the parent goes.
     ///
     /// # Safety
     /// Follows [`unregister_qobject`] requirements; no callback may be active for this object.
