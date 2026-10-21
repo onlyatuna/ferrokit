@@ -103,37 +103,91 @@ pub struct WaylandNativeWindow {
     opacity: f32,
     size_limits: crate::size_limits::SizeLimits,
     #[cfg(target_os = "linux")]
-    stream: Option<UnixStream>,
+    /// Owns the compositor connection for the window's lifetime (closed on drop).
+    _stream: Option<UnixStream>,
 }
 
 static WAYLAND_SURFACE_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1);
 
 impl WaylandNativeWindow {
+    /// Whether the compositor named by `WAYLAND_DISPLAY` accepts a connection.
+    pub fn display_reachable() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let display_name =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| format!("/run/user/{}", crate::current_uid()));
+            UnixStream::connect(std::path::Path::new(&runtime_dir).join(display_name)).is_ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+}
+
+impl WaylandNativeWindow {
+    /// Opens a surface on the compositor named by `WAYLAND_DISPLAY` (default `wayland-0`, relative
+    /// to `XDG_RUNTIME_DIR`). Fails if the compositor socket cannot be reached, and on platforms
+    /// without Wayland. Use [`new_offscreen`](Self::new_offscreen) for a surface with no
+    /// compositor.
     pub fn new(title: &str, rect: Rect, flags: WindowFlags) -> Result<Self, &'static str> {
+        #[cfg(target_os = "linux")]
+        {
+            let display_name =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| format!("/run/user/{}", crate::current_uid()));
+            // An absolute WAYLAND_DISPLAY is the socket path itself (`Path::join` replaces).
+            let socket_path = std::path::Path::new(&runtime_dir).join(&display_name);
+            let stream = UnixStream::connect(socket_path)
+                .map_err(|_| "Failed to connect to the Wayland display")?;
+            let _ = stream.set_nonblocking(true);
+            Self::build(title, rect, flags, display_name, Some(stream))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (title, rect, flags);
+            Err("Wayland windows are unavailable on this platform")
+        }
+    }
+
+    /// A surface with no compositor behind it, driven only through `queue_wayland_event` (the
+    /// analogue of Qt's `offscreen` platform plugin). It owns no socket, so `connection_fd()` is
+    /// `-1` and `bind_event_dispatcher` registers nothing.
+    pub fn new_offscreen(
+        title: &str,
+        rect: Rect,
+        flags: WindowFlags,
+    ) -> Result<Self, &'static str> {
         let display_name =
             std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        Self::build(
+            title,
+            rect,
+            flags,
+            display_name,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    fn build(
+        title: &str,
+        rect: Rect,
+        flags: WindowFlags,
+        display_name: String,
+        #[cfg(target_os = "linux")] stream: Option<UnixStream>,
+    ) -> Result<Self, &'static str> {
         let surface_id = WAYLAND_SURFACE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-        let runtime_dir =
-            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
-        let _wayland_socket_path = format!("{}/{}", runtime_dir, display_name);
-
         #[cfg(target_os = "linux")]
-        let (real_stream, connection_fd) = match UnixStream::connect(&_wayland_socket_path) {
-            Ok(s) => {
-                let _ = s.set_nonblocking(true);
-                let fd = s.as_raw_fd() as SocketDescriptor;
-                (Some(s), fd)
-            }
-            Err(_) => {
-                let fd = (surface_id % 1000 + 20) as SocketDescriptor;
-                (None, fd)
-            }
-        };
-
+        let connection_fd = stream
+            .as_ref()
+            .map_or(-1, |s| s.as_raw_fd() as SocketDescriptor);
         #[cfg(not(target_os = "linux"))]
-        let connection_fd = (surface_id % 1000 + 20) as SocketDescriptor;
+        let connection_fd: SocketDescriptor = -1;
         let is_layer_shell =
             flags.contains(WindowFlags::FRAMELESS) || flags.contains(WindowFlags::STAYS_ON_TOP);
         let stays_on_top =
@@ -174,20 +228,14 @@ impl WaylandNativeWindow {
             opacity: 1.0,
             size_limits: crate::size_limits::SizeLimits::default(),
             #[cfg(target_os = "linux")]
-            stream: real_stream,
+            _stream: stream,
         })
     }
 
+    /// Whether a compositor connection backs this surface (false for offscreen surfaces).
     #[inline]
     pub fn is_live_compositor(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.stream.is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.connection_fd >= 0
     }
 
     #[inline]
@@ -267,7 +315,11 @@ impl WaylandNativeWindow {
         self.connection_fd
     }
 
+    /// Watches the compositor socket; an offscreen surface has none, so nothing is registered.
     pub fn bind_event_dispatcher(&mut self, dispatcher: &mut dyn EventDispatcher) {
+        if self.connection_fd < 0 {
+            return;
+        }
         let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
         dispatcher.register_socket_notifier(&notifier);
         self.socket_notifier = Some(notifier);
@@ -427,12 +479,18 @@ impl PlatformWindow for WaylandNativeWindow {
 
     fn set_stays_on_top(&mut self, enabled: bool) {
         self.stays_on_top = enabled;
+        self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
     }
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
+        self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
         // On Wayland, setting an empty input region via wl_surface.set_input_region(NULL)
         // makes pointer events pass through to underlying windows
+    }
+
+    fn flags(&self) -> WindowFlags {
+        self.flags
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, _dark_mode: bool) -> bool {

@@ -175,12 +175,11 @@ pub mod win32_theme {
         /// Qt picks `windows11` from build 22000 on and `windowsvista` before
         /// (`QWindowsIntegration`), whose menus draw differently.
         fn native_style(&self) -> NativeStyle {
-            static STYLE: std::sync::LazyLock<NativeStyle> = std::sync::LazyLock::new(|| {
-                match Win32Theme::build_number() {
+            static STYLE: std::sync::LazyLock<NativeStyle> =
+                std::sync::LazyLock::new(|| match Win32Theme::build_number() {
                     Some(build) if build >= 22000 => NativeStyle::Windows11,
                     _ => NativeStyle::WindowsVista,
-                }
-            });
+                });
             *STYLE
         }
 
@@ -200,7 +199,13 @@ pub mod win32_theme {
             unsafe {
                 let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
                 ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
-                if SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &mut ncm as *mut _ as *mut _, 0) == 0 {
+                if SystemParametersInfoW(
+                    SPI_GETNONCLIENTMETRICS,
+                    ncm.cbSize,
+                    &mut ncm as *mut _ as *mut _,
+                    0,
+                ) == 0
+                {
                     return None;
                 }
                 let face = &ncm.lfMenuFont.lfFaceName;
@@ -223,7 +228,12 @@ pub mod win32_theme {
             // SAFETY: both queries write one `UINT` through the pointer.
             let (kind_ok, contrast_ok) = unsafe {
                 (
-                    SystemParametersInfoW(SPI_GETFONTSMOOTHINGTYPE, 0, &mut kind as *mut _ as *mut _, 0),
+                    SystemParametersInfoW(
+                        SPI_GETFONTSMOOTHINGTYPE,
+                        0,
+                        &mut kind as *mut _ as *mut _,
+                        0,
+                    ),
                     SystemParametersInfoW(
                         SPI_GETFONTSMOOTHINGCONTRAST,
                         0,
@@ -233,7 +243,11 @@ pub mod win32_theme {
                 )
             };
             // `QWindowsFontDatabase::fontSmoothingGamma` starts from 1 when the query fails.
-            let mut gamma = if contrast_ok != 0 { contrast as f32 / 1000.0 } else { 1.0 };
+            let mut gamma = if contrast_ok != 0 {
+                contrast as f32 / 1000.0
+            } else {
+                1.0
+            };
             if !(1.0..=5.0).contains(&gamma) {
                 gamma = 1.4;
             }
@@ -325,23 +339,31 @@ pub mod cocoa_theme {
         pub fn query_color_scheme() -> ColorScheme {
             use crate::objc_runtime::{nsstring_from_str, Class, Id, ObjcMsg, Sel};
             let nsapp_class = Class::get("NSApplication").unwrap_or(Class::NIL);
-            let nsapp = ObjcMsg::send_class_0(nsapp_class, Sel::register("sharedApplication"));
-            let appearance = ObjcMsg::send_0(nsapp, Sel::register("effectiveAppearance"));
+            let nsapp =
+                unsafe { ObjcMsg::send_class_0(nsapp_class, Sel::register("sharedApplication")) };
+            let appearance =
+                unsafe { ObjcMsg::send_0(nsapp, Sel::register("effectiveAppearance")) };
 
             let aqua = nsstring_from_str("NSAppearanceNameAqua");
             let dark_aqua = nsstring_from_str("NSAppearanceNameDarkAqua");
             let array_class = Id(Class::get("NSArray").unwrap_or(Class::NIL).0);
-            let names = ObjcMsg::send_id(array_class, Sel::register("arrayWithObject:"), aqua);
-            let names = ObjcMsg::send_id(names, Sel::register("arrayByAddingObject:"), dark_aqua);
-            let best = ObjcMsg::send_id(
-                appearance,
-                Sel::register("bestMatchFromAppearancesWithNames:"),
-                names,
-            );
-            let dark =
-                ObjcMsg::send_id_bool_return(best, Sel::register("isEqualToString:"), dark_aqua);
-            ObjcMsg::send_0(aqua, Sel::register("release"));
-            ObjcMsg::send_0(dark_aqua, Sel::register("release"));
+            let names =
+                unsafe { ObjcMsg::send_id(array_class, Sel::register("arrayWithObject:"), aqua) };
+            let names = unsafe {
+                ObjcMsg::send_id(names, Sel::register("arrayByAddingObject:"), dark_aqua)
+            };
+            let best = unsafe {
+                ObjcMsg::send_id(
+                    appearance,
+                    Sel::register("bestMatchFromAppearancesWithNames:"),
+                    names,
+                )
+            };
+            let dark = unsafe {
+                ObjcMsg::send_id_bool_return(best, Sel::register("isEqualToString:"), dark_aqua)
+            };
+            unsafe { ObjcMsg::send_0(aqua, Sel::register("release")) };
+            unsafe { ObjcMsg::send_0(dark_aqua, Sel::register("release")) };
             if dark {
                 ColorScheme::Dark
             } else {

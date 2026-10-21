@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use super::{PlatformMenu, PlatformMenuItem};
 use crate::objc_runtime::{
-    Class, Id, ObjcMsg, Sel, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON,
+    ActionTarget, Class, Id, ObjcMsg, Sel, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON,
 };
 
 pub struct CocoaMenuItem {
@@ -18,6 +19,8 @@ pub struct CocoaMenuItem {
     enabled: Mutex<bool>,
     activated: Signal<()>,
     submenu: Mutex<Option<Box<dyn PlatformMenu>>>,
+    /// The object AppKit sends clicks to (`NSMenuItem.target` is weak, so it lives here).
+    target: RefCell<Option<ActionTarget>>,
 }
 
 // Deliberately neither `Send` nor `Sync`: wraps an `NSMenuItem` (`Id`), which AppKit only allows
@@ -26,12 +29,10 @@ pub struct CocoaMenuItem {
 impl CocoaMenuItem {
     pub fn new_action(id: u32, text: &str) -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
-        let ns_item_alloc = ObjcMsg::send_class_0(item_class, Sel::register("alloc"));
-        let ns_item = ObjcMsg::send_str(
-            ns_item_alloc,
-            Sel::register("initWithTitle:action:keyEquivalent:"),
-            text,
-        );
+        let ns_item_alloc = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("alloc")) };
+        let ns_item = unsafe {
+            ObjcMsg::send_menu_item_init(ns_item_alloc, text, ActionTarget::action(), "")
+        };
 
         Self {
             id,
@@ -43,24 +44,23 @@ impl CocoaMenuItem {
             enabled: Mutex::new(true),
             activated: Signal::new(),
             submenu: Mutex::new(None),
+            target: RefCell::new(None),
         }
     }
 
     pub fn new_checkable(id: u32, text: &str, checked: bool) -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
-        let ns_item_alloc = ObjcMsg::send_class_0(item_class, Sel::register("alloc"));
-        let ns_item = ObjcMsg::send_str(
-            ns_item_alloc,
-            Sel::register("initWithTitle:action:keyEquivalent:"),
-            text,
-        );
+        let ns_item_alloc = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("alloc")) };
+        let ns_item = unsafe {
+            ObjcMsg::send_menu_item_init(ns_item_alloc, text, ActionTarget::action(), "")
+        };
 
         let initial_state = if checked {
             NS_CONTROL_STATE_VALUE_ON
         } else {
             NS_CONTROL_STATE_VALUE_OFF
         };
-        ObjcMsg::send_int(ns_item, Sel::register("setState:"), initial_state);
+        unsafe { ObjcMsg::send_int(ns_item, Sel::register("setState:"), initial_state) };
 
         Self {
             id,
@@ -72,12 +72,13 @@ impl CocoaMenuItem {
             enabled: Mutex::new(true),
             activated: Signal::new(),
             submenu: Mutex::new(None),
+            target: RefCell::new(None),
         }
     }
 
     pub fn new_separator() -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
-        let ns_item = ObjcMsg::send_class_0(item_class, Sel::register("separatorItem"));
+        let ns_item = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("separatorItem")) };
 
         Self {
             id: 0,
@@ -89,7 +90,24 @@ impl CocoaMenuItem {
             enabled: Mutex::new(false),
             activated: Signal::new(),
             submenu: Mutex::new(None),
+            target: RefCell::new(None),
         }
+    }
+
+    /// Routes AppKit clicks on this item to [`trigger`](Self::trigger), as a click on a Qt menu
+    /// item reaches `QCocoaMenuItem`'s action. The target holds the item weakly, so the item's
+    /// owner (the menu) stays the only strong reference.
+    pub fn attach_target(self: &Arc<Self>) {
+        let item = Arc::downgrade(self);
+        let Ok(target) = ActionTarget::new(move || {
+            if let Some(item) = item.upgrade() {
+                item.trigger();
+            }
+        }) else {
+            return;
+        };
+        unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setTarget:"), target.id()) };
+        *self.target.borrow_mut() = Some(target);
     }
 
     #[inline]
@@ -115,7 +133,7 @@ impl CocoaMenuItem {
                 } else {
                     NS_CONTROL_STATE_VALUE_OFF
                 };
-                ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state);
+                unsafe { ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state) };
             }
             self.activated.emit(&());
         }
@@ -123,12 +141,21 @@ impl CocoaMenuItem {
 
     pub fn set_submenu(&self, menu: Box<dyn PlatformMenu>) {
         let sub_id = Id(menu.native_handle() as *mut std::ffi::c_void);
-        ObjcMsg::send_id(self.ns_item, Sel::register("setSubmenu:"), sub_id);
+        unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setSubmenu:"), sub_id) };
         *self.submenu.lock().unwrap() = Some(menu);
     }
 
     pub fn has_submenu(&self) -> bool {
         self.submenu.lock().unwrap().is_some()
+    }
+}
+
+impl Drop for CocoaMenuItem {
+    fn drop(&mut self) {
+        // The item may outlive us inside its NSMenu; it must not keep a dangling target.
+        if self.target.get_mut().is_some() {
+            unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setTarget:"), Id::NIL) };
+        }
     }
 }
 
@@ -143,7 +170,7 @@ impl PlatformMenuItem for CocoaMenuItem {
 
     fn set_text(&mut self, text: &str) {
         *self.text.lock().unwrap() = text.to_string();
-        ObjcMsg::send_str(self.ns_item, Sel::register("setTitle:"), text);
+        unsafe { ObjcMsg::send_str(self.ns_item, Sel::register("setTitle:"), text) };
     }
 
     fn is_separator(&self) -> bool {
@@ -165,7 +192,7 @@ impl PlatformMenuItem for CocoaMenuItem {
         } else {
             NS_CONTROL_STATE_VALUE_OFF
         };
-        ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state);
+        unsafe { ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state) };
     }
 
     fn is_enabled(&self) -> bool {
@@ -174,7 +201,7 @@ impl PlatformMenuItem for CocoaMenuItem {
 
     fn set_enabled(&mut self, enabled: bool) {
         *self.enabled.lock().unwrap() = enabled;
-        ObjcMsg::send_bool(self.ns_item, Sel::register("setEnabled:"), enabled);
+        unsafe { ObjcMsg::send_bool(self.ns_item, Sel::register("setEnabled:"), enabled) };
     }
 
     fn activated(&self) -> &Signal<()> {
@@ -196,8 +223,9 @@ pub struct CocoaMenu {
 impl CocoaMenu {
     pub fn new() -> Self {
         let menu_class = Class::get("NSMenu").unwrap_or(Class::NIL);
-        let ns_menu_alloc = ObjcMsg::send_class_0(menu_class, Sel::register("alloc"));
-        let ns_menu = ObjcMsg::send_str(ns_menu_alloc, Sel::register("initWithTitle:"), "");
+        let ns_menu_alloc = unsafe { ObjcMsg::send_class_0(menu_class, Sel::register("alloc")) };
+        let ns_menu =
+            unsafe { ObjcMsg::send_str(ns_menu_alloc, Sel::register("initWithTitle:"), "") };
 
         Self {
             ns_menu,
@@ -214,7 +242,7 @@ impl CocoaMenu {
 
     pub fn set_title(&self, title: &str) {
         *self.title.lock().unwrap() = title.to_string();
-        ObjcMsg::send_str(self.ns_menu, Sel::register("setTitle:"), title);
+        unsafe { ObjcMsg::send_str(self.ns_menu, Sel::register("setTitle:"), title) };
     }
 
     pub fn items(&self) -> Vec<Arc<CocoaMenuItem>> {
@@ -230,14 +258,21 @@ impl CocoaMenu {
     }
 
     pub fn trigger_item(&self, id: u32) -> bool {
-        let items = self.items.lock().unwrap();
-        for item in items.iter() {
-            if item.id == id {
+        // Release the lock before emitting: a slot may call back into this menu.
+        let item = self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|item| item.id == id)
+            .cloned();
+        match item {
+            Some(item) => {
                 item.trigger();
-                return true;
+                true
             }
+            None => false,
         }
-        false
     }
 }
 
@@ -250,21 +285,23 @@ impl Default for CocoaMenu {
 impl PlatformMenu for CocoaMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(CocoaMenuItem::new_action(id, text));
-        ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item());
+        item.attach_target();
+        unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item.clone());
         item
     }
 
     fn add_checkable(&mut self, id: u32, text: &str, checked: bool) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(CocoaMenuItem::new_checkable(id, text, checked));
-        ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item());
+        item.attach_target();
+        unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item.clone());
         item
     }
 
     fn add_separator(&mut self) {
         let item = Arc::new(CocoaMenuItem::new_separator());
-        ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item());
+        unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item);
     }
 
@@ -272,12 +309,17 @@ impl PlatformMenu for CocoaMenu {
         let item =
             CocoaMenuItem::new_action((self.items.lock().unwrap().len() + 1000) as u32, text);
         item.set_submenu(submenu);
+        // A submenu parent has no action of its own: with an action but no target AppKit would
+        // disable it.
+        unsafe { ObjcMsg::send_action(item.native_item(), Sel::register("setAction:"), Sel::NIL) };
         let arc_item = Arc::new(item);
-        ObjcMsg::send_id(
-            self.ns_menu,
-            Sel::register("addItem:"),
-            arc_item.native_item(),
-        );
+        unsafe {
+            ObjcMsg::send_id(
+                self.ns_menu,
+                Sel::register("addItem:"),
+                arc_item.native_item(),
+            )
+        };
         self.items.lock().unwrap().push(arc_item);
     }
 

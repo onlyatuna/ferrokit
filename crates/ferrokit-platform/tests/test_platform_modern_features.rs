@@ -231,7 +231,7 @@ fn test_cross_platform_backdrop_and_click_through() {
     }
 
     // X11 window
-    let mut x11_win = X11NativeWindow::new("X11HUD", rect, WindowFlags::FRAMELESS)
+    let mut x11_win = X11NativeWindow::new_offscreen("X11HUD", rect, WindowFlags::FRAMELESS)
         .expect("X11 window creation should succeed");
     assert!(x11_win.set_backdrop(BackdropType::Acrylic, true));
     assert!(x11_win.set_backdrop(BackdropType::None, false));
@@ -239,7 +239,7 @@ fn test_cross_platform_backdrop_and_click_through() {
     x11_win.set_click_through(false);
 
     // Wayland window
-    let mut wayland_win = WaylandNativeWindow::new("WaylandHUD", rect, WindowFlags::FRAMELESS)
+    let mut wayland_win = WaylandNativeWindow::new_offscreen("WaylandHUD", rect, WindowFlags::FRAMELESS)
         .expect("Wayland window creation should succeed");
     assert!(wayland_win.set_backdrop(BackdropType::Acrylic, true));
     assert!(wayland_win.set_backdrop(BackdropType::None, false));
@@ -435,7 +435,7 @@ fn test_platform_window_move_resize_opacity_minsize() {
 
     // X11NativeWindow tests
     let mut x11_win =
-        X11NativeWindow::new("X11 Test", Rect::new(0, 0, 640, 480), WindowFlags::empty()).unwrap();
+        X11NativeWindow::new_offscreen("X11 Test", Rect::new(0, 0, 640, 480), WindowFlags::empty()).unwrap();
     assert_eq!(x11_win.minimum_size(), (0, 0));
     x11_win.set_minimum_size(100, 100);
     assert_eq!(x11_win.minimum_size(), (100, 100));
@@ -445,7 +445,7 @@ fn test_platform_window_move_resize_opacity_minsize() {
     assert!(x11_win.start_system_resize(WindowEdges::BOTTOM));
 
     // WaylandNativeWindow tests
-    let mut wl_win = WaylandNativeWindow::new(
+    let mut wl_win = WaylandNativeWindow::new_offscreen(
         "Wayland Test",
         Rect::new(0, 0, 640, 480),
         WindowFlags::empty(),

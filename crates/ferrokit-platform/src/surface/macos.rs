@@ -164,11 +164,13 @@ impl CocoaLayerSurface {
 
         #[cfg(not(target_os = "macos"))]
         {
-            ObjcMsg::send_id(
-                layer,
-                Sel::register("setContents:"),
-                Id(self.pixel_buffer.as_ptr() as *mut std::ffi::c_void),
-            );
+            unsafe {
+                ObjcMsg::send_id(
+                    layer,
+                    Sel::register("setContents:"),
+                    Id(self.pixel_buffer.as_ptr() as *mut std::ffi::c_void),
+                )
+            };
         }
 
         Ok(())
