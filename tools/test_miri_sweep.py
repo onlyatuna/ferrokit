@@ -226,5 +226,55 @@ class TestMiriSweepSharding(unittest.TestCase):
                 parse_shard(bad)
 
 
+class TestMiriLeakBaseline(unittest.TestCase):
+    LEAK_KEY = "t::(leaks at process exit)::SB"
+
+    def test_recorded_leak_is_not_a_regression_and_its_fix_is_an_improvement(self):
+        baseline = {"results": {"t::a::SB": "pass", self.LEAK_KEY: "leak"}}
+        still = {"t::a::SB": {"kind": "pass"}, self.LEAK_KEY: {"kind": "leak"}}
+        self.assertEqual(compare_with_baseline(still, {}, baseline, ["t"], ["SB"]), ([], []))
+        fixed = {"t::a::SB": {"kind": "pass"}}
+        regs, imps = compare_with_baseline(fixed, {}, baseline, ["t"], ["SB"])
+        self.assertEqual(regs, [])
+        self.assertEqual(imps, [f"{self.LEAK_KEY}: baseline leak -> no leak"])
+
+    def test_new_leak_is_a_regression(self):
+        baseline = {"results": {"t::a::SB": "pass"}}
+        leaking = {"t::a::SB": {"kind": "pass"}, self.LEAK_KEY: {"kind": "leak"}}
+        regs, _ = compare_with_baseline(leaking, {}, baseline, ["t"], ["SB"])
+        self.assertEqual(regs, [f"{self.LEAK_KEY}: new test not in baseline failed with leak"])
+
+    def test_a_missing_ordinary_test_is_still_a_regression(self):
+        baseline = {"results": {"t::a::SB": "leak"}}
+        regs, _ = compare_with_baseline({}, {}, baseline, ["t"], ["SB"])
+        self.assertEqual(len(regs), 1)
+
+
+class TestMiriBaselineFiles(unittest.TestCase):
+    @staticmethod
+    def baseline_paths():
+        here = os.path.dirname(__file__)
+        return sorted(
+            os.path.join(here, name)
+            for name in os.listdir(here)
+            if name.startswith("miri_baseline") and name.endswith(".json")
+        )
+
+    def test_every_baseline_is_self_consistent(self):
+        paths = self.baseline_paths()
+        self.assertGreaterEqual(len(paths), 3, paths)
+        crates = set()
+        for path in paths:
+            with open(path, "r", encoding="utf-8") as f:
+                baseline = json.load(f)
+            crates.add(baseline["crate"])
+            targets = baseline["targets"]
+            self.assertEqual(len(targets), len(set(targets)), path)
+            for key in baseline["results"]:
+                self.assertIn(key.split("::", 1)[0], targets, f"{path}: {key}")
+                self.assertIn(key.rsplit("::", 1)[1], ("SB", "TB"), f"{path}: {key}")
+        self.assertEqual(len(crates), len(paths), "each baseline file must cover a distinct crate")
+
+
 if __name__ == "__main__":
     unittest.main()

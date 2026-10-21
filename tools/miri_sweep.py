@@ -42,6 +42,12 @@ import subprocess
 import sys
 import time
 
+# Child processes must not open a console window when this runs from a console-less Windows Python.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+# Name of the per-target pseudo-test that records allocations leaked at process exit.
+LEAK_PSEUDO_TEST = "(leaks at process exit)"
+
 
 FORBIDDEN_FLAGS = {
     "-Zmiri-disable-stacked-borrows",
@@ -85,6 +91,7 @@ def list_tests(args, target):
     cmd += target_args(target) + ["--", "--list", "--format", "terse"]
     p = subprocess.run(
         cmd,
+        creationflags=NO_WINDOW,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -153,6 +160,11 @@ def validate_flags(raw_flags):
 
 def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
     env = dict(os.environ)
+    # With isolation disabled the program sees the host environment: a host Wayland/X11 session
+    # (for example WSLg) would make window creation connect to it and Miri cannot run that. CI has
+    # no display, so drop these to get the same result everywhere.
+    for var in ("WAYLAND_DISPLAY", "DISPLAY"):
+        env.pop(var, None)
     flags = validate_flags(args.flags)
     if extra_miri_flags:
         flags.extend(extra_miri_flags)
@@ -174,7 +186,14 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
             cmd += ["--skip", name]
     try:
         p = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=args.timeout, encoding="utf-8", errors="replace"
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=NO_WINDOW,
         )
         return p.stdout + "\n" + p.stderr, False
     except subprocess.TimeoutExpired as e:
@@ -283,7 +302,7 @@ def sweep_target(args, target, names, model, results, excerpts):
             # regression instead of letting the target count as all-pass.
             leaked = len(re.findall(r"^error: memory leaked", text, re.M))
             if leaked:
-                key = f"{target}::(leaks at process exit)::{model}"
+                key = f"{target}::{LEAK_PSEUDO_TEST}::{model}"
                 results[key] = {
                     "kind": "leak",
                     "bucket": bucket_of("leak"),
@@ -385,7 +404,10 @@ def compare_with_baseline(results, iso_results, baseline, swept_targets, models)
         target = key.split("::", 1)[0]
         model = key.rsplit("::", 1)[-1]
         if target in swept_targets and model in models and key not in results:
-            regressions.append(f"{key}: baseline test missing from sweep (expected {exp_kind})")
+            if exp_kind == "leak" and f"::{LEAK_PSEUDO_TEST}::" in key:
+                improvements.append(f"{key}: baseline leak -> no leak")
+            else:
+                regressions.append(f"{key}: baseline test missing from sweep (expected {exp_kind})")
 
     for item_key, meta in sorted(allowlist.items()):
         target = item_key.split("::", 1)[0]
@@ -532,6 +554,9 @@ def main():
     if args.baseline:
         with open(args.baseline, "r", encoding="utf-8") as f:
             baseline = json.load(f)
+
+    if baseline is not None and baseline.get("crate") not in (None, args.crate):
+        ap.error(f"--baseline is for crate {baseline['crate']!r}, but --crate is {args.crate!r}")
 
     targets_str = args.targets
     if not targets_str:
