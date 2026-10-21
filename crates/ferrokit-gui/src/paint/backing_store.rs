@@ -336,4 +336,17 @@ mod tests {
         let area = Region::from_rect(Rect::new(0, 0, 50, 50));
         assert!(bs.scroll(&area, 10, 10));
     }
+    #[test]
+    fn scroll_clips_negative_source_rect() {
+        let mut bs = BackingStore::new(Size::new(100, 100), 1.0).unwrap();
+        let area = Region::from_rect(Rect::new(-10, 0, 50, 50));
+        assert!(bs.scroll(&area, 20, 0));
+    }
+
+    #[test]
+    fn scroll_clips_source_rect_past_right_edge() {
+        let mut bs = BackingStore::new(Size::new(100, 100), 1.0).unwrap();
+        let area = Region::from_rect(Rect::new(80, 0, 50, 10));
+        assert!(bs.scroll(&area, -40, 0));
+    }
 }

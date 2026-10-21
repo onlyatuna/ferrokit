@@ -448,7 +448,6 @@ impl Image {
             }
             ImageFormat::Grayscale8 => {
                 let u = color.to_color_u8();
-                // ITU-R BT.601 luminance
                 let lum =
                     (u.red() as u32 * 299 + u.green() as u32 * 587 + u.blue() as u32 * 114) / 1000;
                 line[x as usize] = lum as u8;
@@ -457,6 +456,57 @@ impl Image {
             ImageFormat::Alpha8 => {
                 let u = color.to_color_u8();
                 line[x as usize] = u.alpha();
+                true
+            }
+            ImageFormat::Mono | ImageFormat::MonoLsb => {
+                let u = color.to_color_u8();
+                let lum =
+                    (u.red() as u32 * 299 + u.green() as u32 * 587 + u.blue() as u32 * 114) / 1000;
+                let bit = lum >= 128;
+                let bit_index = (x % 8) as u8;
+                let mask = match self.format {
+                    ImageFormat::Mono => 1 << (7 - bit_index),
+                    _ => 1 << bit_index,
+                };
+                let byte = &mut line[(x / 8) as usize];
+                if bit {
+                    *byte |= mask;
+                } else {
+                    *byte &= !mask;
+                }
+                true
+            }
+            ImageFormat::Indexed8 => {
+                let u = color.to_color_u8();
+                if self.color_table.is_empty() {
+                    line[x as usize] = if u.red() as u32 * 299
+                        + u.green() as u32 * 587
+                        + u.blue() as u32 * 114
+                        >= 128_000
+                    {
+                        1
+                    } else {
+                        0
+                    };
+                } else {
+                    let argb = ((u.alpha() as u32) << 24)
+                        | ((u.red() as u32) << 16)
+                        | ((u.green() as u32) << 8)
+                        | u.blue() as u32;
+                    let nearest = self
+                        .color_table
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, candidate)| {
+                            let dr = ((argb >> 16) & 255) as i32 - ((*candidate >> 16) & 255) as i32;
+                            let dg = ((argb >> 8) & 255) as i32 - ((*candidate >> 8) & 255) as i32;
+                            let db = (argb & 255) as i32 - (*candidate & 255) as i32;
+                            dr * dr + dg * dg + db * db
+                        })
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
+                    line[x as usize] = nearest.min(255) as u8;
+                }
                 true
             }
             _ => false,

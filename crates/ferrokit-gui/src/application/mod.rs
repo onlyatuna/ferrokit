@@ -398,3 +398,26 @@ impl QObject for GuiApplication {
         &GUI_APP_META_OBJECT
     }
 }
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn application_state_slot_can_read_state_reentrantly() {
+        let app = GuiApplication::new(Vec::new());
+        let observed = Arc::new(AtomicBool::new(false));
+        let observed_in_slot = Arc::clone(&observed);
+        app.application_state_changed().connect(move |state| {
+            observed_in_slot.store(GuiApplication::application_state() == *state, Ordering::SeqCst);
+        });
+        let next = if GuiApplication::application_state() == ApplicationState::ApplicationActive {
+            ApplicationState::ApplicationInactive
+        } else {
+            ApplicationState::ApplicationActive
+        };
+        app.set_application_state(next);
+        assert!(observed.load(Ordering::SeqCst));
+    }
+}
