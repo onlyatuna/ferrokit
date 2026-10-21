@@ -117,6 +117,32 @@ impl MenuOutcome {
     }
 }
 
+/// Hides a sub-menu its parent holds. `aboutToHide` is emitted before the sub-menu is borrowed
+/// mutably, so a slot can reach the sub-menu through its own handle.
+fn hide_shared(submenu: &MenuRef) {
+    let signal = match submenu.try_borrow() {
+        Ok(sub) if sub.base.is_visible() => Some(sub.about_to_hide.clone()),
+        _ => None,
+    };
+    if let Some(signal) = signal {
+        signal.emit(&());
+    }
+    if let Ok(mut sub) = submenu.try_borrow_mut() {
+        sub.hide_menu_emitting(false);
+    }
+}
+
+/// Releases the mouse capture when a popup loop ends, also when it unwinds.
+#[cfg(windows)]
+struct CaptureGuard;
+
+#[cfg(windows)]
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
+    }
+}
+
 /// Popup menu (`QMenu`).
 ///
 /// A menu paints and routes events for its open sub-menu itself, so a whole cascade
@@ -648,15 +674,16 @@ impl Menu {
         use crate::window::Window;
         use ferrokit_platform::{platform, WindowFlags};
         use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-            ReleaseCapture, SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
+            SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, LoadCursorW, PeekMessageW, SetCursor,
-            SetForegroundWindow, TranslateMessage, IDC_ARROW, MSG, PM_REMOVE,
-            WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN,
-            WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-            WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+            DispatchMessageW, GetMessageW, LoadCursorW, PeekMessageW, PostQuitMessage,
+            PostThreadMessageW, SetCursor, SetForegroundWindow, TranslateMessage, IDC_ARROW, MSG,
+            PM_REMOVE, WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+            WM_SETCURSOR,
         };
 
         self.last_triggered = None;
@@ -697,7 +724,10 @@ impl Menu {
             WindowFlags::FRAMELESS | WindowFlags::TOOL | WindowFlags::STAYS_ON_TOP | WindowFlags::LAYERED,
         ) {
             Ok(w) => w,
-            Err(_) => return None,
+            Err(_) => {
+                self.hide_menu();
+                return None;
+            }
         };
 
         let hwnd = window.native_handle() as HWND;
@@ -706,14 +736,37 @@ impl Menu {
             SetCapture(hwnd);
         }
 
+        // Losing the active window (Alt+Tab, another application) dismisses a popup. That
+        // arrives as a sent message, which `GetMessageW` handles without returning, so the
+        // window's deactivation flags it and wakes the loop.
+        let dismissed = Rc::new(std::cell::Cell::new(false));
+        let flag = Rc::clone(&dismissed);
+        let thread = unsafe { GetCurrentThreadId() };
+        window.set_window_event_handler(move |ev: &mut Event| {
+            if matches!(ev.kind, EventKind::WindowDeactivate) {
+                flag.set(true);
+                unsafe { PostThreadMessageW(thread, WM_NULL, 0, 0) };
+            }
+        });
         window.show();
         self.present_popup(&mut window, root_origin, size);
 
         let mut chosen = None;
+        let mut quit = None;
         // The cursor position is a native desktop position: it maps through the screen it is on.
         unsafe {
+            let capture = CaptureGuard;
             let mut msg: MSG = std::mem::zeroed();
-            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) != 0 {
+            // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
+            // gone, so the loop that was running when the menu opened still quits; -1 is an
+            // error, not a message.
+            while {
+                let got = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+                if got == 0 {
+                    quit = Some(msg.wParam as i32);
+                }
+                got > 0
+            } {
                 let mouse_pt = Point::new(msg.pt.x, msg.pt.y);
                 let mouse_screen = ferrokit_platform::screen::win32_screen::from_native_global_point(
                     mouse_pt,
@@ -738,8 +791,8 @@ impl Menu {
                             self.present_popup(&mut window, root_origin, size);
                         }
 
-                        if let MenuOutcome::Activate(act, _) = outcome {
-                            chosen = Some(act);
+                        if let MenuOutcome::Activate(act, signals) = outcome {
+                            chosen = Some((act, signals));
                             break;
                         }
                     }
@@ -759,8 +812,8 @@ impl Menu {
                         }
                         let outcome = self.handle_mouse_release(local_pt, 1);
                         match outcome {
-                            MenuOutcome::Activate(act, _) => {
-                                chosen = Some(act);
+                            MenuOutcome::Activate(act, signals) => {
+                                chosen = Some((act, signals));
                                 break;
                             }
                             MenuOutcome::Closed => break,
@@ -786,8 +839,8 @@ impl Menu {
                             }
                             VK_RETURN => {
                                 let outcome = self.handle_key(keys::RETURN, 0);
-                                if let MenuOutcome::Activate(act, _) = outcome {
-                                    chosen = Some(act);
+                                if let MenuOutcome::Activate(act, signals) = outcome {
+                                    chosen = Some((act, signals));
                                     break;
                                 }
                             }
@@ -821,17 +874,27 @@ impl Menu {
                     }
                 }
 
-                if !self.base.is_visible() {
+                if !self.base.is_visible() || dismissed.get() {
                     break;
                 }
             }
-            ReleaseCapture();
+            drop(capture);
             // Discard any residual mouse button messages queued during the modal menu
             let mut discard_msg: MSG = std::mem::zeroed();
             while PeekMessageW(&mut discard_msg, std::ptr::null_mut(), WM_LBUTTONDOWN, WM_RBUTTONUP, PM_REMOVE) != 0 {}
         }
         self.hide_menu();
-        chosen
+        // Destroying the popup window may pump messages; the quit is re-posted after that.
+        drop(window);
+        if let Some(code) = quit {
+            unsafe { PostQuitMessage(code) };
+        }
+        // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
+        // menu is hidden, then returns it.
+        if let Some((action, signals)) = &chosen {
+            MenuOutcome::fire(action, signals);
+        }
+        chosen.map(|(action, _)| action)
     }
 
     /// Repaints the popup window and sizes it to the menu plus its open sub-menus.
@@ -865,21 +928,28 @@ impl Menu {
     }
     #[cfg(not(windows))]
     pub fn exec_popup(&mut self, pos: Point) -> Option<ActionRef> {
+        // No modal loop without a native window system here: an earlier result is not this one.
+        self.last_triggered = None;
         self.popup(pos);
         self.last_triggered.clone()
     }
 
     /// Hides the menu and every open sub-menu.
     pub fn hide_menu(&mut self) {
+        self.hide_menu_emitting(true);
+    }
+
+    /// `hide_menu`; `emit` is false when the caller already emitted `about_to_hide`.
+    fn hide_menu_emitting(&mut self, emit: bool) {
         if let Some((_, submenu)) = self.open_submenu.take() {
-            if let Ok(mut s) = submenu.try_borrow_mut() {
-                s.hide_menu();
-            }
+            hide_shared(&submenu);
         }
         if !self.base.is_visible() {
             return;
         }
-        self.about_to_hide.emit(&());
+        if emit {
+            self.about_to_hide.emit(&());
+        }
         self.base.set_visible(false);
         self.active = None;
         self.update();
@@ -1028,6 +1098,13 @@ impl Menu {
         let item = self.item_rects()[idx];
         let geom = self.base.geometry();
         let local_bounds = self.popup_bounds.map(|b| b.translated(-geom.x, -geom.y));
+        // `aboutToShow` runs with the sub-menu's `RefCell` free: the Qt idiom is to fill the menu
+        // from this signal, which needs the menu itself. The geometry below sees what it added.
+        let about_to_show = match submenu.try_borrow() {
+            Ok(sub) => sub.about_to_show.clone(),
+            Err(_) => return,
+        };
+        about_to_show.emit(&());
         {
             let mut sub = submenu.borrow_mut();
             sub.background_color = self.background_color;
@@ -1040,7 +1117,6 @@ impl Menu {
             sub.font = self.font.clone();
             sub.style = self.style.clone();
             sub.set_parent_widget(self.base.parent_widget());
-            sub.about_to_show.emit(&());
             sub.popup_bounds = local_bounds;
             let size = sub.size_hint();
             let mut x = geom.width - SUBMENU_OVERLAP;
@@ -1066,9 +1142,7 @@ impl Menu {
 
     fn close_submenu(&mut self) {
         if let Some((_, submenu)) = self.open_submenu.take() {
-            if let Ok(mut s) = submenu.try_borrow_mut() {
-                s.hide_menu();
-            }
+            hide_shared(&submenu);
             self.update();
         }
     }
