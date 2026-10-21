@@ -2013,7 +2013,7 @@ mod single_shot_source_tests {
     /// timer, and the source is gone once the loop is.
     #[test]
     fn a_short_single_shot_is_a_multimedia_timer() {
-        let _el = EventLoop::new();
+        let el = EventLoop::new();
         Timer::single_shot(10, || {});
         let ids: Vec<_> = with_thread_timer_context(|ctx| {
             super::lock_unpoisoned(&ctx.registry)
@@ -2025,6 +2025,11 @@ mod single_shot_source_tests {
         .unwrap();
         assert_eq!(ids.len(), 1);
         assert!(precise::native_handle(ids[0]).is_some());
+        drop(el);
+        assert!(
+            precise::native_handle(ids[0]).is_none(),
+            "the native timer is released with the loop"
+        );
     }
 }
 

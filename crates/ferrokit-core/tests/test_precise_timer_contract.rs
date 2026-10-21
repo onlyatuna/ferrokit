@@ -127,6 +127,8 @@ fn a_precise_timer_never_fires_before_its_expiry() {
     assert!(timer.is_valid());
     assert!(pump_until(&el, || ticks.lock().unwrap().len() >= 15));
     assert!(kill_object_timer(timer));
+    // SAFETY: the timer is killed, so no callback of the probe runs while it is unregistered.
+    unsafe { unregister_qobject(id) };
 
     // Tick `n` belongs to grid point `n + 1`; a late loop skips grid points, never reaches one
     // sooner.
@@ -154,6 +156,8 @@ fn a_callback_that_overran_is_followed_by_one_callback_not_one_per_missed_interv
         "the timer keeps ticking after the overrun"
     );
     assert!(kill_object_timer(timer));
+    // SAFETY: the timer is killed, so no callback of the probe runs while it is unregistered.
+    unsafe { unregister_qobject(id) };
 
     let block_end = block_end
         .lock()
@@ -187,6 +191,8 @@ fn a_loop_that_was_not_pumped_for_many_intervals_sees_one_callback_when_it_retur
     let first = ticks.lock().unwrap()[0].0;
     pump_for(&el, INTERVAL / 4);
     assert!(kill_object_timer(timer));
+    // SAFETY: the timer is killed, so no callback of the probe runs while it is unregistered.
+    unsafe { unregister_qobject(id) };
 
     let burst = ticks
         .lock()
