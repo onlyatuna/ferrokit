@@ -3,7 +3,7 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
-use ferrokit_core::signal::{ConnectionType, QueuedSignal, Signal};
+use ferrokit_core::signal::{ConnectionId, ConnectionType, QueuedSignal, Signal};
 use std::ptr::NonNull;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -273,12 +273,14 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
 fn connect_with_type_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
     let id = signal.connect_with_type(ConnectionType::Queued, |_| {});
-    assert_eq!(id.0, 0);
+    assert_eq!(id, ConnectionId::INVALID);
+    assert!(!id.is_valid());
 }
 
 #[test]
 fn connect_with_type_blocking_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
     let id = signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
-    assert_eq!(id.0, 0);
+    assert_eq!(id, ConnectionId::INVALID);
+    assert!(!id.is_valid());
 }

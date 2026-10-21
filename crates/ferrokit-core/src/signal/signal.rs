@@ -92,6 +92,14 @@ impl ConnectionType {
 pub struct ConnectionId(pub u64);
 
 impl ConnectionId {
+    /// Returned when a connection is rejected; never allocated by [`ConnectionId::next`].
+    pub const INVALID: ConnectionId = ConnectionId(0);
+
+    /// `false` for [`ConnectionId::INVALID`].
+    pub fn is_valid(&self) -> bool {
+        self.0 != 0
+    }
+
     /// Unique connection identifier: ConnectionId.
     pub fn next() -> Self {
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -421,7 +429,9 @@ impl<T> Signal<T> {
 
     /// Connects a slot with an explicit direct connection type.
     ///
-    /// Queued connections without an explicit receiver thread target the calling thread.
+    /// Queued and blocking-queued connections are rejected here: this entry point names no
+    /// receiver thread. The call prints a diagnostic and returns [`ConnectionId::INVALID`]; use
+    /// `connect_queued` / `connect_blocking_queued` instead.
     pub fn connect_with_type<F>(&self, conn_type: ConnectionType, slot: F) -> ConnectionId
     where
         F: Fn(&T) + Send + Sync + 'static,
@@ -430,7 +440,7 @@ impl<T> Signal<T> {
             eprintln!(
                 "connect_with_type requires a receiver thread for queued connections; use connect_queued or connect_blocking_queued"
             );
-            return ConnectionId(0);
+            return ConnectionId::INVALID;
         }
         let mut inner = self.inner.lock();
         let id = ConnectionId::next();
