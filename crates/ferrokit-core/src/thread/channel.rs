@@ -109,6 +109,12 @@ impl<T> ChannelShared<T> {
         drop(queue);
         self.send_cond.notify_all();
         self.recv_cond.notify_all();
+
+        // Event-loop consumers poll with `try_recv`; wake them so they observe `Disconnected`.
+        let event_senders = self.event_senders.lock().unwrap().clone();
+        for sender in event_senders {
+            (sender.wakeup)();
+        }
     }
 }
 

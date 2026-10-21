@@ -359,6 +359,10 @@ impl<T: Clone + Send + 'static> Future<T> {
                 self.shared.is_finished.load(Ordering::SeqCst),
             )
         };
+        // Ordering: these replay posts happen after the locks are released, so a result or
+        // finish posted concurrently by the producer may be queued ahead of them. Each
+        // transition is still delivered exactly once; only the relative order of replayed and
+        // concurrently produced events is unspecified.
         for value in replay {
             signals.post(move |s| s.result_ready.emit(&value));
         }

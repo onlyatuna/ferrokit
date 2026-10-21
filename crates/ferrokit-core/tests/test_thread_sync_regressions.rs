@@ -631,3 +631,30 @@ fn signal_emits_each_sent_value_exactly_once_under_concurrency() {
         "every sent value must be emitted exactly once"
     );
 }
+
+#[test]
+fn last_sender_drop_wakes_attached_event_senders() {
+    use ferrokit_core::event_loop::EventQueue;
+    use ferrokit_core::object::ThreadId;
+    use ferrokit_core::thread::EventSender;
+
+    let (tx, rx) = channel::<i32>();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&woken);
+    rx.attach_event_sender(EventSender::new(
+        ThreadId::current(),
+        Arc::new(std::sync::Mutex::new(EventQueue::new())),
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    ));
+    let tx2 = tx.clone();
+    drop(tx);
+    assert_eq!(woken.load(Ordering::SeqCst), 0, "a sender is still alive");
+    drop(tx2);
+    assert!(
+        woken.load(Ordering::SeqCst) >= 1,
+        "event-loop consumers must be woken to observe Disconnected"
+    );
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}

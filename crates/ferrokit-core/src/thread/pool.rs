@@ -365,3 +365,42 @@ impl ThreadPoolBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `clear_queue` with queued jobs and no busy worker must wake `wait_for_done` (the idle
+    /// branch): no worker will report completion. The job is queued without starting a worker
+    /// so that state is reachable deterministically.
+    #[test]
+    fn clear_queue_wakes_wait_for_done_when_idle() {
+        let pool = Arc::new(ThreadPool::new(1));
+        let task_shared = Arc::new(TaskShared::<()>::new(CancellationToken::new()));
+        {
+            let canceled = Arc::clone(&task_shared);
+            let mut state = pool.shared.state.lock().unwrap();
+            state.queue.push_back(Job::new(move |run| {
+                assert!(!run);
+                canceled.cancel_unstarted();
+            }));
+        }
+        let waiter = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || pool.wait_for_done_timeout(Duration::from_secs(10)))
+        };
+        // Give the waiter the chance to park before clearing.
+        for _ in 0..1000 {
+            std::thread::yield_now();
+        }
+        pool.clear_queue();
+        assert!(
+            waiter.join().unwrap(),
+            "wait_for_done was not woken by clear_queue"
+        );
+        assert_eq!(
+            *task_shared.status.lock().unwrap(),
+            crate::thread::TaskStatus::Canceled
+        );
+    }
+}
