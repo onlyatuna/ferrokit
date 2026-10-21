@@ -58,6 +58,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
     WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME,
 };
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_MOUSEHWHEEL, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct WindowFlags: u32 {
@@ -182,6 +186,7 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
     if let Some(m) = limits_map.as_mut() {
         m.remove(&(hwnd as isize));
     }
+    let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().remove(&(hwnd as isize)));
     let removed = WINDOW_EVENT_HANDLERS
         .try_with(|map| map.borrow_mut().remove(&(hwnd as isize)))
         .ok()
@@ -218,6 +223,25 @@ pub fn set_window_frameless_config(hwnd: HWND, config: CustomFramelessConfig) {
         *map = Some(HashMap::new());
     }
     map.as_mut().unwrap().insert(hwnd as isize, config);
+}
+
+thread_local! {
+    /// The cursor each window asked for (`QWindow::setCursor`); a window without an entry shows
+    /// the application-wide cursor.
+    static WINDOW_CURSORS: std::cell::RefCell<HashMap<isize, crate::cursor::CursorShape>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// The cursor `hwnd` asked for, if any (UI thread only).
+pub fn window_cursor_shape(hwnd: HWND) -> Option<crate::cursor::CursorShape> {
+    WINDOW_CURSORS
+        .try_with(|m| m.borrow().get(&(hwnd as isize)).copied())
+        .ok()
+        .flatten()
+}
+
+pub fn set_window_cursor_shape(hwnd: HWND, shape: crate::cursor::CursorShape) {
+    let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().insert(hwnd as isize, shape));
 }
 
 pub fn set_window_event_handler(hwnd: HWND, handler: Box<dyn WindowSystemEventHandler>) {
@@ -1148,8 +1172,9 @@ unsafe fn native_window_proc_inner(
         WM_SETCURSOR => {
             let hit_test = (lparam & 0xFFFF) as u32;
             if hit_test == HTCLIENT {
-                let shape = crate::cursor::win32_cursor::Win32Cursor::current_global_shape();
-                crate::cursor::win32_cursor::Win32Cursor::set_shape(shape);
+                let shape = window_cursor_shape(hwnd)
+                    .unwrap_or_else(crate::cursor::win32_cursor::Win32Cursor::current_global_shape);
+                crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
                 return 1;
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1348,7 +1373,8 @@ unsafe fn native_window_proc_inner(
             }
             0
         }
-        WM_MOUSEWHEEL => {
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            let horizontal = msg == WM_MOUSEHWHEEL;
             let dpr = get_window_dpr(hwnd);
             let global_x = get_x_lparam(lparam);
             let global_y = get_y_lparam(lparam);
@@ -1366,6 +1392,11 @@ unsafe fn native_window_proc_inner(
                 dpr,
             );
             let wheel_delta = (wparam >> 16) as i16 as i32;
+            let (delta_x, delta_y) = if horizontal {
+                (wheel_delta, 0)
+            } else {
+                (0, wheel_delta)
+            };
             let modifiers = query_keyboard_modifiers();
 
             dispatch_window_system_event(
@@ -1375,8 +1406,8 @@ unsafe fn native_window_proc_inner(
                     pos,
                     global_pos,
                     delta: WheelDelta {
-                        y: wheel_delta,
-                        x: 0,
+                        y: delta_y,
+                        x: delta_x,
                     },
                     modifiers,
                 },
@@ -1390,11 +1421,28 @@ unsafe fn native_window_proc_inner(
                         y: pt.y,
                         pixel_delta_x: 0,
                         pixel_delta_y: 0,
-                        angle_delta_x: 0,
-                        angle_delta_y: wheel_delta,
+                        angle_delta_x: delta_x,
+                        angle_delta_y: delta_y,
                         modifiers: modifiers.bits(),
                     }),
                 );
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CANCELMODE => {
+            // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
+            // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
+            let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CAPTURECHANGED => {
+            // `lparam` is the window gaining the capture. Capture moving to another window of
+            // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
+            // lost to another thread or to nothing swallows their releases.
+            let new_owner = lparam as HWND;
+            if new_owner.is_null() || !is_window_thread(new_owner) {
+                let _ = APP_MOUSE_BUTTONS
+                    .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1408,8 +1456,27 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_CONTEXTMENU => {
-            let global_x = get_x_lparam(lparam);
-            let global_y = get_y_lparam(lparam);
+            // lParam -1 is the menu key / Shift+F10: no pointer position, so the cursor is the
+            // hint when it is over the window and the window centre otherwise (the receiver
+            // positions a keyboard menu itself).
+            let keyboard = lparam as u32 == u32::MAX;
+            let (global_x, global_y) = if keyboard {
+                let mut cursor = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                GetCursorPos(&mut cursor);
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut rect);
+                if cursor.x >= rect.left
+                    && cursor.x < rect.right
+                    && cursor.y >= rect.top
+                    && cursor.y < rect.bottom
+                {
+                    (cursor.x, cursor.y)
+                } else {
+                    ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+                }
+            } else {
+                (get_x_lparam(lparam), get_y_lparam(lparam))
+            };
             let mut pt = windows_sys::Win32::Foundation::POINT {
                 x: global_x,
                 y: global_y,
@@ -1424,13 +1491,17 @@ unsafe fn native_window_proc_inner(
                         y: pt.y,
                         global_x,
                         global_y,
-                        reason: ferrokit_core::event::ContextMenuReason::Mouse,
+                        reason: if keyboard {
+                            ferrokit_core::event::ContextMenuReason::Keyboard
+                        } else {
+                            ferrokit_core::event::ContextMenuReason::Mouse
+                        },
                     }),
                 );
             }
             0
         }
-        WM_KEYDOWN => {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
             let key = wparam as u32;
             let is_repeat = (lparam & (1 << 30)) != 0;
             let modifiers = query_keyboard_modifiers();
@@ -1457,7 +1528,7 @@ unsafe fn native_window_proc_inner(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        WM_KEYUP => {
+        WM_KEYUP | WM_SYSKEYUP => {
             let key = wparam as u32;
             let modifiers = query_keyboard_modifiers();
             dispatch_window_system_event(
@@ -2195,7 +2266,8 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         self.start_system_resize(edges)
     }
     fn set_cursor(&mut self, shape: crate::cursor::CursorShape) {
-        crate::cursor::win32_cursor::Win32Cursor::set_shape(shape);
+        set_window_cursor_shape(self.hwnd, shape);
+        crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
     }
 
     fn set_opacity(&mut self, opacity: f32) {

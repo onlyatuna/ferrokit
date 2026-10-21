@@ -13,8 +13,8 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetClientRect, GetWindowRect, PeekMessageW, SetWindowPos, TranslateMessage,
-    MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    DispatchMessageW, GetClientRect, GetWindowRect, PeekMessageW, SendMessageW, SetWindowPos,
+    TranslateMessage, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
 };
 
 #[test]
@@ -76,4 +76,108 @@ fn events_posted_from_another_thread_are_delivered_by_the_message_pump() {
     let seen = seen.lock();
     assert_eq!(seen.len(), 1, "got {seen:?}");
     assert!(matches!(seen[0], WindowSystemEvent::CloseRequest));
+}
+
+fn window(title: &str) -> Box<dyn ferrokit_platform::platform_window::PlatformWindow> {
+    platform()
+        .create_window(title, Rect::new(60, 60, 300, 200), WindowFlags::NORMAL)
+        .expect("create window")
+}
+
+fn set_cursor_message(hwnd: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{HTCLIENT, WM_MOUSEMOVE, WM_SETCURSOR};
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_SETCURSOR,
+            hwnd as usize,
+            (HTCLIENT as isize) | ((WM_MOUSEMOVE as isize) << 16),
+        );
+    }
+}
+
+#[test]
+fn each_window_keeps_its_own_cursor_and_blank_hides_it() {
+    use ferrokit_platform::cursor::CursorShape;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursor, LoadCursorW, IDC_CROSS, IDC_IBEAM,
+    };
+    let mut a = window("Cursor A");
+    let mut b = window("Cursor B");
+    a.set_cursor(CursorShape::IBeam);
+    b.set_cursor(CursorShape::Cross);
+    let (ha, hb) = (a.native_handle() as HWND, b.native_handle() as HWND);
+    unsafe {
+        set_cursor_message(ha);
+        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_IBEAM), "window A");
+        set_cursor_message(hb);
+        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_CROSS), "window B");
+        set_cursor_message(ha);
+        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_IBEAM), "A again");
+
+        a.set_cursor(CursorShape::Blank);
+        set_cursor_message(ha);
+        assert!(GetCursor().is_null(), "Qt::BlankCursor hides the cursor");
+    }
+}
+
+#[test]
+fn a_horizontal_wheel_message_is_delivered_with_its_own_axis() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_MOUSEHWHEEL;
+    let mut win = window("HWheel");
+    let hwnd = win.native_handle() as HWND;
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
+        sink.lock().push(ev);
+    })));
+    unsafe {
+        SendMessageW(hwnd, WM_MOUSEHWHEEL, (120usize) << 16, 0);
+    }
+    let seen = seen.lock();
+    let wheel = seen
+        .iter()
+        .find_map(|e| match e {
+            WindowSystemEvent::Wheel { delta, .. } => Some(*delta),
+            _ => None,
+        })
+        .expect("a Wheel event");
+    assert_eq!((wheel.x, wheel.y), (120, 0));
+}
+
+#[test]
+fn an_alt_key_combination_reaches_the_handler() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_SYSKEYDOWN, WM_SYSKEYUP};
+    let mut win = window("SysKey");
+    let hwnd = win.native_handle() as HWND;
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
+        sink.lock().push(ev);
+    })));
+    unsafe {
+        SendMessageW(hwnd, WM_SYSKEYDOWN, 0x46, 0x2000_0001); // Alt+F
+        SendMessageW(hwnd, WM_SYSKEYUP, 0x46, 0xE000_0001u32 as isize);
+    }
+    let seen = seen.lock();
+    assert!(matches!(seen[0], WindowSystemEvent::KeyPress { key: 0x46, .. }), "{seen:?}");
+    assert!(matches!(seen[1], WindowSystemEvent::KeyRelease { key: 0x46, .. }), "{seen:?}");
+}
+
+#[test]
+fn a_cancelled_mouse_mode_forgets_the_pressed_buttons() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetCapture;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_CANCELMODE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+    let win = window("Cancel");
+    let hwnd = win.native_handle() as HWND;
+    unsafe {
+        SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
+        // A popup or dialog took over: the release of the left button is never seen.
+        SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
+        SendMessageW(hwnd, WM_RBUTTONDOWN, 2, 0x0010_0010);
+        SendMessageW(hwnd, WM_RBUTTONUP, 0, 0x0010_0010);
+        assert_ne!(GetCapture(), hwnd, "no button is held: the capture is released");
+    }
 }
