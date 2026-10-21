@@ -64,6 +64,7 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
     if colr.len() < 14 || cpal.len() < 12 {
         return None;
     }
+    let num_base = u16::from_be_bytes([colr[2], colr[3]]) as usize;
     let base_off = u32::from_be_bytes(colr[4..8].try_into().ok()?) as usize;
     let layer_off = u32::from_be_bytes(colr[8..12].try_into().ok()?) as usize;
     let num_layers = u16::from_be_bytes([colr[12], colr[13]]) as usize;
