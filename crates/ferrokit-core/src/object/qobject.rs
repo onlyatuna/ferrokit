@@ -159,14 +159,20 @@ pub struct ObjectRecord {
 enum ChildListChange {
     Add(ObjectId),
     Remove(ObjectId),
+    /// Takes the child out of `owned_children` as well, and hands its owner back to the caller to
+    /// drop once the parent's borrow is released (a `DeferredDelete` of the child, delivered while a
+    /// callback of the parent runs).
+    DeleteOwned(ObjectId),
 }
 
 impl ChildListChange {
-    fn apply(&self, mut data: ObjectDataMut<'_>) {
+    fn apply(&self, mut data: ObjectDataMut<'_>) -> Option<OwnedObject<dyn QObject>> {
         match *self {
             ChildListChange::Add(id) => data.add_child(id),
             ChildListChange::Remove(id) => data.remove_child(id),
+            ChildListChange::DeleteOwned(id) => return data.take_owned_child(id),
         }
+        None
     }
 }
 
@@ -203,6 +209,9 @@ impl Drop for ReleaseBorrowFlag<'_> {
 
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
+        // Owners taken out of `owned_children` by queued `DeleteOwned` edits; dropped after the
+        // borrow flag is released, since destroying them reads this object (their parent).
+        let mut released: Vec<OwnedObject<dyn QObject>> = Vec::new();
         {
             // The borrow flag is released when this block ends (via RAII `ReleaseBorrowFlag`), even if
             // a custom `QObject::object_data_mut()` accessor panics while queued child edits or pending
@@ -229,7 +238,7 @@ impl Drop for ObjectBorrowGuard {
                     // the object is live, and the object is alive.
                     let mut data = unsafe { (*self.ptr).object_data_mut() };
                     for change in &changes {
-                        change.apply(ObjectDataMut::new(data.raw_data_mut()));
+                        released.extend(change.apply(ObjectDataMut::new(data.raw_data_mut())));
                     }
                 }
             }
@@ -249,6 +258,7 @@ impl Drop for ObjectBorrowGuard {
                 }
             }
         }
+        drop(released);
         if self
             .borrow_state
             .free_when_released
@@ -617,7 +627,12 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
         return;
     };
     match borrow_registered(parent) {
-        Some(mut guard) => change.apply(guard.object_data_mut()),
+        Some(mut guard) => {
+            let released = change.apply(guard.object_data_mut());
+            // The owner's destruction reads the parent, so the parent is released first.
+            drop(guard);
+            drop(released);
+        }
         None => {
             lock_unpoisoned(&entry.pending_child_changes).push(change);
             entry
@@ -1416,7 +1431,12 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         }
         for child_id in read_unpoisoned(&entry.children).iter() {
             if let Some(child) = registry.get(child_id) {
-                store_link(&registry, child, &mut write_unpoisoned(&child.parent), None);
+                // A listed child whose own link names another parent (a stale entry) is not
+                // this object's child and keeps its parent.
+                let mut link = write_unpoisoned(&child.parent);
+                if *link == Some(id) {
+                    store_link(&registry, child, &mut link, None);
+                }
             }
         }
     }
@@ -1435,6 +1455,57 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     crate::event_loop::purge_posted_events_for_receiver(id);
     crate::signal::disconnect_all_for_object(id);
     crate::timer::stop_timers_for_object(id);
+}
+
+/// Destroys the object whose `DeferredDelete` was just delivered, with everything below it (Qt
+/// `QObject::event` runs `qDeleteInEventHandler`, which deletes the object and so its children).
+///
+/// * An object its parent owns is taken out of the parent's `owned_children` and dropped through
+///   its owner: the usual destruction, which frees the memory, tells the parent
+///   (`ChildRemoved`), and deletes the object's own children. When a callback of the parent runs,
+///   the owner can't be taken out now: the object is unregistered (with its subtree) at once and
+///   the owner is taken out, and dropped, when that callback returns.
+/// * Any other object has an owner this function can't reach (a standalone [`OwnedObject`], or the
+///   caller of a registration through a pointer). It is unregistered with everything the
+///   registry lists below it, and forgotten by its parent's list. Its owner frees the memory.
+///
+/// Runs on the object's registration thread, after the delivery returned. An id that is no longer
+/// registered is left alone.
+pub(crate) fn destroy_deferred(id: ObjectId) {
+    let Some(record) = GLOBAL_OBJECT_REGISTRY.read().ok().and_then(|r| r.get(&id).cloned()) else {
+        return;
+    };
+    let parent = *read_unpoisoned(&record.parent);
+    // `owned_by_parent` is read through the object, which is only possible when no callback of it
+    // runs; a borrowed object is treated as not owned (and so only unregistered).
+    let owned = with_object(id, |o| o.object_data().owned_by_parent).unwrap_or(false);
+    if let (Some(parent_id), true) = (parent, owned) {
+        match with_object_mut(parent_id, |p| p.object_data_mut().take_owned_child(id)) {
+            Some(Some(owner)) => {
+                drop(owner);
+                return;
+            }
+            None if registered_and_borrowed(parent_id) => {
+                unregister_deferred_subtree(id);
+                edit_child_list(parent_id, ChildListChange::DeleteOwned(id));
+                return;
+            }
+            _ => {}
+        }
+    }
+    unregister_deferred_subtree(id);
+    if let Some(parent_id) = parent {
+        edit_child_list(parent_id, ChildListChange::Remove(id));
+    }
+}
+
+/// Unregisters `id` and everything the registry lists below it, the deepest first.
+fn unregister_deferred_subtree(id: ObjectId) {
+    unregister_descendants(id);
+    // SAFETY: the delivery that ran this has returned, so no callback of the object runs (a
+    // callback further up the stack keeps its own `Arc` to the record, and the memory stays until
+    // its owner frees it), and this runs on the registration thread.
+    unsafe { unregister_qobject(id) };
 }
 /// Unique object identifier: ObjectId (`QObject*` equivalent).
 
@@ -2290,6 +2361,17 @@ impl<'a> ObjectDataMut<'a> {
         &mut self.data.owned_children
     }
 
+    /// Takes the owner of the child `id` out of the list, and the id out of `children`.
+    pub(crate) fn take_owned_child(&mut self, id: ObjectId) -> Option<OwnedObject<dyn QObject>> {
+        self.data.children.retain(|&c| c != id);
+        let index = self
+            .data
+            .owned_children
+            .iter()
+            .position(|c| OwnedObject::object_id(c) == id)?;
+        Some(self.data.owned_children.remove(index))
+    }
+
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn timers_mut(&mut self) -> &mut Vec<crate::timer::TimerId> {
@@ -2487,6 +2569,13 @@ fn release_child(child_id: ObjectId, parent_id: ObjectId) {
     }
     if belongs_elsewhere.is_none() {
         if let Some((child_record, _)) = registered_ptr(child_id) {
+            // The child's own link cannot be read, but the registry's can: another parent there
+            // means the entry is stale. (A link already cleared, as `unregister_qobject` of the
+            // dying parent does before its object is freed, is this parent's child all the same.)
+            let linked_to = *read_unpoisoned(&child_record.parent);
+            if linked_to.is_some_and(|linked| linked != parent_id) {
+                return;
+            }
             *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
             child_record.has_pending_parent_sync.store(true, Ordering::Release);
         }
@@ -3618,7 +3707,10 @@ pub trait QObject: std::any::Any {
     }
 
     /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
-    /// object's thread (`QObject::moveToThread`). The default is `true`.
+    /// object's thread (`QObject::moveToThread`). The default is `true`, which states that the
+    /// object is safe to use and drop on another thread, as a `Send` type is: every registration
+    /// function is `unsafe` because the registrant promises that (see "Thread rules" in
+    /// [`crate::object`]).
     ///
     /// Return `false` when state of the object is also reached through handles that never leave
     /// the creating thread, such as an `Rc` shared with a `!Send` owner. After a move the

@@ -1204,11 +1204,9 @@ pub fn set_deferred_delete_hook(hook: fn(ObjectId)) {
     let _ = DEFERRED_DELETE_HOOK.set(hook);
 }
 
-/// Finishes one delivered `DeferredDelete`: unregisters the receiver and runs the hook.
+/// Finishes one delivered `DeferredDelete`: destroys the receiver with its subtree and runs the hook.
 fn finish_deferred_delete(receiver: ObjectId) {
-    // SAFETY: delivery returned, so the callback borrow has ended; deferred deletion is processed
-    // on the object's registration thread.
-    unsafe { crate::object::unregister_qobject(receiver) };
+    crate::object::qobject::destroy_deferred(receiver);
     if let Some(hook) = DEFERRED_DELETE_HOOK.get() {
         hook(receiver);
     }
