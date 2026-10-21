@@ -268,17 +268,17 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     );
 }
 
-// Queued connection through the no-receiver API targets its calling thread.
+// Queued connections without a receiver return an invalid connection rather than panicking.
 #[test]
-fn connect_with_type_queued_targets_current_thread() {
+fn connect_with_type_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
     let id = signal.connect_with_type(ConnectionType::Queued, |_| {});
-    assert!(signal.disconnect(id));
+    assert_eq!(id.0, 0);
 }
 
 #[test]
-fn connect_with_type_blocking_queued_routes_without_panicking() {
+fn connect_with_type_blocking_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
     let id = signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
-    assert!(signal.disconnect(id));
+    assert_eq!(id.0, 0);
 }
