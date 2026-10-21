@@ -33,8 +33,8 @@ pub struct Settings {
     entries: HashMap<String, Variant>,
     group_stack: Vec<String>,
     dirty: bool,
+    load_failed: bool,
 }
-
 impl Settings {
     /// Creates a new settings instance with an explicit file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
@@ -44,8 +44,11 @@ impl Settings {
             entries: HashMap::new(),
             group_stack: Vec::new(),
             dirty: false,
+            load_failed: false,
         };
-        let _ = s.load_from_disk();
+        if s.load_from_disk().is_err() {
+            s.load_failed = true;
+        }
         s
     }
 
@@ -56,6 +59,7 @@ impl Settings {
             entries: HashMap::new(),
             group_stack: Vec::new(),
             dirty: false,
+            load_failed: false,
         }
     }
 
@@ -194,6 +198,12 @@ impl Settings {
         if !self.dirty {
             return Ok(());
         }
+        if self.load_failed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "settings file could not be loaded completely",
+            ));
+        }
 
         let Some(path) = &self.file_path else {
             return Ok(());
@@ -209,10 +219,15 @@ impl Settings {
             let mut file = File::create(&tmp_path)?;
             self.write_ini_to(&mut file)?;
             file.flush()?;
+            file.sync_all()?;
         }
 
         // Atomic replace via rename
         fs::rename(&tmp_path, path)?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
         self.dirty = false;
         Ok(())
     }
@@ -306,20 +321,37 @@ impl Drop for Settings {
 }
 
 fn serialize_variant_value(v: &Variant) -> String {
-    match v {
-        Variant::Bool(b) => b.to_string(),
-        Variant::I64(i) => i.to_string(),
-        Variant::U64(u) => u.to_string(),
-        Variant::F64(f) => f.to_string(),
-        Variant::String(s) => s.clone(),
-        Variant::Color(r, g, b, a) => format!("#{:02X}{:02X}{:02X}{:02X}", r, g, b, a),
-        Variant::Point(x, y) => format!("{},{}", x, y),
-        Variant::Rect(x, y, w, h) => format!("{},{},{},{}", x, y, w, h),
-        _ => v.to_string_lossy(),
+    let bytes = v.to_bytes();
+    let mut encoded = String::with_capacity(bytes.len() * 2 + 10);
+    encoded.push_str("@Variant(");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
     }
+    encoded.push(')');
+    encoded
 }
 
 fn parse_variant_value(raw: &str) -> Variant {
+    if let Some(encoded) = raw.strip_prefix("@Variant(").and_then(|s| s.strip_suffix(')')) {
+        if encoded.len() % 2 == 0 {
+            let bytes = encoded.as_bytes();
+            let decoded = bytes
+                .chunks_exact(2)
+                .map(|pair| {
+                    let high = (pair[0] as char).to_digit(16)?;
+                    let low = (pair[1] as char).to_digit(16)?;
+                    Some(((high << 4) | low) as u8)
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(decoded) = decoded {
+                if let Ok(value) = Variant::from_bytes(&decoded) {
+                    return value;
+                }
+            }
+        }
+    }
+
     // Check boolean
     if raw.eq_ignore_ascii_case("true") {
         return Variant::Bool(true);

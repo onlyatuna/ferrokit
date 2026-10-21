@@ -14,14 +14,12 @@ pub fn clean_path(path: impl AsRef<str>) -> String {
         return String::new();
     }
 
-    let mut is_network_unc = false;
+    #[cfg(windows)]
+    let is_network_unc = raw.starts_with(r"\\") || raw.starts_with("//");
+    #[cfg(not(windows))]
+    let is_network_unc = false;
     let mut drive_prefix = String::new();
-
-    // Check UNC path (e.g. \\server\share or //server/share)
-    if (raw.starts_with(r"\\") || raw.starts_with("//")) && raw.len() > 2 {
-        is_network_unc = true;
-    } else {
-        // Check Windows drive letter: C: or C:/
+    if !is_network_unc {
         let bytes = raw.as_bytes();
         if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
             drive_prefix = raw[..2].to_string();
@@ -170,6 +168,12 @@ pub fn file_name(path: impl AsRef<Path>) -> String {
 
 /// Returns the base name without the last extension (e.g. "archive.tar" from "archive.tar.gz").
 pub fn base_name(path: impl AsRef<Path>) -> String {
+    let name = file_name(path);
+    name.find('.').map_or(name.as_str(), |idx| &name[..idx]).to_string()
+}
+
+/// Returns the complete base name without the last extension.
+pub fn complete_base_name(path: impl AsRef<Path>) -> String {
     path.as_ref()
         .file_stem()
         .and_then(|n| n.to_str())
@@ -177,18 +181,12 @@ pub fn base_name(path: impl AsRef<Path>) -> String {
         .to_string()
 }
 
-/// Returns the complete base name without any extensions (e.g. "archive" from "archive.tar.gz").
-pub fn complete_base_name(path: impl AsRef<Path>) -> String {
-    let name = file_name(path);
-    if let Some(idx) = name.find('.') {
-        name[..idx].to_string()
-    } else {
-        name
-    }
-}
-
 /// Returns the suffix / file extension without the dot (e.g. "gz" from "archive.tar.gz").
 pub fn suffix(path: impl AsRef<Path>) -> String {
+    let name = file_name(&path);
+    if name.starts_with('.') && !name[1..].contains('.') {
+        return name[1..].to_string();
+    }
     path.as_ref()
         .extension()
         .and_then(|n| n.to_str())
@@ -203,5 +201,23 @@ pub fn complete_suffix(path: impl AsRef<Path>) -> String {
         name[idx + 1..].to_string()
     } else {
         String::new()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_names_and_suffixes_follow_qt_dot_boundaries() {
+        assert_eq!(base_name("archive.tar.gz"), "archive");
+        assert_eq!(complete_base_name("archive.tar.gz"), "archive.tar");
+        assert_eq!(suffix("archive.tar.gz"), "gz");
+        assert_eq!(complete_suffix("archive.tar.gz"), "tar.gz");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_path_collapses_repeated_leading_slashes_on_unix() {
+        assert_eq!(clean_path("//server///share/../file"), "/server/file");
     }
 }

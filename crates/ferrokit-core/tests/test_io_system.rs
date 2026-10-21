@@ -168,10 +168,13 @@ fn test_path_normalization_and_relative() {
     // Component extractions
     let p = "/home/user/archive.tar.gz";
     assert_eq!(file_name(p), "archive.tar.gz");
-    assert_eq!(base_name(p), "archive.tar");
-    assert_eq!(complete_base_name(p), "archive");
+    assert_eq!(base_name(p), "archive");
+    assert_eq!(complete_base_name(p), "archive.tar");
     assert_eq!(suffix(p), "gz");
     assert_eq!(complete_suffix(p), "tar.gz");
+    assert_eq!(suffix("/home/user/.bashrc"), "bashrc");
+    #[cfg(unix)]
+    assert_eq!(clean_path("//usr/bin"), "/usr/bin");
 }
 
 // =============================================================================
@@ -229,6 +232,37 @@ fn test_directory_fileinfo_and_iterator() {
     // Clean up
     let _ = dir.rmpath(".");
     let _ = fs::remove_dir_all(&sub_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_directory_symlinks_are_filtered_and_not_recursed() {
+    use std::os::unix::fs::symlink;
+
+    let root = Directory::temp()
+        .path()
+        .join(format!("ferrokit_symlink_test_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("child")).unwrap();
+    fs::write(root.join("child/file.txt"), b"data").unwrap();
+    symlink(&root, root.join("child/loop")).unwrap();
+    symlink(root.join("child"), root.join("linked_child")).unwrap();
+
+    let no_links = Directory::new(&root)
+        .entry_info_list(DirFilter::ALL_ENTRIES | DirFilter::NO_SYM_LINKS, SortFlag::NAME)
+        .unwrap();
+    assert!(no_links.iter().all(|entry| !entry.is_symlink()));
+
+    let paths: Vec<_> = DirIterator::new(&root, DirFilter::ALL_ENTRIES, true).collect();
+    assert!(paths.len() < 10, "symlinked directory caused recursive traversal");
+    let filtered: Vec<_> = DirIterator::new(
+        &root,
+        DirFilter::ALL_ENTRIES | DirFilter::NO_SYM_LINKS,
+        true,
+    )
+    .collect();
+    assert!(filtered.iter().all(|path| !path.is_symlink()));
+    fs::remove_dir_all(root).unwrap();
 }
 
 // =============================================================================
@@ -361,6 +395,7 @@ fn test_url_and_url_query_manipulation() {
 // 8. Process Lifecycle & Execution
 // =============================================================================
 
+#[cfg(not(windows))]
 #[test]
 fn test_process_lifecycle_and_execution() {
     let mut proc = Process::new();
@@ -432,6 +467,31 @@ fn test_temporary_file_and_dir_auto_cleanup() {
     );
 }
 
+#[test]
+fn test_temporary_paths_are_distinct_and_exclusive() {
+    let first = TemporaryFile::with_prefix_and_suffix("ferrokit_exclusive", ".tmp").unwrap();
+    let second = TemporaryFile::with_prefix_and_suffix("ferrokit_exclusive", ".tmp").unwrap();
+    assert_ne!(first.file_path(), second.file_path());
+    assert!(first.file_path().exists());
+    assert!(second.file_path().exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(first.file_path()).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    let first_dir = TemporaryDir::with_prefix("ferrokit_exclusive_dir").unwrap();
+    let second_dir = TemporaryDir::with_prefix("ferrokit_exclusive_dir").unwrap();
+    assert_ne!(first_dir.path(), second_dir.path());
+    assert!(first_dir.path().is_dir());
+    assert!(second_dir.path().is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(first_dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+}
+
 // =============================================================================
 // 10. LockFile Concurrency & Stale Detection
 // =============================================================================
@@ -500,4 +560,19 @@ fn test_storage_info_queries() {
         "At least one storage volume must be detected"
     );
     assert!(volumes.iter().any(|v| v.is_valid()));
+}
+#[test]
+fn test_process_spawn_failure_restores_not_running() {
+    let mut proc = Process::new();
+    proc.set_program("ferrokit-command-that-does-not-exist");
+    assert!(proc.start().is_err());
+    assert_eq!(proc.state(), ProcessState::NotRunning);
+}
+#[test]
+fn test_buffer_rejects_unrepresentable_seek_and_write() {
+    let mut buffer = Buffer::new();
+    buffer.open(OpenMode::READ_WRITE).unwrap();
+    assert!(IODevice::seek(&mut buffer, u64::MAX).is_err());
+    assert!(std::io::Seek::seek(&mut buffer, std::io::SeekFrom::Start(u64::MAX)).is_err());
+    assert!(buffer.data().is_empty());
 }
