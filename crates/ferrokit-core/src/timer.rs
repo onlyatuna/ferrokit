@@ -279,6 +279,9 @@ thread_local! {
     static SINGLE_SHOT_CALLBACKS: RefCell<HashMap<ObjectId, Box<dyn FnOnce() + Send>>> =
         RefCell::new(HashMap::new());
     static PENDING_SINGLE_SHOTS: RefCell<Vec<(ObjectId, u64)>> = RefCell::new(Vec::new());
+    /// Context-bound single shots of this thread: timer receiver -> context object.
+    static SINGLE_SHOT_CONTEXTS: RefCell<HashMap<ObjectId, ObjectId>> =
+        RefCell::new(HashMap::new());
 }
 
 pub fn register_thread_timer_context(
@@ -425,6 +428,7 @@ pub(crate) fn next_grid_deadline(interval_ms: u64, expiry_ms: u64, now_ms: u64) 
 /// On Windows the native timer of each removed entry is killed as well; it would otherwise keep
 /// posting `WM_TIMER` to the loop's window until the window is destroyed.
 pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
+    cancel_single_shots_for_context(receiver);
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         let to_remove: Vec<TimerId> = reg
@@ -619,7 +623,34 @@ pub(crate) fn register_single_shot_callback(
     });
 }
 
+/// Cancels this thread's pending context-bound single shots of `context`: the timers go away and
+/// the functors (with their captures) are dropped, as Qt's `QSingleShotTimer` is deleted with its
+/// context (qsingleshottimer.cpp:46-59).
+fn cancel_single_shots_for_context(context: ObjectId) {
+    let receivers: Vec<ObjectId> = SINGLE_SHOT_CONTEXTS
+        .try_with(|c| {
+            let mut c = c.borrow_mut();
+            let receivers: Vec<ObjectId> = c
+                .iter()
+                .filter(|(_, &ctx)| ctx == context)
+                .map(|(&r, _)| r)
+                .collect();
+            for r in &receivers {
+                c.remove(r);
+            }
+            receivers
+        })
+        .unwrap_or_default();
+    for receiver in receivers {
+        PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().retain(|(r, _)| *r != receiver));
+        let callback = SINGLE_SHOT_CALLBACKS.with(|c| c.borrow_mut().remove(&receiver));
+        stop_timers_for_object(receiver);
+        drop(callback);
+    }
+}
+
 pub(crate) fn dispatch_single_shot_callback(receiver: ObjectId) -> bool {
+    SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().remove(&receiver));
     let callback = SINGLE_SHOT_CALLBACKS.with(|callbacks| callbacks.borrow_mut().remove(&receiver));
     if let Some(callback) = callback {
         callback();
@@ -975,6 +1006,49 @@ impl Timer {
             self.timeout.emit(&());
         }
     }
+    /// `QTimer::singleShot(msec, context, functor)` (qsingleshottimer.cpp:46-59): `callback` runs
+    /// once on `context`'s thread, queued there when called from another thread, and is dropped
+    /// unrun if `context` is destroyed first. An unregistered `context` drops it at once.
+    pub fn single_shot_with_context(
+        interval_ms: u64,
+        context: ObjectId,
+        callback: impl FnOnce() + Send + 'static,
+    ) {
+        let Some(thread_id) = crate::object::qobject::registration_thread_of(context) else {
+            return;
+        };
+        if interval_ms == 0 || thread_id != crate::object::ThreadId::current() {
+            // Posted with the context as receiver: destroying it purges the event and drops the
+            // functor. For a nonzero interval the arm happens on the context's thread.
+            crate::event_loop::post_event_to_thread(
+                thread_id,
+                context,
+                crate::event::Event::new(crate::event::EventKind::MetaCall(Box::new(move |_| {
+                    if interval_ms == 0 {
+                        callback();
+                    } else {
+                        Self::arm_context_single_shot(interval_ms, context, callback);
+                    }
+                }))),
+            );
+        } else {
+            Self::arm_context_single_shot(interval_ms, context, callback);
+        }
+    }
+
+    fn arm_context_single_shot(
+        interval_ms: u64,
+        context: ObjectId,
+        callback: impl FnOnce() + Send + 'static,
+    ) {
+        let receiver = ObjectId::next();
+        register_single_shot_callback(receiver, callback);
+        SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().insert(receiver, context));
+        if with_thread_timer_context(|ctx| arm_single_shot(ctx, receiver, interval_ms)).is_none() {
+            PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().push((receiver, interval_ms)));
+        }
+    }
+
     /// Fires a single-shot timer callback (`QTimer::singleShot`).
     pub fn single_shot(interval_ms: u64, callback: impl FnOnce() + Send + 'static) {
         let thread_id = crate::object::ThreadId::current();
