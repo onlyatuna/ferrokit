@@ -221,22 +221,44 @@ impl GroupState {
     }
 
     /// Mirrors `QActionGroup::_q_actionChanged`: keeps at most one checked action.
-    fn action_check_changed(&self, id: ObjectId, checked: bool) {
+    ///
+    /// The unchecked previous action's signals are returned, not emitted: the caller emits
+    /// them once no action is borrowed.
+    fn action_check_changed(&self, id: ObjectId, checked: bool) -> Option<CheckedNotice> {
         if self.exclusion.get() == ExclusionPolicy::None {
-            return;
+            return None;
         }
         if checked {
             let previous = self.current.replace(Some(id));
-            if let Some(prev_id) = previous.filter(|p| *p != id) {
-                if let Some(prev) = self.find(prev_id) {
-                    if let Ok(mut prev) = prev.try_borrow_mut() {
-                        prev.set_checked(false);
-                    }
-                }
+            let prev_id = previous.filter(|p| *p != id)?;
+            let prev = self.find(prev_id)?;
+            let mut prev = prev.try_borrow_mut().ok()?;
+            prev.change_checked(false)
+        } else {
+            if self.current.get() == Some(id) {
+                self.current.set(None);
             }
-        } else if self.current.get() == Some(id) {
-            self.current.set(None);
+            None
         }
+    }
+}
+
+/// Signals owed after a checked-state change, to emit with no action borrowed.
+struct CheckedNotice {
+    /// The exclusive group's previously checked action, unchecked by this change.
+    unchecked: Option<Box<CheckedNotice>>,
+    changed: Signal<()>,
+    toggled: Signal<bool>,
+    checked: bool,
+}
+
+impl CheckedNotice {
+    fn emit(self) {
+        if let Some(prev) = self.unchecked {
+            prev.emit();
+        }
+        self.changed.emit(&());
+        self.toggled.emit(&self.checked);
     }
 }
 
@@ -419,16 +441,31 @@ impl Action {
     /// Sets the checked state (`QAction::setChecked`). Ignored for non-checkable actions.
     ///
     /// Inside an exclusive group, checking this action unchecks the previously checked one.
+    ///
+    /// The `changed` and `toggled` slots run before this returns, while the caller still holds
+    /// the borrow of `self`; [`Action::trigger`] emits them after releasing it.
     pub fn set_checked(&mut self, checked: bool) {
+        if let Some(notice) = self.change_checked(checked) {
+            notice.emit();
+        }
+    }
+
+    /// Applies a checked-state change and returns the signals it owes.
+    fn change_checked(&mut self, checked: bool) -> Option<CheckedNotice> {
         if !self.checkable || self.checked == checked {
-            return;
+            return None;
         }
         self.checked = checked;
-        if let Some(group) = self.group_state() {
-            group.action_check_changed(self.id(), checked);
-        }
-        self.changed.emit(&());
-        self.toggled.emit(&checked);
+        let unchecked = self
+            .group_state()
+            .and_then(|group| group.action_check_changed(self.id(), checked))
+            .map(Box::new);
+        Some(CheckedNotice {
+            unchecked,
+            changed: self.changed.clone(),
+            toggled: self.toggled.clone(),
+            checked,
+        })
     }
 
     /// Flips the checked state of a checkable action (`QAction::toggle`).
@@ -523,12 +560,13 @@ impl Action {
     pub fn activate(action: &ActionRef, event: ActionEvent) {
         match event {
             ActionEvent::Trigger => {
-                let (signal, checked, group) = {
+                let (notice, signal, checked, group) = {
                     let mut a = action.borrow_mut();
                     if !a.is_enabled() {
                         return;
                     }
                     let group = a.group_state();
+                    let mut notice = None;
                     if a.checkable {
                         let locked = a.checked
                             && group.as_ref().is_some_and(|g| {
@@ -536,11 +574,15 @@ impl Action {
                                     && g.current.get() == Some(a.id())
                             });
                         if !locked {
-                            a.toggle();
+                            let next = !a.checked;
+                            notice = a.change_checked(next);
                         }
                     }
-                    (a.triggered.clone(), a.checked, group)
+                    (notice, a.triggered.clone(), a.checked, group)
                 };
+                if let Some(notice) = notice {
+                    notice.emit();
+                }
                 signal.emit(&checked);
                 if let Some(group) = group {
                     group.triggered.emit(action);
@@ -629,8 +671,13 @@ impl ActionGroup {
             .actions
             .borrow_mut()
             .push((id, Rc::downgrade(action)));
-        if checked {
-            self.state.action_check_changed(id, true);
+        let notice = if checked {
+            self.state.action_check_changed(id, true)
+        } else {
+            None
+        };
+        if let Some(notice) = notice {
+            notice.emit();
         }
         action.borrow().changed.emit(&());
         action.clone()

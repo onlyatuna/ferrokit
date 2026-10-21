@@ -642,6 +642,10 @@ impl Layout for BoxLayout {
         if !self.needs_activation.get() {
             return;
         }
+        if items_busy(self.items.iter().map(|item| &item.widget)) {
+            crate::layout_scheduler::LayoutScheduler::note_deferred();
+            return;
+        }
         self.needs_activation.set(false);
         if self.items.is_empty() {
             return;
@@ -1571,6 +1575,10 @@ impl Layout for GridLayout {
         if !self.needs_activation.get() {
             return;
         }
+        if items_busy(self.items.iter().map(|item| &item.widget)) {
+            crate::layout_scheduler::LayoutScheduler::note_deferred();
+            return;
+        }
         self.needs_activation.set(false);
         self.ensure_geom();
         let placed = self.placed_rect();
@@ -1627,6 +1635,13 @@ impl Layout for GridLayout {
             }
         }
     }
+}
+
+/// Whether some item's widget is borrowed further up the call stack (a click handler that adds
+/// a row to its own layout). Such a layout cannot place its items now; it stays dirty and
+/// `LayoutScheduler::flush_deferred` runs it once the borrow ends.
+fn items_busy<'a>(mut widgets: impl Iterator<Item = &'a WidgetRef>) -> bool {
+    widgets.any(|widget| widget.try_borrow().is_err())
 }
 
 /// After a layout placed `child`: a child that owns a layout lays it out again when its own size

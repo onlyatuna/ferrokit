@@ -708,6 +708,9 @@ pub struct WidgetBase {
     /// explicit (qlayout.cpp:1126-1129).
     pub explicit_min: Cell<(bool, bool)>,
     pub explicit_max: Cell<(bool, bool)>,
+    /// The deferral epoch of `LayoutScheduler` this tree root last scanned for layouts left dirty
+    /// (`LayoutScheduler::flush_deferred`).
+    pub(crate) layout_epoch: Cell<u64>,
 }
 
 impl WidgetBase {
@@ -740,6 +743,7 @@ impl WidgetBase {
             max_size: Cell::new(Size::new(WIDGET_SIZE_MAX, WIDGET_SIZE_MAX)),
             explicit_min: Cell::new((false, false)),
             explicit_max: Cell::new((false, false)),
+            layout_epoch: Cell::new(0),
         }
     }
     /// Unique object identifier.
@@ -1161,8 +1165,7 @@ impl WidgetBase {
     }
 
     pub fn add_child(&mut self, child: WidgetRef) {
-        let child_id = child.borrow().id();
-        self.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.children.get_mut().retain(|c| !Rc::ptr_eq(c, &child));
         if let Some(win_id) = self.window_id.get() {
             child.borrow().set_window_id(Some(win_id));
         }
@@ -1170,7 +1173,7 @@ impl WidgetBase {
     }
 
     pub fn remove_child(&mut self, child_id: ObjectId) {
-        self.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.children.get_mut().retain(|c| c.try_borrow().map_or(true, |w| w.id() != child_id));
     }
 }
 
@@ -1480,8 +1483,11 @@ impl Widget for EmptyWidget {
     fn children(&self) -> Vec<WidgetRef> {
         let mut list = self.base.children.borrow().clone();
         if let Some(layout) = self.base.layout.borrow().as_ref() {
+            // Identity, not `id()`: no `RefCell` is borrowed, so a child on the stack is fine.
+            let mut seen: std::collections::HashSet<*const RefCell<Box<dyn Widget>>> =
+                list.iter().map(Rc::as_ptr).collect();
             for w in layout.widgets() {
-                if !list.iter().any(|c| c.borrow().id() == w.borrow().id()) {
+                if seen.insert(Rc::as_ptr(&w)) {
                     list.push(w);
                 }
             }
@@ -1490,8 +1496,7 @@ impl Widget for EmptyWidget {
     }
 
     fn add_child(&mut self, child: WidgetRef) {
-        let child_id = child.borrow().id();
-        self.base.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.base.children.get_mut().retain(|c| !Rc::ptr_eq(c, &child));
         if let Some(win_id) = self.base.window_id.get() {
             child.borrow().set_window_id(Some(win_id));
         }
@@ -1500,7 +1505,11 @@ impl Widget for EmptyWidget {
     }
 
     fn remove_child(&mut self, child_id: ObjectId) {
-        self.base.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        // A child that is borrowed (its own handler removes it) cannot be identified: it stays.
+        self.base
+            .children
+            .get_mut()
+            .retain(|c| c.try_borrow().map_or(true, |w| w.id() != child_id));
         self.update();
     }
 

@@ -1503,6 +1503,8 @@ fn do_render_and_present(
     let _t = ferrokit_gui::startup_trace::span_min(0.5, || "do_render_and_present".into());
     // Qt delivers the LayoutRequest events that text and size-hint changes post before the paint.
     crate::command::WidgetCommandQueue::flush_layouts();
+    // Layouts a slot mutated while one of their items was borrowed ran no pass; run them now.
+    crate::layout_scheduler::LayoutScheduler::flush_deferred(root_widget);
     // Qt posts the `LayoutRequest` to the widget that owns the invalidated layout, parent or not.
     // ferrokit queues it on the parent (`WidgetBase::request_layout`), which the root does not have.
     crate::layout_scheduler::LayoutScheduler::activate_if_dirty(root_widget);
@@ -1936,7 +1938,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 });
                 self.dispatcher.dispatch_event(&root, &mut ev);
             }
-            WindowSystemEvent::DpiChanged { dpi_x, dpi_y } => {
+            WindowSystemEvent::DpiChanged { dpi_x, .. } => {
                 let old_dpr = self.render.device_pixel_ratio.get();
                 let new_dpr = ferrokit_gui::round_scale_factor(dpi_x as f64 / 96.0) as f32;
                 self.render.device_pixel_ratio.set(new_dpr);
@@ -1945,15 +1947,15 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 self.backing_store.borrow_mut().resize(size, new_dpr);
                 propagate_dpi_change_recursive(&root, old_dpr, new_dpr);
 
-                let mut root_borrow = root.borrow_mut();
-                root_borrow.set_geometry(Rect::new(0, 0, cur_geom.width, cur_geom.height));
-                if let Some(layout) = root_borrow.layout_mut() {
-                    layout.update_layout();
+                {
+                    // The borrow ends before the render below, which borrows the root again.
+                    let mut root_borrow = root.borrow_mut();
+                    root_borrow.set_geometry(Rect::new(0, 0, cur_geom.width, cur_geom.height));
+                    if let Some(layout) = root_borrow.layout_mut() {
+                        layout.update_layout();
+                    }
+                    root_borrow.update();
                 }
-                root_borrow.update();
-
-                let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x, dpi_y });
-                self.dispatcher.dispatch_event(&root, &mut ev);
 
                 if let Ok(mut pw) = self.platform_window.try_borrow_mut() {
                     let mut bs = self.backing_store.borrow_mut();
