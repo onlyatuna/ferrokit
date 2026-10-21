@@ -23,8 +23,18 @@
     "test_text_system"
   ],
   "negative_controls": [],
-  "isolation_allowlist": {},
+  "isolation_allowlist": {
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    }
+  },
   "results": {
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly::SB": "unsupported",
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly::TB": "unsupported",
     "lib::geometry::primitives::tests::test_margins_operators_and_null::SB": "pass",
     "lib::geometry::primitives::tests::test_margins_operators_and_null::TB": "pass",
     "lib::geometry::primitives::tests::test_point_basic_and_manhattan::SB": "pass",
