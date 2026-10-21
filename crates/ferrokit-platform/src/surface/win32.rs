@@ -509,7 +509,11 @@ impl Win32LayeredSurface {
                 let err = windows_sys::Win32::Foundation::GetLastError();
                 dbg_indirect_err = Some(err);
                 let dbg_fb = crate::resize_debug::start();
-                eprintln!("[Win32Surface] UpdateLayeredWindowIndirect failed (GetLastError = {}), falling back to UpdateLayeredWindow", err);
+                // Runs every frame while the window is minimized or occluded: counted in the stats
+                // and traced on demand, never printed.
+                crate::resize_debug::note(|| format!(
+                    "UpdateLayeredWindowIndirect failed (GetLastError = {err}), falling back to UpdateLayeredWindow"
+                ));
                 self.stats.ulw_fallback_count += 1;
                 let fallback_res = UpdateLayeredWindow(
                     self.hwnd,
@@ -526,10 +530,9 @@ impl Win32LayeredSurface {
                 dbg_fallback_ok = Some(fallback_res != 0);
                 if fallback_res == 0 {
                     let err2 = windows_sys::Win32::Foundation::GetLastError();
-                    eprintln!(
-                        "[Win32Surface] Fallback UpdateLayeredWindow failed, GetLastError = {}",
-                        err2
-                    );
+                    crate::resize_debug::note(|| format!(
+                        "fallback UpdateLayeredWindow failed, GetLastError = {err2}"
+                    ));
                     outcome = Err(
                         "UpdateLayeredWindowIndirect and fallback UpdateLayeredWindow both failed",
                     );

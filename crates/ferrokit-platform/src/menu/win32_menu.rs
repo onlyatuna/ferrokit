@@ -169,7 +169,13 @@ impl Win32Menu {
                     }
                 }
                 MenuEntry::SubMenu { text, menu } => {
-                    let sub_hmenu = menu.build_native_menu()? as HMENU;
+                    let sub_hmenu = match menu.build_native_menu() {
+                        Ok(h) => h as HMENU,
+                        Err(e) => {
+                            DestroyMenu(hmenu);
+                            return Err(e);
+                        }
+                    };
                     let wide_text: Vec<u16> =
                         text.encode_utf16().chain(std::iter::once(0)).collect();
                     if AppendMenuW(
@@ -248,11 +254,13 @@ impl PlatformMenu for Win32Menu {
 
             SetForegroundWindow(self.hwnd);
 
+            // `screen_pos` is a logical desktop point; `TrackPopupMenu` takes physical pixels.
+            let native_pos = crate::screen::logical_point_to_native(screen_pos);
             let cmd_id = TrackPopupMenu(
                 hmenu,
                 TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                screen_pos.x,
-                screen_pos.y,
+                native_pos.x,
+                native_pos.y,
                 0,
                 self.hwnd,
                 ptr::null(),
