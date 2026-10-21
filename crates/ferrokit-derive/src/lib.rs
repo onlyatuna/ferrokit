@@ -14,7 +14,7 @@ use invoke::{argument_bindings, invoker_fn, type_name};
 ///
 /// Automatically creates:
 /// - `fn object_data(&self) -> &ObjectData`
-/// - `fn object_data_mut(&mut self) -> &mut ObjectData`
+/// - `fn object_data_mut(&mut self) -> ObjectDataMut<'_>`
 /// - `fn as_qobject_any(&self) -> Option<&dyn Any>`
 /// - `fn as_qobject_any_mut(&mut self) -> Option<&mut dyn Any>`
 /// - `fn meta_object(&self) -> &'static MetaObject`
