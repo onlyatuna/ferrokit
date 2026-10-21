@@ -725,6 +725,17 @@ impl Drop for ThreadLoopState {
     fn drop(&mut self) {
         crate::timer::unregister_thread_timer_context();
         unregister_thread_event_loop(self.thread_id);
+        // The loop is gone, so nothing turns this queue any more, yet a handle on it can outlive
+        // the loop (an `EventSender` clone, such as the one an `EventLoopThreadHandle` keeps), and
+        // what is still queued would stay queued as long as that handle lives. Qt deletes the
+        // undelivered posted events of a thread together with its `QThreadData`, and the
+        // destructor of a posted `QMetaCallEvent` releases a blocked
+        // `BlockingQueuedConnection` caller. Here the caller waits on a channel whose sender is
+        // inside the call, so the call must be dropped, not kept. The events are dropped after the
+        // queue lock is released: a payload's `Drop` may post events or unregister objects, which
+        // take that lock.
+        let undelivered = lock_unpoisoned(&self.queue).remove_posted_events_matching(|_| true);
+        drop(undelivered);
     }
 }
 

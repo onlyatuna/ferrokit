@@ -657,9 +657,14 @@ pub(crate) fn registration_thread_of(id: ObjectId) -> Option<ThreadId> {
 /// posted, as Qt does (`invokeMethodImpl`, qmetaobject.cpp:1693-1708; `invokeImpl` type checks,
 /// qmetaobject.cpp:2774-2809). `Queued` returns `Ok(Variant::Invalid)`
 /// once posted; the return value is not delivered. `BlockingQueued` waits for the result on the
-/// receiver's thread. `Auto` queues when the caller is on another thread. `Direct`, and `Auto` on the
-/// receiver's own thread, need a `&mut` borrow and return `Err(TargetBorrowFailed)`; use
-/// `QObject::invoke_method_with_type` for those.
+/// receiver's thread. It returns `Err(TargetBorrowFailed)` if the posted call is dropped without
+/// running (the receiver was destroyed, or its loop or thread ended), and `Err(ExecutionFailed)`
+/// without posting if the receiver lives on the calling thread (Qt: dead lock detected). It does
+/// not return while the receiver's thread is alive but does not run its event loop, as in Qt; see
+/// [`ConnectionType::BlockingQueued`](crate::signal::ConnectionType::BlockingQueued). `Auto` queues
+/// when the caller is on another thread. `Direct`, and `Auto` on the receiver's own thread, need a
+/// `&mut` borrow and return `Err(TargetBorrowFailed)`; use `QObject::invoke_method_with_type` for
+/// those.
 pub fn invoke_method_on_thread(
     receiver: ObjectId,
     meta: &'static crate::meta::MetaObject,
