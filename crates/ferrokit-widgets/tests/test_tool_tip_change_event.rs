@@ -4,32 +4,34 @@
 use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectId,
+    register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut,
+    ObjectId, OwnedObject, QObject,
 };
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_widgets::widget::{
-    set_owned_widget_tool_tip, set_widget_ptr_tool_tip, set_widget_tool_tip, Widget, WidgetRef,
-};
+use ferrokit_widgets::widget::{Widget, WidgetRef};
+use ferrokit_widgets::Button;
+use parking_lot::Mutex;
+
 struct ToolTipProbe {
     base: ferrokit_widgets::widget::WidgetBase,
-    change_seen: Arc<AtomicBool>,
+    log: Arc<Mutex<Vec<String>>>,
 }
 
-impl ferrokit_core::object::QObject for ToolTipProbe {
-    fn object_data(&self) -> &ferrokit_core::object::ObjectData {
+impl QObject for ToolTipProbe {
+    fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
-    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
-        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
+    fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.base.object_data)
     }
     fn event(&mut self, ev: &mut Event) -> bool {
         if matches!(ev.kind, EventKind::ToolTipChange) {
-            self.change_seen.store(true, Ordering::SeqCst);
+            let text = self.tool_tip();
+            self.log.lock().push(format!("event:{text}"));
             return true;
         }
         false
@@ -107,84 +109,129 @@ impl Widget for ToolTipProbe {
     }
 }
 
-#[test]
-fn set_tool_tip_delivers_tool_tip_change_event() {
-    // 1. Pointer-registered stack widget using two-phase `set_widget_ptr_tool_tip`.
-    let seen = Arc::new(AtomicBool::new(false));
-    let mut probe = ToolTipProbe {
+type Log = Arc<Mutex<Vec<String>>>;
+
+fn new_probe(log: &Log) -> ToolTipProbe {
+    ToolTipProbe {
         base: ferrokit_widgets::widget::WidgetBase::new(),
-        change_seen: Arc::clone(&seen),
+        log: Arc::clone(log),
+    }
+}
+
+fn entries(log: &Log) -> Vec<String> {
+    log.lock().clone()
+}
+
+/// Object filter that logs `filter` for `ToolTipChange` and consumes it when `consume` is set.
+struct ChangeFilter {
+    data: ObjectData,
+    log: Log,
+    consume: bool,
+}
+
+impl QObject for ChangeFilter {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
+    fn event(&mut self, _event: &mut Event) -> bool {
+        false
+    }
+    fn event_filter(&mut self, _watched: ObjectId, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::ToolTipChange) {
+            self.log.lock().push("filter".to_string());
+            return self.consume;
+        }
+        false
+    }
+}
+
+fn register_filter(log: &Log, consume: bool) -> (ObjectId, OwnedObject<ChangeFilter>) {
+    let filter = ChangeFilter {
+        data: ObjectData::with_auto_id(),
+        log: Arc::clone(log),
+        consume,
     };
+    // SAFETY: test-only; the owner stays on this thread for the whole test and nothing touches the
+    // filter while a callback of it runs.
+    let owner = unsafe { register_owned_qobject(filter) };
+    (OwnedObject::object_id(&owner), owner)
+}
+
+/// `QWidget::setToolTip` (qwidget.cpp:11793-11800) stores the text and then always sends
+/// `ToolTipChange`, so an unregistered widget gets it too, once per call even for the same text.
+#[test]
+fn set_tool_tip_on_an_unregistered_widget_sends_tool_tip_change() {
+    let log: Log = Arc::default();
+    let mut w = new_probe(&log);
+    w.set_tool_tip("one");
+    assert_eq!(w.tool_tip(), "one");
+    assert_eq!(entries(&log), ["event:one"]);
+    w.set_tool_tip("one");
+    assert_eq!(entries(&log), ["event:one", "event:one"], "sent even if the text is unchanged");
+}
+
+/// The event goes through the object filters first and `event()` second, and the new text is
+/// already stored when either runs, for a widget registered by pointer.
+#[test]
+fn set_tool_tip_on_a_pointer_registered_widget_goes_through_filters_then_event() {
+    let log: Log = Arc::default();
+    let (filter_id, _filter) = register_filter(&log, false);
+    let mut probe = new_probe(&log);
+    probe.object_data_mut().install_event_filter(filter_id);
     let id = probe.id();
     let probe_ptr = &raw mut probe;
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(probe_ptr));
     }
-
-    assert!(!seen.load(Ordering::SeqCst));
-    assert!(unsafe { set_widget_ptr_tool_tip(probe_ptr, "Hello Tooltip") });
-    assert!(
-        seen.load(Ordering::SeqCst),
-        "set_widget_ptr_tool_tip must send ToolTipChange event"
-    );
-    assert_eq!(probe.tool_tip(), "Hello Tooltip");
-
+    // SAFETY: the pointer is valid for the whole test and no other reference is used while this one
+    // is; the registry reaches the widget only through the pointer, not through `probe`.
+    let w = unsafe { &mut *probe_ptr };
+    w.set_tool_tip("Hello Tooltip");
+    assert_eq!(w.tool_tip(), "Hello Tooltip");
+    assert_eq!(entries(&log), ["filter", "event:Hello Tooltip"]);
     unsafe {
         unregister_qobject(id);
     }
+}
 
-    // 2. Heap-owned registered widget using two-phase `set_owned_widget_tool_tip`.
-    let seen_owned = Arc::new(AtomicBool::new(false));
-    let owned = unsafe {
-        register_owned_qobject(ToolTipProbe {
-            base: ferrokit_widgets::widget::WidgetBase::new(),
-            change_seen: Arc::clone(&seen_owned),
-        })
-    };
-    assert!(set_owned_widget_tool_tip(&owned, "Owned Tooltip"));
-    assert!(seen_owned.load(Ordering::SeqCst));
-    assert_eq!(owned.with(|o| o.tool_tip().to_string()).as_deref(), Some("Owned Tooltip"));
-    drop(owned);
+/// A filter that consumes `ToolTipChange` keeps `event()` from seeing it; the text is stored all
+/// the same (`d->toolTip` is assigned before the event is sent).
+#[test]
+fn a_consuming_filter_hides_tool_tip_change_from_the_widget_but_not_the_text() {
+    let log: Log = Arc::default();
+    let (filter_id, _filter) = register_filter(&log, true);
+    // SAFETY: test-only; the owner stays on this thread for the whole test.
+    let mut owned = unsafe { register_owned_qobject(new_probe(&log)) };
+    owned
+        .with_mut(|w| w.object_data_mut().install_event_filter(filter_id))
+        .unwrap();
+    owned.with_mut(|w| w.set_tool_tip("kept")).unwrap();
+    assert_eq!(entries(&log), ["filter"]);
+    assert_eq!(owned.with(|w| w.tool_tip()).as_deref(), Some("kept"));
+}
 
-    // 3. Direct `set_tool_tip` on an unregistered widget updates text without UB.
-    let seen_unreg = Arc::new(AtomicBool::new(false));
-    let unreg = ToolTipProbe {
-        base: ferrokit_widgets::widget::WidgetBase::new(),
-        change_seen: Arc::clone(&seen_unreg),
-    };
-    unreg.set_tool_tip("Direct Unregistered");
-    assert_eq!(unreg.tool_tip(), "Direct Unregistered");
-    assert!(!seen_unreg.load(Ordering::SeqCst));
-
-    // 4. Direct `set_tool_tip` on a registered widget updates text without taking an overlapping
-    //    mutable borrow through the registry, passing Stacked Borrows and Tree Borrows.
-    let seen_reg = Arc::new(AtomicBool::new(false));
-    let mut reg_probe = ToolTipProbe {
-        base: ferrokit_widgets::widget::WidgetBase::new(),
-        change_seen: Arc::clone(&seen_reg),
-    };
-    let reg_id = reg_probe.id();
-    let reg_ptr = &raw mut reg_probe;
-    unsafe {
-        register_qobject_ptr(NonNull::new_unchecked(reg_ptr));
-    }
-    reg_probe.set_tool_tip("Direct Registered");
-    assert_eq!(reg_probe.tool_tip(), "Direct Registered");
-    assert!(
-        !seen_reg.load(Ordering::SeqCst),
-        "set_tool_tip(&self) avoids synchronous send_event to eliminate alias conflicts"
-    );
-    unsafe {
-        unregister_qobject(reg_id);
-    }
-
-    // 5. `WidgetRef` using two-phase `set_widget_tool_tip` for event delivery.
-    let seen_ref = Arc::new(AtomicBool::new(false));
-    let widget_ref: WidgetRef = Rc::new(RefCell::new(Box::new(ToolTipProbe {
-        base: ferrokit_widgets::widget::WidgetBase::new(),
-        change_seen: Arc::clone(&seen_ref),
-    })));
-    set_widget_tool_tip(&widget_ref, "Ref Tooltip");
-    assert!(seen_ref.load(Ordering::SeqCst));
+/// A widget held by its owner (`WidgetRef`) gets the event through the borrow the caller holds; it
+/// is not skipped because the widget is borrowed.
+#[test]
+fn set_tool_tip_through_a_widget_ref_borrow_sends_tool_tip_change() {
+    let log: Log = Arc::default();
+    let widget_ref: WidgetRef = Rc::new(RefCell::new(Box::new(new_probe(&log))));
+    widget_ref.borrow_mut().set_tool_tip("Ref Tooltip");
+    assert_eq!(entries(&log), ["event:Ref Tooltip"]);
     assert_eq!(widget_ref.borrow().tool_tip(), "Ref Tooltip");
+}
+
+/// Every widget type has it, not only a custom one: a stock `Button` reaches an object filter.
+#[test]
+fn a_stock_button_sends_tool_tip_change_to_its_filter() {
+    let log: Log = Arc::default();
+    let (filter_id, _filter) = register_filter(&log, false);
+    let mut button = Button::new("b");
+    button.object_data_mut().install_event_filter(filter_id);
+    button.set_tool_tip("tip");
+    assert_eq!(entries(&log), ["filter"]);
+    assert_eq!(button.tool_tip(), "tip");
 }
