@@ -191,14 +191,14 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
         .try_with(|map| map.borrow_mut().remove(&(hwnd as isize)))
         .ok()
         .flatten();
-    if removed.is_none() {
-        // Its handler is running (taken out of the registry): drop it once it returns.
-        let _ = ACTIVE_DISPATCH.try_with(|a| {
-            if a.borrow().contains_key(&(hwnd as isize)) {
-                let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().insert(hwnd as isize));
-            }
-        });
-    }
+    // While the window is dispatching, its running handler is out of the registry: it must be
+    // dropped, not put back, when it returns (also when it replaced itself first and the
+    // replacement was just removed above).
+    let _ = ACTIVE_DISPATCH.try_with(|a| {
+        if a.borrow().contains_key(&(hwnd as isize)) {
+            let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().insert(hwnd as isize));
+        }
+    });
     // Dropping a handler may drop a window, which unregisters: outside every borrow.
     drop(removed);
     discard_pending_events(hwnd as isize);
@@ -297,6 +297,26 @@ fn has_local_handler(hwnd: isize) -> bool {
             .unwrap_or(false)
 }
 
+/// Whether `hwnd` is a live window of another thread (its events wait for that thread's flush).
+fn owned_by_other_thread(hwnd: isize) -> bool {
+    #[cfg(windows)]
+    {
+        // SAFETY: any handle value is accepted; an invalid one yields thread id 0.
+        unsafe {
+            let tid = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                hwnd as HWND,
+                ptr::null_mut(),
+            );
+            tid != 0 && tid != windows_sys::Win32::System::Threading::GetCurrentThreadId()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        true
+    }
+}
+
 /// Delivers the posted events whose handlers live on the calling thread; the others stay queued
 /// for their own thread.
 pub fn flush_window_system_events() -> bool {
@@ -305,9 +325,22 @@ pub fn flush_window_system_events() -> bool {
         let Some(q) = queue.as_mut() else {
             return false;
         };
-        let (mine, others): (Vec<_>, Vec<_>) =
-            std::mem::take(q).into_iter().partition(|(h, _)| has_local_handler(*h));
-        *q = others;
+        let mut mine = Vec::new();
+        let mut kept = Vec::new();
+        let mut dropped = Vec::new();
+        for entry in std::mem::take(q) {
+            if has_local_handler(entry.0) {
+                mine.push(entry);
+            } else if owned_by_other_thread(entry.0) {
+                kept.push(entry);
+            } else {
+                // No handler anywhere: the window is gone or never had one.
+                dropped.push(entry);
+            }
+        }
+        *q = kept;
+        drop(queue);
+        drop(dropped);
         mine
     };
 
@@ -402,6 +435,22 @@ fn track_button_release(msg: u32) {
 
 /// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
 /// button down captures the mouse, so moves and the release keep reaching this window outside it.
+thread_local! {
+    /// Set while this thread releases the capture to hand the mouse to the native move/size loop:
+    /// the loop swallows the button release, so the pressed buttons must survive the capture loss.
+    static RELEASING_FOR_SYSTEM_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `ReleaseCapture` before `SC_DRAGMOVE` / `SC_SIZE`: the `WM_CAPTURECHANGED` it causes must not
+/// forget the pressed buttons (`sync_mouse_buttons_after_move_loop` still needs them).
+#[cfg(windows)]
+fn release_capture_for_system_loop() {
+    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(true));
+    // SAFETY: plain Win32 call; the capture notification is sent before it returns.
+    unsafe { ReleaseCapture() };
+    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(false));
+}
+
 #[cfg(windows)]
 fn capture_on_press(hwnd: HWND) {
     // SAFETY: plain Win32 calls on a window handle of this process.
@@ -1438,7 +1487,10 @@ unsafe fn native_window_proc_inner(
             // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
             // lost to another thread or to nothing swallows their releases.
             let new_owner = lparam as HWND;
-            if new_owner.is_null() || !is_window_thread(new_owner) {
+            let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
+                .try_with(|f| f.get())
+                .unwrap_or(false);
+            if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
                 let _ = APP_MOUSE_BUTTONS
                     .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             }
@@ -1987,9 +2039,8 @@ impl NativeWindow {
     pub fn start_system_move(&self) -> bool {
         if !self.hwnd.is_null() {
             unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                ReleaseCapture();
+                release_capture_for_system_loop();
                 PostMessageW(self.hwnd, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
             }
             true
@@ -2001,9 +2052,8 @@ impl NativeWindow {
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
             unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                ReleaseCapture();
+                release_capture_for_system_loop();
                 let orientation = edges_to_win_orientation(edges);
                 PostMessageW(self.hwnd, WM_SYSCOMMAND, orientation, 0);
             }
@@ -2539,9 +2589,8 @@ pub fn post_system_move(_hwnd: isize) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
         unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            ReleaseCapture();
+            release_capture_for_system_loop();
             PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
         }
         return true;
@@ -2553,9 +2602,8 @@ pub fn post_system_resize(_hwnd: isize, _edges: crate::platform_window::WindowEd
     #[cfg(windows)]
     if _hwnd != 0 {
         unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            ReleaseCapture();
+            release_capture_for_system_loop();
             let orientation = edges_to_win_orientation(_edges);
             PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, orientation, 0);
         }

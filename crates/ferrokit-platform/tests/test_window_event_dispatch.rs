@@ -182,3 +182,33 @@ fn unregistering_a_window_purges_its_posted_events() {
     assert!(log.borrow().is_empty(), "got {:?}", log.borrow());
     unregister_window_event_binding(fake(0x1071));
 }
+
+#[test]
+fn a_replaced_then_unregistered_handler_does_not_come_back() {
+    let log: Log = Default::default();
+    let l = Rc::clone(&log);
+    set_window_event_handler(
+        fake(0x1091),
+        Box::new(ClosureWindowEventHandler::new(move |_| {
+            l.borrow_mut().push((90, "old handler ran"));
+            // Replace itself, then the window dies: neither handler may survive.
+            set_window_event_handler(fake(0x1091), recorder(&l, 91));
+            unregister_window_event_binding(fake(0x1091));
+        })),
+    );
+    send_window_system_event_immediately(fake(0x1091), WindowSystemEvent::FocusIn);
+    send_window_system_event_immediately(fake(0x1091), WindowSystemEvent::FocusOut);
+    assert_eq!(*log.borrow(), vec![(90, "old handler ran")], "only the first event is handled");
+}
+
+#[test]
+fn flushing_drops_events_for_a_window_nobody_handles() {
+    let log: Log = Default::default();
+    post_window_system_event(fake(0x10A1), WindowSystemEvent::CloseRequest);
+    assert!(!flush_window_system_events(), "nothing to deliver");
+    // A handler registered later must not receive the orphaned event.
+    set_window_event_handler(fake(0x10A1), recorder(&log, 0xA1));
+    flush_window_system_events();
+    assert!(log.borrow().is_empty(), "got {:?}", log.borrow());
+    unregister_window_event_binding(fake(0x10A1));
+}

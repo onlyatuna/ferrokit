@@ -10,14 +10,11 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::DeleteObject;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetGuiResources};
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CONTEXTMENU,
     WM_LBUTTONDBLCLK, WM_LBUTTONUP,
 };
-
-const GR_USEROBJECTS: u32 = 1;
 
 fn pixmap() -> Pixmap {
     let mut p = Pixmap::new(16, 16).expect("pixmap");
@@ -73,14 +70,26 @@ fn a_slot_may_drop_the_tray_icon_while_it_is_being_signalled() {
 
 #[test]
 fn a_tray_created_from_a_pixmap_releases_its_icon() {
-    let objects = || unsafe { GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS) };
-    let before = objects();
-    for _ in 0..60 {
-        let tray = TrayIcon::from_pixmap("leak", &pixmap()).expect("tray");
-        drop(tray);
+    let trays: Vec<_> = (0..3)
+        .map(|_| TrayIcon::from_pixmap("leak", &pixmap()).expect("tray"))
+        .collect();
+    let icons: Vec<_> = trays.iter().map(|t| t.icon()).collect();
+    let alive = |icon| {
+        let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+        let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
+        if ok {
+            unsafe {
+                DeleteObject(info.hbmColor);
+                DeleteObject(info.hbmMask);
+            }
+        }
+        ok
+    };
+    assert!(icons.iter().all(|&i| alive(i)), "icons exist while the trays do");
+    drop(trays);
+    for icon in icons {
+        assert!(!alive(icon), "the tray destroyed the icon it created");
     }
-    let leaked = objects().saturating_sub(before);
-    assert!(leaked < 10, "{leaked} USER objects (icons) leaked by 60 trays");
 }
 
 #[test]

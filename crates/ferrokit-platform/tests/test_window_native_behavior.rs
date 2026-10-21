@@ -156,3 +156,45 @@ fn a_cancelled_mouse_mode_forgets_the_pressed_buttons() {
         assert_ne!(GetCapture(), hwnd, "no button is held: the capture is released");
     }
 }
+
+#[test]
+fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
+    use ferrokit_platform::window::NativeWindow;
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WM_LBUTTONDOWN,
+    };
+    const WM_EXITSIZEMOVE: u32 = 0x0232;
+    let win = NativeWindow::new(
+        "SystemMove",
+        Rect::new(0, 0, 200, 200),
+        WindowFlags::NORMAL,
+    )
+    .expect("native window");
+    let hwnd = win.hwnd();
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    ferrokit_platform::window::set_window_event_handler(
+        hwnd,
+        Box::new(ClosureWindowEventHandler::new(move |ev| sink.lock().push(ev))),
+    );
+    // Put the window under the cursor so the loop end sees the release inside it.
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor);
+        SetWindowPos(hwnd, std::ptr::null_mut(), cursor.x - 50, cursor.y - 50, 200, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+        SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
+    }
+    // `ReleaseCapture` for the native loop must not make the window forget the press.
+    assert!(win.start_system_move());
+    unsafe {
+        SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+    }
+    assert!(
+        seen.lock()
+            .iter()
+            .any(|e| matches!(e, WindowSystemEvent::MouseRelease { .. })),
+        "the release the move loop swallowed is synthesized: {:?}",
+        seen.lock()
+    );
+}
