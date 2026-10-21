@@ -2097,6 +2097,8 @@ impl NativeWindow {
         self.layered_surface = None;
         self.presenter = None;
         if !self.drop_target.is_null() {
+            // `DestroyWindow` neither revokes the OLE registration nor releases our reference.
+            crate::drag_drop::win32_ole::revoke_drop_target(self.hwnd, self.drop_target);
             self.drop_target = std::ptr::null_mut();
         }
         if !self.hwnd.is_null() {

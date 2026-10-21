@@ -291,3 +291,20 @@ fn drag_positions_are_logical_client_coordinates() {
     let expect = Point::new((40.0 / dpr).round() as i32, (60.0 / dpr).round() as i32);
     assert_eq!(*pos, expect, "screen point (origin + 40,60) is client (40,60) / dpr {dpr}");
 }
+
+#[test]
+fn closing_a_window_releases_its_drop_target() {
+    use ferrokit_platform::drag_drop::win32_ole::LIVE_DROP_TARGETS;
+    let before = LIVE_DROP_TARGETS.load(Ordering::SeqCst);
+    let mut win = platform()
+        .create_window("Close", Rect::new(10, 10, 200, 150), WindowFlags::NORMAL)
+        .expect("create window");
+    assert!(win.enable_drop_target(true));
+    assert_eq!(LIVE_DROP_TARGETS.load(Ordering::SeqCst), before + 1);
+    drop(win);
+    assert_eq!(
+        LIVE_DROP_TARGETS.load(Ordering::SeqCst),
+        before,
+        "the target and the OLE registration are gone with the window"
+    );
+}

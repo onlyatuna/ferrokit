@@ -133,6 +133,11 @@ pub mod win32_ole {
 
     pub type HRESULT = i32;
 
+    /// Drop targets created and not yet freed (leak detection in tests).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub static LIVE_DROP_TARGETS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
     const E_NOINTERFACE: HRESULT = 0x8000_4002_u32 as i32;
     const MK_SHIFT: u32 = 0x0004;
     const MK_CONTROL: u32 = 0x0008;
@@ -178,6 +183,8 @@ pub mod win32_ole {
         where
             F: Fn(DropEvent) + Send + Sync + 'static,
         {
+            #[cfg(any(test, feature = "test-hooks"))]
+            LIVE_DROP_TARGETS.fetch_add(1, Ordering::SeqCst);
             let target = Box::new(Self {
                 vtbl: &OLE_DROP_TARGET_VTBL,
                 ref_count: AtomicU32::new(1),
@@ -214,6 +221,13 @@ pub mod win32_ole {
         add_ref(this);
         *ppv_object = this;
         S_OK
+    }
+
+    impl Drop for OleDropTarget {
+        fn drop(&mut self) {
+            #[cfg(any(test, feature = "test-hooks"))]
+            LIVE_DROP_TARGETS.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
