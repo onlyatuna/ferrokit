@@ -3,7 +3,13 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from miri_sweep import compare_with_baseline, ALLOWED_STATUS_TRANSITIONS
+from miri_sweep import (
+    compare_with_baseline,
+    ALLOWED_STATUS_TRANSITIONS,
+    failure_section,
+    isolation_outcome,
+    scan_outcomes,
+)
 class TestMiriSweepBaselineComparison(unittest.TestCase):
     def setUp(self):
         self.swept_targets = ["lib", "layered_tests"]
@@ -125,6 +131,65 @@ class TestMiriSweepBaselineComparison(unittest.TestCase):
         regs, _ = compare_with_baseline(results, {}, baseline, ["lib"], ["SB"])
         self.assertEqual(len(regs), 1)
         self.assertIn("missing from sweep", regs[0])
+
+    def test_should_panic_outcome_lines_parse_to_bare_name(self):
+        text = (
+            "test a::plain ... ok\n"
+            "test a::boom - should panic ... ok\n"
+            "test a::ign - should panic ... ignored\n"
+            "test a::bad - should panic ... FAILED\n"
+            "test a::skip ... ignored, reason\n"
+        )
+        self.assertEqual(
+            scan_outcomes(text)[0],
+            [("a::plain", "ok"), ("a::boom", "ok"), ("a::ign", "ignored"), ("a::bad", "FAILED"), ("a::skip", "ignored")],
+        )
+
+    def test_should_panic_failure_section_found_by_bare_name(self):
+        text = "---- a::bad - should panic stdout ----\nmsg\n\nfailures:\n"
+        self.assertEqual(failure_section(text, "a::bad").strip(), "msg")
+
+    def test_outcome_on_bare_line_after_interleaved_stderr(self):
+        text = (
+            "test a::slow ... \n"
+            "warning: stderr from a::slow\n"
+            "  --> src/lib.rs:1:1\n"
+            "ok\n"
+            "test a::next ... ok\n"
+        )
+        outcomes, unresolved = scan_outcomes(text)
+        self.assertEqual(outcomes, [("a::slow", "ok"), ("a::next", "ok")])
+        self.assertEqual(unresolved, [])
+
+    def test_bare_outcome_attributed_to_most_recent_unresolved_start(self):
+        text = (
+            "test a::first ... \n"
+            "test a::second ... ok\n"
+            "some stderr\n"
+            "FAILED\n"
+            "test a::third ... \n"
+        )
+        outcomes, unresolved = scan_outcomes(text)
+        # `second` resolved on its own line, so the bare FAILED goes to `first`, the most recent
+        # start still without an outcome.
+        self.assertEqual(outcomes, [("a::first", "FAILED"), ("a::second", "ok")])
+        self.assertEqual(unresolved, ["a::third"])
+
+    def test_bare_line_without_pending_start_is_ignored(self):
+        text = "ok\ntest a::x ... ok\n"
+        self.assertEqual(scan_outcomes(text), ([("a::x", "ok")], []))
+
+    def test_started_without_outcome_is_unresolved_stopper(self):
+        text = "test a::crash ... \nerror: undefined behavior\n"
+        self.assertEqual(scan_outcomes(text), ([], ["a::crash"]))
+
+    def test_isolation_outcome_same_line_and_bare_forms(self):
+        same = "test a::t - should panic ... FAILED\n"
+        bare = "test a::t ... \nnoise\nignored, reason\n"
+        self.assertEqual(isolation_outcome(same, "a::t"), "FAILED")
+        self.assertEqual(isolation_outcome(bare, "a::t"), "ignored")
+        self.assertIsNone(isolation_outcome("test a::other ... ok\n", "a::t"))
+        self.assertIsNone(isolation_outcome("test a::tt ... ok\n", "a::t"))
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, set_parent, with_object_mut,
+    add_owned_child, dispatch_to_object, register_owned_qobject, set_parent_by_id, with_object_mut,
     ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::signal::ConnectionType;
@@ -162,7 +162,7 @@ fn an_owned_child_is_freed_when_its_callback_returns_not_when_its_parent_drops()
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let mut child = Child::new("child", &log);
@@ -193,7 +193,7 @@ fn only_the_child_whose_callback_is_running_waits_for_it() {
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     attach(parent_id, Child::new("sibling", &log));
@@ -221,7 +221,7 @@ fn a_grandchild_whose_callback_is_running_keeps_alive_only_itself() {
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let mid = Child::new("mid", &log);
@@ -248,7 +248,7 @@ fn a_grandchild_whose_callback_is_running_keeps_alive_only_itself() {
 fn a_child_that_is_not_running_is_freed_with_its_parent() {
     let log = Log::default();
     let parent = Parent::registered();
-    let parent_id = parent.data.id();
+    let parent_id = OwnedObject::object_id(&parent);
     attach(parent_id, Child::new("child", &log));
 
     drop(parent);
@@ -273,7 +273,7 @@ fn no_slot_of_a_destroyed_child_runs_once_the_slot_that_destroyed_it_has_returne
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let observer = Parent::registered();
@@ -289,7 +289,7 @@ fn no_slot_of_a_destroyed_child_runs_once_the_slot_that_destroyed_it_has_returne
         });
         let calls = Arc::clone(&slot_calls);
         child.data.object_name_changed().connect_object(
-            observer.data.id(),
+            OwnedObject::object_id(&observer),
             ThreadId::current(),
             ConnectionType::Direct,
             move |_| calls.lock().unwrap().push("second"),
@@ -322,7 +322,7 @@ fn the_parent_the_child_and_its_connections_are_cleaned_up_in_one_order() {
     let parent_id;
     let parent = {
         let p = Parent::logging(&log);
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let observer = Parent::registered();
@@ -337,7 +337,7 @@ fn the_parent_the_child_and_its_connections_are_cleaned_up_in_one_order() {
             .connect(move |_| calls.lock().unwrap().push("plain"));
         let calls = Arc::clone(&slot_calls);
         child.data.object_name_changed().connect_object(
-            observer.data.id(),
+            OwnedObject::object_id(&observer),
             ThreadId::current(),
             ConnectionType::Direct,
             move |_| calls.lock().unwrap().push("object"),
@@ -385,7 +385,7 @@ fn a_callback_nested_in_another_one_leaves_nothing_parked_and_frees_the_inner_ch
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let mut inner = Child::new("inner", &log);
@@ -423,7 +423,7 @@ fn freeing_a_parked_child_can_run_a_callback_that_parks_and_frees_another() {
     let second_parent_id;
     let second_parent = {
         let p = Parent::registered();
-        second_parent_id = p.data.id();
+        second_parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let mut second = Child::new("second child", &log);
@@ -434,7 +434,7 @@ fn freeing_a_parked_child_can_run_a_callback_that_parks_and_frees_another() {
     let first_parent_id;
     let first_parent = {
         let p = Parent::registered();
-        first_parent_id = p.data.id();
+        first_parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let mut first = Child::new("first child", &log);
@@ -471,7 +471,7 @@ fn a_child_attached_inside_a_callback_that_destroys_its_parent_is_not_listed_in_
     let parent_id;
     let parent = {
         let p = Parent::registered();
-        parent_id = p.data.id();
+        parent_id = OwnedObject::object_id(&p);
         Rc::new(RefCell::new(Some(p)))
     };
     let attached = Rc::new(RefCell::new(Parent::registered()));
@@ -481,7 +481,7 @@ fn a_child_attached_inside_a_callback_that_destroys_its_parent_is_not_listed_in_
         let parent = Rc::clone(&parent);
         let attached = Rc::clone(&attached);
         child.on_user = Some(Box::new(move |me: &mut Child| {
-            set_parent(&mut attached.borrow_mut().data, Some(me.data.id())).unwrap();
+            set_parent_by_id(OwnedObject::object_id(&attached.borrow()), Some(me.data.id())).unwrap();
             drop(parent.borrow_mut().take());
         }));
     }
@@ -491,7 +491,7 @@ fn a_child_attached_inside_a_callback_that_destroys_its_parent_is_not_listed_in_
 
     assert_eq!(*log.borrow(), vec!["child freed".to_string()]);
     assert_eq!(
-        attached.borrow().data.parent(),
+        attached.borrow().with(|a| a.data.parent()).unwrap(),
         None,
         "the attached object still has the destroyed child as its parent"
     );

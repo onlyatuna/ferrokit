@@ -150,7 +150,7 @@ fn test_asynchronous_update_request_and_event_loop_compression() {
     // window while a callback of it runs.
     let boxed_win = unsafe { register_owned_qobject(win) };
 
-    let root = boxed_win.root_widget();
+    let root = boxed_win.with(|w| w.root_widget()).expect("the window is not in a callback");
     let child1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
         Rect::new(10, 10, 80, 40),
     ))));

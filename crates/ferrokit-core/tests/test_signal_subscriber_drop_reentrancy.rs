@@ -89,9 +89,13 @@ fn unregistering_a_receiver_drops_its_subscribers_outside_the_lock() {
         let receiver_id = OwnedObject::object_id(&receiver);
         let signal: Signal<()> = Signal::new();
         let guard = UsesSignalOnDrop { signal: signal.clone() };
-        signal.connect_direct_to(&*receiver, move |_| {
-            let _ = &guard;
-        });
+        receiver
+            .with(|r| {
+                signal.connect_direct_to(r, move |_| {
+                    let _ = &guard;
+                })
+            })
+            .unwrap();
         // SAFETY: no callback of the receiver runs.
         unsafe { unregister_qobject(receiver_id) };
         assert_eq!(signal.subscriber_count(), 0);
@@ -105,9 +109,13 @@ fn unregistering_from_a_later_slot_of_the_emission_does_not_hang() {
         let receiver_id = OwnedObject::object_id(&receiver);
         let signal: Signal<()> = Signal::new();
         let guard = UsesSignalOnDrop { signal: signal.clone() };
-        signal.connect_direct_to(&*receiver, move |_| {
-            let _ = &guard;
-        });
+        receiver
+            .with(|r| {
+                signal.connect_direct_to(r, move |_| {
+                    let _ = &guard;
+                })
+            })
+            .unwrap();
         // The first subscriber has run and is no longer held by the emission when this slot
         // removes it.
         // SAFETY: no callback of the receiver runs.

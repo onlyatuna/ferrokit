@@ -190,7 +190,7 @@ fn start_timer_fires_timer_event() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     assert!(id.is_valid());
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || ticks
@@ -199,8 +199,8 @@ fn start_timer_fires_timer_event() {
         "QObject::start_timer must arm delivery; got {} ticks",
         ticks.load(Ordering::SeqCst)
     );
-    obj.kill_timer(id);
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 #[test]
@@ -211,11 +211,11 @@ fn kill_timer_stops_firing() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || ticks
         .load(Ordering::SeqCst)
         >= 1));
-    assert!(obj.kill_timer(id));
+    assert!(obj.with_mut(|o| o.kill_timer(id)).unwrap());
     let snapshot = ticks.load(Ordering::SeqCst);
     let settle = Instant::now() + Duration::from_millis(200);
     while Instant::now() < settle {
@@ -227,7 +227,7 @@ fn kill_timer_stops_firing() {
         snapshot,
         "killed object timer must stop"
     );
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn zero_interval_object_timer_fires_repeatedly() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.start_timer(0, TimerType::Coarse);
+    let id = obj.with_mut(|o| o.start_timer(0, TimerType::Coarse)).unwrap();
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || ticks
             .load(Ordering::SeqCst)
@@ -246,8 +246,8 @@ fn zero_interval_object_timer_fires_repeatedly() {
         "zero-interval object timer must repost ZeroTimer; got {} ticks",
         ticks.load(Ordering::SeqCst)
     );
-    obj.kill_timer(id);
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 /// Object filter that counts `Timer` events it sees and optionally consumes them.
@@ -335,15 +335,17 @@ fn timer_event_passes_event_filter() {
     // object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
     let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), false)) };
-    let filter_id = filter.object_data().id();
-    obj.object_data_mut().install_event_filter(filter_id);
+    let filter_id = filter.with(|f| f.object_data().id()).unwrap();
+    obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
+        .unwrap();
 
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || ticks
         .load(Ordering::SeqCst)
         >= 1));
-    obj.kill_timer(id);
-    obj.object_data_mut().remove_event_filter(filter_id);
+    obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    obj.with_mut(|o| o.object_data_mut().remove_event_filter(filter_id))
+        .unwrap();
     assert!(
         seen.load(Ordering::SeqCst) >= 1,
         "timer tick must pass the object event filter; filter saw {} timer events, object got {} ticks",
@@ -351,8 +353,8 @@ fn timer_event_passes_event_filter() {
         ticks.load(Ordering::SeqCst)
     );
     unsafe {
-        unregister_qobject(obj.object_data().id());
-        unregister_qobject(filter.object_data().id());
+        unregister_qobject(obj.with(|o| o.object_data().id()).unwrap());
+        unregister_qobject(filter.with(|f| f.object_data().id()).unwrap());
     }
 }
 
@@ -364,17 +366,17 @@ fn timer_event_reaches_event_override() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(EventSpy::new(Arc::clone(&timers))) };
 
-    let id = obj.start_timer(20, TimerType::Precise);
+    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || timers
         .load(Ordering::SeqCst)
         >= 1));
-    obj.kill_timer(id);
+    obj.with_mut(|o| o.kill_timer(id)).unwrap();
     assert!(
         timers.load(Ordering::SeqCst) >= 1,
         "QObject::event must receive Timer; got {} Timer events",
         timers.load(Ordering::SeqCst)
     );
-    unsafe { unregister_qobject(obj.object_data().id()) };
+    unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
 /// Qt posts `QZeroTimerEvent` to the dispatcher, not to the timer object, so object filters never
@@ -390,25 +392,27 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
     // object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
     let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), true)) };
-    let filter_id = filter.object_data().id();
-    obj.object_data_mut().install_event_filter(filter_id);
+    let filter_id = filter.with(|f| f.object_data().id()).unwrap();
+    obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
+        .unwrap();
 
-    let id = obj.start_timer(0, TimerType::Coarse);
+    let id = obj.with_mut(|o| o.start_timer(0, TimerType::Coarse)).unwrap();
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || seen.load(Ordering::SeqCst)
             >= 5),
         "zero-interval timer must keep repeating after a filter consumes ticks; filter saw {} Timer events",
         seen.load(Ordering::SeqCst)
     );
-    obj.kill_timer(id);
-    obj.object_data_mut().remove_event_filter(filter_id);
+    obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    obj.with_mut(|o| o.object_data_mut().remove_event_filter(filter_id))
+        .unwrap();
     assert_eq!(
         ticks.load(Ordering::SeqCst),
         0,
         "a consuming filter must stop the tick reaching timer_event"
     );
     unsafe {
-        unregister_qobject(obj.object_data().id());
-        unregister_qobject(filter.object_data().id());
+        unregister_qobject(obj.with(|o| o.object_data().id()).unwrap());
+        unregister_qobject(filter.with(|f| f.object_data().id()).unwrap());
     }
 }

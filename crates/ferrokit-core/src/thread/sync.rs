@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::cell::UnsafeCell;
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Condvar, LockResult, Mutex as StdMutex, RwLock as StdRwLock, TryLockError};
 use std::thread::{current as current_thread, ThreadId as StdThreadId};
@@ -179,11 +180,11 @@ impl<T: ?Sized> RecursiveMutex<T> {
                 None => {
                     state.owner = Some(current_id);
                     state.count = 1;
-                    return RecursiveMutexGuard { mutex: self };
+                    return RecursiveMutexGuard::new(self);
                 }
                 Some(owner) if owner == current_id => {
                     state.count += 1;
-                    return RecursiveMutexGuard { mutex: self };
+                    return RecursiveMutexGuard::new(self);
                 }
                 Some(_) => {
                     state = self.cond.wait(state).unwrap();
@@ -201,11 +202,11 @@ impl<T: ?Sized> RecursiveMutex<T> {
             None => {
                 state.owner = Some(current_id);
                 state.count = 1;
-                Some(RecursiveMutexGuard { mutex: self })
+                Some(RecursiveMutexGuard::new(self))
             }
             Some(owner) if owner == current_id => {
                 state.count += 1;
-                Some(RecursiveMutexGuard { mutex: self })
+                Some(RecursiveMutexGuard::new(self))
             }
             Some(_) => None,
         }
@@ -226,11 +227,11 @@ impl<T: ?Sized> RecursiveMutex<T> {
                 None => {
                     state.owner = Some(current_id);
                     state.count = 1;
-                    return Some(RecursiveMutexGuard { mutex: self });
+                    return Some(RecursiveMutexGuard::new(self));
                 }
                 Some(owner) if owner == current_id => {
                     state.count += 1;
-                    return Some(RecursiveMutexGuard { mutex: self });
+                    return Some(RecursiveMutexGuard::new(self));
                 }
                 Some(_) => {
                     let now = Instant::now();
@@ -254,8 +255,45 @@ impl<T: ?Sized> RecursiveMutex<T> {
 }
 
 /// An RAII guard returned by [`RecursiveMutex::lock`].
+///
+/// The guard dereferences to `&T` only. A re-entrant lock on the same thread yields a second
+/// guard, so a `DerefMut` on each would hand out aliasing `&mut T`. Mutate through interior
+/// mutability instead, e.g. `RecursiveMutex<RefCell<T>>` or `RecursiveMutex<Cell<T>>`, as with
+/// `std::sync::ReentrantLockGuard`.
+///
+/// The guard is `!Send`: the owner is tracked per thread, so it must be dropped on the thread
+/// that acquired the lock. It is `Sync` only when `T: Sync`.
+///
+/// ```compile_fail,E0596
+/// use ferrokit_core::thread::RecursiveMutex;
+///
+/// let m = RecursiveMutex::new(0_i32);
+/// let mut g = m.lock();
+/// let r: &mut i32 = &mut *g; // no DerefMut
+/// *r += 1;
+/// ```
+///
+/// ```compile_fail,E0277
+/// use ferrokit_core::thread::RecursiveMutex;
+///
+/// let m = RecursiveMutex::new(0_i32);
+/// let g = m.lock();
+/// std::thread::scope(|s| {
+///     s.spawn(move || drop(g)); // guard is !Send
+/// });
+/// ```
 pub struct RecursiveMutexGuard<'a, T: ?Sized> {
     mutex: &'a RecursiveMutex<T>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'a, T: ?Sized> RecursiveMutexGuard<'a, T> {
+    fn new(mutex: &'a RecursiveMutex<T>) -> Self {
+        Self {
+            mutex,
+            _not_send: PhantomData,
+        }
+    }
 }
 
 unsafe impl<T: ?Sized + Sync> Sync for RecursiveMutexGuard<'_, T> {}
@@ -264,12 +302,6 @@ impl<T: ?Sized> Deref for RecursiveMutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.mutex.data.get() }
-    }
-}
-
-impl<T: ?Sized> DerefMut for RecursiveMutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.mutex.data.get() }
     }
 }
 

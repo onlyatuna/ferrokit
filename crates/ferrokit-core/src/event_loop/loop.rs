@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use crate::object::{ScopeLevelGuard, ThreadContext, ThreadId};
 
-use crate::event::{
-    compress_event as run_compress_event, CoreCompressor, Event, EventCompressor, EventKind,
-};
+use crate::event::{CoreCompressor, Event, EventCompressor, EventKind, MergeKey};
 use crate::object::{send_event, EventSender, ObjectData, ObjectId, QObject};
 use crate::poison::lock_unpoisoned;
 use crate::timer::TimerRegistry;
@@ -141,6 +139,49 @@ pub(crate) fn borrowed_send_rejections() -> usize {
     BORROWED_SEND_REJECTIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether a queued call may run for `receiver`. A non-zero receiver that is not registered on this
+/// thread was destroyed or moved away; Qt never delivers posted events to a destroyed object
+/// (qobject.cpp:206-207). `ObjectId(0)` names no object and is always allowed.
+fn queued_call_receiver_alive(receiver: ObjectId) -> bool {
+    if receiver == ObjectId(0) || crate::object::qobject::registered_on_current_thread(receiver) {
+        return true;
+    }
+    eprintln!("ferrokit: dropped posted call to unregistered object {receiver:?}");
+    false
+}
+
+/// Runs a `MetaCallNoTarget`. No borrow of `receiver` is held, so the functor can reach its
+/// receiver through `with_object_mut`, as a direct slot can.
+fn run_no_target_call(receiver: ObjectId, task: crate::event::MetaCallNoTargetFn) -> bool {
+    if !queued_call_receiver_alive(receiver) {
+        return false;
+    }
+    task();
+    true
+}
+
+/// Runs a `MetaCall` with its receiver as the target. The receiver is borrowed while the functor
+/// runs. Only `ObjectId(0)`, which names no object, gets the unit target, so a downcast to a
+/// receiver type fails. A registered receiver never gets it: `notify_helper` rejects or defers a
+/// receiver that a running callback has borrowed before this call.
+fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
+    if !queued_call_receiver_alive(receiver) {
+        return false;
+    }
+    let mut task_opt = Some(task);
+    let handled = crate::object::with_object_mut(receiver, |obj| {
+        if let Some(task) = task_opt.take() {
+            task(obj);
+        }
+    });
+    if handled.is_none() {
+        if let Some(task) = task_opt.take() {
+            task(&mut ());
+        }
+    }
+    true
+}
+
 pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     // QScopedScopeLevelCounter in QCoreApplication::notify (qcoreapplication.cpp:1118).
     let _scope = ScopeLevelGuard::enter();
@@ -196,45 +237,19 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         return true;
     }
 
+    if matches!(&event.kind, EventKind::MetaCallNoTarget(_)) {
+        if let EventKind::MetaCallNoTarget(task) =
+            std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
+        {
+            return run_no_target_call(receiver, task);
+        }
+    }
+
     if matches!(&event.kind, EventKind::MetaCall(_)) {
         if let EventKind::MetaCall(task) =
             std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
         {
-            // Try dispatch via registered receiver first.
-            let mut task_opt = Some(task);
-            let handled = crate::object::with_object_mut(receiver, |obj| {
-                if let Some(task) = task_opt.take() {
-                    task(obj);
-                }
-            });
-            if handled.is_some() {
-                return true;
-            }
-            // Only the ObjectId(0) sentinel (fire-and-forget calls) may run without a registered
-            // receiver. A non-zero receiver that is not registered on this thread was destroyed or
-            // moved away; Qt never delivers posted events to a destroyed object (qobject.cpp:206-207).
-            if receiver != ObjectId(0)
-                && !crate::object::qobject::registered_on_current_thread(receiver)
-            {
-                eprintln!("ferrokit: dropped posted call to unregistered object {receiver:?}");
-                return false;
-            }
-            // Sentinel, or a registered receiver whose borrow is held by a running callback: the
-            // closure runs on a stub (pre-existing fallback, see residuals).
-            struct NullObj(ObjectData);
-            impl QObject for NullObj {
-                fn object_data(&self) -> &ObjectData {
-                    &self.0
-                }
-                fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.0)
-    }
-            }
-            let mut stub = NullObj(ObjectData::new(receiver));
-            if let Some(task) = task_opt.take() {
-                task(&mut stub);
-            }
-            return true;
+            return run_target_call(receiver, task);
         }
     }
 
@@ -250,6 +265,9 @@ pub struct PostedEvent {
     pub receiver: ObjectId,
     pub event: Event,
     pub priority: i32,
+    /// The merge key of `event` under the compressor of the queue that holds it, set when the
+    /// queue takes the event in. It means nothing outside a queue.
+    merge_key: Option<MergeKey>,
 }
 
 impl PostedEvent {
@@ -258,14 +276,26 @@ impl PostedEvent {
             receiver,
             event,
             priority,
+            merge_key: None,
         }
     }
 }
 
 pub struct EventQueue {
-    pub(crate) events: Vec<PostedEvent>,
+    /// Only `insert_at`, `remove_at` and `remove_posted_events_matching` change the events, so
+    /// that `merge_index` and `sorted_from` follow every change.
+    events: Vec<PostedEvent>,
     pub(crate) insertion_offset: usize,
-    pub(crate) compressor: Arc<dyn EventCompressor>,
+    compressor: Arc<dyn EventCompressor>,
+    /// Where the events that have a merge key are: their positions in `events`, ascending, by
+    /// receiver and key. Compressing an event reads its candidates from here, so it does not scan
+    /// the queue, and an event without a key (a `MetaCall`, for `CoreCompressor`) is not in it.
+    merge_index: HashMap<(ObjectId, MergeKey), Vec<usize>>,
+    /// `events[sorted_from..]` is in non-increasing priority order, so `insert_posted` finds its
+    /// place there by binary search and walks only the events in front of it. Those are events
+    /// that a turn left queued (those of a borrowed receiver), with events of a higher priority
+    /// posted behind them; delivering or removing them moves `sorted_from` back toward the front.
+    sorted_from: usize,
 }
 
 impl Default for EventQueue {
@@ -276,11 +306,7 @@ impl Default for EventQueue {
 
 impl EventQueue {
     pub fn new() -> Self {
-        Self {
-            events: Vec::new(),
-            insertion_offset: 0,
-            compressor: Arc::new(CoreCompressor),
-        }
+        Self::with_compressor(Arc::new(CoreCompressor))
     }
 
     pub fn with_compressor(compressor: Arc<dyn EventCompressor>) -> Self {
@@ -288,6 +314,8 @@ impl EventQueue {
             events: Vec::new(),
             insertion_offset: 0,
             compressor,
+            merge_index: HashMap::new(),
+            sorted_from: 0,
         }
     }
 
@@ -303,8 +331,49 @@ impl EventQueue {
         &self.events
     }
 
+    /// Installs `compressor` and returns the one it replaces. The queued events get their merge
+    /// keys from the new compressor. The keys are all computed before anything changes, so a
+    /// compressor that panics leaves the queue as it was.
+    pub(crate) fn replace_compressor(
+        &mut self,
+        compressor: Arc<dyn EventCompressor>,
+    ) -> Arc<dyn EventCompressor> {
+        let keys: Vec<Option<MergeKey>> = self
+            .events
+            .iter()
+            .map(|posted| compressor.merge_key(&posted.event))
+            .collect();
+        for (posted, key) in self.events.iter_mut().zip(keys) {
+            posted.merge_key = key;
+        }
+        self.rebuild_merge_index();
+        std::mem::replace(&mut self.compressor, compressor)
+    }
+
+    /// Merges `event` into a queued event of `receiver`, if the compressor finds one.
     pub fn compress_event(&mut self, receiver: ObjectId, event: &mut Event) -> bool {
-        run_compress_event(&mut self.events, receiver, event, &*self.compressor)
+        let key = self.compressor.merge_key(event);
+        self.merge_into_queued(receiver, key, event)
+    }
+
+    /// Offers `incoming` to the queued events of `receiver` that have its merge key, newest first,
+    /// until one takes it. An event without a key, and a key no queued event has, end it at once.
+    fn merge_into_queued(
+        &mut self,
+        receiver: ObjectId,
+        key: Option<MergeKey>,
+        incoming: &Event,
+    ) -> bool {
+        let Some(key) = key else {
+            return false;
+        };
+        let Some(positions) = self.merge_index.get(&(receiver, key)) else {
+            return false;
+        };
+        positions.iter().rev().any(|&pos| {
+            self.compressor
+                .try_compress(&mut self.events[pos].event, incoming, receiver)
+        })
     }
 
     pub fn post_event(&mut self, receiver: ObjectId, event: Event) {
@@ -336,21 +405,33 @@ impl EventQueue {
         let Some(incoming) = event.as_mut() else {
             return;
         };
-        if self.compress_event(receiver, incoming) {
+        let key = self.compressor.merge_key(incoming);
+        if self.merge_into_queued(receiver, key, incoming) {
             return;
         }
         if let Some(event) = event.take() {
-            self.insert_posted(PostedEvent::new(receiver, event, priority));
+            self.insert_keyed(PostedEvent::new(receiver, event, priority), key);
         }
     }
 
     /// Removes the event at `index`. Removing one from the current turn shrinks
     /// `insertion_offset` with it (Qt `insertionOffset -= startOffset`, qcoreapplication.cpp:1847).
     pub(crate) fn remove_at(&mut self, index: usize) -> PostedEvent {
+        let posted = self.events.remove(index);
         if index < self.insertion_offset {
             self.insertion_offset -= 1;
         }
-        self.events.remove(index)
+        if index < self.sorted_from {
+            self.sorted_from -= 1;
+        }
+        if let Some(key) = posted.merge_key {
+            self.unindex(posted.receiver, key, index);
+        }
+        // What was behind the removed event is one place nearer the front.
+        if index < self.events.len() {
+            self.shift_index(index + 1, -1);
+        }
+        posted
     }
 
     /// Removes every posted event addressed to `receiver` (Qt
@@ -372,13 +453,18 @@ impl EventQueue {
             return Vec::new();
         }
         let turn_end = self.insertion_offset;
+        let sorted_from = self.sorted_from;
         let mut removed = Vec::new();
         let mut removed_in_turn = 0;
+        let mut removed_before_sorted = 0;
         let mut kept = Vec::with_capacity(self.events.len());
         for (index, posted) in std::mem::take(&mut self.events).into_iter().enumerate() {
             if affected(posted.receiver) {
                 if index < turn_end {
                     removed_in_turn += 1;
+                }
+                if index < sorted_from {
+                    removed_before_sorted += 1;
                 }
                 removed.push(posted);
             } else {
@@ -387,6 +473,8 @@ impl EventQueue {
         }
         self.events = kept;
         self.insertion_offset -= removed_in_turn;
+        self.sorted_from -= removed_before_sorted;
+        self.rebuild_merge_index();
         removed
     }
 
@@ -402,15 +490,134 @@ impl EventQueue {
         }
     }
 
+    /// Appends `posted` without compressing it and without looking at its priority.
+    pub(crate) fn push_back(&mut self, posted: PostedEvent) {
+        let key = self.compressor.merge_key(&posted.event);
+        let end = self.events.len();
+        self.insert_at(end, posted, key);
+    }
+
     /// Inserts in priority order after the turn boundary, so an event posted during a turn waits
     /// for the next one (qthread_p.h:65-86).
     pub(crate) fn insert_posted(&mut self, posted: PostedEvent) {
-        let start_search = self.insertion_offset.min(self.events.len());
-        let relative_idx = self.events[start_search..]
+        let key = self.compressor.merge_key(&posted.event);
+        self.insert_keyed(posted, key);
+    }
+
+    fn insert_keyed(&mut self, posted: PostedEvent, key: Option<MergeKey>) {
+        let pos = self.insert_position(posted.priority);
+        self.insert_at(pos, posted, key);
+    }
+
+    /// The place of an event of `priority`: in front of the first event of a lower priority after
+    /// the turn boundary, or the end. The events up to `sorted_from` are not in order and are
+    /// looked at one by one; the rest are, so a binary search finds the place among them.
+    fn insert_position(&self, priority: i32) -> usize {
+        let start = self.insertion_offset.min(self.events.len());
+        let sorted_from = self.sorted_from.max(start);
+        if let Some(offset) = self.events[start..sorted_from]
             .iter()
-            .position(|e| e.priority < posted.priority)
-            .unwrap_or(self.events.len() - start_search);
-        self.events.insert(start_search + relative_idx, posted);
+            .position(|e| e.priority < priority)
+        {
+            return start + offset;
+        }
+        sorted_from + self.events[sorted_from..].partition_point(|e| e.priority >= priority)
+    }
+
+    /// Puts `posted` at `pos`, with `key` as its merge key, and brings `merge_index` and
+    /// `sorted_from` along.
+    fn insert_at(&mut self, pos: usize, mut posted: PostedEvent, key: Option<MergeKey>) {
+        posted.merge_key = key;
+        // What is at `pos` and behind it is one place nearer the end.
+        if pos < self.events.len() {
+            self.shift_index(pos, 1);
+        }
+        if let Some(key) = key {
+            let positions = self.merge_index.entry((posted.receiver, key)).or_default();
+            let at = positions.partition_point(|&p| p < pos);
+            positions.insert(at, pos);
+        }
+        if pos < self.sorted_from {
+            self.sorted_from += 1;
+        } else if pos > self.sorted_from && self.events[pos - 1].priority < posted.priority {
+            // The new event is in front of lower priorities and behind a lower one: it begins
+            // the part that is in order.
+            self.sorted_from = pos;
+        }
+        self.events.insert(pos, posted);
+    }
+
+    /// Moves every indexed position from `first` on by `delta`.
+    fn shift_index(&mut self, first: usize, delta: isize) {
+        for positions in self.merge_index.values_mut() {
+            let from = positions.partition_point(|&p| p < first);
+            for pos in &mut positions[from..] {
+                *pos = pos.wrapping_add_signed(delta);
+            }
+        }
+    }
+
+    /// Drops the entry of the event at `pos` from `merge_index`.
+    fn unindex(&mut self, receiver: ObjectId, key: MergeKey, pos: usize) {
+        let Some(positions) = self.merge_index.get_mut(&(receiver, key)) else {
+            debug_assert!(false, "an event with a merge key is not in the index");
+            return;
+        };
+        match positions.binary_search(&pos) {
+            Ok(at) => {
+                positions.remove(at);
+            }
+            Err(_) => debug_assert!(false, "an event with a merge key is not in the index"),
+        }
+        if positions.is_empty() {
+            self.merge_index.remove(&(receiver, key));
+        }
+    }
+
+    fn rebuild_merge_index(&mut self) {
+        self.merge_index.clear();
+        for (pos, posted) in self.events.iter().enumerate() {
+            if let Some(key) = posted.merge_key {
+                self.merge_index
+                    .entry((posted.receiver, key))
+                    .or_default()
+                    .push(pos);
+            }
+        }
+    }
+
+    /// Checks what the index and `sorted_from` promise, against the events.
+    #[cfg(test)]
+    pub(crate) fn assert_consistent(&self) {
+        let mut expected: HashMap<(ObjectId, MergeKey), Vec<usize>> = HashMap::new();
+        for (pos, posted) in self.events.iter().enumerate() {
+            assert_eq!(
+                posted.merge_key,
+                self.compressor.merge_key(&posted.event),
+                "stale merge key at {pos}"
+            );
+            if let Some(key) = posted.merge_key {
+                expected
+                    .entry((posted.receiver, key))
+                    .or_default()
+                    .push(pos);
+            }
+        }
+        assert_eq!(self.merge_index, expected, "merge index");
+        assert!(
+            self.sorted_from <= self.events.len(),
+            "sorted_from past the end"
+        );
+        assert!(
+            self.events[self.sorted_from..]
+                .windows(2)
+                .all(|pair| pair[0].priority >= pair[1].priority),
+            "events from sorted_from are not in priority order"
+        );
+        assert!(
+            self.insertion_offset <= self.events.len(),
+            "offset past the end"
+        );
     }
 }
 
@@ -608,7 +815,7 @@ impl EventLoop {
     pub fn set_compressor(&mut self, compressor: Arc<dyn EventCompressor>) {
         // The compressor that is replaced is dropped after the queue lock is released: its `Drop`
         // may post events, which takes that lock.
-        let replaced = std::mem::replace(&mut lock_unpoisoned(&self.state.queue).compressor, compressor);
+        let replaced = lock_unpoisoned(&self.state.queue).replace_compressor(compressor);
         drop(replaced);
     }
 
@@ -1015,10 +1222,10 @@ impl EventLoopHandle {
         // merges into queued events in place and the merge-or-insert decision must be atomic
         // against other posters and the pump (Qt compresses under the `postEventList` mutex).
         // A panicking compressor cannot leave the queue structurally inconsistent: it runs before
-        // the queue is changed (it sees `events` as a slice, so the length cannot change) and the
-        // incoming event stays in the slot; an event it had already edited in place stays as it
-        // was left. The lock is therefore taken with `lock_unpoisoned`, so a later destruction or
-        // loop teardown still completes.
+        // the queue and its index are changed (it is given one queued event at a time, never the
+        // collection) and the incoming event stays in the slot; an event it had already edited in
+        // place stays as it was left. The lock is therefore taken with `lock_unpoisoned`, so a
+        // later destruction or loop teardown still completes.
         let mut queue = lock_unpoisoned(&self.queue);
         queue.post_from_slot(receiver, event, priority);
         if event.is_none() {
@@ -1056,6 +1263,9 @@ struct ThreadEventRegistry {
     /// Same ordering and compression rules as a live loop's queue (`EventQueue`), so a thread
     /// that never starts a loop does not accumulate duplicate `UpdateRequest`s.
     pending: HashMap<ThreadId, EventQueue>,
+    /// Threads whose locals have been destroyed (see [`mark_thread_ended`]). A thread id is never
+    /// reused, so an entry stays valid; it costs a few bytes for each thread that used the library.
+    ended: std::collections::HashSet<ThreadId>,
 }
 
 static THREAD_EVENT_HANDLES: Mutex<Option<ThreadEventRegistry>> = Mutex::new(None);
@@ -1065,8 +1275,24 @@ impl ThreadEventRegistry {
         Self {
             handles: HashMap::new(),
             pending: HashMap::new(),
+            ended: std::collections::HashSet::new(),
         }
     }
+}
+
+/// Records that `thread_id` has ended and drops what was held for it. Events posted to it from
+/// now on are dropped (see [`post_event_to_thread`]). Both happen under the registry lock, so
+/// an event is either held and dropped here, or posted after and dropped by the poster: none is
+/// left in a queue that nobody will turn. The dropped events are released after the lock is
+/// released, since a payload's `Drop` may post events or unregister objects.
+pub(crate) fn mark_thread_ended(thread_id: ThreadId) {
+    let held = {
+        let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
+        let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        reg.ended.insert(thread_id);
+        reg.pending.remove(&thread_id)
+    };
+    drop(held);
 }
 
 /// Registers the live loop for `thread_id` and delivers, in posting order, every event that was
@@ -1081,6 +1307,9 @@ pub fn register_thread_event_loop(thread_id: ThreadId, handle: EventLoopHandle) 
     {
         let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
+        // A loop that starts on a thread already reported as ended (during the destruction of
+        // its locals) can turn its queue again: posts must reach it.
+        reg.ended.remove(&thread_id);
         if let Some(buffered) = reg.pending.remove(&thread_id) {
             for posted in buffered.events {
                 let mut event = Some(posted.event);
@@ -1103,7 +1332,11 @@ pub fn unregister_thread_event_loop(thread_id: ThreadId) {
 }
 
 /// Posts `event` to the thread's event queue. If the thread has no event loop yet the event is
-/// held until one registers (see [`register_thread_event_loop`]); it is never dropped.
+/// held until one registers (see [`register_thread_event_loop`]), or until the thread ends, when
+/// it is dropped with the rest of what was held for it. An event posted to a thread that has
+/// already ended is dropped at once, after the registry lock is released: no loop can turn that
+/// queue any more. A thread counts as ended once its locals are destroyed, and only if it asked
+/// for its [`ThreadId::current`](crate::object::ThreadId::current) while it lived.
 pub fn post_event_to_thread(thread_id: ThreadId, receiver: ObjectId, event: Event) {
     post_event_to_thread_with_priority(thread_id, receiver, event, 0);
 }
@@ -1130,6 +1363,9 @@ pub fn post_event_to_thread_with_priority(
     let mut reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
     let reg = reg.get_or_insert_with(ThreadEventRegistry::new);
     let thread_id = routed_thread(receiver, thread_id);
+    if reg.ended.contains(&thread_id) {
+        return;
+    }
     match reg.handles.get(&thread_id) {
         Some(handle) => handle.post_from_slot(receiver, &mut event, priority),
         None => reg
@@ -1161,6 +1397,9 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 /// (Qt `setThreadData_helper`, qobject.cpp:1805-1815, under the locks of qobject.cpp:1757-1758).
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
     let mut woken = None;
+    // Events moved to a thread that has ended; dropped after the registry lock is released, as a
+    // payload's `Drop` may post events or unregister objects.
+    let mut discarded = Vec::new();
     {
         let mut guard = lock_unpoisoned(&THREAD_EVENT_HANDLES);
         let reg = guard.get_or_insert_with(ThreadEventRegistry::new);
@@ -1195,6 +1434,11 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
                     }
                     woken = Some(handle.clone());
                 }
+                None if reg.ended.contains(&to) => {
+                    // No loop can turn that queue: the events go with the thread, and their
+                    // payloads are dropped after the lock is released.
+                    discarded.extend(moved);
+                }
                 None => {
                     let queue = reg.pending.entry(to).or_default();
                     for posted in moved {
@@ -1204,6 +1448,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
             }
         }
     }
+    drop(discarded);
     if let Some(handle) = woken {
         handle.wake_up();
     }
@@ -1281,7 +1526,7 @@ mod tests {
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.call_count += 1;
                 let mut q = self.queue.lock().unwrap();
-                q.events.push(PostedEvent::new(
+                q.push_back(PostedEvent::new(
                     self.data.id(),
                     Event::new(EventKind::UpdateRequest),
                     0,
@@ -1299,7 +1544,7 @@ mod tests {
 
         {
             let mut q = event_loop.queue().lock().unwrap();
-            q.events.push(PostedEvent::new(
+            q.push_back(PostedEvent::new(
                 widget.object_data().id(),
                 Event::new(EventKind::UpdateRequest),
                 0,
@@ -2636,18 +2881,18 @@ mod tests {
                 data: ObjectData::new(ObjectId::next()),
             })
         };
-        let victim_id = victim.data.id();
+        let victim_id = crate::object::OwnedObject::object_id(&victim);
         // SAFETY: as above.
         let driver = unsafe {
             register_owned_qobject(Driver {
                 data: ObjectData::new(ObjectId::next()),
-                victim_data: &victim.data as *const ObjectData as usize,
+                victim_data: victim.with(|v| &v.data as *const ObjectData as usize).unwrap(),
                 victim_id,
                 survived_nested: Arc::clone(&survived_nested),
                 deleted_by_outer: Arc::clone(&deleted_by_outer),
             })
         };
-        let driver_id = driver.data.id();
+        let driver_id = crate::object::OwnedObject::object_id(&driver);
         post_event_to_thread(
             ThreadId::current(),
             driver_id,
@@ -2986,5 +3231,405 @@ mod tests {
             "the outer loop must end with the cross-thread code"
         );
         assert_eq!(*log.lock().unwrap(), vec!["inner-3".to_string()]);
+    }
+
+    /// A loop that registers on a thread already reported as ended (one that starts while the
+    /// thread's locals are destroyed) gets the posts made after it registered; the ones made
+    /// while the thread counted as ended were dropped.
+    #[test]
+    fn registering_a_loop_on_an_ended_thread_makes_it_receive_posts_again() {
+        let delivered = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
+        let event = |name: &'static str| {
+            let log = Arc::clone(&delivered);
+            Event::new(EventKind::MetaCall(Box::new(move |_| log.lock().push(name))))
+        };
+        let el = EventLoop::new();
+        let thread = ThreadId::current();
+        mark_thread_ended(thread);
+        post_event_to_thread(thread, ObjectId(0), event("while-ended"));
+        register_thread_event_loop(thread, el.handle());
+        post_event_to_thread(thread, ObjectId(0), event("after-register"));
+        el.process_events(false);
+        assert_eq!(*delivered.lock(), vec!["after-register"]);
+    }
+}
+
+#[cfg(test)]
+mod merge_index_tests {
+    use super::*;
+
+    fn update_request() -> Event {
+        Event::new(EventKind::UpdateRequest)
+    }
+
+    fn meta_call() -> Event {
+        Event::new(EventKind::MetaCall(Box::new(|_| {})))
+    }
+
+    /// The queue as it was before it had an index and `sorted_from`: a plain vector that every
+    /// post scans from the back, and in which an insertion scans from the turn boundary.
+    #[derive(Default)]
+    struct ScanQueue {
+        events: Vec<PostedEvent>,
+        insertion_offset: usize,
+    }
+
+    impl ScanQueue {
+        fn post(&mut self, receiver: ObjectId, event: Event, priority: i32) {
+            for posted in self.events.iter_mut().rev() {
+                if posted.receiver == receiver
+                    && CoreCompressor.try_compress(&mut posted.event, &event, receiver)
+                {
+                    return;
+                }
+            }
+            self.insert(PostedEvent::new(receiver, event, priority));
+        }
+
+        fn insert(&mut self, posted: PostedEvent) {
+            let start_search = self.insertion_offset.min(self.events.len());
+            let relative_idx = self.events[start_search..]
+                .iter()
+                .position(|e| e.priority < posted.priority)
+                .unwrap_or(self.events.len() - start_search);
+            self.events.insert(start_search + relative_idx, posted);
+        }
+
+        fn remove_at(&mut self, index: usize) -> PostedEvent {
+            if index < self.insertion_offset {
+                self.insertion_offset -= 1;
+            }
+            self.events.remove(index)
+        }
+
+        fn remove_receiver(&mut self, receiver: ObjectId) {
+            let turn_end = self.insertion_offset;
+            let mut removed_in_turn = 0;
+            let mut index = 0;
+            self.events.retain(|posted| {
+                let remove = posted.receiver == receiver;
+                if remove && index < turn_end {
+                    removed_in_turn += 1;
+                }
+                index += 1;
+                !remove
+            });
+            self.insertion_offset -= removed_in_turn;
+        }
+    }
+
+    /// What tells two queued events apart: the receiver, the priority and the kind with its data.
+    fn summary(events: &[PostedEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|posted| {
+                let kind = match &posted.event.kind {
+                    EventKind::User(data) => {
+                        format!("User({})", data.downcast_ref::<u32>().unwrap())
+                    }
+                    kind => format!("{kind:?}"),
+                };
+                format!("{:?} p{} {kind}", posted.receiver, posted.priority)
+            })
+            .collect()
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self, below: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % below
+        }
+    }
+
+    /// A kind of event that the compressor merges, one that it does not, and a payload that tells
+    /// events of the second kind apart.
+    fn random_event(rng: &mut Rng, serial: &mut u32) -> Event {
+        let kind = match rng.next(9) {
+            0 | 1 => EventKind::UpdateRequest,
+            2 => EventKind::LayoutRequest,
+            3 => EventKind::Timer {
+                timer_id: rng.next(3),
+            },
+            4 => EventKind::ZeroTimer {
+                timer_id: rng.next(2),
+            },
+            5 => EventKind::Quit {
+                exit_code: rng.next(100) as i32,
+            },
+            6 => EventKind::Resize {
+                width: rng.next(1000) as i32,
+                height: rng.next(1000) as i32,
+                old_width: 0,
+                old_height: 0,
+            },
+            7 => return meta_call(),
+            _ => {
+                *serial += 1;
+                EventKind::User(Box::new(*serial))
+            }
+        };
+        Event::new(kind)
+    }
+
+    /// Runs the same random operations on an `EventQueue` and on the scanning queue it replaced,
+    /// and requires the same events in the same order after each of them, and an index that is
+    /// what the events say it should be.
+    #[test]
+    fn the_queue_matches_a_scanning_queue_under_random_operations() {
+        let (seeds, steps) = if cfg!(miri) { (3, 150) } else { (40, 3000) };
+        for seed in 1..=seeds {
+            let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ (seed * 0x1234_5678_9ABC));
+            let mut serial = 0u32;
+            let mut queue = EventQueue::new();
+            let mut model = ScanQueue::default();
+
+            for step in 0..steps {
+                let receiver = ObjectId(rng.next(4));
+                let priority = [-1, 0, 0, 0, 1, 3][rng.next(6) as usize];
+                match rng.next(100) {
+                    0..=64 => {
+                        // Both queues get an event that has the same payload.
+                        let before = serial;
+                        let event = random_event(&mut rng, &mut serial);
+                        let twin = match &event.kind {
+                            EventKind::User(_) => Event::new(EventKind::User(Box::new(before + 1))),
+                            EventKind::MetaCall(_) => meta_call(),
+                            kind => Event::new(clone_plain_kind(kind)),
+                        };
+                        queue.post_event_with_priority(receiver, event, priority);
+                        model.post(receiver, twin, priority);
+                    }
+                    65..=69 => {
+                        queue.insertion_offset = queue.events.len();
+                        model.insertion_offset = model.events.len();
+                    }
+                    70..=79 if !queue.events.is_empty() => {
+                        let index = rng.next(queue.events.len() as u64) as usize;
+                        queue.remove_at(index);
+                        model.remove_at(index);
+                    }
+                    80..=82 => {
+                        queue.insertion_offset = 0;
+                        model.insertion_offset = 0;
+                    }
+                    83..=89 => {
+                        queue.remove_posted_events(receiver);
+                        model.remove_receiver(receiver);
+                    }
+                    90..=93 => {
+                        let twin = Event::new(EventKind::UpdateRequest);
+                        queue.push_back(PostedEvent::new(receiver, update_request(), priority));
+                        model
+                            .events
+                            .push(PostedEvent::new(receiver, twin, priority));
+                    }
+                    94..=97 if !queue.events.is_empty() => {
+                        // A gated `DeferredDelete` leaves the turn and is queued again.
+                        let index = rng.next(queue.events.len() as u64) as usize;
+                        let posted = queue.remove_at(index);
+                        queue.insert_posted(posted);
+                        let posted = model.remove_at(index);
+                        model.insert(posted);
+                    }
+                    _ => {}
+                }
+                queue.assert_consistent();
+                assert_eq!(
+                    summary(&queue.events),
+                    summary(&model.events),
+                    "seed {seed} step {step}"
+                );
+                assert_eq!(
+                    queue.insertion_offset, model.insertion_offset,
+                    "seed {seed} step {step}"
+                );
+            }
+        }
+    }
+
+    /// The kinds `random_event` makes that carry no payload that has to stay unique.
+    fn clone_plain_kind(kind: &EventKind) -> EventKind {
+        match kind {
+            EventKind::UpdateRequest => EventKind::UpdateRequest,
+            EventKind::LayoutRequest => EventKind::LayoutRequest,
+            EventKind::Timer { timer_id } => EventKind::Timer {
+                timer_id: *timer_id,
+            },
+            EventKind::ZeroTimer { timer_id } => EventKind::ZeroTimer {
+                timer_id: *timer_id,
+            },
+            EventKind::Quit { exit_code } => EventKind::Quit {
+                exit_code: *exit_code,
+            },
+            EventKind::Resize {
+                width,
+                height,
+                old_width,
+                old_height,
+            } => EventKind::Resize {
+                width: *width,
+                height: *height,
+                old_width: *old_width,
+                old_height: *old_height,
+            },
+            other => panic!("not a plain kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn events_that_cannot_merge_are_not_indexed_and_do_not_hide_the_ones_that_can() {
+        let mut queue = EventQueue::new();
+        let widget = ObjectId(7);
+        queue.post_event(widget, update_request());
+        queue.post_event(widget, Event::new(EventKind::Timer { timer_id: 1 }));
+        let others = if cfg!(miri) { 50 } else { 5000 };
+        for _ in 0..others {
+            queue.post_event(ObjectId(0), meta_call());
+            queue.post_event(widget, meta_call());
+        }
+        queue.assert_consistent();
+        assert_eq!(queue.len(), 2 + 2 * others);
+        assert_eq!(
+            queue.merge_index.len(),
+            2,
+            "only the update request and the timer are indexed"
+        );
+
+        // Both find their candidate behind all the calls.
+        queue.post_event(widget, update_request());
+        queue.post_event(widget, Event::new(EventKind::Timer { timer_id: 1 }));
+        assert_eq!(queue.len(), 2 + 2 * others, "both were merged");
+        // A timer with another id and an update request for another receiver are new events.
+        queue.post_event(widget, Event::new(EventKind::Timer { timer_id: 2 }));
+        queue.post_event(ObjectId(8), update_request());
+        assert_eq!(queue.len(), 4 + 2 * others);
+        queue.assert_consistent();
+    }
+
+    #[test]
+    fn removing_posted_events_keeps_the_index_in_step() {
+        let mut queue = EventQueue::new();
+        let (a, b) = (ObjectId(1), ObjectId(2));
+        queue.post_event(a, update_request());
+        queue.post_event(b, update_request());
+        queue.post_event(ObjectId(0), meta_call());
+        queue.post_event(a, Event::new(EventKind::Timer { timer_id: 5 }));
+        queue.post_event(b, Event::new(EventKind::LayoutRequest));
+        queue.assert_consistent();
+
+        // Everything of `a` goes; what was behind it moves forward in the index with it.
+        let removed = queue.remove_posted_events(a);
+        assert_eq!(removed.len(), 2);
+        queue.assert_consistent();
+        assert_eq!(queue.len(), 3);
+
+        queue.post_event(b, update_request());
+        queue.post_event(b, Event::new(EventKind::LayoutRequest));
+        assert_eq!(queue.len(), 3, "b's events merge into the ones that moved");
+        queue.post_event(a, update_request());
+        assert_eq!(
+            queue.len(),
+            4,
+            "a's update request was removed, not merged into"
+        );
+
+        // Delivering from the front, as a pump does.
+        queue.insertion_offset = queue.len();
+        let first = queue.remove_at(0);
+        assert_eq!(first.receiver, b);
+        queue.assert_consistent();
+        queue.post_event(b, update_request());
+        assert_eq!(
+            queue.len(),
+            4,
+            "the removed update request is not merged into"
+        );
+        queue.post_event(b, Event::new(EventKind::LayoutRequest));
+        assert_eq!(queue.len(), 4, "the layout request behind it still is");
+        queue.assert_consistent();
+
+        let moved = queue.remove_posted_events_matching(|id| id == a || id == b);
+        assert_eq!(moved.len(), 3);
+        queue.assert_consistent();
+        assert!(queue.merge_index.is_empty());
+    }
+
+    #[test]
+    fn an_insertion_goes_in_front_of_the_first_lower_priority_after_the_turn() {
+        let mut queue = EventQueue::new();
+        let r = ObjectId(0);
+        for (label, priority) in [(1u32, 0), (2, 0)] {
+            queue.post_event_with_priority(
+                r,
+                Event::new(EventKind::User(Box::new(label))),
+                priority,
+            );
+        }
+        // A turn that leaves its events queued, with higher priorities posted behind it.
+        queue.insertion_offset = queue.len();
+        queue.post_event_with_priority(r, Event::new(EventKind::User(Box::new(3u32))), 5);
+        queue.post_event_with_priority(r, Event::new(EventKind::User(Box::new(4u32))), 5);
+        queue.insertion_offset = 0;
+        queue.assert_consistent();
+        // `[1 p0, 2 p0, 3 p5, 4 p5]`: a priority 3 event goes in front of the first lower one.
+        queue.post_event_with_priority(r, Event::new(EventKind::User(Box::new(5u32))), 3);
+        queue.assert_consistent();
+        assert_eq!(
+            summary(queue.events()),
+            [
+                "ObjectId(0) p3 User(5)",
+                "ObjectId(0) p0 User(1)",
+                "ObjectId(0) p0 User(2)",
+                "ObjectId(0) p5 User(3)",
+                "ObjectId(0) p5 User(4)",
+            ]
+        );
+    }
+
+    /// A compressor that merges everything of a receiver, and leaves the default merge key.
+    struct MergeAll;
+
+    impl EventCompressor for MergeAll {
+        fn try_compress(
+            &self,
+            _existing: &mut Event,
+            _incoming: &Event,
+            _receiver: ObjectId,
+        ) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn installing_a_compressor_gives_the_queued_events_its_keys() {
+        let mut queue = EventQueue::new();
+        let widget = ObjectId(3);
+        queue.post_event(widget, update_request());
+        queue.post_event(widget, meta_call());
+        assert_eq!(queue.len(), 2, "the core compressor does not merge a call");
+        assert_eq!(queue.merge_index.len(), 1);
+
+        let replaced = queue.replace_compressor(Arc::new(MergeAll));
+        queue.assert_consistent();
+        assert_eq!(queue.merge_index.len(), 1, "both are in one class now");
+        assert_eq!(queue.merge_index[&(widget, MergeKey::new(0, 0))], [0, 1]);
+
+        queue.post_event(widget, Event::new(EventKind::LayoutRequest));
+        assert_eq!(queue.len(), 2, "any event of the receiver is merged now");
+        queue.post_event(ObjectId(4), update_request());
+        assert_eq!(queue.len(), 3, "but only into those of its own receiver");
+
+        let merge_all = queue.replace_compressor(replaced);
+        queue.assert_consistent();
+        assert_eq!(
+            queue.merge_index.len(),
+            2,
+            "the update requests of both receivers"
+        );
+        drop(merge_all);
     }
 }

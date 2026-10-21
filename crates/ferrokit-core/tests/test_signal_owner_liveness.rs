@@ -163,9 +163,10 @@ fn a_live_owner_reaches_a_slot_of_every_kind() {
     let el = EventLoop::new();
     let rcv = receiver();
     let owner = Owner::registered();
-    let (counters, _scoped) = connect_every_kind(&owner.changed, &rcv);
+    let changed = owner.with(|o| o.changed.clone()).unwrap();
+    let (counters, _scoped) = rcv.with(|r| connect_every_kind(&changed, r)).unwrap();
 
-    owner.changed.emit(&1);
+    changed.emit(&1);
     el.process_events(false);
 
     for (name, n) in runs(&counters) {
@@ -180,8 +181,8 @@ fn an_emission_on_a_dropped_owner_calls_no_slot_however_it_was_connected() {
     let el = EventLoop::new();
     let rcv = receiver();
     let owner = Owner::registered();
-    let handle = owner.changed.clone();
-    let (counters, _scoped) = connect_every_kind(&handle, &rcv);
+    let handle = owner.with(|o| o.changed.clone()).unwrap();
+    let (counters, _scoped) = rcv.with(|r| connect_every_kind(&handle, r)).unwrap();
 
     drop(owner);
     handle.emit(&1);
@@ -223,10 +224,10 @@ fn the_signal_of_a_live_owner_is_not_affected_by_the_drop_of_another_owner() {
     let first = Owner::registered();
     let second = Owner::registered();
     let (n, slot) = counter();
-    second.changed.connect(slot);
+    second.with(|s| s.changed.connect(slot)).unwrap();
 
     drop(first);
-    second.changed.emit(&1);
+    second.with(|s| s.changed.emit(&1)).unwrap();
 
     assert_eq!(n.load(Ordering::SeqCst), 1);
 }
@@ -239,14 +240,15 @@ fn a_queued_call_posted_while_the_owner_was_alive_is_still_delivered_after_it_is
     let rcv = receiver();
     let owner = Owner::registered();
     let (n, slot) = counter();
-    owner.changed.connect_object(
-        rcv.data.id(),
+    let changed = owner.with(|o| o.changed.clone()).unwrap();
+    changed.connect_object(
+        OwnedObject::object_id(&rcv),
         ThreadId::current(),
         ConnectionType::Queued,
         slot,
     );
 
-    owner.changed.emit(&1);
+    changed.emit(&1);
     assert_eq!(n.load(Ordering::SeqCst), 0, "queued: not yet");
     drop(owner);
     el.process_events(false);
@@ -270,7 +272,7 @@ impl Dropper {
 fn an_emission_started_inside_a_slot_on_a_dropped_owner_ends_there_and_the_outer_one_goes_on() {
     let outer = Owner::registered();
     let gone = Owner::registered();
-    let gone_handle = gone.changed.clone();
+    let gone_handle = gone.with(|g| g.changed.clone()).unwrap();
     let (gone_runs, slot) = counter();
     gone_handle.connect(slot);
     drop(gone);
@@ -278,11 +280,11 @@ fn an_emission_started_inside_a_slot_on_a_dropped_owner_ends_there_and_the_outer
     let (second_runs, second) = counter();
     {
         let gone_handle = gone_handle.clone();
-        outer.changed.connect(move |_| gone_handle.emit(&2));
+        outer.with(|o| o.changed.connect(move |_| gone_handle.emit(&2))).unwrap();
     }
-    outer.changed.connect(second);
+    outer.with(|o| o.changed.connect(second)).unwrap();
 
-    outer.changed.emit(&1);
+    outer.with(|o| o.changed.emit(&1)).unwrap();
 
     assert_eq!(
         gone_runs.load(Ordering::SeqCst),
@@ -299,7 +301,7 @@ fn an_emission_started_inside_a_slot_on_a_dropped_owner_ends_there_and_the_outer
 #[test]
 fn a_slot_that_drops_the_owner_and_emits_again_reaches_nothing() {
     let owner = Owner::registered();
-    let handle = owner.changed.clone();
+    let handle = owner.with(|o| o.changed.clone()).unwrap();
     let cell = Dropper(Rc::new(Cell::new(Some(owner))));
     let first_runs = Arc::new(AtomicUsize::new(0));
     let (later_runs, later) = counter();
@@ -334,7 +336,7 @@ fn a_slot_that_drops_the_owner_and_emits_again_reaches_nothing() {
 #[test]
 fn an_emission_from_another_thread_after_the_owner_was_dropped_calls_no_slot() {
     let owner = Owner::registered();
-    let handle = owner.changed.clone();
+    let handle = owner.with(|o| o.changed.clone()).unwrap();
     let (n, slot) = counter();
     handle.connect(slot);
 
@@ -473,11 +475,11 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
     let (second_runs, second) = counter();
     {
         let handle = retired.changed.clone();
-        outer.changed.connect(move |_| handle.emit(&2));
+        outer.with(|o| o.changed.connect(move |_| handle.emit(&2))).unwrap();
     }
-    outer.changed.connect(second);
+    outer.with(|o| o.changed.connect(second)).unwrap();
 
-    outer.changed.emit(&1);
+    outer.with(|o| o.changed.emit(&1)).unwrap();
 
     assert_eq!(
         retired_runs.load(Ordering::SeqCst),
