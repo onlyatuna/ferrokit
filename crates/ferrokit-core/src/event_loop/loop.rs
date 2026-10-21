@@ -369,10 +369,11 @@ impl EventQueue {
         let Some(key) = key else {
             return false;
         };
-        let Some(positions) = self.merge_index.get(&(receiver, key)).cloned() else {
+        let Some(bucket_len) = self.merge_index.get(&(receiver, key)).map(Vec::len) else {
             return false;
         };
-        for order in positions.into_iter().rev() {
+        for bucket_index in (0..bucket_len).rev() {
+            let order = self.merge_index[&(receiver, key)][bucket_index];
             let pos = self.events.partition_point(|posted| posted.order < order);
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 self.compressor
@@ -550,22 +551,30 @@ impl EventQueue {
     /// Puts `posted` at `pos`, with `key` as its merge key, and brings `merge_index` and
     /// `sorted_from` along.
     fn insert_at(&mut self, pos: usize, mut posted: PostedEvent, key: Option<MergeKey>) {
-        let previous = pos.checked_sub(1).map(|index| self.events[index].order).unwrap_or(0);
-        let next = self.events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
-        if next - previous <= 1 {
-            let step = u128::MAX / (self.events.len() as u128 + 2);
-            for (index, event) in self.events.iter_mut().enumerate() {
-                event.order = step * (index as u128 + 1);
+        const STRIDE: u128 = 1 << 64;
+        let order_at = |events: &[PostedEvent]| {
+            let previous = pos.checked_sub(1).map(|index| events[index].order).unwrap_or(0);
+            let next = events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
+            if pos == events.len() {
+                previous.checked_add(STRIDE)
+            } else if pos == 0 && next >= STRIDE {
+                Some(next - STRIDE)
+            } else if pos > 0 && next - previous > 1 {
+                Some(previous + (next - previous) / 2)
+            } else {
+                None
             }
-            self.rebuild_merge_index();
+        };
+        let mut order = order_at(&self.events);
+        if order.is_none() {
+            self.relabel_orders();
+            order = order_at(&self.events);
         }
-        let previous = pos.checked_sub(1).map(|index| self.events[index].order).unwrap_or(0);
-        let next = self.events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
-        posted.order = previous + (next - previous) / 2;
+        posted.order = order.expect("relabeling leaves room for an event order label");
         posted.merge_key = key;
         if let Some(key) = key {
             let positions = self.merge_index.entry((posted.receiver, key)).or_default();
-            let at = positions.partition_point(|&order| order < posted.order);
+            let at = positions.partition_point(|&candidate| candidate < posted.order);
             positions.insert(at, posted.order);
         }
         if pos < self.sorted_from {
@@ -574,6 +583,14 @@ impl EventQueue {
             self.sorted_from = pos;
         }
         self.events.insert(pos, posted);
+    }
+
+    fn relabel_orders(&mut self) {
+        let step = u128::MAX / (self.events.len() as u128 + 2);
+        for (index, event) in self.events.iter_mut().enumerate() {
+            event.order = step * (index as u128 + 1);
+        }
+        self.rebuild_merge_index();
     }
 
     fn unindex(&mut self, receiver: ObjectId, key: MergeKey, order: u128) {
@@ -608,7 +625,13 @@ impl EventQueue {
     #[cfg(test)]
     pub(crate) fn assert_consistent(&self) {
         let mut expected: HashMap<(ObjectId, MergeKey), Vec<u128>> = HashMap::new();
+        let mut previous_order = None;
         for (pos, posted) in self.events.iter().enumerate() {
+            assert!(
+                previous_order.is_none_or(|previous| previous < posted.order),
+                "event order labels are not strictly increasing at {pos}"
+            );
+            previous_order = Some(posted.order);
             assert_eq!(
                 posted.merge_key,
                 self.compressor.merge_key(&posted.event),
@@ -3467,6 +3490,35 @@ mod merge_index_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stable_order_labels_handle_repeated_front_middle_and_tail_edits() {
+        let mut queue = EventQueue::new();
+        let receiver = ObjectId(17);
+        let key = MergeKey::new(3, 0);
+
+        for _ in 0..250 {
+            queue.insert_at(0, PostedEvent::new(receiver, update_request(), 0), Some(key));
+        }
+        for _ in 0..250 {
+            queue.push_back(PostedEvent::new(receiver, update_request(), 0));
+        }
+        for _ in 0..250 {
+            let middle = queue.len() / 2;
+            queue.insert_at(middle, PostedEvent::new(receiver, update_request(), 0), Some(key));
+        }
+        queue.assert_consistent();
+
+        let len = queue.len();
+        queue.post_event(receiver, update_request());
+        assert_eq!(queue.len(), len, "the indexed candidate must be merged");
+        for _ in 0..200 {
+            queue.remove_at(queue.len() / 3);
+        }
+        queue.assert_consistent();
+        queue.post_event(receiver, update_request());
+        queue.assert_consistent();
     }
 
     /// The kinds `random_event` makes that carry no payload that has to stay unique.
