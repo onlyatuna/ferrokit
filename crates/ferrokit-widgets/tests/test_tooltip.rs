@@ -168,7 +168,7 @@ fn time_until(el: &mut EventLoop, limit_ms: u64, cond: impl Fn() -> bool) -> Opt
 const NO_BUTTON: MouseButtons = MouseButtons::NO_BUTTON;
 
 fn leaf(x: i32, text: &str) -> WidgetRef {
-    let w = EmptyWidget::with_geometry(Rect::new(x, 0, 100, 100));
+    let mut w = EmptyWidget::with_geometry(Rect::new(x, 0, 100, 100));
     w.set_tool_tip(text);
     Rc::new(RefCell::new(Box::new(w)))
 }
@@ -425,6 +425,8 @@ struct Probe {
     name: &'static str,
     resp: Resp,
     log: Log,
+    /// Runs inside the `ToolTip` handler, i.e. inside the wake-up timer's timeout.
+    on_tip: Option<fn()>,
 }
 
 impl Probe {
@@ -434,6 +436,7 @@ impl Probe {
             name,
             resp,
             log: Rc::clone(log),
+            on_tip: None,
         }
     }
 }
@@ -459,6 +462,9 @@ impl QObject for Probe {
             "{}:ToolTip({x},{y};{global_x},{global_y})",
             self.name
         ));
+        if let Some(on_tip) = self.on_tip {
+            on_tip();
+        }
         match self.resp {
             Resp::Accept => {
                 event.accept();
@@ -1355,4 +1361,71 @@ mod real_windows {
             drop((owner.win, other.win));
         });
     }
+}
+
+// ---- timers ----------------------------------------------------------------------------------
+
+/// The controller keeps its timers by value in a thread-local, so a `Timer` has to keep firing
+/// after it was moved: the registry and the connected closure may not depend on its address.
+#[test]
+fn a_timer_still_fires_after_it_is_moved_following_connect() {
+    use ferrokit_core::timer::Timer;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let _serial = serial();
+    let mut el = EventLoop::new();
+    let fired = Arc::new(AtomicUsize::new(0));
+    let timer = Timer::new();
+    timer.set_single_shot(true);
+    let count = Arc::clone(&fired);
+    timer.timeout.connect(move |()| {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    // Move it twice: into a heap box, then into a vector slot and back out.
+    let boxed = Box::new(timer);
+    let mut slots = vec![None, None];
+    slots[1] = Some(boxed);
+    let timer = *slots[1].take().unwrap();
+    timer.start_with_interval(1);
+    assert!(
+        pump_until(&mut el, Duration::from_millis(3000), || fired
+            .load(Ordering::SeqCst)
+            == 1),
+        "the moved timer never fired"
+    );
+    assert!(!timer.is_active(), "a single-shot timer stays active after firing");
+}
+
+fn drive_controller_timers_from_the_handler() {
+    // Inside the wake-up timeout: starts the expire timer, stops the hide timer, hides (which
+    // stops the expire timer) and shows again.
+    ToolTip::show_text(Point::new(560, 440), "first", None, -1);
+    ToolTip::hide_text();
+    ToolTip::show_text(Point::new(560, 440), "second", None, -1);
+}
+
+/// A `ToolTip` handler runs inside the wake-up timer's timeout and may use the tip API, which
+/// starts and stops the controller's other timers; the wake-up timer is then started again by the
+/// next hover. None of it may panic on a nested borrow of a timer.
+#[test]
+fn a_tool_tip_handler_may_drive_the_controller_timers() {
+    let _serial = serial();
+    let mut el = EventLoop::new();
+    let log: Log = Rc::default();
+    let root = probe_tree(Resp::Accept, Resp::Accept, Resp::Accept, &log);
+    let leaf = root.borrow().children()[0].borrow().children()[0].clone();
+    leaf.borrow_mut()
+        .as_any_mut()
+        .downcast_mut::<Probe>()
+        .unwrap()
+        .on_tip = Some(drive_controller_timers_from_the_handler);
+    let mut d = EventTreeDispatcher::new();
+
+    wake_up(&mut el, &mut d, &root, &log);
+    assert_eq!(ToolTip::text(), "second");
+    ToolTip::hide_text();
+    wake_up(&mut el, &mut d, &root, &log);
+    assert_eq!(log.borrow().len(), 2);
+    ToolTip::hide_text();
 }
