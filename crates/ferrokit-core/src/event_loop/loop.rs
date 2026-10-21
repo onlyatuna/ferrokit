@@ -265,6 +265,8 @@ pub struct PostedEvent {
     pub receiver: ObjectId,
     pub event: Event,
     pub priority: i32,
+    /// Stable queue-order label used by the merge index.
+    order: u128,
     /// The merge key of `event` under the compressor of the queue that holds it, set when the
     /// queue takes the event in. It means nothing outside a queue.
     merge_key: Option<MergeKey>,
@@ -276,6 +278,7 @@ impl PostedEvent {
             receiver,
             event,
             priority,
+            order: 0,
             merge_key: None,
         }
     }
@@ -287,10 +290,9 @@ pub struct EventQueue {
     events: Vec<PostedEvent>,
     pub(crate) insertion_offset: usize,
     compressor: Arc<dyn EventCompressor>,
-    /// Where the events that have a merge key are: their positions in `events`, ascending, by
-    /// receiver and key. Compressing an event reads its candidates from here, so it does not scan
-    /// the queue, and an event without a key (a `MetaCall`, for `CoreCompressor`) is not in it.
-    merge_index: HashMap<(ObjectId, MergeKey), Vec<usize>>,
+    /// Stable queue-order labels of keyed events, ascending, by receiver and key. Compressing an
+    /// event uses these labels to find its candidates without changing the index on queue shifts.
+    merge_index: HashMap<(ObjectId, MergeKey), Vec<u128>>,
     /// `events[sorted_from..]` is in non-increasing priority order, so `insert_posted` finds its
     /// place there by binary search and walks only the events in front of it. Those are events
     /// that a turn left queued (those of a borrowed receiver), with events of a higher priority
@@ -367,13 +369,38 @@ impl EventQueue {
         let Some(key) = key else {
             return false;
         };
-        let Some(positions) = self.merge_index.get(&(receiver, key)) else {
+        let Some(positions) = self.merge_index.get(&(receiver, key)).cloned() else {
             return false;
         };
-        positions.iter().rev().any(|&pos| {
-            self.compressor
-                .try_compress(&mut self.events[pos].event, incoming, receiver)
-        })
+        for order in positions.into_iter().rev() {
+            let pos = self.events.partition_point(|posted| posted.order < order);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                self.compressor
+                    .try_compress(&mut self.events[pos].event, incoming, receiver)
+            }));
+            match outcome {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(payload) => {
+                    let old_key = self.events[pos].merge_key;
+                    let new_key = catch_unwind(AssertUnwindSafe(|| {
+                        self.compressor.merge_key(&self.events[pos].event)
+                    }))
+                    .unwrap_or(None);
+                    if let Some(old_key) = old_key {
+                        self.unindex(receiver, old_key, order);
+                    }
+                    self.events[pos].merge_key = new_key;
+                    if let Some(new_key) = new_key {
+                        let positions = self.merge_index.entry((receiver, new_key)).or_default();
+                        let at = positions.partition_point(|&candidate| candidate < order);
+                        positions.insert(at, order);
+                    }
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+        false
     }
 
     pub fn post_event(&mut self, receiver: ObjectId, event: Event) {
@@ -425,11 +452,7 @@ impl EventQueue {
             self.sorted_from -= 1;
         }
         if let Some(key) = posted.merge_key {
-            self.unindex(posted.receiver, key, index);
-        }
-        // What was behind the removed event is one place nearer the front.
-        if index < self.events.len() {
-            self.shift_index(index + 1, -1);
+            self.unindex(posted.receiver, key, posted.order);
         }
         posted
     }
@@ -527,43 +550,38 @@ impl EventQueue {
     /// Puts `posted` at `pos`, with `key` as its merge key, and brings `merge_index` and
     /// `sorted_from` along.
     fn insert_at(&mut self, pos: usize, mut posted: PostedEvent, key: Option<MergeKey>) {
-        posted.merge_key = key;
-        // What is at `pos` and behind it is one place nearer the end.
-        if pos < self.events.len() {
-            self.shift_index(pos, 1);
+        let previous = pos.checked_sub(1).map(|index| self.events[index].order).unwrap_or(0);
+        let next = self.events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
+        if next - previous <= 1 {
+            let step = u128::MAX / (self.events.len() as u128 + 2);
+            for (index, event) in self.events.iter_mut().enumerate() {
+                event.order = step * (index as u128 + 1);
+            }
+            self.rebuild_merge_index();
         }
+        let previous = pos.checked_sub(1).map(|index| self.events[index].order).unwrap_or(0);
+        let next = self.events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
+        posted.order = previous + (next - previous) / 2;
+        posted.merge_key = key;
         if let Some(key) = key {
             let positions = self.merge_index.entry((posted.receiver, key)).or_default();
-            let at = positions.partition_point(|&p| p < pos);
-            positions.insert(at, pos);
+            let at = positions.partition_point(|&order| order < posted.order);
+            positions.insert(at, posted.order);
         }
         if pos < self.sorted_from {
             self.sorted_from += 1;
         } else if pos > self.sorted_from && self.events[pos - 1].priority < posted.priority {
-            // The new event is in front of lower priorities and behind a lower one: it begins
-            // the part that is in order.
             self.sorted_from = pos;
         }
         self.events.insert(pos, posted);
     }
 
-    /// Moves every indexed position from `first` on by `delta`.
-    fn shift_index(&mut self, first: usize, delta: isize) {
-        for positions in self.merge_index.values_mut() {
-            let from = positions.partition_point(|&p| p < first);
-            for pos in &mut positions[from..] {
-                *pos = pos.wrapping_add_signed(delta);
-            }
-        }
-    }
-
-    /// Drops the entry of the event at `pos` from `merge_index`.
-    fn unindex(&mut self, receiver: ObjectId, key: MergeKey, pos: usize) {
+    fn unindex(&mut self, receiver: ObjectId, key: MergeKey, order: u128) {
         let Some(positions) = self.merge_index.get_mut(&(receiver, key)) else {
             debug_assert!(false, "an event with a merge key is not in the index");
             return;
         };
-        match positions.binary_search(&pos) {
+        match positions.binary_search(&order) {
             Ok(at) => {
                 positions.remove(at);
             }
@@ -576,12 +594,12 @@ impl EventQueue {
 
     fn rebuild_merge_index(&mut self) {
         self.merge_index.clear();
-        for (pos, posted) in self.events.iter().enumerate() {
+        for posted in &self.events {
             if let Some(key) = posted.merge_key {
                 self.merge_index
                     .entry((posted.receiver, key))
                     .or_default()
-                    .push(pos);
+                    .push(posted.order);
             }
         }
     }
@@ -589,7 +607,7 @@ impl EventQueue {
     /// Checks what the index and `sorted_from` promise, against the events.
     #[cfg(test)]
     pub(crate) fn assert_consistent(&self) {
-        let mut expected: HashMap<(ObjectId, MergeKey), Vec<usize>> = HashMap::new();
+        let mut expected: HashMap<(ObjectId, MergeKey), Vec<u128>> = HashMap::new();
         for (pos, posted) in self.events.iter().enumerate() {
             assert_eq!(
                 posted.merge_key,
@@ -600,7 +618,7 @@ impl EventQueue {
                 expected
                     .entry((posted.receiver, key))
                     .or_default()
-                    .push(pos);
+                    .push(posted.order);
             }
         }
         assert_eq!(self.merge_index, expected, "merge index");
@@ -3616,7 +3634,8 @@ mod merge_index_tests {
         let replaced = queue.replace_compressor(Arc::new(MergeAll));
         queue.assert_consistent();
         assert_eq!(queue.merge_index.len(), 1, "both are in one class now");
-        assert_eq!(queue.merge_index[&(widget, MergeKey::new(0, 0))], [0, 1]);
+        assert!(queue.merge_index[&(widget, MergeKey::new(0, 0))][0]
+            < queue.merge_index[&(widget, MergeKey::new(0, 0))][1]);
 
         queue.post_event(widget, Event::new(EventKind::LayoutRequest));
         assert_eq!(queue.len(), 2, "any event of the receiver is merged now");
