@@ -3,7 +3,7 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
-use ferrokit_core::signal::{ConnectionType, QueuedSignal, Signal};
+use ferrokit_core::signal::{ConnectionId, ConnectionType, QueuedSignal, Signal};
 use std::ptr::NonNull;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -268,19 +268,19 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     );
 }
 
-// `connect_with_type` stores no receiver thread, so a Queued or BlockingQueued
-// connection made through it could only run synchronously. Qt never does that
-// (qobject.cpp:4333-4350, 4354-4358). Reject visibly instead.
+// Queued connections without a receiver return an invalid connection rather than panicking.
 #[test]
-#[should_panic(expected = "connect_queued")]
-fn connect_with_type_queued_is_deferred_or_rejected() {
+fn connect_with_type_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
-    signal.connect_with_type(ConnectionType::Queued, |_| {});
+    let id = signal.connect_with_type(ConnectionType::Queued, |_| {});
+    assert_eq!(id, ConnectionId::INVALID);
+    assert!(!id.is_valid());
 }
 
 #[test]
-#[should_panic(expected = "connect_blocking_queued")]
-fn connect_with_type_blocking_queued_is_rejected() {
+fn connect_with_type_blocking_queued_without_receiver_is_rejected() {
     let signal: Signal<i32> = Signal::new();
-    signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
+    let id = signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
+    assert_eq!(id, ConnectionId::INVALID);
+    assert!(!id.is_valid());
 }
