@@ -202,8 +202,9 @@ impl Process {
         self.exit_code = None;
         self.exit_status = None;
         self.stdin_handle = child.stdin.take();
-        self.stdout_buf.lock().clear();
-        self.stderr_buf.lock().clear();
+        // Fresh buffers per run so a detached reader from a previous run cannot append here.
+        self.stdout_buf = Arc::new(Mutex::new(Vec::new()));
+        self.stderr_buf = Arc::new(Mutex::new(Vec::new()));
         self.stdout_reader = child.stdout.take().map(|mut out| {
             let output = Arc::clone(&self.stdout_buf);
             thread::spawn(move || {
@@ -272,22 +273,7 @@ impl Process {
                     } else {
                         ExitStatus::CrashExit
                     });
-                    // A grandchild may keep the pipes open; never block past the timeout.
-                    for reader in [self.stdout_reader.take(), self.stderr_reader.take()]
-                        .into_iter()
-                        .flatten()
-                    {
-                        loop {
-                            if reader.is_finished() {
-                                let _ = reader.join();
-                                break;
-                            }
-                            if timeout.is_some_and(|t| start_time.elapsed() >= t) {
-                                break; // detach the reader
-                            }
-                            thread::sleep(Duration::from_millis(1));
-                        }
-                    }
+                    self.finish_readers(start_time, timeout);
                     self.state = ProcessState::NotRunning;
                     self.pid = None;
                     return true;
@@ -304,6 +290,26 @@ impl Process {
                     self.pid = None;
                     return true;
                 }
+            }
+        }
+    }
+
+    /// Joins reader threads that have finished; once `timeout` (measured from `start`) has
+    /// elapsed, unfinished readers are detached instead of blocking on a grandchild-held pipe.
+    fn finish_readers(&mut self, start: Instant, timeout: Option<Duration>) {
+        for reader in [self.stdout_reader.take(), self.stderr_reader.take()]
+            .into_iter()
+            .flatten()
+        {
+            loop {
+                if reader.is_finished() {
+                    let _ = reader.join();
+                    break;
+                }
+                if timeout.is_some_and(|t| start.elapsed() >= t) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
             }
         }
     }
@@ -344,6 +350,7 @@ impl Process {
             self.exit_status = Some(ExitStatus::CrashExit);
             self.child = None;
             self.stdin_handle = None;
+            self.finish_readers(Instant::now(), Some(Duration::from_millis(100)));
             self.state = ProcessState::NotRunning;
             self.pid = None;
         }

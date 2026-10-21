@@ -253,6 +253,9 @@ impl Settings {
             }
         }
 
+        // Marker: only files carrying it are unescaped on load; unmarked (older) files load verbatim.
+        writeln!(w, "{}", ESCAPE_MARKER)?;
+
         // Write root entries first
         for (k, v) in root_entries {
             writeln!(w, "{}={}", escape_text(&k), v)?;
@@ -284,29 +287,40 @@ impl Settings {
         let reader = BufReader::new(file);
         let mut current_section: Option<String> = None;
 
-        for line in reader.lines() {
+        let mut escaped = false;
+        for (index, line) in reader.lines().enumerate() {
             let line = line?;
             let trimmed = line.trim();
+            if index == 0 && trimmed == ESCAPE_MARKER {
+                escaped = true;
+                continue;
+            }
 
             if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
                 continue;
             }
 
-            if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.ends_with("\\]") {
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let section_name = &trimmed[1..trimmed.len() - 1];
-                current_section = Some(unescape_text(section_name.trim()));
+                let name = section_name.trim();
+                current_section = Some(if escaped { unescape_text(name) } else { name.to_string() });
                 continue;
             }
 
-            if let Some((key, val)) = split_unescaped_eq(trimmed) {
-                let key = unescape_text(key.trim());
+            let pair = if escaped {
+                split_unescaped_eq(trimmed)
+            } else {
+                trimmed.split_once('=')
+            };
+            if let Some((key, val)) = pair {
+                let key = if escaped { unescape_text(key.trim()) } else { key.trim().to_string() };
                 let key = key.as_str();
                 let val = val.trim();
                 let full_key = match &current_section {
                     Some(s) if !s.is_empty() => format!("{}/{}", s, key),
                     _ => key.to_string(),
                 };
-                let parsed = parse_variant_value(val);
+                let parsed = parse_variant_value(val, escaped);
                 self.entries.insert(full_key, parsed);
             }
         }
@@ -323,6 +337,9 @@ impl Drop for Settings {
         }
     }
 }
+
+/// First line of files whose keys/values use backslash escapes.
+const ESCAPE_MARKER: &str = "; ferrokit-settings-escaped-v1";
 
 /// Escapes characters that would break the line-based INI structure.
 fn escape_text(s: &str) -> String {
@@ -388,7 +405,7 @@ fn serialize_variant_value(v: &Variant) -> String {
     if let Variant::String(text) = v {
         let plain_safe = text.trim() == text
             && !text.starts_with("@Variant(")
-            && matches!(parse_variant_value(&escape_text(text)), Variant::String(ref t) if t == text);
+            && matches!(parse_variant_value(&escape_text(text), true), Variant::String(ref t) if t == text);
         if plain_safe {
             return escape_text(text);
         }
@@ -404,7 +421,7 @@ fn serialize_variant_value(v: &Variant) -> String {
     encoded
 }
 
-fn parse_variant_value(raw: &str) -> Variant {
+fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
     if let Some(encoded) = raw.strip_prefix("@Variant(").and_then(|s| s.strip_suffix(')')) {
         if encoded.len() % 2 == 0 {
             let bytes = encoded.as_bytes();
@@ -461,7 +478,7 @@ fn parse_variant_value(raw: &str) -> Variant {
     }
 
     // Default to String
-    Variant::String(unescape_text(raw))
+    Variant::String(if escaped { unescape_text(raw) } else { raw.to_string() })
 }
 
 /// Resolves standard platform config directory.

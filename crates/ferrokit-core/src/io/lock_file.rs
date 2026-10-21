@@ -178,19 +178,20 @@ impl LockFile {
         guard_name.push(".reclaim");
         let guard = PathBuf::from(guard_name);
         match OpenOptions::new().write(true).create_new(true).open(&guard) {
-            Ok(_) => {
+            Ok(mut guard_file) => {
+                let _ = write!(guard_file, "PID={}\nAPP=reclaim\n", std::process::id());
+                drop(guard_file);
                 let removed = self.is_stale() && fs::remove_file(&self.file_path).is_ok();
                 let _ = fs::remove_file(&guard);
                 removed
             }
             Err(_) => {
-                // A crashed reclaimer may have left the guard behind; drop it once it is old.
-                let old = fs::metadata(&guard)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| SystemTime::now().duration_since(t).ok())
-                    .is_some_and(|age| age > self.stale_lock_time);
-                if old {
+                // A crashed reclaimer may have left the guard behind; drop it once its
+                // owner process is gone (same PID rule as the lock itself).
+                let owner_dead = LockFile::new(&guard)
+                    .get_lock_info()
+                    .is_some_and(|(pid, _)| !is_process_alive(pid));
+                if owner_dead {
                     let _ = fs::remove_file(&guard);
                 }
                 false

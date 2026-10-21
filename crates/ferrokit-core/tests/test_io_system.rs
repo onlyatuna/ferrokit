@@ -767,3 +767,31 @@ fn settings_roundtrip_plain_strings_and_escapes() {
     assert_eq!(s.value("we=ird\nkey"), Some(Variant::String("v".into())));
     assert_eq!(s.value("n"), Some(Variant::I64(5)));
 }
+
+#[test]
+fn settings_legacy_unmarked_file_loads_verbatim_and_section_backslash_survives() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("old.ini");
+    fs::write(&path, "p=C:\\new\\temp\nunc=\\\\server\\share\n").unwrap();
+    {
+        let mut s = Settings::new(&path);
+        assert_eq!(s.value("p"), Some(Variant::String("C:\\new\\temp".into())));
+        assert_eq!(s.value("unc"), Some(Variant::String("\\\\server\\share".into())));
+        s.set_value("x", "1 ");
+        s.sync().unwrap();
+    }
+    let s = Settings::new(&path);
+    assert_eq!(s.value("p"), Some(Variant::String("C:\\new\\temp".into())));
+    assert_eq!(s.value("unc"), Some(Variant::String("\\\\server\\share".into())));
+
+    let path2 = dir.path().join("new.ini");
+    {
+        let mut s = Settings::new(&path2);
+        s.set_value("sec\\/k", "v");
+        s.sync().unwrap();
+    }
+    let s = Settings::new(&path2);
+    assert_eq!(s.value("sec\\/k"), Some(Variant::String("v".into())));
+}
