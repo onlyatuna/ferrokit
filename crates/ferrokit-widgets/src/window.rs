@@ -1799,7 +1799,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     y: pos.y,
                     pixel_delta_x: delta.x,
                     pixel_delta_y: delta.y,
-                    angle_delta_x: 0,
+                    angle_delta_x: delta.x,
                     angle_delta_y: delta.y,
                     modifiers: modifiers.bits(),
                 });

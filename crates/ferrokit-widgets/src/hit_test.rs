@@ -476,9 +476,19 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
         });
     }
     loop {
-        let (children, pos, enabled) = {
+        let candidates = {
             let cur = path.last().expect("path starts with the root");
-            (cur.widget.borrow().children(), cur.pos, cur.enabled)
+            let w = cur.widget.borrow();
+            // Children are clipped to the clip rect (a scroll area's viewport): a point outside
+            // it belongs to the widget itself, e.g. to its scroll bars.
+            if w.children_clip_rect().is_some_and(|clip| !clip.contains(cur.pos)) {
+                None
+            } else {
+                Some((w.children(), cur.pos, cur.enabled))
+            }
+        };
+        let Some((children, pos, enabled)) = candidates else {
+            return path;
         };
         let mut next = None;
         for child in children.into_iter().rev() {
