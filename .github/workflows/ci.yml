@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only token by default; jobs that need more must request it explicitly.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the superseded run; runs on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Workspace Test (${{ matrix.os }})
@@ -42,8 +51,7 @@ jobs:
 
       # Lists every target that does not compile on this platform; `cargo test` stops at the first.
       - name: Compile every target (cargo check --keep-going)
-        run: cargo check --workspace --all-targets --keep-going
-        continue-on-error: true
+        run: cargo check --workspace --all-targets --keep-going --locked
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -60,7 +68,7 @@ jobs:
       # main thread, one child process per check with its own time limit.
       - name: macOS main-thread entry (application dispatcher and event loop)
         if: ${{ runner.os == 'macOS' && !cancelled() }}
-        run: cargo run -q -p ferrokit-gui --example main_thread_entry
+        run: cargo run --locked -q -p ferrokit-gui --example main_thread_entry
 
       # ferrokit-platform AppKit checks (windows, status items, menus, screens, cursor, theme) on the
       # OS main thread, one child process per check, reporting ok/FAILED/ENV/CRASH per check.
@@ -69,12 +77,14 @@ jobs:
       - name: macOS main-thread AppKit checks (ferrokit-platform)
         if: ${{ runner.os == 'macOS' && !cancelled() }}
         run: >-
-          cargo run -q -p ferrokit-platform --example appkit_main_thread --
+          cargo run --locked -q -p ferrokit-platform --example appkit_main_thread --
           --known-open=status_item_message
 
       - name: Run doc tests
         if: ${{ !cancelled() }}
-        run: cargo test --workspace --doc
+        # Doc tests run after the binaries; cap a hang so the job still ends with a clear step result.
+        timeout-minutes: 15
+        run: cargo test --workspace --doc --locked
 
   miri-shard:
     name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }}, ${{ matrix.shard }}/${{ matrix.shards }})
@@ -120,8 +130,11 @@ jobs:
           --baseline ${{ matrix.baseline }}
           --run-isolation-allowlist
           --fail-on-regression
+          --timeout 1500
           --summary "$GITHUB_STEP_SUMMARY"
           --out miri_results.json
+        # --timeout is seconds per Miri run, below the 60-minute job limit: a run that hangs is
+        # recorded as a timeout result and the sweep carries on, instead of cancelling the job.
 
   miri:
     # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
@@ -140,6 +153,28 @@ jobs:
             echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
             exit 1
           fi
+
+  tools:
+    name: Tools unit tests and Miri baseline coverage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run tools unit tests
+        run: python -m unittest discover -s tools -p "test_*.py"
+
+      # Every tests/*.rs of a swept crate must be in its baseline `targets` or `excluded`.
+      - name: Check Miri baseline coverage
+        run: |
+          python tools/miri_sweep.py --crate ferrokit-core --baseline tools/miri_baseline.json --check-coverage
+          python tools/miri_sweep.py --crate ferrokit-gui --baseline tools/miri_baseline_ferrokit_gui.json --check-coverage
+          python tools/miri_sweep.py --crate ferrokit-widgets --baseline tools/miri_baseline_ferrokit_widgets.json --check-coverage
 
   model:
     name: Concurrency Model Tests (${{ matrix.suite.name }})
@@ -165,7 +200,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Model Test (${{ matrix.suite.name }})
-        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml ${{ matrix.suite.args }}
+        run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml --locked ${{ matrix.suite.args }}
 
   model-tsan:
     name: Concurrency Model ThreadSanitizer
@@ -174,10 +209,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install nightly toolchain with rust-src
+      - name: Install pinned nightly toolchain with rust-src
         run: |
-          rustup toolchain install nightly --profile minimal -c rust-src
-          rustc +nightly -V
+          rustup toolchain install nightly-2026-10-16 --profile minimal -c rust-src
+          rustc +nightly-2026-10-16 -V
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -186,5 +221,5 @@ jobs:
         env:
           RUSTFLAGS: "-Zsanitizer=thread"
         run: |
-          cargo +nightly test --target x86_64-unknown-linux-gnu -Zbuild-std \
+          cargo +nightly-2026-10-16 test --locked --target x86_64-unknown-linux-gnu -Zbuild-std \
             --manifest-path crates/ferrokit-model/Cargo.toml --test stress_tests -- --nocapture

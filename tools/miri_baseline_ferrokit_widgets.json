@@ -67,6 +67,26 @@
     "test_window_screen_mapping",
     "test_window_size_limits"
   ],
+  "excluded": {
+    "layout_qt_oracle": "not yet swept: no Miri baseline entry yet",
+    "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_label_letter_spacing_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_label_overflow_alignment": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_layered_geometry_sync": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_menu_popup_focus": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_menu_popup_posted_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_menu_popup_present_offset": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_menu_popup_screen": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_progress_bar_size_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_resize_deferred_render": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_scroll_area_paint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_single_resize_pipeline": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_style_scope": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_system_move_release": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_tooltip": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_update_reaches_window": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_window_activation_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
+  },
   "negative_controls": [],
   "isolation_allowlist": {
     "test_application_layers::about_to_quit_emitted_inside_exit_before_exec_returns": {

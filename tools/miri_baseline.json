@@ -63,6 +63,24 @@
     "test_timer_huge_interval",
     "test_timer_single_shot_before_loop"
   ],
+  "excluded": {
+    "test_application_exit_from_worker_thread": "not yet swept: no Miri baseline entry yet",
+    "test_blocking_queued_bound": "not yet swept: no Miri baseline entry yet",
+    "test_core_small_semantics": "not yet swept: no Miri baseline entry yet",
+    "test_destroyed_signal": "not yet swept: no Miri baseline entry yet",
+    "test_io_system": "not yet swept: no Miri baseline entry yet",
+    "test_loop_teardown_events": "not yet swept: no Miri baseline entry yet",
+    "test_main_thread_first_caller": "not yet swept: no Miri baseline entry yet",
+    "test_object_timer_native_release": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_precise_timer_contract": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_precise_timer_lifecycle": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_settimer_cross_thread": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_thread_lifecycle": "not yet swept: no Miri baseline entry yet",
+    "test_timer_context_single_shot": "not yet swept: no Miri baseline entry yet",
+    "test_timer_pinned_start": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_timer_restart": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_variant_extensibility": "not yet swept: no Miri baseline entry yet"
+  },
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
     "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks",
