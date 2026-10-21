@@ -13,7 +13,7 @@ permissions:
 
 # A new push to a pull request cancels the superseded run; runs on main always finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -130,11 +130,12 @@ jobs:
           --baseline ${{ matrix.baseline }}
           --run-isolation-allowlist
           --fail-on-regression
-          --timeout 1500
+          --timeout 2700
           --summary "$GITHUB_STEP_SUMMARY"
           --out miri_results.json
-        # --timeout is seconds per Miri run, below the 60-minute job limit: a run that hangs is
-        # recorded as a timeout result and the sweep carries on, instead of cancelling the job.
+        # --timeout is seconds per `cargo miri test` invocation (one target's remaining tests, plus
+        # its first build), below the 60-minute job limit. On expiry the run is recorded as a timeout
+        # result and the sweep carries on, instead of cancelling the job.
 
   miri:
     # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
