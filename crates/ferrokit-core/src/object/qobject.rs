@@ -1696,6 +1696,9 @@ impl ObjectData {
     }
 
     /// See [`set_parent`].
+    ///
+    /// If the old parent's `ChildRemoved` handler panics, the change is finished and the panic is
+    /// rethrown without `ChildAdded`; see [`set_parent_by_id`] (`# Panics`).
     pub fn set_parent(&mut self, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
         set_parent(self, new_parent)
     }
@@ -2256,6 +2259,7 @@ impl<'a> ObjectDataMut<'a> {
         self.data.remove_child(child);
     }
 
+    /// See [`set_parent`]. Panics as [`set_parent`] documents for its `ChildRemoved` handler.
     #[inline]
     pub fn set_parent(&mut self, parent: Option<ObjectId>) -> Result<(), ReparentError> {
         self.data.set_parent(parent)
@@ -2729,6 +2733,20 @@ pub fn query_pending_parent_sync(child_id: ObjectId) -> Option<bool> {
 /// the global registry and hierarchy lists are repaired before `resume_unwind`, but local
 /// parent data synchronization remains pending and is deferred until that `ObjectBorrowGuard`
 /// drops.
+///
+/// # Panics
+///
+/// If a `ChildRemoved` handler on the old parent panics, the panic is caught and rethrown with
+/// `std::panic::resume_unwind` and the original payload. Before the rethrow, the registry and the
+/// hierarchy lists are repaired so that the child is in its new parent's list and no longer in the
+/// old one. `ChildAdded` is **not** sent to the new parent in this case; this is the public contract
+/// (see issue #21). The new parent receives no event for this call.
+///
+/// If an `ObjectBorrowGuard` on the child is still alive across the panic, the local `ObjectData`
+/// parent sync stays pending and is applied when that guard drops.
+///
+/// A panic from a custom `QObject::object_data_mut()` during the pending-sync application in
+/// `ObjectBorrowGuard::drop` loses the queued items; this is a known limitation.
 pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
     let (child_record, _) = registered_ptr(child_id).ok_or(ReparentError::UnknownObject)?;
     if child_record
@@ -2944,6 +2962,12 @@ pub fn set_parent_by_id(child_id: ObjectId, new_parent: Option<ObjectId>) -> Res
     Ok(())
 }
 
+/// Sets the parent of `child` in the local data and, through the registry, in the hierarchy.
+///
+/// # Panics
+///
+/// If the old parent's `ChildRemoved` handler panics, the change is finished and the panic is
+/// rethrown without `ChildAdded`, as for [`set_parent_by_id`] (`# Panics`).
 pub fn set_parent(child: &mut ObjectData, new_parent: Option<ObjectId>) -> Result<(), ReparentError> {
     let old_parent = child.parent();
     if old_parent == new_parent {
