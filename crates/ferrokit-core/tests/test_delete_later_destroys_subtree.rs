@@ -55,6 +55,12 @@ impl QObject for Probe {
     fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
         ObjectDataMut::new(&mut self.data)
     }
+    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn event(&mut self, event: &mut Event) -> bool {
         if let EventKind::ChildRemoved { child_id } = event.kind {
             self.log
@@ -250,4 +256,28 @@ fn releasing_a_borrowed_child_of_another_parent_leaves_it_alone() {
     .unwrap();
     assert_eq!(query_object_parent(kid_id), Some(Some(real_id)));
     assert!(OwnedObject::with(&kid, |_| ()).is_some(), "kid is still registered");
+}
+
+// ---- findChild covers every child, owned or not (Qt qt_qFindChild_helper) ----
+
+#[test]
+fn find_child_sees_children_attached_without_ownership() {
+    let log = new_log();
+    let parent = owned("parent", &log);
+    let parent_id = OwnedObject::object_id(&parent);
+    let mut kid = owned("kid", &log);
+    let kid_id = OwnedObject::object_id(&kid);
+    kid.with_mut(|k| k.set_object_name("kid")).unwrap();
+    set_parent_by_id(kid_id, Some(parent_id)).unwrap();
+    let probe = std::any::TypeId::of::<Probe>();
+
+    assert_eq!(parent.with(|p| p.find_child_id("kid", probe)).unwrap(), Some(kid_id));
+    let mut seen = 0;
+    assert!(parent
+        .with(|p| p.find_child_any("kid", probe, &mut |_| seen += 1))
+        .unwrap());
+    assert_eq!(seen, 1);
+    let mut all = 0;
+    parent.with(|p| p.find_children_any(Some("kid"), probe, &mut |_| all += 1)).unwrap();
+    assert_eq!(all, 1);
 }
