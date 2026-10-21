@@ -85,9 +85,22 @@ fn clicking_a_disabled_widget_does_not_give_it_focus() {
 
     assert!(!fm.handle_mouse_click(&root, &w));
     assert_eq!(fm.focused_widget_id(), None);
-    assert!(log.borrow().is_empty());
+    assert!(!log.borrow().iter().any(|e| e.starts_with("focus")));
 
     set_widget_enabled(&w, true);
     assert!(fm.handle_mouse_click(&root, &w));
-    assert_eq!(*log.borrow(), ["focus_in"]);
+    assert_eq!(log.borrow().last().map(String::as_str), Some("focus_in"));
+}
+
+#[test]
+fn disabling_a_container_by_attribute_notifies_its_children() {
+    use ferrokit_widgets::widget::WidgetAttribute;
+    let log = Log::default();
+    let child = strong(&log);
+    let root = tree(&[&child]);
+
+    root.borrow().set_attribute(WidgetAttribute::Disabled, true);
+
+    assert_eq!(*log.borrow(), ["enabled_change"]);
+    assert!(!child.borrow().is_enabled());
 }

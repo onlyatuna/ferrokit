@@ -35,6 +35,12 @@ pub fn set_widget_enabled(widget: &WidgetRef, enabled: bool) {
     if changed {
         notices.push(EnabledNotice::Changed(widget.clone()));
     }
+    send_enabled_notices(notices);
+}
+
+/// Sends what `set_enabled_helper` collected: the focus moves and each `EnabledChange` whose widget
+/// is not borrowed.
+fn send_enabled_notices(notices: Vec<EnabledNotice>) {
     for notice in notices {
         match notice {
             EnabledNotice::FocusLost(state) => crate::focus::move_lost_focus_now(&state),
@@ -95,12 +101,18 @@ fn is_shown(widget: &WidgetRef) -> bool {
 /// `show_helper`'s child loop (qwidget.cpp:8074-8130): every child that is not explicitly hidden
 /// gets its `Show` after its own children, before the parent's.
 pub(crate) fn show_children_first(widget: &WidgetRef) {
-    let children = widget.borrow().children();
+    let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+        return;
+    };
     for child in children {
-        if child.borrow().is_visible() {
+        // A child on the stack (its own handler shows its parent) gets no event, as in
+        // `set_widget_enabled`.
+        let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+        if visible {
             show_children_first(&child);
-            let mut w = child.borrow_mut();
-            notify_borrowed(&mut **w, &mut Event::new(EventKind::Show));
+            if let Ok(mut w) = child.try_borrow_mut() {
+                notify_borrowed(&mut **w, &mut Event::new(EventKind::Show));
+            }
         }
     }
 }
@@ -108,11 +120,13 @@ pub(crate) fn show_children_first(widget: &WidgetRef) {
 /// `hide_helper`'s child loop (qwidget.cpp:8238-8289): every child that is not explicitly hidden
 /// gets its `Hide` before its own children do.
 pub(crate) fn hide_children(widget: &WidgetRef) {
-    let children = widget.borrow().children();
+    let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+        return;
+    };
     for child in children {
-        if child.borrow().is_visible() {
-            {
-                let mut w = child.borrow_mut();
+        let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+        if visible {
+            if let Ok(mut w) = child.try_borrow_mut() {
                 notify_borrowed(&mut **w, &mut Event::new(EventKind::Hide));
             }
             hide_children(&child);
@@ -888,6 +902,9 @@ impl WidgetBase {
                 let mut notices = Vec::new();
                 self.force_disabled.set(on);
                 self.set_enabled_helper(!on, &mut notices);
+                // The focus move and the children's `EnabledChange` are sent now, as `set_widget_enabled`
+                // does; this widget's own event needs its `WidgetRef`, which only that function has.
+                send_enabled_notices(notices);
             }
             WidgetAttribute::MouseTracking => {
                 self.mouse_tracking.set(on);
@@ -1149,7 +1166,6 @@ impl WidgetBase {
         } else {
             props.push((name.to_string(), value.to_string()));
         }
-        self.dirty.set(Some(self.geometry.get()));
     }
 
     pub fn property(&self, name: &str) -> Option<String> {

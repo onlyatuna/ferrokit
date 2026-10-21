@@ -54,15 +54,21 @@ impl WindowCore {
             Application::set_active_window(None);
         }
         fn send_to_children(widget: &WidgetRef, active: bool) {
-            let children = widget.borrow().children();
+            let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+                return;
+            };
             for child in children {
-                if child.borrow().is_visible() {
+                let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+                if visible {
                     let kind = if active {
                         EventKind::WindowActivate
                     } else {
                         EventKind::WindowDeactivate
                     };
-                    child.borrow_mut().event(&mut Event::new_spontaneous(kind));
+                    // A child on the stack (the activation arrived during its own handler) is skipped.
+                    if let Ok(mut c) = child.try_borrow_mut() {
+                        c.event(&mut Event::new_spontaneous(kind));
+                    }
                     send_to_children(&child, active);
                 }
             }

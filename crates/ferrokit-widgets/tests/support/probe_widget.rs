@@ -89,6 +89,10 @@ impl QObject for ProbeWidget {
                 self.mouse_press_event(Point::new(*x, *y), *button, 0);
                 true
             }
+            EventKind::EnabledChange => {
+                self.note("enabled_change");
+                true
+            }
             _ => false,
         }
     }

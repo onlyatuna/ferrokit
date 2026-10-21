@@ -1263,7 +1263,7 @@ impl Menu {
 
     /// Keyboard handling (`QMenu::keyPressEvent`); the deepest open sub-menu gets the key first.
     pub(crate) fn handle_key(&mut self, key: u32, modifiers: u32) -> MenuOutcome {
-        let key = keys::normalize_key(key);
+        let key = crate::key_sequence_edit::normalize_key(key, modifiers).0;
         let modifiers = keys::normalize_modifiers(modifiers);
         if let Some((_, submenu)) = self.open_submenu.clone() {
             let outcome = submenu.borrow_mut().handle_key(key, modifiers);

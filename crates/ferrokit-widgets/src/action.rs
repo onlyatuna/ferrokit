@@ -54,30 +54,6 @@ pub(crate) mod keys {
     pub const MOD_META: u32 = 0x1000_0000;
     pub const MOD_MASK: u32 = MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_META;
 
-    /// Maps Win32 virtual-key codes (as used by other widgets in this crate)
-    /// to Qt key codes and folds lowercase ASCII letters to uppercase.
-    pub fn normalize_key(key: u32) -> u32 {
-        match key {
-            0x1B => ESCAPE,
-            0x09 => TAB,
-            0x08 => BACKSPACE,
-            0x0D => RETURN,
-            0x10 => SHIFT,
-            0x11 => CONTROL,
-            0x12 => ALT,
-            0x21 => PAGE_UP,
-            0x22 => PAGE_DOWN,
-            0x23 => END,
-            0x24 => HOME,
-            0x25 => LEFT,
-            0x26 => UP,
-            0x27 => RIGHT,
-            0x28 => DOWN,
-            0x61..=0x7A => key - 0x20,
-            other => other,
-        }
-    }
-
     /// Normalizes modifier bits to Qt `KeyboardModifier` flags, accepting the
     /// compact `KeyboardModifiers` bits of `ferrokit_core` (shift=1, ctrl=2, alt=4, meta=8).
     pub fn normalize_modifiers(modifiers: u32) -> u32 {
@@ -667,10 +643,12 @@ impl ActionGroup {
             old.remove(id);
         }
         action.borrow_mut().group = Some(Rc::downgrade(&self.state));
-        self.state
-            .actions
-            .borrow_mut()
-            .push((id, Rc::downgrade(action)));
+        {
+            let mut members = self.state.actions.borrow_mut();
+            // A member that was dropped without `remove_action` must not pile up.
+            members.retain(|(_, w)| w.strong_count() > 0);
+            members.push((id, Rc::downgrade(action)));
+        }
         let notice = if checked {
             self.state.action_check_changed(id, true)
         } else {
@@ -701,6 +679,12 @@ impl ActionGroup {
             action.borrow_mut().group = None;
             action.borrow().changed.emit(&());
         }
+    }
+
+    /// Number of member entries held, dead ones included (for tests of the pruning).
+    #[doc(hidden)]
+    pub fn member_slots(&self) -> usize {
+        self.state.actions.borrow().len()
     }
 
     /// Returns the live member actions in insertion order.

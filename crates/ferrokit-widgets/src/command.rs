@@ -161,27 +161,50 @@ impl WidgetCommandQueue {
 
             let mut layout_targets: Vec<WidgetRef> = Vec::new();
             let mut seen_layout_ids = HashSet::new();
+            let mut kept = Vec::new();
+            let mut progress = false;
 
             for cmd in commands {
                 match cmd {
                     WidgetCommand::RequestLayout(weak) => {
                         if let Some(target) = weak.upgrade() {
-                            let id = target.borrow().id();
+                            // A borrowed target (a nested dispatch from its own handler) keeps its
+                            // request for the next flush, as `flush_layouts` does.
+                            let Ok(widget) = target.try_borrow() else {
+                                kept.push(WidgetCommand::RequestLayout(weak));
+                                continue;
+                            };
+                            let id = widget.id();
+                            drop(widget);
                             if seen_layout_ids.insert(id) {
                                 layout_targets.push(target);
                             }
                         }
                     }
                     WidgetCommand::Task(task) => {
+                        progress = true;
                         task();
                     }
                 }
+            }
+            progress |= !layout_targets.is_empty();
+            let some_kept = !kept.is_empty();
+            if some_kept {
+                COMMAND_QUEUE.with(|q| {
+                    let mut queue = q.borrow_mut();
+                    kept.append(&mut queue);
+                    *queue = kept;
+                });
             }
 
             for target in layout_targets {
                 crate::layout_scheduler::LayoutScheduler::invalidate(&target);
             }
             crate::layout_scheduler::LayoutScheduler::activate_pending();
+            if some_kept && !progress {
+                // Only borrowed targets are left; they wait for the next flush.
+                break;
+            }
         }
     }
 

@@ -75,3 +75,15 @@ fn an_exclusive_group_unchecks_the_previous_action_and_notifies_it() {
     assert!(!a.borrow().is_checked());
     assert!(b.borrow().is_checked());
 }
+
+#[test]
+fn dropped_actions_do_not_pile_up_in_a_group() {
+    let mut group = ActionGroup::new();
+    for _ in 0..100 {
+        let _ = group.add_new_action("temp"); // dropped at once
+    }
+    let keep = group.add_new_action("keep");
+    assert_eq!(group.actions().len(), 1);
+    assert!(std::rc::Rc::ptr_eq(&group.actions()[0], &keep));
+    assert!(group.member_slots() <= 2, "dead entries are pruned: {}", group.member_slots());
+}
