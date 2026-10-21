@@ -173,19 +173,32 @@ pub fn register_window_event_binding(hwnd: HWND, handle: EventLoopHandle, receiv
         .insert(hwnd as isize, (handle, receiver));
 }
 
+#[inline]
+fn wheel_deltas(horizontal: bool, wheel_delta: i32) -> (i32, i32) {
+    // Qt negates `WM_MOUSEHWHEEL`: its positive horizontal delta scrolls left, Win32's scrolls right.
+    if horizontal {
+        (-wheel_delta, 0)
+    } else {
+        (0, wheel_delta)
+    }
+}
+
 pub fn unregister_window_event_binding(hwnd: HWND) {
-    let mut map = WINDOW_EVENT_BINDINGS.write().unwrap();
-    if let Some(m) = map.as_mut() {
-        m.remove(&(hwnd as isize));
-    }
-    let mut cfg_map = WINDOW_FRAMELESS_CONFIGS.write().unwrap();
-    if let Some(m) = cfg_map.as_mut() {
-        m.remove(&(hwnd as isize));
-    }
-    let mut limits_map = WINDOW_SIZE_LIMITS.write().unwrap();
-    if let Some(m) = limits_map.as_mut() {
-        m.remove(&(hwnd as isize));
-    }
+    // Values removed from the shared registries are dropped only after every guard is released:
+    // a Drop that reaches back into the registries would otherwise re-enter the same RwLock.
+    let removed_binding = {
+        let mut map = WINDOW_EVENT_BINDINGS.write().unwrap();
+        map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
+    };
+    let removed_cfg = {
+        let mut cfg_map = WINDOW_FRAMELESS_CONFIGS.write().unwrap();
+        cfg_map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
+    };
+    let removed_limits = {
+        let mut limits_map = WINDOW_SIZE_LIMITS.write().unwrap();
+        limits_map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
+    };
+    drop((removed_binding, removed_cfg, removed_limits));
     let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().remove(&(hwnd as isize)));
     let removed = WINDOW_EVENT_HANDLERS
         .try_with(|map| map.borrow_mut().remove(&(hwnd as isize)))
@@ -1438,12 +1451,7 @@ unsafe fn native_window_proc_inner(
                 ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
                 dpr,
             );
-            let wheel_delta = (wparam >> 16) as i16 as i32;
-            let (delta_x, delta_y) = if horizontal {
-                (wheel_delta, 0)
-            } else {
-                (0, wheel_delta)
-            };
+            let (delta_x, delta_y) = wheel_deltas(horizontal, (wparam >> 16) as i16 as i32);
             let modifiers = query_keyboard_modifiers();
 
             dispatch_window_system_event(
@@ -2926,5 +2934,37 @@ mod tests {
             let _ = native_window_proc(win.hwnd(), WM_MOUSEMOVE, 0, mouse_pos);
             let _ = native_window_proc(win.hwnd(), WM_LBUTTONDOWN, 0, mouse_pos);
         }
+    }
+
+    #[test]
+    fn wheel_deltas_negate_horizontal_like_qt() {
+        // qwindowspointerhandler.cpp / qwindowsmousehandler.cpp: "Qt horizontal wheel rotation
+        // orientation is opposite to the one in WM_MOUSEHWHEEL": delta = -delta.
+        assert_eq!(wheel_deltas(true, 120), (-120, 0));
+        assert_eq!(wheel_deltas(true, -120), (120, 0));
+        assert_eq!(wheel_deltas(false, 120), (0, 120));
+    }
+
+    struct DropsWindow(#[allow(dead_code)] Option<NativeWindow>);
+    impl WindowSystemEventHandler for DropsWindow {
+        fn handle_window_event(&mut self, _event: WindowSystemEvent) {}
+    }
+
+    #[test]
+    fn unregister_drops_handler_outside_registry_locks() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rect = Rect::new(50, 50, 300, 200);
+            let a = NativeWindow::new("Unregister A", rect, WindowFlags::NORMAL).unwrap();
+            let b = NativeWindow::new("Unregister B", rect, WindowFlags::NORMAL).unwrap();
+            let hwnd_a = a.hwnd();
+            set_window_event_handler(hwnd_a, Box::new(DropsWindow(Some(b))));
+            // Dropping A's handler drops window B, which unregisters B and takes the same locks.
+            unregister_window_event_binding(hwnd_a);
+            drop(a);
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("unregister deadlocked: handler dropped while registry locks held");
     }
 }
