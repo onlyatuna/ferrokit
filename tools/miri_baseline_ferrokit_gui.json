@@ -22,9 +22,26 @@
     "test_solid_fill_blend",
     "test_text_system"
   ],
+  "excluded": {
+    "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_font_style": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_qt_text_advances": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_text_transform_parity": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
+  },
   "negative_controls": [],
-  "isolation_allowlist": {},
+  "isolation_allowlist": {
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    }
+  },
   "results": {
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly::SB": "unsupported",
+    "lib::application::hardening_tests::application_state_slot_can_read_state_reentrantly::TB": "unsupported",
     "lib::geometry::primitives::tests::test_margins_operators_and_null::SB": "pass",
     "lib::geometry::primitives::tests::test_margins_operators_and_null::TB": "pass",
     "lib::geometry::primitives::tests::test_point_basic_and_manhattan::SB": "pass",

@@ -85,11 +85,78 @@ impl<T> FutureShared<T> {
         list.retain(|w| w.alive.load(Ordering::SeqCst));
         list.clone()
     }
+
+    /// Wakes every task parked in `poll`.
+    fn wake_wakers(&self) {
+        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap());
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Orders a just-stored `is_finished`/`is_canceled` flag against waiters. The condvar is
+    /// paired with `results`, but the flags are atomics: a waiter that checked them while holding
+    /// `results` and has not parked yet would otherwise miss a `notify_all` issued right after the
+    /// store. Taking `results` once the flag is visible guarantees the waiter is either already
+    /// parked (and gets notified) or re-checks the flag.
+    fn sync_with_waiters(&self) {
+        drop(self.results.lock().unwrap());
+    }
+}
+
+impl<T: Clone + Send + 'static> FutureShared<T> {
+    fn cancel(&self) {
+        let watchers = {
+            let mut list = self.watchers.lock().unwrap();
+            // Qt: QFutureInterfaceBase::cancel is a no-op once canceled.
+            if self.is_canceled.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            list.retain(|w| w.alive.load(Ordering::SeqCst));
+            list.clone()
+        };
+        self.sync_with_waiters();
+        self.cond.notify_all();
+        for w in watchers {
+            w.post(|s| s.canceled.emit(&()));
+        }
+        self.wake_wakers();
+    }
+
+    fn finish(&self) {
+        let watchers = {
+            let mut list = self.watchers.lock().unwrap();
+            // Qt: reportFinished guards on !isFinished() (qfutureinterface.cpp:461).
+            if self.is_finished.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            list.retain(|w| w.alive.load(Ordering::SeqCst));
+            list.clone()
+        };
+        self.sync_with_waiters();
+        self.cond.notify_all();
+        for w in watchers {
+            w.post(|s| s.finished.emit(&()));
+        }
+        self.wake_wakers();
+    }
 }
 
 /// Producer side of an asynchronous computation, modeled after Qt's `QPromise`.
-pub struct Promise<T> {
+///
+/// Dropping a promise that was never finished cancels the computation and reports it finished
+/// (Qt: `~QPromise`), so no consumer is left waiting forever.
+pub struct Promise<T: Clone + Send + 'static> {
     shared: Arc<FutureShared<T>>,
+}
+
+impl<T: Clone + Send + 'static> Drop for Promise<T> {
+    fn drop(&mut self) {
+        if !self.shared.is_finished.load(Ordering::SeqCst) {
+            self.shared.cancel();
+            self.shared.finish();
+        }
+    }
 }
 
 impl<T: Clone + Send + 'static> Default for Promise<T> {
@@ -118,16 +185,21 @@ impl<T: Clone + Send + 'static> Promise<T> {
         if self.is_canceled() {
             return;
         }
-        {
+        // Appending the result and listing the watchers under one `results` critical section
+        // lets `Future::watcher` tell exactly which results a watcher still has to be sent.
+        let watchers = {
             let mut res = self.shared.results.lock().unwrap();
             res.push(value.clone());
-        }
+            self.shared.live_watchers()
+        };
         self.shared.cond.notify_all();
 
-        for w in self.shared.live_watchers() {
+        for w in watchers {
             let v = value.clone();
             w.post(move |s| s.result_ready.emit(&v));
         }
+        // A pending `poll` resolves with the first result.
+        self.shared.wake_wakers();
     }
 
     /// Sets the final result and marks the promise finished.
@@ -157,12 +229,7 @@ impl<T: Clone + Send + 'static> Promise<T> {
 
     /// Requests cancellation from the producer side.
     pub fn cancel(&self) {
-        self.shared.is_canceled.store(true, Ordering::SeqCst);
-        self.shared.cond.notify_all();
-
-        for w in self.shared.live_watchers() {
-            w.post(|s| s.canceled.emit(&()));
-        }
+        self.shared.cancel();
     }
 
     /// Whether cancellation has been requested.
@@ -172,23 +239,7 @@ impl<T: Clone + Send + 'static> Promise<T> {
 
     /// Marks the computation finished.
     pub fn finish(&self) {
-        // Qt: reportFinished guards on !isFinished() (qfutureinterface.cpp:461).
-        if self.shared.is_finished.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        self.shared.cond.notify_all();
-
-        for w in self.shared.live_watchers() {
-            w.post(|s| s.finished.emit(&()));
-        }
-
-        let wakers = {
-            let mut w = self.shared.wakers.lock().unwrap();
-            std::mem::take(&mut *w)
-        };
-        for waker in wakers {
-            waker.wake();
-        }
+        self.shared.finish();
     }
 }
 
@@ -252,6 +303,15 @@ impl<T: Clone + Send + 'static> Future<T> {
         res.first().cloned()
     }
 
+    /// Blocks until the computation is finished (Qt: `QFuture::waitForFinished`), regardless of
+    /// how many results were reported so far.
+    pub fn wait_for_finished(&self) {
+        let mut res = self.shared.results.lock().unwrap();
+        while !self.shared.is_finished.load(Ordering::SeqCst) {
+            res = self.shared.cond.wait(res).unwrap();
+        }
+    }
+
     /// Whether computation has completed.
     pub fn is_finished(&self) -> bool {
         self.shared.is_finished.load(Ordering::SeqCst)
@@ -264,12 +324,7 @@ impl<T: Clone + Send + 'static> Future<T> {
 
     /// Requests cancellation of computation.
     pub fn cancel(&self) {
-        self.shared.is_canceled.store(true, Ordering::SeqCst);
-        self.shared.cond.notify_all();
-
-        for w in self.shared.live_watchers() {
-            w.post(|s| s.canceled.emit(&()));
-        }
+        self.shared.cancel();
     }
 
     /// Current progress value.
@@ -288,14 +343,50 @@ impl<T: Clone + Send + 'static> Future<T> {
     /// Creates a `FutureWatcher` attached to this future.
     pub fn watcher(&self) -> FutureWatcher<T> {
         let signals = Arc::new(FutureWatcherSignals::new(ThreadId::current()));
-        self.shared
-            .watchers
-            .lock()
-            .unwrap()
-            .push(Arc::clone(&signals));
+
+        // Register and snapshot the current state atomically with respect to the producer side:
+        // results are appended (and watchers listed) under `results`, and the finish/cancel flags
+        // are flipped under `watchers`. Every transition is therefore either replayed here or
+        // posted by the producer, never both and never neither (Qt: `QFutureWatcher::setFuture`
+        // replays the current state).
+        let (replay, canceled, finished) = {
+            let results = self.shared.results.lock().unwrap();
+            let mut watchers = self.shared.watchers.lock().unwrap();
+            watchers.push(Arc::clone(&signals));
+            (
+                results.clone(),
+                self.shared.is_canceled.load(Ordering::SeqCst),
+                self.shared.is_finished.load(Ordering::SeqCst),
+            )
+        };
+        // Ordering: these replay posts happen after the locks are released, so a result or
+        // finish posted concurrently by the producer may be queued ahead of them. Each
+        // transition is still delivered exactly once; only the relative order of replayed and
+        // concurrently produced events is unspecified.
+        for value in replay {
+            signals.post(move |s| s.result_ready.emit(&value));
+        }
+        if canceled {
+            signals.post(|s| s.canceled.emit(&()));
+        }
+        if finished {
+            signals.post(|s| s.finished.emit(&()));
+        }
+
         FutureWatcher {
             future: self.clone(),
             signals,
+        }
+    }
+
+    /// The value `poll` resolves to once the computation produced a result, finished or was
+    /// canceled; `None` while it is still pending.
+    fn ready_output(&self) -> Option<Option<T>> {
+        let first = self.result();
+        if first.is_some() || self.is_finished() || self.is_canceled() {
+            Some(first)
+        } else {
+            None
         }
     }
 }
@@ -304,16 +395,22 @@ impl<T: Clone + Send + 'static> StdFuture for Future<T> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(r) = self.result() {
-            return Poll::Ready(Some(r));
-        }
-        if self.is_finished() || self.is_canceled() {
-            return Poll::Ready(self.result());
+        if let Some(out) = self.ready_output() {
+            return Poll::Ready(out);
         }
 
-        let mut wakers = self.shared.wakers.lock().unwrap();
-        if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
-            wakers.push(cx.waker().clone());
+        {
+            let mut wakers = self.shared.wakers.lock().unwrap();
+            if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
+        }
+
+        // A producer that stored its state after the first check above but before the waker was
+        // registered has already taken the (empty) waker list: re-check now that we are
+        // registered, so the transition cannot be missed.
+        if let Some(out) = self.ready_output() {
+            return Poll::Ready(out);
         }
         Poll::Pending
     }
@@ -385,7 +482,7 @@ impl<T: Clone + Send + 'static> FutureSynchronizer<T> {
     /// Waits for all tracked futures to finish.
     pub fn wait_for_finished(&self) {
         for f in &self.futures {
-            let _ = f.wait_result();
+            f.wait_for_finished();
         }
     }
 
@@ -399,5 +496,51 @@ impl<T: Clone + Send + 'static> FutureSynchronizer<T> {
     /// Clears tracked futures.
     pub fn clear(&mut self) {
         self.futures.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reproduces the consumer critical section of `wait_result`: the waiter holds `results`,
+    /// has seen "not done", and has not yet parked on the condvar. A producer that finishes inside
+    /// that window must still wake the waiter.
+    fn producer_inside_waiter_window(produce: impl FnOnce(Promise<i32>) + Send + 'static) {
+        let promise = Promise::<i32>::new();
+        let future = promise.future();
+        let shared = Arc::clone(&future.shared);
+
+        let guard = shared.results.lock().unwrap();
+        assert!(!future.is_finished() && !future.is_canceled());
+        let producer = std::thread::spawn(move || produce(promise));
+        while !(future.is_finished() || future.is_canceled()) {
+            std::thread::yield_now();
+        }
+        let (guard, timeout) = shared
+            .cond
+            .wait_timeout(guard, Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "lost wakeup: producer notified before the waiter parked"
+        );
+        drop(guard);
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn promise_finish_does_not_lose_wakeup() {
+        producer_inside_waiter_window(|p| p.finish());
+    }
+
+    #[test]
+    fn promise_cancel_does_not_lose_wakeup() {
+        producer_inside_waiter_window(|p| p.cancel());
+    }
+
+    #[test]
+    fn future_cancel_does_not_lose_wakeup() {
+        producer_inside_waiter_window(|p| p.future().cancel());
     }
 }

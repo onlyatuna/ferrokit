@@ -54,15 +54,21 @@ impl WindowCore {
             Application::set_active_window(None);
         }
         fn send_to_children(widget: &WidgetRef, active: bool) {
-            let children = widget.borrow().children();
+            let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+                return;
+            };
             for child in children {
-                if child.borrow().is_visible() {
+                let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+                if visible {
                     let kind = if active {
                         EventKind::WindowActivate
                     } else {
                         EventKind::WindowDeactivate
                     };
-                    child.borrow_mut().event(&mut Event::new_spontaneous(kind));
+                    // A child on the stack (the activation arrived during its own handler) is skipped.
+                    if let Ok(mut c) = child.try_borrow_mut() {
+                        c.event(&mut Event::new_spontaneous(kind));
+                    }
                     send_to_children(&child, active);
                 }
             }
@@ -775,11 +781,14 @@ impl Window {
         std::rc::Rc::clone(&self.root_widget)
     }
     pub fn set_root_widget(&mut self, widget: WidgetRef) {
-        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
+        // The size first: a widget without a window id gets its `Resize` from `set_geometry`
+        // (a window root gets it from `Window`, see `EmptyWidget::set_geometry`), so the new root
+        // learns its initial size.
         let geom = self.geometry.get();
         widget
             .borrow_mut()
             .set_geometry(Rect::new(0, 0, geom.width, geom.height));
+        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
         *self.render_state.root.borrow_mut() = widget.clone();
         self.root_widget = widget;
     }
@@ -1308,14 +1317,24 @@ impl QObject for Window {
             EventKind::Resize { width, height, .. } => {
                 self.render_state.bump(|s| s.event_resize_count += 1);
                 let mut cur = self.geometry.get();
+                let old_size = Size::new(cur.width, cur.height);
                 cur.width = *width;
                 cur.height = *height;
                 self.geometry.set(cur);
 
-                // 1. Root geometry
+                // 1. Root geometry, then its one `Resize` (the root's `set_geometry` sends none).
                 self.root_widget
                     .borrow_mut()
                     .set_geometry(Rect::new(0, 0, *width, *height));
+                if old_size != Size::new(*width, *height) {
+                    let mut root_resize = Event::new_spontaneous(EventKind::Resize {
+                        width: *width,
+                        height: *height,
+                        old_width: old_size.width,
+                        old_height: old_size.height,
+                    });
+                    self.root_widget.borrow_mut().event(&mut root_resize);
+                }
 
                 // 2. Resize callback
                 if let Some(cb) = self.resize_cb.borrow().as_ref() {
@@ -1503,6 +1522,8 @@ fn do_render_and_present(
     let _t = ferrokit_gui::startup_trace::span_min(0.5, || "do_render_and_present".into());
     // Qt delivers the LayoutRequest events that text and size-hint changes post before the paint.
     crate::command::WidgetCommandQueue::flush_layouts();
+    // Layouts a slot mutated while one of their items was borrowed ran no pass; run them now.
+    crate::layout_scheduler::LayoutScheduler::flush_deferred(root_widget);
     // Qt posts the `LayoutRequest` to the widget that owns the invalidated layout, parent or not.
     // ferrokit queues it on the parent (`WidgetBase::request_layout`), which the root does not have.
     crate::layout_scheduler::LayoutScheduler::activate_if_dirty(root_widget);
@@ -1797,7 +1818,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     y: pos.y,
                     pixel_delta_x: delta.x,
                     pixel_delta_y: delta.y,
-                    angle_delta_x: 0,
+                    angle_delta_x: delta.x,
                     angle_delta_y: delta.y,
                     modifiers: modifiers.bits(),
                 });
@@ -1936,7 +1957,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 });
                 self.dispatcher.dispatch_event(&root, &mut ev);
             }
-            WindowSystemEvent::DpiChanged { dpi_x, dpi_y } => {
+            WindowSystemEvent::DpiChanged { dpi_x, .. } => {
                 let old_dpr = self.render.device_pixel_ratio.get();
                 let new_dpr = ferrokit_gui::round_scale_factor(dpi_x as f64 / 96.0) as f32;
                 self.render.device_pixel_ratio.set(new_dpr);
@@ -1945,15 +1966,15 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 self.backing_store.borrow_mut().resize(size, new_dpr);
                 propagate_dpi_change_recursive(&root, old_dpr, new_dpr);
 
-                let mut root_borrow = root.borrow_mut();
-                root_borrow.set_geometry(Rect::new(0, 0, cur_geom.width, cur_geom.height));
-                if let Some(layout) = root_borrow.layout_mut() {
-                    layout.update_layout();
+                {
+                    // The borrow ends before the render below, which borrows the root again.
+                    let mut root_borrow = root.borrow_mut();
+                    root_borrow.set_geometry(Rect::new(0, 0, cur_geom.width, cur_geom.height));
+                    if let Some(layout) = root_borrow.layout_mut() {
+                        layout.update_layout();
+                    }
+                    root_borrow.update();
                 }
-                root_borrow.update();
-
-                let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x, dpi_y });
-                self.dispatcher.dispatch_event(&root, &mut ev);
 
                 if let Ok(mut pw) = self.platform_window.try_borrow_mut() {
                     let mut bs = self.backing_store.borrow_mut();

@@ -109,6 +109,9 @@ impl IODevice for Buffer {
                 "buffer is not open",
             ));
         }
+        if pos > isize::MAX as u64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek position is too large"));
+        }
         self.pos = pos;
         Ok(())
     }
@@ -142,16 +145,19 @@ impl IODevice for Buffer {
             self.pos = self.data.len() as u64;
         }
 
-        let current_pos = self.pos as usize;
-        let write_len = data.len();
+        let current_pos = usize::try_from(self.pos)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "seek position is too large"))?;
+        let end = current_pos.checked_add(data.len())
+            .filter(|&end| end <= isize::MAX as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "buffer write is too large"))?;
 
-        if current_pos + write_len > self.data.len() {
-            self.data.resize(current_pos + write_len, 0);
+        if end > self.data.len() {
+            self.data.resize(end, 0);
         }
 
-        self.data[current_pos..current_pos + write_len].copy_from_slice(data);
-        self.pos += write_len as u64;
-        Ok(write_len)
+        self.data[current_pos..end].copy_from_slice(data);
+        self.pos = end as u64;
+        Ok(data.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -182,20 +188,20 @@ impl Write for Buffer {
 
 impl Seek for Buffer {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let new_pos = match pos {
-            SeekFrom::Start(offset) => offset as i64,
-            SeekFrom::End(offset) => self.data.len() as i64 + offset,
-            SeekFrom::Current(offset) => self.pos as i64 + offset,
+        let base = match pos {
+            SeekFrom::Start(offset) => i128::from(offset),
+            SeekFrom::End(offset) => self.data.len() as i128 + i128::from(offset),
+            SeekFrom::Current(offset) => i128::from(self.pos) + i128::from(offset),
         };
 
-        if new_pos < 0 {
+        if !(0..=isize::MAX as i128).contains(&base) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "cannot seek before buffer start",
+                "seek position is outside the supported range",
             ));
         }
 
-        self.pos = new_pos as u64;
+        self.pos = base as u64;
         Ok(self.pos)
     }
 }

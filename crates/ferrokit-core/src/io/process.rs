@@ -8,8 +8,13 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Current process lifecycle state (`QProcess::ProcessState` equivalent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +51,10 @@ pub struct Process {
 
     child: Option<Child>,
     stdin_handle: Option<ChildStdin>,
-    stdout_buf: Vec<u8>,
-    stderr_buf: Vec<u8>,
+    stdout_reader: Option<thread::JoinHandle<()>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
+    stdout_buf: Arc<Mutex<Vec<u8>>>,
+    stderr_buf: Arc<Mutex<Vec<u8>>>,
 
     state: ProcessState,
     exit_code: Option<i32>,
@@ -72,8 +79,10 @@ impl Process {
             channel_mode: ProcessChannelMode::SeparateChannels,
             child: None,
             stdin_handle: None,
-            stdout_buf: Vec::new(),
-            stderr_buf: Vec::new(),
+            stdout_reader: None,
+            stderr_reader: None,
+            stdout_buf: Arc::new(Mutex::new(Vec::new())),
+            stderr_buf: Arc::new(Mutex::new(Vec::new())),
             state: ProcessState::NotRunning,
             exit_code: None,
             exit_status: None,
@@ -145,6 +154,7 @@ impl Process {
             ));
         }
 
+        // Preserve NotRunning when command construction or spawn fails.
         self.state = ProcessState::Starting;
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
@@ -175,15 +185,54 @@ impl Process {
             }
         }
 
-        let mut child = cmd.spawn()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.state = ProcessState::NotRunning;
+                return Err(error);
+            }
+        };
         self.pid = Some(child.id());
-        self.stdin_handle = child.stdin.take();
-        self.child = Some(child);
-        self.state = ProcessState::Running;
         self.exit_code = None;
         self.exit_status = None;
-        self.stdout_buf.clear();
-        self.stderr_buf.clear();
+        self.stdin_handle = child.stdin.take();
+        // Fresh buffers per run so a detached reader from a previous run cannot append here.
+        self.stdout_buf = Arc::new(Mutex::new(Vec::new()));
+        self.stderr_buf = Arc::new(Mutex::new(Vec::new()));
+        self.stdout_reader = child.stdout.take().map(|mut out| {
+            let output = Arc::clone(&self.stdout_buf);
+            thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match out.read(&mut chunk) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => output.lock().extend_from_slice(&chunk[..count]),
+                    }
+                }
+            })
+        });
+        self.stderr_reader = child.stderr.take().map(|mut err| {
+            let output = Arc::clone(&self.stderr_buf);
+            thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match err.read(&mut chunk) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => output.lock().extend_from_slice(&chunk[..count]),
+                    }
+                }
+            })
+        });
+        self.child = Some(child);
+        self.state = ProcessState::Running;
         Ok(())
     }
 
@@ -206,51 +255,63 @@ impl Process {
         if self.state == ProcessState::NotRunning {
             return true;
         }
-
         let start_time = Instant::now();
 
-        // Read stdout and stderr if pipes exist
-        if let Some(mut child) = self.child.take() {
-            // Read output streams
-            if let Some(mut out) = child.stdout.take() {
-                let _ = out.read_to_end(&mut self.stdout_buf);
-            }
-            if let Some(mut err) = child.stderr.take() {
-                let _ = err.read_to_end(&mut self.stderr_buf);
-            }
-
-            loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        self.exit_code = status.code();
-                        self.exit_status = if status.success() {
-                            Some(ExitStatus::NormalExit)
-                        } else {
-                            Some(ExitStatus::CrashExit)
-                        };
-                        self.state = ProcessState::NotRunning;
-                        self.pid = None;
-                        return true;
+        loop {
+            let result = match self.child.as_mut() {
+                Some(child) => child.try_wait(),
+                None => return true,
+            };
+            match result {
+                Ok(Some(status)) => {
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.wait();
                     }
-                    Ok(None) => {
-                        if let Some(t) = timeout {
-                            if start_time.elapsed() >= t {
-                                self.child = Some(child);
-                                return false;
-                            }
-                        }
-                        thread::sleep(Duration::from_millis(5));
+                    self.exit_code = status.code();
+                    self.exit_status = Some(if status.code().is_some() {
+                        ExitStatus::NormalExit
+                    } else {
+                        ExitStatus::CrashExit
+                    });
+                    self.finish_readers(start_time, timeout);
+                    self.state = ProcessState::NotRunning;
+                    self.pid = None;
+                    return true;
+                }
+                Ok(None) => {
+                    if timeout.is_some_and(|t| start_time.elapsed() >= t) {
+                        return false;
                     }
-                    Err(_) => {
-                        self.state = ProcessState::NotRunning;
-                        self.exit_status = Some(ExitStatus::CrashExit);
-                        self.pid = None;
-                        return true;
-                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => {
+                    self.state = ProcessState::NotRunning;
+                    self.exit_status = Some(ExitStatus::CrashExit);
+                    self.pid = None;
+                    return true;
                 }
             }
         }
-        true
+    }
+
+    /// Joins reader threads that have finished; once `timeout` (measured from `start`) has
+    /// elapsed, unfinished readers are detached instead of blocking on a grandchild-held pipe.
+    fn finish_readers(&mut self, start: Instant, timeout: Option<Duration>) {
+        for reader in [self.stdout_reader.take(), self.stderr_reader.take()]
+            .into_iter()
+            .flatten()
+        {
+            loop {
+                if reader.is_finished() {
+                    let _ = reader.join();
+                    break;
+                }
+                if timeout.is_some_and(|t| start.elapsed() >= t) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 
     /// Writes data to the process's standard input pipe.
@@ -272,47 +333,28 @@ impl Process {
 
     /// Reads all accumulated standard output bytes.
     pub fn read_all_stdout(&mut self) -> Vec<u8> {
-        if let Some(ref mut child) = self.child {
-            if let Some(ref mut out) = child.stdout {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = out.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    self.stdout_buf.extend_from_slice(&buf[..n]);
-                }
-            }
-        }
-        std::mem::take(&mut self.stdout_buf)
+        std::mem::take(&mut *self.stdout_buf.lock())
     }
 
-    /// Reads all accumulated standard error bytes.
+    /// Reads all accumulated standard error bytes without waiting for process exit.
     pub fn read_all_stderr(&mut self) -> Vec<u8> {
-        if let Some(ref mut child) = self.child {
-            if let Some(ref mut err) = child.stderr {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = err.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    self.stderr_buf.extend_from_slice(&buf[..n]);
-                }
-            }
-        }
-        std::mem::take(&mut self.stderr_buf)
+        std::mem::take(&mut *self.stderr_buf.lock())
     }
 
-    /// Forcefully kills the running process.
+    /// Forcefully kills the running process and reaps it.
     pub fn kill(&mut self) -> io::Result<()> {
-        if let Some(ref mut child) = self.child {
+        if let Some(child) = self.child.as_mut() {
             child.kill()?;
-            self.state = ProcessState::NotRunning;
+            let status = child.wait()?;
+            self.exit_code = status.code();
             self.exit_status = Some(ExitStatus::CrashExit);
+            self.child = None;
+            self.stdin_handle = None;
+            self.finish_readers(Instant::now(), Some(Duration::from_millis(100)));
+            self.state = ProcessState::NotRunning;
             self.pid = None;
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Requests termination of the running process.
@@ -333,11 +375,26 @@ impl Process {
         proc.wait_for_finished(None);
         Ok(proc.exit_code().unwrap_or(-1))
     }
-
+ 
     /// Starts a detached process without retaining a handle.
     pub fn start_detached(program: &str, args: &[&str]) -> io::Result<u32> {
-        let child = Command::new(program).args(args).spawn()?;
-        Ok(child.id())
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let child = cmd.spawn()?;
+        let pid = child.id();
+        thread::spawn(move || {
+            let mut child = child;
+            let _ = child.wait();
+        });
+        Ok(pid)
     }
 }
 

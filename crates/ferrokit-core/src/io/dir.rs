@@ -435,47 +435,45 @@ impl Directory {
 
         // Sorting
         if !sort.contains(SortFlag::UNSORTED) {
+            let mut items: Vec<_> = items
+                .into_iter()
+                .map(|info| {
+                    let is_dir = info.is_dir();
+                    let time = sort
+                        .contains(SortFlag::TIME)
+                        .then(|| info.last_modified().unwrap_or(SystemTime::UNIX_EPOCH));
+                    let size = sort.contains(SortFlag::SIZE).then(|| info.size());
+                    (info, is_dir, time, size)
+                })
+                .collect();
             items.sort_by(|a, b| {
-                if sort.contains(SortFlag::DIRS_FIRST) && a.is_dir() != b.is_dir() {
-                    return if a.is_dir() {
-                        Ordering::Less
-                    } else {
-                        Ordering::Greater
-                    };
+                if sort.contains(SortFlag::DIRS_FIRST) && a.1 != b.1 {
+                    return if a.1 { Ordering::Less } else { Ordering::Greater };
                 }
-                if sort.contains(SortFlag::DIRS_LAST) && a.is_dir() != b.is_dir() {
-                    return if a.is_dir() {
-                        Ordering::Greater
-                    } else {
-                        Ordering::Less
-                    };
+                if sort.contains(SortFlag::DIRS_LAST) && a.1 != b.1 {
+                    return if a.1 { Ordering::Greater } else { Ordering::Less };
                 }
 
                 let order = if sort.contains(SortFlag::TIME) {
-                    let time_a = a.last_modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    let time_b = b.last_modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    time_a.cmp(&time_b)
+                    a.2.cmp(&b.2)
                 } else if sort.contains(SortFlag::SIZE) {
-                    a.size().cmp(&b.size())
+                    a.3.cmp(&b.3)
                 } else if sort.contains(SortFlag::TYPE) {
-                    a.suffix().cmp(&b.suffix())
+                    a.0.suffix().cmp(&b.0.suffix())
+                } else if sort.contains(SortFlag::IGNORE_CASE) {
+                    a.0.file_name()
+                        .to_lowercase()
+                        .cmp(&b.0.file_name().to_lowercase())
                 } else {
-                    // Sort by name
-                    if sort.contains(SortFlag::IGNORE_CASE) {
-                        a.file_name()
-                            .to_lowercase()
-                            .cmp(&b.file_name().to_lowercase())
-                    } else {
-                        a.file_name().cmp(&b.file_name())
-                    }
+                    a.0.file_name().cmp(&b.0.file_name())
                 };
-
                 if sort.contains(SortFlag::REVERSED) {
                     order.reverse()
                 } else {
                     order
                 }
             });
+            return Ok(items.into_iter().map(|(info, _, _, _)| info).collect());
         }
 
         Ok(items)
@@ -526,7 +524,7 @@ impl Iterator for DirIterator {
                 let is_dir = info.is_dir();
                 let is_file = info.is_file();
 
-                if is_dir && self.subdirectories {
+                if is_dir && self.subdirectories && !info.is_symlink() {
                     self.dirs_to_visit.push(path.clone());
                 }
 
@@ -540,6 +538,9 @@ impl Iterator for DirIterator {
                     && !self.filter.contains(DirFilter::FILES)
                     && !self.filter.contains(DirFilter::ALL_ENTRIES)
                 {
+                    continue;
+                }
+                if self.filter.contains(DirFilter::NO_SYM_LINKS) && info.is_symlink() {
                     continue;
                 }
                 if !self.filter.contains(DirFilter::HIDDEN) && info.is_hidden() {

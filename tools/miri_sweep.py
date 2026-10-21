@@ -31,7 +31,11 @@ Usage (from the repository root; a nightly toolchain with the `miri` component):
         [--cross x86_64-unknown-linux-gnu] [--toolchain nightly] [--models SB,TB]
         [--timeout SECONDS] [--flags "..."] [--baseline tools/miri_baseline.json]
         [--run-isolation-allowlist] [--fail-on-regression] [--shard I/N] [--list-targets]
-        [--summary summary.md] [--out results.json]
+        [--summary summary.md] [--out results.json] [--check-coverage]
+
+`--check-coverage` runs no Miri. Every `tests/*.rs` file of the baseline's crate must be either in its
+`targets` (swept) or in its `excluded` map ({target: reason}, reason non-empty). A file in neither, a
+target in both, or an entry with no test file fails.
 """
 
 import argparse
@@ -85,7 +89,7 @@ def bucket_of(kind):
 
 
 def list_tests(args, target):
-    cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "-p", args.crate]
+    cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "--locked", "-p", args.crate]
     if args.cross:
         cmd += ["--target", args.cross]
     cmd += target_args(target) + ["--", "--list", "--format", "terse"]
@@ -174,7 +178,7 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
         env["MIRIFLAGS"] = " ".join(flags)
     else:
         env.pop("MIRIFLAGS", None)
-    cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "-p", args.crate]
+    cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "--locked", "-p", args.crate]
     if args.cross:
         cmd += ["--target", args.cross]
     cmd += target_args(target) + ["--", "--test-threads=1"]
@@ -311,8 +315,9 @@ def sweep_target(args, target, names, model, results, excerpts):
                 excerpts[key] = text[text.find("error: memory leaked") :][:3000]
                 print(f"{target} {model}: {leaked} leaked allocations at process exit", flush=True)
             break
-        # Nothing reported and nothing started: the run itself failed (build error, no such test).
-        kind, sig = classify(text)
+        # Nothing reported and nothing started: the run itself failed (build error, no such test), or
+        # it hit the time limit before any test started.
+        kind, sig = ("timeout", None) if timed_out else classify(text)
         for name in names:
             if name not in done:
                 key = f"{target}::{name}::{model}"
@@ -511,6 +516,43 @@ def shard_targets(names, index, count):
     return sorted(names)[index - 1 :: count]
 
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def crate_test_targets(crate, repo_root=REPO_ROOT):
+    """Integration test targets of `crate`: the stems of the `tests/*.rs` files directly in it."""
+    tests_dir = os.path.join(repo_root, "crates", crate, "tests")
+    return {
+        os.path.splitext(name)[0]
+        for name in os.listdir(tests_dir)
+        if name.endswith(".rs") and os.path.isfile(os.path.join(tests_dir, name))
+    }
+
+
+def check_target_coverage(baseline, test_names):
+    """Problems with how `baseline` accounts for the integration test targets in `test_names`.
+
+    Each test target is either swept (`targets`) or excluded with a reason (`excluded`, a map of
+    target to reason). Returns a list of messages; an empty list means the baseline is complete.
+    """
+    excluded = baseline.get("excluded", {})
+    if not isinstance(excluded, dict):
+        return ["`excluded` must be an object mapping target to reason"]
+    problems = []
+    swept = set(baseline.get("targets", []))
+    for name in sorted(test_names - swept - set(excluded)):
+        problems.append(f"tests/{name}.rs is in neither `targets` nor `excluded`")
+    for name in sorted(swept & set(excluded)):
+        problems.append(f"{name} is in both `targets` and `excluded`")
+    for name, reason in sorted(excluded.items()):
+        if not isinstance(reason, str) or not reason.strip():
+            problems.append(f"excluded {name} needs a non-empty reason")
+    listed = (swept - {"lib"}) | set(excluded)
+    for name in sorted(listed - test_names):
+        problems.append(f"{name} is listed but tests/{name}.rs does not exist")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crate", default="ferrokit-core")
@@ -546,6 +588,11 @@ def main():
         action="store_true",
         help="print the target list selected by --targets/--baseline/--shard and exit without running Miri",
     )
+    ap.add_argument(
+        "--check-coverage",
+        action="store_true",
+        help="check that every tests/*.rs of --crate is in the baseline `targets` or `excluded`; run no Miri",
+    )
     ap.add_argument("--out", help="write the results as JSON")
     args = ap.parse_args()
 
@@ -557,6 +604,18 @@ def main():
 
     if baseline is not None and baseline.get("crate") not in (None, args.crate):
         ap.error(f"--baseline is for crate {baseline['crate']!r}, but --crate is {args.crate!r}")
+
+    if args.check_coverage:
+        if baseline is None:
+            ap.error("--check-coverage requires --baseline")
+        problems = check_target_coverage(baseline, crate_test_targets(args.crate))
+        for problem in problems:
+            print(f"coverage: {problem}")
+        if problems:
+            print(f"{len(problems)} target coverage problem(s) in {args.baseline}")
+            return 1
+        print(f"coverage: every {args.crate} test target is in `targets` or `excluded`")
+        return 0
 
     targets_str = args.targets
     if not targets_str:

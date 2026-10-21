@@ -7,6 +7,9 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static SAVE_FILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use super::device::{IODevice, OpenMode};
 use crate::types::ByteArray;
@@ -298,26 +301,45 @@ impl SaveFile {
                 "SaveFile must be opened for writing",
             ));
         }
-
-        let pid = std::process::id();
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        if self.temp_file.is_some() || self.temp_path.is_some() {
+            self.cancel_writing();
+        }
 
         let file_name = self
             .final_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("qsavefile");
-
         let parent = self.final_path.parent().unwrap_or_else(|| Path::new("."));
-        let temp_name = format!(".{}_{}_{}.tmp", file_name, pid, timestamp);
-        let temp_path = parent.join(temp_name);
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        // New targets get the default mode (0666 & ~umask); existing targets keep theirs below.
+
+        let (temp_path, handle) = loop {
+            let sequence = SAVE_FILE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let temp_name = format!(".{}_{}_{}.tmp", file_name, std::process::id(), sequence);
+            let temp_path = parent.join(temp_name);
+            match opts.open(&temp_path) {
+                Ok(handle) => break (temp_path, handle),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        };
+
+        #[cfg(unix)]
+        if let Ok(metadata) = fs::metadata(&self.final_path) {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = fs::Permissions::from_mode(metadata.permissions().mode() & 0o7777);
+            if let Err(err) = fs::set_permissions(&temp_path, permissions) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(err);
+            }
+        }
 
         let mut file = File::new(&temp_path);
-        file.open(mode)?;
-
+        file.handle = Some(handle);
+        file.open_mode = mode;
+        file.pos = 0;
         self.temp_path = Some(temp_path);
         self.temp_file = Some(file);
         self.committed = false;
@@ -329,23 +351,33 @@ impl SaveFile {
         if self.committed {
             return Ok(());
         }
-
+        let temp_path = self.temp_path.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "SaveFile is not open")
+        })?;
         if let Some(mut file) = self.temp_file.take() {
             file.flush()?;
+            if let Some(handle) = file.handle.as_ref() {
+                handle.sync_all()?;
+            }
             file.close();
         }
-
-        if let Some(ref temp_path) = self.temp_path {
-            fs::rename(temp_path, &self.final_path)?;
-            self.committed = true;
-            self.temp_path = None;
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "SaveFile is not open",
-            ))
+        fs::rename(temp_path, &self.final_path)?;
+        self.committed = true;
+        self.temp_path = None;
+        #[cfg(unix)]
+        if let Some(parent) = self.final_path.parent() {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            // The rename already replaced the target; a failed directory sync only weakens
+            // durability, so it must not turn a completed commit into an error.
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
         }
+        Ok(())
     }
 
     /// Cancels writing and discards the temporary file.
@@ -427,5 +459,58 @@ impl Drop for SaveFile {
         if !self.committed {
             self.cancel_writing();
         }
+    }
+}
+#[cfg(test)]
+mod save_file_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_dir() -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .join(format!("ferrokit-savefile-{}-{id}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn save_file_open_is_unique_and_reopen_removes_previous_temp() {
+        let dir = test_dir();
+        let target = dir.join("target");
+        let mut first = SaveFile::new(&target);
+        first.open(OpenMode::WRITE_ONLY).unwrap();
+        let first_temp = first.temp_path.clone().unwrap();
+
+        let mut second = SaveFile::new(&target);
+        second.open(OpenMode::WRITE_ONLY).unwrap();
+        assert_ne!(first.temp_path, second.temp_path);
+
+        first.open(OpenMode::WRITE_ONLY).unwrap();
+        assert!(!first_temp.exists());
+        assert!(first.temp_path.as_ref().unwrap().exists());
+        first.cancel_writing();
+        second.cancel_writing();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_file_preserves_target_permissions_and_commits() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = test_dir();
+        let target = dir.join("target");
+        fs::write(&target, b"old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let mut save = SaveFile::new(&target);
+        save.open(OpenMode::WRITE_ONLY).unwrap();
+        save.write(b"new").unwrap();
+        save.commit().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o640);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

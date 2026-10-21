@@ -7,7 +7,6 @@ use ferrokit_core::event::{Event, EventKind, EventPointPos, MouseButtons};
 use ferrokit_core::object::ObjectId;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 
-#[derive(Default)]
 pub struct EventTreeDispatcher {
     last_hovered: Option<(ObjectId, WidgetRef)>,
     focus_manager: FocusManager,
@@ -18,6 +17,12 @@ pub struct EventTreeDispatcher {
     /// One bit per button held down (`1 << (button - 1)`); the grab ends with the last button.
     held_buttons: u32,
     last_dpr: f32,
+}
+
+impl Default for EventTreeDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventTreeDispatcher {
@@ -64,6 +69,7 @@ impl EventTreeDispatcher {
         self.focus_manager.process_pending(root);
         let result = self.dispatch_event_internal(root, event, MouseButtons(0), None);
         self.focus_manager.process_pending(root);
+        crate::layout_scheduler::LayoutScheduler::flush_deferred(root);
         crate::command::WidgetCommandQueue::flush();
         result
     }
@@ -87,6 +93,7 @@ impl EventTreeDispatcher {
         self.focus_manager.process_pending(root);
         let result = self.dispatch_event_internal(root, &mut event, buttons, tool_tip_pos);
         self.focus_manager.process_pending(root);
+        crate::layout_scheduler::LayoutScheduler::flush_deferred(root);
         crate::command::WidgetCommandQueue::flush();
         result
     }
@@ -335,14 +342,17 @@ impl EventTreeDispatcher {
                 root.borrow_mut().event(event)
             }
             EventKind::KeyPress { key, modifiers, .. } => {
-                // Tab / Shift+Tab keyboard focus navigation
-                if *key == 0x09 || *key == 0x01000001 {
-                    let is_shift = (*modifiers & 0x02000000 != 0) || (*modifiers & 1 != 0);
-                    if is_shift {
+                // `QWidget::event` (qwidget.cpp, KeyPress): Tab, Shift+Tab and Backtab move the focus
+                // before `keyPressEvent`, unless Ctrl or Alt is held. 0x09 is the Win32 VK_TAB.
+                use crate::action::keys;
+                let mods = keys::normalize_modifiers(*modifiers);
+                if mods & (keys::MOD_CTRL | keys::MOD_ALT) == 0 {
+                    let tab = *key == 0x09 || *key == keys::TAB;
+                    if *key == keys::BACKTAB || (tab && mods & keys::MOD_SHIFT != 0) {
                         if self.focus_manager.focus_previous(root) {
                             return true;
                         }
-                    } else if self.focus_manager.focus_next(root) {
+                    } else if tab && self.focus_manager.focus_next(root) {
                         return true;
                     }
                 }
@@ -466,9 +476,19 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
         });
     }
     loop {
-        let (children, pos, enabled) = {
+        let candidates = {
             let cur = path.last().expect("path starts with the root");
-            (cur.widget.borrow().children(), cur.pos, cur.enabled)
+            let w = cur.widget.borrow();
+            // Children are clipped to the clip rect (a scroll area's viewport): a point outside
+            // it belongs to the widget itself, e.g. to its scroll bars.
+            if w.children_clip_rect().is_some_and(|clip| !clip.contains(cur.pos)) {
+                None
+            } else {
+                Some((w.children(), cur.pos, cur.enabled))
+            }
+        };
+        let Some((children, pos, enabled)) = candidates else {
+            return path;
         };
         let mut next = None;
         for child in children.into_iter().rev() {

@@ -152,10 +152,13 @@ impl SingleInstance {
 
         unsafe {
             let handle = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
+            // Read the status before any other call can overwrite it.
+            let create_error = GetLastError();
             let msg_id = RegisterWindowMessageW(wake_name.as_ptr());
 
-            if GetLastError() == 183 {
-                // ERROR_ALREADY_EXISTS (183): another instance is already running
+            // ERROR_ALREADY_EXISTS (183): another instance is already running. A NULL handle
+            // with ERROR_ACCESS_DENIED (5) means the mutex exists but is not ours to open.
+            if create_error == 183 || (handle == 0 && create_error == 5) {
                 if handle != 0 {
                     CloseHandle(handle);
                 }
