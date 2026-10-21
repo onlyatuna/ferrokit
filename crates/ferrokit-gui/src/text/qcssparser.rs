@@ -400,9 +400,9 @@ fn parse_value(property: &QCssProperty, val_str: &str) -> QCssValue {
         return QCssValue::Number(num);
     }
 
-    // Quoted string (e.g. font family names)
-    if (val_str.starts_with('\'') && val_str.ends_with('\''))
-        || (val_str.starts_with('"') && val_str.ends_with('"'))
+    if val_str.len() >= 2
+        && ((val_str.starts_with('\'') && val_str.ends_with('\''))
+            || (val_str.starts_with('"') && val_str.ends_with('"')))
     {
         return QCssValue::String(val_str[1..val_str.len() - 1].to_string());
     }
@@ -513,6 +513,9 @@ pub fn parse_color(input: &str) -> Option<Color> {
     }
 
     if let Some(hex) = s.strip_prefix('#') {
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
         return match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
@@ -527,8 +530,6 @@ pub fn parse_color(input: &str) -> Option<Color> {
                 Some(Color::from_rgba8(r, g, b, 255))
             }
             8 => {
-                // Qt QCss::Parser::parseHexColor -> QColor::fromString (qcssparser.cpp:3026):
-                // 8-digit hex colors are in #AARRGGBB format.
                 let a = u8::from_str_radix(&hex[0..2], 16).ok()?;
                 let r = u8::from_str_radix(&hex[2..4], 16).ok()?;
                 let g = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -580,5 +581,22 @@ pub fn parse_color(input: &str) -> Option<Color> {
         "green" => Some(Color::from_rgba8(0, 128, 0, 255)),
         "blue" => Some(Color::from_rgba8(0, 0, 255, 255)),
         _ => None,
+    }
+}
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn parse_color_rejects_non_ascii_hex_without_panicking() {
+        assert_eq!(parse_color("#aé"), None);
+        assert_eq!(parse_color("#é1"), None);
+        assert_eq!(parse_color("#+f+f+f"), None);
+    }
+
+    #[test]
+    fn parse_lone_quote_as_identifier_without_panicking() {
+        assert_eq!(parse_value(&QCssProperty::Color, "'"), QCssValue::Identifier("'".into()));
+        assert_eq!(parse_value(&QCssProperty::Color, "\""), QCssValue::Identifier("\"".into()));
     }
 }
