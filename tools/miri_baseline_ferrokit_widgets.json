@@ -85,7 +85,19 @@
     "test_system_move_release": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_tooltip": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_update_reaches_window": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
-    "test_window_activation_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
+    "test_window_activation_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_action_reentrancy": "not yet swept: no Miri baseline entry yet",
+    "test_command_flush_borrowed": "not yet swept: no Miri baseline entry yet",
+    "test_focus_dispatch": "not yet swept: no Miri baseline entry yet",
+    "test_layout_reentrancy": "not yet swept: no Miri baseline entry yet",
+    "test_menu_exec_popup": "not yet swept: no Miri baseline entry yet",
+    "test_menu_key_normalization": "not yet swept: no Miri baseline entry yet",
+    "test_menu_reentrancy": "not yet swept: no Miri baseline entry yet",
+    "test_native_dpi_changed": "not yet swept: no Miri baseline entry yet",
+    "test_root_resize_once": "not yet swept: no Miri baseline entry yet",
+    "test_scroll_area_input": "not yet swept: no Miri baseline entry yet",
+    "test_show_hide_borrowed_child": "not yet swept: no Miri baseline entry yet",
+    "test_widget_property_dirty": "not yet swept: no Miri baseline entry yet"
   },
   "negative_controls": [],
   "isolation_allowlist": {

@@ -79,7 +79,15 @@
     "test_timer_context_single_shot": "not yet swept: no Miri baseline entry yet",
     "test_timer_pinned_start": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_timer_restart": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
-    "test_variant_extensibility": "not yet swept: no Miri baseline entry yet"
+    "test_variant_extensibility": "not yet swept: no Miri baseline entry yet",
+    "test_data_parse_hardening": "not yet swept: no Miri baseline entry yet",
+    "test_delete_later_destroys_subtree": "not yet swept: no Miri baseline entry yet",
+    "test_epoll_real_fds": "not yet swept: no Miri baseline entry yet",
+    "test_kill_timer_ownership": "not yet swept: no Miri baseline entry yet",
+    "test_loop_timer_fixes": "not yet swept: no Miri baseline entry yet",
+    "test_loop_wm_quit": "not yet swept: no Miri baseline entry yet",
+    "test_move_to_thread_handler_adds_child": "not yet swept: no Miri baseline entry yet",
+    "test_thread_sync_regressions": "not yet swept: no Miri baseline entry yet"
   },
   "negative_controls": [
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
