@@ -76,10 +76,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
 
-  miri:
-    name: Nightly Miri (SB & TB)
+  miri-shard:
+    name: Miri shard (${{ matrix.model }}, ${{ matrix.shard }}/2)
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [SB, TB]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v7
 
@@ -97,17 +102,36 @@ jobs:
       - name: Run Miri sweep tool unit tests
         run: python -m unittest tools/test_miri_sweep.py
 
-      - name: Run Miri sweep (SB & TB, baseline diff, isolation allowlist)
+      - name: Run Miri sweep (${{ matrix.model }}, shard ${{ matrix.shard }}/2, baseline diff, isolation allowlist)
         run: >-
           python tools/miri_sweep.py
           --crate ferrokit-core
           --toolchain nightly-2026-10-16
-          --models SB,TB
+          --models ${{ matrix.model }}
+          --shard ${{ matrix.shard }}/2
           --baseline tools/miri_baseline.json
           --run-isolation-allowlist
           --fail-on-regression
           --summary "$GITHUB_STEP_SUMMARY"
           --out miri_results.json
+
+  miri:
+    # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
+    name: Nightly Miri (SB & TB)
+    needs: miri-shard
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every Miri shard to succeed
+        env:
+          SHARD_RESULT: ${{ needs.miri-shard.result }}
+        run: |
+          echo "Miri shard results: $SHARD_RESULT"
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
+            exit 1
+          fi
 
   model:
     name: Concurrency Model Tests (${{ matrix.suite.name }})
