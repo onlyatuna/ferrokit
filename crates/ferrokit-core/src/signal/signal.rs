@@ -528,13 +528,33 @@ impl<T> Signal<T> {
     /// all callers and is identical on Windows, macOS, and Linux because `liveness` is an
     /// OS-independent `Arc<AtomicBool>`.
     pub fn emit(&self, value: &T) {
-        if let Some(emitter) = &self.emitter {
-            if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire) {
-                return;
+        self.emit_impl(value, true);
+    }
+
+    /// Emits the signal of an owner that is being destroyed: the owner's blocked flag and its
+    /// liveness token are not consulted, and the emission does not end when the owner is gone.
+    /// This is how `destroyed` is delivered (Qt `~QObject` clears `blockSig` before it emits
+    /// `destroyed`, qobject.cpp:1086-1105); every other signal uses [`Signal::emit`].
+    pub(crate) fn emit_while_owner_dying(&self, value: &T) {
+        self.emit_impl(value, false);
+    }
+
+    fn emit_impl(&self, value: &T, honor_owner_state: bool) {
+        if honor_owner_state {
+            if let Some(emitter) = &self.emitter {
+                if emitter.blocked.load(Ordering::Acquire)
+                    || !emitter.alive.load(Ordering::Acquire)
+                {
+                    return;
+                }
             }
         }
         let emitter_id = self.emitter_id();
-        let owner_alive = self.emitter.as_ref().map(|e| Arc::clone(&e.alive));
+        let owner_alive = self
+            .emitter
+            .as_ref()
+            .filter(|_| honor_owner_state)
+            .map(|e| Arc::clone(&e.alive));
         let _sender_guard = SenderGuard::new(emitter_id);
 
         let snapshot = self.inner.lock().subscribers.clone();

@@ -85,7 +85,6 @@ unsafe impl Sync for RegisteredPtr {}
 /// callback is still on the stack ([`OwnedObject::is_borrowed`]) without reading the child's
 /// memory and even after an ancestor's `unregister_descendants` removed the child from
 /// `GLOBAL_OBJECT_REGISTRY`.
-#[derive(Default)]
 pub(crate) struct ObjectBorrowState {
     pub(crate) borrow_flag: AtomicBool,
     /// Set when an owned child was destroyed while this object's callback was running: the guard
@@ -96,6 +95,36 @@ pub(crate) struct ObjectBorrowState {
     parked: Mutex<Option<SendFree>>,
     /// Set when the underlying object memory is deallocated or its destructor has begun.
     pub(crate) memory_destroyed: AtomicBool,
+    /// `QObject::destroyed`. It lives here, with the state the registry record and the owner
+    /// share, so that the destruction can emit it without reading the object: a callback of the
+    /// object may still be running when its owner is dropped (see `destroy_here`).
+    destroyed: Signal<ObjectId>,
+    /// Set by the one emission of `destroyed`, whichever teardown step comes first.
+    destroyed_emitted: AtomicBool,
+}
+
+impl ObjectBorrowState {
+    fn new(destroyed: Signal<ObjectId>) -> Self {
+        Self {
+            borrow_flag: AtomicBool::new(false),
+            free_when_released: AtomicBool::new(false),
+            parked: Mutex::new(None),
+            memory_destroyed: AtomicBool::new(false),
+            destroyed,
+            destroyed_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Emits `destroyed(id)` once, the first time it is called for this object. Qt `~QObject`
+    /// emits it first, before it disconnects anything and before `deleteChildren`
+    /// (qobject.cpp:1086-1105). The caller has already marked the object dead (liveness false,
+    /// unregistered or borrowed), so no slot can reach the object through the registry: the
+    /// receivers get the id and nothing else.
+    fn emit_destroyed_once(&self, id: ObjectId) {
+        if !self.destroyed_emitted.swap(true, Ordering::AcqRel) {
+            self.destroyed.emit_while_owner_dying(&id);
+        }
+    }
 }
 
 /// Registry record for a QObject. The stored pointer is dereferenced only on the registration
@@ -1344,6 +1373,9 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         }
         removed
     };
+    let state = removed
+        .as_ref()
+        .map(|entry| Arc::clone(&entry.borrow_state));
     if let Some(entry) = removed {
         entry.liveness.store(false, Ordering::Release);
         // Lock order: the registry (L0), then the `children` of a parent (L1), then the `parent`
@@ -1378,6 +1410,15 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
                 store_link(&registry, child, &mut write_unpoisoned(&child.parent), None);
             }
         }
+    }
+    // Unregistering is the object's destruction (this is what delivering a `DeferredDelete`
+    // does, and what the destruction of an owner does first). The object is dead and out of the
+    // registry, its links are cut, and no lock of ours is held. `destroyed` goes out now, before
+    // the connections of the object are cut, so its receivers are still connected (Qt emits it
+    // before it disconnects anything, qobject.cpp:1086-1105). An object that was never
+    // registered emits it from its drop instead.
+    if let Some(state) = state {
+        state.emit_destroyed_once(id);
     }
     unregister_object_thread(id);
     // Posted events addressed to a destroyed object are removed, never delivered (Qt
@@ -1498,6 +1539,11 @@ impl ObjectData {
         let liveness = Arc::new(AtomicBool::new(true));
         let object_name_changed =
             Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
+        let borrow_state = Arc::new(ObjectBorrowState::new(Signal::with_owner_parts(
+            id,
+            Arc::clone(&signals_blocked),
+            Arc::clone(&liveness),
+        )));
         Self {
             id,
             parent: None,
@@ -1515,7 +1561,7 @@ impl ObjectData {
             timers: Vec::new(),
             owned_by_parent: false,
             parent_liveness: None,
-            borrow_state: Arc::new(ObjectBorrowState::default()),
+            borrow_state,
         }
     }
     /// Creates a new ObjectData with a unique auto-generated ObjectId.
@@ -1544,6 +1590,22 @@ impl ObjectData {
     #[inline]
     pub fn object_name_changed(&self) -> &Signal<String> {
         &self.object_name_changed
+    }
+
+    /// Emitted once when this object is destroyed (`QObject::destroyed`), with the object's id.
+    ///
+    /// The object counts as destroyed from its unregistration (what `deleteLater` delivery does)
+    /// or from the start of its drop, whichever comes first; `destroyed` is emitted at that point,
+    /// before the object's connections are cut and before its children are deleted, even when
+    /// signals of the object are blocked. By then the object is dead: `QPointer`s to it are null
+    /// and the registry no longer reaches it, so receivers get the id and nothing else. A slot
+    /// must not assume the object's memory is still there.
+    ///
+    /// A direct receiver runs on the thread that destroys the object. A queued or cross-thread
+    /// receiver is posted to its own thread, and gets the id after the object is gone.
+    #[inline]
+    pub fn destroyed(&self) -> &Signal<ObjectId> {
+        &self.borrow_state.destroyed
     }
 
     /// Installed event filters chain.
@@ -1587,6 +1649,11 @@ impl ObjectData {
         let liveness = Arc::new(AtomicBool::new(true));
         let object_name_changed =
             Signal::with_owner_parts(id, Arc::clone(&signals_blocked), Arc::clone(&liveness));
+        let borrow_state = Arc::new(ObjectBorrowState::new(Signal::with_owner_parts(
+            id,
+            Arc::clone(&signals_blocked),
+            Arc::clone(&liveness),
+        )));
         Self {
             id,
             parent: None,
@@ -1604,7 +1671,7 @@ impl ObjectData {
             timers: Vec::new(),
             owned_by_parent: false,
             parent_liveness: None,
-            borrow_state: Arc::new(ObjectBorrowState::default()),
+            borrow_state,
         }
     }
 
@@ -2234,6 +2301,10 @@ impl Drop for ObjectData {
         // (qobject.cpp:1086-1178), and `QPointer` is cleared before anything else is destroyed.
         self.liveness.store(false, Ordering::Release);
         self.borrow_state.memory_destroyed.store(true, Ordering::Release);
+        // `destroyed` goes out before the parent is told or a child is deleted (Qt `~QObject`,
+        // qobject.cpp:1086-1105). The object is dead by now: the token is false and the memory
+        // counts as destroyed, so no slot reaches it through the registry.
+        self.borrow_state.emit_destroyed_once(self.id);
         // 1. If we have a parent, unlink from parent and notify it
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
@@ -3474,6 +3545,12 @@ pub trait QObject: std::any::Any {
     /// Signal emitted when object name changes (`QObject::objectNameChanged`).
     fn object_name_changed(&self) -> &Signal<String> {
         &self.object_data().object_name_changed
+    }
+
+    /// Signal emitted once when the object is destroyed (`QObject::destroyed`). See
+    /// [`ObjectData::destroyed`].
+    fn destroyed(&self) -> &Signal<ObjectId> {
+        self.object_data().destroyed()
     }
 
     /// Returns parent object ID (`QObject::parent`).
