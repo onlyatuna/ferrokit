@@ -78,60 +78,6 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
-/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) with state update and `ToolTipChange`
-/// delivery separated into two non-overlapping phases for a [`WidgetRef`].
-pub fn set_widget_tool_tip(widget: &WidgetRef, text: &str) {
-    let id = {
-        let w = widget.borrow();
-        w.set_tool_tip_text(text);
-        w.id()
-    };
-    let mut ev = Event::new(EventKind::ToolTipChange);
-    if !ferrokit_core::object::send_event(id, &mut ev) {
-        if let Ok(mut w) = widget.try_borrow_mut() {
-            notify_borrowed(&mut **w, &mut ev);
-        }
-    }
-}
-
-/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) for a registered [`OwnedObject`](ferrokit_core::object::OwnedObject)
-/// widget: updates the tooltip text in a short-lived shared borrow and dispatches
-/// `EventKind::ToolTipChange` after that borrow has ended, avoiding a Stacked Borrows conflict
-/// between `&W` and the `&mut W` callback borrow created by `send_event`.
-///
-/// Returns what `send_event` returns, as the other tool-tip functions do (whether the event was
-/// handled), not whether the text was stored. If the widget cannot be reached now (a callback of
-/// it is running, or it is registered on another thread; see
-/// [`OwnedObject::with`](ferrokit_core::object::OwnedObject::with)), the text is left as it was,
-/// and the event is still sent.
-pub fn set_owned_widget_tool_tip<W: Widget + ?Sized>(
-    widget: &ferrokit_core::object::OwnedObject<W>,
-    text: &str,
-) -> bool {
-    widget.with(|w| w.set_tool_tip_text(text));
-    let id = ferrokit_core::object::OwnedObject::object_id(widget);
-    let mut ev = Event::new(EventKind::ToolTipChange);
-    ferrokit_core::object::send_event(id, &mut ev)
-}
-
-/// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`) for a widget registered via
-/// [`register_qobject_ptr`](ferrokit_core::object::register_qobject_ptr): updates the tooltip text
-/// in a short-lived borrow derived from `widget` and dispatches `EventKind::ToolTipChange` after
-/// that borrow has ended.
-///
-/// # Safety
-/// `widget` must point to a valid, initialized `W` on the current thread, and no callback or
-/// conflicting mutable reference to `*widget` may be active when this function is called.
-pub unsafe fn set_widget_ptr_tool_tip<W: Widget + ?Sized>(widget: *const W, text: &str) -> bool {
-    let id = {
-        let w = unsafe { &*widget };
-        w.set_tool_tip_text(text);
-        w.id()
-    };
-    let mut ev = Event::new(EventKind::ToolTipChange);
-    ferrokit_core::object::send_event(id, &mut ev)
-}
-
 /// `QWidget::isVisible`: the widget and its ancestors are shown, and so is the window it belongs
 /// to. A widget that belongs to no window counts as shown when it is visible.
 fn is_shown(widget: &WidgetRef) -> bool {
@@ -682,23 +628,16 @@ pub trait Widget: QObject + 'static {
         self.widget_base().tool_tip.borrow().clone()
     }
 
-    /// Updates the stored tooltip text without sending `EventKind::ToolTipChange`.
+    /// `QWidget::setToolTip` (qwidget.cpp:11793-11800): stores the text, then always sends
+    /// `ToolTipChange`, even when the text is unchanged. The event goes through the object
+    /// filters and then [`event`](QObject::event) like `FontChange` does in `Button::set_font`,
+    /// and needs `&mut self` for that, so no shared borrow of the widget is alive while it runs.
     ///
-    /// For a registered widget, prefer [`set_owned_widget_tool_tip`], [`set_widget_ptr_tool_tip`],
-    /// or [`set_widget_tool_tip`] so the `&self` borrow ends before `send_event` borrows the
-    /// widget as `&mut self`.
-    fn set_tool_tip_text(&self, text: &str) {
+    /// Calling it from a `ToolTipChange` handler with a different text sends the event again and
+    /// recurses, as in Qt; the handler has to stop on its own.
+    fn set_tool_tip(&mut self, text: &str) {
         *self.widget_base().tool_tip.borrow_mut() = text.to_string();
-    }
-
-    /// `QWidget::setToolTip` (`qwidget.cpp:11793-11800`): updates the tooltip text.
-    ///
-    /// This method updates the tooltip text in place without synchronously invoking
-    /// `send_event`, avoiding alias conflicts with the registry while `&self` is held.
-    /// To deliver `EventKind::ToolTipChange` to a registered widget or `WidgetRef`, use
-    /// [`set_widget_tool_tip`], [`set_owned_widget_tool_tip`], or [`set_widget_ptr_tool_tip`].
-    fn set_tool_tip(&self, text: &str) {
-        self.set_tool_tip_text(text);
+        notify_borrowed(self, &mut Event::new(EventKind::ToolTipChange));
     }
 
     /// `QWidget::toolTipDuration`: how long the tip stays, in ms; -1 (the default) derives it from

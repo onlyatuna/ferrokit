@@ -142,35 +142,35 @@ struct Controller {
     tool_tip_widget: RefCell<Option<WidgetWeak>>,
     tool_tip_pos: Cell<Point>,
     tool_tip_global_pos: Cell<Point>,
-    wake_up: RefCell<Timer>,
-    fall_asleep: RefCell<Timer>,
+    wake_up: Timer,
+    fall_asleep: Timer,
     tip: RefCell<Option<Tip>>,
-    expire: RefCell<Timer>,
-    hide: RefCell<Timer>,
+    expire: Timer,
+    hide: Timer,
     custom_font: RefCell<Option<Font>>,
     custom_palette: RefCell<Option<Palette>>,
 }
 
-fn single_shot_timer(on_timeout: fn()) -> RefCell<Timer> {
+fn single_shot_timer(on_timeout: fn()) -> Timer {
     let timer = Timer::new();
     timer.set_single_shot(true);
     timer.timeout.connect(move |()| on_timeout());
-    RefCell::new(timer)
+    timer
 }
 
-fn start_timer(timer: &RefCell<Timer>, ms: u64) {
-    let timer = timer.borrow_mut();
+// `Timer`'s methods take `&self` and a start only arms the thread's timer context (a zero
+// interval posts a `ZeroTimer` instead of calling the slot), so the timers need no `RefCell`: a
+// timeout that starts or stops another timer, or its own, cannot hit a nested borrow.
+fn start_timer(timer: &Timer, ms: u64) {
     timer.start_with_interval(ms);
 }
 
-fn stop_timer(timer: &RefCell<Timer>) {
-    if let Ok(timer) = timer.try_borrow_mut() {
-        timer.stop();
-    }
+fn stop_timer(timer: &Timer) {
+    timer.stop();
 }
 
-fn timer_active(timer: &RefCell<Timer>) -> bool {
-    timer.try_borrow().map(|t| t.is_active()).unwrap_or(false)
+fn timer_active(timer: &Timer) -> bool {
+    timer.is_active()
 }
 
 impl Controller {
