@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,10 +48,10 @@ pub struct Process {
 
     child: Option<Child>,
     stdin_handle: Option<ChildStdin>,
-    stdout_reader: Option<thread::JoinHandle<Vec<u8>>>,
-    stderr_reader: Option<thread::JoinHandle<Vec<u8>>>,
-    stdout_buf: Vec<u8>,
-    stderr_buf: Vec<u8>,
+    stdout_reader: Option<thread::JoinHandle<()>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
+    stdout_buf: Arc<Mutex<Vec<u8>>>,
+    stderr_buf: Arc<Mutex<Vec<u8>>>,
 
     state: ProcessState,
     exit_code: Option<i32>,
@@ -76,8 +78,8 @@ impl Process {
             stdin_handle: None,
             stdout_reader: None,
             stderr_reader: None,
-            stdout_buf: Vec::new(),
-            stderr_buf: Vec::new(),
+            stdout_buf: Arc::new(Mutex::new(Vec::new())),
+            stderr_buf: Arc::new(Mutex::new(Vec::new())),
             state: ProcessState::NotRunning,
             exit_code: None,
             exit_status: None,
@@ -189,26 +191,34 @@ impl Process {
         };
         self.pid = Some(child.id());
         self.stdin_handle = child.stdin.take();
+        self.stdout_buf.lock().clear();
+        self.stderr_buf.lock().clear();
         self.stdout_reader = child.stdout.take().map(|mut out| {
+            let output = Arc::clone(&self.stdout_buf);
             thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = out.read_to_end(&mut bytes);
-                bytes
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match out.read(&mut chunk) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => output.lock().extend_from_slice(&chunk[..count]),
+                    }
+                }
             })
         });
         self.stderr_reader = child.stderr.take().map(|mut err| {
+            let output = Arc::clone(&self.stderr_buf);
             thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = err.read_to_end(&mut bytes);
-                bytes
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match err.read(&mut chunk) {
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => output.lock().extend_from_slice(&chunk[..count]),
+                    }
+                }
             })
         });
-        self.child = Some(child);
-        self.state = ProcessState::Running;
-        self.exit_code = None;
-        self.exit_status = None;
-        self.stdout_buf.clear();
-        self.stderr_buf.clear();
         Ok(())
     }
 
@@ -251,10 +261,10 @@ impl Process {
                         ExitStatus::CrashExit
                     });
                     if let Some(reader) = self.stdout_reader.take() {
-                        self.stdout_buf = reader.join().unwrap_or_default();
+                        let _ = reader.join();
                     }
                     if let Some(reader) = self.stderr_reader.take() {
-                        self.stderr_buf = reader.join().unwrap_or_default();
+                        let _ = reader.join();
                     }
                     self.state = ProcessState::NotRunning;
                     self.pid = None;
@@ -295,22 +305,12 @@ impl Process {
 
     /// Reads all accumulated standard output bytes.
     pub fn read_all_stdout(&mut self) -> Vec<u8> {
-        if self.stdout_reader.as_ref().is_some_and(|reader| reader.is_finished()) {
-            if let Some(reader) = self.stdout_reader.take() {
-                self.stdout_buf = reader.join().unwrap_or_default();
-            }
-        }
-        std::mem::take(&mut self.stdout_buf)
+        std::mem::take(&mut *self.stdout_buf.lock())
     }
 
     /// Reads all accumulated standard error bytes without waiting for process exit.
     pub fn read_all_stderr(&mut self) -> Vec<u8> {
-        if self.stderr_reader.as_ref().is_some_and(|reader| reader.is_finished()) {
-            if let Some(reader) = self.stderr_reader.take() {
-                self.stderr_buf = reader.join().unwrap_or_default();
-            }
-        }
-        std::mem::take(&mut self.stderr_buf)
+        std::mem::take(&mut *self.stderr_buf.lock())
     }
 
     /// Forcefully kills the running process and reaps it.

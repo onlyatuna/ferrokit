@@ -427,6 +427,12 @@ fn test_process_lifecycle_and_execution() {
 
     let stdout = String::from_utf8_lossy(&proc.read_all_stdout()).to_string();
     assert!(stdout.contains("FERROKIT_PROCESS_OK"));
+    proc.set_program("sh");
+    proc.set_arguments(vec!["-c".to_string(), "exit 7".to_string()]);
+    proc.start().expect("start non-zero process");
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(5))));
+    assert_eq!(proc.exit_code(), Some(7));
+    assert_eq!(proc.exit_status(), Some(ExitStatus::NormalExit));
 }
 
 // =============================================================================
