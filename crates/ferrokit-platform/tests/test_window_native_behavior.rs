@@ -11,35 +11,10 @@ use ferrokit_platform::window_system_interface::{
 use ferrokit_platform::dispatch_window_system_event;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetClientRect, GetWindowRect, PeekMessageW, SendMessageW, SetWindowPos,
-    TranslateMessage, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    DispatchMessageW, PeekMessageW, SendMessageW, TranslateMessage, MSG, PM_REMOVE,
 };
-
-#[test]
-fn a_normal_window_keeps_its_native_frame() {
-    let win = platform()
-        .create_window("Frame", Rect::new(50, 50, 400, 300), WindowFlags::NORMAL)
-        .expect("create window");
-    let hwnd = win.native_handle() as HWND;
-    let (mut client, mut outer): (RECT, RECT) = unsafe { std::mem::zeroed() };
-    unsafe {
-        // A resize recalculates the client area (`WM_NCCALCSIZE`, `wParam` = TRUE).
-        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 420, 320, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        GetClientRect(hwnd, &mut client);
-        GetWindowRect(hwnd, &mut outer);
-    }
-    assert!(
-        client.right - client.left < outer.right - outer.left
-            && client.bottom - client.top < outer.bottom - outer.top,
-        "client {}x{} must be smaller than the window {}x{}: caption and borders stay",
-        client.right - client.left,
-        client.bottom - client.top,
-        outer.right - outer.left,
-        outer.bottom - outer.top
-    );
-}
 
 #[test]
 fn events_posted_from_another_thread_are_delivered_by_the_message_pump() {

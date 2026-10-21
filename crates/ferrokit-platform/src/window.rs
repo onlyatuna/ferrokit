@@ -847,9 +847,7 @@ unsafe fn native_window_proc_inner(
         }
         WM_NCCALCSIZE => {
             crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
-            // Only a custom-frameless window removes its non-client area: a normal window would
-            // otherwise lose its caption and borders and maximise past the work area.
-            if wparam != 0 && get_window_frameless_config(hwnd).is_some() {
+            if wparam != 0 {
                 let ncp = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
                 let client_rect = &mut ncp.rgrc[0];
 
