@@ -198,8 +198,8 @@
     "lib::event_loop::r#loop::tests::test_generic_event_dispatcher_and_event_loop_abstraction::TB": "pass",
     "lib::event_loop::r#loop::tests::test_insertion_offset_priority_ordering::SB": "pass",
     "lib::event_loop::r#loop::tests::test_insertion_offset_priority_ordering::TB": "pass",
-    "lib::event_loop::r#loop::tests::test_live_lock_prevention::SB": "panic",
-    "lib::event_loop::r#loop::tests::test_live_lock_prevention::TB": "panic",
+    "lib::event_loop::r#loop::tests::test_live_lock_prevention::SB": "pass",
+    "lib::event_loop::r#loop::tests::test_live_lock_prevention::TB": "pass",
     "lib::event_loop::r#loop::tests::test_livelock_prevention::SB": "pass",
     "lib::event_loop::r#loop::tests::test_livelock_prevention::TB": "pass",
     "lib::event_loop::r#loop::tests::test_lock_release_reentrancy::SB": "pass",
@@ -957,6 +957,14 @@
     "test_timer_huge_interval::a_huge_interval_neither_panics_nor_poisons_and_later_destruction_completes::TB": "pass",
     "test_timer_huge_interval::a_huge_interval_timer_stays_pending_without_firing_or_a_negative_remaining_time::TB": "pass",
     "test_timer_single_shot_before_loop::single_shot_ms_before_loop_fires_after_loop_starts::SB": "pass",
-    "test_timer_single_shot_before_loop::single_shot_ms_before_loop_fires_after_loop_starts::TB": "pass"
+    "test_timer_single_shot_before_loop::single_shot_ms_before_loop_fires_after_loop_starts::TB": "pass",
+    "lib::io::file::save_file_tests::save_file_open_is_unique_and_reopen_removes_previous_temp::SB": "unsupported",
+    "lib::io::file::save_file_tests::save_file_preserves_target_permissions_and_commits::SB": "unsupported",
+    "test_core_runtime_extensions::test_qsettings_refuses_to_overwrite_after_load_error::SB": "unsupported",
+    "test_core_runtime_extensions::test_qsettings_round_trips_typed_and_multiline_values::SB": "unsupported",
+    "lib::io::file::save_file_tests::save_file_open_is_unique_and_reopen_removes_previous_temp::TB": "unsupported",
+    "lib::io::file::save_file_tests::save_file_preserves_target_permissions_and_commits::TB": "unsupported",
+    "test_core_runtime_extensions::test_qsettings_refuses_to_overwrite_after_load_error::TB": "unsupported",
+    "test_core_runtime_extensions::test_qsettings_round_trips_typed_and_multiline_values::TB": "unsupported"
   }
 }
