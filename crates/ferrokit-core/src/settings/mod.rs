@@ -226,7 +226,10 @@ impl Settings {
         fs::rename(&tmp_path, path)?;
         #[cfg(unix)]
         if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
+            // The rename already committed the data; directory sync failure is not an error.
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
         }
         self.dirty = false;
         Ok(())
@@ -252,15 +255,15 @@ impl Settings {
 
         // Write root entries first
         for (k, v) in root_entries {
-            writeln!(w, "{}={}", k, v)?;
+            writeln!(w, "{}={}", escape_text(&k), v)?;
         }
 
         // Write each section
         for (section, items) in sections {
             writeln!(w)?;
-            writeln!(w, "[{}]", section)?;
+            writeln!(w, "[{}]", escape_text(&section))?;
             for (k, v) in items {
-                writeln!(w, "{}={}", k, v)?;
+                writeln!(w, "{}={}", escape_text(&k), v)?;
             }
         }
 
@@ -289,14 +292,15 @@ impl Settings {
                 continue;
             }
 
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.ends_with("\\]") {
                 let section_name = &trimmed[1..trimmed.len() - 1];
-                current_section = Some(section_name.trim().to_string());
+                current_section = Some(unescape_text(section_name.trim()));
                 continue;
             }
 
-            if let Some((key, val)) = trimmed.split_once('=') {
-                let key = key.trim();
+            if let Some((key, val)) = split_unescaped_eq(trimmed) {
+                let key = unescape_text(key.trim());
+                let key = key.as_str();
                 let val = val.trim();
                 let full_key = match &current_section {
                     Some(s) if !s.is_empty() => format!("{}/{}", s, key),
@@ -320,7 +324,75 @@ impl Drop for Settings {
     }
 }
 
+/// Escapes characters that would break the line-based INI structure.
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '=' | ';' | '#' | '[' | ']' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Reverses `escape_text`; unknown escape sequences are kept literally so older files
+/// containing backslashes still load.
+fn unescape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(e @ ('=' | ';' | '#' | '[' | ']')) => out.push(e),
+            _ => {
+                out.push('\\');
+                continue;
+            }
+        }
+        chars.next();
+    }
+    out
+}
+
+/// Splits at the first `=` that is not preceded by an escaping backslash.
+fn split_unescaped_eq(line: &str) -> Option<(&str, &str)> {
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '=' {
+            return Some((&line[..i], &line[i + 1..]));
+        }
+    }
+    None
+}
+
 fn serialize_variant_value(v: &Variant) -> String {
+    // Qt INI convention: plain strings stay human-readable; @Variant only for other types
+    // and for strings that would not round-trip through the plain parser.
+    if let Variant::String(text) = v {
+        let plain_safe = text.trim() == text
+            && !text.starts_with("@Variant(")
+            && matches!(parse_variant_value(&escape_text(text)), Variant::String(ref t) if t == text);
+        if plain_safe {
+            return escape_text(text);
+        }
+    }
     let bytes = v.to_bytes();
     let mut encoded = String::with_capacity(bytes.len() * 2 + 10);
     encoded.push_str("@Variant(");
@@ -389,7 +461,7 @@ fn parse_variant_value(raw: &str) -> Variant {
     }
 
     // Default to String
-    Variant::String(raw.to_string())
+    Variant::String(unescape_text(raw))
 }
 
 /// Resolves standard platform config directory.

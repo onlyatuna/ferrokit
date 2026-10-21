@@ -92,8 +92,7 @@ impl LockFile {
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     // Check if stale
-                    if self.is_stale() {
-                        let _ = self.remove_stale_lock_file();
+                    if self.reclaim_if_stale() {
                         continue;
                     }
 
@@ -170,6 +169,33 @@ impl LockFile {
         }
 
         false
+    }
+
+    /// Removes the lock file if it is stale. Stale checks and removal are serialized through a
+    /// guard file so that one waiter cannot delete a fresh lock another waiter just created.
+    fn reclaim_if_stale(&self) -> bool {
+        let mut guard_name = self.file_path.as_os_str().to_owned();
+        guard_name.push(".reclaim");
+        let guard = PathBuf::from(guard_name);
+        match OpenOptions::new().write(true).create_new(true).open(&guard) {
+            Ok(_) => {
+                let removed = self.is_stale() && fs::remove_file(&self.file_path).is_ok();
+                let _ = fs::remove_file(&guard);
+                removed
+            }
+            Err(_) => {
+                // A crashed reclaimer may have left the guard behind; drop it once it is old.
+                let old = fs::metadata(&guard)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| SystemTime::now().duration_since(t).ok())
+                    .is_some_and(|age| age > self.stale_lock_time);
+                if old {
+                    let _ = fs::remove_file(&guard);
+                }
+                false
+            }
+        }
     }
 
     /// Removes a stale lock file from disk.

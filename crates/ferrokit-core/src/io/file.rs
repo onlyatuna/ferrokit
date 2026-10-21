@@ -313,11 +313,7 @@ impl SaveFile {
         let parent = self.final_path.parent().unwrap_or_else(|| Path::new("."));
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
+        // New targets get the default mode (0666 & ~umask); existing targets keep theirs below.
 
         let (temp_path, handle) = loop {
             let sequence = SAVE_FILE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -375,7 +371,11 @@ impl SaveFile {
             } else {
                 parent
             };
-            fs::File::open(parent)?.sync_all()?;
+            // The rename already replaced the target; a failed directory sync only weakens
+            // durability, so it must not turn a completed commit into an error.
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
         }
         Ok(())
     }

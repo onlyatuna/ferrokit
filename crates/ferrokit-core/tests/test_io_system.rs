@@ -395,7 +395,6 @@ fn test_url_and_url_query_manipulation() {
 // 8. Process Lifecycle & Execution
 // =============================================================================
 
-#[cfg(not(windows))]
 #[test]
 fn test_process_lifecycle_and_execution() {
     let mut proc = Process::new();
@@ -427,8 +426,7 @@ fn test_process_lifecycle_and_execution() {
 
     let stdout = String::from_utf8_lossy(&proc.read_all_stdout()).to_string();
     assert!(stdout.contains("FERROKIT_PROCESS_OK"));
-    proc.set_program("sh");
-    proc.set_arguments(vec!["-c".to_string(), "exit 7".to_string()]);
+    set_shell(&mut proc, "exit 7");
     proc.start().expect("start non-zero process");
     assert!(proc.wait_for_finished(Some(Duration::from_secs(5))));
     assert_eq!(proc.exit_code(), Some(7));
@@ -581,4 +579,191 @@ fn test_buffer_rejects_unrepresentable_seek_and_write() {
     assert!(IODevice::seek(&mut buffer, u64::MAX).is_err());
     assert!(std::io::Seek::seek(&mut buffer, std::io::SeekFrom::Start(u64::MAX)).is_err());
     assert!(buffer.data().is_empty());
+}
+
+fn set_shell(proc: &mut Process, script: &str) {
+    #[cfg(windows)]
+    {
+        proc.set_program("cmd.exe");
+        proc.set_arguments(vec!["/C".to_string(), script.to_string()]);
+    }
+    #[cfg(not(windows))]
+    {
+        proc.set_program("sh");
+        proc.set_arguments(vec!["-c".to_string(), script.to_string()]);
+    }
+}
+
+fn long_running_script() -> &'static str {
+    #[cfg(windows)]
+    {
+        "ping -n 30 127.0.0.1 >nul"
+    }
+    #[cfg(not(windows))]
+    {
+        "sleep 30"
+    }
+}
+
+#[test]
+fn process_start_failure_keeps_not_running() {
+    let mut proc = Process::new();
+    proc.set_program("ferrokit-no-such-program-xyz");
+    assert!(proc.start().is_err());
+    assert_eq!(proc.state(), ProcessState::NotRunning);
+}
+
+#[test]
+fn process_large_output_is_drained_without_deadlock() {
+    let mut proc = Process::new();
+    #[cfg(windows)]
+    {
+        proc.set_program("cmd.exe");
+        proc.set_arguments(vec![
+            "/C".into(),
+            "for /L %i in (1,1,20000) do @echo 0123456789012345678901234567890123456789".into(),
+        ]);
+    }
+    #[cfg(not(windows))]
+    {
+        proc.set_program("sh");
+        proc.set_arguments(vec![
+            "-c".into(),
+            "i=0; while [ $i -lt 20000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done".into(),
+        ]);
+    }
+    proc.start().unwrap();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(60))));
+    assert!(proc.read_all_stdout().len() > 64 * 1024);
+}
+
+#[test]
+fn process_wait_times_out_and_kill_reaps() {
+    let mut proc = Process::new();
+    set_shell(&mut proc, long_running_script());
+    proc.start().unwrap();
+    assert!(!proc.wait_for_finished(Some(Duration::from_millis(50))));
+    assert_eq!(proc.state(), ProcessState::Running);
+    // wait_for_finished must not close stdin.
+    assert!(proc.write_stdin(b"x").is_ok() || cfg!(windows));
+    proc.kill().unwrap();
+    assert_eq!(proc.state(), ProcessState::NotRunning);
+    assert_eq!(proc.exit_status(), Some(ExitStatus::CrashExit));
+    assert!(proc.process_id().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn process_signal_death_is_crash_exit() {
+    let mut proc = Process::new();
+    set_shell(&mut proc, "kill -9 $$");
+    proc.start().unwrap();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(10))));
+    assert_eq!(proc.exit_status(), Some(ExitStatus::CrashExit));
+}
+
+#[cfg(unix)]
+#[test]
+fn process_wait_honours_timeout_when_grandchild_holds_pipe() {
+    let mut proc = Process::new();
+    set_shell(&mut proc, "sleep 20 & exit 0");
+    proc.start().unwrap();
+    let begin = std::time::Instant::now();
+    assert!(proc.wait_for_finished(Some(Duration::from_millis(500))));
+    assert!(begin.elapsed() < Duration::from_secs(10));
+    assert_eq!(proc.exit_code(), Some(0));
+}
+
+#[test]
+fn save_file_drop_without_commit_removes_temp_and_keeps_target() {
+    let dir = TemporaryDir::new().unwrap();
+    let target = dir.path().join("t.txt");
+    File::write_text_file(&target, "old").unwrap();
+    {
+        let mut save = SaveFile::new(&target);
+        save.open(OpenMode::WRITE_ONLY).unwrap();
+        save.write(b"new").unwrap();
+    }
+    assert_eq!(File::read_text(&target).unwrap(), "old");
+    let leftovers = fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(leftovers, 1, "temp file must be removed on drop");
+}
+
+#[cfg(unix)]
+#[test]
+fn save_file_new_target_uses_default_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TemporaryDir::new().unwrap();
+    let probe = dir.path().join("probe");
+    fs::write(&probe, b"").unwrap();
+    let expected = fs::metadata(&probe).unwrap().permissions().mode() & 0o7777;
+    let target = dir.path().join("new.txt");
+    let mut save = SaveFile::new(&target);
+    save.open(OpenMode::WRITE_ONLY).unwrap();
+    save.write(b"x").unwrap();
+    save.commit().unwrap();
+    assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o7777, expected);
+}
+
+#[test]
+fn lock_file_stale_reclaim_gives_exactly_one_owner() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    for _ in 0..20 {
+        let dir = TemporaryDir::new().unwrap();
+        let path = dir.path().join("app.lock");
+        // Stale: owner pid cannot be alive.
+        fs::write(&path, "PID=4294967294\nAPP=dead\nTIME=0\n").unwrap();
+        let holders = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+        let done = Arc::new(Barrier::new(3));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let (path, holders, barrier, done) =
+                (path.clone(), holders.clone(), barrier.clone(), done.clone());
+            handles.push(std::thread::spawn(move || {
+                let mut lock = LockFile::new(&path);
+                barrier.wait();
+                let got = lock.try_lock_now().unwrap_or(false);
+                if got {
+                    holders.fetch_add(1, Ordering::SeqCst);
+                }
+                done.wait();
+                drop(lock);
+            }));
+        }
+        done.wait();
+        assert_eq!(holders.load(Ordering::SeqCst), 1);
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+}
+
+#[test]
+fn settings_roundtrip_plain_strings_and_escapes() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("s.ini");
+    {
+        let mut s = Settings::new(&path);
+        s.set_value("name", "hello world");
+        s.set_value("multi", "a\nb=c\r\nd");
+        s.set_value("looks_num", "123");
+        s.set_value("padded", "  x  ");
+        s.set_value("we=ird\nkey", "v");
+        s.set_value("n", 5i64);
+        s.sync().unwrap();
+    }
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("name=hello world"), "{text}");
+    assert_eq!(text.lines().filter(|l| l.contains("=v")).count(), 1);
+    let s = Settings::new(&path);
+    assert_eq!(s.value("name"), Some(Variant::String("hello world".into())));
+    assert_eq!(s.value("multi"), Some(Variant::String("a\nb=c\r\nd".into())));
+    assert_eq!(s.value("looks_num"), Some(Variant::String("123".into())));
+    assert_eq!(s.value("padded"), Some(Variant::String("  x  ".into())));
+    assert_eq!(s.value("we=ird\nkey"), Some(Variant::String("v".into())));
+    assert_eq!(s.value("n"), Some(Variant::I64(5)));
 }

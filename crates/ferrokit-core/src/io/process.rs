@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Current process lifecycle state (`QProcess::ProcessState` equivalent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -182,6 +185,12 @@ impl Process {
             }
         }
 
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -190,6 +199,8 @@ impl Process {
             }
         };
         self.pid = Some(child.id());
+        self.exit_code = None;
+        self.exit_status = None;
         self.stdin_handle = child.stdin.take();
         self.stdout_buf.lock().clear();
         self.stderr_buf.lock().clear();
@@ -219,6 +230,8 @@ impl Process {
                 }
             })
         });
+        self.child = Some(child);
+        self.state = ProcessState::Running;
         Ok(())
     }
 
@@ -242,7 +255,6 @@ impl Process {
             return true;
         }
         let start_time = Instant::now();
-        self.close_stdin();
 
         loop {
             let result = match self.child.as_mut() {
@@ -260,11 +272,21 @@ impl Process {
                     } else {
                         ExitStatus::CrashExit
                     });
-                    if let Some(reader) = self.stdout_reader.take() {
-                        let _ = reader.join();
-                    }
-                    if let Some(reader) = self.stderr_reader.take() {
-                        let _ = reader.join();
+                    // A grandchild may keep the pipes open; never block past the timeout.
+                    for reader in [self.stdout_reader.take(), self.stderr_reader.take()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        loop {
+                            if reader.is_finished() {
+                                let _ = reader.join();
+                                break;
+                            }
+                            if timeout.is_some_and(|t| start_time.elapsed() >= t) {
+                                break; // detach the reader
+                            }
+                            thread::sleep(Duration::from_millis(1));
+                        }
                     }
                     self.state = ProcessState::NotRunning;
                     self.pid = None;
@@ -349,12 +371,17 @@ impl Process {
  
     /// Starts a detached process without retaining a handle.
     pub fn start_detached(program: &str, args: &[&str]) -> io::Result<u32> {
-        let child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let child = cmd.spawn()?;
         let pid = child.id();
         thread::spawn(move || {
             let mut child = child;
