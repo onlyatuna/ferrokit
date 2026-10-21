@@ -215,7 +215,7 @@ impl fmt::Debug for JsonValue {
                     && !n.is_infinite()
                     && !n.is_nan()
                     && *n >= (i64::MIN as f64)
-                    && *n <= (i64::MAX as f64)
+                    && *n < 9_223_372_036_854_775_808.0
                 {
                     write!(f, "{}", *n as i64)
                 } else {

@@ -444,7 +444,7 @@ impl Variant {
     pub fn to_int(&self) -> Option<i64> {
         match self {
             Variant::I64(i) => Some(*i),
-            Variant::U64(u) => Some(*u as i64),
+            Variant::U64(u) => i64::try_from(*u).ok(),
             Variant::F64(f) => Some(*f as i64),
             Variant::Bool(b) => Some(if *b { 1 } else { 0 }),
             Variant::String(s) => s.trim().parse::<i64>().ok(),
@@ -972,7 +972,7 @@ impl Variant {
             JsonValue::Null | JsonValue::Undefined => Variant::Invalid,
             JsonValue::Bool(b) => Variant::Bool(*b),
             JsonValue::Number(n) => {
-                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n <= (i64::MAX as f64) {
+                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < 9_223_372_036_854_775_808.0 {
                     Variant::I64(*n as i64)
                 } else {
                     Variant::F64(*n)
@@ -1634,6 +1634,27 @@ impl DataSerializable for Variant {
     }
 
     fn deserialize<R: std::io::Read>(stream: &mut DataStreamReader<R>) -> std::io::Result<Self> {
+        Self::deserialize_at_depth(stream, 0)
+    }
+}
+
+/// Maximum List/Map nesting accepted by [`Variant`] binary deserialization.
+const MAX_DESERIALIZE_DEPTH: usize = 128;
+
+/// Upper bound on elements preallocated from an untrusted count.
+const MAX_PREALLOC_ELEMS: usize = 1024;
+
+impl Variant {
+    fn deserialize_at_depth<R: std::io::Read>(
+        stream: &mut DataStreamReader<R>,
+        depth: usize,
+    ) -> std::io::Result<Self> {
+        if depth > MAX_DESERIALIZE_DEPTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Variant nesting too deep",
+            ));
+        }
         let tag = stream.read_u8()?;
         match tag {
             0 => Ok(Self::Invalid),
@@ -1741,18 +1762,18 @@ impl DataSerializable for Variant {
             25 => stream.read_u64().map(|id| Self::ObjectId(ObjectId(id))),
             26 => {
                 let count = stream.read_u32()? as usize;
-                let mut list = Vec::with_capacity(count);
+                let mut list = Vec::with_capacity(count.min(MAX_PREALLOC_ELEMS));
                 for _ in 0..count {
-                    list.push(Self::deserialize(stream)?);
+                    list.push(Self::deserialize_at_depth(stream, depth + 1)?);
                 }
                 Ok(Self::List(list))
             }
             27 => {
                 let count = stream.read_u32()? as usize;
-                let mut map = HashMap::with_capacity(count);
+                let mut map = HashMap::with_capacity(count.min(MAX_PREALLOC_ELEMS));
                 for _ in 0..count {
                     let k = stream.read_string()?;
-                    let v = Self::deserialize(stream)?;
+                    let v = Self::deserialize_at_depth(stream, depth + 1)?;
                     map.insert(k, v);
                 }
                 Ok(Self::Map(map))
