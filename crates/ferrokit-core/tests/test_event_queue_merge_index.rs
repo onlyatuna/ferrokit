@@ -31,6 +31,42 @@ impl EventCompressor for Counting {
         CoreCompressor.merge_key(event)
     }
 }
+struct MutateThenPanic {
+    panic_once: std::sync::atomic::AtomicBool,
+}
+
+impl EventCompressor for MutateThenPanic {
+    fn try_compress(&self, existing: &mut Event, _incoming: &Event, _receiver: ObjectId) -> bool {
+        if self.panic_once.swap(false, Ordering::SeqCst) {
+            existing.kind = EventKind::LayoutRequest;
+            panic!("compressor panic");
+        }
+        CoreCompressor.try_compress(existing, _incoming, _receiver)
+    }
+
+    fn merge_key(&self, event: &Event) -> Option<MergeKey> {
+        CoreCompressor.merge_key(event)
+    }
+}
+
+#[test]
+fn a_panicking_compressor_keeps_the_merge_index_consistent() {
+    let mut el = EventLoop::new();
+    el.set_compressor(Arc::new(MutateThenPanic {
+        panic_once: std::sync::atomic::AtomicBool::new(true),
+    }));
+    let receiver = ObjectId::next();
+    el.post_event(receiver, update_request());
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        el.post_event(receiver, update_request());
+    }));
+    assert!(panic.is_err());
+
+    // The callback changed the queued event before panicking. Its new key must be indexed.
+    el.post_event(receiver, Event::new(EventKind::LayoutRequest));
+    assert_eq!(queued(&el), 1);
+}
 
 struct Node {
     data: ObjectData,

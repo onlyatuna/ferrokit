@@ -30,7 +30,7 @@ Usage (from the repository root; a nightly toolchain with the `miri` component):
     python tools/miri_sweep.py [--crate ferrokit-core] [--targets lib,test_signal_owner_binding]
         [--cross x86_64-unknown-linux-gnu] [--toolchain nightly] [--models SB,TB]
         [--timeout SECONDS] [--flags "..."] [--baseline tools/miri_baseline.json]
-        [--run-isolation-allowlist] [--fail-on-regression]
+        [--run-isolation-allowlist] [--fail-on-regression] [--shard I/N] [--list-targets]
         [--summary summary.md] [--out results.json]
 """
 
@@ -472,6 +472,23 @@ def format_summary(args, models, results, iso_results, baseline, regressions, im
     return "\n".join(lines) + "\n"
 
 
+def parse_shard(text):
+    """Parse `I/N` (1-based shard index I of N shards)."""
+    try:
+        index_str, count_str = text.split("/", 1)
+        index, count = int(index_str), int(count_str)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected I/N, got {text!r}")
+    if count < 1 or not 1 <= index <= count:
+        raise argparse.ArgumentTypeError(f"shard {text!r} must satisfy 1 <= I <= N")
+    return index, count
+
+
+def shard_targets(names, index, count):
+    """Deterministic partition: shard `index` of `count` takes every count-th name of the sorted list."""
+    return sorted(names)[index - 1 :: count]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--crate", default="ferrokit-core")
@@ -496,6 +513,17 @@ def main():
         help="exit with code 1 if any baseline regression or negative-control failure occurs",
     )
     ap.add_argument("--summary", help="write Markdown summary to this file")
+    ap.add_argument(
+        "--shard",
+        type=parse_shard,
+        metavar="I/N",
+        help="run only shard I (1-based) of N over the sorted target list; shards partition the targets",
+    )
+    ap.add_argument(
+        "--list-targets",
+        action="store_true",
+        help="print the target list selected by --targets/--baseline/--shard and exit without running Miri",
+    )
     ap.add_argument("--out", help="write the results as JSON")
     args = ap.parse_args()
 
@@ -513,6 +541,14 @@ def main():
             ap.error("--targets is required when --baseline does not specify `targets`")
 
     target_list = [t.strip() for t in targets_str.split(",") if t.strip()]
+    if args.shard:
+        index, count = args.shard
+        target_list = shard_targets(target_list, index, count)
+        if not target_list:
+            ap.error(f"--shard {index}/{count} selects no targets")
+    if args.list_targets:
+        print("\n".join(target_list))
+        return 0
     swept_targets = set(target_list)
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     results, excerpts, tests = {}, {}, {}
