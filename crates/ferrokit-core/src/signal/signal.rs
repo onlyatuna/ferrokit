@@ -23,7 +23,11 @@ thread_local! {
 /// Returns None if no signal is actively being emitted.
 /// Modeled after Qt's QObject::sender().
 pub fn sender() -> Option<ObjectId> {
-    CURRENT_SENDER_STACK.with(|stack| stack.borrow().last().copied().flatten())
+    // A slot that runs while the thread's locals are destroyed (a `destroyed` receiver of an object
+    // held by a thread local) finds the stack gone: there is no sender then.
+    CURRENT_SENDER_STACK
+        .try_with(|stack| stack.borrow().last().copied().flatten())
+        .unwrap_or(None)
 }
 
 /// RAII guard that pushes the emitter of the signal being delivered onto the sender stack.
@@ -34,7 +38,9 @@ pub struct SenderGuard;
 
 impl SenderGuard {
     pub fn new(sender_id: Option<ObjectId>) -> Self {
-        CURRENT_SENDER_STACK.with(|stack| stack.borrow_mut().push(sender_id));
+        // Once the thread's locals are destroyed there is no stack to push to, and `drop` finds
+        // none to pop from; an emission from a destructor must not panic there.
+        let _ = CURRENT_SENDER_STACK.try_with(|stack| stack.borrow_mut().push(sender_id));
         SenderGuard
     }
 }

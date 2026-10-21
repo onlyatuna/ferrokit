@@ -534,3 +534,27 @@ fn unregistering_a_live_object_emits_destroyed_once() {
         vec![format!("destroyed {}", id.0), "a dropped".to_string()]
     );
 }
+
+thread_local! {
+    static HELD: std::cell::RefCell<Option<OwnedObject<Probe>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An object owned by a thread local is destroyed while the thread's locals are torn down. The
+/// sender stack (touched after the holder, so destroyed before it) is gone by then; emitting
+/// `destroyed` must not panic on it, which would abort the process from a TLS destructor.
+#[test]
+fn an_object_held_by_a_thread_local_emits_destroyed_at_thread_exit() {
+    let log = new_log();
+    let worker_log = Arc::clone(&log);
+    let thread = std::thread::spawn(move || {
+        let owner = owned("tls", &worker_log);
+        owner
+            .with(|p| p.destroyed().connect(|_| assert_eq!(ferrokit_core::signal::sender(), None)))
+            .unwrap();
+        // The holder registers its destructor first, the sender stack second.
+        HELD.with(|held| *held.borrow_mut() = Some(owner));
+        let _ = ferrokit_core::signal::sender();
+    });
+    thread.join().expect("the thread's locals were destroyed without a panic");
+    assert_eq!(entries(&log), vec!["tls dropped".to_string()]);
+}
