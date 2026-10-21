@@ -112,7 +112,8 @@
 //!    closure that captures one, held while events are processed, an event is sent, or a signal
 //!    connected to the object is emitted, is still live when the callback writes through the
 //!    registry's pointer. Read the state through [`with_object`], or keep it outside the object
-//!    (`Rc<Cell<_>>`, an atomic).
+//!    (an `Rc<Cell<_>>` shared with an owner that stays on the registration thread, or an
+//!    atomic; see the thread rules for what such an object must answer to `can_move_to_thread`).
 //! 3. **Touching the object while one of its callbacks runs.** Not even a read is allowed,
 //!    including a read of its id. `OwnedObject` has no `Deref`: `with` and `with_mut` take the
 //!    callback-borrow flag, so while a callback of the object runs they return `None` and call
@@ -158,6 +159,16 @@
 //! thread: a move of it, or of an ancestor, is refused with [`MoveByIdError::NotMovable`] before
 //! an event is sent or anything changes. The object of a `Timer` does, because its `!Send` handle
 //! shares state with it that only the creating thread may use.
+//!
+//! **Contract of every registration function.** Registering an object is `unsafe` because the
+//! registry runs `&mut` callbacks of it, and drops it (through its owner), on whichever thread it
+//! is registered on, and [`move_to_thread_by_id`] is a safe function that changes that thread.
+//! The registrant therefore promises one of two things: the object answers `false` to
+//! [`QObject::can_move_to_thread`] (so it never leaves the thread it was registered on), or it
+//! is safe to use and drop on another thread, as a `Send` type is (no `Rc`, no `Cell` or `RefCell`
+//! shared with a handle that stays behind, no thread-local state). An object that holds an `Rc`
+//! it shares with its owner must answer `false`. [`QObject::can_move_to_thread`] answers `true`
+//! by default, which makes the second promise.
 //!
 //! # Synchronization and locking contract
 //!
