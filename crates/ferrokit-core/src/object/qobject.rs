@@ -2322,7 +2322,10 @@ impl Drop for ObjectData {
         // qobject.cpp:1086-1105). The object is dead by now: the token is false and the memory
         // counts as destroyed, so no slot reaches it through the registry.
         self.borrow_state.emit_destroyed_once(self.id);
-        // 1. If we have a parent, unlink from parent and notify it
+        // 1. If we have a parent, unlink from parent and notify it. A panic from a filter or
+        // `event()` during the ChildRemoved send is held until the teardown below has run, then
+        // resumed (swallowed if the thread is already unwinding, since a second panic aborts).
+        let mut held_panic: Option<Box<dyn std::any::Any + Send>> = None;
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
                 // The parent's borrow is held, so its child lists cannot be edited now. The
@@ -2338,12 +2341,14 @@ impl Drop for ObjectData {
                     let mut pdata = parent_obj.object_data_mut();
                     pdata.children_mut().retain(|&id| id != self.id);
                     pdata.owned_children_mut().retain(|c| OwnedObject::object_id(c) != self.id);
-                    let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
-                    parent_obj.event(&mut ev);
                 });
+                let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
+                held_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::event_loop::notify_helper(parent_id, &mut ev);
+                }))
+                .err();
             }
         }
-
         // 2. Cascade deletion to all children (deleteChildren)
         self.delete_children();
 
@@ -2353,6 +2358,12 @@ impl Drop for ObjectData {
         // SAFETY: an object registered through the unsafe registration API must be
         // unregistered only after dispatch callbacks have completed; Drop follows that contract.
         unsafe { unregister_qobject(self.id) };
+
+        if let Some(payload) = held_panic {
+            if !std::thread::panicking() {
+                std::panic::resume_unwind(payload);
+            }
+        }
     }
 }
 
@@ -3887,12 +3898,21 @@ pub trait QObject: std::any::Any {
     }
 
     /// Starts a timer and returns a TimerId (`QObject::startTimer`).
+    ///
+    /// Rejected from a thread other than the object's: a diagnostic is printed, no timer is
+    /// registered and [`crate::timer::TimerId::INVALID`] is returned (Qt: "Timers cannot be
+    /// started from another thread").
     fn start_timer(
         &mut self,
         interval_ms: u64,
         timer_type: crate::timer::TimerType,
     ) -> crate::timer::TimerId {
-        let receiver = self.object_data().id();
+        let data = self.object_data();
+        if data.thread_id() != ThreadId::current() {
+            eprintln!("QObject::start_timer: timers cannot be started from another thread");
+            return crate::timer::TimerId::INVALID;
+        }
+        let receiver = data.id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
         self.object_data_mut().add_timer(id);
         id

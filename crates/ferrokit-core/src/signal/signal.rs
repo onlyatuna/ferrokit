@@ -98,6 +98,14 @@ impl ConnectionType {
 pub struct ConnectionId(pub u64);
 
 impl ConnectionId {
+    /// Returned when a connection is rejected; never allocated by [`ConnectionId::next`].
+    pub const INVALID: ConnectionId = ConnectionId(0);
+
+    /// `false` for [`ConnectionId::INVALID`].
+    pub fn is_valid(&self) -> bool {
+        self.0 != 0
+    }
+
     /// Unique connection identifier: ConnectionId.
     pub fn next() -> Self {
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -427,19 +435,19 @@ impl<T> Signal<T> {
 
     /// Connects a slot with an explicit direct connection type.
     ///
-    /// Panics for `Queued` and `BlockingQueued`: this entry point stores no receiver thread, so a
-    /// queued slot could only run synchronously, which Qt's `QueuedConnection` never does
-    /// (`qobject.cpp:4333-4350`). Use `connect_queued` / `connect_blocking_queued` (which name the
-    /// thread) or `connect_object`.
+    /// Queued and blocking-queued connections are rejected here: this entry point names no
+    /// receiver thread. The call prints a diagnostic and returns [`ConnectionId::INVALID`]; use
+    /// `connect_queued` / `connect_blocking_queued` instead.
     pub fn connect_with_type<F>(&self, conn_type: ConnectionType, slot: F) -> ConnectionId
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        assert!(
-            !conn_type.is_queued() && !conn_type.is_blocking_queued(),
-            "connect_with_type cannot establish a queued connection (no receiver thread): \
-             use connect_queued, connect_blocking_queued, or connect_object"
-        );
+        if conn_type.is_queued() || conn_type.is_blocking_queued() {
+            eprintln!(
+                "connect_with_type requires a receiver thread for queued connections; use connect_queued or connect_blocking_queued"
+            );
+            return ConnectionId::INVALID;
+        }
         let mut inner = self.inner.lock();
         let id = ConnectionId::next();
 
