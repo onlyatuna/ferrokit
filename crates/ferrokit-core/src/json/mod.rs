@@ -19,6 +19,9 @@ pub use parser::{JsonParseError, ParseErrorReason};
 pub use value::{JsonType, JsonValue};
 pub use writer::JsonFormat;
 
+/// 2^63 as `f64`: the exclusive upper bound of finite values exactly convertible to `i64`.
+pub(crate) const I64_EXCLUSIVE_UPPER_F64: f64 = 9_223_372_036_854_775_808.0;
+
 /// Parses arbitrary JSON text into a `JsonValue`.
 pub fn from_str(json: &str) -> Result<JsonValue, JsonParseError> {
     from_slice(json.as_bytes())
