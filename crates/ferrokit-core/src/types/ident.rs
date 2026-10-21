@@ -336,7 +336,7 @@ impl Uuid {
     pub fn from_string(s: &str) -> Option<Self> {
         let clean = s.trim().trim_start_matches('{').trim_end_matches('}');
         let hex_only: String = clean.chars().filter(|c| *c != '-').collect();
-        if hex_only.len() != 32 {
+        if hex_only.len() != 32 || !hex_only.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
 

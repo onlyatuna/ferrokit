@@ -364,8 +364,15 @@ impl<R: Read> DataStreamReader<R> {
     /// Reads a 32-bit length prefixed byte array.
     pub fn read_bytes(&mut self) -> io::Result<Vec<u8>> {
         let len = self.read_u32()? as usize;
-        let mut buf = vec![0u8; len];
-        self.read_raw(&mut buf)?;
+        // Never allocate more than the input actually delivers: grow in chunks.
+        const CHUNK: usize = 64 * 1024;
+        let mut buf = Vec::with_capacity(len.min(CHUNK));
+        while buf.len() < len {
+            let start = buf.len();
+            let n = (len - start).min(CHUNK);
+            buf.resize(start + n, 0);
+            self.read_raw(&mut buf[start..])?;
+        }
         Ok(buf)
     }
 
@@ -387,7 +394,7 @@ impl<R: Read> DataStreamReader<R> {
     /// Reads a `StringList`.
     pub fn read_string_list(&mut self) -> io::Result<StringList> {
         let count = self.read_u32()? as usize;
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(count.min(1024));
         for _ in 0..count {
             list.push(self.read_string()?);
         }

@@ -63,16 +63,27 @@ pub trait EventDispatcher {
     }
 }
 
-#[derive(Debug, Default)]
+/// Fallback dispatcher: the loop thread parks, and [`wake_up`](EventDispatcher::wake_up) sets a flag
+/// and unparks it. Timers live in the loop's registry and are delivered by `send_timer_events`.
+#[derive(Debug)]
 pub struct GenericEventDispatcher {
     wake_up_flag: Arc<AtomicBool>,
+    /// The thread that runs `process_events`: the one that created the dispatcher.
+    thread: std::thread::Thread,
     native_filters: NativeEventFilterChain,
+}
+
+impl Default for GenericEventDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GenericEventDispatcher {
     pub fn new() -> Self {
         Self {
             wake_up_flag: Arc::new(AtomicBool::new(false)),
+            thread: std::thread::current(),
             native_filters: NativeEventFilterChain::new(),
         }
     }
@@ -81,22 +92,26 @@ impl GenericEventDispatcher {
 #[derive(Debug, Clone)]
 pub struct GenericEventDispatcherHandle {
     wake_up_flag: Arc<AtomicBool>,
+    thread: std::thread::Thread,
 }
 
 impl EventDispatcherHandle for GenericEventDispatcherHandle {
     fn wake_up(&self) {
         self.wake_up_flag.store(true, Ordering::Release);
+        self.thread.unpark();
     }
 }
 
 impl EventDispatcher for GenericEventDispatcher {
     fn wake_up(&self) {
         self.wake_up_flag.store(true, Ordering::Release);
+        self.thread.unpark();
     }
 
     fn clone_handle(&self) -> Arc<dyn EventDispatcherHandle> {
         Arc::new(GenericEventDispatcherHandle {
             wake_up_flag: Arc::clone(&self.wake_up_flag),
+            thread: self.thread.clone(),
         })
     }
 
@@ -146,7 +161,9 @@ impl EventDispatcher for GenericEventDispatcher {
 
     fn unregister_timer(&self, _entry: &TimerEntry) {}
 
-    fn send_timer_events(&self, _registry: &Mutex<TimerRegistry>) {}
+    fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
+        crate::timer::deliver_due_timers(registry, crate::timer::current_time_ms(), []);
+    }
 }
 
 /// Which creation path an event loop comes from, which decides its dispatcher, as in Qt:
