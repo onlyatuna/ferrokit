@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::event::EventFilterChain;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -207,8 +207,11 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     // (loop.rs process_events) holds no object borrow here.
     if let EventKind::ZeroTimer { timer_id } = &event.kind {
         let timer_id = *timer_id;
-        let _ = deliver_timer_event(receiver, timer_id);
-        crate::timer::repost_zero_timer(receiver, timer_id);
+        // A timer killed since the event was queued is gone: no tick, no repost.
+        if crate::timer::zero_timer_armed(receiver, timer_id) {
+            let _ = deliver_timer_event(receiver, timer_id);
+            crate::timer::repost_zero_timer(receiver, timer_id);
+        }
         return true;
     }
 
@@ -287,7 +290,10 @@ impl PostedEvent {
 pub struct EventQueue {
     /// Only `insert_at`, `remove_at` and `remove_posted_events_matching` change the events, so
     /// that `merge_index` and `sorted_from` follow every change.
-    events: Vec<PostedEvent>,
+    events: VecDeque<PostedEvent>,
+    /// Number of queued events of each receiver, so a purge for an object that has none costs
+    /// no scan of the queue (Qt keeps a posted-event count per object).
+    receiver_counts: HashMap<ObjectId, usize>,
     pub(crate) insertion_offset: usize,
     compressor: Arc<dyn EventCompressor>,
     /// Stable queue-order labels of keyed events, ascending, by receiver and key. Compressing an
@@ -317,7 +323,8 @@ impl EventQueue {
 
     pub fn with_compressor(compressor: Arc<dyn EventCompressor>) -> Self {
         Self {
-            events: Vec::new(),
+            events: VecDeque::new(),
+            receiver_counts: HashMap::new(),
             insertion_offset: 0,
             compressor,
             merge_index: HashMap::new(),
@@ -342,7 +349,7 @@ impl EventQueue {
         self.events.len()
     }
 
-    pub fn events(&self) -> &[PostedEvent] {
+    pub fn events(&self) -> &VecDeque<PostedEvent> {
         &self.events
     }
 
@@ -462,7 +469,10 @@ impl EventQueue {
     /// Removes the event at `index`. Removing one from the current turn shrinks
     /// `insertion_offset` with it (Qt `insertionOffset -= startOffset`, qcoreapplication.cpp:1847).
     pub(crate) fn remove_at(&mut self, index: usize) -> PostedEvent {
-        let posted = self.events.remove(index);
+        let posted = self
+            .events
+            .remove(index)
+            .expect("remove_at: index is within the queue");
         if index < self.insertion_offset {
             self.insertion_offset -= 1;
         }
@@ -472,7 +482,17 @@ impl EventQueue {
         if let Some(key) = posted.merge_key {
             self.unindex(posted.receiver, key, posted.order);
         }
+        self.count_removed(posted.receiver);
         posted
+    }
+
+    fn count_removed(&mut self, receiver: ObjectId) {
+        if let Some(count) = self.receiver_counts.get_mut(&receiver) {
+            *count -= 1;
+            if *count == 0 {
+                self.receiver_counts.remove(&receiver);
+            }
+        }
     }
 
     /// Removes every posted event addressed to `receiver` (Qt
@@ -481,6 +501,9 @@ impl EventQueue {
     /// queue, so the caller drops them after releasing the lock (qcoreapplication.cpp:2000-2001).
     /// `insertion_offset` shrinks by the removed entries inside the current turn, as in `remove_at`.
     pub(crate) fn remove_posted_events(&mut self, receiver: ObjectId) -> Vec<PostedEvent> {
+        if !self.receiver_counts.contains_key(&receiver) {
+            return Vec::new();
+        }
         self.remove_posted_events_matching(|id| id == receiver)
     }
 
@@ -490,7 +513,7 @@ impl EventQueue {
         &mut self,
         affected: impl Fn(ObjectId) -> bool,
     ) -> Vec<PostedEvent> {
-        if !self.events.iter().any(|posted| affected(posted.receiver)) {
+        if !self.receiver_counts.keys().any(|&id| affected(id)) {
             return Vec::new();
         }
         let turn_end = self.insertion_offset;
@@ -498,7 +521,7 @@ impl EventQueue {
         let mut removed = Vec::new();
         let mut removed_in_turn = 0;
         let mut removed_before_sorted = 0;
-        let mut kept = Vec::with_capacity(self.events.len());
+        let mut kept = VecDeque::with_capacity(self.events.len());
         for (index, posted) in std::mem::take(&mut self.events).into_iter().enumerate() {
             if affected(posted.receiver) {
                 if index < turn_end {
@@ -507,9 +530,10 @@ impl EventQueue {
                 if index < sorted_from {
                     removed_before_sorted += 1;
                 }
+                self.count_removed(posted.receiver);
                 removed.push(posted);
             } else {
-                kept.push(posted);
+                kept.push_back(posted);
             }
         }
         self.events = kept;
@@ -566,20 +590,31 @@ impl EventQueue {
     fn insert_position(&self, priority: i32) -> usize {
         let start = self.insertion_offset.min(self.events.len());
         let sorted_from = self.sorted_from.max(start);
-        if let Some(offset) = self.events[start..sorted_from]
-            .iter()
+        if let Some(offset) = self
+            .events
+            .range(start..sorted_from)
             .position(|e| e.priority < priority)
         {
             return start + offset;
         }
-        sorted_from + self.events[sorted_from..].partition_point(|e| e.priority >= priority)
+        // Binary search among the sorted events: the first one of a lower priority.
+        let (mut low, mut high) = (sorted_from, self.events.len());
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if self.events[mid].priority >= priority {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        low
     }
 
     /// Puts `posted` at `pos`, with `key` as its merge key, and brings `merge_index` and
     /// `sorted_from` along.
     fn insert_at(&mut self, pos: usize, mut posted: PostedEvent, key: Option<MergeKey>) {
         const STRIDE: u128 = 1 << 64;
-        let order_at = |events: &[PostedEvent]| {
+        let order_at = |events: &VecDeque<PostedEvent>| {
             let previous = pos.checked_sub(1).map(|index| events[index].order).unwrap_or(0);
             let next = events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
             if pos == events.len() {
@@ -609,6 +644,7 @@ impl EventQueue {
         } else if pos > self.sorted_from && self.events[pos - 1].priority < posted.priority {
             self.sorted_from = pos;
         }
+        *self.receiver_counts.entry(posted.receiver).or_default() += 1;
         self.events.insert(pos, posted);
     }
 
@@ -677,10 +713,16 @@ impl EventQueue {
             "sorted_from past the end"
         );
         assert!(
-            self.events[self.sorted_from..]
-                .windows(2)
-                .all(|pair| pair[0].priority >= pair[1].priority),
+            self.events
+                .range(self.sorted_from..)
+                .zip(self.events.range(self.sorted_from..).skip(1))
+                .all(|(first, second)| first.priority >= second.priority),
             "events from sorted_from are not in priority order"
+        );
+        assert_eq!(
+            self.receiver_counts.values().sum::<usize>(),
+            self.events.len(),
+            "receiver counts"
         );
         assert!(
             self.insertion_offset <= self.events.len(),
@@ -813,10 +855,19 @@ impl Drop for ThreadLoopState {
     }
 }
 
+/// A running loop belongs to the thread that made it: its drop and `exec` use that thread's
+/// timer context, loop level and thread id, so it is `!Send` on every platform. Other threads
+/// reach the loop through an [`EventLoopHandle`].
+///
+/// ```compile_fail
+/// fn needs_send<T: Send>(_: T) {}
+/// needs_send(ferrokit_core::event_loop::EventLoop::new());
+/// ```
 pub struct EventLoop {
     state: Arc<ThreadLoopState>,
     exit: LoopExit,
     custom_timeout: Option<Duration>,
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 impl Drop for EventLoop {
@@ -848,6 +899,7 @@ impl EventLoop {
             state: ThreadLoopState::current_or_create(kind),
             exit: LoopExit::new(),
             custom_timeout: None,
+            _not_send: std::marker::PhantomData,
         }
     }
 
@@ -1000,6 +1052,12 @@ impl EventLoop {
             .dispatcher
             .send_timer_events(&self.state.timer_registry);
         if let DispatchResult::Quit(code) = res {
+            // A `WM_QUIT` is `QCoreApplication::quit`: it ends every loop running on the thread,
+            // not only the innermost one, since the message is consumed here and the outer
+            // loops never see it (`QEventDispatcherWin32::processEvents`).
+            for running in self.state.running.lock().iter() {
+                running.request(code);
+            }
             self.exit.request(code);
         }
 
@@ -1136,9 +1194,9 @@ fn current_levels() -> (usize, usize) {
 }
 
 /// Event-level gate for a `DeferredDelete` (qcoreapplication.cpp:1870-1885). `stamp` and `current`
-/// are (loop level, scope level) pairs. Delivered when the stamp outranks the current levels, when
-/// it was posted before any loop ran and a loop is running now, or, for the loop-exit flush, when
-/// the levels are equal.
+/// are (loop level, scope level) pairs, compared by their sums as Qt's `loopLevel + scopeLevel`.
+/// Delivered when the stamp outranks the current levels, when it was posted at level zero and a
+/// level is active now, or, for the loop-exit flush, when the levels are equal.
 fn deferred_delete_deliverable(
     stamp: (usize, usize),
     current: (usize, usize),
@@ -1147,7 +1205,7 @@ fn deferred_delete_deliverable(
     let stamp_sum = stamp.0 + stamp.1;
     let current_sum = current.0 + current.1;
     stamp_sum > current_sum
-        || (stamp.0 == 0 && current.0 > 0)
+        || (stamp_sum == 0 && current_sum > 0)
         || (explicit_flush && stamp_sum == current_sum)
 }
 
@@ -1284,9 +1342,11 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
             // exits only when accepted (qcoreapplication.cpp:2052-2058).
             if !crate::application::is_application_object(receiver) {
                 quit_code = Some(exit_code);
-                // A posted Quit exits the loop through QCoreApplication::exit, which emits
-                // aboutToQuit (qcoreapplication.cpp:2054-2056, 1532-1535).
-                crate::application::emit_about_to_quit_once();
+                // A posted Quit to another object ends the loop like `QEventLoop::quit` or
+                // `QThread::exit`, which never emit `aboutToQuit`: only `QCoreApplication::exit`
+                // does (qcoreapplication.cpp:1532-1535), and the application's own Quit reaches
+                // it through `deliver_application_quit`. A nested loop's quit must not use up
+                // the one emission of the real application quit.
             }
         }
 
@@ -1504,6 +1564,7 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 /// and is routed to `to`. The moved events keep their order and priority and are not compressed
 /// (Qt `setThreadData_helper`, qobject.cpp:1805-1815, under the locks of qobject.cpp:1757-1758).
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
+    let receiver_set: std::collections::HashSet<ObjectId> = receivers.iter().copied().collect();
     let mut woken = None;
     // Events moved to a thread that has ended; dropped after the registry lock is released, as a
     // payload's `Drop` may post events or unregister objects.
@@ -1521,12 +1582,12 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
             seen.push(&handle.queue);
             moved.extend(
                 lock_unpoisoned(&handle.queue)
-                    .remove_posted_events_matching(|id| receivers.contains(&id)),
+                    .remove_posted_events_matching(|id| receiver_set.contains(&id)),
             );
         }
         for (thread, queue) in reg.pending.iter_mut() {
             if *thread != to {
-                moved.extend(queue.remove_posted_events_matching(|id| receivers.contains(&id)));
+                moved.extend(queue.remove_posted_events_matching(|id| receiver_set.contains(&id)));
             }
         }
         // A queued `ZeroTimer` of a moved receiver is not carried: `timer::adopt_timers` re-arms
@@ -3424,9 +3485,9 @@ mod merge_index_tests {
     }
 
     /// What tells two queued events apart: the receiver, the priority and the kind with its data.
-    fn summary(events: &[PostedEvent]) -> Vec<String> {
+    fn summary<'a>(events: impl IntoIterator<Item = &'a PostedEvent>) -> Vec<String> {
         events
-            .iter()
+            .into_iter()
             .map(|posted| {
                 let kind = match &posted.event.kind {
                     EventKind::User(data) => {

@@ -8,7 +8,33 @@ use std::time::{Duration, Instant};
 
 use crate::thread::task::{CancellationToken, TaskError, TaskHandle, TaskShared};
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+/// A queued unit of work. The closure is told whether it is being run (`true`) or discarded
+/// without running (`false`), so a job dropped from the queue still completes its task handle.
+struct Job {
+    work: Option<Box<dyn FnOnce(bool) + Send + 'static>>,
+}
+
+impl Job {
+    fn new(work: impl FnOnce(bool) + Send + 'static) -> Self {
+        Self {
+            work: Some(Box::new(work)),
+        }
+    }
+
+    fn run(mut self) {
+        if let Some(work) = self.work.take() {
+            work(true);
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        if let Some(work) = self.work.take() {
+            work(false);
+        }
+    }
+}
 
 pub(crate) struct PoolState {
     max_threads: usize,
@@ -24,6 +50,24 @@ pub(crate) struct PoolShared {
     pub(crate) total_threads: AtomicUsize,
 }
 
+impl PoolShared {
+    /// Reserves as many new workers as the queue needs and the thread limit allows, and returns
+    /// the id of the first one and how many. Must be called with `state` locked.
+    ///
+    /// A worker that exists but has not picked up a job yet counts as available, so a burst of
+    /// submissions grows the pool by one worker per queued job instead of waiting for the first
+    /// worker to become busy.
+    fn reserve_workers(&self, state: &PoolState) -> (usize, usize) {
+        let total = self.total_threads.load(Ordering::SeqCst);
+        let available = total.saturating_sub(state.busy_workers);
+        let wanted = state.queue.len().saturating_sub(available);
+        let room = state.max_threads.saturating_sub(total);
+        let count = wanted.min(room);
+        self.total_threads.fetch_add(count, Ordering::SeqCst);
+        (total + 1, count)
+    }
+}
+
 /// A thread pool for executing tasks concurrently, modeled after Qt's `QThreadPool`.
 pub struct ThreadPool {
     shared: Arc<PoolShared>,
@@ -33,12 +77,15 @@ pub struct ThreadPool {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        {
+        let discarded = {
             let mut state = self.shared.state.lock().unwrap();
             state.shutdown = true;
-            state.queue.clear();
-        }
+            std::mem::take(&mut state.queue)
+        };
         self.shared.work_cond.notify_all();
+        // Dropping the jobs completes their handles as canceled. Done outside the pool lock
+        // because that may wake arbitrary user code (async wakers).
+        drop(discarded);
 
         let mut workers = self.workers.lock().unwrap();
         for worker in workers.drain(..) {
@@ -93,13 +140,17 @@ impl ThreadPool {
         let handle = TaskHandle::new(Arc::clone(&shared));
 
         let job_shared = Arc::clone(&shared);
-        let job = Box::new(move || {
-            if cancel_token.is_canceled() {
-                job_shared.finish(Err(TaskError::Canceled));
+        let job = Job::new(move |run| {
+            if !run {
+                // Dropped from the queue (clear / pool teardown) without ever running.
+                job_shared.cancel_unstarted();
                 return;
             }
-
-            job_shared.mark_running();
+            // The Queued -> Running transition is atomic with respect to `TaskHandle::cancel`:
+            // a task reported as canceled never runs, and a running one is never "canceled".
+            if !job_shared.try_start() {
+                return;
+            }
             let result = catch_unwind(std::panic::AssertUnwindSafe(|| task(cancel_token)));
             match result {
                 Ok(val) => job_shared.finish(Ok(val)),
@@ -121,28 +172,21 @@ impl ThreadPool {
     }
 
     fn submit_job(&self, job: Job) {
-        let mut spawn_worker = false;
-        {
+        let (first_id, count) = {
             let mut state = self.shared.state.lock().unwrap();
             state.queue.push_back(job);
+            self.shared.reserve_workers(&state)
+        };
 
-            let total = self.shared.total_threads.load(Ordering::SeqCst);
-            if state.busy_workers >= total && total < state.max_threads {
-                spawn_worker = true;
-                self.shared.total_threads.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        if spawn_worker {
-            self.spawn_worker_thread();
+        for id in first_id..first_id + count {
+            self.spawn_worker_thread(id);
         }
 
         self.shared.work_cond.notify_one();
     }
 
-    fn spawn_worker_thread(&self) {
+    fn spawn_worker_thread(&self, id: usize) {
         let pool = Arc::clone(&self.shared);
-        let id = self.shared.total_threads.load(Ordering::SeqCst);
         let thread_name = format!("{}-{}", self.name_prefix, id);
 
         let handle_res = StdThreadBuilder::new()
@@ -163,7 +207,7 @@ impl ThreadPool {
                 };
 
                 if let Some(job) = job {
-                    job();
+                    job.run();
                 }
 
                 {
@@ -175,8 +219,12 @@ impl ThreadPool {
                 }
             });
 
-        if let Ok(handle) = handle_res {
-            self.workers.lock().unwrap().push(handle);
+        match handle_res {
+            Ok(handle) => self.workers.lock().unwrap().push(handle),
+            // The slot reserved for this worker is free again; the next submission retries.
+            Err(_) => {
+                self.shared.total_threads.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     }
 
@@ -186,9 +234,17 @@ impl ThreadPool {
     }
 
     /// Sets the maximum number of worker threads.
+    ///
+    /// Raising the limit immediately starts workers for tasks that are already queued.
     pub fn set_max_thread_count(&self, count: usize) {
-        let mut state = self.shared.state.lock().unwrap();
-        state.max_threads = count.max(1);
+        let (first_id, spawn_count) = {
+            let mut state = self.shared.state.lock().unwrap();
+            state.max_threads = count.max(1);
+            self.shared.reserve_workers(&state)
+        };
+        for id in first_id..first_id + spawn_count {
+            self.spawn_worker_thread(id);
+        }
     }
 
     /// Returns the number of currently active (busy) worker threads.
@@ -202,9 +258,20 @@ impl ThreadPool {
     }
 
     /// Clears all unstarted tasks from the queue, matching `QThreadPool::clear()`.
+    ///
+    /// The handles of the discarded tasks complete as [`TaskError::Canceled`].
     pub fn clear_queue(&self) {
-        let mut state = self.shared.state.lock().unwrap();
-        state.queue.clear();
+        let (discarded, idle) = {
+            let mut state = self.shared.state.lock().unwrap();
+            (std::mem::take(&mut state.queue), state.busy_workers == 0)
+        };
+        // Dropping the jobs completes their handles; done outside the lock because that may
+        // wake arbitrary user code (async wakers).
+        drop(discarded);
+        if idle {
+            // Nothing is running, so no worker will report completion: wake `wait_for_done`.
+            self.shared.done_cond.notify_all();
+        }
     }
 
     /// Blocks until all queued and executing tasks have completed.
@@ -296,5 +363,44 @@ impl ThreadPoolBuilder {
             name_prefix: self.name_prefix,
             workers: Mutex::new(Vec::new()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `clear_queue` with queued jobs and no busy worker must wake `wait_for_done` (the idle
+    /// branch): no worker will report completion. The job is queued without starting a worker
+    /// so that state is reachable deterministically.
+    #[test]
+    fn clear_queue_wakes_wait_for_done_when_idle() {
+        let pool = Arc::new(ThreadPool::new(1));
+        let task_shared = Arc::new(TaskShared::<()>::new(CancellationToken::new()));
+        {
+            let canceled = Arc::clone(&task_shared);
+            let mut state = pool.shared.state.lock().unwrap();
+            state.queue.push_back(Job::new(move |run| {
+                assert!(!run);
+                canceled.cancel_unstarted();
+            }));
+        }
+        let waiter = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || pool.wait_for_done_timeout(Duration::from_secs(10)))
+        };
+        // Give the waiter the chance to park before clearing.
+        for _ in 0..1000 {
+            std::thread::yield_now();
+        }
+        pool.clear_queue();
+        assert!(
+            waiter.join().unwrap(),
+            "wait_for_done was not woken by clear_queue"
+        );
+        assert_eq!(
+            *task_shared.status.lock().unwrap(),
+            crate::thread::TaskStatus::Canceled
+        );
     }
 }

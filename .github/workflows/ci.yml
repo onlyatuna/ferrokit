@@ -77,14 +77,22 @@ jobs:
         run: cargo test --workspace --doc
 
   miri-shard:
-    name: Miri shard (${{ matrix.model }}, ${{ matrix.shard }}/2)
+    name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        model: [SB, TB]
-        shard: [1, 2]
+        # One entry per (crate, model, shard); a shard's sweep is estimated well under 40 minutes.
+        include:
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 2, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 2, shards: 2}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: TB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: TB, shard: 1, shards: 1}
     steps:
       - uses: actions/checkout@v7
 
@@ -102,14 +110,14 @@ jobs:
       - name: Run Miri sweep tool unit tests
         run: python -m unittest tools/test_miri_sweep.py
 
-      - name: Run Miri sweep (${{ matrix.model }}, shard ${{ matrix.shard }}/2, baseline diff, isolation allowlist)
+      - name: Run Miri sweep (${{ matrix.crate }}, ${{ matrix.model }}, shard ${{ matrix.shard }}/${{ matrix.shards }}, baseline diff, isolation allowlist)
         run: >-
           python tools/miri_sweep.py
-          --crate ferrokit-core
+          --crate ${{ matrix.crate }}
           --toolchain nightly-2026-10-16
           --models ${{ matrix.model }}
-          --shard ${{ matrix.shard }}/2
-          --baseline tools/miri_baseline.json
+          --shard ${{ matrix.shard }}/${{ matrix.shards }}
+          --baseline ${{ matrix.baseline }}
           --run-isolation-allowlist
           --fail-on-regression
           --summary "$GITHUB_STEP_SUMMARY"

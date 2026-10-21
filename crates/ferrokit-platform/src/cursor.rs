@@ -66,7 +66,7 @@ pub mod win32_cursor {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, LoadCursorW, SetCursor, HCURSOR, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS,
-        IDC_HAND, IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
+        IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
         IDC_SIZEWE, IDC_UPARROW, IDC_WAIT, SM_CXCURSOR,
     };
     static CURRENT_GLOBAL_SHAPE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -109,6 +109,7 @@ pub mod win32_cursor {
             }
         }
 
+        /// Makes `shape` the application-wide cursor and shows it.
         pub fn set_shape(shape: CursorShape) {
             let code = match shape {
                 CursorShape::Arrow => 0,
@@ -126,6 +127,13 @@ pub mod win32_cursor {
                 CursorShape::Busy => 12,
             };
             CURRENT_GLOBAL_SHAPE.store(code, std::sync::atomic::Ordering::Relaxed);
+            Self::apply_shape(shape);
+        }
+
+        /// Shows `shape` on the screen without changing the application-wide cursor
+        /// (a per-window cursor is applied from that window's `WM_SETCURSOR`).
+        /// `Blank` hides the cursor (`Qt::BlankCursor`).
+        pub fn apply_shape(shape: CursorShape) {
             let idc = match shape {
                 CursorShape::Arrow => IDC_ARROW,
                 CursorShape::UpArrow => IDC_UPARROW,
@@ -137,7 +145,11 @@ pub mod win32_cursor {
                 CursorShape::SizeBDiag => IDC_SIZENESW,
                 CursorShape::SizeFDiag => IDC_SIZENWSE,
                 CursorShape::SizeAll => IDC_SIZEALL,
-                CursorShape::Blank => IDC_NO,
+                CursorShape::Blank => {
+                    // SAFETY: a null cursor handle removes the cursor image.
+                    unsafe { SetCursor(std::ptr::null_mut()) };
+                    return;
+                }
                 CursorShape::PointingHand => IDC_HAND,
                 CursorShape::Busy => IDC_APPSTARTING,
             };
