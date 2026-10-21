@@ -461,12 +461,18 @@ impl PlatformWindow for WaylandNativeWindow {
 
     fn set_stays_on_top(&mut self, enabled: bool) {
         self.stays_on_top = enabled;
+        self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
     }
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
+        self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
         // On Wayland, setting an empty input region via wl_surface.set_input_region(NULL)
         // makes pointer events pass through to underlying windows
+    }
+
+    fn flags(&self) -> WindowFlags {
+        self.flags
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, _dark_mode: bool) -> bool {

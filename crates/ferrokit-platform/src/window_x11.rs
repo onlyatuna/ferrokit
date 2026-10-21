@@ -510,11 +510,17 @@ impl PlatformWindow for X11NativeWindow {
 
     fn set_stays_on_top(&mut self, enabled: bool) {
         self.stays_on_top = enabled;
+        self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
     }
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
+        self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
         // In X11, setting an empty XCB_SHAPE_SK_INPUT region makes mouse events pass through
+    }
+
+    fn flags(&self) -> WindowFlags {
+        self.flags
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, _dark_mode: bool) -> bool {
