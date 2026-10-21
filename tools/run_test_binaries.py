@@ -23,14 +23,10 @@ import time
 KIND_FLAGS = {"lib": "--lib", "test": "--test", "bin": "--bin", "example": "--example", "bench": "--bench"}
 
 
-def test_targets(jobs):
-    out = subprocess.run(
-        ["cargo", "test", "-j", jobs, "--workspace", "--no-run", "--message-format=json"],
-        stdout=subprocess.PIPE,
-        check=True,
-    ).stdout.decode("utf-8", "replace")
+def parse_test_targets(lines, jobs):
+    """Map `cargo test --no-run --message-format=json` lines to (name, command) pairs."""
     found = []
-    for line in out.splitlines():
+    for line in lines:
         try:
             msg = json.loads(line)
         except ValueError:
@@ -44,11 +40,20 @@ def test_targets(jobs):
         if kind in ("lib", "rlib", "proc-macro", "cdylib", "dylib", "staticlib"):
             flag = "--lib"
         package = os.path.basename(os.path.dirname(msg["manifest_path"]))
-        cmd = ["cargo", "test", "-j", jobs, "-p", package, flag]
+        cmd = ["cargo", "test", "--locked", "-j", jobs, "-p", package, flag]
         if flag != "--lib":
             cmd.append(msg["target"]["name"])
         found.append(("{} {}".format(package, msg["target"]["name"]), cmd))
     return found
+
+
+def test_targets(jobs):
+    out = subprocess.run(
+        ["cargo", "test", "--locked", "-j", jobs, "--workspace", "--no-run", "--message-format=json"],
+        stdout=subprocess.PIPE,
+        check=True,
+    ).stdout.decode("utf-8", "replace")
+    return parse_test_targets(out.splitlines(), jobs)
 
 
 def kill_tree(proc):
@@ -65,7 +70,11 @@ def main():
     args = parser.parse_args()
 
     results = []
-    for name, cmd in test_targets(args.jobs):
+    targets = test_targets(args.jobs)
+    if not targets:
+        print("error: no test targets found; refusing to report success", file=sys.stderr)
+        return 1
+    for name, cmd in targets:
         print("::group::{}".format(name), flush=True)
         start = time.monotonic()
         proc = subprocess.Popen(
