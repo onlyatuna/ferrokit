@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, CString};
 use std::sync::{LazyLock, Mutex};
 
 #[repr(transparent)]
@@ -170,7 +170,6 @@ mod native_bindings {
     extern "C" {
         pub fn objc_getClass(name: *const c_char) -> *mut c_void;
         pub fn sel_registerName(name: *const c_char) -> *const c_void;
-        pub fn sel_getName(sel: *const c_void) -> *const c_char;
         pub fn objc_msgSend();
         pub fn objc_allocateClassPair(
             superclass: *mut c_void,
@@ -227,10 +226,12 @@ fn is_macos_at_least(major: NSInteger) -> bool {
         minor: NSInteger,
         patch: NSInteger,
     }
-    let info = ObjcMsg::send_class_0(
-        objc_get_class("NSProcessInfo"),
-        Sel::register("processInfo"),
-    );
+    let info = unsafe {
+        ObjcMsg::send_class_0(
+            objc_get_class("NSProcessInfo"),
+            Sel::register("processInfo"),
+        )
+    };
     let sel = Sel::register("isOperatingSystemAtLeastVersion:");
     let version = NSOperatingSystemVersion {
         major,
@@ -265,20 +266,24 @@ pub fn qcocoa_application_delegate() -> Id {
         {
             return;
         }
-        let current = ObjcMsg::send_class_0(
-            objc_get_class("NSRunningApplication"),
-            Sel::register("currentApplication"),
-        );
-        if !ObjcMsg::send_bool_return(current, Sel::register("isActive")) {
-            let app = ObjcMsg::send_class_0(
-                objc_get_class("NSApplication"),
-                Sel::register("sharedApplication"),
-            );
-            ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true);
+        let current = unsafe {
+            ObjcMsg::send_class_0(
+                objc_get_class("NSRunningApplication"),
+                Sel::register("currentApplication"),
+            )
+        };
+        if !unsafe { ObjcMsg::send_bool_return(current, Sel::register("isActive")) } {
+            let app = unsafe {
+                ObjcMsg::send_class_0(
+                    objc_get_class("NSApplication"),
+                    Sel::register("sharedApplication"),
+                )
+            };
+            unsafe { ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true) };
         }
         if is_macos_at_least(14) {
             // NSApplicationActivateAllWindows
-            ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1);
+            unsafe { ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1) };
         }
     }
     static DELEGATE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
@@ -314,7 +319,7 @@ pub fn nsstring_from_str(s: &str) -> Id {
     let cls = objc_get_class("NSString");
     let sel_alloc = Sel::register("alloc");
     let sel_init = Sel::register("initWithBytes:length:encoding:");
-    let str_obj = ObjcMsg::send_class_0(cls, sel_alloc);
+    let str_obj = unsafe { ObjcMsg::send_class_0(cls, sel_alloc) };
     unsafe {
         let msg_send: extern "C" fn(
             *mut c_void,
@@ -385,6 +390,10 @@ pub struct MockObjectData {
     pub scale_factor: f64,
     pub material: NSInteger,
     pub blending_mode: NSInteger,
+    /// `-[NSControl target]` / `-[NSMenuItem target]`, set by `setTarget:`.
+    pub target: Id,
+    /// `-[NSControl action]` / `-[NSMenuItem action]`, set by `setAction:`.
+    pub action: Sel,
 }
 
 // SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
@@ -414,6 +423,8 @@ impl Default for MockObjectData {
             scale_factor: 1.0,
             material: 0,
             blending_mode: 0,
+            target: Id::NIL,
+            action: Sel::NIL,
         }
     }
 }
@@ -539,34 +550,61 @@ impl MockObjcRuntime {
 // Message send wrapper (msg_send mock and native dispatch)
 // ---------------------------------------------------------------------------
 
+/// Typed `objc_msgSend` wrappers (native on macOS, a recording mock elsewhere).
+///
+/// Each function fixes one C signature, named by the function, and forwards to `objc_msgSend`
+/// with it. Nothing checks that `sel` actually has that signature, so every function is `unsafe`.
+///
+/// # Safety (all `send_*` functions)
+///
+/// - `receiver` is nil (the send is then a no-op returning nil/zero/false) or a live Objective-C
+///   object; for `send_class_0` it is a class.
+/// - The receiver's class implements `sel` with exactly the argument and return types of the
+///   function called (`send_int` for `setLevel:`, `send_id` for `addSubview:`, ...).
+/// - The caller is on the thread the receiver belongs to (the main thread for AppKit objects) and
+///   owns the reference counts: results of `alloc`/`new`/`copy` are +1 and must be balanced.
 pub struct ObjcMsg;
 
+/// Name the mock runtime registered for `sel` (the reverse of `sel_register_name`).
+#[cfg(not(target_os = "macos"))]
+fn mock_selector_name(sel: Sel) -> String {
+    MockObjcRuntime::instance()
+        .selectors
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, &v)| v == (sel.0 as usize))
+        .map(|(k, _)| k.clone())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+#[inline]
+unsafe fn msg_send_fn<F: Copy>() -> F {
+    debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
+    std::mem::transmute_copy(&(native_bindings::objc_msgSend as *const ()))
+}
+
 impl ObjcMsg {
-    /// Sends a zero-argument message
-    pub fn send_0(receiver: Id, sel: Sel) -> Id {
+    /// `-[receiver sel]` returning an object.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_0(receiver: Id, sel: Sel) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = msg_send_fn();
             Id(msg_send(receiver.0, sel.0))
         }
 
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
-
+            let sel_name = mock_selector_name(sel);
             if sel_name == "button" {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.button;
@@ -580,16 +618,18 @@ impl ObjcMsg {
         }
     }
 
-    /// Sends a class factory message (e.g., [NSMenu alloc], [NSStatusBar systemStatusBar])
-    pub fn send_class_0(class: Class, sel: Sel) -> Id {
+    /// `+[class sel]` returning an object (`alloc`, `systemStatusBar`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_class_0(class: Class, sel: Sel) -> Id {
         if class.is_nil() {
             return Id::NIL;
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = msg_send_fn();
             Id(msg_send(class.0, sel.0))
         }
 
@@ -604,15 +644,7 @@ impl ObjcMsg {
                 .find(|(_, &v)| v == (class.0 as usize))
                 .map(|(k, _)| k.clone())
                 .unwrap_or_default();
-
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "systemStatusBar" {
                 runtime.allocate_object("NSStatusBar")
@@ -635,9 +667,13 @@ impl ObjcMsg {
         }
     }
 
-    /// Sends a message with 1 string argument (e.g., initWithTitle:, setTitle:)
+    /// `-[receiver sel:NSString]` with `text` as a temporary `NSString` (released after the send,
+    /// so `sel` must copy or retain it: `setTitle:`, `initWithTitle:`, `setToolTip:`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
     #[allow(unused_variables)]
-    pub fn send_str(receiver: Id, sel: Sel, text: &str) -> Id {
+    pub unsafe fn send_str(receiver: Id, sel: Sel, text: &str) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
@@ -652,44 +688,27 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let ns_title = nsstring_from_str(text);
-            let sel_name_ptr = native_bindings::sel_getName(sel.0 as *const c_void);
-            let sel_str = if !sel_name_ptr.is_null() {
-                CStr::from_ptr(sel_name_ptr).to_str().unwrap_or_default()
-            } else {
-                ""
-            };
-
-            if sel_str == "initWithTitle:action:keyEquivalent:" {
-                let empty_key = nsstring_from_str("");
-                let msg_send: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    *mut c_void,
-                    *const c_void,
-                    *mut c_void,
-                ) -> *mut c_void = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                Id(msg_send(
-                    receiver.0,
-                    sel.0,
-                    ns_title.0,
-                    std::ptr::null(),
-                    empty_key.0,
-                ))
-            } else {
-                let msg_send: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    *mut c_void,
-                ) -> *mut c_void = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                Id(msg_send(receiver.0, sel.0, ns_title.0))
-            }
+        {
+            let ns_text = nsstring_from_str(text);
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> *mut c_void =
+                msg_send_fn();
+            let result = Id(msg_send(receiver.0, sel.0, ns_text.0));
+            Self::send_0(ns_text, Sel::register("release"));
+            result
         }
     }
 
-    /// Sends a message with 1 object argument (e.g., setMenu:, addItem:, addSubview:, removeStatusItem:)
-    pub fn send_id(receiver: Id, sel: Sel, arg: Id) -> Id {
+    /// `-[NSMenuItem initWithTitle:action:keyEquivalent:]` on an allocated item.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]; `receiver` is an allocated, not yet initialised `NSMenuItem`.
+    #[allow(unused_variables)]
+    pub unsafe fn send_menu_item_init(
+        receiver: Id,
+        title: &str,
+        action: Sel,
+        key_equivalent: &str,
+    ) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
@@ -697,18 +716,58 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            runtime.update_object(receiver, |data| {
+                data.title = title.to_string();
+                data.action = action;
+            });
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let ns_title = nsstring_from_str(title);
+            let ns_key = nsstring_from_str(key_equivalent);
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+            ) -> *mut c_void = msg_send_fn();
+            let result = Id(msg_send(
+                receiver.0,
+                Sel::register("initWithTitle:action:keyEquivalent:").0,
+                ns_title.0,
+                action.0,
+                ns_key.0,
+            ));
+            Self::send_0(ns_title, Sel::register("release"));
+            Self::send_0(ns_key, Sel::register("release"));
+            result
+        }
+    }
+
+    /// `-[receiver sel:id]` (`setMenu:`, `addItem:`, `addSubview:`, `setTarget:`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_id(receiver: Id, sel: Sel, arg: Id) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let runtime = MockObjcRuntime::instance();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "setMenu:" {
                 runtime.update_object(receiver, |data| {
                     data.menu = arg;
+                });
+            } else if sel_name == "setTarget:" {
+                runtime.update_object(receiver, |data| {
+                    data.target = arg;
                 });
             } else if sel_name == "makeKeyAndOrderFront:" {
                 runtime.update_object(receiver, |data| {
@@ -745,15 +804,45 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                msg_send_fn();
             Id(msg_send(receiver.0, sel.0, arg.0))
         }
     }
 
-    /// Sends a message with 1 float/length argument (e.g., statusItemWithLength:)
-    pub fn send_length(receiver: Id, sel: Sel, length: CGFloat) -> Id {
+    /// `-[receiver sel:SEL]` (`setAction:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_action(receiver: Id, sel: Sel, action: Sel) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            if mock_selector_name(sel) == "setAction:" {
+                MockObjcRuntime::instance().update_object(receiver, |data| {
+                    data.action = action;
+                });
+            }
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *const c_void) -> *mut c_void =
+                msg_send_fn();
+            Id(msg_send(receiver.0, sel.0, action.0))
+        }
+    }
+
+    /// `-[receiver sel:CGFloat]` (`statusItemWithLength:`, `setZPosition:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_length(receiver: Id, sel: Sel, length: CGFloat) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
@@ -765,15 +854,18 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, CGFloat) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                msg_send_fn();
             Id(msg_send(receiver.0, sel.0, length))
         }
     }
 
-    /// Sends a message with an integer argument (e.g., setLevel:, setState:)
-    pub fn send_int(receiver: Id, sel: Sel, val: NSInteger) -> Id {
+    /// `-[receiver sel:NSInteger]` (`setLevel:`, `setState:`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_int(receiver: Id, sel: Sel, val: NSInteger) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
@@ -781,14 +873,7 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "setLevel:" {
                 runtime.update_object(receiver, |data| {
@@ -811,15 +896,18 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, NSInteger) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                msg_send_fn();
             Id(msg_send(receiver.0, sel.0, val))
         }
     }
 
-    /// Sends a message with a boolean argument (e.g., setIgnoresMouseEvents:, setEnabled:)
-    pub fn send_bool(receiver: Id, sel: Sel, val: bool) -> Id {
+    /// `-[receiver sel:BOOL]` (`setIgnoresMouseEvents:`, `setEnabled:`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_bool(receiver: Id, sel: Sel, val: bool) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
@@ -827,14 +915,7 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "setIgnoresMouseEvents:" {
                 runtime.update_object(receiver, |data| {
@@ -849,24 +930,27 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let bool_val: BOOL = if val { YES } else { NO };
             let msg_send: extern "C" fn(*mut c_void, *const c_void, BOOL) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                msg_send_fn();
             Id(msg_send(receiver.0, sel.0, bool_val))
         }
     }
 
-    /// Sends a message with a CGSize argument (e.g., [NSWindow setMinSize:])
-    pub fn send_size(receiver: Id, sel: Sel, size: CGSize) -> Id {
+    /// `-[receiver sel:CGSize]` (`setMinSize:`, `initWithSize:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_size(receiver: Id, sel: Sel, size: CGSize) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, CGSize) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                msg_send_fn();
             Id(msg_send(receiver.0, sel.0, size))
         }
 
@@ -877,9 +961,69 @@ impl ObjcMsg {
         }
     }
 
-    /// Sends window initialization message (initWithContentRect:styleMask:backing:defer:)
+    /// `-[receiver sel:CGRect]` (`initWithFrame:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
     #[allow(unused_variables)]
-    pub fn send_window_init(
+    pub unsafe fn send_rect(receiver: Id, sel: Sel, rect: CGRect) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            MockObjcRuntime::instance().update_object(receiver, |data| {
+                data.frame = rect;
+            });
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect) -> *mut c_void =
+                msg_send_fn();
+            Id(msg_send(receiver.0, sel.0, rect))
+        }
+    }
+
+    /// `-[receiver sel:CGRect display:BOOL]` (`setFrame:display:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    #[allow(unused_variables)]
+    pub unsafe fn send_rect_display(receiver: Id, sel: Sel, rect: CGRect, display: bool) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            MockObjcRuntime::instance().update_object(receiver, |data| {
+                data.frame = rect;
+            });
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect, BOOL) -> *mut c_void =
+                msg_send_fn();
+            Id(msg_send(
+                receiver.0,
+                sel.0,
+                rect,
+                if display { YES } else { NO },
+            ))
+        }
+    }
+
+    /// `-[NSWindow initWithContentRect:styleMask:backing:defer:]` on an allocated window.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]; `sel` is `initWithContentRect:styleMask:backing:defer:`.
+    #[allow(unused_variables)]
+    pub unsafe fn send_window_init(
         receiver: Id,
         sel: Sel,
         rect: CGRect,
@@ -901,45 +1045,31 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let sel_name_ptr = native_bindings::sel_getName(sel.0 as *const c_void);
-            let sel_str = if !sel_name_ptr.is_null() {
-                CStr::from_ptr(sel_name_ptr).to_str().unwrap_or_default()
-            } else {
-                ""
-            };
-
-            if sel_str.starts_with("initWithFrame:") {
-                let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect) -> *mut c_void =
-                    std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                Id(msg_send(receiver.0, sel.0, rect))
-            } else if sel_str.starts_with("setFrame:display:") {
-                let msg_send: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    CGRect,
-                    BOOL,
-                ) -> *mut c_void = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                Id(msg_send(receiver.0, sel.0, rect, YES))
-            } else {
-                let defer_b: BOOL = if defer_flag { YES } else { NO };
-                let msg_send: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    CGRect,
-                    NSUInteger,
-                    NSUInteger,
-                    BOOL,
-                ) -> *mut c_void = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                Id(msg_send(
-                    receiver.0, sel.0, rect, style_mask, backing, defer_b,
-                ))
-            }
+        {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                CGRect,
+                NSUInteger,
+                NSUInteger,
+                BOOL,
+            ) -> *mut c_void = msg_send_fn();
+            Id(msg_send(
+                receiver.0,
+                sel.0,
+                rect,
+                style_mask,
+                backing,
+                if defer_flag { YES } else { NO },
+            ))
         }
     }
 
-    /// Sends a zero-argument message and returns a boolean value (e.g., isFlipped)
-    pub fn send_bool_return(receiver: Id, sel: Sel) -> bool {
+    /// `-[receiver sel]` returning `BOOL` (`isFlipped`, `isActive`, ...).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_bool_return(receiver: Id, sel: Sel) -> bool {
         if receiver.is_nil() {
             return false;
         }
@@ -947,14 +1077,7 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "isFlipped" {
                 if let Some(obj) = runtime.get_object_data(receiver) {
@@ -970,19 +1093,16 @@ impl ObjcMsg {
 
         #[cfg(target_os = "macos")]
         {
-            let sel = sel.0 as *const c_void;
-            let ptr = receiver.0;
-            let res: BOOL = unsafe {
-                let msg_send: unsafe extern "C" fn(*mut c_void, *const c_void) -> BOOL =
-                    std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                msg_send(ptr, sel)
-            };
-            res == YES
+            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
+            msg_send(receiver.0, sel.0) == YES
         }
     }
 
-    /// Sends a message with 1 object argument that returns a BOOL (e.g., isEqualToString:).
-    pub fn send_id_bool_return(receiver: Id, sel: Sel, arg: Id) -> bool {
+    /// `-[receiver sel:id]` returning `BOOL` (`isEqualToString:`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_id_bool_return(receiver: Id, sel: Sel, arg: Id) -> bool {
         if receiver.is_nil() {
             return false;
         }
@@ -995,20 +1115,17 @@ impl ObjcMsg {
 
         #[cfg(target_os = "macos")]
         {
-            let res: BOOL = unsafe {
-                let msg_send: unsafe extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    *mut c_void,
-                ) -> BOOL = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-                msg_send(receiver.0, sel.0, arg.0)
-            };
-            res == YES
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> BOOL =
+                msg_send_fn();
+            msg_send(receiver.0, sel.0, arg.0) == YES
         }
     }
 
-    /// Sends a zero-argument message and returns a CGRect struct value (e.g., frame, visibleFrame)
-    pub fn send_rect_return(receiver: Id, sel: Sel) -> CGRect {
+    /// `-[receiver sel]` returning a `CGRect` (`frame`, `visibleFrame`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_rect_return(receiver: Id, sel: Sel) -> CGRect {
         if receiver.is_nil() {
             return CGRect::ZERO;
         }
@@ -1016,14 +1133,7 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let sel_name = runtime
-                .selectors
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(_, &v)| v == (sel.0 as usize))
-                .map(|(k, _)| k.clone())
-                .unwrap_or_default();
+            let sel_name = mock_selector_name(sel);
 
             if sel_name == "visibleFrame" {
                 runtime
@@ -1039,11 +1149,10 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             #[cfg(target_arch = "aarch64")]
             {
-                let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGRect =
-                    std::mem::transmute(native_bindings::objc_msgSend as *const ());
+                let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGRect = msg_send_fn();
                 msg_send(receiver.0, sel.0)
             }
             #[cfg(target_arch = "x86_64")]
@@ -1062,72 +1171,210 @@ impl ObjcMsg {
         }
     }
 
-    /// Sends a zero-argument message and returns a 64-bit float (e.g., backingScaleFactor)
-    pub fn send_f64_return(receiver: Id, _sel: Sel) -> f64 {
+    /// `-[receiver sel]` returning a `double` (`backingScaleFactor`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_f64_return(receiver: Id, sel: Sel) -> f64 {
         if receiver.is_nil() {
             return 1.0;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let runtime = MockObjcRuntime::instance();
-            runtime
+            let _ = sel;
+            MockObjcRuntime::instance()
                 .get_object_data(receiver)
                 .map(|d| d.scale_factor)
                 .unwrap_or(2.0)
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> f64 =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
-            msg_send(receiver.0, _sel.0)
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> f64 = msg_send_fn();
+            msg_send(receiver.0, sel.0)
         }
     }
 
-    /// Sends a zero-argument message and returns a usize (e.g., [NSArray count])
-    pub fn send_usize_return(receiver: Id, _sel: Sel) -> usize {
+    /// `-[receiver sel]` returning an `NSUInteger` (`[NSArray count]`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_usize_return(receiver: Id, sel: Sel) -> usize {
         if receiver.is_nil() {
             return 0;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let runtime = MockObjcRuntime::instance();
-            runtime
+            let _ = sel;
+            MockObjcRuntime::instance()
                 .get_object_data(receiver)
                 .map(|d| d.children.len())
                 .unwrap_or(0)
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSUInteger =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
-            msg_send(receiver.0, _sel.0)
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSUInteger = msg_send_fn();
+            msg_send(receiver.0, sel.0)
         }
     }
 
-    /// Sends an index lookup message (e.g., [NSArray objectAtIndex:])
-    pub fn send_id_with_usize(receiver: Id, _sel: Sel, idx: usize) -> Id {
+    /// `-[receiver sel:NSUInteger]` returning an object (`[NSArray objectAtIndex:]`).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_id_with_usize(receiver: Id, sel: Sel, idx: usize) -> Id {
         if receiver.is_nil() {
             return Id::NIL;
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let runtime = MockObjcRuntime::instance();
-            runtime
+            let _ = sel;
+            MockObjcRuntime::instance()
                 .get_object_data(receiver)
                 .and_then(|d| d.children.get(idx).copied())
                 .unwrap_or(Id::NIL)
         }
 
         #[cfg(target_os = "macos")]
-        unsafe {
+        {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) -> *mut c_void =
-                std::mem::transmute(native_bindings::objc_msgSend as *const ());
-            Id(msg_send(receiver.0, _sel.0, idx))
+                msg_send_fn();
+            Id(msg_send(receiver.0, sel.0, idx))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Action targets: the Objective-C object AppKit controls and menu items call back into
+// ---------------------------------------------------------------------------
+
+/// Selector every [`ActionTarget`] implements: `-ferrokitPerformAction:`.
+pub const ACTION_TARGET_SELECTOR: &str = "ferrokitPerformAction:";
+
+type ActionCallback = std::rc::Rc<dyn Fn()>;
+
+thread_local! {
+    /// Callbacks by target object address. AppKit delivers actions on the main thread, the thread
+    /// that created the target (`ActionTarget` is `!Send`).
+    static ACTION_CALLBACKS: std::cell::RefCell<HashMap<usize, ActionCallback>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// The class behind [`ActionTarget`]: an `NSObject` subclass named `FerrokitActionTarget` whose
+/// `-ferrokitPerformAction:` runs the target's callback. Registered once, on first use; nil if
+/// the runtime refuses the class.
+#[cfg(target_os = "macos")]
+fn action_target_class() -> Class {
+    extern "C" fn perform_action(this: *mut c_void, _cmd: *const c_void, _sender: *mut c_void) {
+        // A panic must not unwind into AppKit.
+        let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
+    }
+    static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
+        let existing = objc_get_class("FerrokitActionTarget");
+        if !existing.is_nil() {
+            return existing.0 as usize;
+        }
+        let class = native_bindings::objc_allocateClassPair(
+            objc_get_class("NSObject").0,
+            c"FerrokitActionTarget".as_ptr(),
+            0,
+        );
+        if class.is_null() {
+            return 0;
+        }
+        native_bindings::class_addMethod(
+            class,
+            Sel::register(ACTION_TARGET_SELECTOR).0,
+            perform_action as *const c_void,
+            c"v@:@".as_ptr(),
+        );
+        native_bindings::objc_registerClassPair(class);
+        class as usize
+    });
+    Class(*CLASS as *mut c_void)
+}
+
+/// An Objective-C object that runs a Rust closure when AppKit sends it
+/// [`ACTION_TARGET_SELECTOR`]. Controls and menu items hold their target weakly, so the owner
+/// keeps the `ActionTarget` alive for as long as the control can fire (and clears the control's
+/// target before dropping it).
+pub struct ActionTarget {
+    id: Id,
+}
+
+impl ActionTarget {
+    /// Creates the target object. Errors when the runtime cannot provide the class.
+    pub fn new(callback: impl Fn() + 'static) -> Result<Self, &'static str> {
+        #[cfg(target_os = "macos")]
+        let id = {
+            let class = action_target_class();
+            if class.is_nil() {
+                return Err("Cannot register the action target class");
+            }
+            // SAFETY: `alloc`/`init` take no arguments and `class` is a registered NSObject
+            // subclass; the +1 reference is released in `Drop`.
+            unsafe {
+                ObjcMsg::send_0(
+                    ObjcMsg::send_class_0(class, Sel::register("alloc")),
+                    Sel::register("init"),
+                )
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let id = MockObjcRuntime::instance().allocate_object("FerrokitActionTarget");
+        if id.is_nil() {
+            return Err("Cannot allocate the action target");
+        }
+        ACTION_CALLBACKS.with(|callbacks| {
+            callbacks
+                .borrow_mut()
+                .insert(id.0 as usize, std::rc::Rc::new(callback));
+        });
+        Ok(Self { id })
+    }
+
+    /// The object to pass to `setTarget:`.
+    #[inline]
+    pub fn id(&self) -> Id {
+        self.id
+    }
+
+    /// The selector to pass to `setAction:`.
+    #[inline]
+    pub fn action() -> Sel {
+        Sel::register(ACTION_TARGET_SELECTOR)
+    }
+
+    /// What `-ferrokitPerformAction:` does: runs the callback registered for `target` on this
+    /// thread. Returns whether there was one. Tests use it to stand in for a click.
+    pub fn perform(target: Id) -> bool {
+        let callback = ACTION_CALLBACKS
+            .with(|callbacks| callbacks.borrow().get(&(target.0 as usize)).cloned());
+        match callback {
+            Some(callback) => {
+                callback();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Drop for ActionTarget {
+    fn drop(&mut self) {
+        ACTION_CALLBACKS.with(|callbacks| {
+            callbacks.borrow_mut().remove(&(self.id.0 as usize));
+        });
+        #[cfg(target_os = "macos")]
+        // SAFETY: balances the +1 from `alloc`/`init` in `new`.
+        unsafe {
+            ObjcMsg::send_0(self.id, Sel::register("release"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        MockObjcRuntime::instance().remove_object(self.id);
     }
 }

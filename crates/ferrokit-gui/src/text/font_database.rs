@@ -209,8 +209,26 @@ impl FontDatabase {
 
         #[cfg(not(target_os = "windows"))]
         {
+            // fontconfig's default directories (fonts.conf: /usr/share/fonts,
+            // /usr/local/share/fonts, $XDG_DATA_HOME/fonts, ~/.fonts), which Qt's
+            // QFontconfigDatabase scans on Linux, plus the macOS system/user font folders.
             search_paths.push(PathBuf::from("/usr/share/fonts"));
+            search_paths.push(PathBuf::from("/usr/local/share/fonts"));
             search_paths.push(PathBuf::from("/System/Library/Fonts"));
+            search_paths.push(PathBuf::from("/Library/Fonts"));
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+                Some(data) => search_paths.push(PathBuf::from(data).join("fonts")),
+                None => {
+                    if let Some(home) = &home {
+                        search_paths.push(home.join(".local/share/fonts"));
+                    }
+                }
+            }
+            if let Some(home) = &home {
+                search_paths.push(home.join(".fonts"));
+                search_paths.push(home.join("Library/Fonts"));
+            }
         }
 
         let mut db = Self {

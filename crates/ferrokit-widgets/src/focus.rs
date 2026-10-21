@@ -95,8 +95,11 @@ fn send_focus_out(root: &WidgetRef, id: ObjectId, reason: FocusReason) {
         let mut old = old_widget.borrow_mut();
         old.set_has_focus(false);
         let mut ev = Event::new_spontaneous(EventKind::FocusOut { reason });
-        old.event(&mut ev);
-        old.focus_out_event(reason);
+        // `event()` routes FocusOut to `focus_out_event`; a widget whose `event` does not handle it
+        // still gets the virtual call, so the handler runs once either way.
+        if !old.event(&mut ev) {
+            old.focus_out_event(reason);
+        }
         old.update();
     }
 }
@@ -176,8 +179,9 @@ fn send_focus_in(widget: &WidgetRef, reason: FocusReason) {
     let mut new = widget.borrow_mut();
     new.set_has_focus(true);
     let mut ev = Event::new_spontaneous(EventKind::FocusIn { reason });
-    new.event(&mut ev);
-    new.focus_in_event(reason);
+    if !new.event(&mut ev) {
+        new.focus_in_event(reason);
+    }
     new.update();
 }
 
@@ -332,26 +336,19 @@ impl FocusManager {
 
     /// Handles mouse click on a hit widget, setting focus if click focus is accepted.
     pub fn handle_mouse_click(&mut self, root: &WidgetRef, hit_widget: &WidgetRef) -> bool {
-        let hit_id = hit_widget.borrow().id();
-        let policy = hit_widget.borrow().focus_policy();
-        if policy.accepts_click() {
-            self.set_focus(root, Some(hit_id), FocusReason::Mouse)
-        } else {
-            // Check if widget belongs to a parent that accepts click focus
-            let mut parent_weak = hit_widget.borrow().parent_widget();
-            while let Some(parent_w) = parent_weak {
-                if let Some(parent_rc) = parent_w.upgrade() {
-                    let p_policy = parent_rc.borrow().focus_policy();
-                    if p_policy.accepts_click() {
-                        let p_id = parent_rc.borrow().id();
-                        return self.set_focus(root, Some(p_id), FocusReason::Mouse);
-                    }
-                    parent_weak = parent_rc.borrow().parent_widget();
-                } else {
-                    break;
-                }
+        // `giveFocusAccordingToFocusPolicy` (qapplication.cpp): from the clicked widget up to its
+        // window, the first enabled widget that accepts click focus takes it.
+        let mut current = Some(Rc::clone(hit_widget));
+        while let Some(widget) = current {
+            let (id, enabled, accepts_click, parent) = {
+                let w = widget.borrow();
+                (w.id(), w.is_enabled(), w.focus_policy().accepts_click(), w.parent_widget())
+            };
+            if enabled && accepts_click {
+                return self.set_focus(root, Some(id), FocusReason::Mouse);
             }
-            false
+            current = parent.and_then(|p| p.upgrade());
         }
+        false
     }
 }

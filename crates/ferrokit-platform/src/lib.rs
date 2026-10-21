@@ -2,6 +2,16 @@
 //! ferrokit-platform: Platform abstraction and window integration.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+/// Real user id of this process (the `/run/user/<uid>` runtime directory, D-Bus `AUTH EXTERNAL`).
+#[cfg(target_os = "linux")]
+pub(crate) fn current_uid() -> u32 {
+    extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: getuid takes no arguments, cannot fail and touches no memory.
+    unsafe { getuid() }
+}
+
 pub mod dialogs;
 pub use dialogs::{
     platform_dialogs, DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs,
@@ -75,7 +85,7 @@ pub use menu::{
 #[cfg(windows)]
 pub use menu::{Win32Menu, Win32MenuItem};
 pub use objc_runtime::{
-    objc_get_class, sel_register_name, CGFloat, CGPoint, CGRect, CGSize, Class, Id,
+    objc_get_class, sel_register_name, ActionTarget, CGFloat, CGPoint, CGRect, CGSize, Class, Id,
     MockObjcRuntime, NSInteger, NSUInteger, ObjcMsg, Sel, BOOL, NO, NS_CONTROL_STATE_VALUE_MIXED,
     NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON, NS_FLOATING_WINDOW_LEVEL,
     NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL,

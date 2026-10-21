@@ -299,7 +299,8 @@ mod objc {
     }
 
     pub fn rect(receiver: Id, sel: &str) -> CGRect {
-        ObjcMsg::send_rect_return(receiver, Sel::register(sel))
+        // SAFETY: callers pass a live object and a selector returning a `CGRect` (`frame`).
+        unsafe { ObjcMsg::send_rect_return(receiver, Sel::register(sel)) }
     }
 
     /// Objects of `array` (an NSArray).

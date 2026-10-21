@@ -277,9 +277,9 @@ pub mod cocoa_cursor {
                 CursorShape::Cross => "crosshairCursor",
                 _ => "arrowCursor",
             };
-            let cursor = ObjcMsg::send_class_0(cursor_class, Sel::register(sel_name));
+            let cursor = unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register(sel_name)) };
             if !cursor.is_nil() {
-                ObjcMsg::send_0(cursor, Sel::register("set"));
+                unsafe { ObjcMsg::send_0(cursor, Sel::register("set")) };
             }
         }
     }

@@ -156,7 +156,7 @@ fn generic_window_is_active_between_focus_in_and_focus_out() {
 
 #[test]
 fn x11_window_is_active_between_focus_in_and_focus_out() {
-    let mut w = X11NativeWindow::new("x", rect(), WindowFlags::NORMAL).unwrap();
+    let mut w = X11NativeWindow::new_offscreen("x", rect(), WindowFlags::NORMAL).unwrap();
     w.show();
     assert!(!w.is_active());
 
@@ -174,7 +174,7 @@ fn x11_window_is_active_between_focus_in_and_focus_out() {
 
 #[test]
 fn wayland_window_is_active_between_keyboard_enter_and_leave() {
-    let mut w = WaylandNativeWindow::new("w", rect(), WindowFlags::NORMAL).unwrap();
+    let mut w = WaylandNativeWindow::new_offscreen("w", rect(), WindowFlags::NORMAL).unwrap();
     w.show();
     assert!(!w.is_active());
 
@@ -193,7 +193,7 @@ fn simulated_focus_events_reach_the_handler_as_focus_in_and_out() {
     use std::sync::{Arc, Mutex};
     let log = Arc::new(Mutex::new(Vec::<&'static str>::new()));
     let sink = Arc::clone(&log);
-    let mut w = WaylandNativeWindow::new("w", rect(), WindowFlags::NORMAL).unwrap();
+    let mut w = WaylandNativeWindow::new_offscreen("w", rect(), WindowFlags::NORMAL).unwrap();
     w.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |e| match e {
         WindowSystemEvent::FocusIn => sink.lock().unwrap().push("in"),
         WindowSystemEvent::FocusOut => sink.lock().unwrap().push("out"),
@@ -241,11 +241,11 @@ fn a_tooltip_window_is_not_activated_by_being_shown_on_any_backend() {
     g.poll_events();
     assert!(!g.is_active());
 
-    let x = X11NativeWindow::new("x", rect(), WindowFlags::TOOLTIP).unwrap();
+    let x = X11NativeWindow::new_offscreen("x", rect(), WindowFlags::TOOLTIP).unwrap();
     x.show();
     assert!(!x.is_active());
 
-    let w = WaylandNativeWindow::new("w", rect(), WindowFlags::TOOLTIP).unwrap();
+    let w = WaylandNativeWindow::new_offscreen("w", rect(), WindowFlags::TOOLTIP).unwrap();
     w.show();
     assert!(!w.is_active());
 }

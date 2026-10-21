@@ -25,6 +25,12 @@ thread_local! {
 }
 
 thread_local! {
+    /// Tasks that found their target borrowed and try again at the next `flush` call, not in the
+    /// same one (a nested flush would spin on a widget that stays borrowed).
+    static RETRY_QUEUE: RefCell<Vec<WidgetCommand>> = const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
     /// Widgets whose `DeferredDelete` is posted, each with the parent it leaves on delivery.
     static PENDING_DELETES: RefCell<Vec<PendingDelete>> = const { RefCell::new(Vec::new()) };
 }
@@ -153,6 +159,8 @@ impl WidgetCommandQueue {
     /// Must be invoked when no widget in the hierarchy is borrowed mutably.
     /// Multiple `RequestLayout` commands on the same container are deduplicated.
     pub fn flush() {
+        let retries = RETRY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        COMMAND_QUEUE.with(|q| q.borrow_mut().extend(retries));
         while COMMAND_QUEUE.with(|q| !q.borrow().is_empty()) {
             let commands = COMMAND_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
             if commands.is_empty() {
@@ -161,38 +169,62 @@ impl WidgetCommandQueue {
 
             let mut layout_targets: Vec<WidgetRef> = Vec::new();
             let mut seen_layout_ids = HashSet::new();
+            let mut kept = Vec::new();
+            let mut progress = false;
 
             for cmd in commands {
                 match cmd {
                     WidgetCommand::RequestLayout(weak) => {
                         if let Some(target) = weak.upgrade() {
-                            let id = target.borrow().id();
+                            // A borrowed target (a nested dispatch from its own handler) keeps its
+                            // request for the next flush, as `flush_layouts` does.
+                            let Ok(widget) = target.try_borrow() else {
+                                kept.push(WidgetCommand::RequestLayout(weak));
+                                continue;
+                            };
+                            let id = widget.id();
+                            drop(widget);
                             if seen_layout_ids.insert(id) {
                                 layout_targets.push(target);
                             }
                         }
                     }
                     WidgetCommand::Task(task) => {
+                        progress = true;
                         task();
                     }
                 }
+            }
+            progress |= !layout_targets.is_empty();
+            let some_kept = !kept.is_empty();
+            if some_kept {
+                COMMAND_QUEUE.with(|q| {
+                    let mut queue = q.borrow_mut();
+                    kept.append(&mut queue);
+                    *queue = kept;
+                });
             }
 
             for target in layout_targets {
                 crate::layout_scheduler::LayoutScheduler::invalidate(&target);
             }
             crate::layout_scheduler::LayoutScheduler::activate_pending();
+            if some_kept && !progress {
+                // Only borrowed targets are left; they wait for the next flush.
+                break;
+            }
         }
     }
 
     /// Returns the number of currently pending commands in this thread.
     pub fn pending_count() -> usize {
-        COMMAND_QUEUE.with(|q| q.borrow().len())
+        COMMAND_QUEUE.with(|q| q.borrow().len()) + RETRY_QUEUE.with(|q| q.borrow().len())
     }
 
     /// Clears any pending commands (useful for test resets).
     pub fn clear() {
         COMMAND_QUEUE.with(|q| q.borrow_mut().clear());
+        RETRY_QUEUE.with(|q| q.borrow_mut().clear());
     }
 }
 
@@ -210,20 +242,29 @@ fn on_deferred_delete(id: ObjectId) {
     }
 }
 
-/// Removes `id` from `parent`'s children and relayouts `parent`. If `parent` is borrowed, the
-/// removal is queued as a task and runs at the next flush.
-fn remove_child_from(parent: &WidgetRef, id: ObjectId) {
-    let Ok(mut w) = parent.try_borrow_mut() else {
+/// Removes `id` from `parent`'s children and relayouts `parent`. If `parent`, or a child that
+/// cannot be told from `id`, is borrowed, the removal is retried at the next flush.
+pub fn remove_child_from(parent: &WidgetRef, id: ObjectId) {
+    let retry = |parent: &WidgetRef| {
         let weak = Rc::downgrade(parent);
-        WidgetCommandQueue::post_task(move || {
+        let task = move || {
             if let Some(parent) = weak.upgrade() {
                 remove_child_from(&parent, id);
             }
-        });
+        };
+        RETRY_QUEUE.with(|q| q.borrow_mut().push(WidgetCommand::Task(Box::new(task))));
+    };
+    let Ok(mut w) = parent.try_borrow_mut() else {
+        retry(parent);
         return;
     };
     w.remove_child(id);
+    // A child on the stack could not be told from the one to remove: try again at the next flush.
+    let incomplete = w.widget_base().removal_incomplete.replace(false);
     drop(w);
+    if incomplete {
+        retry(parent);
+    }
     crate::layout_scheduler::LayoutScheduler::invalidate(parent);
     crate::layout_scheduler::LayoutScheduler::activate_pending();
 }
