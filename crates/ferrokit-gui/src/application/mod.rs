@@ -274,9 +274,16 @@ impl GuiApplication {
     }
 
     pub fn set_application_state(&self, state: ApplicationState) {
-        let mut guard = GLOBAL_APP_STATE.write().unwrap();
-        if *guard != state {
-            *guard = state;
+        let changed = {
+            let mut guard = GLOBAL_APP_STATE.write().unwrap();
+            if *guard != state {
+                *guard = state;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
             self.application_state_changed.emit(&state);
         }
     }

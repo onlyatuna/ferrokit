@@ -207,40 +207,34 @@ impl BackingStore {
         let w = self.pixmap.physical_width() as i32;
         let h = self.pixmap.physical_height() as i32;
 
-        let dst_x = src_rect.x + phys_dx;
-        let dst_y = src_rect.y + phys_dy;
-
-        if dst_x < 0 || dst_y < 0 || dst_x + src_rect.width > w || dst_y + src_rect.height > h {
-            return false;
+        let left = src_rect.x.max(0).max(-phys_dx);
+        let top = src_rect.y.max(0).max(-phys_dy);
+        let right = (src_rect.x + src_rect.width).min(w).min(w - phys_dx);
+        let bottom = (src_rect.y + src_rect.height).min(h).min(h - phys_dy);
+        if left >= right || top >= bottom {
+            return true;
         }
-
-        // Clone current buffer to blit shifted region
-        let old_pixmap = self.pixmap.clone();
-        let src_slice = old_pixmap.data();
+        let width = right - left;
+        let height = bottom - top;
+        let dst_x = left + phys_dx;
+        let dst_y = top + phys_dy;
         let dst_slice = self.pixmap.data_mut();
-
         let bpp = 4;
         let stride = w as usize * bpp;
 
         if phys_dy > 0 {
-            // Copy bottom to top
-            for row in (0..src_rect.height).rev() {
-                let sy = (src_rect.y + row) as usize;
-                let dy_row = (dst_y + row) as usize;
-                let s_start = sy * stride + (src_rect.x as usize) * bpp;
-                let d_start = dy_row * stride + (dst_x as usize) * bpp;
-                let len = src_rect.width as usize * bpp;
-                dst_slice[d_start..d_start + len].copy_from_slice(&src_slice[s_start..s_start + len]);
+            for row in (0..height).rev() {
+                let s_start = ((top + row) as usize) * stride + (left as usize) * bpp;
+                let d_start = ((dst_y + row) as usize) * stride + (dst_x as usize) * bpp;
+                let len = width as usize * bpp;
+                dst_slice.copy_within(s_start..s_start + len, d_start);
             }
         } else {
-            // Copy top to bottom
-            for row in 0..src_rect.height {
-                let sy = (src_rect.y + row) as usize;
-                let dy_row = (dst_y + row) as usize;
-                let s_start = sy * stride + (src_rect.x as usize) * bpp;
-                let d_start = dy_row * stride + (dst_x as usize) * bpp;
-                let len = src_rect.width as usize * bpp;
-                dst_slice[d_start..d_start + len].copy_from_slice(&src_slice[s_start..s_start + len]);
+            for row in 0..height {
+                let s_start = ((top + row) as usize) * stride + (left as usize) * bpp;
+                let d_start = ((dst_y + row) as usize) * stride + (dst_x as usize) * bpp;
+                let len = width as usize * bpp;
+                dst_slice.copy_within(s_start..s_start + len, d_start);
             }
         }
 
