@@ -253,13 +253,22 @@ pub struct DbusConnection {
     stream: Option<UnixStream>,
 }
 
-static DBUS_SOCKET_FD_COUNTER: AtomicU32 = AtomicU32::new(100);
 
 impl DbusConnection {
     pub fn connect_session_bus() -> Result<Self, &'static str> {
         let address = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|_| {
-            let uid = std::env::var("UID").unwrap_or_else(|_| "1000".to_string());
-            format!("unix:path=/run/user/{}/bus", uid)
+            #[cfg(target_os = "linux")]
+            {
+                extern "C" {
+                    fn getuid() -> u32;
+                }
+                let uid = unsafe { getuid() };
+                format!("unix:path=/run/user/{}/bus", uid)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                String::new()
+            }
         });
         #[cfg(target_os = "linux")]
         let (real_stream, socket_fd) = {
@@ -270,23 +279,18 @@ impl DbusConnection {
                 &address
             };
 
-            match UnixStream::connect(socket_path) {
-                Ok(s) => {
-                    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(200)));
-                    let fd = s.as_raw_fd() as SocketDescriptor;
-                    (Some(s), fd)
-                }
-                Err(_) => {
-                    let fd =
-                        DBUS_SOCKET_FD_COUNTER.fetch_add(1, Ordering::SeqCst) as SocketDescriptor;
-                    (None, fd)
-                }
-            }
+            let s = UnixStream::connect(socket_path)
+                .map_err(|_| "Failed to connect to the D-Bus session bus")?;
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+            let fd = s.as_raw_fd() as SocketDescriptor;
+            (Some(s), fd)
         };
 
         #[cfg(not(target_os = "linux"))]
-        let socket_fd = DBUS_SOCKET_FD_COUNTER.fetch_add(1, Ordering::SeqCst) as SocketDescriptor;
+        return Err("D-Bus session bus is unavailable on this platform");
 
+        #[cfg(target_os = "linux")]
+        {
         let mut conn = Self {
             address,
             unique_name: String::new(),
@@ -308,6 +312,7 @@ impl DbusConnection {
         conn.hello()?;
 
         Ok(conn)
+        }
     }
 
     fn perform_sasl_handshake(&mut self) -> Result<(), &'static str> {
@@ -503,8 +508,16 @@ impl DbusConnection {
         &self,
         dispatcher: &mut dyn EventDispatcher,
     ) -> Arc<SocketNotifier> {
-        let notifier = Arc::new(SocketNotifier::new(self.socket_fd, SocketEvent::Read));
-        dispatcher.register_socket_notifier(&notifier);
-        notifier
+        #[cfg(target_os = "linux")]
+        {
+            let notifier = Arc::new(SocketNotifier::new(self.socket_fd, SocketEvent::Read));
+            dispatcher.register_socket_notifier(&notifier);
+            notifier
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = dispatcher;
+            Arc::new(SocketNotifier::new(-1, SocketEvent::Read))
+        }
     }
 }

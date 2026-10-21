@@ -219,20 +219,18 @@ impl X11NativeWindow {
         let _socket_path = format!("/tmp/.X11-unix/X{}", display_num);
 
         #[cfg(target_os = "linux")]
-        let (real_stream, connection_fd) = match UnixStream::connect(&_socket_path) {
-            Ok(s) => {
-                let _ = s.set_nonblocking(true);
-                let fd = s.as_raw_fd() as SocketDescriptor;
-                (Some(s), fd)
-            }
-            Err(_) => {
-                let fd = (xid % 1000 + 10) as SocketDescriptor;
-                (None, fd)
-            }
+        let (real_stream, connection_fd) = {
+            let s = UnixStream::connect(&_socket_path)
+                .map_err(|_| "Failed to connect to the X11 display")?;
+            let _ = s.set_nonblocking(true);
+            let fd = s.as_raw_fd() as SocketDescriptor;
+            (Some(s), fd)
         };
 
         #[cfg(not(target_os = "linux"))]
-        let connection_fd = (xid % 1000 + 10) as SocketDescriptor;
+        let (real_stream, connection_fd) = (None::<()>, -1);
+        #[cfg(not(target_os = "linux"))]
+        return Err("X11 windows are unavailable on this platform");
         let stays_on_top =
             flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP);
         let click_through = flags.contains(WindowFlags::CLICK_THROUGH);
@@ -308,9 +306,14 @@ impl X11NativeWindow {
     }
 
     pub fn bind_event_dispatcher(&mut self, dispatcher: &mut dyn EventDispatcher) {
-        let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
-        dispatcher.register_socket_notifier(&notifier);
-        self.socket_notifier = Some(notifier);
+        #[cfg(target_os = "linux")]
+        {
+            let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
+            dispatcher.register_socket_notifier(&notifier);
+            self.socket_notifier = Some(notifier);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = dispatcher;
     }
 
     pub fn queue_x11_event(&self, event: X11Event) {
