@@ -54,12 +54,13 @@ fn content_returns_to_the_origin_when_the_bar_is_no_longer_needed() {
 }
 
 #[test]
-fn an_always_off_bar_keeps_the_content_at_the_origin() {
+fn an_always_off_bar_keeps_its_range_and_the_wheel_still_scrolls() {
     let (a, content) = area(110, 100, 100, 300);
     with_area(&a, |s| s.set_scroll_position(0, 50));
     with_area(&a, |s| s.set_vertical_scrollbar_policy(ScrollBarPolicy::AlwaysOff));
-    assert_eq!(content.borrow().geometry().y, 0);
-    assert!(!wheel(&a, 0, -120), "nothing to scroll: the parent gets the wheel");
+    assert_eq!(content.borrow().geometry().y, -50, "the position survives hiding the bar");
+    assert!(wheel(&a, 0, -120), "QScrollArea with a hidden bar still scrolls by wheel");
+    assert_eq!(with_area(&a, |s| s.scroll_position()).y, 53);
 }
 
 #[test]

@@ -725,6 +725,9 @@ pub struct WidgetBase {
     /// The deferral epoch of `LayoutScheduler` this tree root last scanned for layouts left dirty
     /// (`LayoutScheduler::flush_deferred`).
     pub(crate) layout_epoch: Cell<u64>,
+    /// The last `remove_child` met a child that is borrowed, so it could not tell whether that
+    /// child was the one to remove. The caller that has the parent handle retries later.
+    pub(crate) removal_incomplete: Cell<bool>,
 }
 
 impl WidgetBase {
@@ -758,6 +761,7 @@ impl WidgetBase {
             explicit_min: Cell::new((false, false)),
             explicit_max: Cell::new((false, false)),
             layout_epoch: Cell::new(0),
+            removal_incomplete: Cell::new(false),
         }
     }
     /// Unique object identifier.
@@ -1188,8 +1192,18 @@ impl WidgetBase {
         self.children.get_mut().push(child);
     }
 
+    /// Removes the child with `child_id`. A child that is borrowed (its own handler is running)
+    /// cannot be identified and stays; `removal_incomplete` then tells the caller to retry.
     pub fn remove_child(&mut self, child_id: ObjectId) {
-        self.children.get_mut().retain(|c| c.try_borrow().map_or(true, |w| w.id() != child_id));
+        let mut incomplete = false;
+        self.children.get_mut().retain(|c| match c.try_borrow() {
+            Ok(w) => w.id() != child_id,
+            Err(_) => {
+                incomplete = true;
+                true
+            }
+        });
+        self.removal_incomplete.set(incomplete);
     }
 }
 
@@ -1525,11 +1539,7 @@ impl Widget for EmptyWidget {
     }
 
     fn remove_child(&mut self, child_id: ObjectId) {
-        // A child that is borrowed (its own handler removes it) cannot be identified: it stays.
-        self.base
-            .children
-            .get_mut()
-            .retain(|c| c.try_borrow().map_or(true, |w| w.id() != child_id));
+        self.base.remove_child(child_id);
         self.update();
     }
 

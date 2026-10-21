@@ -615,6 +615,10 @@ impl ScrollArea {
             let max_v = (content_size.height - view_h).max(0);
             self.v_scrollbar.set_range(0, max_v);
             self.v_scrollbar.set_page_step(view_h);
+        } else if self.v_policy == ScrollBarPolicy::AlwaysOff {
+            // Qt keeps the range of a bar that is switched off; the wheel still scrolls.
+            self.v_scrollbar.set_range(0, (content_size.height - view_h).max(0));
+            self.v_scrollbar.set_page_step(view_h);
         } else {
             self.v_scrollbar.set_range(0, 0);
         }
@@ -625,6 +629,9 @@ impl ScrollArea {
                 .set_geometry(Rect::new(0, geom.height - bar_size, view_w, bar_size));
             let max_h = (content_size.width - view_w).max(0);
             self.h_scrollbar.set_range(0, max_h);
+            self.h_scrollbar.set_page_step(view_w);
+        } else if self.h_policy == ScrollBarPolicy::AlwaysOff {
+            self.h_scrollbar.set_range(0, (content_size.width - view_w).max(0));
             self.h_scrollbar.set_page_step(view_w);
         } else {
             self.h_scrollbar.set_range(0, 0);

@@ -735,6 +735,8 @@ impl Menu {
             SetForegroundWindow(hwnd);
             SetCapture(hwnd);
         }
+        // Released when this function ends, however it ends (also before the loop starts).
+        let capture = CaptureGuard;
 
         // Losing the active window (Alt+Tab, another application) dismisses a popup. That
         // arrives as a sent message, which `GetMessageW` handles without returning, so the
@@ -755,7 +757,6 @@ impl Menu {
         let mut quit = None;
         // The cursor position is a native desktop position: it maps through the screen it is on.
         unsafe {
-            let capture = CaptureGuard;
             let mut msg: MSG = std::mem::zeroed();
             // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
             // gone, so the loop that was running when the menu opened still quits; -1 is an

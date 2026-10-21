@@ -45,3 +45,36 @@ fn set_geometry_calls_the_root_resize_handler_once() {
     assert_eq!(seen.borrow().len(), 1, "{:?}", seen.borrow());
     assert_eq!(seen.borrow()[0].0, Size::new(320, 160));
 }
+
+#[test]
+fn a_new_root_widget_learns_its_initial_size() {
+    let _g = headless::install();
+    let mut win = Window::new("r", Rect::new(0, 0, 200, 100), WindowFlags::FRAMELESS).unwrap();
+    let seen: Rc<RefCell<Vec<(Size, Size)>>> = Rc::default();
+    let log = Rc::clone(&seen);
+    let root = EmptyWidget::with_geometry(Rect::new(0, 0, 50, 50));
+    root.set_resize_handler(move |new, old| log.borrow_mut().push((new, old)));
+
+    win.set_root_widget(Rc::new(RefCell::new(Box::new(root))));
+
+    assert_eq!(*seen.borrow(), [(Size::new(200, 100), Size::new(50, 50))]);
+}
+
+#[test]
+fn a_programmatic_window_resize_event_reaches_the_root_once() {
+    use ferrokit_core::event::{Event, EventKind};
+    use ferrokit_core::object::QObject;
+    let _g = headless::install();
+    let mut win = Window::new("r", Rect::new(0, 0, 200, 100), WindowFlags::FRAMELESS).unwrap();
+    let seen = watch_root(&win);
+
+    let mut ev = Event::new_spontaneous(EventKind::Resize {
+        width: 260,
+        height: 120,
+        old_width: 200,
+        old_height: 100,
+    });
+    assert!(win.event(&mut ev));
+
+    assert_eq!(*seen.borrow(), [(Size::new(260, 120), Size::new(200, 100))]);
+}

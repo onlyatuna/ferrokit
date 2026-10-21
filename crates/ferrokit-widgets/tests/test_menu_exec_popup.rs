@@ -10,13 +10,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, PostQuitMessage, PostThreadMessageW, MSG, WM_KEYDOWN,
+    GetMessageW, PeekMessageW, PostQuitMessage, PostThreadMessageW, MSG, PM_NOREMOVE, WM_KEYDOWN,
 };
+
+/// `PostThreadMessageW` needs the thread's message queue to exist; a peek creates it.
+fn ensure_queue() {
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
+}
 
 const VK_DOWN: usize = 0x28;
 const VK_RETURN: usize = 0x0D;
 
 fn post_key(vk: usize) {
+    ensure_queue();
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, vk, 0) };
 }
 
@@ -48,6 +55,7 @@ fn exec_popup_triggers_the_action_it_returns() {
 fn a_quit_posted_while_the_menu_is_open_survives_it() {
     let menu = Menu::new_ref("m");
     menu.borrow_mut().add_new_action("Go");
+    ensure_queue();
     unsafe { PostQuitMessage(7) };
 
     let chosen = menu.borrow_mut().exec_popup(Point::new(50, 50));

@@ -781,11 +781,14 @@ impl Window {
         std::rc::Rc::clone(&self.root_widget)
     }
     pub fn set_root_widget(&mut self, widget: WidgetRef) {
-        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
+        // The size first: a widget without a window id gets its `Resize` from `set_geometry`
+        // (a window root gets it from `Window`, see `EmptyWidget::set_geometry`), so the new root
+        // learns its initial size.
         let geom = self.geometry.get();
         widget
             .borrow_mut()
             .set_geometry(Rect::new(0, 0, geom.width, geom.height));
+        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
         *self.render_state.root.borrow_mut() = widget.clone();
         self.root_widget = widget;
     }
@@ -1314,14 +1317,24 @@ impl QObject for Window {
             EventKind::Resize { width, height, .. } => {
                 self.render_state.bump(|s| s.event_resize_count += 1);
                 let mut cur = self.geometry.get();
+                let old_size = Size::new(cur.width, cur.height);
                 cur.width = *width;
                 cur.height = *height;
                 self.geometry.set(cur);
 
-                // 1. Root geometry
+                // 1. Root geometry, then its one `Resize` (the root's `set_geometry` sends none).
                 self.root_widget
                     .borrow_mut()
                     .set_geometry(Rect::new(0, 0, *width, *height));
+                if old_size != Size::new(*width, *height) {
+                    let mut root_resize = Event::new_spontaneous(EventKind::Resize {
+                        width: *width,
+                        height: *height,
+                        old_width: old_size.width,
+                        old_height: old_size.height,
+                    });
+                    self.root_widget.borrow_mut().event(&mut root_resize);
+                }
 
                 // 2. Resize callback
                 if let Some(cb) = self.resize_cb.borrow().as_ref() {
