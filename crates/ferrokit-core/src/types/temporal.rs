@@ -92,8 +92,10 @@ impl Date {
     }
 
     /// Returns the date `days` days later (earlier if negative) (`QDate::addDays`).
+    ///
+    /// Saturates at the year range of `i32` instead of overflowing.
     pub fn add_days(&self, days: i64) -> Self {
-        Self::from_epoch_days(self.to_epoch_days() + days)
+        Self::from_epoch_days(self.to_epoch_days().saturating_add(days))
     }
 
     /// Adds calendar months, clamping the day to the target month's length (`QDate::addMonths`).
@@ -106,8 +108,10 @@ impl Date {
     }
 
     /// Adds calendar years; Feb 29 maps to Feb 28 in non-leap years (`QDate::addYears`).
+    ///
+    /// The year saturates at the `i32` range.
     pub fn add_years(&self, years: i32) -> Self {
-        let year = self.year + years;
+        let year = self.year.saturating_add(years);
         let day = self.day.min(Self::days_in_month_of(year, self.month));
         Self::new(year, self.month, day)
     }
@@ -180,7 +184,10 @@ impl Time {
 
     /// Returns the number of milliseconds since the start of the day (00:00:00.000).
     pub fn msecs_since_start_of_day(&self) -> u32 {
-        ((self.hour * 60 + self.minute) * 60 + self.second) * 1000 + self.millisecond
+        // Fields are public, so out-of-range values must saturate instead of overflowing.
+        let total = ((self.hour as u64 * 60 + self.minute as u64) * 60 + self.second as u64) * 1000
+            + self.millisecond as u64;
+        total.min(u32::MAX as u64) as u32
     }
 
     /// Creates a `Time` from milliseconds since the start of the day.
@@ -202,7 +209,8 @@ impl Time {
 
     /// Returns the time `ms` milliseconds later, wrapping around midnight (`QTime::addMSecs`).
     pub fn add_msecs(&self, ms: i64) -> Self {
-        let total = (self.msecs_since_start_of_day() as i64 + ms).rem_euclid(86_400_000);
+        let base = (self.msecs_since_start_of_day() % 86_400_000) as i64;
+        let total = (base + ms % 86_400_000).rem_euclid(86_400_000);
         Self::from_msecs_since_start_of_day(total as u32)
     }
 
@@ -286,8 +294,10 @@ impl DateTime {
     }
 
     /// Returns this date-time shifted by `ms` milliseconds (`QDateTime::addMSecs`).
+    ///
+    /// Saturates at the `i64` millisecond range instead of overflowing.
     pub fn add_msecs(&self, ms: i64) -> Self {
-        Self::from_timestamp_ms(self.timestamp_ms + ms)
+        Self::from_timestamp_ms(self.timestamp_ms.saturating_add(ms))
     }
 
     /// Returns this date-time shifted by `secs` seconds (`QDateTime::addSecs`).
@@ -311,8 +321,10 @@ impl DateTime {
     }
 
     /// Milliseconds from this date-time to `other` (`QDateTime::msecsTo`).
+    ///
+    /// Saturates at `i64::MIN`/`i64::MAX` instead of overflowing.
     pub fn msecs_to(&self, other: &DateTime) -> i64 {
-        other.timestamp_ms - self.timestamp_ms
+        other.timestamp_ms.saturating_sub(self.timestamp_ms)
     }
 
     /// Whole seconds from this date-time to `other` (`QDateTime::secsTo`).
@@ -355,8 +367,12 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// Proleptic Gregorian civil date for days since 1970-01-01 (inverse of [`days_from_civil`]).
+///
+/// Saturates at the `i32` year range.
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
+    // Clamp so the arithmetic below cannot overflow and the year fits in i32.
+    const MAX_DAYS: i64 = (i32::MAX as i64) * 366;
+    let z = days.clamp(-MAX_DAYS, MAX_DAYS) + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -365,12 +381,14 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let mp = (5 * doy + 2) / 153;
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let year = if m <= 2 { y + 1 } else { y } as i32;
+    let year = (if m <= 2 { y + 1 } else { y }).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     (year, m, d)
 }
 
 fn calculate_timestamp_ms(date: &Date, time: &Time) -> i64 {
-    date.to_epoch_days() * 86_400_000 + time.msecs_since_start_of_day() as i64
+    date.to_epoch_days()
+        .saturating_mul(86_400_000)
+        .saturating_add(time.msecs_since_start_of_day() as i64)
 }
 
 fn timestamp_ms_to_date_time(timestamp_ms: i64) -> (Date, Time) {

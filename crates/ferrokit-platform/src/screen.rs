@@ -35,6 +35,64 @@ pub fn native_cursor_to_logical(native: Point) -> Point {
     crate::high_dpi::from_native_global_point(native, origin, dpr)
 }
 
+/// Logical desktop point to the physical desktop point native APIs (`TrackPopupMenu`,
+/// `SetCursorPos`, ...) take, through the screen that contains it
+/// (`QHighDpi::toNativePixels(pos, screen)`); the primary screen when none does. The inverse of
+/// [`native_cursor_to_logical`].
+pub fn logical_point_to_native(logical: Point) -> Point {
+    let platform = crate::integration::platform();
+    let primary = platform.primary_screen();
+    let mut screens: Vec<(Rect, f32)> = vec![(primary.geometry(), primary.device_pixel_ratio())];
+    screens.extend(
+        platform
+            .screens()
+            .iter()
+            .map(|s| (s.geometry(), s.device_pixel_ratio())),
+    );
+    logical_to_native_on(&screens, logical)
+}
+
+/// `logical_point_to_native` over explicit `(logical geometry, ratio)` screens; the first entry is
+/// the primary screen, used when no screen contains the point.
+fn logical_to_native_on(screens: &[(Rect, f32)], logical: Point) -> Point {
+    let (g, dpr) = screens
+        .iter()
+        .skip(1)
+        .find(|(g, _)| g.contains(logical))
+        .or_else(|| screens.first())
+        .copied()
+        .unwrap_or((Rect::new(0, 0, 0, 0), 1.0));
+    crate::high_dpi::to_native_global_point(logical, Point::new(g.x, g.y), dpr)
+}
+
+#[cfg(test)]
+mod logical_to_native_tests {
+    use super::*;
+
+    const PRIMARY_100: (Rect, f32) = (Rect { x: 0, y: 0, width: 1920, height: 1080 }, 1.0);
+    // Native top-left (-2880, 0), logical (-2880, 0, 1920, 1080), ratio 1.5.
+    const LEFT_150: (Rect, f32) = (Rect { x: -2880, y: 0, width: 1920, height: 1080 }, 1.5);
+
+    #[test]
+    fn a_point_on_a_scaled_secondary_screen_becomes_physical_pixels() {
+        let screens = [PRIMARY_100, LEFT_150];
+        // Inverse of `native_cursor_to_logical`: (-1440, 300) native <-> (-1920, 200) logical.
+        assert_eq!(
+            logical_to_native_on(&screens, Point::new(-1920, 200)),
+            Point::new(-1440, 300)
+        );
+    }
+
+    #[test]
+    fn a_point_off_every_screen_uses_the_primary_ratio() {
+        let screens = [(Rect { x: 0, y: 0, width: 1920, height: 1080 }, 1.5), LEFT_150];
+        assert_eq!(
+            logical_to_native_on(&screens, Point::new(-300, -300)),
+            Point::new(-450, -450)
+        );
+    }
+}
+
 #[cfg(windows)]
 pub mod win32_screen {
     use super::*;
