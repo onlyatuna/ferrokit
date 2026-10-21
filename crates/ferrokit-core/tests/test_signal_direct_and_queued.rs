@@ -268,19 +268,17 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     );
 }
 
-// `connect_with_type` stores no receiver thread, so a Queued or BlockingQueued
-// connection made through it could only run synchronously. Qt never does that
-// (qobject.cpp:4333-4350, 4354-4358). Reject visibly instead.
+// Queued connection through the no-receiver API targets its calling thread.
 #[test]
-#[should_panic(expected = "connect_queued")]
-fn connect_with_type_queued_is_deferred_or_rejected() {
+fn connect_with_type_queued_targets_current_thread() {
     let signal: Signal<i32> = Signal::new();
-    signal.connect_with_type(ConnectionType::Queued, |_| {});
+    let id = signal.connect_with_type(ConnectionType::Queued, |_| {});
+    assert!(signal.disconnect(id));
 }
 
 #[test]
-#[should_panic(expected = "connect_blocking_queued")]
-fn connect_with_type_blocking_queued_is_rejected() {
+fn connect_with_type_blocking_queued_routes_without_panicking() {
     let signal: Signal<i32> = Signal::new();
-    signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
+    let id = signal.connect_with_type(ConnectionType::BlockingQueued, |_| {});
+    assert!(signal.disconnect(id));
 }
