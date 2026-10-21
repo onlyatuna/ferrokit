@@ -257,12 +257,7 @@ fn dispatch_thread_timer_impl(
 
         // Python/PySide6 contains a raising timer slot and keeps the loop and other timers running.
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            if matches!(
-                crate::event_loop::deliver_timer_event(receiver, raw_id as u64),
-                crate::event_loop::TimerDelivery::NotDeliverable
-            ) {
-                crate::timer::dispatch_single_shot_callback(receiver);
-            }
+            crate::timer::send_tick(receiver, raw_id as u64);
         }));
     }
     rearmed_elapse.get()
@@ -272,8 +267,6 @@ static REGISTER_CLASS_ONCE: Once = Once::new();
 
 fn ensure_window_class_registered() {
     REGISTER_CLASS_ONCE.call_once(|| unsafe {
-        windows_sys::Win32::Media::timeBeginPeriod(1);
-
         let h_instance = GetModuleHandleW(ptr::null());
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -351,6 +344,11 @@ impl Win32EventDispatcher {
                 .borrow_mut()
                 .insert(internal_hwnd as usize, Arc::clone(&wakeup_pending));
         });
+
+        // Keeps the 1 ms timer resolution while this dispatcher lives; `Drop` ends the period.
+        unsafe {
+            windows_sys::Win32::Media::timeBeginPeriod(1);
+        }
 
         Self {
             internal_hwnd,
@@ -572,12 +570,7 @@ impl Win32EventDispatcher {
                 remove_posted_timer_event(self.internal_hwnd, raw_id);
             }
 
-            if matches!(
-                crate::event_loop::deliver_timer_event(receiver, raw_id as u64),
-                crate::event_loop::TimerDelivery::NotDeliverable
-            ) {
-                crate::timer::dispatch_single_shot_callback(receiver);
-            }
+            crate::timer::send_tick(receiver, raw_id as u64);
 
             if !single_shot {
                 let rearm_now_ms = post_clock();
@@ -696,6 +689,10 @@ impl Drop for Win32EventDispatcher {
                 flags.borrow_mut().remove(&key);
             });
             crate::timer::precise::disarm_all_for(self.internal_hwnd);
+            // Pairs the `timeBeginPeriod(1)` of `new`.
+            unsafe {
+                windows_sys::Win32::Media::timeEndPeriod(1);
+            }
             unsafe {
                 DestroyWindow(self.internal_hwnd);
             }

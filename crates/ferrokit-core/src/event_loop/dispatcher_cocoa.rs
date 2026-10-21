@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 use crate::event_loop::dispatcher::{DispatchResult, EventDispatcher, EventDispatcherHandle};
-use crate::poison::lock_unpoisoned;
 use crate::timer::{TimerEntry, TimerRegistry};
 
 mod ffi {
@@ -494,29 +493,7 @@ impl EventDispatcher for CocoaEventDispatcher {
     fn unregister_timer(&self, _entry: &TimerEntry) {}
 
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
-        let now_ms = crate::timer::current_time_ms();
-        let expired_ids = lock_unpoisoned(registry).expired_timers(now_ms);
-        for id in expired_ids {
-            let Some((receiver, single_shot)) =
-                crate::timer::begin_timer_delivery(registry, id, now_ms)
-            else {
-                continue;
-            };
-
-            if matches!(
-                crate::event_loop::deliver_timer_event(receiver, id.0 as u64),
-                crate::event_loop::TimerDelivery::NotDeliverable
-            ) {
-                crate::timer::dispatch_single_shot_callback(receiver);
-            }
-
-            let mut reg = lock_unpoisoned(registry);
-            if single_shot {
-                reg.unregister(id);
-            } else if let Some(entry) = reg.get_mut(id) {
-                entry.in_timer_event = false;
-            }
-        }
+        crate::timer::deliver_due_timers(registry, crate::timer::current_time_ms(), []);
     }
 }
 
