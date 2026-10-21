@@ -456,7 +456,26 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
 /// the entries so the target thread can re-register them under the same ids (Qt
 /// `QObjectPrivate::moveToThread_helper` timer handling: `unregisterTimers` on the source,
 /// qobject.cpp:1490-1502).
-pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> Vec<TimerEntry> {
+pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> DetachedTimers {
+    // Context-bound single shots move with their context (timers move with the object in Qt).
+    let shots = take_context_single_shots(|ctx| receivers.contains(&ctx));
+    let entries = detach_registered_timers(receivers);
+    DetachedTimers { entries, shots }
+}
+
+/// Timers taken from a moved subtree, to be re-armed on the target thread by [`adopt_timers`].
+pub(crate) struct DetachedTimers {
+    entries: Vec<TimerEntry>,
+    shots: Vec<(ObjectId, u64, SingleShotFn)>,
+}
+
+impl DetachedTimers {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.shots.is_empty()
+    }
+}
+
+fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<TimerEntry> {
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         let ids: Vec<TimerId> = reg
@@ -488,7 +507,15 @@ pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> Vec<TimerEntr
 /// Qt's `registerTimer`. Runs as a `MetaCall` queued to the target after the move. An entry whose
 /// receiver has moved on is forwarded to its current owner; one whose receiver was destroyed is
 /// dropped.
-pub(crate) fn adopt_timers(entries: Vec<TimerEntry>) {
+pub(crate) fn adopt_timers(detached: DetachedTimers) {
+    for (context, interval_ms, callback) in detached.shots {
+        // Armed here, forwarded to the context's current thread, or dropped if it is gone.
+        Timer::single_shot_with_context(interval_ms, context, callback);
+    }
+    adopt_entries(detached.entries);
+}
+
+fn adopt_entries(entries: Vec<TimerEntry>) {
     let current = crate::object::ThreadId::current();
     let mut local = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -498,7 +525,7 @@ pub(crate) fn adopt_timers(entries: Vec<TimerEntry>) {
                 owner,
                 crate::object::ObjectId(0),
                 crate::event::Event::new(crate::event::EventKind::MetaCall(Box::new(move |_| {
-                    adopt_timers(vec![entry])
+                    adopt_entries(vec![entry])
                 }))),
             ),
             None => {}
@@ -623,30 +650,50 @@ pub(crate) fn register_single_shot_callback(
     });
 }
 
+type SingleShotFn = Box<dyn FnOnce() + Send + 'static>;
+
+/// Removes this thread's pending context-bound single shots whose context satisfies `pick`: their
+/// timers go away and their functors are returned as `(context, interval_ms, functor)`.
+fn take_context_single_shots(pick: impl Fn(ObjectId) -> bool) -> Vec<(ObjectId, u64, SingleShotFn)> {
+    let taken: Vec<(ObjectId, ObjectId)> = SINGLE_SHOT_CONTEXTS
+        .try_with(|c| {
+            let mut c = c.borrow_mut();
+            let taken: Vec<_> = c.iter().filter(|(_, &ctx)| pick(ctx)).map(|(&r, &ctx)| (r, ctx)).collect();
+            for (r, _) in &taken {
+                c.remove(r);
+            }
+            taken
+        })
+        .unwrap_or_default();
+    let mut shots = Vec::with_capacity(taken.len());
+    for (receiver, context) in taken {
+        let pending = PENDING_SINGLE_SHOTS.with(|p| {
+            let mut p = p.borrow_mut();
+            let at = p.iter().position(|(r, _)| *r == receiver)?;
+            Some(p.remove(at).1)
+        });
+        let armed = with_thread_timer_context(|ctx| {
+            lock_unpoisoned(&ctx.registry)
+                .entries
+                .values()
+                .find(|e| e.receiver == receiver)
+                .map(|e| e.interval_ms)
+        })
+        .flatten();
+        stop_timers_for_object(receiver);
+        let callback = SINGLE_SHOT_CALLBACKS.with(|c| c.borrow_mut().remove(&receiver));
+        if let Some(callback) = callback {
+            shots.push((context, pending.or(armed).unwrap_or(0), callback));
+        }
+    }
+    shots
+}
+
 /// Cancels this thread's pending context-bound single shots of `context`: the timers go away and
 /// the functors (with their captures) are dropped, as Qt's `QSingleShotTimer` is deleted with its
 /// context (qsingleshottimer.cpp:46-59).
 fn cancel_single_shots_for_context(context: ObjectId) {
-    let receivers: Vec<ObjectId> = SINGLE_SHOT_CONTEXTS
-        .try_with(|c| {
-            let mut c = c.borrow_mut();
-            let receivers: Vec<ObjectId> = c
-                .iter()
-                .filter(|(_, &ctx)| ctx == context)
-                .map(|(&r, _)| r)
-                .collect();
-            for r in &receivers {
-                c.remove(r);
-            }
-            receivers
-        })
-        .unwrap_or_default();
-    for receiver in receivers {
-        PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().retain(|(r, _)| *r != receiver));
-        let callback = SINGLE_SHOT_CALLBACKS.with(|c| c.borrow_mut().remove(&receiver));
-        stop_timers_for_object(receiver);
-        drop(callback);
-    }
+    drop(take_context_single_shots(|ctx| ctx == context));
 }
 
 pub(crate) fn dispatch_single_shot_callback(receiver: ObjectId) -> bool {
@@ -1023,7 +1070,7 @@ impl Timer {
             crate::event_loop::post_event_to_thread(
                 thread_id,
                 context,
-                crate::event::Event::new(crate::event::EventKind::MetaCall(Box::new(move |_| {
+                crate::event::Event::new(crate::event::EventKind::MetaCallNoTarget(Box::new(move || {
                     if interval_ms == 0 {
                         callback();
                     } else {
