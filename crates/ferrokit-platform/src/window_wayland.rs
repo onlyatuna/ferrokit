@@ -111,6 +111,24 @@ static WAYLAND_SURFACE_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1);
 
 impl WaylandNativeWindow {
+    /// Whether the compositor named by `WAYLAND_DISPLAY` accepts a connection.
+    pub fn display_reachable() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let display_name =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| format!("/run/user/{}", crate::current_uid()));
+            UnixStream::connect(std::path::Path::new(&runtime_dir).join(display_name)).is_ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+}
+
+impl WaylandNativeWindow {
     /// Opens a surface on the compositor named by `WAYLAND_DISPLAY` (default `wayland-0`, relative
     /// to `XDG_RUNTIME_DIR`). Fails if the compositor socket cannot be reached, and on platforms
     /// without Wayland. Use [`new_offscreen`](Self::new_offscreen) for a surface with no

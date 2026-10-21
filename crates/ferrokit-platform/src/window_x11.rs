@@ -208,6 +208,26 @@ static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0x02000001);
 
 impl X11NativeWindow {
+    /// Whether the display named by `DISPLAY` (default `:0`) accepts a connection.
+    pub fn display_reachable() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+            let display_num = display_name
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.split('.').next())
+                .unwrap_or("0");
+            UnixStream::connect(format!("/tmp/.X11-unix/X{}", display_num)).is_ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+}
+
+impl X11NativeWindow {
     /// Opens a window on the X server named by `DISPLAY` (default `:0`). Fails if the display
     /// socket cannot be reached, and on platforms without X11. Use
     /// [`new_offscreen`](Self::new_offscreen) for a window with no display server.

@@ -775,6 +775,10 @@ impl DbusConnection {
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                     ) =>
                 {
+                    if self.tx_pos > 0 {
+                        self.tx_buf.drain(..self.tx_pos);
+                        self.tx_pos = 0;
+                    }
                     return Ok(());
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

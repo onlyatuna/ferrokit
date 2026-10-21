@@ -225,14 +225,19 @@ pub mod unix {
     }
 
     impl UnixPlatformIntegration {
+        /// The display server selected by the environment, or `Generic` when its socket is not
+        /// reachable (stale `DISPLAY`, SSH forwarding, `WAYLAND_SOCKET` alone), so windows fall
+        /// back to the offscreen window instead of failing.
         pub fn detect_display_server() -> DisplayServerKind {
-            if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("WAYLAND_SOCKET").is_ok() {
-                DisplayServerKind::Wayland
-            } else if std::env::var("DISPLAY").is_ok() {
-                DisplayServerKind::X11
-            } else {
-                DisplayServerKind::Generic
+            if (std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("WAYLAND_SOCKET").is_ok())
+                && WaylandNativeWindow::display_reachable()
+            {
+                return DisplayServerKind::Wayland;
             }
+            if std::env::var("DISPLAY").is_ok() && X11NativeWindow::display_reachable() {
+                return DisplayServerKind::X11;
+            }
+            DisplayServerKind::Generic
         }
     }
 
@@ -575,4 +580,42 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
 pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
     let mut writer = PLATFORM_INTEGRATION.write().unwrap();
     *writer = Some(integration);
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod unreachable_display_tests {
+    use super::unix::{DisplayServerKind, UnixPlatformIntegration};
+    use super::PlatformIntegration;
+    use ferrokit_gui::geometry::primitives::Rect;
+    use crate::window::WindowFlags;
+
+    #[test]
+    fn bogus_display_falls_back_to_a_working_window() {
+        let saved = (
+            std::env::var_os("DISPLAY"),
+            std::env::var_os("WAYLAND_DISPLAY"),
+            std::env::var_os("WAYLAND_SOCKET"),
+        );
+        std::env::set_var("DISPLAY", "localhost:7777.0");
+        std::env::set_var("WAYLAND_DISPLAY", "ferrokit-bogus-wayland");
+        std::env::set_var("WAYLAND_SOCKET", "99");
+        let kind = UnixPlatformIntegration::detect_display_server();
+        let win = UnixPlatformIntegration::default().create_window(
+            "t",
+            Rect::new(0, 0, 100, 100),
+            WindowFlags::default(),
+        );
+        for (k, v) in [
+            ("DISPLAY", saved.0),
+            ("WAYLAND_DISPLAY", saved.1),
+            ("WAYLAND_SOCKET", saved.2),
+        ] {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        assert_eq!(kind, DisplayServerKind::Generic);
+        assert!(win.is_ok());
+    }
 }
