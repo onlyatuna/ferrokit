@@ -196,14 +196,21 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
         worker_flag.store(true, Ordering::SeqCst);
     });
 
-    // Give worker thread a moment to post and block
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    // The worker cannot finish before this thread runs its call, however long it takes to post it.
     assert!(!worker_finished.load(Ordering::SeqCst));
 
-    // Main thread processes the event
-    let has_event = event_loop.process_events(false);
-    assert!(has_event);
-    assert!(processed.load(Ordering::SeqCst));
+    // Main thread processes the event once the worker has posted it. How long the worker takes to
+    // get there is not part of what this test checks (under Miri it takes many milliseconds of
+    // the virtual clock), so pump until the slot has run, with a watchdog.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !processed.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "watchdog: the blocking queued call was not delivered within 10s"
+        );
+        event_loop.process_events(false);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
     // Worker can now unblock and terminate
     worker.join().unwrap();

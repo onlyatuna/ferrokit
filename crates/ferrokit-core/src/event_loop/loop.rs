@@ -298,6 +298,10 @@ pub struct EventQueue {
     /// that a turn left queued (those of a borrowed receiver), with events of a higher priority
     /// posted behind them; delivering or removing them moves `sorted_from` back toward the front.
     sorted_from: usize,
+    /// Set once the loop that turned this queue is gone (`close`). A closed queue takes no event:
+    /// handles on it that outlive the loop (`EventSender` and `EventLoopHandle` clones) would
+    /// otherwise queue events that nothing can run or drop.
+    closed: bool,
 }
 
 impl Default for EventQueue {
@@ -318,11 +322,20 @@ impl EventQueue {
             compressor,
             merge_index: HashMap::new(),
             sorted_from: 0,
+            closed: false,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    /// Closes the queue and returns every event it still holds. Nothing is posted to it from now
+    /// on (`post_from_slot` and `try_push_back` leave the event with the caller), so what is
+    /// returned is the last of it. The caller drops the events after releasing the queue lock.
+    pub(crate) fn close(&mut self) -> Vec<PostedEvent> {
+        self.closed = true;
+        self.remove_posted_events_matching(|_| true)
     }
 
     pub fn len(&self) -> usize {
@@ -421,15 +434,19 @@ impl EventQueue {
     }
 
     /// Posts the event in `event` and leaves the slot empty, or, when the event is merged into one
-    /// that is queued, leaves it in the slot for the caller to drop. A payload's `Drop` may
-    /// unregister objects or post events, which takes locks that the caller of this function may
-    /// hold, so the caller declares the slot before taking them and drops it after releasing them.
+    /// that is queued, or the queue is closed (see `close`), leaves it in the slot for the caller
+    /// to drop. A payload's `Drop` may unregister objects or post events, which takes locks that
+    /// the caller of this function may hold, so the caller declares the slot before taking them
+    /// and drops it after releasing them.
     pub(crate) fn post_from_slot(
         &mut self,
         receiver: ObjectId,
         event: &mut Option<Event>,
         priority: i32,
     ) {
+        if self.closed {
+            return;
+        }
         let Some(incoming) = event.as_mut() else {
             return;
         };
@@ -519,6 +536,16 @@ impl EventQueue {
         let key = self.compressor.merge_key(&posted.event);
         let end = self.events.len();
         self.insert_at(end, posted, key);
+    }
+
+    /// `push_back` for a queue that may be closed: returns `posted` to the caller, who drops it
+    /// after releasing the queue lock, when the queue is closed.
+    pub(crate) fn try_push_back(&mut self, posted: PostedEvent) -> Option<PostedEvent> {
+        if self.closed {
+            return Some(posted);
+        }
+        self.push_back(posted);
+        None
     }
 
     /// Inserts in priority order after the turn boundary, so an event posted during a turn waits
@@ -766,6 +793,23 @@ impl Drop for ThreadLoopState {
     fn drop(&mut self) {
         crate::timer::unregister_thread_timer_context();
         unregister_thread_event_loop(self.thread_id);
+        // The loop is gone, so nothing turns this queue any more, yet a handle on it can outlive
+        // the loop (an `EventSender` clone, such as the one an `EventLoopThreadHandle` keeps), and
+        // what is still queued would stay queued as long as that handle lives. Qt deletes the
+        // undelivered posted events of a thread together with its `QThreadData`, and the
+        // destructor of a posted `QMetaCallEvent` releases a blocked
+        // `BlockingQueuedConnection` caller. Here the caller waits on a channel whose sender is
+        // inside the call, so the call must be dropped, not kept. The queue is closed, so a post
+        // through such a handle after this point is dropped by the poster instead of queued. The
+        // events are dropped after the queue lock is released: a payload's `Drop` may post events
+        // or unregister objects, which take that lock.
+        let undelivered = lock_unpoisoned(&self.queue).close();
+        for posted in undelivered {
+            // A payload whose `Drop` panics is contained and the other events are still dropped:
+            // this runs from a destructor, possibly while the thread unwinds, and a panic that
+            // escaped from here then would abort the process.
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(posted)));
+        }
     }
 }
 
@@ -773,6 +817,21 @@ pub struct EventLoop {
     state: Arc<ThreadLoopState>,
     exit: LoopExit,
     custom_timeout: Option<Duration>,
+}
+
+impl Drop for EventLoop {
+    fn drop(&mut self) {
+        // The thread's last loop: nothing delivers a queued `DeferredDelete` after this, and its
+        // object would stay registered. Qt delivers them when a thread finishes
+        // (`QThreadPrivate::finish` calls `sendPostedEvents(nullptr, DeferredDelete)`). The
+        // thread's state is still alive here, so a handler runs with a working loop. What else is
+        // queued is dropped with the state (`ThreadLoopState::drop`). The flush is contained as a
+        // whole too: this may run while the thread's locals are destroyed or while it unwinds, and
+        // a panic that escaped from a destructor then would abort the process.
+        if Arc::strong_count(&self.state) == 1 {
+            let _ = catch_unwind(AssertUnwindSafe(|| self.flush_deferred_deletes()));
+        }
+    }
 }
 
 impl EventLoop {
@@ -874,7 +933,10 @@ impl EventLoop {
 
     /// Delivers the queued `DeferredDelete` events that the loop-exit flush allows, matching
     /// `sendPostedEvents(nullptr, QEvent::DeferredDelete)` (qcoreapplication.cpp:1484-1489). Other
-    /// posted events stay queued. Returns the number delivered.
+    /// posted events stay queued, and so does a `DeferredDelete` whose receiver a running callback
+    /// has borrowed. A handler or destructor that panics is contained and the flush goes on, as in
+    /// a loop turn; the flush also runs when the last loop of a thread is dropped, where a panic
+    /// that escaped during unwinding would abort the process. Returns the number delivered.
     pub fn flush_deferred_deletes(&self) -> usize {
         {
             let mut q = lock_unpoisoned(&self.state.queue);
@@ -886,11 +948,16 @@ impl EventLoop {
                 let mut q = lock_unpoisoned(&self.state.queue);
                 let end = q.insertion_offset;
                 let levels = current_levels();
+                // As in `next_deliverable_index`, a receiver that a running callback has borrowed
+                // is not unregistered under that callback: its event stays queued.
                 let found = q.events.iter().take(end).position(|p| match p.event.kind {
                     EventKind::DeferredDelete {
                         loop_level,
                         scope_level,
-                    } => deferred_delete_deliverable((loop_level, scope_level), levels, true),
+                    } => {
+                        deferred_delete_deliverable((loop_level, scope_level), levels, true)
+                            && !crate::object::qobject::registered_and_borrowed(p.receiver)
+                    }
                     _ => false,
                 });
                 match found {
@@ -909,8 +976,10 @@ impl EventLoop {
             else {
                 continue;
             };
-            send_event(receiver, &mut event);
-            finish_deferred_delete(receiver);
+            // As in `pump_posted_events`: the panic hook logs a raising handler, and the receiver
+            // is unregistered all the same.
+            let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
+            let _ = catch_unwind(AssertUnwindSafe(|| finish_deferred_delete(receiver)));
             delivered += 1;
         }
         delivered

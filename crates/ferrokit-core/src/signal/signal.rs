@@ -60,6 +60,13 @@ pub enum ConnectionType {
     /// Queued connection: posted into receiver's thread event loop.
     Queued,
     /// Blocking queued connection: caller thread blocks until receiver thread finishes execution.
+    ///
+    /// The wait ends when the receiver's loop has run the call, or when the call is dropped
+    /// without running: the receiver was destroyed, its slot panicked, its loop ended or its
+    /// thread ended. A receiver thread that is alive but does not run its event loop (it is
+    /// stalled, or inside a long callback, or its loop waits on a lock the caller holds) keeps the
+    /// caller waiting for as long as that lasts; there is no timeout or cancellation, as in Qt's
+    /// `Qt::BlockingQueuedConnection`.
     BlockingQueued,
 }
 
@@ -850,6 +857,14 @@ impl<T: Clone + Send + 'static> Signal<T> {
     }
 
     /// Blocking queued connection: emitter thread will block until the receiver's event loop finishes executing slot.
+    ///
+    /// `emit` returns once the slot has run, or once the posted call is dropped without running:
+    /// the receiver was destroyed, the slot panicked, or the receiver's loop or thread ended
+    /// (the call is dropped with the loop's queue, as Qt deletes the posted events of a finished
+    /// thread, which releases the blocked caller). It does not return while the receiver's
+    /// thread is alive but does not run its event loop; see
+    /// [`ConnectionType::BlockingQueued`]. When the receiver lives on the emitting thread the
+    /// slot runs in place and nothing waits (Qt reports a dead lock for that combination).
     pub fn connect_blocking_queued<F>(
         &self,
         receiver_id: ObjectId,

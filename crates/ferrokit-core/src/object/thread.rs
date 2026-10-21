@@ -33,11 +33,13 @@ impl EventSender {
         }
     }
 
-    /// Sends a posted event to the target thread queue and triggers wakeup.
+    /// Sends a posted event to the target thread queue and triggers wakeup. If the thread's loop
+    /// has ended the queue is closed: the event is dropped, after the queue lock is released (its
+    /// payload's `Drop` may post events or unregister objects), and nothing is woken.
     pub fn send(&self, event: PostedEvent) {
-        {
-            let mut q = lock_unpoisoned(&self.queue);
-            q.push_back(event);
+        let rejected = lock_unpoisoned(&self.queue).try_push_back(event);
+        if rejected.is_some() {
+            return;
         }
 
         (self.wakeup)();
