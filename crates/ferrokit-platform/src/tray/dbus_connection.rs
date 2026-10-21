@@ -254,6 +254,9 @@ pub struct DbusConnection {
 }
 
 
+#[cfg(windows)]
+static DBUS_SOCKET_FD_COUNTER: AtomicU32 = AtomicU32::new(100);
+
 impl DbusConnection {
     pub fn connect_session_bus() -> Result<Self, &'static str> {
         let address = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|_| {
@@ -267,7 +270,7 @@ impl DbusConnection {
             }
             #[cfg(not(target_os = "linux"))]
             {
-                String::new()
+                "1000".to_string()
             }
         });
         #[cfg(target_os = "linux")]
@@ -286,10 +289,12 @@ impl DbusConnection {
             (Some(s), fd)
         };
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        let socket_fd = DBUS_SOCKET_FD_COUNTER.fetch_add(1, Ordering::SeqCst) as SocketDescriptor;
+        #[cfg(target_os = "macos")]
         return Err("D-Bus session bus is unavailable on this platform");
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         {
         let mut conn = Self {
             address,

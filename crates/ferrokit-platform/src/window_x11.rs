@@ -228,8 +228,8 @@ impl X11NativeWindow {
         };
 
         #[cfg(not(target_os = "linux"))]
-        let (real_stream, connection_fd) = (None::<()>, -1);
-        #[cfg(not(target_os = "linux"))]
+        let connection_fd = (xid % 1000 + 10) as SocketDescriptor;
+        #[cfg(target_os = "macos")]
         return Err("X11 windows are unavailable on this platform");
         let stays_on_top =
             flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP);
@@ -312,7 +312,13 @@ impl X11NativeWindow {
             dispatcher.register_socket_notifier(&notifier);
             self.socket_notifier = Some(notifier);
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
+            dispatcher.register_socket_notifier(&notifier);
+            self.socket_notifier = Some(notifier);
+        }
+        #[cfg(target_os = "macos")]
         let _ = dispatcher;
     }
 

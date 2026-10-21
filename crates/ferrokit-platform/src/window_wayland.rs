@@ -129,8 +129,8 @@ impl WaylandNativeWindow {
         };
 
         #[cfg(not(target_os = "linux"))]
-        let (real_stream, connection_fd) = (None::<()>, -1);
-        #[cfg(not(target_os = "linux"))]
+        let connection_fd = (surface_id % 1000 + 20) as SocketDescriptor;
+        #[cfg(target_os = "macos")]
         return Err("Wayland windows are unavailable on this platform");
         let is_layer_shell =
             flags.contains(WindowFlags::FRAMELESS) || flags.contains(WindowFlags::STAYS_ON_TOP);
@@ -272,7 +272,13 @@ impl WaylandNativeWindow {
             dispatcher.register_socket_notifier(&notifier);
             self.socket_notifier = Some(notifier);
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        {
+            let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
+            dispatcher.register_socket_notifier(&notifier);
+            self.socket_notifier = Some(notifier);
+        }
+        #[cfg(target_os = "macos")]
         let _ = dispatcher;
     }
 
