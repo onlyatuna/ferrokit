@@ -428,9 +428,9 @@ pub mod cocoa_screen {
             let sel_visible_frame = Sel::register("visibleFrame");
             let sel_scale = Sel::register("backingScaleFactor");
 
-            let frame = ObjcMsg::send_rect_return(screen, sel_frame);
-            let visible_frame = ObjcMsg::send_rect_return(screen, sel_visible_frame);
-            let scale = ObjcMsg::send_f64_return(screen, sel_scale);
+            let frame = unsafe { ObjcMsg::send_rect_return(screen, sel_frame) };
+            let visible_frame = unsafe { ObjcMsg::send_rect_return(screen, sel_visible_frame) };
+            let scale = unsafe { ObjcMsg::send_f64_return(screen, sel_scale) };
 
             let raw_geom = Rect::new(
                 frame.origin.x as i32,
@@ -463,9 +463,11 @@ pub mod cocoa_screen {
 
         pub fn primary() -> Self {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
-            let main_screen = ObjcMsg::send_class_0(nsscreen_class, Sel::register("mainScreen"));
+            let main_screen =
+                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("mainScreen")) };
             if !main_screen.is_nil() {
-                let frame = ObjcMsg::send_rect_return(main_screen, Sel::register("frame"));
+                let frame =
+                    unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
                 let primary_height = frame.size.height as i32;
                 Self::from_nsscreen(main_screen, true, primary_height)
             } else {
@@ -481,25 +483,29 @@ pub mod cocoa_screen {
 
         pub fn screens() -> Vec<Self> {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
-            let screens_array = ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens"));
+            let screens_array =
+                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
             if screens_array.is_nil() {
                 return vec![Self::primary()];
             }
 
-            let count = ObjcMsg::send_usize_return(screens_array, Sel::register("count"));
+            let count =
+                unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) };
             if count == 0 {
                 return vec![Self::primary()];
             }
 
-            let first =
-                ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0);
-            let first_frame = ObjcMsg::send_rect_return(first, Sel::register("frame"));
+            let first = unsafe {
+                ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
+            };
+            let first_frame = unsafe { ObjcMsg::send_rect_return(first, Sel::register("frame")) };
             let primary_height = first_frame.size.height as i32;
 
             let mut result = Vec::with_capacity(count);
             for i in 0..count {
-                let screen_id =
-                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), i);
+                let screen_id = unsafe {
+                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), i)
+                };
                 if !screen_id.is_nil() {
                     result.push(Self::from_nsscreen(screen_id, i == 0, primary_height));
                 }

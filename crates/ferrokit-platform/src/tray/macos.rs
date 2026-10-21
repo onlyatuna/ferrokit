@@ -2,8 +2,10 @@
 use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::paint::Pixmap;
 
+use std::sync::Arc;
+
 use crate::menu::PlatformMenu;
-use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, NS_SQUARE_STATUS_ITEM_LENGTH};
+use crate::objc_runtime::{ActionTarget, Class, Id, ObjcMsg, Sel, NS_SQUARE_STATUS_ITEM_LENGTH};
 use crate::platform_tray::PlatformTrayIcon;
 
 pub struct CocoaStatusItem {
@@ -17,7 +19,9 @@ pub struct CocoaStatusItem {
     is_template: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
-    on_click: Option<Box<dyn Fn() + Send + Sync>>,
+    on_click: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The object the button sends clicks to (`NSControl.target` is weak, so it lives here).
+    click_target: Option<ActionTarget>,
 }
 
 // Deliberately neither `Send` nor `Sync`: wraps an `NSStatusItem` (`Id`), which AppKit only allows
@@ -28,16 +32,19 @@ impl CocoaStatusItem {
         ThreadContext::assert_main_thread("CocoaStatusItem::new");
 
         let status_bar_class = Class::get("NSStatusBar").unwrap_or(Class::NIL);
-        let status_bar = ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar"));
+        let status_bar =
+            unsafe { ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar")) };
 
         // Qt: statusItemWithLength:NSSquareStatusItemLength (qcocoasystemtrayicon.mm:37). Qt
         // switches to NSVariableStatusItemLength only for icons backed by a native NSImage
         // (QAppleIconEngine, :88-98); pixmap icons keep the square length.
-        let status_item = ObjcMsg::send_length(
-            status_bar,
-            Sel::register("statusItemWithLength:"),
-            NS_SQUARE_STATUS_ITEM_LENGTH,
-        );
+        let status_item = unsafe {
+            ObjcMsg::send_length(
+                status_bar,
+                Sel::register("statusItemWithLength:"),
+                NS_SQUARE_STATUS_ITEM_LENGTH,
+            )
+        };
 
         Self {
             item_id,
@@ -51,6 +58,7 @@ impl CocoaStatusItem {
             menu: None,
             last_message: None,
             on_click: None,
+            click_target: None,
         }
     }
 
@@ -69,11 +77,11 @@ impl CocoaStatusItem {
 
     pub fn set_template(&mut self, is_template: bool) {
         self.is_template = is_template;
-        let button = ObjcMsg::send_0(self.status_item, Sel::register("button"));
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
-            let image = ObjcMsg::send_0(button, Sel::register("image"));
+            let image = unsafe { ObjcMsg::send_0(button, Sel::register("image")) };
             if !image.is_nil() {
-                ObjcMsg::send_bool(image, Sel::register("setTemplate:"), is_template);
+                unsafe { ObjcMsg::send_bool(image, Sel::register("setTemplate:"), is_template) };
             }
         }
     }
@@ -83,17 +91,23 @@ impl CocoaStatusItem {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.on_click = Some(Box::new(callback));
-        let button = ObjcMsg::send_0(self.status_item, Sel::register("button"));
-        if !button.is_nil() {
-            // In AppKit: [button setTarget:self] & [button setAction:@selector(onStatusItemClick:)]
-            ObjcMsg::send_id(button, Sel::register("setTarget:"), self.status_item);
-            ObjcMsg::send_id(
-                button,
-                Sel::register("setAction:"),
-                Id(Sel::register("onStatusItemClick:").0 as *mut std::ffi::c_void),
-            );
+        let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(callback);
+        self.on_click = Some(Arc::clone(&callback));
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+        if button.is_nil() {
+            return;
         }
+        let Ok(target) = ActionTarget::new(move || callback()) else {
+            return;
+        };
+        // [button setTarget:target] & [button setAction:@selector(ferrokitPerformAction:)]: the
+        // target runs the callback when AppKit delivers the click.
+        unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), target.id()) };
+        unsafe {
+            ObjcMsg::send_action(button, Sel::register("setAction:"), ActionTarget::action())
+        };
+        // A previous target is released only now that the button points at the new one.
+        self.click_target = Some(target);
     }
 
     /// Triggers the click action handler.
@@ -128,18 +142,19 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.icon_bytes = pixmap.data().to_vec();
 
         // Configure icon on status item button
-        let button = ObjcMsg::send_0(self.status_item, Sel::register("button"));
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
             let image_class = Class::get("NSImage").unwrap_or(Class::NIL);
-            let image_alloc = ObjcMsg::send_class_0(image_class, Sel::register("alloc"));
-            let cg_size = crate::objc_runtime::CGSize::new(
-                self.icon_width as f64,
-                self.icon_height as f64,
-            );
-            let image = ObjcMsg::send_size(image_alloc, Sel::register("initWithSize:"), cg_size);
+            let image_alloc = unsafe { ObjcMsg::send_class_0(image_class, Sel::register("alloc")) };
+            let cg_size =
+                crate::objc_runtime::CGSize::new(self.icon_width as f64, self.icon_height as f64);
+            let image =
+                unsafe { ObjcMsg::send_size(image_alloc, Sel::register("initWithSize:"), cg_size) };
             if !image.is_nil() {
-                ObjcMsg::send_bool(image, Sel::register("setTemplate:"), self.is_template);
-                ObjcMsg::send_id(button, Sel::register("setImage:"), image);
+                unsafe {
+                    ObjcMsg::send_bool(image, Sel::register("setTemplate:"), self.is_template)
+                };
+                unsafe { ObjcMsg::send_id(button, Sel::register("setImage:"), image) };
             }
         }
         Ok(())
@@ -149,9 +164,9 @@ impl PlatformTrayIcon for CocoaStatusItem {
 
         // Qt: m_statusItem.button.toolTip (qcocoasystemtrayicon.mm:195-200); the button title
         // is never set, so no text appears in the menu bar.
-        let button = ObjcMsg::send_0(self.status_item, Sel::register("button"));
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
-            ObjcMsg::send_str(button, Sel::register("setToolTip:"), tooltip);
+            unsafe { ObjcMsg::send_str(button, Sel::register("setToolTip:"), tooltip) };
         }
         Ok(())
     }
@@ -159,21 +174,21 @@ impl PlatformTrayIcon for CocoaStatusItem {
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>) {
         // [status_item setMenu:ns_menu]
         let menu_id = Id(menu.native_handle() as *mut std::ffi::c_void);
-        ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), menu_id);
+        unsafe { ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), menu_id) };
         self.menu = Some(menu);
     }
 
     fn show(&mut self) -> Result<(), &'static str> {
         self.is_visible = true;
         // Set status item visible
-        ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), true);
+        unsafe { ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), true) };
         Ok(())
     }
 
     fn hide(&mut self) -> Result<(), &'static str> {
         self.is_visible = false;
         // Set status item hidden
-        ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), false);
+        unsafe { ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), false) };
         Ok(())
     }
 
@@ -188,15 +203,16 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.last_message = Some((title.to_string(), msg.to_string(), icon, dur));
 
         let center_class = Class::get("NSUserNotificationCenter").unwrap_or(Class::NIL);
-        let center =
-            ObjcMsg::send_class_0(center_class, Sel::register("defaultUserNotificationCenter"));
+        let center = unsafe {
+            ObjcMsg::send_class_0(center_class, Sel::register("defaultUserNotificationCenter"))
+        };
         let notif_class = Class::get("NSUserNotification").unwrap_or(Class::NIL);
-        let notif_alloc = ObjcMsg::send_class_0(notif_class, Sel::register("alloc"));
-        let notif = ObjcMsg::send_0(notif_alloc, Sel::register("init"));
+        let notif_alloc = unsafe { ObjcMsg::send_class_0(notif_class, Sel::register("alloc")) };
+        let notif = unsafe { ObjcMsg::send_0(notif_alloc, Sel::register("init")) };
         if !notif.is_nil() {
-            ObjcMsg::send_str(notif, Sel::register("setTitle:"), title);
-            ObjcMsg::send_str(notif, Sel::register("setInformativeText:"), msg);
-            ObjcMsg::send_id(center, Sel::register("deliverNotification:"), notif);
+            unsafe { ObjcMsg::send_str(notif, Sel::register("setTitle:"), title) };
+            unsafe { ObjcMsg::send_str(notif, Sel::register("setInformativeText:"), msg) };
+            unsafe { ObjcMsg::send_id(center, Sel::register("deliverNotification:"), notif) };
         }
         Ok(())
     }
@@ -208,16 +224,23 @@ impl PlatformTrayIcon for CocoaStatusItem {
 
 impl Drop for CocoaStatusItem {
     fn drop(&mut self) {
+        if self.click_target.is_some() {
+            let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+            unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), Id::NIL) };
+        }
         // [[NSStatusBar systemStatusBar] removeStatusItem:status_item]
         if !self.status_item.is_nil() {
             let status_bar_class = Class::get("NSStatusBar").unwrap_or(Class::NIL);
-            let status_bar =
-                ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar"));
-            ObjcMsg::send_id(
-                status_bar,
-                Sel::register("removeStatusItem:"),
-                self.status_item,
-            );
+            let status_bar = unsafe {
+                ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar"))
+            };
+            unsafe {
+                ObjcMsg::send_id(
+                    status_bar,
+                    Sel::register("removeStatusItem:"),
+                    self.status_item,
+                )
+            };
         }
     }
 }

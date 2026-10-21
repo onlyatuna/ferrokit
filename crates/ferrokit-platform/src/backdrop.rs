@@ -107,7 +107,12 @@ pub fn set_window_backdrop(
 }
 
 #[cfg(windows)]
-fn set_win10_accent(hwnd: windows_sys::Win32::Foundation::HWND, state: u32, flags: u32, gradient_color: u32) -> bool {
+fn set_win10_accent(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    state: u32,
+    flags: u32,
+    gradient_color: u32,
+) -> bool {
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 
     #[repr(C)]
@@ -175,7 +180,7 @@ pub fn set_cocoa_window_backdrop(
     let target_window = if !ns_window.is_nil() {
         ns_window
     } else {
-        ObjcMsg::send_0(ns_view, Sel::register("window"))
+        unsafe { ObjcMsg::send_0(ns_view, Sel::register("window")) }
     };
 
     if target_window.is_nil() {
@@ -187,7 +192,7 @@ pub fn set_cocoa_window_backdrop(
             // Qt removes the area's effect view from its superview and forgets it; the content
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
             if let Some(effect_view) = backdrop_view.take() {
-                ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview"));
+                unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
             }
             true
         }
@@ -202,11 +207,12 @@ pub fn set_cocoa_window_backdrop(
                 Some(view) => view,
                 None => {
                     let effect_class = Class::get("NSVisualEffectView").unwrap_or(Class::NIL);
-                    let effect_alloc = ObjcMsg::send_class_0(effect_class, Sel::register("alloc"));
+                    let effect_alloc =
+                        unsafe { ObjcMsg::send_class_0(effect_class, Sel::register("alloc")) };
                     if effect_alloc.is_nil() {
                         return false;
                     }
-                    ObjcMsg::send_0(effect_alloc, Sel::register("init"))
+                    unsafe { ObjcMsg::send_0(effect_alloc, Sel::register("init")) }
                 }
             };
 
@@ -219,9 +225,9 @@ pub fn set_cocoa_window_backdrop(
                 BackdropType::None => 0,
             };
 
-            ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material);
-            ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0); // BehindWindow
-            ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1); // Active
+            unsafe { ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material) };
+            unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) }; // BehindWindow
+            unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) }; // Active
 
             let app_name = if dark_mode {
                 "NSAppearanceNameDarkAqua"
@@ -229,30 +235,45 @@ pub fn set_cocoa_window_backdrop(
                 "NSAppearanceNameAqua"
             };
             let appearance_class = Class::get("NSAppearance").unwrap_or(Class::NIL);
-            let appearance = ObjcMsg::send_str(
-                Id(appearance_class.0),
-                Sel::register("appearanceNamed:"),
-                app_name,
-            );
+            let appearance = unsafe {
+                ObjcMsg::send_str(
+                    Id(appearance_class.0),
+                    Sel::register("appearanceNamed:"),
+                    app_name,
+                )
+            };
             if !appearance.is_nil() {
-                ObjcMsg::send_id(effect_view, Sel::register("setAppearance:"), appearance);
+                unsafe {
+                    ObjcMsg::send_id(effect_view, Sel::register("setAppearance:"), appearance)
+                };
             }
 
             if existing.is_none() {
                 // Qt stacks the effect layer below the content layer (z 0): wantsLayer, then
                 // layer.zPosition = -FLT_MAX (qcocoawindow.mm:2267-2270). zPosition is a CGFloat.
-                ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true);
-                let effect_layer = ObjcMsg::send_0(effect_view, Sel::register("layer"));
-                ObjcMsg::send_length(
-                    effect_layer,
-                    Sel::register("setZPosition:"),
-                    f64::from(-f32::MAX),
-                );
-                let content_view = ObjcMsg::send_0(target_window, Sel::register("contentView"));
+                unsafe { ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true) };
+                let effect_layer = unsafe { ObjcMsg::send_0(effect_view, Sel::register("layer")) };
+                unsafe {
+                    ObjcMsg::send_length(
+                        effect_layer,
+                        Sel::register("setZPosition:"),
+                        f64::from(-f32::MAX),
+                    )
+                };
+                let content_view =
+                    unsafe { ObjcMsg::send_0(target_window, Sel::register("contentView")) };
                 if !content_view.is_nil() {
-                    ObjcMsg::send_id(content_view, Sel::register("addSubview:"), effect_view);
+                    unsafe {
+                        ObjcMsg::send_id(content_view, Sel::register("addSubview:"), effect_view)
+                    };
                 } else {
-                    ObjcMsg::send_id(target_window, Sel::register("setContentView:"), effect_view);
+                    unsafe {
+                        ObjcMsg::send_id(
+                            target_window,
+                            Sel::register("setContentView:"),
+                            effect_view,
+                        )
+                    };
                 }
                 *backdrop_view = Some(effect_view);
             }

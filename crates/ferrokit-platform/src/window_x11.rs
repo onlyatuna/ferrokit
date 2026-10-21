@@ -200,37 +200,71 @@ pub struct X11NativeWindow {
     opacity: f32,
     size_limits: crate::size_limits::SizeLimits,
     #[cfg(target_os = "linux")]
-    stream: Option<UnixStream>,
+    /// Owns the display connection for the window's lifetime (closed on drop).
+    _stream: Option<UnixStream>,
 }
 
 static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0x02000001);
 
 impl X11NativeWindow {
+    /// Opens a window on the X server named by `DISPLAY` (default `:0`). Fails if the display
+    /// socket cannot be reached, and on platforms without X11. Use
+    /// [`new_offscreen`](Self::new_offscreen) for a window with no display server.
     pub fn new(title: &str, rect: Rect, flags: WindowFlags) -> Result<Self, &'static str> {
-        let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
-        let xid = X11_WINDOW_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-        let display_num = display_name
-            .split(':')
-            .nth(1)
-            .and_then(|s| s.split('.').next())
-            .unwrap_or("0");
-        let _socket_path = format!("/tmp/.X11-unix/X{}", display_num);
-
         #[cfg(target_os = "linux")]
-        let (real_stream, connection_fd) = {
-            let s = UnixStream::connect(&_socket_path)
+        {
+            let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+            let display_num = display_name
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.split('.').next())
+                .unwrap_or("0");
+            let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{}", display_num))
                 .map_err(|_| "Failed to connect to the X11 display")?;
-            let _ = s.set_nonblocking(true);
-            let fd = s.as_raw_fd() as SocketDescriptor;
-            (Some(s), fd)
-        };
-
+            let _ = stream.set_nonblocking(true);
+            Self::build(title, rect, flags, display_name, Some(stream))
+        }
         #[cfg(not(target_os = "linux"))]
-        let connection_fd = (xid % 1000 + 10) as SocketDescriptor;
-        #[cfg(target_os = "macos")]
-        return Err("X11 windows are unavailable on this platform");
+        {
+            let _ = (title, rect, flags);
+            Err("X11 windows are unavailable on this platform")
+        }
+    }
+
+    /// A window with no display server behind it, driven only through `queue_x11_event`
+    /// (the analogue of Qt's `offscreen` platform plugin). It owns no socket, so
+    /// `connection_fd()` is `-1` and `bind_event_dispatcher` registers nothing.
+    pub fn new_offscreen(
+        title: &str,
+        rect: Rect,
+        flags: WindowFlags,
+    ) -> Result<Self, &'static str> {
+        let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+        Self::build(
+            title,
+            rect,
+            flags,
+            display_name,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    fn build(
+        title: &str,
+        rect: Rect,
+        flags: WindowFlags,
+        display_name: String,
+        #[cfg(target_os = "linux")] stream: Option<UnixStream>,
+    ) -> Result<Self, &'static str> {
+        let xid = X11_WINDOW_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        #[cfg(target_os = "linux")]
+        let connection_fd = stream
+            .as_ref()
+            .map_or(-1, |s| s.as_raw_fd() as SocketDescriptor);
+        #[cfg(not(target_os = "linux"))]
+        let connection_fd: SocketDescriptor = -1;
         let stays_on_top =
             flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP);
         let click_through = flags.contains(WindowFlags::CLICK_THROUGH);
@@ -264,20 +298,14 @@ impl X11NativeWindow {
             opacity: 1.0,
             size_limits: crate::size_limits::SizeLimits::default(),
             #[cfg(target_os = "linux")]
-            stream: real_stream,
+            _stream: stream,
         })
     }
 
+    /// Whether a display connection backs this window (false for offscreen windows).
     #[inline]
     pub fn is_live_display(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.stream.is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.connection_fd >= 0
     }
 
     #[inline]
@@ -305,21 +333,14 @@ impl X11NativeWindow {
         self.connection_fd
     }
 
+    /// Watches the display socket; an offscreen window has none, so nothing is registered.
     pub fn bind_event_dispatcher(&mut self, dispatcher: &mut dyn EventDispatcher) {
-        #[cfg(target_os = "linux")]
-        {
-            let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
-            dispatcher.register_socket_notifier(&notifier);
-            self.socket_notifier = Some(notifier);
+        if self.connection_fd < 0 {
+            return;
         }
-        #[cfg(windows)]
-        {
-            let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
-            dispatcher.register_socket_notifier(&notifier);
-            self.socket_notifier = Some(notifier);
-        }
-        #[cfg(target_os = "macos")]
-        let _ = dispatcher;
+        let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
+        dispatcher.register_socket_notifier(&notifier);
+        self.socket_notifier = Some(notifier);
     }
 
     pub fn queue_x11_event(&self, event: X11Event) {

@@ -106,6 +106,12 @@ impl DbusStatusNotifierItem {
         self.connection.lock().unwrap().is_some()
     }
 
+    /// Uses `connection` instead of connecting to the session bus on first use.
+    pub fn set_connection(&mut self, connection: DbusConnection) {
+        *self.connection.lock().unwrap() = Some(connection);
+    }
+
+    /// Watches the bus socket; `None` when there is no bus connection or it has no descriptor.
     pub fn bind_event_dispatcher(
         &mut self,
         dispatcher: &mut dyn EventDispatcher,
@@ -116,7 +122,7 @@ impl DbusStatusNotifierItem {
         }
         conn_guard
             .as_ref()
-            .map(|c| c.bind_event_dispatcher(dispatcher))
+            .and_then(|c| c.bind_event_dispatcher(dispatcher))
     }
 
     pub fn activate(&mut self, _x: i32, _y: i32) {}
@@ -195,35 +201,40 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.menu = Some(menu);
     }
 
+    /// Registers with the StatusNotifierWatcher on the session bus. Without a reachable bus the
+    /// icon cannot appear, as with `QSystemTrayIcon::show` when no tray exists: this is not an
+    /// error, but `is_registered()` stays false.
     fn show(&mut self) -> Result<(), &'static str> {
         self.status = "Active".to_string();
 
-        // Register with StatusNotifierWatcher on Session Bus
         let mut guard = self.connection.lock().unwrap();
         if guard.is_none() {
             *guard = DbusConnection::connect_session_bus().ok();
         }
 
-        if let Some(conn) = guard.as_mut() {
-            let service_name = format!("org.kde.StatusNotifierItem-{}-1", self.id);
-            let _ = conn.request_name(&service_name);
-            let _ = conn.register_status_notifier_item("/StatusNotifierItem");
+        let Some(conn) = guard.as_mut() else {
+            self.is_registered = false;
+            return Ok(());
+        };
+        let service_name = format!("org.kde.StatusNotifierItem-{}-1", self.id);
+        self.is_registered = conn.request_name(&service_name).is_ok()
+            && conn
+                .register_status_notifier_item("/StatusNotifierItem")
+                .is_ok();
 
-            // Emit NewStatus("Active") signal
-            let serial = conn.next_serial();
-            let mut sig = DbusMessage::signal(
-                "/StatusNotifierItem",
-                "org.kde.StatusNotifierItem",
-                "NewStatus",
-                serial,
-            );
-            sig.append_string("Active");
-            let _ = conn.send_message(sig);
+        // Emit NewStatus("Active") signal
+        let serial = conn.next_serial();
+        let mut sig = DbusMessage::signal(
+            "/StatusNotifierItem",
+            "org.kde.StatusNotifierItem",
+            "NewStatus",
+            serial,
+        );
+        sig.append_string("Active");
+        let _ = conn.send_message(sig);
 
-            // Subscribe to NameOwnerChanged signals to detect panel restarts
-            let _ = conn.add_match("type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.kde.StatusNotifierWatcher'");
-        }
-        self.is_registered = true;
+        // Subscribe to NameOwnerChanged signals to detect panel restarts
+        let _ = conn.add_match("type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.kde.StatusNotifierWatcher'");
         Ok(())
     }
 
@@ -276,12 +287,15 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
                 "Notify",
                 serial,
             );
+            // org.freedesktop.Notifications.Notify: susssasa{sv}i
             notify_call.append_string(&self.id);
             notify_call.append_u32(0);
             notify_call.append_string(app_icon);
             notify_call.append_string(title);
             notify_call.append_string(msg);
-            notify_call.append_i32(dur as i32);
+            notify_call.append_empty_string_array();
+            notify_call.append_empty_dict_sv();
+            notify_call.append_i32(i32::try_from(dur).unwrap_or(i32::MAX));
             let _ = conn.send_message(notify_call);
         }
         Ok(())

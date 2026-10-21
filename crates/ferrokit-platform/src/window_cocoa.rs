@@ -117,68 +117,67 @@ impl CocoaNativeWindow {
         #[cfg(not(target_os = "macos"))]
         let view_class = Class::get("QNSView").ok_or("Cannot find class QNSView")?;
 
-        let mut style_mask = if flags.contains(WindowFlags::FRAMELESS)
-            || flags.contains(WindowFlags::TOOLTIP)
-        {
-            NS_WINDOW_STYLE_MASK_BORDERLESS
-        } else {
-            NS_WINDOW_STYLE_MASK_TITLED
-                | NS_WINDOW_STYLE_MASK_CLOSABLE
-                | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
-                | NS_WINDOW_STYLE_MASK_RESIZABLE
-        };
+        let mut style_mask =
+            if flags.contains(WindowFlags::FRAMELESS) || flags.contains(WindowFlags::TOOLTIP) {
+                NS_WINDOW_STYLE_MASK_BORDERLESS
+            } else {
+                NS_WINDOW_STYLE_MASK_TITLED
+                    | NS_WINDOW_STYLE_MASK_CLOSABLE
+                    | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+                    | NS_WINDOW_STYLE_MASK_RESIZABLE
+            };
 
         if flags.contains(WindowFlags::CUSTOM_FRAMELESS) {
             style_mask |= NS_WINDOW_STYLE_MASK_RESIZABLE;
         }
 
-        let ns_window_alloc = ObjcMsg::send_class_0(window_class, Sel::register("alloc"));
+        let ns_window_alloc =
+            unsafe { ObjcMsg::send_class_0(window_class, Sel::register("alloc")) };
         if ns_window_alloc.is_nil() {
             return Err("NSWindow allocation failed");
         }
 
         let cg_rect = native_rect(rect);
 
-        let ns_window = ObjcMsg::send_window_init(
-            ns_window_alloc,
-            Sel::register("initWithContentRect:styleMask:backing:defer:"),
-            cg_rect,
-            style_mask,
-            NS_BACKING_STORE_BUFFERED,
-            false,
-        );
+        let ns_window = unsafe {
+            ObjcMsg::send_window_init(
+                ns_window_alloc,
+                Sel::register("initWithContentRect:styleMask:backing:defer:"),
+                cg_rect,
+                style_mask,
+                NS_BACKING_STORE_BUFFERED,
+                false,
+            )
+        };
 
-        ObjcMsg::send_str(ns_window, Sel::register("setTitle:"), title);
+        unsafe { ObjcMsg::send_str(ns_window, Sel::register("setTitle:"), title) };
 
-        let ns_view_alloc = ObjcMsg::send_class_0(view_class, Sel::register("alloc"));
+        let ns_view_alloc = unsafe { ObjcMsg::send_class_0(view_class, Sel::register("alloc")) };
         let view_rect = CGRect::new(0.0, 0.0, rect.width as f64, rect.height as f64);
-        let ns_view = ObjcMsg::send_window_init(
-            ns_view_alloc,
-            Sel::register("initWithFrame:"),
-            view_rect,
-            0,
-            0,
-            false,
-        );
+        let ns_view = unsafe {
+            ObjcMsg::send_rect(ns_view_alloc, Sel::register("initWithFrame:"), view_rect)
+        };
 
-        ObjcMsg::send_id(ns_window, Sel::register("setContentView:"), ns_view);
+        unsafe { ObjcMsg::send_id(ns_window, Sel::register("setContentView:"), ns_view) };
         // Qt: QNSView makes itself layer-backed (qnsview_drawing.mm:57) and the backing store
         // flushes into the view's layer (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
         // qcocoabackingstore.mm:392), not into the view.
-        ObjcMsg::send_bool(ns_view, Sel::register("setWantsLayer:"), true);
-        let layer = ObjcMsg::send_0(ns_view, Sel::register("layer"));
+        unsafe { ObjcMsg::send_bool(ns_view, Sel::register("setWantsLayer:"), true) };
+        let layer = unsafe { ObjcMsg::send_0(ns_view, Sel::register("layer")) };
 
-        ObjcMsg::send_int(
-            ns_window,
-            Sel::register("setLevel:"),
-            cocoa_window_level(flags),
-        );
+        unsafe {
+            ObjcMsg::send_int(
+                ns_window,
+                Sel::register("setLevel:"),
+                cocoa_window_level(flags),
+            )
+        };
         let stays_on_top =
             flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP);
 
         let click_through = flags.contains(WindowFlags::CLICK_THROUGH);
         if click_through {
-            ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true);
+            unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true) };
         }
 
         let surface = CocoaLayerSurface::new(
@@ -227,46 +226,53 @@ impl CocoaNativeWindow {
         self.vibrancy_material = material;
         if let Some(mat) = material {
             // 1. Make window transparent
-            ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), false);
+            unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), false) };
             let color_class = Class::get("NSColor").unwrap_or(Class::NIL);
-            let clear_color = ObjcMsg::send_class_0(color_class, Sel::register("clearColor"));
-            ObjcMsg::send_id(self.ns_window, Sel::register("setBackgroundColor:"), clear_color);
+            let clear_color =
+                unsafe { ObjcMsg::send_class_0(color_class, Sel::register("clearColor")) };
+            unsafe {
+                ObjcMsg::send_id(
+                    self.ns_window,
+                    Sel::register("setBackgroundColor:"),
+                    clear_color,
+                )
+            };
 
             // 2. Instantiate or configure NSVisualEffectView
             if self.vibrancy_view.is_none() {
                 let effect_class = Class::get("NSVisualEffectView").unwrap_or(Class::NIL);
-                let effect_alloc = ObjcMsg::send_class_0(effect_class, Sel::register("alloc"));
+                let effect_alloc =
+                    unsafe { ObjcMsg::send_class_0(effect_class, Sel::register("alloc")) };
                 let view_rect = CGRect::new(
                     0.0,
                     0.0,
                     self.geometry.width as f64,
                     self.geometry.height as f64,
                 );
-                let effect_view = ObjcMsg::send_window_init(
-                    effect_alloc,
-                    Sel::register("initWithFrame:"),
-                    view_rect,
-                    0,
-                    0,
-                    false,
-                );
+                let effect_view = unsafe {
+                    ObjcMsg::send_rect(effect_alloc, Sel::register("initWithFrame:"), view_rect)
+                };
                 if !effect_view.is_nil() {
                     // NSVisualEffectBlendingModeBehindWindow = 0
-                    ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0);
+                    unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) };
                     // NSVisualEffectStateActive = 1
-                    ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1);
-                    ObjcMsg::send_id(self.ns_view, Sel::register("addSubview:"), effect_view);
+                    unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) };
+                    unsafe {
+                        ObjcMsg::send_id(self.ns_view, Sel::register("addSubview:"), effect_view)
+                    };
                     self.vibrancy_view = Some(effect_view);
                 }
             }
 
             if let Some(effect_view) = self.vibrancy_view {
-                ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), mat as isize);
+                unsafe {
+                    ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), mat as isize)
+                };
             }
         } else {
-            ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), true);
+            unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), true) };
             if let Some(effect_view) = self.vibrancy_view.take() {
-                ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview"));
+                unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
             }
         }
     }
@@ -406,7 +412,7 @@ impl CocoaNativeWindow {
 
     #[inline]
     pub fn is_flipped(&self) -> bool {
-        ObjcMsg::send_bool_return(self.ns_view, Sel::register("isFlipped"))
+        unsafe { ObjcMsg::send_bool_return(self.ns_view, Sel::register("isFlipped")) }
     }
 }
 
@@ -419,16 +425,16 @@ impl PlatformWindow for CocoaNativeWindow {
         } else {
             "makeKeyAndOrderFront:"
         };
-        ObjcMsg::send_id(self.ns_window, Sel::register(order), Id::NIL);
+        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register(order), Id::NIL) };
         self.visible.store(true, Ordering::Release);
     }
 
     fn is_active(&self) -> bool {
-        ObjcMsg::send_bool_return(self.ns_window, Sel::register("isKeyWindow"))
+        unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isKeyWindow")) }
     }
 
     fn hide(&self) {
-        ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL);
+        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
         self.visible.store(false, Ordering::Release);
     }
 
@@ -439,14 +445,14 @@ impl PlatformWindow for CocoaNativeWindow {
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
         let cg_rect = native_rect(rect);
-        ObjcMsg::send_window_init(
-            self.ns_window,
-            Sel::register("setFrame:display:"),
-            cg_rect,
-            0,
-            0,
-            true,
-        );
+        unsafe {
+            ObjcMsg::send_rect_display(
+                self.ns_window,
+                Sel::register("setFrame:display:"),
+                cg_rect,
+                true,
+            )
+        };
         let _ = self.surface.resize(rect.width as u32, rect.height as u32);
     }
 
@@ -455,20 +461,24 @@ impl PlatformWindow for CocoaNativeWindow {
         // flags (qcocoawindow.mm:749).
         self.stays_on_top = enabled;
         self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
-        ObjcMsg::send_int(
-            self.ns_window,
-            Sel::register("setLevel:"),
-            cocoa_window_level(self.flags),
-        );
+        unsafe {
+            ObjcMsg::send_int(
+                self.ns_window,
+                Sel::register("setLevel:"),
+                cocoa_window_level(self.flags),
+            )
+        };
     }
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
-        ObjcMsg::send_bool(
-            self.ns_window,
-            Sel::register("setIgnoresMouseEvents:"),
-            enabled,
-        );
+        unsafe {
+            ObjcMsg::send_bool(
+                self.ns_window,
+                Sel::register("setIgnoresMouseEvents:"),
+                enabled,
+            )
+        };
     }
 
     fn start_system_drag(&self) {
@@ -479,21 +489,27 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: only while the left button alone is pressed; otherwise the move is refused
         // (QCocoaWindow::startSystemMove, qcocoawindow.mm:366-370).
         let ns_event = Id(Class::get("NSEvent").unwrap_or(Class::NIL).0);
-        if ObjcMsg::send_usize_return(ns_event, Sel::register("pressedMouseButtons")) != 1 {
+        if unsafe { ObjcMsg::send_usize_return(ns_event, Sel::register("pressedMouseButtons")) }
+            != 1
+        {
             return false;
         }
-        let nsapp = ObjcMsg::send_class_0(
-            Class::get("NSApplication").unwrap_or(Class::NIL),
-            Sel::register("sharedApplication"),
-        );
+        let nsapp = unsafe {
+            ObjcMsg::send_class_0(
+                Class::get("NSApplication").unwrap_or(Class::NIL),
+                Sel::register("sharedApplication"),
+            )
+        };
         if !nsapp.is_nil() {
-            let current_event = ObjcMsg::send_0(nsapp, Sel::register("currentEvent"));
+            let current_event = unsafe { ObjcMsg::send_0(nsapp, Sel::register("currentEvent")) };
             if !current_event.is_nil() {
-                ObjcMsg::send_id(
-                    self.ns_window,
-                    Sel::register("performWindowDragWithEvent:"),
-                    current_event,
-                );
+                unsafe {
+                    ObjcMsg::send_id(
+                        self.ns_window,
+                        Sel::register("performWindowDragWithEvent:"),
+                        current_event,
+                    )
+                };
             }
         }
         true
@@ -507,11 +523,13 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity.clamp(0.0, 1.0);
-        ObjcMsg::send_length(
-            self.ns_window,
-            Sel::register("setAlphaValue:"),
-            self.opacity as CGFloat,
-        );
+        unsafe {
+            ObjcMsg::send_length(
+                self.ns_window,
+                Sel::register("setAlphaValue:"),
+                self.opacity as CGFloat,
+            )
+        };
     }
 
     fn opacity(&self) -> f32 {
@@ -522,14 +540,16 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: QCocoaWindow::propagateSizeHints sets window.contentMinSize, the minimum of the
         // content area (qcocoawindow.mm:1181-1185), not the frame's minSize.
         self.size_limits.min = crate::size_limits::clamp_size_limit(min_w, min_h);
-        ObjcMsg::send_size(
-            self.ns_window,
-            Sel::register("setContentMinSize:"),
-            CGSize::new(
-                self.size_limits.min.0 as CGFloat,
-                self.size_limits.min.1 as CGFloat,
-            ),
-        );
+        unsafe {
+            ObjcMsg::send_size(
+                self.ns_window,
+                Sel::register("setContentMinSize:"),
+                CGSize::new(
+                    self.size_limits.min.0 as CGFloat,
+                    self.size_limits.min.1 as CGFloat,
+                ),
+            )
+        };
     }
 
     fn minimum_size(&self) -> (i32, i32) {
@@ -540,14 +560,16 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: the same `propagateSizeHints` sets window.contentMaxSize to `windowMaximumSize()`
         // as is, `QWINDOWSIZE_MAX` included for an axis without a maximum (qcocoawindow.mm:1187-1188).
         self.size_limits.max = crate::size_limits::clamp_size_limit(max_w, max_h);
-        ObjcMsg::send_size(
-            self.ns_window,
-            Sel::register("setContentMaxSize:"),
-            CGSize::new(
-                self.size_limits.max.0 as CGFloat,
-                self.size_limits.max.1 as CGFloat,
-            ),
-        );
+        unsafe {
+            ObjcMsg::send_size(
+                self.ns_window,
+                Sel::register("setContentMaxSize:"),
+                CGSize::new(
+                    self.size_limits.max.0 as CGFloat,
+                    self.size_limits.max.1 as CGFloat,
+                ),
+            )
+        };
     }
 
     fn maximum_size(&self) -> (i32, i32) {

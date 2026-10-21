@@ -331,6 +331,22 @@ pub mod cocoa {
                 || std::env::var("QT_QPA_PLATFORM").as_deref() == Ok("offscreen")
                 || std::env::var("FERROKIT_HEADLESS").is_ok()
         }
+
+        /// Runs the `NSApplication` setup once. AppKit allows it only on the main thread, so a
+        /// call from any other thread (the lazy `platform()` singleton built by a worker) does
+        /// nothing and the setup is done by the first call made on the main thread, which window
+        /// creation makes.
+        #[cfg(target_os = "macos")]
+        fn ensure_ns_application() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static DONE: AtomicBool = AtomicBool::new(false);
+            if Self::is_headless() || !ferrokit_core::object::ThreadContext::is_main_thread() {
+                return;
+            }
+            if !DONE.swap(true, Ordering::AcqRel) {
+                init_ns_application();
+            }
+        }
     }
     pub struct CocoaPlatformIntegration {
         screen_changed_signal: Signal<()>,
@@ -340,9 +356,7 @@ pub mod cocoa {
     impl Default for CocoaPlatformIntegration {
         fn default() -> Self {
             #[cfg(target_os = "macos")]
-            if !Self::is_headless() {
-                init_ns_application();
-            }
+            Self::ensure_ns_application();
             Self {
                 screen_changed_signal: Signal::new(),
                 theme: Arc::new(CocoaTheme::default()),
@@ -357,20 +371,24 @@ pub mod cocoa {
     #[cfg(target_os = "macos")]
     fn init_ns_application() {
         use crate::objc_runtime::{objc_get_class, qcocoa_application_delegate, ObjcMsg, Sel};
-        let app = ObjcMsg::send_class_0(
-            objc_get_class("NSApplication"),
-            Sel::register("sharedApplication"),
-        );
+        let app = unsafe {
+            ObjcMsg::send_class_0(
+                objc_get_class("NSApplication"),
+                Sel::register("sharedApplication"),
+            )
+        };
         if std::env::var_os("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")
             .is_none_or(|value| value.is_empty())
         {
             transform_process_to_foreground_application(app);
         }
-        ObjcMsg::send_id(
-            app,
-            Sel::register("setDelegate:"),
-            qcocoa_application_delegate(),
-        );
+        unsafe {
+            ObjcMsg::send_id(
+                app,
+                Sel::register("setDelegate:"),
+                qcocoa_application_delegate(),
+            )
+        };
     }
 
     /// `qt_mac_transformProccessToForegroundApplication` (qcocoahelpers.mm:138-180): the
@@ -382,7 +400,7 @@ pub mod cocoa {
         let set = |key| info_plist_int(key).is_some_and(|value| value != 0);
         if !set("LSUIElement") && !set("LSBackgroundOnly") {
             // NSApplicationActivationPolicyRegular
-            ObjcMsg::send_int(app, Sel::register("setActivationPolicy:"), 0);
+            unsafe { ObjcMsg::send_int(app, Sel::register("setActivationPolicy:"), 0) };
         }
     }
 
@@ -413,7 +431,7 @@ pub mod cocoa {
         let ns_key = nsstring_from_str(key);
         let value =
             unsafe { CFBundleGetValueForInfoDictionaryKey(CFBundleGetMainBundle(), ns_key.0) };
-        ObjcMsg::send_0(ns_key, Sel::register("release"));
+        unsafe { ObjcMsg::send_0(ns_key, Sel::register("release")) };
         if value.is_null() {
             return None;
         }
@@ -457,6 +475,8 @@ pub mod cocoa {
             if Self::is_headless() {
                 return Ok(Box::new(GenericWindow::new(title, rect, flags)));
             }
+            #[cfg(target_os = "macos")]
+            Self::ensure_ns_application();
             let win = CocoaNativeWindow::new(title, rect, flags)?;
             Ok(Box::new(win))
         }
@@ -525,18 +545,12 @@ static PLATFORM_INTEGRATION: std::sync::RwLock<Option<Arc<dyn PlatformIntegratio
     std::sync::RwLock::new(None);
 
 pub fn platform() -> Arc<dyn PlatformIntegration> {
-    {
-        let reader = PLATFORM_INTEGRATION.read().unwrap();
-        if let Some(integration) = &*reader {
-            return Arc::clone(integration);
-        }
-    }
-
-    let mut writer = PLATFORM_INTEGRATION.write().unwrap();
-    if let Some(integration) = &*writer {
+    if let Some(integration) = &*PLATFORM_INTEGRATION.read().unwrap() {
         return Arc::clone(integration);
     }
 
+    // Built without holding the lock: constructing an integration may call into the window
+    // system, and must not block (or deadlock with) other users of `platform()`.
     #[cfg(windows)]
     let default_integration: Arc<dyn PlatformIntegration> =
         Arc::new(win32::Win32PlatformIntegration::default());
@@ -552,8 +566,10 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     let default_integration: Arc<dyn PlatformIntegration> =
         Arc::new(generic::GenericPlatformIntegration::default());
-    *writer = Some(Arc::clone(&default_integration));
-    default_integration
+
+    let mut writer = PLATFORM_INTEGRATION.write().unwrap();
+    // A racing caller (or `set_platform_integration`) may have installed one meanwhile.
+    Arc::clone(writer.get_or_insert(default_integration))
 }
 
 pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
