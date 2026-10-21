@@ -182,9 +182,21 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
     if let Some(m) = limits_map.as_mut() {
         m.remove(&(hwnd as isize));
     }
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        map.borrow_mut().remove(&(hwnd as isize));
-    });
+    let removed = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().remove(&(hwnd as isize)))
+        .ok()
+        .flatten();
+    if removed.is_none() {
+        // Its handler is running (taken out of the registry): drop it once it returns.
+        let _ = ACTIVE_DISPATCH.try_with(|a| {
+            if a.borrow().contains_key(&(hwnd as isize)) {
+                let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().insert(hwnd as isize));
+            }
+        });
+    }
+    // Dropping a handler may drop a window, which unregisters: outside every borrow.
+    drop(removed);
+    discard_pending_events(hwnd as isize);
 }
 
 #[inline]
@@ -209,16 +221,24 @@ pub fn set_window_frameless_config(hwnd: HWND, config: CustomFramelessConfig) {
 }
 
 pub fn set_window_event_handler(hwnd: HWND, handler: Box<dyn WindowSystemEventHandler>) {
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        map.borrow_mut().insert(hwnd as isize, handler);
-    });
+    let replaced = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().insert(hwnd as isize, handler))
+        .ok()
+        .flatten();
+    drop(replaced);
 }
 
 static WINDOW_SYSTEM_EVENT_QUEUE: Mutex<Option<Vec<(isize, WindowSystemEvent)>>> = Mutex::new(None);
 
+/// Private window message that tells a window's own thread to deliver the events posted for it
+/// (`QWindowSystemInterface::flushWindowSystemEvents` is driven by the event dispatcher in Qt).
+/// `PostMessageW` is thread-safe and the message is also dispatched by nested (modal) loops.
+#[cfg(windows)]
+const WM_FLUSH_WINDOW_SYSTEM_EVENTS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x1F;
+
 pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
     {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap();
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
         if queue.is_none() {
             *queue = Some(Vec::new());
         }
@@ -227,15 +247,44 @@ pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
         }
     }
 
+    #[cfg(windows)]
+    // SAFETY: `PostMessageW` accepts any handle value and fails harmlessly for a stale one.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd,
+            WM_FLUSH_WINDOW_SYSTEM_EVENTS,
+            0,
+            0,
+        );
+    }
     if let Some((handle, _)) = get_window_event_binding(hwnd) {
         handle.wake_up();
     }
 }
 
+/// Whether the calling thread owns the handler of `hwnd` (handlers are thread-local, so only that
+/// thread can deliver its events).
+fn has_local_handler(hwnd: isize) -> bool {
+    WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow().contains_key(&hwnd))
+        .unwrap_or(false)
+        || ACTIVE_DISPATCH
+            .try_with(|a| a.borrow().contains_key(&hwnd))
+            .unwrap_or(false)
+}
+
+/// Delivers the posted events whose handlers live on the calling thread; the others stay queued
+/// for their own thread.
 pub fn flush_window_system_events() -> bool {
     let events: Vec<(isize, WindowSystemEvent)> = {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap();
-        queue.as_mut().map(std::mem::take).unwrap_or_default()
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(q) = queue.as_mut() else {
+            return false;
+        };
+        let (mine, others): (Vec<_>, Vec<_>) =
+            std::mem::take(q).into_iter().partition(|(h, _)| has_local_handler(*h));
+        *q = others;
+        mine
     };
 
     if events.is_empty() {
@@ -442,47 +491,145 @@ fn sync_interactive_resize(
 }
 
 thread_local! {
-    static NESTED_EVENTS: std::cell::RefCell<Vec<(HWND, WindowSystemEvent)>> = const { std::cell::RefCell::new(Vec::new()) };
-    static IS_DISPATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Windows whose handler is running right now. The value holds the events that arrived for
+    /// that window meanwhile (`SendEvent` re-entrancy); the outermost call delivers them in order
+    /// once its handler returns. Events for any *other* window are delivered at once, so a nested
+    /// modal loop started from a handler keeps feeding its own window.
+    static ACTIVE_DISPATCH: std::cell::RefCell<HashMap<isize, std::collections::VecDeque<WindowSystemEvent>>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// Windows unregistered while their handler was running; the handler is dropped, not restored.
+    static UNREGISTERED_WHILE_ACTIVE: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
-pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent) {
-    let is_dispatching = IS_DISPATCHING.try_with(|d| d.get()).unwrap_or(false);
-    if is_dispatching {
-        let _ = NESTED_EVENTS.try_with(|q| q.borrow_mut().push((hwnd, event)));
-        return;
+/// Marks `hwnd` as dispatching for its lifetime. Dropping it (also while unwinding out of a
+/// panicking handler) makes the window deliverable again and discards what was queued behind the
+/// failed handler.
+struct ActiveDispatch(isize);
+
+impl Drop for ActiveDispatch {
+    fn drop(&mut self) {
+        let queued = ACTIVE_DISPATCH
+            .try_with(|a| a.borrow_mut().remove(&self.0))
+            .ok()
+            .flatten();
+        let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().remove(&self.0));
+        // Dropping events may run arbitrary `Drop` code: do it outside the borrow.
+        drop(queued);
     }
+}
 
-    let _ = IS_DISPATCHING.try_with(|d| d.set(true));
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        if let Some(handler) = map.borrow_mut().get_mut(&(hwnd as isize)) {
-            handler.handle_window_event(event);
-        }
-    });
+/// Runs one handler call with the handler taken out of the registry, so the handler may register,
+/// replace or unregister handlers (create or drop a window) while it runs. The handler goes back
+/// afterwards, also when it panics, unless it was replaced or its window was unregistered.
+struct RunningHandler {
+    hwnd: isize,
+    handler: Option<Box<dyn WindowSystemEventHandler>>,
+}
 
-    loop {
-        let next = NESTED_EVENTS
-            .try_with(|q| {
-                if q.borrow().is_empty() {
-                    None
+impl Drop for RunningHandler {
+    fn drop(&mut self) {
+        let Some(handler) = self.handler.take() else {
+            return;
+        };
+        let unregistered = UNREGISTERED_WHILE_ACTIVE
+            .try_with(|u| u.borrow_mut().remove(&self.hwnd))
+            .unwrap_or(false);
+        let leftover = WINDOW_EVENT_HANDLERS
+            .try_with(|map| {
+                let mut map = map.borrow_mut();
+                if unregistered || map.contains_key(&self.hwnd) {
+                    // Unregistered, or replaced by a handler set while this one ran.
+                    Some(handler)
                 } else {
-                    Some(q.borrow_mut().remove(0))
+                    map.insert(self.hwnd, handler);
+                    None
                 }
             })
             .unwrap_or(None);
+        drop(leftover);
+    }
+}
 
-        match next {
-            Some((h, ev)) => {
-                let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-                    if let Some(handler) = map.borrow_mut().get_mut(&(h as isize)) {
-                        handler.handle_window_event(ev);
-                    }
-                });
+fn run_handler(hwnd: isize, event: WindowSystemEvent) {
+    let taken = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().remove(&hwnd))
+        .ok()
+        .flatten();
+    let Some(handler) = taken else {
+        return;
+    };
+    let mut running = RunningHandler {
+        hwnd,
+        handler: Some(handler),
+    };
+    if let Some(handler) = running.handler.as_mut() {
+        handler.handle_window_event(event);
+    }
+}
+
+pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent) {
+    use std::collections::hash_map::Entry;
+    let key = hwnd as isize;
+    let first = ACTIVE_DISPATCH
+        .try_with(|active| match active.borrow_mut().entry(key) {
+            Entry::Occupied(mut e) => {
+                e.get_mut().push_back(event);
+                None
             }
+            Entry::Vacant(v) => {
+                v.insert(std::collections::VecDeque::new());
+                Some(event)
+            }
+        })
+        .unwrap_or(None);
+    let Some(mut event) = first else {
+        return;
+    };
+
+    let _active = ActiveDispatch(key);
+    loop {
+        run_handler(key, event);
+        let next = ACTIVE_DISPATCH
+            .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
+            .unwrap_or(None);
+        match next {
+            Some(ev) => event = ev,
             None => break,
         }
     }
-    let _ = IS_DISPATCHING.try_with(|d| d.set(false));
+}
+
+/// Drops every event still queued for `hwnd` (a destroyed window must not receive them, and a
+/// recycled handle must not inherit them).
+fn discard_pending_events(hwnd: isize) {
+    let discarded: Vec<WindowSystemEvent> = {
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        if let Some(q) = queue.as_mut() {
+            let mut kept = Vec::with_capacity(q.len());
+            for (h, ev) in q.drain(..) {
+                if h == hwnd {
+                    out.push(ev);
+                } else {
+                    kept.push((h, ev));
+                }
+            }
+            *q = kept;
+        }
+        out
+    };
+    drop(discarded);
+    let nested: Option<Vec<WindowSystemEvent>> = ACTIVE_DISPATCH
+        .try_with(|a| {
+            a.borrow_mut()
+                .get_mut(&hwnd)
+                .map(|q| q.drain(..).collect::<Vec<_>>())
+        })
+        .unwrap_or(None);
+    drop(nested);
 }
 fn is_window_thread(hwnd: HWND) -> bool {
     #[cfg(windows)]
@@ -670,9 +817,15 @@ unsafe fn native_window_proc_inner(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_FLUSH_WINDOW_SYSTEM_EVENTS => {
+            flush_window_system_events();
+            0
+        }
         WM_NCCALCSIZE => {
             crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
-            if wparam != 0 {
+            // Only a custom-frameless window removes its non-client area: a normal window would
+            // otherwise lose its caption and borders and maximise past the work area.
+            if wparam != 0 && get_window_frameless_config(hwnd).is_some() {
                 let ncp = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
                 let client_rect = &mut ncp.rgrc[0];
 
