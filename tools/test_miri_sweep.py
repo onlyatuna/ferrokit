@@ -1,3 +1,5 @@
+import argparse
+import json
 import os
 import sys
 import unittest
@@ -5,6 +7,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from miri_sweep import (
     compare_with_baseline,
+    parse_shard,
+    shard_targets,
     ALLOWED_STATUS_TRANSITIONS,
     failure_section,
     isolation_outcome,
@@ -190,6 +194,36 @@ class TestMiriSweepBaselineComparison(unittest.TestCase):
         self.assertEqual(isolation_outcome(bare, "a::t"), "ignored")
         self.assertIsNone(isolation_outcome("test a::other ... ok\n", "a::t"))
         self.assertIsNone(isolation_outcome("test a::tt ... ok\n", "a::t"))
+
+
+class TestMiriSweepSharding(unittest.TestCase):
+    @staticmethod
+    def baseline_targets():
+        path = os.path.join(os.path.dirname(__file__), "miri_baseline.json")
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)["targets"]
+
+    def test_shards_union_covers_every_baseline_target_exactly_once(self):
+        targets = self.baseline_targets()
+        self.assertEqual(len(targets), len(set(targets)))
+        for count in range(1, 6):
+            shards = [shard_targets(targets, i, count) for i in range(1, count + 1)]
+            flat = [t for shard in shards for t in shard]
+            self.assertEqual(sorted(flat), sorted(targets), f"count={count}")
+            self.assertEqual(len(flat), len(set(flat)), f"count={count}")
+
+    def test_shards_are_balanced_and_deterministic(self):
+        targets = self.baseline_targets()
+        sizes = [len(shard_targets(targets, i, 2)) for i in (1, 2)]
+        self.assertLessEqual(abs(sizes[0] - sizes[1]), 1)
+        self.assertEqual(shard_targets(targets, 1, 2), shard_targets(list(reversed(targets)), 1, 2))
+
+    def test_parse_shard_accepts_valid_and_rejects_invalid(self):
+        self.assertEqual(parse_shard("1/2"), (1, 2))
+        self.assertEqual(parse_shard("2/2"), (2, 2))
+        for bad in ("0/2", "3/2", "1/0", "a/2", "1", "-1/2"):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=bad):
+                parse_shard(bad)
 
 
 if __name__ == "__main__":
