@@ -14,7 +14,7 @@ pub use win32_menu::{Win32Menu, Win32MenuItem};
 pub use cocoa_menu::{CocoaMenu, CocoaMenuItem};
 pub use dbus_menu::{DBusMenu, DBusMenuItem, DBusMenuLayoutNode, DBusMenuPropValue};
 
-pub trait PlatformMenuItem: Send + Sync {
+pub trait PlatformMenuItem {
     fn id(&self) -> u32;
     fn text(&self) -> String;
     fn set_text(&mut self, text: &str);
@@ -31,7 +31,7 @@ pub trait PlatformMenuItem: Send + Sync {
     fn activated(&self) -> &Signal<()>;
 }
 
-pub trait PlatformMenu: Send + Sync {
+pub trait PlatformMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem>;
     fn add_checkable(&mut self, id: u32, text: &str, checked: bool) -> Arc<dyn PlatformMenuItem>;
     fn add_separator(&mut self);

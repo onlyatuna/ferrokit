@@ -1481,10 +1481,9 @@ pub struct NativeWindow {
     dcomp_downgraded: bool,
 }
 
-#[cfg(windows)]
-unsafe impl Send for NativeWindow {}
-#[cfg(windows)]
-unsafe impl Sync for NativeWindow {}
+// Deliberately neither `Send` nor `Sync`: it owns an `HWND` (window APIs such as `DestroyWindow`
+// require the creating thread), a raw OLE drop-target pointer and unsynchronised `Cell` state, and
+// the window procedure reaches it from that thread only. `owner_thread` records that thread.
 
 /// `set_stays_on_top`'s `SetWindowPos` insert-after target: `HWND_TOPMOST` for the topmost band,
 /// `HWND_NOTOPMOST` to leave it.

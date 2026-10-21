@@ -253,9 +253,6 @@ pub struct DbusConnection {
     stream: Option<UnixStream>,
 }
 
-unsafe impl Send for DbusConnection {}
-unsafe impl Sync for DbusConnection {}
-
 static DBUS_SOCKET_FD_COUNTER: AtomicU32 = AtomicU32::new(100);
 
 impl DbusConnection {

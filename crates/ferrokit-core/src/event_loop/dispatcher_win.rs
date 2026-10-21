@@ -293,9 +293,16 @@ fn ensure_window_class_registered() {
     });
 }
 
+/// Message-only window plus event-loop state of one thread.
+///
+/// Deliberately neither `Send` nor `Sync`: the window, its `DestroyWindow` in `Drop`, the thread
+/// local wake-up flags and message pumping all belong to the creating thread. Other threads
+/// use [`Win32EventDispatcherHandle`] (from [`clone_handle`](Self::clone_handle)) to wake it up.
 pub struct Win32EventDispatcher {
     pub internal_hwnd: HWND,
     pub wakeup_pending: Arc<AtomicBool>,
+    /// Cleared by `Drop` before the window is destroyed; handles check it before posting.
+    alive: Arc<AtomicBool>,
     pub native_filters: NativeEventFilterChain,
 }
 
@@ -348,6 +355,7 @@ impl Win32EventDispatcher {
         Self {
             internal_hwnd,
             wakeup_pending,
+            alive: Arc::new(AtomicBool::new(true)),
             native_filters: NativeEventFilterChain::new(),
         }
     }
@@ -362,8 +370,9 @@ impl Win32EventDispatcher {
 
     pub fn clone_handle(&self) -> Win32EventDispatcherHandle {
         Win32EventDispatcherHandle {
-            internal_hwnd: self.internal_hwnd,
+            internal_hwnd: self.internal_hwnd as isize,
             wakeup_pending: Arc::clone(&self.wakeup_pending),
+            alive: Arc::clone(&self.alive),
         }
     }
 
@@ -600,17 +609,30 @@ impl Win32EventDispatcher {
     }
 }
 
+/// Cross-thread handle that wakes the owning [`Win32EventDispatcher`].
+///
+/// The window is stored as an integer, so the handle is `Send + Sync` by construction: the only
+/// thing it ever does with it is `PostMessageW`, which Windows documents as callable from any
+/// thread. Once the dispatcher is dropped the handle stops posting (see `wake_up`).
 #[derive(Debug, Clone)]
 pub struct Win32EventDispatcherHandle {
-    internal_hwnd: HWND,
+    internal_hwnd: isize,
     wakeup_pending: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
 }
 
 impl Win32EventDispatcherHandle {
     pub fn wake_up(&self) {
+        // Once the dispatcher is dropped its window is gone and the `HWND` value may be reused
+        // by an unrelated window, so do not post (or set `wakeup_pending`) any more. The check
+        // and the post are not atomic: a drop that lands between them can still let one post
+        // through, which then hits a destroyed (or, very unlikely, a recycled) window.
+        if !self.alive.load(Ordering::Acquire) {
+            return;
+        }
         if !self.wakeup_pending.swap(true, Ordering::Release) {
             unsafe {
-                PostMessageW(self.internal_hwnd, WM_FERROKIT_WAKEUP, 0, 0);
+                PostMessageW(self.internal_hwnd as HWND, WM_FERROKIT_WAKEUP, 0, 0);
             }
         }
     }
@@ -621,9 +643,6 @@ impl EventDispatcherHandle for Win32EventDispatcherHandle {
         self.wake_up();
     }
 }
-
-unsafe impl Send for Win32EventDispatcherHandle {}
-unsafe impl Sync for Win32EventDispatcherHandle {}
 
 impl EventDispatcher for Win32EventDispatcher {
     fn wake_up(&self) {
@@ -668,10 +687,9 @@ impl EventDispatcher for Win32EventDispatcher {
     }
 }
 
-unsafe impl Send for Win32EventDispatcher {}
-unsafe impl Sync for Win32EventDispatcher {}
 impl Drop for Win32EventDispatcher {
     fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
         if !self.internal_hwnd.is_null() {
             let key = self.internal_hwnd as usize;
             let _ = WAKEUP_FLAGS.try_with(|flags| {
@@ -690,6 +708,71 @@ impl Drop for Win32EventDispatcher {
 mod tests {
     use super::*;
     use std::ptr::NonNull;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    /// Fails to compile if `T` is `Send` (the usual "ambiguous impl" trick for negative bounds).
+    macro_rules! assert_not_send {
+        ($t:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfSend<A> {
+                    fn some_item() {}
+                }
+                impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+                struct Invalid;
+                impl<T: ?Sized + Send> AmbiguousIfSend<Invalid> for T {}
+                let _ = <$t as AmbiguousIfSend<_>>::some_item;
+            };
+        };
+    }
+
+    /// Fails to compile if `T` is `Sync`.
+    macro_rules! assert_not_sync {
+        ($t:ty) => {
+            const _: fn() = || {
+                trait AmbiguousIfSync<A> {
+                    fn some_item() {}
+                }
+                impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+                struct Invalid;
+                impl<T: ?Sized + Sync> AmbiguousIfSync<Invalid> for T {}
+                let _ = <$t as AmbiguousIfSync<_>>::some_item;
+            };
+        };
+    }
+
+    // The dispatcher owns a window that only its creating thread may destroy (`Drop`), so it must
+    // not move to or be shared with another thread; its handle exists for exactly that.
+    assert_not_send!(Win32EventDispatcher);
+    assert_not_sync!(Win32EventDispatcher);
+    // `EventLoop` shares its thread's state, which contains the dispatcher, through an `Arc`, so
+    // it is `!Send` on Windows as a consequence.
+    assert_not_send!(crate::event_loop::EventLoop);
+
+    #[test]
+    fn test_handle_is_send_sync() {
+        assert_send_sync::<Win32EventDispatcherHandle>();
+    }
+
+    #[test]
+    fn test_handle_does_not_post_after_dispatcher_dropped() {
+        let dispatcher = Win32EventDispatcher::new();
+        let handle = dispatcher.clone_handle();
+        handle.wake_up();
+        assert!(
+            handle.wakeup_pending.load(Ordering::Acquire),
+            "a live dispatcher's handle posts"
+        );
+        let _ = dispatcher.process_events(false, None);
+        assert!(!handle.wakeup_pending.load(Ordering::Acquire));
+        drop(dispatcher);
+
+        // The window is gone and its `HWND` value may be reused: no post may be attempted, which
+        // shows as `wakeup_pending` (set right before every post) staying clear.
+        let h = handle.clone();
+        std::thread::spawn(move || h.wake_up()).join().unwrap();
+        assert!(!handle.wakeup_pending.load(Ordering::Acquire));
+    }
 
     #[test]
     fn test_cross_thread_wakeup() {

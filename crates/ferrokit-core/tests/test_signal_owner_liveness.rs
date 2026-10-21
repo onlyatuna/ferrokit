@@ -259,6 +259,8 @@ fn a_queued_call_posted_while_the_owner_was_alive_is_still_delivered_after_it_is
 /// A slot that is meant to run in the middle of an emission and drop the owner it belongs to. The
 /// closure must be `Send + Sync` and holds a thread-bound value; every use is on one thread.
 struct Dropper(Rc<Cell<Option<OwnedObject<Owner>>>>);
+// SAFETY: the `Rc` is only ever created, used and dropped on the test's own thread (see the
+// type's documentation); `Send + Sync` only satisfies the bounds of the slot closure.
 unsafe impl Send for Dropper {}
 unsafe impl Sync for Dropper {}
 

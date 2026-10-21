@@ -20,8 +20,8 @@ pub struct CocoaStatusItem {
     on_click: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
-unsafe impl Send for CocoaStatusItem {}
-unsafe impl Sync for CocoaStatusItem {}
+// Deliberately neither `Send` nor `Sync`: wraps an `NSStatusItem` (`Id`), which AppKit only allows
+// to be used from the main thread (`new` asserts it).
 
 impl CocoaStatusItem {
     pub fn new(item_id: usize) -> Self {

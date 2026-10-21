@@ -117,8 +117,8 @@ pub struct Win32Menu {
     entries: Vec<MenuEntry>,
 }
 
-unsafe impl Send for Win32Menu {}
-unsafe impl Sync for Win32Menu {}
+// Deliberately neither `Send` nor `Sync` (raw `HWND`): the menu is shown and destroyed through
+// window APIs that must run on the thread that owns `hwnd`.
 
 impl Win32Menu {
     pub fn new(hwnd: HWND) -> Self {

@@ -259,6 +259,8 @@ fn a_child_that_is_not_running_is_freed_with_its_parent() {
 /// A handle that lets a closure that must be `Send + Sync` hold a thread-bound value. Every use
 /// in this file is on one thread.
 struct ThreadBound<T>(T);
+// SAFETY: the wrapped value is only ever created, used and dropped on the test's own thread (see
+// the type's documentation); `Send + Sync` only satisfies the bounds of the slot closures.
 unsafe impl<T> Send for ThreadBound<T> {}
 unsafe impl<T> Sync for ThreadBound<T> {}
 impl<T> ThreadBound<T> {

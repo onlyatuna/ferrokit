@@ -19,7 +19,11 @@ pub struct Mutex<T: ?Sized> {
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
+// `Send` needs no `unsafe`: every field is `Send` when `T: Send`.
+//
+// SAFETY: `data` is only reachable through a `MutexGuard`, and a guard exists only while `inner`
+// records the mutex as locked (see `lock`), so at most one thread accesses `T` at a time. As with
+// `std::sync::Mutex`, that makes `Mutex<T>` `Sync` whenever `T: Send`.
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 
 impl<T> Mutex<T> {
@@ -95,6 +99,8 @@ pub struct MutexGuard<'a, T: ?Sized> {
     mutex: &'a Mutex<T>,
 }
 
+// SAFETY: a shared `&MutexGuard<T>` only hands out `&T` (via `Deref`), so it is as safe to share
+// across threads as `&T` itself, i.e. when `T: Sync`.
 unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
 
 impl<T: ?Sized> Deref for MutexGuard<'_, T> {
@@ -147,7 +153,11 @@ pub struct RecursiveMutex<T: ?Sized> {
     data: UnsafeCell<T>,
 }
 
-unsafe impl<T: ?Sized + Send> Send for RecursiveMutex<T> {}
+// `Send` needs no `unsafe`: every field is `Send` when `T: Send`.
+//
+// SAFETY: `data` is only reachable through a `RecursiveMutexGuard`, and guards are only handed out
+// to the thread recorded as `owner` in `state` (see `lock`), so only one thread at a time accesses
+// `T`. As with `std::sync::Mutex`, that makes `RecursiveMutex<T>` `Sync` whenever `T: Send`.
 unsafe impl<T: ?Sized + Send> Sync for RecursiveMutex<T> {}
 
 impl<T> RecursiveMutex<T> {
@@ -296,6 +306,9 @@ impl<'a, T: ?Sized> RecursiveMutexGuard<'a, T> {
     }
 }
 
+// SAFETY: a shared `&RecursiveMutexGuard<T>` only hands out `&T` (via `Deref`), so it is as safe
+// to share across threads as `&T` itself, i.e. when `T: Sync`. (The `PhantomData<*const ()>` that
+// makes the guard `!Send` would otherwise also make it `!Sync`.)
 unsafe impl<T: ?Sized + Sync> Sync for RecursiveMutexGuard<'_, T> {}
 
 impl<T: ?Sized> Deref for RecursiveMutexGuard<'_, T> {
