@@ -21,6 +21,10 @@ pub enum ParseErrorReason {
     InvalidNumber,
     ExpectedColon,
     ExpectedCommaOrCloser,
+    /// Arrays/objects nested deeper than [`MAX_NESTING_DEPTH`].
+    DeepNesting,
+    /// A string contained bytes that are not valid UTF-8.
+    IllegalUtf8String,
 }
 
 impl fmt::Display for ParseErrorReason {
@@ -34,6 +38,8 @@ impl fmt::Display for ParseErrorReason {
             Self::InvalidNumber => write!(f, "invalid numeric format"),
             Self::ExpectedColon => write!(f, "expected ':' after object key"),
             Self::ExpectedCommaOrCloser => write!(f, "expected ',' or closing bracket/brace"),
+            Self::DeepNesting => write!(f, "document is nested too deeply"),
+            Self::IllegalUtf8String => write!(f, "string is not valid UTF-8"),
         }
     }
 }
@@ -69,12 +75,16 @@ impl fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
+/// Maximum array/object nesting depth (same limit as Qt's `QJsonParser`).
+pub const MAX_NESTING_DEPTH: usize = 1024;
+
 /// Internal recursive descent parser.
 pub(crate) struct Parser<'a> {
     chars: &'a [u8],
     pos: usize,
     line: usize,
     col: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -84,6 +94,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             line: 1,
             col: 1,
+            depth: 0,
         }
     }
 
@@ -115,8 +126,19 @@ impl<'a> Parser<'a> {
             'n' => self.parse_null(),
             't' | 'f' => self.parse_bool(),
             '"' => self.parse_string().map(JsonValue::String),
-            '[' => self.parse_array().map(JsonValue::Array),
-            '{' => self.parse_object().map(JsonValue::Object),
+            '[' | '{' => {
+                if self.depth >= MAX_NESTING_DEPTH {
+                    return Err(self.error(ParseErrorReason::DeepNesting));
+                }
+                self.depth += 1;
+                let res = if ch == '[' {
+                    self.parse_array().map(JsonValue::Array)
+                } else {
+                    self.parse_object().map(JsonValue::Object)
+                };
+                self.depth -= 1;
+                res
+            }
             '-' | '0'..='9' => self.parse_number(),
             other => Err(self.error(ParseErrorReason::UnexpectedChar(other))),
         }
@@ -147,30 +169,38 @@ impl<'a> Parser<'a> {
             return Err(self.error(ParseErrorReason::UnexpectedChar('"')));
         }
 
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
+        let mut utf8 = [0u8; 4];
+        let mut push = |out: &mut Vec<u8>, c: char| {
+            out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+        };
 
         while let Some(b) = self.advance() {
             match b {
-                b'"' => return Ok(out),
+                b'"' => {
+                    return String::from_utf8(out)
+                        .map_err(|_| self.error(ParseErrorReason::IllegalUtf8String));
+                }
                 b'\\' => {
                     let esc = match self.advance() {
                         Some(e) => e,
                         None => return Err(self.error(ParseErrorReason::UnterminatedString)),
                     };
                     match esc {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\x08'),
-                        b'f' => out.push('\x0c'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
+                        b'"' => push(&mut out, '"'),
+                        b'\\' => push(&mut out, '\\'),
+                        b'/' => push(&mut out, '/'),
+                        b'b' => push(&mut out, '\x08'),
+                        b'f' => push(&mut out, '\x0c'),
+                        b'n' => push(&mut out, '\n'),
+                        b'r' => push(&mut out, '\r'),
+                        b't' => push(&mut out, '\t'),
                         b'u' => {
                             let code = self.parse_hex4()?;
                             // Check for UTF-16 surrogate pair
                             if (0xD800..=0xDBFF).contains(&code) {
                                 // High surrogate; expect \uXXXX low surrogate
+                                let saved = (self.pos, self.line, self.col);
                                 if self.consume_keyword(b"\\u") {
                                     let low = self.parse_hex4()?;
                                     if (0xDC00..=0xDFFF).contains(&low) {
@@ -178,20 +208,22 @@ impl<'a> Parser<'a> {
                                             + (((code - 0xD800) as u32) << 10)
                                             + ((low - 0xDC00) as u32);
                                         if let Some(ch) = char::from_u32(codepoint) {
-                                            out.push(ch);
+                                            push(&mut out, ch);
                                         } else {
-                                            out.push('\u{FFFD}');
+                                            push(&mut out, '\u{FFFD}');
                                         }
                                     } else {
-                                        out.push('\u{FFFD}');
+                                        // Not a low surrogate: leave it for the next iteration.
+                                        (self.pos, self.line, self.col) = saved;
+                                        push(&mut out, '\u{FFFD}');
                                     }
                                 } else {
-                                    out.push('\u{FFFD}');
+                                    push(&mut out, '\u{FFFD}');
                                 }
                             } else if let Some(ch) = char::from_u32(code as u32) {
-                                out.push(ch);
+                                push(&mut out, ch);
                             } else {
-                                out.push('\u{FFFD}');
+                                push(&mut out, '\u{FFFD}');
                             }
                         }
                         _ => return Err(self.error(ParseErrorReason::InvalidEscapeSequence)),
@@ -202,8 +234,8 @@ impl<'a> Parser<'a> {
                     return Err(self.error(ParseErrorReason::InvalidEscapeSequence));
                 }
                 b => {
-                    // Valid UTF-8 byte
-                    out.push(b as char);
+                    // Raw byte; whole string is validated as UTF-8 at the closing quote
+                    out.push(b);
                 }
             }
         }
@@ -247,6 +279,9 @@ impl<'a> Parser<'a> {
         }
 
         if self.pos == first_digit_pos {
+            return Err(self.error(ParseErrorReason::InvalidNumber));
+        }
+        if self.chars[first_digit_pos] == b'0' && self.pos - first_digit_pos > 1 {
             return Err(self.error(ParseErrorReason::InvalidNumber));
         }
 

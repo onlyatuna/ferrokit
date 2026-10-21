@@ -102,11 +102,11 @@ impl ByteArray {
     /// Decodes a hexadecimal string into a `ByteArray`, matching `QByteArray::fromHex`.
     pub fn from_hex(hex: &str) -> Result<Self, HexError> {
         let clean = hex.trim();
-        if !clean.len().is_multiple_of(2) {
+        let chars: Vec<char> = clean.chars().collect();
+        if !chars.len().is_multiple_of(2) {
             return Err(HexError::OddLength);
         }
-        let mut bytes = Vec::with_capacity(clean.len() / 2);
-        let chars: Vec<char> = clean.chars().collect();
+        let mut bytes = Vec::with_capacity(chars.len() / 2);
         for chunk in chars.chunks(2) {
             let h = chunk[0]
                 .to_digit(16)
