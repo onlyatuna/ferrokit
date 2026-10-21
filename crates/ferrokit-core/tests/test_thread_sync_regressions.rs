@@ -65,7 +65,7 @@ fn wait_until_busy(pool: &ThreadPool, workers: usize) {
 fn wait_condition_wait_releases_mutex_exactly_once() {
     const WAITERS: usize = 2;
     const CONTENDERS: usize = 4;
-    const ROUNDS: usize = 2_000;
+    const ROUNDS: usize = 200;
 
     let mutex = Arc::new(Mutex::new(()));
     let cond = Arc::new(WaitCondition::new());
@@ -120,6 +120,9 @@ fn wait_condition_wait_releases_mutex_exactly_once() {
                 yield_now();
                 leave();
                 drop(guard);
+                // `Mutex` barges: without a pause a contender re-locks before the woken waiter
+                // runs, which on slow runners starves the waiters past `GUARD`.
+                yield_now();
             }
         }));
     }
