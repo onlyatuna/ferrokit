@@ -301,6 +301,8 @@ fn ensure_window_class_registered() {
 pub struct Win32EventDispatcher {
     pub internal_hwnd: HWND,
     pub wakeup_pending: Arc<AtomicBool>,
+    /// Cleared by `Drop` before the window is destroyed; handles check it before posting.
+    alive: Arc<AtomicBool>,
     pub native_filters: NativeEventFilterChain,
 }
 
@@ -353,6 +355,7 @@ impl Win32EventDispatcher {
         Self {
             internal_hwnd,
             wakeup_pending,
+            alive: Arc::new(AtomicBool::new(true)),
             native_filters: NativeEventFilterChain::new(),
         }
     }
@@ -369,6 +372,7 @@ impl Win32EventDispatcher {
         Win32EventDispatcherHandle {
             internal_hwnd: self.internal_hwnd as isize,
             wakeup_pending: Arc::clone(&self.wakeup_pending),
+            alive: Arc::clone(&self.alive),
         }
     }
 
@@ -609,15 +613,23 @@ impl Win32EventDispatcher {
 ///
 /// The window is stored as an integer, so the handle is `Send + Sync` by construction: the only
 /// thing it ever does with it is `PostMessageW`, which Windows documents as callable from any
-/// thread. If the dispatcher (and its window) is already gone the post just fails.
+/// thread. Once the dispatcher is dropped the handle stops posting (see `wake_up`).
 #[derive(Debug, Clone)]
 pub struct Win32EventDispatcherHandle {
     internal_hwnd: isize,
     wakeup_pending: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
 }
 
 impl Win32EventDispatcherHandle {
     pub fn wake_up(&self) {
+        // Once the dispatcher is dropped its window is gone and the `HWND` value may be reused
+        // by an unrelated window, so do not post (or set `wakeup_pending`) any more. The check
+        // and the post are not atomic: a drop that lands between them can still let one post
+        // through, which then hits a destroyed (or, very unlikely, a recycled) window.
+        if !self.alive.load(Ordering::Acquire) {
+            return;
+        }
         if !self.wakeup_pending.swap(true, Ordering::Release) {
             unsafe {
                 PostMessageW(self.internal_hwnd as HWND, WM_FERROKIT_WAKEUP, 0, 0);
@@ -677,6 +689,7 @@ impl EventDispatcher for Win32EventDispatcher {
 
 impl Drop for Win32EventDispatcher {
     fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
         if !self.internal_hwnd.is_null() {
             let key = self.internal_hwnd as usize;
             let _ = WAKEUP_FLAGS.try_with(|flags| {
@@ -732,6 +745,9 @@ mod tests {
     // not move to or be shared with another thread; its handle exists for exactly that.
     assert_not_send!(Win32EventDispatcher);
     assert_not_sync!(Win32EventDispatcher);
+    // `EventLoop` shares its thread's state, which contains the dispatcher, through an `Arc`, so
+    // it is `!Send` on Windows as a consequence.
+    assert_not_send!(crate::event_loop::EventLoop);
 
     #[test]
     fn test_handle_is_send_sync() {
@@ -739,12 +755,23 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_wake_up_after_dispatcher_dropped_is_harmless() {
+    fn test_handle_does_not_post_after_dispatcher_dropped() {
         let dispatcher = Win32EventDispatcher::new();
         let handle = dispatcher.clone_handle();
+        handle.wake_up();
+        assert!(
+            handle.wakeup_pending.load(Ordering::Acquire),
+            "a live dispatcher's handle posts"
+        );
+        let _ = dispatcher.process_events(false, None);
+        assert!(!handle.wakeup_pending.load(Ordering::Acquire));
         drop(dispatcher);
-        // `PostMessageW` to the destroyed window fails; it must not crash or hang from any thread.
-        std::thread::spawn(move || handle.wake_up()).join().unwrap();
+
+        // The window is gone and its `HWND` value may be reused: no post may be attempted, which
+        // shows as `wakeup_pending` (set right before every post) staying clear.
+        let h = handle.clone();
+        std::thread::spawn(move || h.wake_up()).join().unwrap();
+        assert!(!handle.wakeup_pending.load(Ordering::Acquire));
     }
 
     #[test]

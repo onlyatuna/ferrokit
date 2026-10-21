@@ -87,3 +87,16 @@ fn plain_data_back_ends_stay_thread_safe() {
     assert_send_sync::<crate::tray::DbusConnection>();
     assert_send_sync::<crate::hotkey::UnixHotkeyManager>();
 }
+
+// No raw handles of their own: a menu entry is a label, flags and a signal; the layer surface is a
+// layer id plus a pixel buffer.
+#[cfg(windows)]
+#[test]
+fn win32_menu_item_stays_thread_safe() {
+    assert_send_sync::<crate::menu::Win32MenuItem>();
+}
+
+#[test]
+fn cocoa_layer_surface_stays_thread_safe() {
+    assert_send_sync::<crate::surface::CocoaLayerSurface>();
+}
