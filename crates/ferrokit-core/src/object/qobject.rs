@@ -2250,10 +2250,9 @@ impl Drop for ObjectData {
                     let mut pdata = parent_obj.object_data_mut();
                     pdata.children_mut().retain(|&id| id != self.id);
                     pdata.owned_children_mut().retain(|c| OwnedObject::object_id(c) != self.id);
-                    drop(pdata);
-                    let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
-                    crate::event_loop::notify_helper(parent_id, &mut ev);
                 });
+                let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
+                crate::event_loop::notify_helper(parent_id, &mut ev);
             }
         }
         // 2. Cascade deletion to all children (deleteChildren)
@@ -3785,7 +3784,7 @@ pub trait QObject: std::any::Any {
         }
         let receiver = data.id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
-        data.add_timer(id);
+        self.object_data_mut().add_timer(id);
         id
     }
 

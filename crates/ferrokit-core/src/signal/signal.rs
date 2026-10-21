@@ -426,11 +426,11 @@ impl<T> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        if conn_type.is_queued() {
-            return self.connect_queued(ThreadId::current(), slot);
-        }
-        if conn_type.is_blocking_queued() {
-            return self.connect_blocking_queued(ObjectId(0), ThreadId::current(), slot);
+        if conn_type.is_queued() || conn_type.is_blocking_queued() {
+            eprintln!(
+                "connect_with_type requires a receiver thread for queued connections; use connect_queued or connect_blocking_queued"
+            );
+            return ConnectionId(0);
         }
         let mut inner = self.inner.lock();
         let id = ConnectionId::next();
