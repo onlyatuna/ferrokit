@@ -107,7 +107,6 @@ jobs:
           --run-isolation-allowlist
           --fail-on-regression
           --summary "$GITHUB_STEP_SUMMARY"
-          --targets test_compressor_panic_cleanup,test_core_data_structures,test_core_runtime_extensions,test_event_queue_merge_index,test_future_watcher_thread,test_meta_invoke_overload_signal,test_meta_object_system,test_meta_slots,test_owned_child_destroyed_in_callback,test_owned_child_ownership,test_panic_containment,test_parent_children_during_callbacks,test_parent_tree_rules,test_pool_worker_not_main,test_posted_payload_dropped_outside_the_locks,test_queued_delivery_regressions,test_recursive_mutex,test_serialization_and_json,test_signal_sender_destroyed_during_emit,test_signal_subscriber_drop_reentrancy,test_thread_system,test_timer_huge_interval,test_timer_single_shot_before_loop
           --out miri_results.json
 
   model:
