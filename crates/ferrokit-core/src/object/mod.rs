@@ -320,11 +320,12 @@
 //!
 //! ### Handler panic recovery
 //!
-//! If the old parent's `ChildRemoved` handler panics during [`set_parent()`], the unwind is caught
-//! via `catch_unwind`. The function forces reconciliation by updating `child.parent` and adding the
-//! child to the new parent's local list (bringing local state into alignment with the already-committed
-//! registry state), suppresses `ChildAdded`, releases all locks and borrow flags, and resumes the
-//! panic with the original payload.
+//! If the old parent's `ChildRemoved` handler panics during [`set_parent()`] or [`set_parent_by_id()`],
+//! the unwind is caught via `catch_unwind`. The registry and hierarchy lists are repaired so the child
+//! sits in its new parent's list, `ChildAdded` is **not** sent (public contract, issue #21), all locks and
+//! borrow flags are released, and the panic is resumed with the original payload. If an `ObjectBorrowGuard`
+//! on the child is still alive, the local parent sync stays pending until that guard drops.
+//! A panic inside a custom `object_data_mut()` while the guard applies queued edits loses those edits (known limitation).
 //!
 //! ### Lock poisoning strategy
 //!
