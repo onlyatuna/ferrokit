@@ -23,7 +23,11 @@ thread_local! {
 /// Returns None if no signal is actively being emitted.
 /// Modeled after Qt's QObject::sender().
 pub fn sender() -> Option<ObjectId> {
-    CURRENT_SENDER_STACK.with(|stack| stack.borrow().last().copied().flatten())
+    // A slot that runs while the thread's locals are destroyed (a `destroyed` receiver of an object
+    // held by a thread local) finds the stack gone: there is no sender then.
+    CURRENT_SENDER_STACK
+        .try_with(|stack| stack.borrow().last().copied().flatten())
+        .unwrap_or(None)
 }
 
 /// RAII guard that pushes the emitter of the signal being delivered onto the sender stack.
@@ -34,7 +38,9 @@ pub struct SenderGuard;
 
 impl SenderGuard {
     pub fn new(sender_id: Option<ObjectId>) -> Self {
-        CURRENT_SENDER_STACK.with(|stack| stack.borrow_mut().push(sender_id));
+        // Once the thread's locals are destroyed there is no stack to push to, and `drop` finds
+        // none to pop from; an emission from a destructor must not panic there.
+        let _ = CURRENT_SENDER_STACK.try_with(|stack| stack.borrow_mut().push(sender_id));
         SenderGuard
     }
 }
@@ -536,13 +542,33 @@ impl<T> Signal<T> {
     /// all callers and is identical on Windows, macOS, and Linux because `liveness` is an
     /// OS-independent `Arc<AtomicBool>`.
     pub fn emit(&self, value: &T) {
-        if let Some(emitter) = &self.emitter {
-            if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire) {
-                return;
+        self.emit_impl(value, true);
+    }
+
+    /// Emits the signal of an owner that is being destroyed: the owner's blocked flag and its
+    /// liveness token are not consulted, and the emission does not end when the owner is gone.
+    /// This is how `destroyed` is delivered (Qt `~QObject` clears `blockSig` before it emits
+    /// `destroyed`, qobject.cpp:1086-1105); every other signal uses [`Signal::emit`].
+    pub(crate) fn emit_while_owner_dying(&self, value: &T) {
+        self.emit_impl(value, false);
+    }
+
+    fn emit_impl(&self, value: &T, honor_owner_state: bool) {
+        if honor_owner_state {
+            if let Some(emitter) = &self.emitter {
+                if emitter.blocked.load(Ordering::Acquire)
+                    || !emitter.alive.load(Ordering::Acquire)
+                {
+                    return;
+                }
             }
         }
         let emitter_id = self.emitter_id();
-        let owner_alive = self.emitter.as_ref().map(|e| Arc::clone(&e.alive));
+        let owner_alive = self
+            .emitter
+            .as_ref()
+            .filter(|_| honor_owner_state)
+            .map(|e| Arc::clone(&e.alive));
         let _sender_guard = SenderGuard::new(emitter_id);
 
         let snapshot = self.inner.lock().subscribers.clone();
