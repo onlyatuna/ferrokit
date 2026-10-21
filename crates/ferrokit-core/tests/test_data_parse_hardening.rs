@@ -7,16 +7,27 @@ fn nested(open: &str, close: &str, n: usize) -> String {
     format!("{}{}", open.repeat(n), close.repeat(n))
 }
 
+fn on_big_stack<F: FnOnce() + Send + 'static>(f: F) {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[test]
 fn json_deep_nesting_is_an_error_not_a_stack_overflow() {
-    let ok = nested("[", "]", 1024);
-    assert!(JsonDocument::from_json_str(&ok).is_ok());
-    let deep = "[".repeat(200_000);
-    let err = JsonDocument::from_json_str(&deep).unwrap_err();
-    assert_eq!(err.reason, ParseErrorReason::DeepNesting);
-    let deep_obj = "{\"a\":".repeat(200_000);
-    let err = JsonDocument::from_json_str(&deep_obj).unwrap_err();
-    assert_eq!(err.reason, ParseErrorReason::DeepNesting);
+    on_big_stack(|| {
+        let ok = nested("[", "]", 1024);
+        assert!(JsonDocument::from_json_str(&ok).is_ok());
+        let deep = "[".repeat(200_000);
+        let err = JsonDocument::from_json_str(&deep).unwrap_err();
+        assert_eq!(err.reason, ParseErrorReason::DeepNesting);
+        let deep_obj = "{\"a\":".repeat(200_000);
+        let err = JsonDocument::from_json_str(&deep_obj).unwrap_err();
+        assert_eq!(err.reason, ParseErrorReason::DeepNesting);
+    });
 }
 
 #[test]
@@ -60,13 +71,15 @@ fn json_two_pow_63_is_not_written_as_i64_max() {
 
 #[test]
 fn variant_deserialize_deep_nesting_is_an_error() {
-    // tag 26 (List), count 1, repeated.
-    let mut bytes = Vec::new();
-    for _ in 0..300_000 {
-        bytes.push(26u8);
-        bytes.extend_from_slice(&1u32.to_be_bytes());
-    }
-    assert!(Variant::from_bytes(&bytes).is_err());
+    on_big_stack(|| {
+        // tag 26 (List), count 1, repeated.
+        let mut bytes = Vec::new();
+        for _ in 0..300_000 {
+            bytes.push(26u8);
+            bytes.extend_from_slice(&1u32.to_be_bytes());
+        }
+        assert!(Variant::from_bytes(&bytes).is_err());
+    });
 }
 
 #[test]
@@ -115,23 +128,30 @@ fn variant_u64_above_i64_max_has_no_int_value() {
 }
 
 #[test]
-fn temporal_extremes_do_not_overflow() {
+fn temporal_extremes_saturate() {
     let d = Date::new(i32::MAX, 6, 1);
-    let _ = d.add_years(i32::MAX);
-    let _ = d.add_days(i64::MAX);
-    let _ = d.add_days(i64::MIN);
-    let _ = d.to_epoch_days();
+    assert_eq!(d.add_years(i32::MAX).year, i32::MAX);
+    assert_eq!(d.add_days(i64::MAX).year, i32::MAX);
+    assert_eq!(d.add_days(i64::MIN).year, i32::MIN);
+    assert_eq!(Date::new(i32::MIN, 6, 1).add_years(i32::MIN).year, i32::MIN);
     let t = Time {
         hour: u32::MAX,
         minute: u32::MAX,
         second: u32::MAX,
         millisecond: u32::MAX,
     };
-    let _ = t.msecs_since_start_of_day();
-    let _ = t.add_msecs(i64::MAX);
-    let _ = t.msecs_to(&Time::default());
-    let dt = DateTime::from_timestamp_ms(i64::MAX);
-    let _ = dt.add_msecs(i64::MAX);
-    let _ = dt.msecs_to(&DateTime::from_timestamp_ms(i64::MIN));
-    let _ = DateTime::new(d, t);
+    assert_eq!(t.msecs_since_start_of_day(), u32::MAX);
+    assert!(t.add_msecs(i64::MAX).is_valid());
+    assert!(t.add_msecs(i64::MIN).is_valid());
+    assert_eq!(t.msecs_to(&Time::default()), -(u32::MAX as i64));
+    // True wrap-around: one hour before midnight plus two hours is 01:00.
+    let late = Time { hour: 23, minute: 0, second: 0, millisecond: 0 };
+    assert_eq!(late.add_msecs(2 * 3_600_000).hour, 1);
+    let max = DateTime::from_timestamp_ms(i64::MAX);
+    let min = DateTime::from_timestamp_ms(i64::MIN);
+    assert_eq!(max.add_msecs(i64::MAX).to_timestamp_ms(), i64::MAX);
+    assert_eq!(min.add_msecs(i64::MIN).to_timestamp_ms(), i64::MIN);
+    assert_eq!(min.msecs_to(&max), i64::MAX);
+    assert_eq!(max.msecs_to(&min), i64::MIN);
+    assert_eq!(DateTime::new(d, t).to_timestamp_ms(), i64::MAX);
 }

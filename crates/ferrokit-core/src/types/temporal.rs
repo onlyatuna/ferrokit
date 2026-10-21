@@ -92,6 +92,8 @@ impl Date {
     }
 
     /// Returns the date `days` days later (earlier if negative) (`QDate::addDays`).
+    ///
+    /// Saturates at the year range of `i32` instead of overflowing.
     pub fn add_days(&self, days: i64) -> Self {
         Self::from_epoch_days(self.to_epoch_days().saturating_add(days))
     }
@@ -106,6 +108,8 @@ impl Date {
     }
 
     /// Adds calendar years; Feb 29 maps to Feb 28 in non-leap years (`QDate::addYears`).
+    ///
+    /// The year saturates at the `i32` range.
     pub fn add_years(&self, years: i32) -> Self {
         let year = self.year.saturating_add(years);
         let day = self.day.min(Self::days_in_month_of(year, self.month));
@@ -205,7 +209,8 @@ impl Time {
 
     /// Returns the time `ms` milliseconds later, wrapping around midnight (`QTime::addMSecs`).
     pub fn add_msecs(&self, ms: i64) -> Self {
-        let total = (self.msecs_since_start_of_day() as i64).saturating_add(ms).rem_euclid(86_400_000);
+        let base = (self.msecs_since_start_of_day() % 86_400_000) as i64;
+        let total = (base + ms % 86_400_000).rem_euclid(86_400_000);
         Self::from_msecs_since_start_of_day(total as u32)
     }
 
@@ -289,6 +294,8 @@ impl DateTime {
     }
 
     /// Returns this date-time shifted by `ms` milliseconds (`QDateTime::addMSecs`).
+    ///
+    /// Saturates at the `i64` millisecond range instead of overflowing.
     pub fn add_msecs(&self, ms: i64) -> Self {
         Self::from_timestamp_ms(self.timestamp_ms.saturating_add(ms))
     }
@@ -314,6 +321,8 @@ impl DateTime {
     }
 
     /// Milliseconds from this date-time to `other` (`QDateTime::msecsTo`).
+    ///
+    /// Saturates at `i64::MIN`/`i64::MAX` instead of overflowing.
     pub fn msecs_to(&self, other: &DateTime) -> i64 {
         other.timestamp_ms.saturating_sub(self.timestamp_ms)
     }
@@ -358,6 +367,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// Proleptic Gregorian civil date for days since 1970-01-01 (inverse of [`days_from_civil`]).
+///
+/// Saturates at the `i32` year range.
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     // Clamp so the arithmetic below cannot overflow and the year fits in i32.
     const MAX_DAYS: i64 = (i32::MAX as i64) * 366;

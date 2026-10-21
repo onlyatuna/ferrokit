@@ -441,6 +441,9 @@ impl Variant {
     }
 
     /// Converts to a signed 64-bit integer.
+    ///
+    /// A `U64` above `i64::MAX` yields `None` instead of wrapping to a negative
+    /// number (Qt's `toLongLong` wraps; this deliberately differs).
     pub fn to_int(&self) -> Option<i64> {
         match self {
             Variant::I64(i) => Some(*i),
@@ -972,7 +975,7 @@ impl Variant {
             JsonValue::Null | JsonValue::Undefined => Variant::Invalid,
             JsonValue::Bool(b) => Variant::Bool(*b),
             JsonValue::Number(n) => {
-                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < 9_223_372_036_854_775_808.0 {
+                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < crate::json::I64_EXCLUSIVE_UPPER_F64 {
                     Variant::I64(*n as i64)
                 } else {
                     Variant::F64(*n)
