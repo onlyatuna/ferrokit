@@ -2373,8 +2373,10 @@ impl<'a> ObjectDataMut<'a> {
     }
 
     #[inline]
-    pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) {
+    pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) -> bool {
+        let before = self.data.timers.len();
         self.data.timers.retain(|&t| t != id);
+        self.data.timers.len() != before
     }
 
     #[inline]
@@ -4115,13 +4117,18 @@ pub trait QObject: std::any::Any {
         }
         let receiver = data.id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
-        self.object_data_mut().add_timer(id);
+        if id.is_valid() {
+            self.object_data_mut().add_timer(id);
+        }
         id
     }
 
-    /// Kills the timer with the specified timer ID (`QObject::killTimer`).
+    /// Kills the timer with the specified timer ID (`QObject::killTimer`). A timer this object did
+    /// not start is refused and `false` is returned, as in Qt.
     fn kill_timer(&mut self, id: crate::timer::TimerId) -> bool {
-        self.object_data_mut().remove_timer(id);
+        if !self.object_data_mut().remove_timer(id) {
+            return false;
+        }
         crate::timer::kill_object_timer(id)
     }
 
