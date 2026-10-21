@@ -344,6 +344,38 @@ fn test_qsettings_hierarchy_and_atomic_sync() {
     // Cleanup
     let _ = fs::remove_dir_all(&tmp_dir);
 }
+#[test]
+fn test_qsettings_round_trips_typed_and_multiline_values() {
+    let path = std::env::temp_dir().join(format!("ferrokit_settings_roundtrip_{}.ini", ObjectId::next().0));
+    let expected = [
+        ("numeric_text", Variant::String("123".to_string())),
+        ("multiline", Variant::String("first\nsecond=evil".to_string())),
+        ("float", Variant::F64(1.0)),
+        ("large_unsigned", Variant::U64(u64::MAX)),
+    ];
+    {
+        let mut settings = Settings::new(&path);
+        for (key, value) in &expected {
+            settings.set_value(key, value.clone());
+        }
+        settings.sync().unwrap();
+    }
+    let reloaded = Settings::new(&path);
+    for (key, value) in &expected {
+        assert_eq!(reloaded.value(key), Some(value.clone()));
+    }
+    let _ = fs::remove_file(path);
+}
+#[test]
+fn test_qsettings_refuses_to_overwrite_after_load_error() {
+    let path = std::env::temp_dir().join(format!("ferrokit_settings_invalid_{}.ini", ObjectId::next().0));
+    fs::write(&path, [0xff, b'=', b'x', b'\n']).unwrap();
+    let mut settings = Settings::new(&path);
+    settings.set_value("new_key", "new value");
+    assert!(settings.sync().is_err());
+    assert_eq!(fs::read(&path).unwrap(), [0xff, b'=', b'x', b'\n']);
+    let _ = fs::remove_file(path);
+}
 
 // -----------------------------------------------------------------------------
 // 5. Test QFileSystemWatcher File and Directory Monitoring

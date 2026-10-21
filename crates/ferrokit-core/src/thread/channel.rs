@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,29 +72,55 @@ impl fmt::Display for RecvTimeoutError {
 
 impl std::error::Error for RecvTimeoutError {}
 
-type ChannelSignalEmitter<T> = Arc<dyn Fn(&T) + Send + Sync>;
+/// An emission of a channel's attached signal, prepared on the sending thread.
+type DeferredEmission = Box<dyn FnOnce() + Send>;
+type ChannelSignalEmitter<T> = Arc<dyn Fn(&T) -> DeferredEmission + Send + Sync>;
 
 struct ChannelShared<T> {
     queue: Mutex<VecDeque<T>>,
     capacity: Option<usize>,
     is_closed: Mutex<bool>,
+    senders: AtomicUsize,
     send_cond: Condvar,
     recv_cond: Condvar,
     event_senders: Mutex<Vec<EventSender>>,
     signal_emitters: Mutex<Vec<ChannelSignalEmitter<T>>>,
 }
 
+impl<T> ChannelShared<T> {
+    fn new(capacity: Option<usize>) -> Arc<Self> {
+        Arc::new(Self {
+            queue: Mutex::new(VecDeque::new()),
+            capacity,
+            is_closed: Mutex::new(false),
+            senders: AtomicUsize::new(1),
+            send_cond: Condvar::new(),
+            recv_cond: Condvar::new(),
+            event_senders: Mutex::new(Vec::new()),
+            signal_emitters: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn close(&self) {
+        // Waiters check `is_closed` while holding `queue`, so flipping it under the same lock
+        // guarantees they are either parked (and woken below) or see the flag.
+        let queue = self.queue.lock().unwrap();
+        *self.is_closed.lock().unwrap() = true;
+        drop(queue);
+        self.send_cond.notify_all();
+        self.recv_cond.notify_all();
+
+        // Event-loop consumers poll with `try_recv`; wake them so they observe `Disconnected`.
+        let event_senders = self.event_senders.lock().unwrap().clone();
+        for sender in event_senders {
+            (sender.wakeup)();
+        }
+    }
+}
+
 /// Creates an unbounded channel with Qt event loop integration.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let shared = Arc::new(ChannelShared {
-        queue: Mutex::new(VecDeque::new()),
-        capacity: None,
-        is_closed: Mutex::new(false),
-        send_cond: Condvar::new(),
-        recv_cond: Condvar::new(),
-        event_senders: Mutex::new(Vec::new()),
-        signal_emitters: Mutex::new(Vec::new()),
-    });
+    let shared = ChannelShared::new(None);
 
     (
         Sender {
@@ -105,15 +132,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 
 /// Creates a bounded channel with maximum capacity.
 pub fn bounded<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    let shared = Arc::new(ChannelShared {
-        queue: Mutex::new(VecDeque::new()),
-        capacity: Some(capacity.max(1)),
-        is_closed: Mutex::new(false),
-        send_cond: Condvar::new(),
-        recv_cond: Condvar::new(),
-        event_senders: Mutex::new(Vec::new()),
-        signal_emitters: Mutex::new(Vec::new()),
-    });
+    let shared = ChannelShared::new(Some(capacity.max(1)));
 
     (
         Sender {
@@ -130,8 +149,19 @@ pub struct Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
+        self.shared.senders.fetch_add(1, Ordering::SeqCst);
         Self {
             shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        // The last sender going away disconnects the receiver, like `std::sync::mpsc`: once the
+        // queue is drained `recv` reports `Disconnected` instead of blocking forever.
+        if self.shared.senders.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.shared.close();
         }
     }
 }
@@ -139,6 +169,14 @@ impl<T> Clone for Sender<T> {
 impl<T> Sender<T> {
     /// Sends a value into the channel. Blocks if channel is bounded and full.
     pub fn send(&self, val: T) -> Result<(), SendError<T>> {
+        // Qt-style signal emission must see exactly the value this call sends, and must run
+        // with no channel lock held (a slot may use the channel again). So the emissions are
+        // prepared from `val` here and run after it has been queued.
+        let emissions: Vec<DeferredEmission> = {
+            let emitters = self.shared.signal_emitters.lock().unwrap().clone();
+            emitters.iter().map(|emit| emit(&val)).collect()
+        };
+
         {
             let mut queue = self.shared.queue.lock().unwrap();
             let is_closed = *self.shared.is_closed.lock().unwrap();
@@ -168,14 +206,8 @@ impl<T> Sender<T> {
         }
 
         // Notify attached signals if any
-        let signal_emitters = self.shared.signal_emitters.lock().unwrap().clone();
-        if !signal_emitters.is_empty() {
-            let queue = self.shared.queue.lock().unwrap();
-            if let Some(last) = queue.back() {
-                for emitter in signal_emitters {
-                    emitter(last);
-                }
-            }
+        for emission in emissions {
+            emission();
         }
 
         Ok(())
@@ -262,17 +294,19 @@ impl<T> Receiver<T> {
         T: Clone + Send + 'static,
     {
         let sig_clone = signal.clone();
-        let emitter = Arc::new(move |val: &T| {
-            sig_clone.emit(val);
+        // Called on the sending thread before the value is moved into the queue: clones the
+        // value and hands back the emission to run once no channel lock is held.
+        let emitter: ChannelSignalEmitter<T> = Arc::new(move |val: &T| {
+            let signal = sig_clone.clone();
+            let value = val.clone();
+            Box::new(move || signal.emit(&value)) as DeferredEmission
         });
         self.shared.signal_emitters.lock().unwrap().push(emitter);
     }
 
     /// Closes the channel.
     pub fn close(&self) {
-        *self.shared.is_closed.lock().unwrap() = true;
-        self.shared.send_cond.notify_all();
-        self.shared.recv_cond.notify_all();
+        self.shared.close();
     }
 }
 

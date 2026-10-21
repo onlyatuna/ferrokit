@@ -55,7 +55,9 @@ impl<T: ?Sized> Mutex<T> {
 
     /// Attempts to acquire the mutex without blocking.
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
-        let mut locked = self.inner.try_lock().ok()?;
+        // The gate is only ever held for a few instructions, so waiting for it is cheap; a
+        // `try_lock` on it would fail spuriously while the user mutex is actually free.
+        let mut locked = self.inner.lock().unwrap();
         if !*locked {
             *locked = true;
             Some(MutexGuard { mutex: self })
@@ -206,7 +208,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
     /// Attempts to acquire the recursive mutex without blocking.
     pub fn try_lock(&self) -> Option<RecursiveMutexGuard<'_, T>> {
         let current_id = current_thread().id();
-        let mut state = self.state.try_lock().ok()?;
+        let mut state = self.state.lock().unwrap();
 
         match state.owner {
             None => {
@@ -527,41 +529,37 @@ impl WaitCondition {
         let mutex = guard.mutex;
         let gate_lock = self.gate.lock().unwrap();
 
-        // Release mutex
-        {
-            let mut locked = mutex.inner.lock().unwrap();
-            *locked = false;
-            mutex.cond.notify_one();
-        }
+        // Releasing through the guard unlocks exactly once. The gate stays held until the
+        // condvar parks us, so a `wake_*` issued after the release cannot be missed.
         drop(guard);
 
-        // Sleep on condition variable
-        let _gate = self.cond.wait(gate_lock).unwrap();
+        // Sleep on condition variable. The gate must be released before re-locking the mutex:
+        // another waiter holding the mutex may itself be blocked on the gate.
+        drop(self.cond.wait(gate_lock).unwrap());
 
         // Re-acquire mutex
         mutex.lock().unwrap()
     }
 
     /// Waits on the condition for at most `timeout`. Returns the re-acquired guard and whether signaled.
+    ///
+    /// Re-acquiring the mutex shares the original deadline, so the call never blocks for more
+    /// than `timeout` in total; the guard is `None` if the mutex could not be re-acquired in time.
     pub fn wait_timeout<'a, T>(
         &self,
         guard: MutexGuard<'a, T>,
         timeout: Duration,
     ) -> (Option<MutexGuard<'a, T>>, bool) {
+        let deadline = Instant::now() + timeout;
         let mutex = guard.mutex;
         let gate_lock = self.gate.lock().unwrap();
 
-        // Release mutex
-        {
-            let mut locked = mutex.inner.lock().unwrap();
-            *locked = false;
-            mutex.cond.notify_one();
-        }
         drop(guard);
 
-        let (_gate_lock, timeout_res) = self.cond.wait_timeout(gate_lock, timeout).unwrap();
+        let (gate_lock, timeout_res) = self.cond.wait_timeout(gate_lock, timeout).unwrap();
         let signaled = !timeout_res.timed_out();
-        let acquired = mutex.try_lock_for(timeout);
+        drop(gate_lock);
+        let acquired = mutex.try_lock_until(deadline);
         (acquired, signaled)
     }
 

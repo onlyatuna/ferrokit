@@ -33,8 +33,8 @@ pub struct Settings {
     entries: HashMap<String, Variant>,
     group_stack: Vec<String>,
     dirty: bool,
+    load_failed: bool,
 }
-
 impl Settings {
     /// Creates a new settings instance with an explicit file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
@@ -44,8 +44,11 @@ impl Settings {
             entries: HashMap::new(),
             group_stack: Vec::new(),
             dirty: false,
+            load_failed: false,
         };
-        let _ = s.load_from_disk();
+        if s.load_from_disk().is_err() {
+            s.load_failed = true;
+        }
         s
     }
 
@@ -56,6 +59,7 @@ impl Settings {
             entries: HashMap::new(),
             group_stack: Vec::new(),
             dirty: false,
+            load_failed: false,
         }
     }
 
@@ -194,6 +198,12 @@ impl Settings {
         if !self.dirty {
             return Ok(());
         }
+        if self.load_failed {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "settings file could not be loaded completely",
+            ));
+        }
 
         let Some(path) = &self.file_path else {
             return Ok(());
@@ -209,10 +219,18 @@ impl Settings {
             let mut file = File::create(&tmp_path)?;
             self.write_ini_to(&mut file)?;
             file.flush()?;
+            file.sync_all()?;
         }
 
         // Atomic replace via rename
         fs::rename(&tmp_path, path)?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            // The rename already committed the data; directory sync failure is not an error.
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         self.dirty = false;
         Ok(())
     }
@@ -235,17 +253,20 @@ impl Settings {
             }
         }
 
+        // Marker: only files carrying it are unescaped on load; unmarked (older) files load verbatim.
+        writeln!(w, "{}", ESCAPE_MARKER)?;
+
         // Write root entries first
         for (k, v) in root_entries {
-            writeln!(w, "{}={}", k, v)?;
+            writeln!(w, "{}={}", escape_text(&k), v)?;
         }
 
         // Write each section
         for (section, items) in sections {
             writeln!(w)?;
-            writeln!(w, "[{}]", section)?;
+            writeln!(w, "[{}]", escape_text(&section))?;
             for (k, v) in items {
-                writeln!(w, "{}={}", k, v)?;
+                writeln!(w, "{}={}", escape_text(&k), v)?;
             }
         }
 
@@ -266,9 +287,14 @@ impl Settings {
         let reader = BufReader::new(file);
         let mut current_section: Option<String> = None;
 
-        for line in reader.lines() {
+        let mut escaped = false;
+        for (index, line) in reader.lines().enumerate() {
             let line = line?;
             let trimmed = line.trim();
+            if index == 0 && trimmed == ESCAPE_MARKER {
+                escaped = true;
+                continue;
+            }
 
             if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
                 continue;
@@ -276,18 +302,25 @@ impl Settings {
 
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let section_name = &trimmed[1..trimmed.len() - 1];
-                current_section = Some(section_name.trim().to_string());
+                let name = section_name.trim();
+                current_section = Some(if escaped { unescape_text(name) } else { name.to_string() });
                 continue;
             }
 
-            if let Some((key, val)) = trimmed.split_once('=') {
-                let key = key.trim();
+            let pair = if escaped {
+                split_unescaped_eq(trimmed)
+            } else {
+                trimmed.split_once('=')
+            };
+            if let Some((key, val)) = pair {
+                let key = if escaped { unescape_text(key.trim()) } else { key.trim().to_string() };
+                let key = key.as_str();
                 let val = val.trim();
                 let full_key = match &current_section {
                     Some(s) if !s.is_empty() => format!("{}/{}", s, key),
                     _ => key.to_string(),
                 };
-                let parsed = parse_variant_value(val);
+                let parsed = parse_variant_value(val, escaped);
                 self.entries.insert(full_key, parsed);
             }
         }
@@ -305,21 +338,109 @@ impl Drop for Settings {
     }
 }
 
-fn serialize_variant_value(v: &Variant) -> String {
-    match v {
-        Variant::Bool(b) => b.to_string(),
-        Variant::I64(i) => i.to_string(),
-        Variant::U64(u) => u.to_string(),
-        Variant::F64(f) => f.to_string(),
-        Variant::String(s) => s.clone(),
-        Variant::Color(r, g, b, a) => format!("#{:02X}{:02X}{:02X}{:02X}", r, g, b, a),
-        Variant::Point(x, y) => format!("{},{}", x, y),
-        Variant::Rect(x, y, w, h) => format!("{},{},{},{}", x, y, w, h),
-        _ => v.to_string_lossy(),
+/// First line of files whose keys/values use backslash escapes.
+const ESCAPE_MARKER: &str = "; ferrokit-settings-escaped-v1";
+
+/// Escapes characters that would break the line-based INI structure.
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '=' | ';' | '#' | '[' | ']' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
     }
+    out
 }
 
-fn parse_variant_value(raw: &str) -> Variant {
+/// Reverses `escape_text`; unknown escape sequences are kept literally so older files
+/// containing backslashes still load.
+fn unescape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(e @ ('=' | ';' | '#' | '[' | ']')) => out.push(e),
+            _ => {
+                out.push('\\');
+                continue;
+            }
+        }
+        chars.next();
+    }
+    out
+}
+
+/// Splits at the first `=` that is not preceded by an escaping backslash.
+fn split_unescaped_eq(line: &str) -> Option<(&str, &str)> {
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '=' {
+            return Some((&line[..i], &line[i + 1..]));
+        }
+    }
+    None
+}
+
+fn serialize_variant_value(v: &Variant) -> String {
+    // Qt INI convention: plain strings stay human-readable; @Variant only for other types
+    // and for strings that would not round-trip through the plain parser.
+    if let Variant::String(text) = v {
+        let plain_safe = text.trim() == text
+            && !text.starts_with("@Variant(")
+            && matches!(parse_variant_value(&escape_text(text), true), Variant::String(ref t) if t == text);
+        if plain_safe {
+            return escape_text(text);
+        }
+    }
+    let bytes = v.to_bytes();
+    let mut encoded = String::with_capacity(bytes.len() * 2 + 10);
+    encoded.push_str("@Variant(");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded.push(')');
+    encoded
+}
+
+fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
+    if let Some(encoded) = raw.strip_prefix("@Variant(").and_then(|s| s.strip_suffix(')')) {
+        if encoded.len() % 2 == 0 {
+            let bytes = encoded.as_bytes();
+            let decoded = bytes
+                .chunks_exact(2)
+                .map(|pair| {
+                    let high = (pair[0] as char).to_digit(16)?;
+                    let low = (pair[1] as char).to_digit(16)?;
+                    Some(((high << 4) | low) as u8)
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(decoded) = decoded {
+                if let Ok(value) = Variant::from_bytes(&decoded) {
+                    return value;
+                }
+            }
+        }
+    }
+
     // Check boolean
     if raw.eq_ignore_ascii_case("true") {
         return Variant::Bool(true);
@@ -357,7 +478,7 @@ fn parse_variant_value(raw: &str) -> Variant {
     }
 
     // Default to String
-    Variant::String(raw.to_string())
+    Variant::String(if escaped { unescape_text(raw) } else { raw.to_string() })
 }
 
 /// Resolves standard platform config directory.

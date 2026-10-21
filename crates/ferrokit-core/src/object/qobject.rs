@@ -159,14 +159,26 @@ pub struct ObjectRecord {
 enum ChildListChange {
     Add(ObjectId),
     Remove(ObjectId),
+    /// Takes the child out of `owned_children` as well, and hands its owner back to the caller to
+    /// drop once the parent's borrow is released (a `DeferredDelete` of the child, delivered while a
+    /// callback of the parent runs).
+    DeleteOwned(ObjectId),
 }
 
 impl ChildListChange {
-    fn apply(&self, mut data: ObjectDataMut<'_>) {
+    fn apply(&self, mut data: ObjectDataMut<'_>) -> Option<OwnedObject<dyn QObject>> {
         match *self {
             ChildListChange::Add(id) => data.add_child(id),
             ChildListChange::Remove(id) => data.remove_child(id),
+            ChildListChange::DeleteOwned(id) => {
+                let owner = data.take_owned_child(id);
+                if owner.is_none() {
+                    data.remove_child(id);
+                }
+                return owner;
+            }
         }
+        None
     }
 }
 
@@ -203,6 +215,9 @@ impl Drop for ReleaseBorrowFlag<'_> {
 
 impl Drop for ObjectBorrowGuard {
     fn drop(&mut self) {
+        // Owners taken out of `owned_children` by queued `DeleteOwned` edits; dropped after the
+        // borrow flag is released, since destroying them reads this object (their parent).
+        let mut released: Vec<OwnedObject<dyn QObject>> = Vec::new();
         {
             // The borrow flag is released when this block ends (via RAII `ReleaseBorrowFlag`), even if
             // a custom `QObject::object_data_mut()` accessor panics while queued child edits or pending
@@ -229,7 +244,7 @@ impl Drop for ObjectBorrowGuard {
                     // the object is live, and the object is alive.
                     let mut data = unsafe { (*self.ptr).object_data_mut() };
                     for change in &changes {
-                        change.apply(ObjectDataMut::new(data.raw_data_mut()));
+                        released.extend(change.apply(ObjectDataMut::new(data.raw_data_mut())));
                     }
                 }
             }
@@ -249,6 +264,7 @@ impl Drop for ObjectBorrowGuard {
                 }
             }
         }
+        drop(released);
         if self
             .borrow_state
             .free_when_released
@@ -617,7 +633,12 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
         return;
     };
     match borrow_registered(parent) {
-        Some(mut guard) => change.apply(guard.object_data_mut()),
+        Some(mut guard) => {
+            let released = change.apply(guard.object_data_mut());
+            // The owner's destruction reads the parent, so the parent is released first.
+            drop(guard);
+            drop(released);
+        }
         None => {
             lock_unpoisoned(&entry.pending_child_changes).push(change);
             entry
@@ -654,7 +675,7 @@ pub fn dispatch_to_object(receiver: ObjectId, event: &mut Event) -> bool {
 /// Lock order: this map, then the registry (L0, read), then the record's `thread_id`. They are held
 /// together so that two calls for one id leave both stores with the same last writer. No caller
 /// holds L0, L1, L2 or `HIERARCHY_MUTATION`.
-pub fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
+pub(crate) fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
     let mut lock = write_unpoisoned(&GLOBAL_OBJECT_THREADS);
     if lock.is_none() {
         *lock = Some(HashMap::new());
@@ -671,7 +692,7 @@ pub fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
 
 /// Unregisters an object's thread affinity from the global registry. It is part of the cleanup of
 /// a destroyed object, which cannot report a failure, so a poisoned map is used as it is.
-pub fn unregister_object_thread(id: ObjectId) {
+pub(crate) fn unregister_object_thread(id: ObjectId) {
     if let Some(map) = write_unpoisoned(&GLOBAL_OBJECT_THREADS).as_mut() {
         map.remove(&id);
     }
@@ -801,18 +822,46 @@ fn owned_thread(child: &OwnedObject<dyn QObject>) -> Option<ThreadId> {
         .or_else(|| child.with(|c| c.object_data().thread()))
 }
 
+/// The ids of a subtree being collected for a thread move: the objects found (`all_ids`, root
+/// first) and the ids still to inspect. Membership is a hash lookup, so a subtree of `n` objects
+/// costs `O(n)` and not `O(n²)`.
+#[derive(Default)]
+struct SubtreeScan {
+    all_ids: Vec<ObjectId>,
+    found: std::collections::HashSet<ObjectId>,
+    queue: Vec<ObjectId>,
+    queued: std::collections::HashSet<ObjectId>,
+}
+
+impl SubtreeScan {
+    fn add(&mut self, id: ObjectId) {
+        if self.found.insert(id) {
+            self.all_ids.push(id);
+        }
+    }
+
+    fn enqueue(&mut self, id: ObjectId) {
+        if !self.found.contains(&id) && self.queued.insert(id) {
+            self.queue.push(id);
+        }
+    }
+
+    fn pop(&mut self) -> Option<ObjectId> {
+        let id = self.queue.pop()?;
+        self.queued.remove(&id);
+        Some(id)
+    }
+}
+
 /// Walks `data` and its unregistered `owned_children`, checking that no owned child is borrowed by
 /// a running callback and that every unregistered owned descendant allows moving to another
 /// thread, while queuing registered children for registry-backed inspection.
 fn inspect_owned_tree(
     data: &ObjectData,
-    all_ids: &mut Vec<ObjectId>,
-    queue: &mut Vec<ObjectId>,
+    scan: &mut SubtreeScan,
 ) -> Result<(), super::thread::MoveError> {
     use super::thread::MoveError;
-    if !all_ids.contains(&data.id()) {
-        all_ids.push(data.id());
-    }
+    scan.add(data.id());
     for owned in data.owned_children() {
         if OwnedObject::is_borrowed(owned) {
             return Err(MoveError::Busy);
@@ -833,9 +882,7 @@ fn inspect_owned_tree(
             if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
                 return Err(MoveError::WrongThread);
             }
-            if !all_ids.contains(&owned_id) && !queue.contains(&owned_id) {
-                queue.push(owned_id);
-            }
+            scan.enqueue(owned_id);
         } else {
             // SAFETY: the registry has no live entry for it, so no callback of it can start, and
             // `is_borrowed` above found no running one.
@@ -843,18 +890,14 @@ fn inspect_owned_tree(
             if !owned.can_move_to_thread() {
                 return Err(MoveError::NotMovable);
             }
-            inspect_owned_tree(owned.object_data(), all_ids, queue)?;
+            inspect_owned_tree(owned.object_data(), scan)?;
         }
     }
     for &child_id in data.children() {
-        if !all_ids.contains(&child_id) && !queue.contains(&child_id) {
-            queue.push(child_id);
-        }
+        scan.enqueue(child_id);
     }
     for child_id in registered_children_below(data.id()) {
-        if !all_ids.contains(&child_id) && !queue.contains(&child_id) {
-            queue.push(child_id);
-        }
+        scan.enqueue(child_id);
     }
     Ok(())
 }
@@ -863,13 +906,10 @@ fn inspect_owned_tree(
 /// thread and to answer `true` to `QObject::can_move_to_thread`. An id that has no live record in
 /// the registry (such as an unregistered non-owned child, or a record whose liveness is already
 /// false) is kept in `all_ids` and its registered children are still queued for inspection.
-fn collect_queued_descendants(
-    all_ids: &mut Vec<ObjectId>,
-    queue: &mut Vec<ObjectId>,
-) -> Result<(), super::thread::MoveError> {
+fn collect_queued_descendants(scan: &mut SubtreeScan) -> Result<(), super::thread::MoveError> {
     use super::thread::MoveError;
-    while let Some(child_id) = queue.pop() {
-        if all_ids.contains(&child_id) {
+    while let Some(child_id) = scan.pop() {
+        if scan.found.contains(&child_id) {
             continue;
         }
         let live_entry = {
@@ -891,15 +931,13 @@ fn collect_queued_descendants(
                 if !obj.can_move_to_thread() {
                     return Err(MoveError::NotMovable);
                 }
-                inspect_owned_tree(obj.object_data(), all_ids, queue)
+                inspect_owned_tree(obj.object_data(), scan)
             })
             .ok_or(MoveError::Busy)??;
         } else {
-            all_ids.push(child_id);
+            scan.add(child_id);
             for descendant_id in registered_children_below(child_id) {
-                if !all_ids.contains(&descendant_id) && !queue.contains(&descendant_id) {
-                    queue.push(descendant_id);
-                }
+                scan.enqueue(descendant_id);
             }
         }
     }
@@ -957,18 +995,17 @@ pub(crate) fn prepare_move_to_thread(
         if !obj.can_move_to_thread() {
             return Err(MoveByIdError::NotMovable);
         }
-        let mut all_ids = Vec::new();
-        let mut queue = Vec::new();
-        inspect_owned_tree(data, &mut all_ids, &mut queue)?;
-        Ok(Some((all_ids, queue)))
+        let mut scan = SubtreeScan::default();
+        inspect_owned_tree(data, &mut scan)?;
+        Ok(Some(scan))
     })
     .ok_or(MoveByIdError::Busy)??;
 
-    let Some((mut all_ids, mut queue)) = initial else {
+    let Some(mut scan) = initial else {
         return Ok(None);
     };
-    collect_queued_descendants(&mut all_ids, &mut queue)?;
-    Ok(Some(all_ids))
+    collect_queued_descendants(&mut scan)?;
+    Ok(Some(scan.all_ids))
 }
 
 /// Pre-validation and subtree collection for the deprecated [`crate::object::move_to_thread`].
@@ -1012,11 +1049,10 @@ pub(crate) fn prepare_move_to_thread_from_data(
         return Ok(None);
     }
 
-    let mut all_ids = Vec::new();
-    let mut queue = Vec::new();
-    inspect_owned_tree(object_data, &mut all_ids, &mut queue)?;
-    collect_queued_descendants(&mut all_ids, &mut queue)?;
-    Ok(Some(all_ids))
+    let mut scan = SubtreeScan::default();
+    inspect_owned_tree(object_data, &mut scan)?;
+    collect_queued_descendants(&mut scan)?;
+    Ok(Some(scan.all_ids))
 }
 
 /// Queries the target object's thread affinity across threads.
@@ -1410,13 +1446,21 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
             };
             let mut children = write_unpoisoned(&parent.children);
             if *read_unpoisoned(&entry.parent) == Some(parent_id) {
-                children.retain(|&child_id| child_id != id);
+                // A parent deleting its children in list order finds each one at the front.
+                if let Some(at) = children.iter().position(|&child_id| child_id == id) {
+                    children.remove(at);
+                }
                 break;
             }
         }
         for child_id in read_unpoisoned(&entry.children).iter() {
             if let Some(child) = registry.get(child_id) {
-                store_link(&registry, child, &mut write_unpoisoned(&child.parent), None);
+                // A listed child whose own link names another parent (a stale entry) is not
+                // this object's child and keeps its parent.
+                let mut link = write_unpoisoned(&child.parent);
+                if *link == Some(id) {
+                    store_link(&registry, child, &mut link, None);
+                }
             }
         }
     }
@@ -1435,6 +1479,72 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     crate::event_loop::purge_posted_events_for_receiver(id);
     crate::signal::disconnect_all_for_object(id);
     crate::timer::stop_timers_for_object(id);
+}
+
+/// Destroys the object whose `DeferredDelete` was just delivered, with everything below it (Qt
+/// `QObject::event` runs `qDeleteInEventHandler`, which deletes the object and so its children).
+///
+/// * An object its parent owns is taken out of the parent's `owned_children` and dropped through
+///   its owner: the usual destruction, which frees the memory, tells the parent
+///   (`ChildRemoved`), and deletes the object's own children. When a callback of the parent runs,
+///   the owner can't be taken out now: the object is unregistered (with its subtree) at once and
+///   the owner is taken out, and dropped, when that callback returns.
+/// * Any other object has an owner this function can't reach (a standalone [`OwnedObject`], or the
+///   caller of a registration through a pointer). It is unregistered with everything the
+///   registry lists below it, and forgotten by its parent's list. Its owner frees the memory.
+///
+/// Runs on the object's registration thread, after the delivery returned. An id that is no longer
+/// registered is left alone.
+pub(crate) fn destroy_deferred(id: ObjectId) {
+    let Some(record) = GLOBAL_OBJECT_REGISTRY.read().ok().and_then(|r| r.get(&id).cloned()) else {
+        return;
+    };
+    let parent = *read_unpoisoned(&record.parent);
+    // Ownership is read from the parent's list: the object itself may be borrowed by a callback
+    // further up the stack, which its own flag would hide.
+    if let Some(parent_id) = parent {
+        match with_object_mut(parent_id, |p| p.object_data_mut().take_owned_child(id)) {
+            Some(Some(owner)) => {
+                drop(owner);
+                return;
+            }
+            None if registered_and_borrowed(parent_id) => {
+                // Whether the parent owns it is settled when its callback returns.
+                unregister_deferred_subtree(id, &record.borrow_state);
+                edit_child_list(parent_id, ChildListChange::DeleteOwned(id));
+                return;
+            }
+            _ => {}
+        }
+    }
+    unregister_deferred_subtree(id, &record.borrow_state);
+    if let Some(parent_id) = parent {
+        edit_child_list(parent_id, ChildListChange::Remove(id));
+    }
+}
+
+/// The ids `data` lists as children that it does not own (attached with `set_parent_by_id`).
+fn unowned_child_ids(data: &ObjectData) -> Vec<ObjectId> {
+    if data.owned_children.is_empty() {
+        return data.children.clone();
+    }
+    let owned: std::collections::HashSet<ObjectId> =
+        data.owned_children.iter().map(OwnedObject::object_id).collect();
+    data.children
+        .iter()
+        .copied()
+        .filter(|id| !owned.contains(id))
+        .collect()
+}
+/// Unregisters `id` and everything the registry lists below it, the deepest first; `destroyed` of
+/// `id` goes out before any descendant is unregistered (and so before theirs).
+fn unregister_deferred_subtree(id: ObjectId, state: &ObjectBorrowState) {
+    state.emit_destroyed_once(id);
+    unregister_descendants(id);
+    // SAFETY: the delivery that ran this has returned, so no callback of the object runs (a
+    // callback further up the stack keeps its own `Arc` to the record, and the memory stays until
+    // its owner frees it), and this runs on the registration thread.
+    unsafe { unregister_qobject(id) };
 }
 /// Unique object identifier: ObjectId (`QObject*` equivalent).
 
@@ -2271,8 +2381,10 @@ impl<'a> ObjectDataMut<'a> {
     }
 
     #[inline]
-    pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) {
+    pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) -> bool {
+        let before = self.data.timers.len();
         self.data.timers.retain(|&t| t != id);
+        self.data.timers.len() != before
     }
 
     #[inline]
@@ -2288,6 +2400,18 @@ impl<'a> ObjectDataMut<'a> {
     #[inline]
     pub(crate) fn into_owned_children_mut(self) -> &'a mut Vec<OwnedObject<dyn QObject>> {
         &mut self.data.owned_children
+    }
+
+    /// Takes the owner of the child `id` out of the list, and the id out of `children`. Nothing
+    /// changes when this object does not own `id`.
+    pub(crate) fn take_owned_child(&mut self, id: ObjectId) -> Option<OwnedObject<dyn QObject>> {
+        let index = self
+            .data
+            .owned_children
+            .iter()
+            .position(|c| OwnedObject::object_id(c) == id)?;
+        self.data.children.retain(|&c| c != id);
+        Some(self.data.owned_children.remove(index))
     }
 
     #[inline]
@@ -2487,6 +2611,13 @@ fn release_child(child_id: ObjectId, parent_id: ObjectId) {
     }
     if belongs_elsewhere.is_none() {
         if let Some((child_record, _)) = registered_ptr(child_id) {
+            // The child's own link cannot be read, but the registry's can: another parent there
+            // means the entry is stale. (A link already cleared, as `unregister_qobject` of the
+            // dying parent does before its object is freed, is this parent's child all the same.)
+            let linked_to = *read_unpoisoned(&child_record.parent);
+            if linked_to.is_some_and(|linked| linked != parent_id) {
+                return;
+            }
             *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
             child_record.has_pending_parent_sync.store(true, Ordering::Release);
         }
@@ -3618,7 +3749,10 @@ pub trait QObject: std::any::Any {
     }
 
     /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
-    /// object's thread (`QObject::moveToThread`). The default is `true`.
+    /// object's thread (`QObject::moveToThread`). The default is `true`, which states that the
+    /// object is safe to use and drop on another thread, as a `Send` type is: every registration
+    /// function is `unsafe` because the registrant promises that (see "Thread rules" in
+    /// [`crate::object`]).
     ///
     /// Return `false` when state of the object is also reached through handles that never leave
     /// the creating thread, such as an `Rc` shared with a `!Send` owner. After a move the
@@ -3647,6 +3781,10 @@ pub trait QObject: std::any::Any {
         self.object_data().signals_blocked.load(Ordering::Acquire)
     }
 
+    /// Searches the children this object owns first, then the ones attached without ownership
+    /// (`set_parent_by_id`): `findChild` covers every child (Qt `qt_qFindChild_helper`), so the
+    /// order differs from `children()` when both kinds are mixed.
+    ///
     /// Calls `visit` with the first child matching type ID and optional name, depth first after
     /// the direct children (`QObject::findChild`). Returns whether one was found. A child whose
     /// callback is running is skipped.
@@ -3681,6 +3819,28 @@ pub trait QObject: std::any::Any {
                 return true;
             }
         }
+        // 3. Children attached without ownership (`set_parent_by_id`), after the owned ones.
+        let unowned = unowned_child_ids(self.object_data());
+        for &child_id in &unowned {
+            let hit = with_object(child_id, |c| {
+                let name_matches = name.is_empty() || c.object_name() == Some(name);
+                match c.as_qobject_any() {
+                    Some(any) if name_matches && any.type_id() == type_id => {
+                        visit(any);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            if hit == Some(true) {
+                return true;
+            }
+        }
+        for &child_id in &unowned {
+            if with_object(child_id, |c| c.find_child_any(name, type_id, visit)) == Some(true) {
+                return true;
+            }
+        }
         false
     }
 
@@ -3699,6 +3859,21 @@ pub trait QObject: std::any::Any {
         // 2. Descendants if no direct child matched
         for child in &self.object_data().owned_children {
             if let Some(Some(found_id)) = child.with(|c| c.find_child_id(name, type_id)) {
+                return Some(found_id);
+            }
+        }
+        let unowned = unowned_child_ids(self.object_data());
+        for &child_id in &unowned {
+            let hit = with_object(child_id, |c| {
+                let name_matches = name.is_empty() || c.object_name() == Some(name);
+                name_matches && c.as_qobject_any().is_some_and(|a| a.type_id() == type_id)
+            });
+            if hit == Some(true) {
+                return Some(child_id);
+            }
+        }
+        for &child_id in &unowned {
+            if let Some(Some(found_id)) = with_object(child_id, |c| c.find_child_id(name, type_id)) {
                 return Some(found_id);
             }
         }
@@ -3737,6 +3912,30 @@ pub trait QObject: std::any::Any {
                 return true;
             }
         }
+        let unowned = unowned_child_ids(self.object_data());
+        for &child_id in &unowned {
+            let hit = with_object_mut(child_id, |c| {
+                let name_matches = name.is_empty() || c.object_name() == Some(name);
+                if !name_matches || !c.as_qobject_any().is_some_and(|a| a.type_id() == type_id) {
+                    return false;
+                }
+                match c.as_qobject_any_mut() {
+                    Some(any) => {
+                        visit(any);
+                        true
+                    }
+                    None => false,
+                }
+            });
+            if hit == Some(true) {
+                return true;
+            }
+        }
+        for &child_id in &unowned {
+            if with_object_mut(child_id, |c| c.find_child_any_mut(name, type_id, visit)) == Some(true) {
+                return true;
+            }
+        }
         false
     }
 
@@ -3751,6 +3950,19 @@ pub trait QObject: std::any::Any {
         let target_name = name.unwrap_or("");
         for child in &self.object_data().owned_children {
             child.with(|c| {
+                let name_matches = target_name.is_empty() || c.object_name() == Some(target_name);
+                if name_matches {
+                    if let Some(any) = c.as_qobject_any() {
+                        if any.type_id() == type_id {
+                            visit(any);
+                        }
+                    }
+                }
+                c.find_children_any(name, type_id, visit);
+            });
+        }
+        for child_id in unowned_child_ids(self.object_data()) {
+            with_object(child_id, |c| {
                 let name_matches = target_name.is_empty() || c.object_name() == Some(target_name);
                 if name_matches {
                     if let Some(any) = c.as_qobject_any() {
@@ -3914,13 +4126,18 @@ pub trait QObject: std::any::Any {
         }
         let receiver = data.id();
         let id = crate::timer::start_object_timer(receiver, interval_ms, timer_type);
-        self.object_data_mut().add_timer(id);
+        if id.is_valid() {
+            self.object_data_mut().add_timer(id);
+        }
         id
     }
 
-    /// Kills the timer with the specified timer ID (`QObject::killTimer`).
+    /// Kills the timer with the specified timer ID (`QObject::killTimer`). A timer this object did
+    /// not start is refused and `false` is returned, as in Qt.
     fn kill_timer(&mut self, id: crate::timer::TimerId) -> bool {
-        self.object_data_mut().remove_timer(id);
+        if !self.object_data_mut().remove_timer(id) {
+            return false;
+        }
         crate::timer::kill_object_timer(id)
     }
 
@@ -6378,6 +6595,24 @@ mod tests {
         drop(returned);
     }
 
+    /// A `DeferredDelete` finished for an owned child that a callback further up the stack still
+    /// borrows: its owner leaves the parent's list all the same, and the memory is freed when that
+    /// callback returns.
+    #[test]
+    fn test_destroy_deferred_of_an_owned_child_borrowed_by_an_outer_frame_takes_its_owner() {
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        // SAFETY: the child is not used directly; the parent owns it.
+        let child_id = unsafe { add_owned_child(parent_id, Box::new(Plain(ObjectData::new(ObjectId::next())))) }
+            .map_err(|(error, _)| error)
+            .unwrap();
+
+        with_object_mut(child_id, |_| destroy_deferred(child_id)).unwrap();
+
+        assert!(parent.with(|p| p.0.owned_children().is_empty() && p.0.children().is_empty()).unwrap());
+        assert!(with_object(child_id, |_| ()).is_none());
+    }
     /// Objects whose own lists name each other (the safe `reparent` builds that without any
     /// parent link) are registered: a child that is registered under another parent is not listed,
     /// so the registry's lists do not form a ring, and dropping the parent of such an object from

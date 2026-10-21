@@ -35,6 +35,12 @@ pub fn set_widget_enabled(widget: &WidgetRef, enabled: bool) {
     if changed {
         notices.push(EnabledNotice::Changed(widget.clone()));
     }
+    send_enabled_notices(notices);
+}
+
+/// Sends what `set_enabled_helper` collected: the focus moves and each `EnabledChange` whose widget
+/// is not borrowed.
+fn send_enabled_notices(notices: Vec<EnabledNotice>) {
     for notice in notices {
         match notice {
             EnabledNotice::FocusLost(state) => crate::focus::move_lost_focus_now(&state),
@@ -95,12 +101,18 @@ fn is_shown(widget: &WidgetRef) -> bool {
 /// `show_helper`'s child loop (qwidget.cpp:8074-8130): every child that is not explicitly hidden
 /// gets its `Show` after its own children, before the parent's.
 pub(crate) fn show_children_first(widget: &WidgetRef) {
-    let children = widget.borrow().children();
+    let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+        return;
+    };
     for child in children {
-        if child.borrow().is_visible() {
+        // A child on the stack (its own handler shows its parent) gets no event, as in
+        // `set_widget_enabled`.
+        let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+        if visible {
             show_children_first(&child);
-            let mut w = child.borrow_mut();
-            notify_borrowed(&mut **w, &mut Event::new(EventKind::Show));
+            if let Ok(mut w) = child.try_borrow_mut() {
+                notify_borrowed(&mut **w, &mut Event::new(EventKind::Show));
+            }
         }
     }
 }
@@ -108,11 +120,13 @@ pub(crate) fn show_children_first(widget: &WidgetRef) {
 /// `hide_helper`'s child loop (qwidget.cpp:8238-8289): every child that is not explicitly hidden
 /// gets its `Hide` before its own children do.
 pub(crate) fn hide_children(widget: &WidgetRef) {
-    let children = widget.borrow().children();
+    let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
+        return;
+    };
     for child in children {
-        if child.borrow().is_visible() {
-            {
-                let mut w = child.borrow_mut();
+        let visible = child.try_borrow().is_ok_and(|c| c.is_visible());
+        if visible {
+            if let Ok(mut w) = child.try_borrow_mut() {
                 notify_borrowed(&mut **w, &mut Event::new(EventKind::Hide));
             }
             hide_children(&child);
@@ -708,6 +722,12 @@ pub struct WidgetBase {
     /// explicit (qlayout.cpp:1126-1129).
     pub explicit_min: Cell<(bool, bool)>,
     pub explicit_max: Cell<(bool, bool)>,
+    /// The deferral epoch of `LayoutScheduler` this tree root last scanned for layouts left dirty
+    /// (`LayoutScheduler::flush_deferred`).
+    pub(crate) layout_epoch: Cell<u64>,
+    /// The last `remove_child` met a child that is borrowed, so it could not tell whether that
+    /// child was the one to remove. The caller that has the parent handle retries later.
+    pub(crate) removal_incomplete: Cell<bool>,
 }
 
 impl WidgetBase {
@@ -740,6 +760,8 @@ impl WidgetBase {
             max_size: Cell::new(Size::new(WIDGET_SIZE_MAX, WIDGET_SIZE_MAX)),
             explicit_min: Cell::new((false, false)),
             explicit_max: Cell::new((false, false)),
+            layout_epoch: Cell::new(0),
+            removal_incomplete: Cell::new(false),
         }
     }
     /// Unique object identifier.
@@ -884,6 +906,9 @@ impl WidgetBase {
                 let mut notices = Vec::new();
                 self.force_disabled.set(on);
                 self.set_enabled_helper(!on, &mut notices);
+                // The focus move and the children's `EnabledChange` are sent now, as `set_widget_enabled`
+                // does; this widget's own event needs its `WidgetRef`, which only that function has.
+                send_enabled_notices(notices);
             }
             WidgetAttribute::MouseTracking => {
                 self.mouse_tracking.set(on);
@@ -1145,7 +1170,6 @@ impl WidgetBase {
         } else {
             props.push((name.to_string(), value.to_string()));
         }
-        self.dirty.set(Some(self.geometry.get()));
     }
 
     pub fn property(&self, name: &str) -> Option<String> {
@@ -1161,16 +1185,25 @@ impl WidgetBase {
     }
 
     pub fn add_child(&mut self, child: WidgetRef) {
-        let child_id = child.borrow().id();
-        self.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.children.get_mut().retain(|c| !Rc::ptr_eq(c, &child));
         if let Some(win_id) = self.window_id.get() {
             child.borrow().set_window_id(Some(win_id));
         }
         self.children.get_mut().push(child);
     }
 
+    /// Removes the child with `child_id`. A child that is borrowed (its own handler is running)
+    /// cannot be identified and stays; `removal_incomplete` then tells the caller to retry.
     pub fn remove_child(&mut self, child_id: ObjectId) {
-        self.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        let mut incomplete = false;
+        self.children.get_mut().retain(|c| match c.try_borrow() {
+            Ok(w) => w.id() != child_id,
+            Err(_) => {
+                incomplete = true;
+                true
+            }
+        });
+        self.removal_incomplete.set(incomplete);
     }
 }
 
@@ -1359,12 +1392,16 @@ impl Widget for EmptyWidget {
             self.base.invalidate_vacated_rect(old_rect);
         }
         if size_changed {
-            self.resize_event(new_size, old_size);
+            let has_parent = self.base.parent.borrow().is_some();
+            // A window root gets its `Resize` event from `Window` (one `QResizeEvent` per resize);
+            // sending it here as well ran `resize_event` twice.
+            if has_parent || self.base.window_id.get().is_none() {
+                self.resize_event(new_size, old_size);
+            }
             // A layout-owning child re-lays out its children when its size changes, as Qt's
             // QLayout::widgetEvent does on Resize, when the layout is already activated (qlayout.cpp:528-530).
             // A parentless widget is a window root, which Window lays out itself (window.rs:859-860);
             // fitting it here as well ran that pass twice (test_layout_metric_caching aligned container).
-            let has_parent = self.base.parent.borrow().is_some();
             if let Some(mut layout) = self.layout_ref_mut() {
                 if has_parent && !layout.is_dirty() {
                     layout.set_geometry(Rect::new(0, 0, rect.width, rect.height));
@@ -1480,8 +1517,11 @@ impl Widget for EmptyWidget {
     fn children(&self) -> Vec<WidgetRef> {
         let mut list = self.base.children.borrow().clone();
         if let Some(layout) = self.base.layout.borrow().as_ref() {
+            // Identity, not `id()`: no `RefCell` is borrowed, so a child on the stack is fine.
+            let mut seen: std::collections::HashSet<*const RefCell<Box<dyn Widget>>> =
+                list.iter().map(Rc::as_ptr).collect();
             for w in layout.widgets() {
-                if !list.iter().any(|c| c.borrow().id() == w.borrow().id()) {
+                if seen.insert(Rc::as_ptr(&w)) {
                     list.push(w);
                 }
             }
@@ -1490,8 +1530,7 @@ impl Widget for EmptyWidget {
     }
 
     fn add_child(&mut self, child: WidgetRef) {
-        let child_id = child.borrow().id();
-        self.base.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.base.children.get_mut().retain(|c| !Rc::ptr_eq(c, &child));
         if let Some(win_id) = self.base.window_id.get() {
             child.borrow().set_window_id(Some(win_id));
         }
@@ -1500,7 +1539,7 @@ impl Widget for EmptyWidget {
     }
 
     fn remove_child(&mut self, child_id: ObjectId) {
-        self.base.children.get_mut().retain(|c| c.borrow().id() != child_id);
+        self.base.remove_child(child_id);
         self.update();
     }
 

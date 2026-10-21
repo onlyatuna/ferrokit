@@ -52,8 +52,10 @@ fn interactive_resize_inside_capacity_never_resizes_buffers() {
     // 100 resizes sweeping up and down inside the allocation.
     let mut count = 0u64;
     for i in 0..100u32 {
-        let w = 200 + (i * 7) % (aw - 200);
-        let h = 150 + (i * 5) % (ah - 150);
+        // Inside the capacity band: visible >= alloc / 2 (smaller would give memory back).
+        let (lo_w, lo_h) = (aw.div_ceil(2), ah.div_ceil(2));
+        let w = lo_w + (i * 7) % (aw - lo_w);
+        let h = lo_h + (i * 5) % (ah - lo_h);
         if (w, h) == (s.width(), s.height()) {
             continue;
         }

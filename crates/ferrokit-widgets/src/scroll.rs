@@ -124,6 +124,18 @@ impl ScrollBar {
         self.single_step.set(step.max(1));
     }
 
+    /// One wheel notch scrolls three single steps; a zero delta scrolls nothing. True when the
+    /// value changed (`QAbstractSlider::wheelEvent` ignores a wheel that moves nothing).
+    fn scroll_by_wheel(&self, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let steps = self.single_step.get() * 3;
+        let before = self.value.get();
+        self.set_value(before + if delta > 0 { -steps } else { steps });
+        self.value.get() != before
+    }
+
     pub fn set_value(&self, val: i32) {
         let clamped = val.clamp(self.minimum.get(), self.maximum.get());
         if self.value.get() != clamped {
@@ -201,8 +213,7 @@ impl QObject for ScrollBar {
                 true
             }
             EventKind::Wheel { angle_delta_y, .. } => {
-                self.wheel_event(Point::new(0, 0), *angle_delta_y, 0);
-                true
+                self.scroll_by_wheel(*angle_delta_y)
             }
             _ => false,
         }
@@ -352,12 +363,7 @@ impl Widget for ScrollBar {
     }
 
     fn wheel_event(&mut self, _pos: Point, delta_y: i32, _modifiers: u32) {
-        let steps = if delta_y > 0 {
-            -self.single_step.get() * 3
-        } else {
-            self.single_step.get() * 3
-        };
-        self.set_value(self.value.get() + steps);
+        self.scroll_by_wheel(delta_y);
     }
 
     fn paint_event(&mut self, painter: &mut Painter) {
@@ -415,6 +421,8 @@ pub struct ScrollArea {
     v_policy: ScrollBarPolicy,
     scroll_x: std::cell::Cell<i32>,
     scroll_y: std::cell::Cell<i32>,
+    /// The bar a mouse press started on; moves and the release go to it.
+    bar_grab: std::cell::Cell<Option<Orientation>>,
 }
 
 impl ScrollArea {
@@ -435,6 +443,7 @@ impl ScrollArea {
             v_policy: ScrollBarPolicy::AsNeeded,
             scroll_x: std::cell::Cell::new(0),
             scroll_y: std::cell::Cell::new(0),
+            bar_grab: std::cell::Cell::new(None),
         }
     }
 
@@ -513,6 +522,49 @@ impl ScrollArea {
         Rect::new(0, 0, w, h)
     }
 
+    fn bar(&self, orientation: Orientation) -> &ScrollBar {
+        match orientation {
+            Orientation::Horizontal => &self.h_scrollbar,
+            Orientation::Vertical => &self.v_scrollbar,
+        }
+    }
+
+    fn bar_mut(&mut self, orientation: Orientation) -> &mut ScrollBar {
+        match orientation {
+            Orientation::Horizontal => &mut self.h_scrollbar,
+            Orientation::Vertical => &mut self.v_scrollbar,
+        }
+    }
+
+    /// Reads the bar values and moves the content widget to match.
+    fn sync_scroll_position(&self) {
+        self.scroll_x.set(self.h_scrollbar.value());
+        self.scroll_y.set(self.v_scrollbar.value());
+        if let Some(w) = &self.widget {
+            let b = w.borrow();
+            let g = b.geometry();
+            b.set_geometry(Rect::new(-self.scroll_x.get(), -self.scroll_y.get(), g.width, g.height));
+        }
+        self.update();
+    }
+
+    /// A wheel turn: Shift or a horizontal-only delta drives the horizontal bar (with
+    /// `angle_delta_x`), anything else the vertical one. True when a bar moved.
+    fn scroll_by_wheel(&mut self, angle_x: i32, angle_y: i32, modifiers: u32) -> bool {
+        let is_shift = (modifiers & 0x02000000 != 0) || (modifiers & 1 != 0);
+        let horizontal = is_shift || (angle_x != 0 && angle_y == 0);
+        let (bar, delta) = if horizontal {
+            (&self.h_scrollbar, if angle_x != 0 { angle_x } else { angle_y })
+        } else {
+            (&self.v_scrollbar, angle_y)
+        };
+        let moved = bar.scroll_by_wheel(delta);
+        if moved {
+            self.sync_scroll_position();
+        }
+        moved
+    }
+
     fn update_scrollbars(&self) {
         let geom = self.base.geometry();
         if geom.width <= 0 || geom.height <= 0 {
@@ -554,7 +606,8 @@ impl ScrollArea {
             geom.height
         };
 
-        // Position and update vertical scrollbar
+        // A bar that is not shown has no range: the content returns to the origin
+        // (`QScrollBar` of an `AlwaysOff` / unneeded policy has maximum 0).
         self.v_scrollbar.set_visible(show_v);
         if show_v {
             self.v_scrollbar
@@ -562,9 +615,14 @@ impl ScrollArea {
             let max_v = (content_size.height - view_h).max(0);
             self.v_scrollbar.set_range(0, max_v);
             self.v_scrollbar.set_page_step(view_h);
+        } else if self.v_policy == ScrollBarPolicy::AlwaysOff {
+            // Qt keeps the range of a bar that is switched off; the wheel still scrolls.
+            self.v_scrollbar.set_range(0, (content_size.height - view_h).max(0));
+            self.v_scrollbar.set_page_step(view_h);
+        } else {
+            self.v_scrollbar.set_range(0, 0);
         }
 
-        // Position and update horizontal scrollbar
         self.h_scrollbar.set_visible(show_h);
         if show_h {
             self.h_scrollbar
@@ -572,6 +630,11 @@ impl ScrollArea {
             let max_h = (content_size.width - view_w).max(0);
             self.h_scrollbar.set_range(0, max_h);
             self.h_scrollbar.set_page_step(view_w);
+        } else if self.h_policy == ScrollBarPolicy::AlwaysOff {
+            self.h_scrollbar.set_range(0, (content_size.width - view_w).max(0));
+            self.h_scrollbar.set_page_step(view_w);
+        } else {
+            self.h_scrollbar.set_range(0, 0);
         }
 
         self.scroll_x.set(self.h_scrollbar.value());
@@ -610,27 +673,51 @@ impl QObject for ScrollArea {
     fn event(&mut self, event: &mut Event) -> bool {
         match &event.kind {
             EventKind::Wheel {
+                angle_delta_x,
                 angle_delta_y,
-                pixel_delta_x,
                 modifiers,
                 ..
             } => {
-                let is_shift = (*modifiers & 0x02000000 != 0) || (*modifiers & 1 != 0);
-                if is_shift || *pixel_delta_x != 0 {
-                    self.h_scrollbar
-                        .wheel_event(Point::new(0, 0), *angle_delta_y, 0);
-                    self.scroll_x.set(self.h_scrollbar.value());
-                } else {
-                    self.v_scrollbar
-                        .wheel_event(Point::new(0, 0), *angle_delta_y, 0);
-                    self.scroll_y.set(self.v_scrollbar.value());
-                }
-                if let Some(w) = &self.widget {
-                    let b = w.borrow();
-                    let g = b.geometry();
-                    b.set_geometry(Rect::new(-self.scroll_x.get(), -self.scroll_y.get(), g.width, g.height));
-                }
-                self.update();
+                // A wheel that moved nothing (no bar, at a limit) is not handled: the parent
+                // gets it, as `QAbstractScrollArea::wheelEvent` ignores it.
+                self.scroll_by_wheel(*angle_delta_x, *angle_delta_y, *modifiers)
+            }
+            EventKind::MouseButtonPress { x, y, button } => {
+                let pos = Point::new(*x, *y);
+                let bar = [Orientation::Vertical, Orientation::Horizontal]
+                    .into_iter()
+                    .find(|o| {
+                        let bar = self.bar(*o);
+                        bar.is_visible() && bar.geometry().contains(pos)
+                    });
+                let Some(orientation) = bar else {
+                    return false;
+                };
+                self.bar_grab.set(Some(orientation));
+                let bar = self.bar_mut(orientation);
+                let g = bar.geometry();
+                bar.mouse_press_event(Point::new(pos.x - g.x, pos.y - g.y), *button, 0);
+                self.sync_scroll_position();
+                true
+            }
+            EventKind::MouseMove { x, y } => {
+                let Some(orientation) = self.bar_grab.get() else {
+                    return false;
+                };
+                let bar = self.bar_mut(orientation);
+                let g = bar.geometry();
+                bar.mouse_move_event(Point::new(*x - g.x, *y - g.y));
+                self.sync_scroll_position();
+                true
+            }
+            EventKind::MouseButtonRelease { x, y, button } => {
+                let Some(orientation) = self.bar_grab.take() else {
+                    return false;
+                };
+                let bar = self.bar_mut(orientation);
+                let g = bar.geometry();
+                bar.mouse_release_event(Point::new(*x - g.x, *y - g.y), *button, 0);
+                self.sync_scroll_position();
                 true
             }
             _ => false,
@@ -735,21 +822,8 @@ impl Widget for ScrollArea {
         self.base.remove_child(child_id);
     }
 
-    fn wheel_event(&mut self, pos: Point, delta_y: i32, modifiers: u32) {
-        let is_shift = (modifiers & 0x02000000 != 0) || (modifiers & 1 != 0);
-        if is_shift {
-            self.h_scrollbar.wheel_event(pos, delta_y, modifiers);
-            self.scroll_x.set(self.h_scrollbar.value());
-        } else {
-            self.v_scrollbar.wheel_event(pos, delta_y, modifiers);
-            self.scroll_y.set(self.v_scrollbar.value());
-        }
-        if let Some(w) = &self.widget {
-            let b = w.borrow();
-            let g = b.geometry();
-            b.set_geometry(Rect::new(-self.scroll_x.get(), -self.scroll_y.get(), g.width, g.height));
-        }
-        self.update();
+    fn wheel_event(&mut self, _pos: Point, delta_y: i32, modifiers: u32) {
+        self.scroll_by_wheel(0, delta_y, modifiers);
     }
 
     fn children_clip_rect(&self) -> Option<Rect> {
