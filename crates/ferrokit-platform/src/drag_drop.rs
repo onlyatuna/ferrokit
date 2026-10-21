@@ -31,14 +31,120 @@ pub enum DropEvent {
     },
 }
 
+/// Payload decoding shared by every backend that receives files or text.
+pub mod payload {
+    /// MIME type reported for a list of dropped files (`CF_HDROP`).
+    pub const URI_LIST: &str = "text/uri-list";
+    /// MIME type reported for dropped text (`CF_UNICODETEXT`).
+    pub const PLAIN_TEXT: &str = "text/plain";
+
+    /// The paths in a `DROPFILES` block (`CF_HDROP`): a header (`pFiles` offset, `POINT`, `fNC`,
+    /// `fWide`) followed by NUL-separated, double-NUL-terminated names. Malformed blocks yield
+    /// what could be read; nothing is read out of bounds.
+    pub fn parse_hdrop(bytes: &[u8]) -> Vec<String> {
+        const HEADER: usize = 20;
+        if bytes.len() < HEADER {
+            return Vec::new();
+        }
+        let offset = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let wide = i32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) != 0;
+        let Some(list) = bytes.get(offset.max(HEADER)..) else {
+            return Vec::new();
+        };
+        let mut paths = Vec::new();
+        if wide {
+            let units: Vec<u16> = list
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            for name in units.split(|&u| u == 0) {
+                if name.is_empty() {
+                    break;
+                }
+                paths.push(String::from_utf16_lossy(name));
+            }
+        } else {
+            for name in list.split(|&b| b == 0) {
+                if name.is_empty() {
+                    break;
+                }
+                paths.push(String::from_utf8_lossy(name).into_owned());
+            }
+        }
+        paths
+    }
+
+    /// `QUrl::fromLocalFile(path).toEncoded()` for a Windows path: `C:\a b` becomes
+    /// `file:///C:/a%20b`, `\\server\share\f` becomes `file://server/share/f`.
+    pub fn file_uri(path: &str) -> String {
+        let normalized = path.replace('\\', "/");
+        let (authority, rest) = match normalized.strip_prefix("//") {
+            Some(unc) => match unc.split_once('/') {
+                Some((host, rest)) => (host.to_string(), format!("/{rest}")),
+                None => (unc.to_string(), String::new()),
+            },
+            None if normalized.starts_with('/') => (String::new(), normalized),
+            None => (String::new(), format!("/{normalized}")),
+        };
+        let mut out = String::from("file://");
+        out.push_str(&authority);
+        for b in rest.bytes() {
+            if b.is_ascii_alphanumeric() || b"-._~/:".contains(&b) {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    }
+
+    /// The `text/uri-list` payload (CRLF separated, as RFC 2483 and Qt use).
+    pub fn uri_list(paths: &[String]) -> Vec<u8> {
+        paths
+            .iter()
+            .map(|p| file_uri(p))
+            .collect::<Vec<_>>()
+            .join("\r\n")
+            .into_bytes()
+    }
+
+    /// UTF-8 text from a `CF_UNICODETEXT` block (NUL terminated UTF-16).
+    pub fn unicode_text(bytes: &[u8]) -> String {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect();
+        String::from_utf16_lossy(&units)
+    }
+}
+
 #[cfg(windows)]
 pub mod win32_ole {
     use super::*;
     use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::{HWND, POINTL, S_OK};
-    use windows_sys::Win32::System::Ole::{RegisterDragDrop, RevokeDragDrop, DROPEFFECT_COPY};
+    use windows_sys::Win32::Foundation::{HWND, POINT, POINTL, S_OK};
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows_sys::Win32::System::Ole::{
+        RegisterDragDrop, RevokeDragDrop, CF_HDROP, CF_UNICODETEXT, DROPEFFECT_COPY,
+        DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE,
+    };
 
     pub type HRESULT = i32;
+
+    const E_NOINTERFACE: HRESULT = 0x8000_4002_u32 as i32;
+    const MK_SHIFT: u32 = 0x0004;
+    const MK_CONTROL: u32 = 0x0008;
+
+    /// `IID_IUnknown`
+    pub const IID_IUNKNOWN: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(
+        0x00000000_0000_0000_c000_000000000046,
+    );
+    /// `IID_IDropTarget`
+    pub const IID_IDROPTARGET: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(
+        0x00000122_0000_0000_c000_000000000046,
+    );
 
     #[repr(C)]
     pub struct IDropTargetVtbl {
@@ -63,6 +169,8 @@ pub mod win32_ole {
         pub ref_count: AtomicU32,
         pub hwnd: HWND,
         pub callback: Box<dyn Fn(DropEvent) + Send + Sync>,
+        /// Whether the drag currently over the window carries a format this target can decode.
+        pub accepts: std::sync::atomic::AtomicBool,
     }
 
     impl OleDropTarget {
@@ -75,9 +183,14 @@ pub mod win32_ole {
                 ref_count: AtomicU32::new(1),
                 hwnd,
                 callback: Box::new(callback),
+                accepts: std::sync::atomic::AtomicBool::new(false),
             });
             Box::into_raw(target)
         }
+    }
+
+    fn same_guid(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
+        a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
     }
 
     unsafe extern "system" fn query_interface(
@@ -85,13 +198,20 @@ pub mod win32_ole {
         riid: *const windows_sys::core::GUID,
         ppv_object: *mut *mut c_void,
     ) -> HRESULT {
-        const E_NOINTERFACE: HRESULT = -2147467262; // 0x80004002
-        if ppv_object.is_null() || riid.is_null() {
+        if ppv_object.is_null() {
             return E_NOINTERFACE;
         }
-
-        let target = this as *mut OleDropTarget;
-        (*target).ref_count.fetch_add(1, Ordering::SeqCst);
+        *ppv_object = std::ptr::null_mut();
+        if riid.is_null() {
+            return E_NOINTERFACE;
+        }
+        let riid = &*riid;
+        // Only the two interfaces this object implements: answering anything else would let OLE
+        // call foreign vtable slots (IMarshal, IDropTargetHelper, ...) on an `IDropTarget` vtable.
+        if !same_guid(riid, &IID_IUNKNOWN) && !same_guid(riid, &IID_IDROPTARGET) {
+            return E_NOINTERFACE;
+        }
+        add_ref(this);
         *ppv_object = this;
         S_OK
     }
@@ -110,23 +230,196 @@ pub mod win32_ole {
         count
     }
 
+    // ---- IDataObject (only the slots this target calls) --------------------------------------
+
+    #[repr(C)]
+    struct FormatEtc {
+        cf_format: u16,
+        ptd: *mut c_void,
+        dw_aspect: u32,
+        lindex: i32,
+        tymed: u32,
+    }
+
+    #[repr(C)]
+    struct StgMedium {
+        tymed: u32,
+        h_global: *mut c_void,
+        p_unk_for_release: *mut c_void,
+    }
+
+    #[repr(C)]
+    pub struct IDataObjectVtbl {
+        pub query_interface: usize,
+        pub add_ref: usize,
+        pub release: usize,
+        pub get_data: unsafe extern "system" fn(*mut c_void, *const c_void, *mut c_void) -> HRESULT,
+        pub get_data_here: usize,
+        pub query_get_data: unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT,
+        pub get_canonical_format_etc: usize,
+        pub set_data: usize,
+        pub enum_format_etc: usize,
+        pub d_advise: usize,
+        pub d_unadvise: usize,
+        pub enum_d_advise: usize,
+    }
+
+    const DVASPECT_CONTENT: u32 = 1;
+    const TYMED_HGLOBAL: u32 = 1;
+
+    #[link(name = "ole32")]
+    extern "system" {
+        fn ReleaseStgMedium(medium: *mut c_void);
+    }
+
+    fn format_etc(cf: u16) -> FormatEtc {
+        FormatEtc {
+            cf_format: cf,
+            ptd: std::ptr::null_mut(),
+            dw_aspect: DVASPECT_CONTENT,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL,
+        }
+    }
+
+    /// Whether `data_object` offers `cf` as global memory.
+    unsafe fn has_format(data_object: *mut c_void, cf: u16) -> bool {
+        let vtbl = *(data_object as *const *const IDataObjectVtbl);
+        let fmt = format_etc(cf);
+        ((*vtbl).query_get_data)(data_object, &fmt as *const _ as *const c_void) == S_OK
+    }
+
+    /// The bytes of the `cf` global-memory block of `data_object`.
+    unsafe fn read_format(data_object: *mut c_void, cf: u16) -> Option<Vec<u8>> {
+        let vtbl = *(data_object as *const *const IDataObjectVtbl);
+        let fmt = format_etc(cf);
+        let mut medium = StgMedium {
+            tymed: 0,
+            h_global: std::ptr::null_mut(),
+            p_unk_for_release: std::ptr::null_mut(),
+        };
+        let hr = ((*vtbl).get_data)(
+            data_object,
+            &fmt as *const _ as *const c_void,
+            &mut medium as *mut _ as *mut c_void,
+        );
+        if hr != S_OK {
+            return None;
+        }
+        let mut bytes = None;
+        if medium.tymed == TYMED_HGLOBAL && !medium.h_global.is_null() {
+            let size = GlobalSize(medium.h_global);
+            let ptr = GlobalLock(medium.h_global) as *const u8;
+            if !ptr.is_null() {
+                bytes = Some(std::slice::from_raw_parts(ptr, size).to_vec());
+                GlobalUnlock(medium.h_global);
+            }
+        }
+        ReleaseStgMedium(&mut medium as *mut _ as *mut c_void);
+        bytes
+    }
+
+    /// The MIME types `data_object` can be decoded into.
+    ///
+    /// # Safety
+    /// `data_object` must be a live `IDataObject`.
+    pub unsafe fn data_object_formats(data_object: *mut c_void) -> Vec<String> {
+        let mut formats = Vec::new();
+        if data_object.is_null() {
+            return formats;
+        }
+        if has_format(data_object, CF_HDROP) {
+            formats.push(payload::URI_LIST.to_string());
+        }
+        if has_format(data_object, CF_UNICODETEXT) {
+            formats.push(payload::PLAIN_TEXT.to_string());
+        }
+        formats
+    }
+
+    /// The decoded payload of every format `data_object_formats` reports.
+    ///
+    /// # Safety
+    /// `data_object` must be a live `IDataObject`.
+    pub unsafe fn data_object_payload(data_object: *mut c_void) -> Vec<(String, Vec<u8>)> {
+        let mut data = Vec::new();
+        if data_object.is_null() {
+            return data;
+        }
+        if let Some(bytes) = read_format(data_object, CF_HDROP) {
+            data.push((
+                payload::URI_LIST.to_string(),
+                payload::uri_list(&payload::parse_hdrop(&bytes)),
+            ));
+        }
+        if let Some(bytes) = read_format(data_object, CF_UNICODETEXT) {
+            data.push((
+                payload::PLAIN_TEXT.to_string(),
+                payload::unicode_text(&bytes).into_bytes(),
+            ));
+        }
+        data
+    }
+
+    /// The effect a drag proposes: the modifier keys choose (Ctrl+Shift link, Ctrl copy, Shift
+    /// move), otherwise copy; limited to what the source `allowed`.
+    pub fn proposed_effect(key_state: u32, allowed: u32) -> u32 {
+        let wanted = match (key_state & MK_CONTROL != 0, key_state & MK_SHIFT != 0) {
+            (true, true) => DROPEFFECT_LINK,
+            (true, false) => DROPEFFECT_COPY,
+            (false, true) => DROPEFFECT_MOVE,
+            (false, false) => DROPEFFECT_COPY,
+        };
+        if allowed & wanted != 0 {
+            return wanted;
+        }
+        [DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_LINK]
+            .into_iter()
+            .find(|e| allowed & e != 0)
+            .unwrap_or(DROPEFFECT_NONE)
+    }
+
+    /// The window-client logical position of a screen point of the drag.
+    unsafe fn logical_client_pos(hwnd: HWND, pt: POINTL) -> Point {
+        let mut native = POINT { x: pt.x, y: pt.y };
+        ScreenToClient(hwnd, &mut native);
+        crate::high_dpi::from_native_point(
+            Point::new(native.x, native.y),
+            crate::window::get_window_dpr(hwnd),
+        )
+    }
+
+    unsafe fn set_effect(pdw_effect: *mut u32, accepts: bool, key_state: u32) -> u32 {
+        if pdw_effect.is_null() {
+            return DROPEFFECT_NONE;
+        }
+        let effect = if accepts {
+            proposed_effect(key_state, *pdw_effect)
+        } else {
+            DROPEFFECT_NONE
+        };
+        *pdw_effect = effect;
+        effect
+    }
+
     unsafe extern "system" fn drag_enter(
         this: *mut c_void,
-        _p_data_obj: *mut c_void,
-        _grf_key_state: u32,
+        p_data_obj: *mut c_void,
+        grf_key_state: u32,
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
         let target = &*(this as *mut OleDropTarget);
-        if !pdw_effect.is_null() {
-            *pdw_effect = DROPEFFECT_COPY;
-        }
+        let formats = data_object_formats(p_data_obj);
+        let accepts = !formats.is_empty();
+        target.accepts.store(accepts, Ordering::SeqCst);
+        let effect = set_effect(pdw_effect, accepts, grf_key_state);
         // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Enter {
-                pos: Point::new(pt.x, pt.y),
-                formats: vec!["text/plain".to_string()],
-                effect: DROPEFFECT_COPY,
+                pos: logical_client_pos(target.hwnd, pt),
+                formats,
+                effect,
             })
         }));
         S_OK
@@ -134,18 +427,16 @@ pub mod win32_ole {
 
     unsafe extern "system" fn drag_over(
         this: *mut c_void,
-        _grf_key_state: u32,
+        grf_key_state: u32,
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
         let target = &*(this as *mut OleDropTarget);
-        if !pdw_effect.is_null() {
-            *pdw_effect = DROPEFFECT_COPY;
-        }
+        let effect = set_effect(pdw_effect, target.accepts.load(Ordering::SeqCst), grf_key_state);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Over {
-                pos: Point::new(pt.x, pt.y),
-                effect: DROPEFFECT_COPY,
+                pos: logical_client_pos(target.hwnd, pt),
+                effect,
             })
         }));
         S_OK
@@ -153,6 +444,7 @@ pub mod win32_ole {
 
     unsafe extern "system" fn drag_leave(this: *mut c_void) -> HRESULT {
         let target = &*(this as *mut OleDropTarget);
+        target.accepts.store(false, Ordering::SeqCst);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Leave)
         }));
@@ -161,21 +453,22 @@ pub mod win32_ole {
 
     unsafe extern "system" fn drop(
         this: *mut c_void,
-        _p_data_obj: *mut c_void,
-        _grf_key_state: u32,
+        p_data_obj: *mut c_void,
+        grf_key_state: u32,
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
         let target = &*(this as *mut OleDropTarget);
-        if !pdw_effect.is_null() {
-            *pdw_effect = DROPEFFECT_COPY;
-        }
+        target.accepts.store(false, Ordering::SeqCst);
+        let formats = data_object_formats(p_data_obj);
+        let data = data_object_payload(p_data_obj);
+        let effect = set_effect(pdw_effect, !formats.is_empty(), grf_key_state);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Drop {
-                pos: Point::new(pt.x, pt.y),
-                formats: vec!["text/plain".to_string()],
-                data: vec![("text/plain".to_string(), b"dropped".to_vec())],
-                effect: DROPEFFECT_COPY,
+                pos: logical_client_pos(target.hwnd, pt),
+                formats,
+                data,
+                effect,
             })
         }));
         S_OK
@@ -219,5 +512,46 @@ pub mod win32_ole {
                 release(target as *mut c_void);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::payload::*;
+
+    #[test]
+    fn malformed_drop_files_blocks_never_read_out_of_bounds() {
+        assert!(parse_hdrop(&[]).is_empty());
+        assert!(parse_hdrop(&[0; 19]).is_empty());
+        // pFiles points past the end.
+        let mut b = vec![0u8; 20];
+        b[..4].copy_from_slice(&1000u32.to_le_bytes());
+        assert!(parse_hdrop(&b).is_empty());
+        // Unterminated wide name with an odd trailing byte is still bounded.
+        let mut b = vec![0u8; 20];
+        b[..4].copy_from_slice(&20u32.to_le_bytes());
+        b[16] = 1;
+        b.extend_from_slice(&[b'a', 0, b'b', 0, b'c']);
+        assert_eq!(parse_hdrop(&b), vec!["ab".to_string()]);
+    }
+
+    #[test]
+    fn ansi_drop_files_are_decoded() {
+        let mut b = vec![0u8; 20];
+        b[..4].copy_from_slice(&20u32.to_le_bytes());
+        b.extend_from_slice(b"C:\\x.txt\0D:\\y.txt\0\0");
+        assert_eq!(parse_hdrop(&b), vec!["C:\\x.txt", "D:\\y.txt"]);
+    }
+
+    #[test]
+    fn file_uris_percent_encode_non_ascii_and_reserved_bytes() {
+        assert_eq!(file_uri("C:\\a b\\é#.txt"), "file:///C:/a%20b/%C3%A9%23.txt");
+        assert_eq!(file_uri("\\\\srv\\share\\f"), "file://srv/share/f");
+    }
+
+    #[test]
+    fn unicode_text_stops_at_the_terminator() {
+        let bytes: Vec<u8> = "hi\0junk".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(unicode_text(&bytes), "hi");
     }
 }
