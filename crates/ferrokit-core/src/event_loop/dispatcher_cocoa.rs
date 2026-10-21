@@ -122,7 +122,7 @@ struct Runtime {
     date_from_now: Sel,
 }
 
-// Class and selector pointers are process-wide constants.
+// SAFETY: class and selector pointers are process-wide constants.
 unsafe impl Send for Runtime {}
 unsafe impl Sync for Runtime {}
 
@@ -272,7 +272,7 @@ extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
 /// (Qt's `postedEventsSource`, :786-801).
 struct WakeSource(CFTypeRef);
 
-// CFRunLoopSourceSignal, CFRunLoopWakeUp and CFRunLoopSourceInvalidate are thread-safe.
+// SAFETY: CFRunLoopSourceSignal, CFRunLoopWakeUp and CFRunLoopSourceInvalidate are thread-safe.
 unsafe impl Send for WakeSource {}
 unsafe impl Sync for WakeSource {}
 

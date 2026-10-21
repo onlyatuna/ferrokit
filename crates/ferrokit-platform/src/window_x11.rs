@@ -177,6 +177,8 @@ pub fn x11_keycode_to_qt_key(keycode: u32) -> u32 {
     }
 }
 
+/// Not `Send`/`Sync`: owns a `Box<dyn WindowSystemEventHandler>`, which carries no thread-safety
+/// bound, so the window stays on the thread that created it.
 pub struct X11NativeWindow {
     xid: u32,
     title: String,
@@ -200,9 +202,6 @@ pub struct X11NativeWindow {
     #[cfg(target_os = "linux")]
     stream: Option<UnixStream>,
 }
-
-unsafe impl Send for X11NativeWindow {}
-unsafe impl Sync for X11NativeWindow {}
 
 static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0x02000001);

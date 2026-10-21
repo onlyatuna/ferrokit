@@ -32,9 +32,6 @@ pub struct DBusMenuItem {
     submenu: Mutex<Option<Box<dyn PlatformMenu>>>,
 }
 
-unsafe impl Send for DBusMenuItem {}
-unsafe impl Sync for DBusMenuItem {}
-
 impl DBusMenuItem {
     pub fn new_action(id: u32, text: &str) -> Self {
         Self {
@@ -174,9 +171,6 @@ pub struct DBusMenu {
     revision: AtomicU32,
     is_popup_requested: Mutex<bool>,
 }
-
-unsafe impl Send for DBusMenu {}
-unsafe impl Sync for DBusMenu {}
 
 impl DBusMenu {
     pub fn new() -> Self {

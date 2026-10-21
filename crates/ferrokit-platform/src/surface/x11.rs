@@ -11,9 +11,6 @@ pub struct X11ShmSurface {
     shm_buffer: Vec<u8>,
 }
 
-unsafe impl Send for X11ShmSurface {}
-unsafe impl Sync for X11ShmSurface {}
-
 impl X11ShmSurface {
     pub fn new(window_id: u32, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {

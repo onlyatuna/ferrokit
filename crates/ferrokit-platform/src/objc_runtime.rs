@@ -9,8 +9,8 @@ use std::sync::{LazyLock, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(pub *mut c_void);
 
-unsafe impl Send for Id {}
-unsafe impl Sync for Id {}
+// Deliberately neither `Send` nor `Sync`: an `Id` is a raw pointer to an Objective-C object, and
+// AppKit objects may only be messaged from the main thread. Types holding one inherit that.
 
 impl Id {
     pub const NIL: Self = Self(std::ptr::null_mut());
@@ -30,9 +30,6 @@ impl Id {
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Class(pub *mut c_void);
-
-unsafe impl Send for Class {}
-unsafe impl Sync for Class {}
 
 impl Class {
     pub const NIL: Self = Self(std::ptr::null_mut());
@@ -57,9 +54,6 @@ impl Class {
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Sel(pub *const c_void);
-
-unsafe impl Send for Sel {}
-unsafe impl Sync for Sel {}
 
 impl Sel {
     pub const NIL: Self = Self(std::ptr::null());
@@ -392,6 +386,11 @@ pub struct MockObjectData {
     pub material: NSInteger,
     pub blending_mode: NSInteger,
 }
+
+// SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
+// a dereferenced pointer, so moving `MockObjectData` between threads cannot touch foreign state.
+// This lets the mock registry live in a `static` behind a `Mutex`; real `Id`s stay `!Send`.
+unsafe impl Send for MockObjectData {}
 
 impl Default for MockObjectData {
     fn default() -> Self {

@@ -2,7 +2,7 @@
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
 
-pub trait PlatformSurface: Send + Sync {
+pub trait PlatformSurface {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn resize(&mut self, width: u32, height: u32) -> Result<(), &'static str>;

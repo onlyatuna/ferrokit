@@ -75,6 +75,8 @@ pub enum WaylandLayerLevel {
     Top = 2,
     Overlay = 3,
 }
+/// Not `Send`/`Sync`: owns a `Box<dyn WindowSystemEventHandler>`, which carries no thread-safety
+/// bound, so the window stays on the thread that created it.
 pub struct WaylandNativeWindow {
     surface_id: u32,
     title: String,
@@ -103,9 +105,6 @@ pub struct WaylandNativeWindow {
     #[cfg(target_os = "linux")]
     stream: Option<UnixStream>,
 }
-
-unsafe impl Send for WaylandNativeWindow {}
-unsafe impl Sync for WaylandNativeWindow {}
 
 static WAYLAND_SURFACE_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1);

@@ -50,9 +50,6 @@ pub struct CocoaLayerSurface {
     pixel_buffer: Vec<u8>,
 }
 
-unsafe impl Send for CocoaLayerSurface {}
-unsafe impl Sync for CocoaLayerSurface {}
-
 impl CocoaLayerSurface {
     pub fn new(layer_id: usize, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {

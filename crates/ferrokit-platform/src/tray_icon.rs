@@ -362,10 +362,9 @@ pub struct TrayIcon {
     pub on_context_menu_requested: Signal<Point>,
 }
 
-#[cfg(windows)]
-unsafe impl Send for TrayIcon {}
-#[cfg(windows)]
-unsafe impl Sync for TrayIcon {}
+// Deliberately neither `Send` nor `Sync` (raw `HWND`/`HICON`): the tray window, its window
+// procedure (which reaches the icon through a raw pointer) and `DestroyWindow` in `Drop` all
+// belong to the thread that created the icon.
 #[cfg(windows)]
 impl TrayIcon {
     pub fn new(tooltip: impl Into<String>, hicon: HICON) -> Result<Box<Self>, &'static str> {

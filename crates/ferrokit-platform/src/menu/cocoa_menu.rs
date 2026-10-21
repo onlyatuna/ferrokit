@@ -20,8 +20,8 @@ pub struct CocoaMenuItem {
     submenu: Mutex<Option<Box<dyn PlatformMenu>>>,
 }
 
-unsafe impl Send for CocoaMenuItem {}
-unsafe impl Sync for CocoaMenuItem {}
+// Deliberately neither `Send` nor `Sync`: wraps an `NSMenuItem` (`Id`), which AppKit only allows
+// to be used from the main thread.
 
 impl CocoaMenuItem {
     pub fn new_action(id: u32, text: &str) -> Self {
@@ -190,8 +190,8 @@ pub struct CocoaMenu {
     popup_pos: Mutex<Option<Point>>,
 }
 
-unsafe impl Send for CocoaMenu {}
-unsafe impl Sync for CocoaMenu {}
+// Deliberately neither `Send` nor `Sync`: wraps an `NSMenu` (`Id`), which AppKit only allows to be
+// used from the main thread.
 
 impl CocoaMenu {
     pub fn new() -> Self {

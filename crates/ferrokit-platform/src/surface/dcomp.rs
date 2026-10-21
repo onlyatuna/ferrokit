@@ -258,8 +258,8 @@ pub fn convert_rgba_to_staging_bgra(src: &[u8], dst: &mut [u8], opacity: f32) {
     }
 }
 
-unsafe impl Send for DCompSurface {}
-unsafe impl Sync for DCompSurface {}
+// Deliberately neither `Send` nor `Sync`: owns raw D3D11/DXGI/DirectComposition COM pointers
+// whose immediate context and visual tree may only be driven from the window's thread.
 
 impl DCompSurface {
     /// Creates a hardware accelerated DirectComposition surface for `hwnd`.

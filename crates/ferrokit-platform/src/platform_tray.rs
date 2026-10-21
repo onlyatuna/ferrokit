@@ -12,7 +12,7 @@ pub enum TrayMessageIcon {
     Critical = 3,
 }
 
-pub trait PlatformTrayIcon: Send + Sync {
+pub trait PlatformTrayIcon {
     fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
