@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Full Miri sweep on main every night, whatever changed.
+    - cron: '0 18 * * *'
 
 jobs:
   test:
@@ -15,7 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
+        # macos-latest is paused while hosted macOS runners are saturated; re-add it here and
+        # to the protect-main required checks to restore it.
+        os: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -76,15 +81,55 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace --doc
 
+  miri-changes:
+    name: Miri relevance
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # Miri runs when code it can reach changed: the swept crates, their in-repo
+          # dependencies, the lockfile/toolchain, or the sweep tooling and baselines.
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ] \
+             || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(crates/[^/]+/(src|tests|build\.rs|Cargo\.toml)|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|\.cargo/|tools/(miri_|test_miri_))'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   miri-shard:
-    name: Miri shard (${{ matrix.model }}, ${{ matrix.shard }}/2)
+    needs: miri-changes
+    if: needs.miri-changes.outputs.run == 'true'
+    name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        model: [SB, TB]
-        shard: [1, 2]
+        # One entry per (crate, model, shard); a shard's sweep is estimated well under 40 minutes.
+        include:
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 2, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 1, shards: 2}
+          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 2, shards: 2}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: TB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: SB, shard: 1, shards: 1}
+          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: TB, shard: 1, shards: 1}
     steps:
       - uses: actions/checkout@v7
 
@@ -102,14 +147,14 @@ jobs:
       - name: Run Miri sweep tool unit tests
         run: python -m unittest tools/test_miri_sweep.py
 
-      - name: Run Miri sweep (${{ matrix.model }}, shard ${{ matrix.shard }}/2, baseline diff, isolation allowlist)
+      - name: Run Miri sweep (${{ matrix.crate }}, ${{ matrix.model }}, shard ${{ matrix.shard }}/${{ matrix.shards }}, baseline diff, isolation allowlist)
         run: >-
           python tools/miri_sweep.py
-          --crate ferrokit-core
+          --crate ${{ matrix.crate }}
           --toolchain nightly-2026-10-16
           --models ${{ matrix.model }}
-          --shard ${{ matrix.shard }}/2
-          --baseline tools/miri_baseline.json
+          --shard ${{ matrix.shard }}/${{ matrix.shards }}
+          --baseline ${{ matrix.baseline }}
           --run-isolation-allowlist
           --fail-on-regression
           --summary "$GITHUB_STEP_SUMMARY"
@@ -118,16 +163,24 @@ jobs:
   miri:
     # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
     name: Nightly Miri (SB & TB)
-    needs: miri-shard
+    needs: [miri-changes, miri-shard]
     if: always()
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - name: Require every Miri shard to succeed
+      - name: Require every Miri shard to succeed (or Miri to be irrelevant to this change)
         env:
+          RELEVANT: ${{ needs.miri-changes.outputs.run }}
+          CHANGES_RESULT: ${{ needs.miri-changes.result }}
           SHARD_RESULT: ${{ needs.miri-shard.result }}
         run: |
-          echo "Miri shard results: $SHARD_RESULT"
+          echo "relevance: $CHANGES_RESULT run=$RELEVANT; shards: $SHARD_RESULT"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::Miri relevance check failed ($CHANGES_RESULT)"; exit 1
+          fi
+          if [ "$RELEVANT" != "true" ]; then
+            echo "No Miri-relevant files changed; shards skipped."; exit 0
+          fi
           if [ "$SHARD_RESULT" != "success" ]; then
             echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
             exit 1

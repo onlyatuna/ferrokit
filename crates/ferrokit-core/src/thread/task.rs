@@ -3,7 +3,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,8 @@ pub enum TaskError {
     Panicked(String),
     /// Operation timed out.
     Timeout,
+    /// [`TaskHandle::join`] on another handle to the same task already moved the result out.
+    ResultTaken,
 }
 
 impl fmt::Display for TaskError {
@@ -39,6 +41,7 @@ impl fmt::Display for TaskError {
             Self::Canceled => write!(f, "task was canceled"),
             Self::Panicked(msg) => write!(f, "task panicked: {}", msg),
             Self::Timeout => write!(f, "task wait timed out"),
+            Self::ResultTaken => write!(f, "task result was already taken by join"),
         }
     }
 }
@@ -74,6 +77,8 @@ pub(crate) struct TaskShared<T> {
     pub(crate) status: Mutex<TaskStatus>,
     pub(crate) cond: Condvar,
     pub(crate) result: Mutex<Option<Result<T, TaskError>>>,
+    /// Set (under `result`) once `join` moved the result out.
+    pub(crate) taken: AtomicBool,
     pub(crate) cancel_token: CancellationToken,
     pub(crate) wakers: Mutex<Vec<Waker>>,
 }
@@ -84,29 +89,53 @@ impl<T> TaskShared<T> {
             status: Mutex::new(TaskStatus::Queued),
             cond: Condvar::new(),
             result: Mutex::new(None),
+            taken: AtomicBool::new(false),
             cancel_token,
             wakers: Mutex::new(Vec::new()),
         }
     }
 
-    pub(crate) fn mark_running(&self) {
+    /// Moves the task from `Queued` to `Running`. Returns `false` if the task must not run:
+    /// it was already canceled while queued, or its token was canceled before it started (in
+    /// which case it is completed as canceled here).
+    pub(crate) fn try_start(&self) -> bool {
         let mut st = self.status.lock().unwrap();
+        if *st != TaskStatus::Queued {
+            return false;
+        }
+        if self.cancel_token.is_canceled() {
+            self.settle(st, Err(TaskError::Canceled));
+            return false;
+        }
+        *st = TaskStatus::Running;
+        true
+    }
+
+    /// Completes a task that was dropped from a queue without running as canceled, so nobody
+    /// waiting on it is left blocked.
+    pub(crate) fn cancel_unstarted(&self) {
+        let st = self.status.lock().unwrap();
         if *st == TaskStatus::Queued {
-            *st = TaskStatus::Running;
+            self.settle(st, Err(TaskError::Canceled));
         }
     }
 
     pub(crate) fn finish(&self, res: Result<T, TaskError>) {
-        {
-            let mut st = self.status.lock().unwrap();
-            *st = match &res {
-                Ok(_) => TaskStatus::Completed,
-                Err(TaskError::Canceled) => TaskStatus::Canceled,
-                Err(TaskError::Panicked(_)) | Err(TaskError::Timeout) => TaskStatus::Failed,
-            };
-            let mut r = self.result.lock().unwrap();
-            *r = Some(res);
-        }
+        let st = self.status.lock().unwrap();
+        self.settle(st, res);
+    }
+
+    /// Publishes the final status and result, then wakes blocked waiters and polling tasks.
+    fn settle(&self, mut st: MutexGuard<'_, TaskStatus>, res: Result<T, TaskError>) {
+        *st = match &res {
+            Ok(_) => TaskStatus::Completed,
+            Err(TaskError::Canceled) => TaskStatus::Canceled,
+            Err(TaskError::Panicked(_) | TaskError::Timeout | TaskError::ResultTaken) => {
+                TaskStatus::Failed
+            }
+        };
+        *self.result.lock().unwrap() = Some(res);
+        drop(st);
         self.cond.notify_all();
 
         let wakers = {
@@ -158,15 +187,16 @@ impl<T> TaskHandle<T> {
         self.shared.cancel_token.is_canceled() || self.status() == TaskStatus::Canceled
     }
 
-    /// Requests cooperative cancellation of the task. Returns `true` if canceled.
+    /// Requests cooperative cancellation of the task. Returns `true` if the task was still queued
+    /// and is now canceled without ever running; `false` if it had already started (it can only
+    /// stop cooperatively through its [`CancellationToken`]) or had finished.
     pub fn cancel(&self) -> bool {
+        // The token is set under the status lock so that a worker deciding whether to start the
+        // task (see `TaskShared::try_start`) sees "canceled" exactly when `cancel` reports it.
+        let st = self.shared.status.lock().unwrap();
         self.shared.cancel_token.cancel();
-        let mut st = self.shared.status.lock().unwrap();
         if *st == TaskStatus::Queued {
-            *st = TaskStatus::Canceled;
-            let mut r = self.shared.result.lock().unwrap();
-            *r = Some(Err(TaskError::Canceled));
-            self.shared.cond.notify_all();
+            self.shared.settle(st, Err(TaskError::Canceled));
             true
         } else {
             false
@@ -184,10 +214,13 @@ impl<T> TaskHandle<T> {
         T: Clone,
     {
         let mut res = self.shared.result.lock().unwrap();
-        while res.is_none() {
+        while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             res = self.shared.cond.wait(res).unwrap();
         }
-        res.as_ref().unwrap().clone()
+        match res.as_ref() {
+            Some(r) => r.clone(),
+            None => Err(TaskError::ResultTaken),
+        }
     }
 
     /// Blocks until the task completes within `timeout`.
@@ -198,7 +231,7 @@ impl<T> TaskHandle<T> {
         let deadline = Instant::now() + timeout;
         let mut res = self.shared.result.lock().unwrap();
 
-        while res.is_none() {
+        while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             let now = Instant::now();
             if now >= deadline {
                 return Ok(None);
@@ -206,21 +239,34 @@ impl<T> TaskHandle<T> {
             let remaining = deadline - now;
             let (next_res, timeout_res) = self.shared.cond.wait_timeout(res, remaining).unwrap();
             res = next_res;
-            if timeout_res.timed_out() && res.is_none() {
+            if timeout_res.timed_out() && res.is_none() && !self.shared.taken.load(Ordering::SeqCst)
+            {
                 return Ok(None);
             }
         }
 
-        res.as_ref().unwrap().clone().map(Some)
+        match res.as_ref() {
+            Some(r) => r.clone().map(Some),
+            None => Err(TaskError::ResultTaken),
+        }
     }
 
     /// Consumes the task handle, blocking until completion and taking the owned result.
+    ///
+    /// The result is moved out, so other clones of the handle observe
+    /// [`TaskError::ResultTaken`] instead of the value.
     pub fn join(self) -> Result<T, TaskError> {
         let mut res = self.shared.result.lock().unwrap();
-        while res.is_none() {
+        while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             res = self.shared.cond.wait(res).unwrap();
         }
-        res.take().unwrap()
+        match res.take() {
+            Some(r) => {
+                self.shared.taken.store(true, Ordering::SeqCst);
+                r
+            }
+            None => Err(TaskError::ResultTaken),
+        }
     }
 }
 
@@ -231,6 +277,8 @@ impl<T: Clone> Future for TaskHandle<T> {
         let res = self.shared.result.lock().unwrap();
         if let Some(r) = res.as_ref() {
             Poll::Ready(r.clone())
+        } else if self.shared.taken.load(Ordering::SeqCst) {
+            Poll::Ready(Err(TaskError::ResultTaken))
         } else {
             let mut wakers = self.shared.wakers.lock().unwrap();
             if !wakers.iter().any(|w| w.will_wake(cx.waker())) {

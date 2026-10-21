@@ -58,6 +58,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
     WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME,
 };
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_MOUSEHWHEEL, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct WindowFlags: u32 {
@@ -182,9 +186,22 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
     if let Some(m) = limits_map.as_mut() {
         m.remove(&(hwnd as isize));
     }
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        map.borrow_mut().remove(&(hwnd as isize));
+    let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().remove(&(hwnd as isize)));
+    let removed = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().remove(&(hwnd as isize)))
+        .ok()
+        .flatten();
+    // While the window is dispatching, its running handler is out of the registry: it must be
+    // dropped, not put back, when it returns (also when it replaced itself first and the
+    // replacement was just removed above).
+    let _ = ACTIVE_DISPATCH.try_with(|a| {
+        if a.borrow().contains_key(&(hwnd as isize)) {
+            let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().insert(hwnd as isize));
+        }
     });
+    // Dropping a handler may drop a window, which unregisters: outside every borrow.
+    drop(removed);
+    discard_pending_events(hwnd as isize);
 }
 
 #[inline]
@@ -208,17 +225,44 @@ pub fn set_window_frameless_config(hwnd: HWND, config: CustomFramelessConfig) {
     map.as_mut().unwrap().insert(hwnd as isize, config);
 }
 
+thread_local! {
+    /// The cursor each window asked for (`QWindow::setCursor`); a window without an entry shows
+    /// the application-wide cursor.
+    static WINDOW_CURSORS: std::cell::RefCell<HashMap<isize, crate::cursor::CursorShape>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// The cursor `hwnd` asked for, if any (UI thread only).
+pub fn window_cursor_shape(hwnd: HWND) -> Option<crate::cursor::CursorShape> {
+    WINDOW_CURSORS
+        .try_with(|m| m.borrow().get(&(hwnd as isize)).copied())
+        .ok()
+        .flatten()
+}
+
+pub fn set_window_cursor_shape(hwnd: HWND, shape: crate::cursor::CursorShape) {
+    let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().insert(hwnd as isize, shape));
+}
+
 pub fn set_window_event_handler(hwnd: HWND, handler: Box<dyn WindowSystemEventHandler>) {
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        map.borrow_mut().insert(hwnd as isize, handler);
-    });
+    let replaced = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().insert(hwnd as isize, handler))
+        .ok()
+        .flatten();
+    drop(replaced);
 }
 
 static WINDOW_SYSTEM_EVENT_QUEUE: Mutex<Option<Vec<(isize, WindowSystemEvent)>>> = Mutex::new(None);
 
+/// Private window message that tells a window's own thread to deliver the events posted for it
+/// (`QWindowSystemInterface::flushWindowSystemEvents` is driven by the event dispatcher in Qt).
+/// `PostMessageW` is thread-safe and the message is also dispatched by nested (modal) loops.
+#[cfg(windows)]
+const WM_FLUSH_WINDOW_SYSTEM_EVENTS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x1F;
+
 pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
     {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap();
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
         if queue.is_none() {
             *queue = Some(Vec::new());
         }
@@ -227,15 +271,77 @@ pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
         }
     }
 
+    #[cfg(windows)]
+    // SAFETY: `PostMessageW` accepts any handle value and fails harmlessly for a stale one.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd,
+            WM_FLUSH_WINDOW_SYSTEM_EVENTS,
+            0,
+            0,
+        );
+    }
     if let Some((handle, _)) = get_window_event_binding(hwnd) {
         handle.wake_up();
     }
 }
 
+/// Whether the calling thread owns the handler of `hwnd` (handlers are thread-local, so only that
+/// thread can deliver its events).
+fn has_local_handler(hwnd: isize) -> bool {
+    WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow().contains_key(&hwnd))
+        .unwrap_or(false)
+        || ACTIVE_DISPATCH
+            .try_with(|a| a.borrow().contains_key(&hwnd))
+            .unwrap_or(false)
+}
+
+/// Whether `hwnd` is a live window of another thread (its events wait for that thread's flush).
+fn owned_by_other_thread(hwnd: isize) -> bool {
+    #[cfg(windows)]
+    {
+        // SAFETY: any handle value is accepted; an invalid one yields thread id 0.
+        unsafe {
+            let tid = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                hwnd as HWND,
+                ptr::null_mut(),
+            );
+            tid != 0 && tid != windows_sys::Win32::System::Threading::GetCurrentThreadId()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        true
+    }
+}
+
+/// Delivers the posted events whose handlers live on the calling thread; the others stay queued
+/// for their own thread.
 pub fn flush_window_system_events() -> bool {
     let events: Vec<(isize, WindowSystemEvent)> = {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap();
-        queue.as_mut().map(std::mem::take).unwrap_or_default()
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(q) = queue.as_mut() else {
+            return false;
+        };
+        let mut mine = Vec::new();
+        let mut kept = Vec::new();
+        let mut dropped = Vec::new();
+        for entry in std::mem::take(q) {
+            if has_local_handler(entry.0) {
+                mine.push(entry);
+            } else if owned_by_other_thread(entry.0) {
+                kept.push(entry);
+            } else {
+                // No handler anywhere: the window is gone or never had one.
+                dropped.push(entry);
+            }
+        }
+        *q = kept;
+        drop(queue);
+        drop(dropped);
+        mine
     };
 
     if events.is_empty() {
@@ -329,6 +435,22 @@ fn track_button_release(msg: u32) {
 
 /// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
 /// button down captures the mouse, so moves and the release keep reaching this window outside it.
+thread_local! {
+    /// Set while this thread releases the capture to hand the mouse to the native move/size loop:
+    /// the loop swallows the button release, so the pressed buttons must survive the capture loss.
+    static RELEASING_FOR_SYSTEM_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `ReleaseCapture` before `SC_DRAGMOVE` / `SC_SIZE`: the `WM_CAPTURECHANGED` it causes must not
+/// forget the pressed buttons (`sync_mouse_buttons_after_move_loop` still needs them).
+#[cfg(windows)]
+fn release_capture_for_system_loop() {
+    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(true));
+    // SAFETY: plain Win32 call; the capture notification is sent before it returns.
+    unsafe { ReleaseCapture() };
+    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(false));
+}
+
 #[cfg(windows)]
 fn capture_on_press(hwnd: HWND) {
     // SAFETY: plain Win32 calls on a window handle of this process.
@@ -442,47 +564,145 @@ fn sync_interactive_resize(
 }
 
 thread_local! {
-    static NESTED_EVENTS: std::cell::RefCell<Vec<(HWND, WindowSystemEvent)>> = const { std::cell::RefCell::new(Vec::new()) };
-    static IS_DISPATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Windows whose handler is running right now. The value holds the events that arrived for
+    /// that window meanwhile (`SendEvent` re-entrancy); the outermost call delivers them in order
+    /// once its handler returns. Events for any *other* window are delivered at once, so a nested
+    /// modal loop started from a handler keeps feeding its own window.
+    static ACTIVE_DISPATCH: std::cell::RefCell<HashMap<isize, std::collections::VecDeque<WindowSystemEvent>>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// Windows unregistered while their handler was running; the handler is dropped, not restored.
+    static UNREGISTERED_WHILE_ACTIVE: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
-pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent) {
-    let is_dispatching = IS_DISPATCHING.try_with(|d| d.get()).unwrap_or(false);
-    if is_dispatching {
-        let _ = NESTED_EVENTS.try_with(|q| q.borrow_mut().push((hwnd, event)));
-        return;
+/// Marks `hwnd` as dispatching for its lifetime. Dropping it (also while unwinding out of a
+/// panicking handler) makes the window deliverable again and discards what was queued behind the
+/// failed handler.
+struct ActiveDispatch(isize);
+
+impl Drop for ActiveDispatch {
+    fn drop(&mut self) {
+        let queued = ACTIVE_DISPATCH
+            .try_with(|a| a.borrow_mut().remove(&self.0))
+            .ok()
+            .flatten();
+        let _ = UNREGISTERED_WHILE_ACTIVE.try_with(|u| u.borrow_mut().remove(&self.0));
+        // Dropping events may run arbitrary `Drop` code: do it outside the borrow.
+        drop(queued);
     }
+}
 
-    let _ = IS_DISPATCHING.try_with(|d| d.set(true));
-    let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-        if let Some(handler) = map.borrow_mut().get_mut(&(hwnd as isize)) {
-            handler.handle_window_event(event);
-        }
-    });
+/// Runs one handler call with the handler taken out of the registry, so the handler may register,
+/// replace or unregister handlers (create or drop a window) while it runs. The handler goes back
+/// afterwards, also when it panics, unless it was replaced or its window was unregistered.
+struct RunningHandler {
+    hwnd: isize,
+    handler: Option<Box<dyn WindowSystemEventHandler>>,
+}
 
-    loop {
-        let next = NESTED_EVENTS
-            .try_with(|q| {
-                if q.borrow().is_empty() {
-                    None
+impl Drop for RunningHandler {
+    fn drop(&mut self) {
+        let Some(handler) = self.handler.take() else {
+            return;
+        };
+        let unregistered = UNREGISTERED_WHILE_ACTIVE
+            .try_with(|u| u.borrow_mut().remove(&self.hwnd))
+            .unwrap_or(false);
+        let leftover = WINDOW_EVENT_HANDLERS
+            .try_with(|map| {
+                let mut map = map.borrow_mut();
+                if unregistered || map.contains_key(&self.hwnd) {
+                    // Unregistered, or replaced by a handler set while this one ran.
+                    Some(handler)
                 } else {
-                    Some(q.borrow_mut().remove(0))
+                    map.insert(self.hwnd, handler);
+                    None
                 }
             })
             .unwrap_or(None);
+        drop(leftover);
+    }
+}
 
-        match next {
-            Some((h, ev)) => {
-                let _ = WINDOW_EVENT_HANDLERS.try_with(|map| {
-                    if let Some(handler) = map.borrow_mut().get_mut(&(h as isize)) {
-                        handler.handle_window_event(ev);
-                    }
-                });
+fn run_handler(hwnd: isize, event: WindowSystemEvent) {
+    let taken = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().remove(&hwnd))
+        .ok()
+        .flatten();
+    let Some(handler) = taken else {
+        return;
+    };
+    let mut running = RunningHandler {
+        hwnd,
+        handler: Some(handler),
+    };
+    if let Some(handler) = running.handler.as_mut() {
+        handler.handle_window_event(event);
+    }
+}
+
+pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent) {
+    use std::collections::hash_map::Entry;
+    let key = hwnd as isize;
+    let first = ACTIVE_DISPATCH
+        .try_with(|active| match active.borrow_mut().entry(key) {
+            Entry::Occupied(mut e) => {
+                e.get_mut().push_back(event);
+                None
             }
+            Entry::Vacant(v) => {
+                v.insert(std::collections::VecDeque::new());
+                Some(event)
+            }
+        })
+        .unwrap_or(None);
+    let Some(mut event) = first else {
+        return;
+    };
+
+    let _active = ActiveDispatch(key);
+    loop {
+        run_handler(key, event);
+        let next = ACTIVE_DISPATCH
+            .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
+            .unwrap_or(None);
+        match next {
+            Some(ev) => event = ev,
             None => break,
         }
     }
-    let _ = IS_DISPATCHING.try_with(|d| d.set(false));
+}
+
+/// Drops every event still queued for `hwnd` (a destroyed window must not receive them, and a
+/// recycled handle must not inherit them).
+fn discard_pending_events(hwnd: isize) {
+    let discarded: Vec<WindowSystemEvent> = {
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        if let Some(q) = queue.as_mut() {
+            let mut kept = Vec::with_capacity(q.len());
+            for (h, ev) in q.drain(..) {
+                if h == hwnd {
+                    out.push(ev);
+                } else {
+                    kept.push((h, ev));
+                }
+            }
+            *q = kept;
+        }
+        out
+    };
+    drop(discarded);
+    let nested: Option<Vec<WindowSystemEvent>> = ACTIVE_DISPATCH
+        .try_with(|a| {
+            a.borrow_mut()
+                .get_mut(&hwnd)
+                .map(|q| q.drain(..).collect::<Vec<_>>())
+        })
+        .unwrap_or(None);
+    drop(nested);
 }
 fn is_window_thread(hwnd: HWND) -> bool {
     #[cfg(windows)]
@@ -670,6 +890,10 @@ unsafe fn native_window_proc_inner(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_FLUSH_WINDOW_SYSTEM_EVENTS => {
+            flush_window_system_events();
+            0
+        }
         WM_NCCALCSIZE => {
             crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
             if wparam != 0 {
@@ -995,8 +1219,9 @@ unsafe fn native_window_proc_inner(
         WM_SETCURSOR => {
             let hit_test = (lparam & 0xFFFF) as u32;
             if hit_test == HTCLIENT {
-                let shape = crate::cursor::win32_cursor::Win32Cursor::current_global_shape();
-                crate::cursor::win32_cursor::Win32Cursor::set_shape(shape);
+                let shape = window_cursor_shape(hwnd)
+                    .unwrap_or_else(crate::cursor::win32_cursor::Win32Cursor::current_global_shape);
+                crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
                 return 1;
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1195,7 +1420,8 @@ unsafe fn native_window_proc_inner(
             }
             0
         }
-        WM_MOUSEWHEEL => {
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            let horizontal = msg == WM_MOUSEHWHEEL;
             let dpr = get_window_dpr(hwnd);
             let global_x = get_x_lparam(lparam);
             let global_y = get_y_lparam(lparam);
@@ -1213,6 +1439,11 @@ unsafe fn native_window_proc_inner(
                 dpr,
             );
             let wheel_delta = (wparam >> 16) as i16 as i32;
+            let (delta_x, delta_y) = if horizontal {
+                (wheel_delta, 0)
+            } else {
+                (0, wheel_delta)
+            };
             let modifiers = query_keyboard_modifiers();
 
             dispatch_window_system_event(
@@ -1222,8 +1453,8 @@ unsafe fn native_window_proc_inner(
                     pos,
                     global_pos,
                     delta: WheelDelta {
-                        y: wheel_delta,
-                        x: 0,
+                        y: delta_y,
+                        x: delta_x,
                     },
                     modifiers,
                 },
@@ -1237,11 +1468,31 @@ unsafe fn native_window_proc_inner(
                         y: pt.y,
                         pixel_delta_x: 0,
                         pixel_delta_y: 0,
-                        angle_delta_x: 0,
-                        angle_delta_y: wheel_delta,
+                        angle_delta_x: delta_x,
+                        angle_delta_y: delta_y,
                         modifiers: modifiers.bits(),
                     }),
                 );
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CANCELMODE => {
+            // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
+            // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
+            let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CAPTURECHANGED => {
+            // `lparam` is the window gaining the capture. Capture moving to another window of
+            // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
+            // lost to another thread or to nothing swallows their releases.
+            let new_owner = lparam as HWND;
+            let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
+                .try_with(|f| f.get())
+                .unwrap_or(false);
+            if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
+                let _ = APP_MOUSE_BUTTONS
+                    .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1255,8 +1506,27 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_CONTEXTMENU => {
-            let global_x = get_x_lparam(lparam);
-            let global_y = get_y_lparam(lparam);
+            // lParam -1 is the menu key / Shift+F10: no pointer position, so the cursor is the
+            // hint when it is over the window and the window centre otherwise (the receiver
+            // positions a keyboard menu itself).
+            let keyboard = lparam as u32 == u32::MAX;
+            let (global_x, global_y) = if keyboard {
+                let mut cursor = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                GetCursorPos(&mut cursor);
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(hwnd, &mut rect);
+                if cursor.x >= rect.left
+                    && cursor.x < rect.right
+                    && cursor.y >= rect.top
+                    && cursor.y < rect.bottom
+                {
+                    (cursor.x, cursor.y)
+                } else {
+                    ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+                }
+            } else {
+                (get_x_lparam(lparam), get_y_lparam(lparam))
+            };
             let mut pt = windows_sys::Win32::Foundation::POINT {
                 x: global_x,
                 y: global_y,
@@ -1271,13 +1541,17 @@ unsafe fn native_window_proc_inner(
                         y: pt.y,
                         global_x,
                         global_y,
-                        reason: ferrokit_core::event::ContextMenuReason::Mouse,
+                        reason: if keyboard {
+                            ferrokit_core::event::ContextMenuReason::Keyboard
+                        } else {
+                            ferrokit_core::event::ContextMenuReason::Mouse
+                        },
                     }),
                 );
             }
             0
         }
-        WM_KEYDOWN => {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
             let key = wparam as u32;
             let is_repeat = (lparam & (1 << 30)) != 0;
             let modifiers = query_keyboard_modifiers();
@@ -1304,7 +1578,7 @@ unsafe fn native_window_proc_inner(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
-        WM_KEYUP => {
+        WM_KEYUP | WM_SYSKEYUP => {
             let key = wparam as u32;
             let modifiers = query_keyboard_modifiers();
             dispatch_window_system_event(
@@ -1765,9 +2039,8 @@ impl NativeWindow {
     pub fn start_system_move(&self) -> bool {
         if !self.hwnd.is_null() {
             unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                ReleaseCapture();
+                release_capture_for_system_loop();
                 PostMessageW(self.hwnd, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
             }
             true
@@ -1779,9 +2052,8 @@ impl NativeWindow {
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
             unsafe {
-                use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                ReleaseCapture();
+                release_capture_for_system_loop();
                 let orientation = edges_to_win_orientation(edges);
                 PostMessageW(self.hwnd, WM_SYSCOMMAND, orientation, 0);
             }
@@ -1944,6 +2216,8 @@ impl NativeWindow {
         self.layered_surface = None;
         self.presenter = None;
         if !self.drop_target.is_null() {
+            // `DestroyWindow` neither revokes the OLE registration nor releases our reference.
+            crate::drag_drop::win32_ole::revoke_drop_target(self.hwnd, self.drop_target);
             self.drop_target = std::ptr::null_mut();
         }
         if !self.hwnd.is_null() {
@@ -2040,7 +2314,8 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         self.start_system_resize(edges)
     }
     fn set_cursor(&mut self, shape: crate::cursor::CursorShape) {
-        crate::cursor::win32_cursor::Win32Cursor::set_shape(shape);
+        set_window_cursor_shape(self.hwnd, shape);
+        crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
     }
 
     fn set_opacity(&mut self, opacity: f32) {
@@ -2314,9 +2589,8 @@ pub fn post_system_move(_hwnd: isize) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
         unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            ReleaseCapture();
+            release_capture_for_system_loop();
             PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
         }
         return true;
@@ -2328,9 +2602,8 @@ pub fn post_system_resize(_hwnd: isize, _edges: crate::platform_window::WindowEd
     #[cfg(windows)]
     if _hwnd != 0 {
         unsafe {
-            use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            ReleaseCapture();
+            release_capture_for_system_loop();
             let orientation = edges_to_win_orientation(_edges);
             PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, orientation, 0);
         }

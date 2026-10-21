@@ -183,13 +183,15 @@ pub fn calculate_next_timeout(
 #[derive(Debug, Default)]
 pub struct TimerRegistry {
     entries: HashMap<TimerId, TimerEntry>,
+    /// Timer ids of each receiver, so destroying or moving an object finds its timers without
+    /// scanning every timer of the thread (Qt keeps a per-object timer list). `receiver` of a
+    /// registered entry is never changed (`get_mut` callers change deadlines and flags only).
+    by_receiver: HashMap<ObjectId, Vec<TimerId>>,
 }
 
 impl TimerRegistry {
     pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Returns the number of registered timers.
@@ -239,11 +241,32 @@ impl TimerRegistry {
             single_shot,
         };
 
-        self.entries.insert(id, entry);
+        if let Some(replaced) = self.entries.insert(id, entry) {
+            self.unindex(replaced.receiver, id);
+        }
+        self.by_receiver.entry(receiver).or_default().push(id);
+    }
+
+    fn unindex(&mut self, receiver: ObjectId, id: TimerId) {
+        if let Some(ids) = self.by_receiver.get_mut(&receiver) {
+            if let Some(at) = ids.iter().position(|&candidate| candidate == id) {
+                ids.swap_remove(at);
+            }
+            if ids.is_empty() {
+                self.by_receiver.remove(&receiver);
+            }
+        }
     }
 
     pub fn unregister(&mut self, id: TimerId) -> Option<TimerEntry> {
-        self.entries.remove(&id)
+        let entry = self.entries.remove(&id)?;
+        self.unindex(entry.receiver, id);
+        Some(entry)
+    }
+
+    /// The ids of the timers registered for `receiver`.
+    pub(crate) fn ids_for_receiver(&self, receiver: ObjectId) -> &[TimerId] {
+        self.by_receiver.get(&receiver).map_or(&[], Vec::as_slice)
     }
 
     pub fn get(&self, id: TimerId) -> Option<&TimerEntry> {
@@ -258,12 +281,17 @@ impl TimerRegistry {
         self.entries.values().map(|e| e.next_fire_ms).min()
     }
 
+    /// The timers that are due at `now_ms`, in order of expiry (ties by id), as Qt's
+    /// `QTimerInfoList` keeps them sorted by timeout.
     pub fn expired_timers(&self, now_ms: u64) -> Vec<TimerId> {
-        self.entries
+        let mut due: Vec<(u64, TimerId)> = self
+            .entries
             .values()
             .filter(|e| !e.in_timer_event && e.interval_ms > 0 && now_ms >= e.next_fire_ms)
-            .map(|e| e.id)
-            .collect()
+            .map(|e| (e.next_fire_ms, e.id))
+            .collect();
+        due.sort_unstable_by_key(|&(fire, id)| (fire, id.0));
+        due.into_iter().map(|(_, id)| id).collect()
     }
 }
 
@@ -279,9 +307,8 @@ thread_local! {
     static SINGLE_SHOT_CALLBACKS: RefCell<HashMap<ObjectId, Box<dyn FnOnce() + Send>>> =
         RefCell::new(HashMap::new());
     static PENDING_SINGLE_SHOTS: RefCell<Vec<(ObjectId, u64)>> = RefCell::new(Vec::new());
-    /// Context-bound single shots of this thread: timer receiver -> context object.
-    static SINGLE_SHOT_CONTEXTS: RefCell<HashMap<ObjectId, ObjectId>> =
-        RefCell::new(HashMap::new());
+    /// Context-bound single shots of this thread.
+    static SINGLE_SHOT_CONTEXTS: RefCell<ContextShots> = RefCell::new(ContextShots::default());
 }
 
 pub fn register_thread_timer_context(
@@ -431,12 +458,7 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
     cancel_single_shots_for_context(receiver);
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
-        let to_remove: Vec<TimerId> = reg
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.receiver == receiver)
-            .map(|(&id, _)| id)
-            .collect();
+        let to_remove: Vec<TimerId> = reg.ids_for_receiver(receiver).to_vec();
         let count = to_remove.len();
         for id in to_remove {
             let _entry = reg.unregister(id);
@@ -458,7 +480,7 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
 /// qobject.cpp:1490-1502).
 pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> DetachedTimers {
     // Context-bound single shots move with their context (timers move with the object in Qt).
-    let shots = take_context_single_shots(|ctx| receivers.contains(&ctx));
+    let shots = take_context_single_shots(receivers);
     let entries = detach_registered_timers(receivers);
     DetachedTimers { entries, shots }
 }
@@ -478,11 +500,9 @@ impl DetachedTimers {
 fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<TimerEntry> {
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
-        let ids: Vec<TimerId> = reg
-            .entries
+        let ids: Vec<TimerId> = receivers
             .iter()
-            .filter(|(_, entry)| receivers.contains(&entry.receiver))
-            .map(|(&id, _)| id)
+            .flat_map(|&receiver| reg.ids_for_receiver(receiver).iter().copied())
             .collect();
         let mut detached = Vec::with_capacity(ids.len());
         for id in ids {
@@ -652,18 +672,11 @@ pub(crate) fn register_single_shot_callback(
 
 type SingleShotFn = Box<dyn FnOnce() + Send + 'static>;
 
-/// Removes this thread's pending context-bound single shots whose context satisfies `pick`: their
-/// timers go away and their functors are returned as `(context, interval_ms, functor)`.
-fn take_context_single_shots(pick: impl Fn(ObjectId) -> bool) -> Vec<(ObjectId, u64, SingleShotFn)> {
+/// Removes this thread's pending context-bound single shots whose context is in `contexts`:
+/// their timers go away and their functors are returned as `(context, interval_ms, functor)`.
+fn take_context_single_shots(contexts: &[ObjectId]) -> Vec<(ObjectId, u64, SingleShotFn)> {
     let taken: Vec<(ObjectId, ObjectId)> = SINGLE_SHOT_CONTEXTS
-        .try_with(|c| {
-            let mut c = c.borrow_mut();
-            let taken: Vec<_> = c.iter().filter(|(_, &ctx)| pick(ctx)).map(|(&r, &ctx)| (r, ctx)).collect();
-            for (r, _) in &taken {
-                c.remove(r);
-            }
-            taken
-        })
+        .try_with(|c| c.borrow_mut().take_for(contexts))
         .unwrap_or_default();
     let mut shots = Vec::with_capacity(taken.len());
     for (receiver, context) in taken {
@@ -673,10 +686,10 @@ fn take_context_single_shots(pick: impl Fn(ObjectId) -> bool) -> Vec<(ObjectId, 
             Some(p.remove(at).1)
         });
         let armed = with_thread_timer_context(|ctx| {
-            lock_unpoisoned(&ctx.registry)
-                .entries
-                .values()
-                .find(|e| e.receiver == receiver)
+            let reg = lock_unpoisoned(&ctx.registry);
+            reg.ids_for_receiver(receiver)
+                .first()
+                .and_then(|&id| reg.get(id))
                 .map(|e| e.interval_ms)
         })
         .flatten();
@@ -693,11 +706,53 @@ fn take_context_single_shots(pick: impl Fn(ObjectId) -> bool) -> Vec<(ObjectId, 
 /// the functors (with their captures) are dropped, as Qt's `QSingleShotTimer` is deleted with its
 /// context (qsingleshottimer.cpp:46-59).
 fn cancel_single_shots_for_context(context: ObjectId) {
-    drop(take_context_single_shots(|ctx| ctx == context));
+    drop(take_context_single_shots(&[context]));
+}
+
+/// Context-bound single shots of this thread, indexed both ways: a destroyed context finds its
+/// shots without a scan of every shot.
+#[derive(Default)]
+struct ContextShots {
+    /// Timer receiver of a shot -> its context object.
+    context_of: HashMap<ObjectId, ObjectId>,
+    /// Context object -> the timer receivers of its shots.
+    receivers_of: HashMap<ObjectId, Vec<ObjectId>>,
+}
+
+impl ContextShots {
+    fn insert(&mut self, receiver: ObjectId, context: ObjectId) {
+        self.remove(receiver);
+        self.context_of.insert(receiver, context);
+        self.receivers_of.entry(context).or_default().push(receiver);
+    }
+
+    fn remove(&mut self, receiver: ObjectId) {
+        let Some(context) = self.context_of.remove(&receiver) else {
+            return;
+        };
+        if let Some(receivers) = self.receivers_of.get_mut(&context) {
+            receivers.retain(|&candidate| candidate != receiver);
+            if receivers.is_empty() {
+                self.receivers_of.remove(&context);
+            }
+        }
+    }
+
+    /// Removes and returns the `(receiver, context)` pairs of the shots bound to `contexts`.
+    fn take_for(&mut self, contexts: &[ObjectId]) -> Vec<(ObjectId, ObjectId)> {
+        let mut taken = Vec::new();
+        for &context in contexts {
+            for receiver in self.receivers_of.remove(&context).unwrap_or_default() {
+                self.context_of.remove(&receiver);
+                taken.push((receiver, context));
+            }
+        }
+        taken
+    }
 }
 
 pub(crate) fn dispatch_single_shot_callback(receiver: ObjectId) -> bool {
-    SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().remove(&receiver));
+    SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().remove(receiver));
     let callback = SINGLE_SHOT_CALLBACKS.with(|callbacks| callbacks.borrow_mut().remove(&receiver));
     if let Some(callback) = callback {
         callback();
@@ -1157,6 +1212,56 @@ pub(crate) fn begin_timer_delivery(
     Some((entry.receiver, entry.single_shot))
 }
 
+/// Sends the tick of timer `raw_id` to `receiver`. A `Timer::single_shot` callback has no object
+/// behind it: its receiver is not registered, so the callback runs instead. An event filter that
+/// consumes the tick of such a receiver must not strand the callback in its thread-local map
+/// either.
+pub(crate) fn send_tick(receiver: ObjectId, raw_id: u64) {
+    use crate::event_loop::{deliver_timer_event, TimerDelivery};
+    let run_callback = match deliver_timer_event(receiver, raw_id) {
+        TimerDelivery::NotDeliverable => true,
+        TimerDelivery::Filtered => {
+            SINGLE_SHOT_CALLBACKS.with(|callbacks| callbacks.borrow().contains_key(&receiver))
+        }
+        TimerDelivery::Delivered => false,
+    };
+    if run_callback {
+        dispatch_single_shot_callback(receiver);
+    }
+}
+
+/// Delivers the timers of `registry` that are due at `now_ms`, in order of expiry, plus the
+/// `extra` ids a dispatcher found due itself. A slot that panics is contained: the timer keeps
+/// its schedule and the rest of the batch is delivered, as the posted-event pump does. Returns
+/// the ids of the single-shot timers that were delivered and removed.
+pub(crate) fn deliver_due_timers(
+    registry: &Mutex<TimerRegistry>,
+    now_ms: u64,
+    extra: impl IntoIterator<Item = TimerId>,
+) -> Vec<TimerId> {
+    let mut ids = lock_unpoisoned(registry).expired_timers(now_ms);
+    let mut seen: std::collections::HashSet<TimerId> = ids.iter().copied().collect();
+    ids.extend(extra.into_iter().filter(|id| seen.insert(*id)));
+
+    let mut retired = Vec::new();
+    for id in ids {
+        let Some((receiver, single_shot)) = begin_timer_delivery(registry, id, now_ms) else {
+            continue;
+        };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            send_tick(receiver, id.0 as u64)
+        }));
+        let mut reg = lock_unpoisoned(registry);
+        if single_shot {
+            reg.unregister(id);
+            retired.push(id);
+        } else if let Some(entry) = reg.get_mut(id) {
+            entry.in_timer_event = false;
+        }
+    }
+    retired
+}
+
 /// Re-posts a zero-interval repeating timer after its slot ran (Qt re-arms zero timers each
 /// loop iteration). Skips the repost when the timer was stopped, restarted, or made single-shot
 /// inside the slot, since the registry entry for `timer_id` is then gone or changed.
@@ -1175,6 +1280,20 @@ pub fn repost_zero_timer(receiver: ObjectId, timer_id: u64) {
             crate::event::Event::new(crate::event::EventKind::ZeroTimer { timer_id }),
         );
     }
+}
+
+/// Whether the zero-interval timer `timer_id` of `receiver` is still registered. A queued
+/// `ZeroTimer` of a timer that was killed since is dropped, as Qt sends a zero timer only while
+/// `timerDict` has it (qeventdispatcher_win.cpp:879-899) and removes the pending ones in
+/// `unregisterTimer`.
+pub(crate) fn zero_timer_armed(receiver: ObjectId, timer_id: u64) -> bool {
+    let id = TimerId(timer_id as u32);
+    with_thread_timer_context(|ctx| {
+        lock_unpoisoned(&ctx.registry)
+            .get(id)
+            .is_some_and(|e| e.receiver == receiver && e.interval_ms == 0)
+    })
+    .unwrap_or(false)
 }
 
 /// The object the registry calls for a [`Timer`]. It is private: only a registry callback ever
@@ -2105,6 +2224,51 @@ mod tests {
             begin_timer_delivery(&registry, id, u64::MAX),
             Some((ObjectId(99), true))
         );
+    }
+}
+
+#[cfg(test)]
+mod receiver_index_tests {
+    use super::*;
+
+    #[test]
+    fn the_receiver_index_follows_register_replace_and_unregister() {
+        let (a, b) = (ObjectId::next(), ObjectId::next());
+        let mut reg = TimerRegistry::new();
+        let a1 = reg.register(a, 10, TimerType::Coarse, false);
+        let a2 = reg.register(a, 20, TimerType::Coarse, false);
+        let b1 = reg.register(b, 30, TimerType::Coarse, false);
+        let mut of_a = reg.ids_for_receiver(a).to_vec();
+        of_a.sort_by_key(|id| id.0);
+        assert_eq!(of_a, vec![a1, a2]);
+        assert_eq!(reg.ids_for_receiver(b), &[b1]);
+
+        // A moved timer re-registers under its id: no duplicate, and a new receiver replaces the old.
+        reg.register_with_id(a1, b, 10, TimerType::Coarse, false);
+        assert_eq!(reg.ids_for_receiver(a), &[a2]);
+        let mut of_b = reg.ids_for_receiver(b).to_vec();
+        of_b.sort_by_key(|id| id.0);
+        assert_eq!(of_b, vec![a1, b1]);
+
+        assert!(reg.unregister(a2).is_some());
+        assert!(reg.ids_for_receiver(a).is_empty());
+        assert!(reg.unregister(a2).is_none());
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn context_shots_are_found_by_context_and_forgotten_once_fired() {
+        let mut shots = ContextShots::default();
+        let (c1, c2) = (ObjectId::next(), ObjectId::next());
+        let (r1, r2, r3) = (ObjectId::next(), ObjectId::next(), ObjectId::next());
+        shots.insert(r1, c1);
+        shots.insert(r2, c1);
+        shots.insert(r3, c2);
+        shots.remove(r2);
+        assert_eq!(shots.take_for(&[c1]), vec![(r1, c1)]);
+        assert!(shots.take_for(&[c1]).is_empty());
+        assert_eq!(shots.take_for(&[c1, c2]), vec![(r3, c2)]);
+        assert!(shots.context_of.is_empty() && shots.receivers_of.is_empty());
     }
 }
 

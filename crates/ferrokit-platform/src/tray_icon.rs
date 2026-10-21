@@ -140,12 +140,22 @@ impl Menu {
 
         for item in &self.items {
             if let Some(sub) = &item.submenu {
-                let sub_hmenu = sub.create_native_hmenu()?;
+                let sub_hmenu = match sub.create_native_hmenu() {
+                    Ok(h) => h,
+                    Err(e) => {
+                        DestroyMenu(hmenu);
+                        return Err(e);
+                    }
+                };
                 let wide_text: Vec<u16> =
                     item.text.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut sub_flags = MF_POPUP | MF_STRING;
+                if !item.enabled {
+                    sub_flags |= MF_GRAYED | MF_DISABLED;
+                }
                 if AppendMenuW(
                     hmenu,
-                    MF_POPUP | MF_STRING,
+                    sub_flags,
                     sub_hmenu as usize,
                     wide_text.as_ptr(),
                 ) == 0
@@ -244,47 +254,78 @@ const TRAY_WINDOW_CLASS_NAME: &[u16] = &[
     'a' as u16, 'y' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 0,
 ];
 
+/// Whether the tray registered for `hwnd` at `addr` is still alive. A slot may drop the icon
+/// (a "Quit" entry) while the window procedure is still inside one of its signals.
+#[cfg(windows)]
+fn tray_is_alive(hwnd: HWND, addr: usize) -> bool {
+    TRAY_INSTANCES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&(hwnd as isize)).copied())
+        == Some(addr)
+}
+
 #[cfg(windows)]
 unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let tray_ptr = {
-        let guard = TRAY_INSTANCES.lock().unwrap();
+        let guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .as_ref()
             .and_then(|m| m.get(&(hwnd as isize)).copied())
     };
 
     if let Some(addr) = tray_ptr {
-        let tray = &mut *(addr as *mut TrayIcon);
-        if msg == tray.taskbar_created_msg {
-            if tray.visible {
-                let _ = tray.send_notify_icon_message(NIM_ADD);
+        // Shared access only: this procedure re-enters itself (the context menu's modal loop
+        // pumps this very window), so a `&mut TrayIcon` here would alias. Nothing below mutates
+        // the icon except through `Cell`s, and no reference is kept across an emit: a slot may
+        // drop the icon, so the pointer is re-validated before every later use.
+        let tray = || &*(addr as *const TrayIcon);
+        if msg == tray().taskbar_created_msg {
+            if tray().visible {
+                let _ = tray().send_notify_icon_message(NIM_ADD);
             }
             return 0;
         } else if msg == WM_TRAY_CALLBACK {
             let event_type = (lparam & 0xFFFF) as u32;
             match event_type {
                 NIN_SELECT | WM_LBUTTONUP => {
-                    tray.on_activated.emit(&TrayActivation::Trigger);
+                    // The release that ends a double click is not a click (Qt:
+                    // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
+                    if tray().ignore_next_release.replace(false) {
+                        return 0;
+                    }
+                    let activated = tray().on_activated.clone();
+                    activated.emit(&TrayActivation::Trigger);
                     return 0;
                 }
                 WM_LBUTTONDBLCLK => {
-                    tray.on_activated.emit(&TrayActivation::DoubleClick);
+                    tray().ignore_next_release.set(true);
+                    let activated = tray().on_activated.clone();
+                    activated.emit(&TrayActivation::DoubleClick);
                     return 0;
                 }
                 WM_RBUTTONUP | WM_CONTEXTMENU => {
                     let mut pt = POINT { x: 0, y: 0 };
                     GetCursorPos(&mut pt);
                     let pos = crate::screen::native_cursor_to_logical(Point::new(pt.x, pt.y));
-                    tray.on_context_menu_requested.emit(&pos);
-                    tray.on_activated.emit(&TrayActivation::Context);
-                    if tray.menu.is_some() {
-                        tray.show_context_menu_at(pos);
+                    let requested = tray().on_context_menu_requested.clone();
+                    let activated = tray().on_activated.clone();
+                    let has_menu = tray().menu.is_some();
+                    requested.emit(&pos);
+                    if !tray_is_alive(hwnd, addr) {
+                        return 0;
+                    }
+                    activated.emit(&TrayActivation::Context);
+                    if has_menu && tray_is_alive(hwnd, addr) {
+                        tray().show_context_menu_at(pos);
                     }
                     return 0;
                 }
                 0x0405 => {
                     // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
-                    tray.on_message_clicked.emit(&());
+                    let clicked = tray().on_message_clicked.clone();
+                    clicked.emit(&());
                     return 0;
                 }
                 _ => {}
@@ -298,7 +339,8 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 _ => None,
             };
             if let Some(event) = power_event {
-                tray.on_power_event.emit(&event);
+                let power = tray().on_power_event.clone();
+                power.emit(&event);
             }
             return 1;
         }
@@ -350,9 +392,14 @@ fn ensure_tray_window_class_registered() {
 pub struct TrayIcon {
     hwnd: HWND,
     hicon: HICON,
+    /// Whether this icon created `hicon` (and so destroys it); an `HICON` passed to `new` or
+    /// `set_icon` stays the caller's.
+    owns_icon: bool,
     tooltip: String,
     visible: bool,
     taskbar_created_msg: u32,
+    /// Set by a double click: the release that ends it must not count as a click.
+    ignore_next_release: std::cell::Cell<bool>,
     menu: Option<Box<dyn crate::menu::PlatformMenu>>,
 
     pub on_activated: Signal<TrayActivation>,
@@ -402,9 +449,11 @@ impl TrayIcon {
         let mut tray = Box::new(Self {
             hwnd,
             hicon,
+            owns_icon: false,
             tooltip: tooltip.into(),
             visible: false,
             taskbar_created_msg,
+            ignore_next_release: std::cell::Cell::new(false),
             menu: None,
             on_activated: Signal::new(),
             on_menu_action: Signal::new(),
@@ -415,7 +464,7 @@ impl TrayIcon {
 
         // Register into global HWND router table
         {
-            let mut guard = TRAY_INSTANCES.lock().unwrap();
+            let mut guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
                 *guard = Some(HashMap::new());
             }
@@ -430,7 +479,16 @@ impl TrayIcon {
 
     pub fn from_pixmap(tooltip: impl Into<String>, pixmap: &Pixmap) -> Result<Box<Self>, &'static str> {
         let hicon = Self::create_hicon_from_pixmap(pixmap)?;
-        Self::new(tooltip, hicon)
+        match Self::new(tooltip, hicon) {
+            Ok(mut tray) => {
+                tray.owns_icon = true;
+                Ok(tray)
+            }
+            Err(e) => {
+                Self::destroy_hicon(hicon);
+                Err(e)
+            }
+        }
     }
 
     pub fn set_menu(&mut self, menu: Box<dyn crate::menu::PlatformMenu>) {
@@ -512,12 +570,23 @@ impl TrayIcon {
         Ok(())
     }
 
+    /// Shows `hicon`, which stays owned by the caller (it is not destroyed with the tray icon).
     pub fn set_icon(&mut self, hicon: HICON) -> Result<(), &'static str> {
-        self.hicon = hicon;
-        if self.visible {
-            self.send_notify_icon_message(NIM_MODIFY)?;
+        self.replace_icon(hicon, false)
+    }
+
+    fn replace_icon(&mut self, hicon: HICON, owned: bool) -> Result<(), &'static str> {
+        let old = std::mem::replace(&mut self.hicon, hicon);
+        let old_owned = std::mem::replace(&mut self.owns_icon, owned);
+        let result = if self.visible {
+            self.send_notify_icon_message(NIM_MODIFY)
+        } else {
+            Ok(())
+        };
+        if old_owned && old != hicon {
+            Self::destroy_hicon(old);
         }
-        Ok(())
+        result
     }
 
     pub fn icon(&self) -> HICON {
@@ -597,8 +666,11 @@ impl TrayIcon {
 
     pub fn show_context_menu_at(&self, screen_pos: Point) {
         if let Some(menu) = &self.menu {
+            // The menu's modal loop runs slots, one of which may drop this icon: emit through a
+            // handle that does not live in `self`.
+            let action = self.on_menu_action.clone();
             if let Some(cmd_id) = menu.exec_popup(screen_pos) {
-                self.on_menu_action.emit(&cmd_id);
+                action.emit(&cmd_id);
             }
         }
     }
@@ -620,7 +692,16 @@ impl TrayIcon {
             bmi.bmiHeader.biBitCount = 32;
             bmi.bmiHeader.biCompression = BI_RGB;
 
+            let src_data = pixmap.data();
+            let pixel_count = (w as usize) * (h as usize);
+            if src_data.len() < pixel_count * 4 {
+                return Err("pixmap data shorter than its size");
+            }
+
             let hdc = CreateCompatibleDC(ptr::null_mut());
+            if hdc.is_null() {
+                return Err("CreateCompatibleDC failed");
+            }
             let mut bits_ptr: *mut u8 = ptr::null_mut();
             let hbm_color = CreateDIBSection(
                 hdc,
@@ -640,8 +721,6 @@ impl TrayIcon {
                 return Err("CreateDIBSection failed");
             }
 
-            let src_data = pixmap.data();
-            let pixel_count = (w * h) as usize;
             for i in 0..pixel_count {
                 let r = src_data[i * 4];
                 let g = src_data[i * 4 + 1];
@@ -692,13 +771,9 @@ impl TrayIcon {
 #[cfg(windows)]
 impl crate::platform_tray::PlatformTrayIcon for TrayIcon {
     fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        let old_hicon = self.hicon;
         let new_hicon = Self::create_hicon_from_pixmap(pixmap)?;
-        self.set_icon(new_hicon)?;
-        if !old_hicon.is_null() {
-            Self::destroy_hicon(old_hicon);
-        }
-        Ok(())
+        // The old icon is destroyed only if this tray created it (`replace_icon`).
+        self.replace_icon(new_hicon, true)
     }
 
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str> {
@@ -738,7 +813,7 @@ impl Drop for TrayIcon {
         let _ = self.hide();
 
         {
-            let mut guard = TRAY_INSTANCES.lock().unwrap();
+            let mut guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(map) = guard.as_mut() {
                 map.remove(&(self.hwnd as isize));
             }
@@ -748,6 +823,9 @@ impl Drop for TrayIcon {
             unsafe {
                 DestroyWindow(self.hwnd);
             }
+        }
+        if self.owns_icon {
+            Self::destroy_hicon(self.hicon);
         }
     }
 }

@@ -31,8 +31,8 @@ const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
 const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x00000020;
 const DXGI_SCALING_STRETCH: u32 = 0;
 const DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL: u32 = 3;
-const DXGI_ALPHA_MODE_PREMULTIPLIED: u32 = 2;
-const DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE: u32 = 0x200;
+const DXGI_ALPHA_MODE_PREMULTIPLIED: u32 = 1;
+const DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE: u32 = 0x4;
 
 const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
 const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
@@ -48,29 +48,29 @@ const IID_IUNKNOWN: GUID = GUID {
 const IID_IDXGI_FACTORY2: GUID = GUID {
     data1: 0x50c83a1c,
     data2: 0xe072,
-    data3: 0x4d48,
+    data3: 0x4c48,
     data4: [0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0],
 };
 
 const IID_IDXGI_SWAP_CHAIN1: GUID = GUID {
-    data1: 0x790a45f8,
-    data2: 0x0f42,
+    data1: 0x790a45f7,
+    data2: 0x0d42,
     data3: 0x4876,
-    data4: [0x98, 0x52, 0x38, 0xb8, 0x2e, 0x7e, 0x1b, 0x6a],
+    data4: [0x98, 0x3a, 0x0a, 0x55, 0xcf, 0xe6, 0xf4, 0xaa],
 };
 
 const IID_IDXGI_SURFACE1: GUID = GUID {
     data1: 0x4AE63092,
     data2: 0x6327,
     data3: 0x4c1b,
-    data4: [0x80, 0xAE, 0xBF, 0xE1, 0xE0, 0x84, 0x10, 0xCD],
+    data4: [0x80, 0xAE, 0xBF, 0xE1, 0x2E, 0xA3, 0x2B, 0x86],
 };
 
 const IID_IDCOMPOSITION_DEVICE: GUID = GUID {
-    data1: 0xC37D25AE,
-    data2: 0x2E15,
-    data3: 0x4673,
-    data4: [0x9F, 0x94, 0xDB, 0x76, 0x08, 0x16, 0x0F, 0xDE],
+    data1: 0xC37EA93A,
+    data2: 0xE7AA,
+    data3: 0x450D,
+    data4: [0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3],
 };
 
 // -----------------------------------------------------------------------------
@@ -223,6 +223,10 @@ pub struct DCompSurface {
     staging_h: u32,
     /// Back buffers were reallocated: the next present must cover the whole visible area.
     force_full: bool,
+    /// The area the previous present changed. The flip-model swap chain has two buffers, so the
+    /// back buffer holds the frame before the previous one: it needs the previous change as well
+    /// as the current one.
+    prev_dirty: Option<Rect>,
     /// The window opacity the owner asked for; presented with every `present_region`.
     opacity: f32,
     /// The opacity the staging DIB's pixels were last scaled by. A different value means every
@@ -515,6 +519,10 @@ impl DCompSurface {
 
             // 12. Allocate staging GDI DIB (allocated size) for software pixel translation
             let staging_dc = CreateCompatibleDC(ptr::null_mut());
+            if staging_dc.is_null() {
+                cleanup(&[dcomp_clip_visual, dcomp_visual]);
+                return Err("CreateCompatibleDC failed for the staging DIB");
+            }
             let mut bmi: BITMAPINFO = std::mem::zeroed();
             bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
             bmi.bmiHeader.biWidth = alloc_w.max(1) as i32;
@@ -532,6 +540,14 @@ impl DCompSurface {
                 ptr::null_mut(),
                 0,
             );
+            if staging_bitmap.is_null() || staging_bits.is_null() {
+                if !staging_bitmap.is_null() {
+                    DeleteObject(staging_bitmap as HGDIOBJ);
+                }
+                DeleteDC(staging_dc);
+                cleanup(&[dcomp_clip_visual, dcomp_visual]);
+                return Err("CreateDIBSection failed for the staging DIB");
+            }
             let staging_old_bitmap = SelectObject(staging_dc, staging_bitmap);
 
             Ok(Self {
@@ -557,6 +573,7 @@ impl DCompSurface {
                 staging_w: alloc_w,
                 staging_h: alloc_h,
                 force_full: true,
+                prev_dirty: None,
                 opacity: 1.0,
                 staged_opacity: 1.0,
                 stats: DCompStats::default(),
@@ -594,6 +611,7 @@ impl DCompSurface {
             staging_w: width,
             staging_h: height,
             force_full: true,
+            prev_dirty: None,
             opacity: 1.0,
             staged_opacity: 1.0,
             stats: DCompStats::default(),
@@ -669,15 +687,16 @@ impl DCompSurface {
             return Ok(());
         }
 
-        let realloc = |alloc: u32, visible: u32| {
-            if visible > alloc || alloc > visible.saturating_mul(2) {
-                capacity_for(visible)
+        // One `ResizeBuffers` per capacity change: when either axis leaves its band, both axes get
+        // fresh headroom together (otherwise width and height would reallocate at different sizes
+        // and double the calls).
+        let outside = |alloc: u32, visible: u32| visible > alloc || alloc > visible.saturating_mul(2);
+        let (new_alloc_w, new_alloc_h) =
+            if outside(self.alloc_w, width) || outside(self.alloc_h, height) {
+                (capacity_for(width), capacity_for(height))
             } else {
-                alloc
-            }
-        };
-        let new_alloc_w = realloc(self.alloc_w, width);
-        let new_alloc_h = realloc(self.alloc_h, height);
+                (self.alloc_w, self.alloc_h)
+            };
         if new_alloc_w != self.alloc_w || new_alloc_h != self.alloc_h {
             self.resize_buffers(new_alloc_w, new_alloc_h)?;
         }
@@ -716,27 +735,8 @@ impl DCompSurface {
                 swapChainFlags: u32,
             ) -> HRESULT;
             let resize_fn: PfnResizeBuffers = std::mem::transmute(*sc_vtbl.add(13));
-            let hr = resize_fn(
-                self.swap_chain,
-                2,
-                alloc_w,
-                alloc_h,
-                DXGI_FORMAT_B8G8R8A8_UNORM,
-                DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE,
-            );
-            if hr < 0 {
-                let u_hr = hr as u32;
-                if u_hr == 0x887A0005 || u_hr == 0x887A0007 {
-                    return Err("DXGI_ERROR_DEVICE_LOST");
-                }
-                return Err("ResizeBuffers failed on swap chain");
-            }
-            self.stats.resize_buffers_count += 1;
-
-            // Resize staging DIB
-            SelectObject(self.staging_dc, self.staging_old_bitmap);
-            DeleteObject(self.staging_bitmap);
-
+            // Allocate the new staging DIB first: if it fails nothing has changed yet (the swap
+            // chain keeps its size, the old DIB stays selected).
             let mut bmi: BITMAPINFO = std::mem::zeroed();
             bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
             bmi.bmiHeader.biWidth = alloc_w.max(1) as i32;
@@ -754,6 +754,34 @@ impl DCompSurface {
                 ptr::null_mut(),
                 0,
             );
+            if new_bmp.is_null() || bits.is_null() {
+                if !new_bmp.is_null() {
+                    DeleteObject(new_bmp as HGDIOBJ);
+                }
+                return Err("CreateDIBSection failed for the staging DIB");
+            }
+
+            let hr = resize_fn(
+                self.swap_chain,
+                2,
+                alloc_w,
+                alloc_h,
+                DXGI_FORMAT_B8G8R8A8_UNORM,
+                DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE,
+            );
+            if hr < 0 {
+                DeleteObject(new_bmp as HGDIOBJ);
+                let u_hr = hr as u32;
+                if u_hr == 0x887A0005 || u_hr == 0x887A0007 {
+                    return Err("DXGI_ERROR_DEVICE_LOST");
+                }
+                return Err("ResizeBuffers failed on swap chain");
+            }
+            self.stats.resize_buffers_count += 1;
+
+            // Swap the staging DIB.
+            SelectObject(self.staging_dc, self.staging_old_bitmap);
+            DeleteObject(self.staging_bitmap);
             self.staging_old_bitmap = SelectObject(self.staging_dc, new_bmp);
             self.staging_bitmap = new_bmp;
             self.staging_bits = bits as *mut u8;
@@ -795,6 +823,7 @@ impl DCompSurface {
         }
 
         let full_window_rect = Rect::new(0, 0, self.width as i32, self.height as i32);
+        let full_present = self.force_full;
         let dirty = if self.force_full {
             full_window_rect
         } else {
@@ -836,14 +865,8 @@ impl DCompSurface {
                 pp_surface: *mut *mut c_void,
             ) -> HRESULT;
             let get_buffer_fn: PfnGetBuffer = std::mem::transmute(*sc_vtbl.add(9));
-            let iid_idxgi_surface1 = windows_sys::core::GUID {
-                data1: 0x4AE63092,
-                data2: 0x6327,
-                data3: 0x4827,
-                data4: [0x88, 0x2F, 0x20, 0x00, 0x57, 0xA3, 0xD0, 0x33],
-            };
             let mut dxgi_surface1: *mut c_void = ptr::null_mut();
-            let hr = get_buffer_fn(self.swap_chain, 0, &iid_idxgi_surface1, &mut dxgi_surface1);
+            let hr = get_buffer_fn(self.swap_chain, 0, &IID_IDXGI_SURFACE1, &mut dxgi_surface1);
             if hr < 0 || dxgi_surface1.is_null() {
                 return Err("IDXGISwapChain::GetBuffer(0, IDXGISurface1) failed");
             }
@@ -865,16 +888,21 @@ impl DCompSurface {
                 return Err("IDXGISurface1::GetDC failed");
             }
 
-            // 4. BitBlt differential dirty rect from staging DIB to back buffer
+            // 4. BitBlt the changed area from the staging DIB to the back buffer, together with the
+            // previous present's area: this buffer last showed the frame before that.
+            let blit = match (full_present, self.prev_dirty) {
+                (false, Some(prev)) => full_window_rect.intersected(&clipped.united(&prev)),
+                _ => clipped,
+            };
             windows_sys::Win32::Graphics::Gdi::BitBlt(
                 dxgi_dc,
-                clipped.x,
-                clipped.y,
-                clipped.width,
-                clipped.height,
+                blit.x,
+                blit.y,
+                blit.width,
+                blit.height,
                 self.staging_dc,
-                clipped.x,
-                clipped.y,
+                blit.x,
+                blit.y,
                 windows_sys::Win32::Graphics::Gdi::SRCCOPY,
             );
             // 5. Release DC: ReleaseDC is slot 12 on IDXGISurface1
@@ -882,10 +910,10 @@ impl DCompSurface {
                 unsafe extern "system" fn(this: *mut c_void, p_dirty_rect: *const RECT) -> HRESULT;
             let rel_dc_fn: PfnReleaseDC = std::mem::transmute(*surf_vtbl.add(12));
             let dirty_gdi_rect = RECT {
-                left: clipped.x,
-                top: clipped.y,
-                right: clipped.x + clipped.width,
-                bottom: clipped.y + clipped.height,
+                left: blit.x,
+                top: blit.y,
+                right: blit.x + blit.width,
+                bottom: blit.y + blit.height,
             };
             rel_dc_fn(dxgi_surface1, &dirty_gdi_rect);
 
@@ -909,8 +937,10 @@ impl DCompSurface {
                 right: clipped.x + clipped.width,
                 bottom: clipped.y + clipped.height,
             };
+            // DXGI rejects dirty rectangles (`DXGI_ERROR_INVALID_CALL`) on the first present of
+            // fresh buffers, which is exactly when everything is dirty anyway.
             let present_params = DXGI_PRESENT_PARAMETERS {
-                DirtyRectsCount: 1,
+                DirtyRectsCount: if full_present { 0 } else { 1 },
                 pDirtyRects: &mut dxgi_dirty_rect,
                 pScrollRect: ptr::null_mut(),
                 pScrollOffset: ptr::null_mut(),
@@ -921,6 +951,7 @@ impl DCompSurface {
                 return Err("IDXGISwapChain1::Present1 failed");
             }
             self.force_full = false;
+            self.prev_dirty = Some(clipped);
             self.stats.present_count += 1;
             crate::resize_trace::record(
                 crate::resize_trace::TraceKind::Present1,

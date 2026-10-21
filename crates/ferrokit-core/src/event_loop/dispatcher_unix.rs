@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 use crate::event_loop::dispatcher::{DispatchResult, EventDispatcher, EventDispatcherHandle};
 use crate::event_loop::socket_notifier::{SocketDescriptor, SocketEvent, SocketNotifier};
-use crate::poison::lock_unpoisoned;
 use crate::timer::{TimerEntry, TimerId, TimerRegistry};
 
 pub const EPOLLIN: u32 = 0x001;
@@ -88,41 +87,123 @@ impl TimerFd {
     }
 }
 
+/// The kernel side of the Linux reactor: one `epoll` set that holds every descriptor of an
+/// enabled socket notifier and an `eventfd` that wakes a blocked `epoll_wait` (what Qt's
+/// `QEventDispatcherUNIX` does with its thread-wakeup eventfd and `select`).
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 mod linux_epoll {
+    use super::SocketDescriptor;
     use std::os::raw::c_int;
 
-    pub const EPOLLIN: u32 = 0x001;
-    pub const EPOLLPRI: u32 = 0x002;
-    pub const EPOLLOUT: u32 = 0x004;
-    pub const EPOLLERR: u32 = 0x008;
-    pub const EPOLLHUP: u32 = 0x010;
-    pub const EPOLLRDHUP: u32 = 0x2000;
-    pub const EPOLL_CLOEXEC: c_int = 0x80000;
+    /// `data` of the wake-up eventfd in the epoll set. A descriptor is never this large.
+    const WAKE_TOKEN: u64 = u64::MAX;
 
-    pub const EPOLL_CTL_ADD: c_int = 1;
-    pub const EPOLL_CTL_DEL: c_int = 2;
-    pub const EPOLL_CTL_MOD: c_int = 3;
-
-    #[repr(C)]
-    #[cfg_attr(target_arch = "x86_64", repr(packed))]
-    #[derive(Debug, Copy, Clone)]
-    pub struct EpollEvent {
-        pub events: u32,
-        pub data: u64,
+    pub struct Poller {
+        epoll_fd: c_int,
+        wake_fd: c_int,
     }
 
-    extern "C" {
-        pub fn epoll_create1(flags: c_int) -> c_int;
-        pub fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent) -> c_int;
-        pub fn epoll_wait(
-            epfd: c_int,
-            events: *mut EpollEvent,
-            maxevents: c_int,
-            timeout: c_int,
-        ) -> c_int;
-        pub fn close(fd: c_int) -> c_int;
+    impl Poller {
+        pub fn new() -> Option<Self> {
+            // SAFETY: plain syscalls; every descriptor created here is closed on failure or in
+            // `Drop`.
+            unsafe {
+                let epoll_fd = libc::epoll_create1(libc::EPOLL_CLOEXEC);
+                if epoll_fd < 0 {
+                    return None;
+                }
+                let wake_fd = libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK);
+                if wake_fd < 0 {
+                    libc::close(epoll_fd);
+                    return None;
+                }
+                let mut ev = libc::epoll_event {
+                    events: libc::EPOLLIN as u32,
+                    u64: WAKE_TOKEN,
+                };
+                if libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, wake_fd, &mut ev) < 0 {
+                    libc::close(wake_fd);
+                    libc::close(epoll_fd);
+                    return None;
+                }
+                Some(Self { epoll_fd, wake_fd })
+            }
+        }
+
+        /// Makes a blocked or later `wait` return.
+        pub fn wake(&self) {
+            let one: u64 = 1;
+            // SAFETY: writes the 8 bytes of a live local to the eventfd. A full counter
+            // (`EAGAIN`) already means "readable", so the result is not needed.
+            unsafe {
+                libc::write(self.wake_fd, (&one as *const u64).cast(), 8);
+            }
+        }
+
+        fn drain_wake(&self) {
+            let mut value: u64 = 0;
+            // SAFETY: reads 8 bytes into a live local; the descriptor is non-blocking.
+            unsafe {
+                libc::read(self.wake_fd, (&mut value as *mut u64).cast(), 8);
+            }
+        }
+
+        /// Sets the events reported for `fd`: none removes it from the set.
+        pub fn set_interest(&self, fd: SocketDescriptor, events: u32) {
+            // SAFETY: `epoll_ctl` only reads `ev`; a descriptor that is invalid or already
+            // closed makes it fail, which leaves the set as it was.
+            unsafe {
+                if events == 0 {
+                    libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
+                    return;
+                }
+                let mut ev = libc::epoll_event {
+                    events,
+                    u64: fd as u64,
+                };
+                if libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut ev) < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT)
+                {
+                    libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev);
+                }
+            }
+        }
+
+        /// Blocks for at most `timeout_ms` (0 polls, negative waits forever) until a registered
+        /// descriptor is ready or `wake` is called. Returns whether it was woken and the ready
+        /// `(descriptor, events)` pairs.
+        pub fn wait(&self, timeout_ms: c_int) -> (bool, Vec<(SocketDescriptor, u32)>) {
+            let mut events = [libc::epoll_event { events: 0, u64: 0 }; 64];
+            // SAFETY: `events` has room for the 64 entries passed as the maximum.
+            let count = unsafe {
+                libc::epoll_wait(self.epoll_fd, events.as_mut_ptr(), events.len() as c_int, timeout_ms)
+            };
+            let mut woken = false;
+            let mut ready = Vec::new();
+            for event in events.iter().take(count.max(0) as usize) {
+                // Copied out: the struct is packed on x86-64.
+                let (flags, token) = (event.events, event.u64);
+                if token == WAKE_TOKEN {
+                    woken = true;
+                } else {
+                    ready.push((token as SocketDescriptor, flags));
+                }
+            }
+            if woken {
+                self.drain_wake();
+            }
+            (woken, ready)
+        }
+    }
+
+    impl Drop for Poller {
+        fn drop(&mut self) {
+            // SAFETY: both descriptors are owned by this value and closed once.
+            unsafe {
+                libc::close(self.wake_fd);
+                libc::close(self.epoll_fd);
+            }
+        }
     }
 }
 
@@ -134,7 +215,7 @@ pub struct EpollReactor {
     cond: Condvar,
     lock: Mutex<bool>,
     #[cfg(target_os = "linux")]
-    epoll_fd: std::os::raw::c_int,
+    poller: Option<linux_epoll::Poller>,
 }
 
 impl Default for EpollReactor {
@@ -145,9 +226,6 @@ impl Default for EpollReactor {
 
 impl EpollReactor {
     pub fn new() -> Self {
-        #[cfg(target_os = "linux")]
-        let epoll_fd = unsafe { linux_epoll::epoll_create1(linux_epoll::EPOLL_CLOEXEC) };
-
         Self {
             event_fd: Arc::new(EventFd::new(0)),
             timer_fds: Mutex::new(HashMap::new()),
@@ -156,25 +234,75 @@ impl EpollReactor {
             cond: Condvar::new(),
             lock: Mutex::new(false),
             #[cfg(target_os = "linux")]
-            epoll_fd,
+            poller: linux_epoll::Poller::new(),
         }
+    }
+
+    /// Ends a sleep in `epoll_wait`, whichever way it sleeps.
+    fn notify_sleeper(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = &self.poller {
+            poller.wake();
+        }
+        let _guard = self.lock.lock().unwrap();
+        self.cond.notify_all();
     }
 
     pub fn wake_up(&self) {
         self.event_fd.write(1);
-        let _guard = self.lock.lock().unwrap();
-        self.cond.notify_all();
+        self.notify_sleeper();
     }
 
     pub fn register_timer(&self, id: TimerId, interval: Duration, single_shot: bool) {
         let tfd = Arc::new(TimerFd::new(id, interval, single_shot));
         self.timer_fds.lock().unwrap().insert(id, tfd);
-        let _guard = self.lock.lock().unwrap();
-        self.cond.notify_all();
+        self.notify_sleeper();
     }
 
     pub fn unregister_timer(&self, id: TimerId) {
         self.timer_fds.lock().unwrap().remove(&id);
+    }
+
+    /// The epoll events `fd` needs for its enabled notifiers. A Read and an Exception notifier
+    /// of one descriptor share one epoll registration, so the mask is the union of the two.
+    #[cfg(target_os = "linux")]
+    fn interest_of(
+        notifiers: &HashMap<(SocketDescriptor, SocketEvent), Arc<SocketNotifier>>,
+        fd: SocketDescriptor,
+    ) -> u32 {
+        let enabled = |kind| {
+            notifiers
+                .get(&(fd, kind))
+                .is_some_and(|notifier| notifier.is_enabled())
+        };
+        let mut events = 0;
+        if enabled(SocketEvent::Read) {
+            events |= (libc::EPOLLIN | libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32;
+        }
+        if enabled(SocketEvent::Exception) {
+            events |= (libc::EPOLLPRI | libc::EPOLLERR | libc::EPOLLHUP) as u32;
+        }
+        events
+    }
+
+    /// Brings the epoll registration of `fd` in line with its notifiers: a descriptor whose
+    /// notifiers are all disabled or removed leaves the set, so a readable one cannot spin the
+    /// loop. The map lock is held across the syscall so two updates of one descriptor cannot
+    /// interleave.
+    fn sync_fd(&self, fd: SocketDescriptor) {
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = &self.poller {
+            let notifiers = self.socket_notifiers.lock().unwrap();
+            poller.set_interest(fd, Self::interest_of(&notifiers, fd));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = fd;
+    }
+
+    /// A notifier of `fd` was enabled or disabled. A thread blocked in `epoll_wait` sees the new
+    /// interest set at once, so nothing needs waking.
+    fn notifier_enabled_changed(&self, fd: SocketDescriptor) {
+        self.sync_fd(fd);
     }
 
     pub fn register_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
@@ -183,60 +311,97 @@ impl EpollReactor {
             .lock()
             .unwrap()
             .insert(key, Arc::clone(notifier));
-        #[cfg(target_os = "linux")]
-        if self.epoll_fd >= 0 {
-            let mut ev = linux_epoll::EpollEvent {
-                events: match notifier.event_type() {
-                    SocketEvent::Read => {
-                        linux_epoll::EPOLLIN
-                            | linux_epoll::EPOLLERR
-                            | linux_epoll::EPOLLHUP
-                            | linux_epoll::EPOLLRDHUP
-                    }
-                    SocketEvent::Exception => {
-                        linux_epoll::EPOLLERR | linux_epoll::EPOLLHUP | linux_epoll::EPOLLPRI
-                    }
-                },
-                data: notifier.descriptor() as u64,
-            };
-            unsafe {
-                linux_epoll::epoll_ctl(
-                    self.epoll_fd,
-                    linux_epoll::EPOLL_CTL_ADD,
-                    notifier.descriptor() as std::os::raw::c_int,
-                    &mut ev,
-                );
-            }
-        }
-
-        let _guard = self.lock.lock().unwrap();
-        self.cond.notify_all();
+        self.sync_fd(key.0);
     }
 
     pub fn unregister_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
         let key = (notifier.descriptor(), notifier.event_type());
         self.socket_notifiers.lock().unwrap().remove(&key);
-
-        #[cfg(target_os = "linux")]
-        if self.epoll_fd >= 0 {
-            unsafe {
-                linux_epoll::epoll_ctl(
-                    self.epoll_fd,
-                    linux_epoll::EPOLL_CTL_DEL,
-                    notifier.descriptor() as std::os::raw::c_int,
-                    std::ptr::null_mut(),
-                );
-            }
-        }
+        self.sync_fd(key.0);
     }
 
     pub fn trigger_socket_event(&self, fd: SocketDescriptor, event: SocketEvent) {
         self.pending_socket_events.lock().unwrap().push((fd, event));
-        let _guard = self.lock.lock().unwrap();
-        self.cond.notify_all();
+        self.notify_sleeper();
     }
 
+    /// Waits until a descriptor is ready, `wake_up` is called, a timer is due or `timeout`
+    /// passes (`None` waits for a timer or a wake-up). Returns whether the loop was woken, the
+    /// due timers and the ready `(descriptor, kind)` pairs.
     pub fn epoll_wait(
+        &self,
+        timeout: Option<Duration>,
+    ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = &self.poller {
+            return self.wait_in_kernel(poller, timeout);
+        }
+        self.wait_on_condvar(timeout)
+    }
+
+    /// How long a wait may last: `timeout` and the next simulated timer, whichever is earlier.
+    fn sleep_duration(&self, timeout: Option<Duration>, now: Instant) -> Duration {
+        match (timeout, self.next_timer_delay(now)) {
+            (Some(t), Some(td)) => t.min(td),
+            (Some(t), None) => t,
+            (None, Some(td)) => td,
+            (None, None) => Duration::from_secs(3600),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_in_kernel(
+        &self,
+        poller: &linux_epoll::Poller,
+        timeout: Option<Duration>,
+    ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
+        let start = Instant::now();
+        let mut pending_sockets = std::mem::take(&mut *self.pending_socket_events.lock().unwrap());
+        let mut awoken = self.event_fd.is_readable();
+        if awoken {
+            self.event_fd.read();
+        }
+        let mut expired = self.collect_expired_timers(start);
+
+        // Nothing to wait for when something is ready already: the poll then only collects the
+        // descriptors that are ready as well.
+        let wait = if awoken || !pending_sockets.is_empty() || !expired.is_empty() {
+            Duration::ZERO
+        } else {
+            self.sleep_duration(timeout, start)
+        };
+        let millis = wait.as_millis() + u128::from(wait.subsec_nanos() % 1_000_000 != 0);
+        let (_woken, ready) = poller.wait(millis.min(libc::c_int::MAX as u128) as libc::c_int);
+
+        if self.event_fd.is_readable() {
+            self.event_fd.read();
+            awoken = true;
+        }
+        if !wait.is_zero() {
+            for id in self.collect_expired_timers(Instant::now()) {
+                if !expired.contains(&id) {
+                    expired.push(id);
+                }
+            }
+            pending_sockets.extend(std::mem::take(
+                &mut *self.pending_socket_events.lock().unwrap(),
+            ));
+        }
+        for (fd, flags) in ready {
+            let failed = flags & (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32 != 0;
+            let readable = flags & (libc::EPOLLIN | libc::EPOLLPRI) as u32 != 0;
+            if failed {
+                pending_sockets.push((fd, SocketEvent::Exception));
+            }
+            if readable || failed {
+                pending_sockets.push((fd, SocketEvent::Read));
+            }
+        }
+        (awoken, expired, pending_sockets)
+    }
+
+    /// The wait of a reactor without a kernel poller: only simulated events, a condition variable.
+    fn wait_on_condvar(
         &self,
         timeout: Option<Duration>,
     ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
@@ -259,59 +424,9 @@ impl EpollReactor {
         if !expired.is_empty() {
             return (false, expired, Vec::new());
         }
-        // Calculate sleep timeout
-        let sleep_duration = match timeout {
-            Some(t) => {
-                let earliest_timer = self.next_timer_delay(start);
-                match earliest_timer {
-                    Some(td) => t.min(td),
-                    None => t,
-                }
-            }
-            None => self
-                .next_timer_delay(start)
-                .unwrap_or(Duration::from_secs(3600)),
-        };
-
+        let sleep_duration = self.sleep_duration(timeout, start);
         if sleep_duration.is_zero() {
             return (false, Vec::new(), Vec::new());
-        }
-        #[allow(unused_mut)]
-        let mut kernel_sockets: Vec<(SocketDescriptor, SocketEvent)> = Vec::new();
-        #[cfg(target_os = "linux")]
-        if self.epoll_fd >= 0 {
-            let mut events = [linux_epoll::EpollEvent { events: 0, data: 0 }; 64];
-            let nfds = unsafe {
-                linux_epoll::epoll_wait(self.epoll_fd, events.as_mut_ptr(), 64, 0)
-            };
-
-            if nfds > 0 {
-                for i in 0..nfds as usize {
-                    let ev = events[i];
-                    let fd = ev.data as SocketDescriptor;
-                    let is_err = (ev.events
-                        & (linux_epoll::EPOLLERR
-                            | linux_epoll::EPOLLHUP
-                            | linux_epoll::EPOLLRDHUP))
-                        != 0;
-                    let is_read = (ev.events & (linux_epoll::EPOLLIN | linux_epoll::EPOLLPRI)) != 0;
-
-                    if is_err {
-                        kernel_sockets.push((fd, SocketEvent::Exception));
-                    }
-                    if is_read || is_err {
-                        kernel_sockets.push((fd, SocketEvent::Read));
-                    }
-                }
-            }
-        }
-
-        if !kernel_sockets.is_empty() {
-            let now = Instant::now();
-            let expired = self.collect_expired_timers(now);
-            let mut combined = pending_sockets;
-            combined.extend(kernel_sockets);
-            return (false, expired, combined);
         }
 
         // Wait on condition variable or timeout
@@ -337,6 +452,7 @@ impl EpollReactor {
         let pending_sockets = std::mem::take(&mut *self.pending_socket_events.lock().unwrap());
         (was_awoken, expired, pending_sockets)
     }
+
     fn next_timer_delay(&self, now: Instant) -> Option<Duration> {
         let tfds = self.timer_fds.lock().unwrap();
         let mut min_delay: Option<Duration> = None;
@@ -362,16 +478,6 @@ impl EpollReactor {
             }
         }
         expired
-    }
-}
-impl Drop for EpollReactor {
-    fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        if self.epoll_fd >= 0 {
-            unsafe {
-                linux_epoll::close(self.epoll_fd);
-            }
-        }
     }
 }
 
@@ -466,11 +572,16 @@ impl EventDispatcher for UnixEventDispatcher {
             }
         }
 
+        // Due simulated timers are kept even when the loop was also woken: they have fired once
+        // and would be lost otherwise.
+        let timers_due = !expired_timers.is_empty();
+        if timers_due {
+            self.pending_timers.lock().unwrap().extend(expired_timers);
+        }
         if awoken {
             return DispatchResult::Awoken;
         }
-        if !expired_timers.is_empty() {
-            self.pending_timers.lock().unwrap().extend(expired_timers);
+        if timers_due {
             return DispatchResult::Normal;
         }
         if !triggered_sockets.is_empty() {
@@ -499,44 +610,27 @@ impl EventDispatcher for UnixEventDispatcher {
 
     fn register_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
         self.reactor.register_socket_notifier(notifier);
+        // A notifier that is disabled later must leave the poll set at once, or a readable
+        // descriptor would end every wait immediately.
+        let reactor = Arc::downgrade(&self.reactor);
+        let fd = notifier.descriptor();
+        notifier.set_enable_hook(Some(Arc::new(move || {
+            if let Some(reactor) = reactor.upgrade() {
+                reactor.notifier_enabled_changed(fd);
+            }
+        })));
     }
 
     fn unregister_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
+        notifier.set_enable_hook(None);
         self.reactor.unregister_socket_notifier(notifier);
     }
 
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
         let now_ms = crate::timer::current_time_ms();
-        let mut expired_ids = lock_unpoisoned(registry).expired_timers(now_ms);
-
         let pending = std::mem::take(&mut *self.pending_timers.lock().unwrap());
-        for id in pending {
-            if !expired_ids.contains(&id) {
-                expired_ids.push(id);
-            }
-        }
-
-        for id in expired_ids {
-            let Some((receiver, single_shot)) =
-                crate::timer::begin_timer_delivery(registry, id, now_ms)
-            else {
-                continue;
-            };
-
-            if matches!(
-                crate::event_loop::deliver_timer_event(receiver, id.0 as u64),
-                crate::event_loop::TimerDelivery::NotDeliverable
-            ) {
-                crate::timer::dispatch_single_shot_callback(receiver);
-            }
-
-            let mut reg = lock_unpoisoned(registry);
-            if single_shot {
-                reg.unregister(id);
-                self.reactor.unregister_timer(id);
-            } else if let Some(entry) = reg.get_mut(id) {
-                entry.in_timer_event = false;
-            }
+        for id in crate::timer::deliver_due_timers(registry, now_ms, pending) {
+            self.reactor.unregister_timer(id);
         }
     }
 }
