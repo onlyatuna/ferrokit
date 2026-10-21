@@ -7,7 +7,7 @@ mod headless;
 
 use ferrokit_gui::geometry::primitives::{Rect, Size};
 use ferrokit_platform::{WindowFlags, WindowSystemEvent};
-use ferrokit_widgets::widget::{EmptyWidget, Widget};
+use ferrokit_widgets::widget::EmptyWidget;
 use ferrokit_widgets::window::Window;
 use std::cell::RefCell;
 use std::rc::Rc;
