@@ -924,6 +924,12 @@
     "test_tab_key_hook::only_the_listed_tab_key_moves_the_focus::TB": "pass",
     "test_tab_key_hook::shift_tab_matches_only_the_default_backtab_entry::TB": "pass",
     "test_tab_key_hook::tab_and_backtab_move_the_focus_off_a_key_sequence_edit_by_default::TB": "pass",
-    "test_tab_key_hook::tab_is_recorded_when_it_is_not_a_finishing_combination::TB": "pass"
+    "test_tab_key_hook::tab_is_recorded_when_it_is_not_a_finishing_combination::TB": "pass",
+    "test_menu_key_normalization::submenu_keys_are_normalized_once::SB": "unsupported",
+    "test_menu_key_normalization::submenu_keys_are_normalized_once::TB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_emits_about_to_hide_once::SB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_emits_about_to_hide_once::TB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_is_still_hidden_when_its_parent_hides::SB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_is_still_hidden_when_its_parent_hides::TB": "unsupported"
   }
 }
