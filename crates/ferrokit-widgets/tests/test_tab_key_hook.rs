@@ -122,3 +122,18 @@ fn ctrl_tab_still_does_not_move_the_focus() {
     assert!(f.focus_is_edit());
     assert!(f.other_log.borrow().is_empty());
 }
+
+#[test]
+fn shift_tab_matches_only_the_default_backtab_entry() {
+    let mut f = fixture(Some(vec![KeyCombination::new(qt_key::TAB, 0)]));
+    f.press(KEY_TAB, key_modifier::SHIFT);
+    assert!(f.focus_is_edit(), "Shift+Tab is not Tab: it is recorded");
+    assert_eq!(f.recorded(), "Shift+Tab");
+
+    let mut f = fixture(Some(vec![KeyCombination::new(qt_key::BACKTAB, key_modifier::SHIFT)]));
+    f.press(KEY_BACKTAB, key_modifier::SHIFT);
+    assert!(!f.focus_is_edit(), "an exact Backtab+Shift entry matches");
+    let mut f = fixture(Some(vec![KeyCombination::new(qt_key::BACKTAB, key_modifier::SHIFT)]));
+    f.press(KEY_BACKTAB, 0);
+    assert!(f.focus_is_edit(), "Backtab alone is not that entry");
+}

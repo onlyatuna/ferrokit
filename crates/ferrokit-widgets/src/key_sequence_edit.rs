@@ -811,20 +811,22 @@ impl KeySequenceEdit {
         )
     }
 
-    /// Shift+Tab is Backtab: the combination a finishing list is compared with.
-    fn finishing_candidate(combo: KeyCombination) -> KeyCombination {
-        if combo.key == qt_key::TAB && combo.modifiers == key_modifier::SHIFT {
-            KeyCombination::new(qt_key::BACKTAB, 0)
-        } else if combo.key == qt_key::BACKTAB {
-            KeyCombination::new(qt_key::BACKTAB, combo.modifiers & !key_modifier::SHIFT)
-        } else {
-            combo
-        }
+    /// Whether `combo` finishes editing: it is listed, or it is Shift+Tab (or Backtab with only
+    /// Shift) and the default Backtab entry is listed. Qt reports Shift+Tab as Backtab, so the
+    /// default entry would otherwise never match.
+    fn is_finishing(&self, combo: KeyCombination) -> bool {
+        let shift_backtab = (combo.key == qt_key::TAB || combo.key == qt_key::BACKTAB)
+            && combo.modifiers == key_modifier::SHIFT;
+        self.finishing_key_combinations.contains(&combo)
+            || (shift_backtab
+                && self
+                    .finishing_key_combinations
+                    .contains(&KeyCombination::new(qt_key::BACKTAB, 0)))
     }
 
     fn record_key_press(&mut self, key: u32, modifiers: u32) {
         let combo = KeyCombination::from_key_event(key, modifiers);
-        if self.finishing_key_combinations.contains(&Self::finishing_candidate(combo)) {
+        if self.is_finishing(combo) {
             self.finish_editing();
             return;
         }
@@ -1059,9 +1061,7 @@ impl Widget for KeySequenceEdit {
     /// in which case they move the focus.
     fn wants_tab_key(&self, key: u32, modifiers: u32) -> bool {
         let combo = KeyCombination::from_key_event(key, modifiers);
-        !self
-            .finishing_key_combinations
-            .contains(&Self::finishing_candidate(combo))
+        !self.is_finishing(combo)
     }
 
     fn key_press_event(&mut self, key: u32, modifiers: u32, _is_repeat: bool) {
