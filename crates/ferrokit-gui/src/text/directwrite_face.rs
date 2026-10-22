@@ -188,7 +188,7 @@ impl DirectWriteFace {
 
         let bounds = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }.ok()?;
         let (width, height) = ((bounds.right - bounds.left).max(0) as usize, (bounds.bottom - bounds.top).max(0) as usize);
-        if width == 0 || height == 0 {
+        if width == 0 || height == 0 || crate::text::glyph_face::exceeds_glyph_budget(width, height) {
             return Some((blank, Vec::new()));
         }
 

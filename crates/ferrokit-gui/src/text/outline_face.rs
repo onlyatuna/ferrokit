@@ -12,7 +12,7 @@
 //! `tests/test_outline_face_parity.rs`).
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics};
+use crate::text::glyph_face::{exceeds_glyph_budget, GlyphFace, GlyphMetrics};
 use ab_glyph_rasterizer::{point, Point, Rasterizer};
 use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder};
 
@@ -22,27 +22,6 @@ pub struct OutlineFace {
     face: Face<'static>,
     units_per_em: f32,
     _data: SharedFontData,
-}
-
-/// Largest glyph bitmap (in pixels) the rasterizer will allocate.
-const MAX_GLYPH_PIXELS: usize = 16 * 1024 * 1024;
-
-/// Whether a `width` x `height` glyph bitmap is too large to allocate.
-fn exceeds_glyph_budget(width: usize, height: usize) -> bool {
-    width.checked_mul(height).map_or(true, |n| n > MAX_GLYPH_PIXELS)
-}
-
-#[cfg(test)]
-mod budget_tests {
-    use super::*;
-
-    #[test]
-    fn glyph_budget_rejects_crafted_bounding_boxes_without_allocating() {
-        assert!(!exceeds_glyph_budget(64, 64));
-        assert!(!exceeds_glyph_budget(4096, 4096));
-        assert!(exceeds_glyph_budget(49_152, 49_152));
-        assert!(exceeds_glyph_budget(usize::MAX, 2));
-    }
 }
 
 impl OutlineFace {

@@ -980,14 +980,15 @@ impl<'a> Painter<'a> {
                             continue;
                         }
 
-                        let a_factor = (src_raw_a as f32 / 255.0) * self.state.opacity;
+                        let op = self.state.opacity.clamp(0.0, 1.0);
+                        let a_factor = (src_raw_a as f32 / 255.0) * op;
                         let src_a = ((a_factor * 255.0).round() as u32).min(255);
                         let inv_a = 255 - src_a;
 
                         // tiny-skia Pixmap is premultiplied RGBA
-                        let src_pr = ((src_raw_r as f32 * self.state.opacity).round() as u32).min(255);
-                        let src_pg = ((src_raw_g as f32 * self.state.opacity).round() as u32).min(255);
-                        let src_pb = ((src_raw_b as f32 * self.state.opacity).round() as u32).min(255);
+                        let src_pr = ((src_raw_r as f32 * op).round() as u32).min(255);
+                        let src_pg = ((src_raw_g as f32 * op).round() as u32).min(255);
+                        let src_pb = ((src_raw_b as f32 * op).round() as u32).min(255);
 
                         let dst_idx = ((dst_y as usize) * (pw as usize) + (dst_x as usize)) * 4;
                         let cur_r = pix_data[dst_idx] as u32;
