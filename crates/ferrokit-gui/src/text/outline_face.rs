@@ -27,6 +27,24 @@ pub struct OutlineFace {
 /// Largest glyph bitmap (in pixels) the rasterizer will allocate.
 const MAX_GLYPH_PIXELS: usize = 16 * 1024 * 1024;
 
+/// Whether a `width` x `height` glyph bitmap is too large to allocate.
+fn exceeds_glyph_budget(width: usize, height: usize) -> bool {
+    width.checked_mul(height).map_or(true, |n| n > MAX_GLYPH_PIXELS)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_budget_rejects_crafted_bounding_boxes_without_allocating() {
+        assert!(!exceeds_glyph_budget(64, 64));
+        assert!(!exceeds_glyph_budget(4096, 4096));
+        assert!(exceeds_glyph_budget(49_152, 49_152));
+        assert!(exceeds_glyph_budget(usize::MAX, 2));
+    }
+}
+
 impl OutlineFace {
     /// Parses face `face_index` of the font file `data` (reads the table directory only).
     pub fn new(data: SharedFontData, face_index: u32) -> Result<Self, String> {
@@ -155,7 +173,7 @@ impl GlyphFace for OutlineFace {
         if m.width == 0 || m.height == 0 {
             return (m, Vec::new());
         }
-        if m.width.checked_mul(m.height).map_or(true, |n| n > MAX_GLYPH_PIXELS) {
+        if exceeds_glyph_budget(m.width, m.height) {
             // Crafted bounding box: drop the glyph instead of allocating gigabytes.
             m.width = 0;
             m.height = 0;

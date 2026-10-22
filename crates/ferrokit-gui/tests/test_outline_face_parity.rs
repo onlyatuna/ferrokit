@@ -59,18 +59,3 @@ fn outline_face_matches_fontdue_on_latin_fonts() {
 fn outline_face_matches_fontdue_on_cjk_collection() {
     compare("msjh.ttc", 0);
 }
-
-#[test]
-fn outline_face_refuses_absurdly_large_glyph_bitmaps() {
-    let Ok(bytes) = std::fs::read("C:/Windows/Fonts/segoeui.ttf")
-        .or_else(|_| std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-    else {
-        return;
-    };
-    let face = OutlineFace::new(SharedFontData::from_vec(bytes), 0).expect("outline face");
-    let gid = face.glyph_index('W');
-    // A bounding box this size would need ~40 GB of coverage buffers.
-    let (m, bitmap) = face.rasterize_indexed(gid, 100_000.0);
-    assert!(bitmap.is_empty());
-    assert_eq!((m.width, m.height), (0, 0));
-}
