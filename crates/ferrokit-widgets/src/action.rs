@@ -233,7 +233,7 @@ fn defer_uncheck(prev: ActionWeak) {
         };
         let superseded = a
             .group_state()
-            .is_some_and(|g| g.current.get().is_some_and(|c| c != a.id()));
+            .is_some_and(|g| g.current.get() != Some(a.id()));
         let notice = if superseded { a.change_checked(false) } else { None };
         drop(a);
         if let Some(notice) = notice {

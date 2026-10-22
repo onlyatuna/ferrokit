@@ -127,14 +127,19 @@ fn hide_shared(submenu: &MenuRef) {
     if let Some(signal) = signal {
         signal.emit(&());
     }
+    hide_quietly(submenu);
+}
+
+/// Hides `submenu` without emitting `aboutToHide`; while it is borrowed (e.g. a slot is running
+/// on it) the hide is retried at the next flush.
+fn hide_quietly(submenu: &MenuRef) {
     match submenu.try_borrow_mut() {
         Ok(mut sub) => sub.hide_menu_emitting(false),
         Err(_) => {
-            // Borrowed (e.g. a slot is running on it): hide it once it is free.
             let weak = std::rc::Rc::downgrade(submenu);
             crate::command::defer_retry(move || {
                 if let Some(submenu) = weak.upgrade() {
-                    hide_shared(&submenu);
+                    hide_quietly(&submenu);
                 }
             });
         }

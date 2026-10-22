@@ -81,3 +81,25 @@ fn a_borrowed_submenu_is_still_hidden_when_its_parent_hides() {
     WidgetCommandQueue::flush();
     assert!(!sub.borrow().is_visible());
 }
+
+#[test]
+fn a_borrowed_submenu_emits_about_to_hide_once() {
+    use ferrokit_widgets::command::WidgetCommandQueue;
+    WidgetCommandQueue::clear();
+    let top = Menu::new_ref("top");
+    let sub = top.borrow_mut().add_menu("sub");
+    sub.borrow_mut().add_new_action("x");
+    let count = Arc::new(Mutex::new(0));
+    let c = Arc::clone(&count);
+    sub.borrow().about_to_hide.connect(move |_| *c.lock().unwrap() += 1);
+    top.borrow_mut().popup(Point::new(0, 0));
+    key(&top, VK_DOWN);
+    key(&top, VK_RIGHT);
+    {
+        let _held = sub.borrow(); // immutably borrowed: hide must wait
+        top.borrow_mut().hide_menu();
+    }
+    WidgetCommandQueue::flush();
+    assert!(!sub.borrow().is_visible());
+    assert_eq!(*count.lock().unwrap(), 1);
+}
