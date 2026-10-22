@@ -28,6 +28,29 @@ impl GradientStop {
     }
 }
 
+/// Inserts a stop keeping `stops` sorted by position; a stop at an existing position replaces
+/// its color (`QGradient::setColorAt`, qgradient.cpp).
+fn insert_stop(stops: &mut Vec<GradientStop>, position: f32, color: Color) {
+    let stop = GradientStop::new(position, color);
+    let index = stops.partition_point(|s| s.position < stop.position);
+    match stops.get_mut(index) {
+        Some(existing) if existing.position == stop.position => existing.color = stop.color,
+        _ => stops.insert(index, stop),
+    }
+}
+
+/// Converts to tiny-skia stops, scaling every stop's alpha by the painter opacity.
+fn to_skia_stops(stops: &[GradientStop], opacity: f32) -> Vec<tiny_skia::GradientStop> {
+    stops
+        .iter()
+        .map(|s| {
+            let mut color = s.color;
+            color.apply_opacity(opacity);
+            tiny_skia::GradientStop::new(s.position, color)
+        })
+        .collect()
+}
+
 /// Linear gradient definition (`QLinearGradient`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearGradient {
@@ -48,7 +71,7 @@ impl LinearGradient {
     }
 
     pub fn add_stop(&mut self, position: f32, color: Color) {
-        self.stops.push(GradientStop::new(position, color));
+        insert_stop(&mut self.stops, position, color);
     }
 
     pub fn with_stop(mut self, position: f32, color: Color) -> Self {
@@ -61,15 +84,11 @@ impl LinearGradient {
     }
 
     /// Converts to tiny_skia Shader.
-    pub fn to_shader(&self, transform: Transform) -> Option<Shader<'static>> {
+    pub fn to_shader(&self, transform: Transform, opacity: f32) -> Option<Shader<'static>> {
         if self.stops.len() < 2 {
             return None;
         }
-        let skia_stops: Vec<tiny_skia::GradientStop> = self
-            .stops
-            .iter()
-            .map(|s| tiny_skia::GradientStop::new(s.position, s.color))
-            .collect();
+        let skia_stops = to_skia_stops(&self.stops, opacity);
 
         LinearGradientBuilder::build(
             tiny_skia::Point::from_xy(self.start.x, self.start.y),
@@ -115,7 +134,7 @@ impl RadialGradient {
     }
 
     pub fn add_stop(&mut self, position: f32, color: Color) {
-        self.stops.push(GradientStop::new(position, color));
+        insert_stop(&mut self.stops, position, color);
     }
 
     pub fn with_stop(mut self, position: f32, color: Color) -> Self {
@@ -128,15 +147,11 @@ impl RadialGradient {
     }
 
     /// Converts to tiny_skia Shader.
-    pub fn to_shader(&self, transform: Transform) -> Option<Shader<'static>> {
+    pub fn to_shader(&self, transform: Transform, opacity: f32) -> Option<Shader<'static>> {
         if self.stops.len() < 2 || self.radius <= 0.0 {
             return None;
         }
-        let skia_stops: Vec<tiny_skia::GradientStop> = self
-            .stops
-            .iter()
-            .map(|s| tiny_skia::GradientStop::new(s.position, s.color))
-            .collect();
+        let skia_stops = to_skia_stops(&self.stops, opacity);
 
         let pt = tiny_skia::Point::from_xy(self.center.x, self.center.y);
         tiny_skia::RadialGradient::new(pt, pt, self.radius, skia_stops, self.spread, transform)
@@ -206,5 +221,48 @@ impl Brush {
             pixmap,
             transform: Transform::identity(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn positions(stops: &[GradientStop]) -> Vec<f32> {
+        stops.iter().map(|s| s.position).collect()
+    }
+
+    #[test]
+    fn stops_are_kept_sorted_regardless_of_call_order() {
+        let mut g = LinearGradient::new(PointF::new(0.0, 0.0), PointF::new(10.0, 0.0));
+        g.add_stop(1.0, Color::from_rgba8(255, 0, 0, 255));
+        g.add_stop(0.0, Color::from_rgba8(0, 0, 255, 255));
+        g.add_stop(0.5, Color::from_rgba8(0, 255, 0, 255));
+        assert_eq!(positions(&g.stops), vec![0.0, 0.5, 1.0]);
+        assert_eq!(g.stops[0].color, Color::from_rgba8(0, 0, 255, 255));
+        let mut r = RadialGradient::new(PointF::new(5.0, 5.0), 5.0);
+        r.add_stop(1.0, Color::WHITE);
+        r.add_stop(0.25, Color::BLACK);
+        assert_eq!(positions(&r.stops), vec![0.25, 1.0]);
+    }
+
+    #[test]
+    fn stop_at_existing_position_replaces_color() {
+        let mut g = LinearGradient::new(PointF::new(0.0, 0.0), PointF::new(10.0, 0.0));
+        g.add_stop(0.5, Color::BLACK);
+        g.add_stop(0.5, Color::WHITE);
+        assert_eq!(g.stops.len(), 1);
+        assert_eq!(g.stops[0].color, Color::WHITE);
+    }
+
+    #[test]
+    fn opacity_scales_stop_alpha() {
+        let mut c = Color::from_rgba8(255, 0, 0, 255);
+        c.apply_opacity(0.5);
+        assert!((c.alpha() - 0.5).abs() < 1e-6);
+        let mut g = LinearGradient::new(PointF::new(0.0, 0.0), PointF::new(10.0, 0.0));
+        g.add_stop(0.0, c);
+        g.add_stop(1.0, c);
+        assert!(g.to_shader(Transform::identity(), 0.5).is_some());
     }
 }

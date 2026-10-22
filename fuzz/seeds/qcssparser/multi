@@ -1,0 +1,1 @@
+QLabel, QPushButton:hover > QWidget#id.cls { border: 1px solid rgba(1,2,3,50%); padding: 2px 4px; margin: 0; }

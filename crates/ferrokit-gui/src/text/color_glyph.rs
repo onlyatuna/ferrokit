@@ -237,3 +237,110 @@ pub fn rasterize_color_glyph(
 
     Some((effective_metrics, pixmap))
 }
+
+#[cfg(test)]
+mod colr_bounds_tests {
+    use super::*;
+
+    fn be16(v: &mut Vec<u8>, x: u16) {
+        v.extend_from_slice(&x.to_be_bytes());
+    }
+    fn be32(v: &mut Vec<u8>, x: u32) {
+        v.extend_from_slice(&x.to_be_bytes());
+    }
+
+    /// COLR with one base glyph (id 5) -> one layer (glyph 9, palette entry 0).
+    fn colr_table() -> Vec<u8> {
+        let mut t = Vec::new();
+        be16(&mut t, 0); // version
+        be16(&mut t, 1); // numBaseGlyphRecords
+        be32(&mut t, 14); // baseGlyphRecordsOffset
+        be32(&mut t, 20); // layerRecordsOffset
+        be16(&mut t, 1); // numLayerRecords
+        be16(&mut t, 5); // base gid
+        be16(&mut t, 0); // firstLayerIndex
+        be16(&mut t, 1); // numLayers
+        be16(&mut t, 9); // layer gid
+        be16(&mut t, 0); // palette index
+        t
+    }
+
+    /// CPAL with one palette and one BGRA color (blue 1, green 2, red 3, alpha 4).
+    fn cpal_table() -> Vec<u8> {
+        let mut t = Vec::new();
+        be16(&mut t, 0);
+        be16(&mut t, 1); // numPaletteEntries
+        be16(&mut t, 1); // numPalettes
+        be16(&mut t, 1); // numColorRecords
+        be32(&mut t, 14); // colorRecordsArrayOffset
+        be16(&mut t, 0); // colorRecordIndices[0]
+        t.extend_from_slice(&[1, 2, 3, 4]);
+        t
+    }
+
+    /// Builds an sfnt with COLR and CPAL, letting tests lie about the declared lengths.
+    fn font(colr: &[u8], cpal: &[u8], colr_len: u32, cpal_len: u32) -> Vec<u8> {
+        let colr_off = 12 + 2 * 16;
+        let cpal_off = colr_off + colr.len();
+        let mut f = Vec::new();
+        f.extend_from_slice(&[0, 1, 0, 0]);
+        be16(&mut f, 2);
+        f.extend_from_slice(&[0; 6]);
+        for (tag, off, len) in [(b"COLR", colr_off, colr_len), (b"CPAL", cpal_off, cpal_len)] {
+            f.extend_from_slice(tag);
+            be32(&mut f, 0);
+            be32(&mut f, off as u32);
+            be32(&mut f, len);
+        }
+        f.extend_from_slice(colr);
+        f.extend_from_slice(cpal);
+        f
+    }
+
+    #[test]
+    fn well_formed_font_parses() {
+        let (c, p) = (colr_table(), cpal_table());
+        let f = font(&c, &p, c.len() as u32, p.len() as u32);
+        let layers = parse_colr_v0_layers(&f, 0, 5).unwrap();
+        assert_eq!(layers, vec![ColorLayer { glyph_id: 9, color: [3, 2, 1, 4] }]);
+        assert!(parse_colr_v0_layers(&f, 0, 6).is_none());
+    }
+
+    #[test]
+    fn declared_table_length_past_end_of_file_is_rejected() {
+        let (c, p) = (colr_table(), cpal_table());
+        assert!(parse_colr_v0_layers(&font(&c, &p, 10_000, p.len() as u32), 0, 5).is_none());
+        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, 10_000), 0, 5).is_none());
+        assert!(parse_colr_v0_layers(&font(&c, &p, u32::MAX, p.len() as u32), 0, 5).is_none());
+    }
+
+    #[test]
+    fn tables_shorter_than_their_headers_are_rejected() {
+        let (c, p) = (colr_table(), cpal_table());
+        assert!(parse_colr_v0_layers(&font(&c, &p, 13, p.len() as u32), 0, 5).is_none());
+        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, 11), 0, 5).is_none());
+        assert!(parse_colr_v0_layers(&font(&c, &p, 0, 0), 0, 5).is_none());
+    }
+
+    #[test]
+    fn record_offsets_past_the_table_are_rejected() {
+        let p = cpal_table();
+        let mut c = colr_table();
+        c[4..8].copy_from_slice(&1000u32.to_be_bytes()); // base record offset
+        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+        let mut c = colr_table();
+        c[8..12].copy_from_slice(&1000u32.to_be_bytes()); // layer record offset
+        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+    }
+
+    #[test]
+    fn truncated_directory_and_bad_ttc_index_are_rejected() {
+        let (c, p) = (colr_table(), cpal_table());
+        let f = font(&c, &p, c.len() as u32, p.len() as u32);
+        assert!(parse_colr_v0_layers(&f[..30], 0, 5).is_none());
+        assert!(parse_colr_v0_layers(&f[..8], 0, 5).is_none());
+        let mut ttc = b"ttcf".to_vec();
+        ttc.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 1]);
+        assert!(parse_colr_v0_layers(&ttc, 3, 5).is_none());
+    }
+}

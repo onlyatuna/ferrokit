@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Fuzz seeds are byte-exact inputs.
+fuzz/seeds/** -text

@@ -37,6 +37,20 @@
         "SB": "pass",
         "TB": "pass"
       }
+    },
+    "lib::application::hardening_tests::focus_window_changed_slot_can_reregister_signal": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "lib::application::hardening_tests::last_window_closed_slot_can_reregister_signal": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
     }
   },
   "results": {
@@ -331,6 +345,12 @@
     "test_text_system::text_range_slicing_clamps_invalid_and_out_of_range_boundaries::SB": "pass",
     "test_text_system::text_range_slicing_clamps_invalid_and_out_of_range_boundaries::TB": "pass",
     "test_text_system::word_navigation_normalizes_malformed_unicode_positions::SB": "pass",
-    "test_text_system::word_navigation_normalizes_malformed_unicode_positions::TB": "pass"
+    "test_text_system::word_navigation_normalizes_malformed_unicode_positions::TB": "pass",
+    "lib::application::hardening_tests::focus_window_changed_slot_can_reregister_signal::SB": "unsupported",
+    "lib::application::hardening_tests::focus_window_changed_slot_can_reregister_signal::TB": "unsupported",
+    "lib::application::hardening_tests::last_window_closed_slot_can_reregister_signal::SB": "unsupported",
+    "lib::application::hardening_tests::last_window_closed_slot_can_reregister_signal::TB": "unsupported",
+    "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::SB": "panic",
+    "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::TB": "panic"
   }
 }
