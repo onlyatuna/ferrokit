@@ -360,8 +360,10 @@ impl Win32EventDispatcher {
 
     pub fn wake_up(&self) {
         if !self.wakeup_pending.swap(true, Ordering::Release) {
-            unsafe {
-                PostMessageW(self.internal_hwnd, WM_FERROKIT_WAKEUP, 0, 0);
+            // A failed post leaves no message to clear the flag, so reset it or every later
+            // wake-up would be skipped.
+            if unsafe { PostMessageW(self.internal_hwnd, WM_FERROKIT_WAKEUP, 0, 0) } == 0 {
+                self.wakeup_pending.store(false, Ordering::Release);
             }
         }
     }
@@ -404,6 +406,14 @@ impl Win32EventDispatcher {
                     if msg.message == WM_QUIT {
                         return DispatchResult::Quit(msg.wParam as i32);
                     }
+                    // The internal wake-up is handled before the native event filter, as Qt does
+                    // (qeventdispatcher_win.cpp): a filter must not swallow it and leave
+                    // `wakeup_pending` set forever.
+                    if msg.hwnd == self.internal_hwnd && msg.message == WM_FERROKIT_WAKEUP {
+                        self.wakeup_pending.store(false, Ordering::Release);
+                        awoken = true;
+                        continue;
+                    }
                     let mut native_result = 0isize;
                     if self.native_filters.filter_native(
                         "windows_generic_MSG",
@@ -419,10 +429,7 @@ impl Win32EventDispatcher {
                     }
 
                     if msg.hwnd == self.internal_hwnd {
-                        if msg.message == WM_FERROKIT_WAKEUP {
-                            self.wakeup_pending.store(false, Ordering::Release);
-                            awoken = true;
-                        } else if msg.message == WM_TIMER {
+                        if msg.message == WM_TIMER {
                             DispatchMessageW(&msg);
                         } else {
                             DefWindowProcW(msg.hwnd, msg.message, msg.wParam, msg.lParam);
@@ -570,7 +577,11 @@ impl Win32EventDispatcher {
                 remove_posted_timer_event(self.internal_hwnd, raw_id);
             }
 
-            crate::timer::send_tick(receiver, raw_id as u64);
+            // A raising slot must not skip the `in_timer_event` reset below (the direct
+            // WM_TIMER path contains it the same way).
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                crate::timer::send_tick(receiver, raw_id as u64);
+            }));
 
             if !single_shot {
                 let rearm_now_ms = post_clock();
@@ -623,10 +634,11 @@ impl Win32EventDispatcherHandle {
         if !self.alive.load(Ordering::Acquire) {
             return;
         }
-        if !self.wakeup_pending.swap(true, Ordering::Release) {
-            unsafe {
-                PostMessageW(self.internal_hwnd as HWND, WM_FERROKIT_WAKEUP, 0, 0);
-            }
+        if !self.wakeup_pending.swap(true, Ordering::Release)
+            && unsafe { PostMessageW(self.internal_hwnd as HWND, WM_FERROKIT_WAKEUP, 0, 0) } == 0
+        {
+            // See `Win32EventDispatcher::wake_up`.
+            self.wakeup_pending.store(false, Ordering::Release);
         }
     }
 }
@@ -1510,5 +1522,99 @@ mod tests {
         );
 
         drop(timer);
+    }
+
+    #[test]
+    fn test_native_filter_cannot_swallow_the_internal_wakeup() {
+        struct ConsumeAll;
+        impl NativeEventFilter for ConsumeAll {
+            fn native_event_filter(
+                &mut self,
+                _event_type: &str,
+                _msg: &NativeMessage,
+                _result: &mut isize,
+            ) -> bool {
+                true
+            }
+        }
+
+        let dispatcher = Win32EventDispatcher::new();
+        dispatcher.install_native_event_filter(Box::new(ConsumeAll));
+        dispatcher.wake_up();
+        assert!(dispatcher.wakeup_pending.load(Ordering::Acquire));
+
+        let res = dispatcher.process_events(false, None);
+        assert!(matches!(res, DispatchResult::Awoken));
+        assert!(
+            !dispatcher.wakeup_pending.load(Ordering::Acquire),
+            "the wake-up is handled before the native event filter"
+        );
+    }
+
+    #[test]
+    fn test_wakeup_pending_is_reset_when_the_post_fails() {
+        let dispatcher = Win32EventDispatcher::new();
+        let handle = dispatcher.clone_handle();
+        let stale = Win32EventDispatcherHandle {
+            // A window handle that is not valid makes PostMessageW fail.
+            internal_hwnd: 1,
+            wakeup_pending: Arc::clone(&handle.wakeup_pending),
+            alive: Arc::clone(&handle.alive),
+        };
+        stale.wake_up();
+        assert!(
+            !stale.wakeup_pending.load(Ordering::Acquire),
+            "a failed PostMessageW must not leave wakeup_pending set"
+        );
+    }
+
+    #[test]
+    fn test_panicking_pending_tick_does_not_wedge_the_timer() {
+        use crate::object::{register_owned_qobject, ObjectData, ObjectDataMut, QObject};
+        use crate::timer::{TimerRegistry, TimerType};
+
+        struct Raiser {
+            data: ObjectData,
+        }
+        impl QObject for Raiser {
+            fn object_data(&self) -> &ObjectData {
+                &self.data
+            }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+                ObjectDataMut::new(&mut self.data)
+            }
+            fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+            fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+                Some(self)
+            }
+            fn timer_event(&mut self, _timer_id: u64) {
+                panic!("timer slot failure (expected by the test)");
+            }
+        }
+
+        let el = crate::event_loop::EventLoop::new();
+        let data = ObjectData::new(ObjectId::next());
+        let object_id = data.id();
+        // SAFETY: the owner stays on this thread and nothing touches the object while a callback
+        // of it runs.
+        let owner = unsafe { register_owned_qobject(Raiser { data }) };
+        let mut registry = TimerRegistry::new();
+        let id = registry.register(object_id, 1_000_000, TimerType::Precise, false);
+        let deadline = registry.get(id).unwrap().next_fire_ms;
+        let registry = Mutex::new(registry);
+
+        PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(id.0));
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            el.dispatcher()
+                .send_timer_events_at(&registry, deadline, deadline)
+        }));
+        assert!(result.is_ok(), "the panic escaped from send_timer_events_at");
+        assert!(
+            !registry.lock().unwrap().get(id).unwrap().in_timer_event,
+            "a raising slot must not leave in_timer_event set"
+        );
+        drop(owner);
     }
 }
