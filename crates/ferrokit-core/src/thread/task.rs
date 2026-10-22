@@ -143,7 +143,8 @@ impl<T> TaskShared<T> {
             std::mem::take(&mut *w)
         };
         for waker in wakers {
-            waker.wake();
+            // One panicking waker must not leave the remaining ones unwoken.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()));
         }
     }
 }

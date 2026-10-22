@@ -207,7 +207,9 @@ impl ThreadPool {
                 };
 
                 if let Some(job) = job {
-                    job.run();
+                    // A panicking waker/completion must not skip the accounting below,
+                    // or `wait_for_done` would hang; the worker stays alive.
+                    let _ = catch_unwind(std::panic::AssertUnwindSafe(|| job.run()));
                 }
 
                 {

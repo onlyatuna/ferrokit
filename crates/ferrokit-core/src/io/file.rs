@@ -351,16 +351,27 @@ impl SaveFile {
         if self.committed {
             return Ok(());
         }
-        let temp_path = self.temp_path.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "SaveFile is not open")
-        })?;
+        if self.temp_path.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "SaveFile is not open",
+            ));
+        }
         if let Some(mut file) = self.temp_file.take() {
-            file.flush()?;
-            if let Some(handle) = file.handle.as_ref() {
-                handle.sync_all()?;
+            let synced = file.flush().and_then(|()| match file.handle.as_ref() {
+                Some(handle) => handle.sync_all(),
+                None => Ok(()),
+            });
+            if let Err(err) = synced {
+                // The staged data may be incomplete: discard it so a retry cannot publish it.
+                drop(file);
+                self.cancel_writing();
+                self.committed = false;
+                return Err(err);
             }
             file.close();
         }
+        let temp_path = self.temp_path.as_ref().expect("checked above");
         fs::rename(temp_path, &self.final_path)?;
         self.committed = true;
         self.temp_path = None;

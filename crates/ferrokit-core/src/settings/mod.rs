@@ -258,15 +258,15 @@ impl Settings {
 
         // Write root entries first
         for (k, v) in root_entries {
-            writeln!(w, "{}={}", escape_text(&k), v)?;
+            writeln!(w, "{}={}", escape_name(&k), v)?;
         }
 
         // Write each section
         for (section, items) in sections {
             writeln!(w)?;
-            writeln!(w, "[{}]", escape_text(&section))?;
+            writeln!(w, "[{}]", escape_name(&section))?;
             for (k, v) in items {
-                writeln!(w, "{}={}", escape_text(&k), v)?;
+                writeln!(w, "{}={}", escape_name(&k), v)?;
             }
         }
 
@@ -359,8 +359,28 @@ fn escape_text(s: &str) -> String {
     out
 }
 
-/// Reverses `escape_text`; unknown escape sequences are kept literally so older files
-/// containing backslashes still load.
+/// Like `escape_text`, but also escapes leading/trailing whitespace (which the loader
+/// trims) so keys and section names keep it across a save/load round trip.
+fn escape_name(s: &str) -> String {
+    let start = s.len() - s.trim_start().len();
+    let end = s.trim_end().len();
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.char_indices() {
+        if c.is_whitespace() && (i < start || i >= end) && c != '\n' && c != '\r' {
+            match c {
+                ' ' => out.push_str("\\s"),
+                '\t' => out.push_str("\\t"),
+                other => out.push_str(&format!("\\u{{{:x}}}", other as u32)),
+            }
+        } else {
+            out.push_str(&escape_text(c.encode_utf8(&mut [0; 4])));
+        }
+    }
+    out
+}
+
+/// Reverses `escape_name`/`escape_text`; unknown escape sequences are kept literally so older
+/// files containing backslashes still load.
 fn unescape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -373,6 +393,29 @@ fn unescape_text(s: &str) -> String {
             Some('\\') => out.push('\\'),
             Some('n') => out.push('\n'),
             Some('r') => out.push('\r'),
+            Some('s') => out.push(' '),
+            Some('t') => out.push('\t'),
+            Some('u') => {
+                let rest: String = chars.clone().collect();
+                let decoded = rest
+                    .strip_prefix("u{")
+                    .and_then(|r| r.split_once('}'))
+                    .and_then(|(hex, _)| Some((hex.len(), char::from_u32(u32::from_str_radix(hex, 16).ok()?)?)));
+                match decoded {
+                    Some((hex_len, ch)) => {
+                        out.push(ch);
+                        // Skip `u{`, the hex digits and `}` (all ASCII).
+                        for _ in 0..hex_len + 3 {
+                            chars.next();
+                        }
+                        continue;
+                    }
+                    None => {
+                        out.push('\\');
+                        continue;
+                    }
+                }
+            }
             Some(e @ ('=' | ';' | '#' | '[' | ']')) => out.push(e),
             _ => {
                 out.push('\\');

@@ -188,9 +188,15 @@ impl LockFile {
             Err(_) => {
                 // A crashed reclaimer may have left the guard behind; drop it once its
                 // owner process is gone (same PID rule as the lock itself).
-                let owner_dead = LockFile::new(&guard)
-                    .get_lock_info()
-                    .is_some_and(|(pid, _)| !is_process_alive(pid));
+                let owner_dead = match LockFile::new(&guard).get_lock_info() {
+                    Some((pid, _)) => !is_process_alive(pid),
+                    // Crashed before writing its PID: stale once older than stale_lock_time.
+                    None => fs::metadata(&guard)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age >= self.stale_lock_time),
+                };
                 if owner_dead {
                     let _ = fs::remove_file(&guard);
                 }
