@@ -7,7 +7,10 @@ time, and on timeout the tail of its output (libtest names the tests that have b
 over 60 seconds). Diagnostic only; the exit code is 1 if any target failed or timed out. Doc tests
 are not included (`cargo test --doc`).
 
-Usage (from the repository root): python tools/run_test_binaries.py [--timeout SECONDS] [--jobs N]
+Usage (from the repository root):
+    python tools/run_test_binaries.py [--timeout SECONDS] [--jobs N] [--package NAME]... [--test-threads N]
+
+`--package` (repeatable) runs only those packages' targets; `--test-threads` is passed to libtest.
 
 `--jobs` is cargo's build parallelism (default 1); tests always run one target at a time.
 """
@@ -23,7 +26,7 @@ import time
 KIND_FLAGS = {"lib": "--lib", "test": "--test", "bin": "--bin", "example": "--example", "bench": "--bench"}
 
 
-def parse_test_targets(lines, jobs):
+def parse_test_targets(lines, jobs, packages=None, test_threads=None):
     """Map `cargo test --no-run --message-format=json` lines to (name, command) pairs."""
     found = []
     for line in lines:
@@ -40,20 +43,24 @@ def parse_test_targets(lines, jobs):
         if kind in ("lib", "rlib", "proc-macro", "cdylib", "dylib", "staticlib"):
             flag = "--lib"
         package = os.path.basename(os.path.dirname(msg["manifest_path"]))
+        if packages and package not in packages:
+            continue
         cmd = ["cargo", "test", "--locked", "-j", jobs, "-p", package, flag]
         if flag != "--lib":
             cmd.append(msg["target"]["name"])
+        if test_threads:
+            cmd += ["--", "--test-threads", test_threads]
         found.append(("{} {}".format(package, msg["target"]["name"]), cmd))
     return found
 
 
-def test_targets(jobs):
+def test_targets(jobs, packages=None, test_threads=None):
     out = subprocess.run(
         ["cargo", "test", "--locked", "-j", jobs, "--workspace", "--no-run", "--message-format=json"],
         stdout=subprocess.PIPE,
         check=True,
     ).stdout.decode("utf-8", "replace")
-    return parse_test_targets(out.splitlines(), jobs)
+    return parse_test_targets(out.splitlines(), jobs, packages, test_threads)
 
 
 def kill_tree(proc):
@@ -67,10 +74,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeout", type=float, default=120.0, help="seconds per test target")
     parser.add_argument("--jobs", default="1", help="cargo build jobs (-j)")
+    parser.add_argument("--package", action="append", help="only run this package's targets (repeatable)")
+    parser.add_argument("--test-threads", help="libtest --test-threads value")
     args = parser.parse_args()
 
     results = []
-    targets = test_targets(args.jobs)
+    targets = test_targets(args.jobs, args.package, args.test_threads)
     if not targets:
         print("error: no test targets found; refusing to report success", file=sys.stderr)
         return 1
