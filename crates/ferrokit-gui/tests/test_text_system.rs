@@ -17,7 +17,8 @@ fn test_cursor_advances_by_document_growth_for_combining_marks() {
 
 #[test]
 fn test_markdown_deeply_nested_links_do_not_overflow_the_stack() {
-    let n = 20_000;
+    // Miri interprets the quadratic rescans far slower; the depth cap is exercised either way.
+    let n = if cfg!(miri) { 200 } else { 20_000 };
     let md = format!("{}a{}", "[".repeat(n), "](u)".repeat(n));
     let mut doc = TextDocument::new();
     doc.set_markdown(&md);
