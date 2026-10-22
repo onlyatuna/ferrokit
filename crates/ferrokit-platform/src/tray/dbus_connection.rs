@@ -1398,7 +1398,7 @@ mod tests {
         let sig = DbusMessage::signal("/a", "org.test", "First", 10);
         bus.push_to_client(&sig.to_bytes());
         bus.close_after_queued();
-        assert!(conn.hello().is_err());
+        assert!(conn.wait_for_reply(9999).is_err());
         let got = conn.read_incoming().unwrap();
         assert_eq!(got, vec![DbusMessage::from_bytes(&sig.to_bytes()).unwrap()]);
         assert!(conn.read_incoming().is_err());
