@@ -57,7 +57,10 @@ impl ImageReader {
 
     fn read_png(bytes: &[u8]) -> Result<Image, String> {
         let cursor = Cursor::new(bytes);
-        let decoder = png::Decoder::new(cursor);
+        let mut decoder = png::Decoder::new(cursor);
+        // Expand palettes, sub-byte depths and tRNS, and reduce 16-bit samples to 8, so the
+        // frame is always Gray/GrayAlpha/Rgb/Rgba at 8 bits (as Qt's PNG plugin decodes).
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder
             .read_info()
             .map_err(|e| format!("PNG read_info error: {e}"))?;
@@ -68,52 +71,34 @@ impl ImageReader {
 
         let width = info.width;
         let height = info.height;
+        let channels = match info.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Grayscale => 1,
+            other => return Err(format!("Unsupported PNG color type: {other:?}")),
+        };
+        if info.bit_depth != png::BitDepth::Eight {
+            return Err(format!("Unsupported PNG bit depth: {:?}", info.bit_depth));
+        }
 
         let mut image = Image::new(width, height, ImageFormat::Rgba8888);
-        let total_pixels = (width * height) as usize;
-
-        match info.color_type {
-            png::ColorType::Rgba => {
-                let bytes_to_copy = total_pixels * 4;
-                if buf.len() >= bytes_to_copy {
-                    for y in 0..height {
-                        let src_start = (y as usize) * (width as usize) * 4;
-                        let src_end = src_start + (width as usize) * 4;
-                        if let Some(dest_line) = image.scan_line_mut(y) {
-                            dest_line[0..(width as usize) * 4]
-                                .copy_from_slice(&buf[src_start..src_end]);
-                        }
-                    }
-                }
+        let row_bytes = width as usize * channels;
+        for y in 0..height {
+            let start = y as usize * info.line_size;
+            let row = buf
+                .get(start..start + row_bytes)
+                .ok_or("PNG frame shorter than its header declares")?;
+            for x in 0..width {
+                let p = &row[x as usize * channels..][..channels];
+                let color = match channels {
+                    4 => Color::from_rgba8(p[0], p[1], p[2], p[3]),
+                    3 => Color::from_rgba8(p[0], p[1], p[2], 255),
+                    2 => Color::from_rgba8(p[0], p[0], p[0], p[1]),
+                    _ => Color::from_rgba8(p[0], p[0], p[0], 255),
+                };
+                image.set_pixel_color(x, y, color);
             }
-            png::ColorType::Rgb => {
-                for y in 0..height {
-                    for x in 0..width {
-                        let src_off = ((y * width + x) as usize) * 3;
-                        if src_off + 2 < buf.len() {
-                            let color = Color::from_rgba8(
-                                buf[src_off],
-                                buf[src_off + 1],
-                                buf[src_off + 2],
-                                255,
-                            );
-                            image.set_pixel_color(x, y, color);
-                        }
-                    }
-                }
-            }
-            png::ColorType::Grayscale => {
-                for y in 0..height {
-                    for x in 0..width {
-                        let src_off = (y * width + x) as usize;
-                        if src_off < buf.len() {
-                            let v = buf[src_off];
-                            image.set_pixel_color(x, y, Color::from_rgba8(v, v, v, 255));
-                        }
-                    }
-                }
-            }
-            _ => return Err(format!("Unsupported PNG color type: {:?}", info.color_type)),
         }
 
         Ok(image)
@@ -149,6 +134,16 @@ impl ImageReader {
         let abs_height = height.unsigned_abs();
         let abs_width = width as u32;
 
+        let bytes_per_pixel: u64 = match bpp {
+            24 => 3,
+            32 => 4,
+            _ => return Err(format!("Unsupported BMP bits per pixel: {bpp}")),
+        };
+        let row_bytes = (abs_width as u64 * bytes_per_pixel).div_ceil(4) * 4;
+        let needed = row_bytes * abs_height as u64;
+        if (pixel_offset as u64).saturating_add(needed) > bytes.len() as u64 {
+            return Err("BMP pixel data shorter than its header declares".to_string());
+        }
         let mut image = Image::new(abs_width, abs_height, ImageFormat::Rgba8888);
 
         if bpp == 24 {
@@ -221,29 +216,37 @@ impl ImageReader {
             .ok_or("Missing PPM max_val")?
             .parse()
             .map_err(|e| format!("{e}"))?;
+        if !(1..=65535).contains(&max_val) {
+            return Err("PPM max value must be in 1..=65535".to_string());
+        }
 
+        // Each sample needs at least two bytes ("0 "), so the header cannot promise more
+        // pixels than the text can hold; checked before allocating.
+        let samples = (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|p| p.checked_mul(3))
+            .ok_or("PPM dimensions overflow")?;
+        if samples.checked_mul(2).is_none_or(|n| n > bytes.len() as u64 + 1) {
+            return Err("PPM data shorter than its header declares".to_string());
+        }
         let mut image = Image::new(width, height, ImageFormat::Rgba8888);
+        let max = max_val as u64;
+        let mut sample = |name: &str| -> Result<u8, String> {
+            let v: u64 = tokens
+                .next()
+                .ok_or_else(|| format!("Missing {name}"))?
+                .parse()
+                .map_err(|e| format!("{e}"))?;
+            if v > max {
+                return Err(format!("PPM {name} sample {v} exceeds max value {max}"));
+            }
+            Ok((v * 255 / max) as u8)
+        };
         for y in 0..height {
             for x in 0..width {
-                let r: u32 = tokens
-                    .next()
-                    .ok_or("Missing red")?
-                    .parse()
-                    .map_err(|e| format!("{e}"))?;
-                let g: u32 = tokens
-                    .next()
-                    .ok_or("Missing green")?
-                    .parse()
-                    .map_err(|e| format!("{e}"))?;
-                let b: u32 = tokens
-                    .next()
-                    .ok_or("Missing blue")?
-                    .parse()
-                    .map_err(|e| format!("{e}"))?;
-
-                let r_norm = (r * 255 / max_val) as u8;
-                let g_norm = (g * 255 / max_val) as u8;
-                let b_norm = (b * 255 / max_val) as u8;
+                let r_norm = sample("red")?;
+                let g_norm = sample("green")?;
+                let b_norm = sample("blue")?;
                 image.set_pixel_color(x, y, Color::from_rgba8(r_norm, g_norm, b_norm, 255));
             }
         }
@@ -367,5 +370,114 @@ impl ImageWriter {
         }
 
         Ok(out.into_bytes())
+    }
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    fn encode(
+        w: u32,
+        h: u32,
+        color: png::ColorType,
+        depth: png::BitDepth,
+        palette: Option<Vec<u8>>,
+        trns: Option<Vec<u8>>,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(color);
+            enc.set_depth(depth);
+            if let Some(p) = palette {
+                enc.set_palette(p);
+            }
+            if let Some(t) = trns {
+                enc.set_trns(t);
+            }
+            let mut wr = enc.write_header().unwrap();
+            wr.write_image_data(data).unwrap();
+        }
+        out
+    }
+
+    fn rgba(img: &Image, x: u32, y: u32) -> [u8; 4] {
+        let u = img.pixel_color(x, y).unwrap().to_color_u8();
+        [u.red(), u.green(), u.blue(), u.alpha()]
+    }
+
+    #[test]
+    fn png_16_bit_rgb_keeps_high_bytes() {
+        // 2x1: (0x1234, 0x5678, 0x9ABC) and (0xFFFF, 0, 0x8000).
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xFF, 0xFF, 0, 0, 0x80, 0];
+        let png = encode(2, 1, png::ColorType::Rgb, png::BitDepth::Sixteen, None, None, &data);
+        let img = ImageReader::read_from_memory(&png).unwrap();
+        assert_eq!((img.width(), img.height()), (2, 1));
+        assert_eq!(rgba(&img, 0, 0), [0x12, 0x56, 0x9A, 255]);
+        assert_eq!(rgba(&img, 1, 0), [255, 0, 0x80, 255]);
+    }
+
+    #[test]
+    fn png_2_bit_gray_is_scaled_to_8_bit() {
+        // One row of four pixels: values 0,1,2,3 packed MSB first.
+        let png = encode(4, 1, png::ColorType::Grayscale, png::BitDepth::Two, None, None, &[0b00_01_10_11]);
+        let img = ImageReader::read_from_memory(&png).unwrap();
+        let got: Vec<u8> = (0..4).map(|x| rgba(&img, x, 0)[0]).collect();
+        assert_eq!(got, vec![0, 85, 170, 255]);
+    }
+
+    #[test]
+    fn png_indexed_with_transparency_decodes() {
+        let pal = vec![255, 0, 0, 0, 255, 0];
+        let png = encode(2, 1, png::ColorType::Indexed, png::BitDepth::Eight, Some(pal), Some(vec![128]), &[0, 1]);
+        let img = ImageReader::read_from_memory(&png).unwrap();
+        assert_eq!(rgba(&img, 0, 0)[..3], [255, 0, 0]);
+        assert!((rgba(&img, 0, 0)[3] as i32 - 128).abs() <= 1);
+        assert_eq!(rgba(&img, 1, 0), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn png_gray_alpha_decodes() {
+        let png = encode(1, 1, png::ColorType::GrayscaleAlpha, png::BitDepth::Eight, None, None, &[100, 200]);
+        let img = ImageReader::read_from_memory(&png).unwrap();
+        let p = rgba(&img, 0, 0);
+        assert_eq!(p[..3], [100, 100, 100]);
+        assert!((p[3] as i32 - 200).abs() <= 1);
+    }
+
+    #[test]
+    fn ppm_rejects_zero_and_oversized_max_value() {
+        let e = ImageReader::read_from_memory(b"P3\n1 1 0 0 0 0").unwrap_err();
+        assert!(e.contains("max value"), "{e}");
+        let e = ImageReader::read_from_memory(b"P3\n1 1 70000 0 0 0").unwrap_err();
+        assert!(e.contains("max value"), "{e}");
+    }
+
+    #[test]
+    fn ppm_rejects_samples_above_max_and_scales_others() {
+        let e = ImageReader::read_from_memory(b"P3\n1 1 100 0 101 0").unwrap_err();
+        assert!(e.contains("exceeds"), "{e}");
+        let img = ImageReader::read_from_memory(b"P3\n1 1 100 100 50 0").unwrap();
+        assert_eq!(rgba(&img, 0, 0), [255, 127, 0, 255]);
+    }
+
+    #[test]
+    fn ppm_huge_header_does_not_allocate() {
+        let e = ImageReader::read_from_memory(b"P3\n4000000000 4000000000 255 0 0 0").unwrap_err();
+        assert!(e.contains("shorter") || e.contains("overflow"), "{e}");
+    }
+
+    #[test]
+    fn bmp_huge_header_does_not_allocate() {
+        let mut bmp = vec![0u8; 54];
+        bmp[0..2].copy_from_slice(b"BM");
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&i32::MAX.to_le_bytes());
+        bmp[22..26].copy_from_slice(&i32::MAX.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        assert!(ImageReader::read_from_memory(&bmp).is_err());
     }
 }

@@ -1090,7 +1090,7 @@ impl Widget for KeySequenceEdit {
             let r = self.clear_button_rect();
             let cx = r.x as f32 + r.width as f32 / 2.0;
             let cy = r.y as f32 + r.height as f32 / 2.0;
-            painter.set_pen(Pen::new(self.palette.color(group, ColorRole::Dark), 1.5));
+            painter.set_pen(Pen::new(self.palette.color(group, ColorRole::Dark), 1.5).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
             painter.draw_line(
                 PointF::new(cx - 4.0, cy - 4.0),
                 PointF::new(cx + 4.0, cy + 4.0),
