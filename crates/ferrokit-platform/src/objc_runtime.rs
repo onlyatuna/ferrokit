@@ -394,6 +394,10 @@ pub struct MockObjectData {
     pub target: Id,
     /// `-[NSControl action]` / `-[NSMenuItem action]`, set by `setAction:`.
     pub action: Sel,
+    /// Pixel bytes of an `NSBitmapImageRep`, set by `ObjcMsg::send_bitmap_rep_init`.
+    pub pixels: Vec<u8>,
+    /// Owners of the object; `alloc` starts at one, containers add one per held child.
+    pub retain_count: usize,
 }
 
 // SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
@@ -425,6 +429,8 @@ impl Default for MockObjectData {
             blending_mode: 0,
             target: Id::NIL,
             action: Sel::NIL,
+            pixels: Vec::new(),
+            retain_count: 1,
         }
     }
 }
@@ -544,6 +550,30 @@ impl MockObjcRuntime {
     pub fn remove_object(&self, id: Id) {
         self.objects.lock().unwrap().remove(&(id.0 as usize));
     }
+
+    /// `-retain`: another owner holds `id`.
+    pub fn retain(&self, id: Id) {
+        self.update_object(id, |data| data.retain_count += 1);
+    }
+
+    /// `-release`: drops one owner; at zero the object is deallocated and releases what it
+    /// holds (subviews, window content view, image representations, ...).
+    pub fn release(&self, id: Id) {
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            let mut objects = self.objects.lock().unwrap();
+            let key = id.0 as usize;
+            let Some(obj) = objects.get_mut(&key) else {
+                continue;
+            };
+            obj.retain_count = obj.retain_count.saturating_sub(1);
+            if obj.retain_count == 0 {
+                if let Some(dead) = objects.remove(&key) {
+                    pending.extend(dead.children);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +643,17 @@ impl ObjcMsg {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.menu;
                 }
+            } else if sel_name == "release" {
+                runtime.release(receiver);
+                return Id::NIL;
+            } else if sel_name == "removeFromSuperview" {
+                if let Some(parent) = runtime.get_object_data(receiver).map(|d| d.parent) {
+                    runtime.update_object(parent, |p| p.children.retain(|c| *c != receiver));
+                    runtime.update_object(receiver, |d| d.parent = Id::NIL);
+                    // The superview's retain is gone.
+                    runtime.release(receiver);
+                }
+                return Id::NIL;
             }
             receiver
         }
@@ -797,8 +838,25 @@ impl ObjcMsg {
                 runtime.update_object(arg, |data| {
                     data.parent = receiver;
                 });
+                // Containers retain what they hold.
+                runtime.retain(arg);
             } else if sel_name == "removeStatusItem:" {
                 runtime.remove_object(arg);
+            } else if sel_name == "setImage:" {
+                let old = runtime
+                    .get_object_data(receiver)
+                    .map(|d| d.contents)
+                    .unwrap_or(Id::NIL);
+                runtime.update_object(receiver, |data| {
+                    data.contents = arg;
+                });
+                runtime.retain(arg);
+                runtime.release(old);
+            } else if sel_name == "addRepresentation:" {
+                runtime.update_object(receiver, |data| {
+                    data.children.push(arg);
+                });
+                runtime.retain(arg);
             }
             receiver
         }
@@ -1244,6 +1302,91 @@ impl ObjcMsg {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) -> *mut c_void =
                 msg_send_fn();
             Id(msg_send(receiver.0, sel.0, idx))
+        }
+    }
+
+    /// `[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:w pixelsHigh:h
+    /// bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+    /// bytesPerRow:w*4 bitsPerPixel:32]`, then copies `rgba` (premultiplied RGBA8, `w * h * 4`
+    /// bytes, the layout AppKit's default bitmap format expects) into its pixel buffer.
+    ///
+    /// `receiver` is the `alloc`ed (+1) `NSBitmapImageRep`; the result is that +1 object, or nil
+    /// when the size is zero, `rgba` is too short, or AppKit fails.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_bitmap_rep_init(
+        receiver: Id,
+        width: usize,
+        height: usize,
+        rgba: &[u8],
+    ) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+        let Some(len) = width.checked_mul(height).and_then(|n| n.checked_mul(4)) else {
+            return Id::NIL;
+        };
+        if len == 0 || rgba.len() < len {
+            return Id::NIL;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            MockObjcRuntime::instance().update_object(receiver, |data| {
+                data.pixels = rgba[..len].to_vec();
+                data.frame = CGRect::new(0.0, 0.0, width as f64, height as f64);
+            });
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let color_space = nsstring_from_str("NSDeviceRGBColorSpace");
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut *mut u8,
+                NSInteger,
+                NSInteger,
+                NSInteger,
+                NSInteger,
+                BOOL,
+                BOOL,
+                *mut c_void,
+                NSInteger,
+                NSInteger,
+            ) -> *mut c_void = msg_send_fn();
+            let rep = Id(msg_send(
+                receiver.0,
+                Sel::register(
+                    "initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:",
+                )
+                .0,
+                std::ptr::null_mut(),
+                width as NSInteger,
+                height as NSInteger,
+                8,
+                4,
+                YES,
+                NO,
+                color_space.0,
+                (width * 4) as NSInteger,
+                32,
+            ));
+            Self::send_0(color_space, Sel::register("release"));
+            if rep.is_nil() {
+                return Id::NIL;
+            }
+            let data = Self::send_0(rep, Sel::register("bitmapData")).0 as *mut u8;
+            if data.is_null() {
+                Self::send_0(rep, Sel::register("release"));
+                return Id::NIL;
+            }
+            // SAFETY: `bitmapData` points at `bytesPerRow * height == len` bytes owned by `rep`,
+            // and `rgba` holds at least `len` bytes (checked above); the buffers are distinct.
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len);
+            rep
         }
     }
 }

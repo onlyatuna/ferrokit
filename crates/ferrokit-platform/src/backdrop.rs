@@ -193,6 +193,8 @@ pub fn set_cocoa_window_backdrop(
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
             if let Some(effect_view) = backdrop_view.take() {
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
+                // Drop our +1 from `alloc`/`init`; the superview's retain went with the removal.
+                unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
             true
         }

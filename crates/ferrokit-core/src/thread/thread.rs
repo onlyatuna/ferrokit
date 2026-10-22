@@ -509,11 +509,19 @@ impl EventLoopThreadHandle {
         &self.sender
     }
 
-    /// Asks the event loop to exit with `code` once the events already queued have run,
-    /// matching `QThread::exit`. The code is returned by [`EventLoopThreadHandle::join`].
+    /// Ends every event loop running on the thread (including nested ones) with `code`, once
+    /// the events already queued have run, matching `QThread::exit`. The code is returned by
+    /// [`EventLoopThreadHandle::join`].
     pub fn exit(&self, code: i32) {
-        let quit_event = Event::new(EventKind::Quit { exit_code: code });
-        self.sender.post_event(ObjectId(0), quit_event);
+        // A posted `Quit` would end only the innermost loop that pumps it; the call below runs
+        // on the thread and ends all of them.
+        let end_all_loops = Box::new(move |_: &mut dyn std::any::Any| {
+            if let Some(handle) = crate::event_loop::get_thread_event_sender(ThreadId::current()) {
+                handle.exit(code);
+            }
+        });
+        self.sender
+            .post_event(ObjectId(0), Event::new(EventKind::MetaCall(end_all_loops)));
     }
 
     /// Tells the thread's event loop to quit with code 0, matching `QThread::quit`.

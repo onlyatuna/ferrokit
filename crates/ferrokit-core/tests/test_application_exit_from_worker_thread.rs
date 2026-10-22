@@ -74,3 +74,18 @@ fn exit_from_worker_thread_ends_exec_with_requested_code() {
     );
     assert_eq!(code, 7, "exit(7) from a worker thread must end exec with 7");
 }
+
+#[test]
+fn exit_from_worker_thread_emits_about_to_quit() {
+    let _watchdog = Watchdog::arm(Duration::from_secs(15));
+    let mut app = CoreApplication::new(vec!["test".to_string()]);
+    let emitted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&emitted);
+    app.about_to_quit().connect(move |_| flag.store(true, Ordering::SeqCst));
+
+    Timer::single_shot(0, || {
+        std::thread::spawn(|| CoreApplication::exit(3));
+    });
+    assert_eq!(app.exec(), 3);
+    assert!(emitted.load(Ordering::SeqCst), "aboutToQuit must be emitted for exit() from a worker");
+}
