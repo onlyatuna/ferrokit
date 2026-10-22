@@ -882,7 +882,11 @@ impl DbusConnection {
     /// several reads is returned once its last byte arrives. Also retries queued output.
     pub fn read_incoming(&mut self) -> Result<Vec<DbusMessage>, &'static str> {
         if self.closed {
-            return Err("The D-Bus connection is closed");
+            // Messages queued before the close (e.g. while waiting for a reply) still go out.
+            if self.inbox.is_empty() {
+                return Err("The D-Bus connection is closed");
+            }
+            return Ok(self.inbox.drain(..).collect());
         }
         self.flush_tx()?;
         let mut read_error = None;
@@ -1385,6 +1389,18 @@ mod tests {
         let got = conn.read_incoming().unwrap();
         assert_eq!(got, vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]);
         assert!(!conn.is_live_socket());
+        assert!(conn.read_incoming().is_err());
+    }
+
+    #[test]
+    fn messages_queued_while_waiting_for_a_reply_survive_a_close() {
+        let (mut conn, bus) = connect(":1.2");
+        let sig = DbusMessage::signal("/a", "org.test", "First", 10);
+        bus.push_to_client(&sig.to_bytes());
+        bus.close_after_queued();
+        assert!(conn.hello().is_err());
+        let got = conn.read_incoming().unwrap();
+        assert_eq!(got, vec![DbusMessage::from_bytes(&sig.to_bytes()).unwrap()]);
         assert!(conn.read_incoming().is_err());
     }
 

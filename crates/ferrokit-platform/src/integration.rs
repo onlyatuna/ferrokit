@@ -209,8 +209,8 @@ pub mod unix {
     use crate::platform_window::GenericWindow;
     use crate::theme::UnixTheme;
     use crate::tray::DbusStatusNotifierItem;
-    use crate::window_wayland::WaylandNativeWindow;
-    use crate::window_x11::X11NativeWindow;
+    use crate::window_wayland::{WaylandNativeWindow, WAYLAND_CONNECT_FAILED};
+    use crate::window_x11::{X11NativeWindow, X11_CONNECT_FAILED};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum DisplayServerKind {
@@ -268,8 +268,12 @@ pub mod unix {
         if kind == DisplayServerKind::Generic {
             return Ok(Box::new(GenericWindow::new(title, rect, flags)));
         }
-        open_native(kind, title, rect, flags)
-            .or_else(|_| Ok(Box::new(GenericWindow::new(title, rect, flags))))
+        match open_native(kind, title, rect, flags) {
+            Err(e) if e == X11_CONNECT_FAILED || e == WAYLAND_CONNECT_FAILED => {
+                Ok(Box::new(GenericWindow::new(title, rect, flags)))
+            }
+            other => other,
+        }
     }
 
     impl PlatformIntegration for UnixPlatformIntegration {
@@ -656,8 +660,20 @@ mod unreachable_display_tests {
             "t",
             Rect::new(0, 0, 100, 100),
             WindowFlags::default(),
-            |_, _, _, _| Err("Failed to connect to the X11 display"),
+            |_, _, _, _| Err(crate::window_x11::X11_CONNECT_FAILED),
         );
         assert!(win.is_ok());
+    }
+
+    #[test]
+    fn other_native_errors_propagate() {
+        let win = super::unix::open_window(
+            DisplayServerKind::X11,
+            "t",
+            Rect::new(0, 0, 100, 100),
+            WindowFlags::default(),
+            |_, _, _, _| Err("shm setup failed"),
+        );
+        assert_eq!(win.err(), Some("shm setup failed"));
     }
 }
