@@ -367,6 +367,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_right_moves_pixels_and_leaves_the_rest() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 50, 50)), 10, 0));
@@ -382,6 +383,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_down_overlapping_copies_from_the_original() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 20, 50)), 0, 3));
@@ -391,6 +393,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_up_and_left_overlapping_copies_from_the_original() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(10, 10, 40, 40)), -4, -3));
@@ -402,6 +405,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_with_negative_source_clips_to_the_buffer() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(-10, 0, 50, 50)), 20, 0));
@@ -412,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_with_source_past_right_edge_clips_to_the_buffer() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(80, 0, 50, 10)), -40, 0));
@@ -425,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_scales_logical_offsets_by_dpr() {
         let mut bs = coordinate_store(200, 200, 2.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 25, 25)), 5, 0));
@@ -435,6 +441,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_entirely_outside_is_a_no_op() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 10, 10)), 500, 0));
