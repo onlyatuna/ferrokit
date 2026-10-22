@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` lets adding the `miri` label start the Miri sweep on an open PR.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
   schedule:
     # Full Miri sweep on main every night, whatever changed.
@@ -104,18 +106,23 @@ jobs:
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'miri') }}
+          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: |
-          # Miri runs when code it can reach changed: the swept crates, their in-repo
-          # dependencies, the lockfile/toolchain, or the sweep tooling and baselines.
-          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ] \
-             || [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+          # Miri (8 shards) runs nightly, on manual dispatch, and on PRs labelled `miri`.
+          # PRs that change the sweep tooling or baselines always run it, since nothing
+          # else checks a baseline edit. Pushes to main rely on the nightly run.
+          case "$EVENT" in
+            schedule|workflow_dispatch) echo "run=true" >> "$GITHUB_OUTPUT"; exit 0;;
+            pull_request) ;;
+            *) echo "run=false" >> "$GITHUB_OUTPUT"; exit 0;;
+          esac
+          if [ "$HAS_LABEL" = true ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           changed=$(git diff --name-only "$BASE" "$HEAD")
-          echo "$changed"
-          if echo "$changed" | grep -qE '^(crates/[^/]+/(src|tests|build\.rs|Cargo\.toml)|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|\.cargo/|tools/(miri_|test_miri_))'; then
+          if echo "$changed" | grep -qE '^tools/(miri_|test_miri_)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
