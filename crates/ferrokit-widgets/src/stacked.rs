@@ -332,48 +332,61 @@ impl StackedWidget {
         }
     }
 
-    /// Appends a widget to the stack and returns its index.
-    pub fn add_widget(&mut self, widget: WidgetRef) -> usize {
-        let idx = self.layout.borrow().count();
-        self.insert_widget(idx, widget);
-        idx
+    /// Runs `f` on the stack with its borrow held only for the call.
+    fn with<R>(stack: &WidgetRef, f: impl FnOnce(&mut StackedWidget) -> R) -> R {
+        let mut guard = stack.borrow_mut();
+        let stacked = guard
+            .as_any_mut()
+            .downcast_mut::<StackedWidget>()
+            .expect("not a StackedWidget");
+        f(stacked)
     }
 
-    /// Inserts a page at `index`; see [`StackedLayout::insert_widget`].
-    pub fn insert_widget(&mut self, index: usize, widget: WidgetRef) -> usize {
-        self.base.add_child(widget.clone());
-        let changes = {
-            let mut layout = self.layout.borrow_mut();
+    /// Appends a page to the stack and returns its index.
+    pub fn add_widget(stack: &WidgetRef, widget: WidgetRef) -> usize {
+        let index = Self::with(stack, |s| s.layout.borrow().count());
+        Self::insert_widget(stack, index, widget)
+    }
+
+    /// Inserts a page at `index`; see [`StackedLayout::insert_widget`]. Show and hide events, and
+    /// `current_changed`, are sent with the stack not borrowed. Returns the page's index.
+    pub fn insert_widget(stack: &WidgetRef, index: usize, widget: WidgetRef) -> usize {
+        let (at, first, changes, signal) = Self::with(stack, |s| {
+            s.base.add_child(widget.clone());
+            let mut layout = s.layout.borrow_mut();
             let at = index.min(layout.count());
             let first = layout.count() == 0;
-            (at, first, layout.insert_state(index, widget))
-        };
-        let (at, first, changes) = changes;
-        crate::stacked::apply_visibility(changes);
+            let changes = layout.insert_state(index, widget);
+            (at, first, changes, s.current_changed.clone())
+        });
+        apply_visibility(changes);
         if first {
-            self.current_changed.emit(&at);
+            signal.emit(&at);
         }
-        self.update();
+        stack.borrow().update();
         at
     }
 
     /// Removes the page at `index`, hides it and drops it from the children; the neighbouring page
     /// becomes current when the current one was removed.
-    pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
-        let (removed, changes, current) = {
-            let mut layout = self.layout.borrow_mut();
+    pub fn remove_widget(stack: &WidgetRef, index: usize) -> Option<WidgetRef> {
+        let (removed, changes, current, signal) = Self::with(stack, |s| {
+            let mut layout = s.layout.borrow_mut();
             let was_current = index == layout.current_index();
             let (removed, changes) = layout.remove_state(index);
             let current = (was_current && layout.count() > 0).then(|| layout.current_index());
-            (removed, changes, current)
-        };
+            drop(layout);
+            if let Some(removed) = &removed {
+                s.base.remove_child(removed.borrow().id());
+            }
+            (removed, changes, current, s.current_changed.clone())
+        });
         let removed = removed?;
-        crate::stacked::apply_visibility(changes);
-        self.base.remove_child(removed.borrow().id());
+        apply_visibility(changes);
         if let Some(current) = current {
-            self.current_changed.emit(&current);
+            signal.emit(&current);
         }
-        self.update();
+        stack.borrow().update();
         Some(removed)
     }
 
@@ -382,20 +395,22 @@ impl StackedWidget {
         self.layout.borrow().current_index()
     }
 
-    /// Sets the active visible page index, emitting `current_changed`.
-    pub fn set_current_index(&mut self, index: usize) {
-        let changes = {
-            let mut layout = self.layout.borrow_mut();
-            if index != layout.current_index() {
+    /// Sets the active visible page index, emitting `current_changed`. The old page is hidden and
+    /// the new one shown with the stack not borrowed.
+    pub fn set_current_index(stack: &WidgetRef, index: usize) {
+        let (changes, signal) = Self::with(stack, |s| {
+            let mut layout = s.layout.borrow_mut();
+            let changes = if index != layout.current_index() {
                 layout.set_current_state(index)
             } else {
                 None
-            }
-        };
+            };
+            (changes, s.current_changed.clone())
+        });
         if let Some(changes) = changes {
-            crate::stacked::apply_visibility(changes);
-            self.current_changed.emit(&index);
-            self.update();
+            apply_visibility(changes);
+            signal.emit(&index);
+            stack.borrow().update();
         }
     }
 

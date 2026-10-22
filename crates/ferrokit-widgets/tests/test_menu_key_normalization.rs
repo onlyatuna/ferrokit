@@ -14,6 +14,17 @@ fn press(menu: &mut Menu, key: u32) -> bool {
     menu.event(&mut ev)
 }
 
+/// `Menu::popup` needs a shared menu (`aboutToShow` runs with it free); these tests drive an
+/// owned one, so hand it over for the popup and take it back.
+fn popped(menu: Menu, pos: Point) -> Menu {
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(menu));
+    Menu::popup(&shared, pos);
+    match std::rc::Rc::try_unwrap(shared) {
+        Ok(cell) => cell.into_inner(),
+        Err(_) => unreachable!("the popup keeps no handle to its menu"),
+    }
+}
+
 #[test]
 fn function_and_numpad_keys_do_not_match_letter_mnemonics() {
     let mut menu = Menu::new("m");
@@ -28,7 +39,7 @@ fn function_and_numpad_keys_do_not_match_letter_mnemonics() {
     menu.triggered.connect(move |_| {
         f.fetch_add(100, Ordering::SeqCst);
     });
-    menu.popup(Point::new(0, 0));
+    let mut menu = popped(menu, Point::new(0, 0));
 
     assert!(!press(&mut menu, 0x70), "F1 is not 'P'");
     assert!(!press(&mut menu, 0x61), "numpad 1 is not 'A'");
@@ -47,7 +58,7 @@ fn submenu_keys_are_normalized_once() {
     let sub = top.borrow_mut().add_menu("sub");
     let subsub = sub.borrow_mut().add_menu("subsub");
     subsub.borrow_mut().add_new_action("leaf");
-    top.borrow_mut().popup(Point::new(0, 0));
+    Menu::popup(&top, Point::new(0, 0));
     let send = |key: u32| {
         let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false });
         top.borrow_mut().event(&mut ev)

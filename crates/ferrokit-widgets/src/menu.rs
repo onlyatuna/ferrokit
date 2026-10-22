@@ -134,7 +134,7 @@ fn hide_shared(submenu: &MenuRef) {
 /// on it) the hide is retried at the next flush.
 fn hide_quietly(submenu: &MenuRef) {
     match submenu.try_borrow_mut() {
-        Ok(mut sub) => sub.hide_menu_emitting(false),
+        Ok(mut sub) => sub.hide_now(false),
         Err(_) => {
             let weak = std::rc::Rc::downgrade(submenu);
             crate::command::defer_retry(move || {
@@ -196,6 +196,9 @@ pub struct Menu {
     pub about_to_hide: Signal<()>,
     /// `set_widget_visible` already emitted the signal of the pending `set_visible`.
     announced: std::cell::Cell<bool>,
+    /// `about_to_hide` signals of hides an input handler did while this menu was borrowed; they
+    /// are emitted once the borrow is released (`Menu::dispatch`, or the next flush).
+    pending_hide: Vec<Signal<()>>,
 }
 
 pub type QMenu = Menu;
@@ -244,6 +247,7 @@ impl Menu {
             about_to_show,
             about_to_hide,
             announced: std::cell::Cell::new(false),
+            pending_hide: Vec::new(),
         }
     }
 
@@ -647,52 +651,48 @@ impl Menu {
         Rect::new(x, y, size.width, size.height)
     }
 
-    /// Shows the menu at `pos` (`QMenu::popup`).
-    pub fn popup(&mut self, pos: Point) {
-        self.popup_at(pos, None);
+    /// Shows the menu at `pos` (`QMenu::popup`). `about_to_show` is emitted with the menu not
+    /// borrowed, so a slot may fill it.
+    pub fn popup(menu: &MenuRef, pos: Point) {
+        Self::popup_at(menu, pos, None);
     }
 
     /// Shows the menu at `pos` with `at` highlighted.
-    ///
-    /// `about_to_show` is emitted while `self` is borrowed by the caller; a slot that needs the
-    /// menu (the Qt idiom of filling it from this signal) must use [`Menu::popup_at_shared`].
-    pub fn popup_at(&mut self, pos: Point, at: Option<&ActionRef>) {
-        self.about_to_show.emit(&());
-        self.popup_at_announced(pos, at);
+    pub fn popup_at(menu: &MenuRef, pos: Point, at: Option<&ActionRef>) {
+        Self::emit_unborrowed(menu, |m| m.about_to_show.clone());
+        menu.borrow_mut().popup_at_inner(pos, at);
     }
 
-    /// `popup_at` for a shared menu: `about_to_show` is emitted with the menu not borrowed.
-    pub fn popup_at_shared(menu: &MenuRef, pos: Point, at: Option<&ActionRef>) {
-        Self::emit_shared(menu, |m| m.about_to_show.clone());
-        menu.borrow_mut().popup_at_announced(pos, at);
-    }
-
-    /// `popup` for a shared menu (see [`Menu::popup_at_shared`]).
-    pub fn popup_shared(menu: &MenuRef, pos: Point) {
-        Self::popup_at_shared(menu, pos, None);
-    }
-
-    /// `exec_popup` for a shared menu: `about_to_show` is emitted with the menu not borrowed.
-    pub fn exec_popup_shared(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
-        Self::emit_shared(menu, |m| m.about_to_show.clone());
-        menu.borrow_mut().exec_popup_announced(pos)
-    }
-
-    /// `hide_menu` for a shared menu: `about_to_hide` is emitted with the menu not borrowed.
-    pub fn hide_menu_shared(menu: &MenuRef) {
+    /// Hides the menu and every open sub-menu. `about_to_hide` is emitted with the menu not
+    /// borrowed.
+    pub fn hide_menu(menu: &MenuRef) {
         let visible = menu.borrow().base.is_visible();
         if visible {
-            Self::emit_shared(menu, |m| m.about_to_hide.clone());
+            Self::emit_unborrowed(menu, |m| m.about_to_hide.clone());
         }
-        menu.borrow_mut().hide_menu_emitting(false);
+        menu.borrow_mut().hide_now(false);
     }
 
-    fn emit_shared(menu: &MenuRef, signal: impl Fn(&Menu) -> Signal<()>) {
+    /// Delivers `event` to the menu and then emits the `about_to_hide` signals its handlers
+    /// queued, with the menu not borrowed.
+    pub fn dispatch(menu: &MenuRef, event: &mut Event) -> bool {
+        let (handled, pending) = {
+            let mut m = menu.borrow_mut();
+            let handled = m.handle_event(event);
+            (handled, std::mem::take(&mut m.pending_hide))
+        };
+        for signal in pending {
+            signal.emit(&());
+        }
+        handled
+    }
+
+    fn emit_unborrowed(menu: &MenuRef, signal: impl Fn(&Menu) -> Signal<()>) {
         let signal = signal(&menu.borrow());
         signal.emit(&());
     }
 
-    fn popup_at_announced(&mut self, pos: Point, at: Option<&ActionRef>) {
+    fn popup_at_inner(&mut self, pos: Point, at: Option<&ActionRef>) {
         let geometry = self.popup_geometry(pos);
         self.show_with_geometry(geometry);
         if let Some(action) = at {
@@ -705,33 +705,49 @@ impl Menu {
     /// until it closes, and returns the triggered action.
     ///
     /// `events` may be any (possibly blocking) event source, e.g. a platform event pump.
-    pub fn exec<I>(&mut self, pos: Point, events: I) -> Option<ActionRef>
+    pub fn exec<I>(menu: &MenuRef, pos: Point, events: I) -> Option<ActionRef>
     where
         I: IntoIterator<Item = Event>,
     {
-        self.last_triggered = None;
-        self.popup(pos);
+        menu.borrow_mut().last_triggered = None;
+        Self::popup(menu, pos);
         for mut event in events {
-            self.event(&mut event);
-            if !self.base.is_visible() {
+            Self::dispatch(menu, &mut event);
+            if !menu.borrow().base.is_visible() {
                 break;
             }
         }
-        if self.base.is_visible() {
-            self.hide_menu();
+        if menu.borrow().base.is_visible() {
+            Self::hide_menu(menu);
         }
-        self.last_triggered.clone()
+        let chosen = menu.borrow().last_triggered.clone();
+        chosen
     }
+
+    /// Pops the menu up and runs it modally (`QMenu::exec`); `about_to_show`, `about_to_hide` and
+    /// the chosen action's signals are emitted with the menu not borrowed.
+    pub fn exec_popup(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
+        Self::emit_unborrowed(menu, |m| m.about_to_show.clone());
+        let (chosen, pending) = {
+            let mut m = menu.borrow_mut();
+            let chosen = m.exec_popup_inner(pos);
+            (chosen, std::mem::take(&mut m.pending_hide))
+        };
+        for signal in pending {
+            signal.emit(&());
+        }
+        // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
+        // menu is hidden, then returns it.
+        chosen.map(|(action, signals)| {
+            MenuOutcome::fire(&action, &signals);
+            action
+        })
+    }
+
     /// Pops up the menu as a top-level transparent frameless layered window and runs
     /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
     #[cfg(windows)]
-    pub fn exec_popup(&mut self, pos: Point) -> Option<ActionRef> {
-        self.about_to_show.emit(&());
-        self.exec_popup_announced(pos)
-    }
-
-    #[cfg(windows)]
-    fn exec_popup_announced(&mut self, pos: Point) -> Option<ActionRef> {
+    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
         use crate::window::Window;
         use ferrokit_platform::{platform, WindowFlags};
         use windows_sys::Win32::Foundation::HWND;
@@ -777,7 +793,7 @@ impl Menu {
         let root_origin = Point::new(x, y);
         let initial_rect = Rect::new(x, y, size.width, size.height);
         self.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
-        self.popup_at_announced(Point::new(0, 0), None);
+        self.popup_at_inner(Point::new(0, 0), None);
 
         let mut window = match Window::new(
             "",
@@ -786,7 +802,7 @@ impl Menu {
         ) {
             Ok(w) => w,
             Err(_) => {
-                self.hide_menu();
+                self.hide_now(true);
                 return None;
             }
         };
@@ -945,18 +961,13 @@ impl Menu {
             let mut discard_msg: MSG = std::mem::zeroed();
             while PeekMessageW(&mut discard_msg, std::ptr::null_mut(), WM_LBUTTONDOWN, WM_RBUTTONUP, PM_REMOVE) != 0 {}
         }
-        self.hide_menu();
+        self.hide_now(true);
         // Destroying the popup window may pump messages; the quit is re-posted after that.
         drop(window);
         if let Some(code) = quit {
             unsafe { PostQuitMessage(code) };
         }
-        // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
-        // menu is hidden, then returns it.
-        if let Some((action, signals)) = &chosen {
-            MenuOutcome::fire(action, signals);
-        }
-        chosen.map(|(action, _)| action)
+        chosen
     }
 
     /// Repaints the popup window and sizes it to the menu plus its open sub-menus.
@@ -989,34 +1000,25 @@ impl Menu {
         });
     }
     #[cfg(not(windows))]
-    pub fn exec_popup(&mut self, pos: Point) -> Option<ActionRef> {
-        self.about_to_show.emit(&());
-        self.exec_popup_announced(pos)
-    }
-
-    #[cfg(not(windows))]
-    fn exec_popup_announced(&mut self, pos: Point) -> Option<ActionRef> {
+    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
         // No modal loop without a native window system here: an earlier result is not this one.
         self.last_triggered = None;
-        self.popup_at_announced(pos, None);
-        self.last_triggered.clone()
+        self.popup_at_inner(pos, None);
+        self.last_triggered.clone().map(|a| (a, Vec::new()))
     }
 
-    /// Hides the menu and every open sub-menu.
-    pub fn hide_menu(&mut self) {
-        self.hide_menu_emitting(true);
-    }
-
-    /// `hide_menu`; `emit` is false when the caller already emitted `about_to_hide`.
-    fn hide_menu_emitting(&mut self, emit: bool) {
+    /// Hides the menu and every open sub-menu without emitting `about_to_hide`: this menu's
+    /// signal is queued in `pending_hide` when `announce` is set, for whoever releases the borrow
+    /// to emit; an open sub-menu announces itself.
+    fn hide_now(&mut self, announce: bool) {
         if let Some((_, submenu)) = self.open_submenu.take() {
             hide_shared(&submenu);
         }
         if !self.base.is_visible() {
             return;
         }
-        if emit {
-            self.about_to_hide.emit(&());
+        if announce {
+            self.pending_hide.push(self.about_to_hide.clone());
         }
         self.base.set_visible(false);
         self.active = None;
@@ -1232,7 +1234,7 @@ impl Menu {
             self.open_submenu_at(idx, true);
             return MenuOutcome::Handled;
         }
-        self.hide_menu();
+        self.hide_now(true);
         self.last_triggered = Some(action.clone());
         MenuOutcome::Activate(action, vec![self.triggered.clone()])
     }
@@ -1252,7 +1254,7 @@ impl Menu {
             MenuOutcome::NavigateRight => MenuOutcome::NavigateRight,
             MenuOutcome::Activate(action, mut signals) => {
                 self.open_submenu = None;
-                self.hide_menu();
+                self.hide_now(true);
                 self.last_triggered = Some(action.clone());
                 signals.push(self.triggered.clone());
                 MenuOutcome::Activate(action, signals)
@@ -1373,7 +1375,7 @@ impl Menu {
                 None => MenuOutcome::Handled,
             },
             keys::ESCAPE => {
-                self.hide_menu();
+                self.hide_now(true);
                 MenuOutcome::Closed
             }
             _ => self.handle_mnemonic(key, modifiers),
@@ -1492,7 +1494,7 @@ impl Menu {
             return outcome;
         }
         if !self.covers(pos) {
-            self.hide_menu();
+            self.hide_now(true);
             return MenuOutcome::Closed;
         }
         if let Some(idx) = self.index_at(pos) {
@@ -1530,6 +1532,19 @@ impl Menu {
         self.last_mouse_pos = None;
         if self.open_submenu.is_none() {
             self.set_active_index(None);
+        }
+    }
+
+    /// Posts the queued `about_to_hide` signals to the next flush, when this menu is no longer
+    /// borrowed.
+    fn announce_hide_later(&mut self) {
+        let pending = std::mem::take(&mut self.pending_hide);
+        if !pending.is_empty() {
+            crate::command::WidgetCommandQueue::post_task(move || {
+                for signal in pending {
+                    signal.emit(&());
+                }
+            });
         }
     }
 
@@ -1717,7 +1732,25 @@ impl QObject for Menu {
         ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
+    /// The event handler runs with the menu borrowed by its caller, so a hide it does is announced
+    /// at the next flush; `Menu::dispatch` announces it at once.
     fn event(&mut self, event: &mut Event) -> bool {
+        let handled = self.handle_event(event);
+        self.announce_hide_later();
+        handled
+    }
+
+    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl Menu {
+    fn handle_event(&mut self, event: &mut Event) -> bool {
         // `QWidget::changeEvent(EnabledChange)` repaints; the menu's dirty area is its own.
         if matches!(event.kind, EventKind::EnabledChange) {
             self.update();
@@ -1742,14 +1775,6 @@ impl QObject for Menu {
             _ => return false,
         };
         self.finish_top_level(outcome)
-    }
-
-    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 }
 
@@ -1816,10 +1841,10 @@ impl Widget for Menu {
     }
 
     fn set_visible(&self, visible: bool) {
+        let announced = self.announced.replace(false);
         if visible == self.base.is_visible() {
             return;
         }
-        let announced = self.announced.replace(false);
         if visible {
             if !announced {
                 self.about_to_show.emit(&());
@@ -1924,16 +1949,19 @@ impl Widget for Menu {
     fn mouse_press_event(&mut self, pos: Point, button: u32, _modifiers: u32) {
         let outcome = self.handle_mouse_press(pos, button);
         self.finish_top_level(outcome);
+        self.announce_hide_later();
     }
 
     fn mouse_release_event(&mut self, pos: Point, button: u32, _modifiers: u32) {
         let outcome = self.handle_mouse_release(pos, button);
         self.finish_top_level(outcome);
+        self.announce_hide_later();
     }
 
     fn mouse_move_event(&mut self, pos: Point) {
         let outcome = self.handle_mouse_move(pos);
         self.finish_top_level(outcome);
+        self.announce_hide_later();
     }
 
     fn leave_event(&mut self) {
@@ -1944,6 +1972,7 @@ impl Widget for Menu {
         if self.base.is_visible() {
             let outcome = self.handle_key(key, modifiers);
             self.finish_top_level(outcome);
+            self.announce_hide_later();
         }
     }
 

@@ -668,14 +668,8 @@ fn test_window_resize_through_a_stacked_widget_reuses_the_page_metric_cache() {
     page.borrow_mut().set_layout(Box::new(page_layout));
 
     let stack: WidgetRef = Rc::new(RefCell::new(Box::new(stacked::StackedWidget::new())));
-    if let Some(s) = stack
-        .borrow_mut()
-        .as_any_mut()
-        .downcast_mut::<stacked::StackedWidget>()
-    {
-        s.add_widget(Rc::clone(&page));
-        s.set_current_index(0);
-    }
+    stacked::StackedWidget::add_widget(&stack, Rc::clone(&page));
+    stacked::StackedWidget::set_current_index(&stack, 0);
     let mut root_layout = BoxLayout::vertical();
     root_layout.set_margins(ferrokit_gui::geometry::primitives::Margins::new(0, 0, 0, 0));
     root_layout.add_widget(Rc::clone(&stack));

@@ -154,10 +154,6 @@ fn stack() -> WidgetRef {
     Rc::new(RefCell::new(Box::new(StackedWidget::new())))
 }
 
-fn with_stack<R>(s: &WidgetRef, f: impl FnOnce(&mut StackedWidget) -> R) -> R {
-    f(s.borrow_mut().as_any_mut().downcast_mut::<StackedWidget>().unwrap())
-}
-
 fn count(s: &WidgetRef) -> usize {
     s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap().count()
 }
@@ -167,7 +163,7 @@ fn current(s: &WidgetRef) -> usize {
 }
 
 fn add(s: &WidgetRef, page: &WidgetRef) {
-    with_stack(s, |st| st.add_widget(page.clone()));
+    StackedWidget::add_widget(s, page.clone());
     adopt_tree(s);
 }
 
@@ -246,9 +242,9 @@ fn stacked_widget_insert_and_remove_follow_the_layout() {
         add(&s, p);
     }
     let new = probe("n", FocusPolicy::NoFocus, &log);
-    with_stack(&s, |st| st.insert_widget(0, new.clone()));
+    StackedWidget::insert_widget(&s, 0, new.clone());
     assert_eq!(current(&s), 1);
-    let removed = with_stack(&s, |st| st.remove_widget(1)).unwrap();
+    let removed = StackedWidget::remove_widget(&s, 1).unwrap();
     assert!(Rc::ptr_eq(&removed, &pages[0]));
     assert!(!removed.borrow().is_visible());
     assert_eq!(count(&s), 2);
@@ -376,10 +372,10 @@ fn about_to_show_and_hide_slots_can_borrow_the_menu_through_set_widget_visible()
     MENU.with(|m| *m.borrow_mut() = None);
 }
 
-/// `popup_at_shared` and `exec_popup_shared` emit `aboutToShow` with the menu free; the slot fills it
+/// `popup_at` and `exec_popup` emit `aboutToShow` with the menu free; the slot fills it
 /// and the popup then sizes itself with the new action.
 #[test]
-fn popup_shared_emits_about_to_show_with_the_menu_free() {
+fn popup_emits_about_to_show_with_the_menu_free() {
     let menu = Menu::new_ref("m");
     SHARED.with(|s| *s.borrow_mut() = Some(menu.clone()));
     menu.borrow().about_to_show.connect(|_| {
@@ -387,16 +383,58 @@ fn popup_shared_emits_about_to_show_with_the_menu_free() {
             s.borrow().as_ref().unwrap().borrow_mut().add_action(Action::new_ref("filled"));
         });
     });
-    Menu::popup_at_shared(&menu, Point::new(5, 5), None);
+    Menu::popup_at(&menu, Point::new(5, 5), None);
     assert!(menu.borrow().is_visible());
     assert_eq!(menu.borrow().actions().len(), 1);
-    Menu::hide_menu_shared(&menu);
+    Menu::hide_menu(&menu);
     assert!(!menu.borrow().is_visible());
     // Windows' `exec_popup` runs a native modal loop.
     #[cfg(not(windows))]
     {
-        assert!(Menu::exec_popup_shared(&menu, Point::new(5, 5)).is_none());
+        assert!(Menu::exec_popup(&menu, Point::new(5, 5)).is_none());
         assert_eq!(menu.borrow().actions().len(), 2);
     }
+    SHARED.with(|s| *s.borrow_mut() = None);
+}
+
+fn click_outside() -> Event {
+    Event::new_spontaneous(EventKind::MouseButtonPress { x: 900, y: 900, button: 1 })
+}
+
+fn menu_with_hide_slot() -> (MenuRef, Arc<Mutex<u32>>) {
+    let menu = Menu::new_ref("m");
+    menu.borrow_mut().add_new_action("item");
+    SHARED.with(|s| *s.borrow_mut() = Some(menu.clone()));
+    let hidden = Arc::new(Mutex::new(0));
+    let h = Arc::clone(&hidden);
+    menu.borrow().about_to_hide.connect(move |_| {
+        // Borrowing the menu mutably panics when the emitter still holds it.
+        SHARED.with(|s| drop(s.borrow().as_ref().unwrap().borrow_mut()));
+        *h.lock().unwrap() += 1;
+    });
+    Menu::popup(&menu, Point::new(5, 5));
+    (menu, hidden)
+}
+
+/// A click outside dismisses the menu through `Menu::dispatch`, which emits `about_to_hide` with
+/// the menu not borrowed.
+#[test]
+fn a_click_outside_emits_about_to_hide_with_the_menu_free() {
+    let (menu, hidden) = menu_with_hide_slot();
+    Menu::dispatch(&menu, &mut click_outside());
+    assert!(!menu.borrow().is_visible());
+    assert_eq!(*hidden.lock().unwrap(), 1);
+    SHARED.with(|s| *s.borrow_mut() = None);
+}
+
+/// The same click delivered by the event dispatcher, which holds the menu borrowed while
+/// `event` runs: the signal is emitted at the next flush, once the borrow is gone.
+#[test]
+fn a_click_outside_through_event_emits_about_to_hide_after_the_borrow() {
+    let (menu, hidden) = menu_with_hide_slot();
+    menu.borrow_mut().event(&mut click_outside());
+    assert!(!menu.borrow().is_visible());
+    WidgetCommandQueue::flush();
+    assert_eq!(*hidden.lock().unwrap(), 1);
     SHARED.with(|s| *s.borrow_mut() = None);
 }

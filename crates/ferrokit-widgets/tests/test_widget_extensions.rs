@@ -7,27 +7,47 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// `Menu::popup` needs a shared menu (`aboutToShow` runs with it free); these tests drive an
+/// owned one, so hand it over for the popup and take it back.
+fn popped(menu: ferrokit_widgets::Menu, pos: ferrokit_gui::geometry::primitives::Point) -> ferrokit_widgets::Menu {
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(menu));
+    ferrokit_widgets::Menu::popup(&shared, pos);
+    match std::rc::Rc::try_unwrap(shared) {
+        Ok(cell) => cell.into_inner(),
+        Err(_) => unreachable!("the popup keeps no handle to its menu"),
+    }
+}
+
 #[test]
 fn test_stacked_widget_page_switching() {
-    let mut stack = StackedWidget::new();
+    let stack: WidgetRef = Rc::new(RefCell::new(Box::new(StackedWidget::new())));
     let page0: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
     let page1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
+    let read = |f: &dyn Fn(&StackedWidget) -> usize| {
+        f(stack.borrow().as_any().downcast_ref::<StackedWidget>().unwrap())
+    };
 
-    let idx0 = stack.add_widget(page0.clone());
-    let idx1 = stack.add_widget(page1.clone());
+    let idx0 = StackedWidget::add_widget(&stack, page0.clone());
+    let idx1 = StackedWidget::add_widget(&stack, page1.clone());
     assert_eq!(idx0, 0);
     assert_eq!(idx1, 1);
-    assert_eq!(stack.count(), 2);
-    assert_eq!(stack.current_index(), 0);
+    assert_eq!(read(&|s| s.count()), 2);
+    assert_eq!(read(&|s| s.current_index()), 0);
 
     let changed = Arc::new(AtomicUsize::new(999));
     let changed_clone = Arc::clone(&changed);
-    stack.current_changed.connect(move |idx: &usize| {
-        changed_clone.store(*idx, Ordering::SeqCst);
-    });
+    stack
+        .borrow()
+        .as_any()
+        .downcast_ref::<StackedWidget>()
+        .unwrap()
+        .current_changed
+        .connect(move |idx: &usize| {
+            changed_clone.store(*idx, Ordering::SeqCst);
+        });
 
-    stack.set_current_index(1);
-    assert_eq!(stack.current_index(), 1);
+    StackedWidget::set_current_index(&stack, 1);
+    assert_eq!(read(&|s| s.current_index()), 1);
     assert_eq!(changed.load(Ordering::SeqCst), 1);
 }
 
@@ -99,7 +119,7 @@ fn test_menu_high_dpi_hit_testing() {
     menu.add_separator();
     menu.add_action(act_exit.clone());
 
-    menu.popup(Point::new(0, 0));
+    let mut menu = popped(menu, Point::new(0, 0));
 
     let exit_geo = menu.action_geometry(&act_exit).expect("Exit action geometry exists");
     let target_logical_pt = Point::new(exit_geo.center().x, exit_geo.center().y);
@@ -153,7 +173,7 @@ fn test_submenu_hover_and_signature_propagation() {
     sub_ref.borrow_mut().add_action(act_stack.clone());
 
     let act_layout = root.actions()[0].clone();
-    root.popup(Point::new(0, 0));
+    let mut root = popped(root, Point::new(0, 0));
 
     // Move to root item 0 (Layout) -> opens submenu
     let layout_geo = root.action_geometry(&act_layout).expect("Layout action geometry");
@@ -223,7 +243,7 @@ fn opacity_menu() -> (
     let autostart = Action::new_ref("Autostart");
     root.add_action(interval.clone());
     root.add_action(autostart.clone());
-    root.popup(Point::new(0, 0));
+    let mut root = popped(root, Point::new(0, 0));
     (root, interval, autostart)
 }
 

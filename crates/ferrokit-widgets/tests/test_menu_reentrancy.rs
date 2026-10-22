@@ -33,7 +33,7 @@ fn a_submenu_can_be_filled_from_its_about_to_show_slot() {
         });
     });
 
-    top.borrow_mut().popup(Point::new(10, 10));
+    Menu::popup(&top, Point::new(10, 10));
     key(&top, VK_DOWN);
     key(&top, VK_RIGHT);
 
@@ -55,10 +55,10 @@ fn a_submenu_about_to_hide_slot_can_read_the_submenu() {
         });
     });
 
-    top.borrow_mut().popup(Point::new(10, 10));
+    Menu::popup(&top, Point::new(10, 10));
     key(&top, VK_DOWN);
     key(&top, VK_RIGHT);
-    top.borrow_mut().hide_menu();
+    Menu::hide_menu(&top);
 
     assert_eq!(*titles.lock().unwrap(), ["sub"]);
 }
@@ -70,13 +70,13 @@ fn a_borrowed_submenu_is_still_hidden_when_its_parent_hides() {
     let top = Menu::new_ref("top");
     let sub = top.borrow_mut().add_menu("sub");
     sub.borrow_mut().add_new_action("x");
-    top.borrow_mut().popup(Point::new(0, 0));
+    Menu::popup(&top, Point::new(0, 0));
     key(&top, VK_DOWN);
     key(&top, VK_RIGHT);
     assert!(sub.borrow().is_visible());
     {
         let _held = sub.borrow_mut();
-        top.borrow_mut().hide_menu();
+        Menu::hide_menu(&top);
     }
     WidgetCommandQueue::flush();
     assert!(!sub.borrow().is_visible());
@@ -92,12 +92,12 @@ fn a_borrowed_submenu_emits_about_to_hide_once() {
     let count = Arc::new(Mutex::new(0));
     let c = Arc::clone(&count);
     sub.borrow().about_to_hide.connect(move |_| *c.lock().unwrap() += 1);
-    top.borrow_mut().popup(Point::new(0, 0));
+    Menu::popup(&top, Point::new(0, 0));
     key(&top, VK_DOWN);
     key(&top, VK_RIGHT);
     {
         let _held = sub.borrow(); // immutably borrowed: hide must wait
-        top.borrow_mut().hide_menu();
+        Menu::hide_menu(&top);
     }
     WidgetCommandQueue::flush();
     assert!(!sub.borrow().is_visible());
