@@ -443,12 +443,22 @@ impl Variant {
     /// Converts to a signed 64-bit integer.
     ///
     /// A `U64` above `i64::MAX` yields `None` instead of wrapping to a negative
-    /// number (Qt's `toLongLong` wraps; this deliberately differs).
+    /// number (Qt's `toLongLong` wraps; this deliberately differs). An `F64` is rounded half
+    /// away from zero like Qt's `qRound64`; NaN, infinities and values outside the `i64`
+    /// range yield `None`.
     pub fn to_int(&self) -> Option<i64> {
         match self {
             Variant::I64(i) => Some(*i),
             Variant::U64(u) => i64::try_from(*u).ok(),
-            Variant::F64(f) => Some(*f as i64),
+            Variant::F64(f) => {
+                let r = f.round();
+                // -2^63 and 2^63 are exactly representable; NaN fails both comparisons.
+                if r >= -9_223_372_036_854_775_808.0 && r < 9_223_372_036_854_775_808.0 {
+                    Some(r as i64)
+                } else {
+                    None
+                }
+            }
             Variant::Bool(b) => Some(if *b { 1 } else { 0 }),
             Variant::String(s) => s.trim().parse::<i64>().ok(),
             _ => None,
@@ -461,11 +471,22 @@ impl Variant {
     }
 
     /// Converts to an unsigned 64-bit integer.
+    ///
+    /// An `F64` is rounded half away from zero like Qt's `qRound64`; a negative result, NaN,
+    /// infinities and values above the `u64` range yield `None`.
     pub fn to_uint(&self) -> Option<u64> {
         match self {
             Variant::U64(u) => Some(*u),
             Variant::I64(i) if *i >= 0 => Some(*i as u64),
-            Variant::F64(f) if *f >= 0.0 => Some(*f as u64),
+            Variant::F64(f) => {
+                let r = f.round();
+                // 2^64 is exactly representable; NaN fails both comparisons.
+                if r >= 0.0 && r < 18_446_744_073_709_551_616.0 {
+                    Some(r as u64)
+                } else {
+                    None
+                }
+            }
             Variant::Bool(b) => Some(if *b { 1 } else { 0 }),
             Variant::String(s) => s.trim().parse::<u64>().ok(),
             _ => None,

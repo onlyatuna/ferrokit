@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::Write;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ferrokit_core::animation::{
     AnimationDirection, AnimationState, EasingCurve, EasingType, PropertyAnimation,
@@ -25,12 +23,12 @@ use ferrokit_core::variant::Variant;
 
 struct DynamicMockObject {
     data: ObjectData,
-    last_changed_property: Rc<RefCell<Option<String>>>,
-    change_count: Rc<RefCell<u32>>,
+    last_changed_property: Arc<Mutex<Option<String>>>,
+    change_count: Arc<Mutex<u32>>,
 }
 
 impl DynamicMockObject {
-    fn new(id: ObjectId, last_prop: Rc<RefCell<Option<String>>>, count: Rc<RefCell<u32>>) -> Self {
+    fn new(id: ObjectId, last_prop: Arc<Mutex<Option<String>>>, count: Arc<Mutex<u32>>) -> Self {
         Self {
             data: ObjectData::new(id),
             last_changed_property: last_prop,
@@ -47,8 +45,8 @@ impl QObject for DynamicMockObject {
         ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn dynamic_property_change(&mut self, property_name: &str) {
-        *self.last_changed_property.borrow_mut() = Some(property_name.to_string());
-        *self.change_count.borrow_mut() += 1;
+        *self.last_changed_property.lock().unwrap() = Some(property_name.to_string());
+        *self.change_count.lock().unwrap() += 1;
     }
 }
 
@@ -90,10 +88,10 @@ fn test_variant_types_and_interpolation() {
 
 #[test]
 fn test_qobject_dynamic_properties_and_events() {
-    let last_prop = Rc::new(RefCell::new(None));
-    let count = Rc::new(RefCell::new(0));
+    let last_prop = Arc::new(Mutex::new(None));
+    let count = Arc::new(Mutex::new(0));
     let mut obj =
-        DynamicMockObject::new(ObjectId::next(), Rc::clone(&last_prop), Rc::clone(&count));
+        DynamicMockObject::new(ObjectId::next(), Arc::clone(&last_prop), Arc::clone(&count));
 
     assert!(obj.property("custom_color").is_none());
 
@@ -107,13 +105,13 @@ fn test_qobject_dynamic_properties_and_events() {
         obj.property("custom_color"),
         Some(Variant::Color(255, 128, 0, 255))
     );
-    assert_eq!(*last_prop.borrow(), Some("custom_color".to_string()));
-    assert_eq!(*count.borrow(), 1);
+    assert_eq!(*last_prop.lock().unwrap(), Some("custom_color".to_string()));
+    assert_eq!(*count.lock().unwrap(), 1);
 
     // Setting the same property value returns false and does not trigger event
     let changed_again = obj.set_property("custom_color", Variant::Color(255, 128, 0, 255));
     assert!(!changed_again);
-    assert_eq!(*count.borrow(), 1);
+    assert_eq!(*count.lock().unwrap(), 1);
 
     // Dynamic property names listing
     obj.set_property("opacity", Variant::F64(0.8));
@@ -128,7 +126,7 @@ fn test_qobject_dynamic_properties_and_events() {
     assert!(!obj
         .dynamic_property_names()
         .contains(&"absent_prop".to_string()));
-    assert_eq!(*count.borrow(), 2);
+    assert_eq!(*count.lock().unwrap(), 2);
 
     // Setting Variant::Invalid on existing dynamic property removes it, emits DynamicPropertyChange, and returns false (qobject.cpp:4554-4574)
     let r_remove = obj.set_property("custom_color", Variant::Invalid);
@@ -146,8 +144,8 @@ fn test_qobject_dynamic_properties_and_events() {
             .contains(&"custom_color".to_string()),
         "Dynamic property name must be removed from list"
     );
-    assert_eq!(*last_prop.borrow(), Some("custom_color".to_string()));
-    assert_eq!(*count.borrow(), 3, "Event must be emitted on removal");
+    assert_eq!(*last_prop.lock().unwrap(), Some("custom_color".to_string()));
+    assert_eq!(*count.lock().unwrap(), 3, "Event must be emitted on removal");
 }
 // -----------------------------------------------------------------------------
 // 2. Test Signal connect_to and Object Thread Affinity
@@ -155,8 +153,8 @@ fn test_qobject_dynamic_properties_and_events() {
 
 #[test]
 fn test_signal_auto_thread_affinity() {
-    let last_prop = Rc::new(RefCell::new(None));
-    let count = Rc::new(RefCell::new(0));
+    let last_prop = Arc::new(Mutex::new(None));
+    let count = Arc::new(Mutex::new(0));
     let obj = unsafe {
         register_owned_qobject(DynamicMockObject::new(ObjectId::next(), last_prop, count))
     };
@@ -266,8 +264,8 @@ fn test_variant_animation_timeline_and_keyframes() {
 
 #[test]
 fn test_property_animation_does_not_retain_borrowed_object() {
-    let last_prop = Rc::new(RefCell::new(None));
-    let count = Rc::new(RefCell::new(0));
+    let last_prop = Arc::new(Mutex::new(None));
+    let count = Arc::new(Mutex::new(0));
     let obj = DynamicMockObject::new(ObjectId::next(), last_prop, count);
 
     let mut prop_anim = PropertyAnimation::new("token_count");

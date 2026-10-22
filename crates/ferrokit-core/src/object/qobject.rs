@@ -3749,10 +3749,16 @@ pub trait QObject: std::any::Any {
     }
 
     /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
-    /// object's thread (`QObject::moveToThread`). The default is `true`, which states that the
-    /// object is safe to use and drop on another thread, as a `Send` type is: every registration
-    /// function is `unsafe` because the registrant promises that (see "Thread rules" in
-    /// [`crate::object`]).
+    /// object's thread (`QObject::moveToThread`). The default is `true`, which is a **promise**
+    /// by the implementer that the object is safe to use and drop on another thread, as a `Send`
+    /// type is: every registration function is `unsafe` because the registrant promises that (see
+    /// "Thread rules" in [`crate::object`]).
+    ///
+    /// An implementer whose type holds an `Rc`, a `RefCell` or `Cell` shared with a handle that
+    /// stays behind, a raw pointer, a non-`Send` closure or thread-local state **must** override
+    /// this and return `false`. Keeping the default for such a type makes the registration
+    /// contract false: a safe call of `move_to_thread_by_id` would then run its callbacks and
+    /// drop it on another thread, which is undefined behavior.
     ///
     /// Return `false` when state of the object is also reached through handles that never leave
     /// the creating thread, such as an `Rc` shared with a `!Send` owner. After a move the
@@ -5201,6 +5207,10 @@ mod tests {
     }
 
     impl QObject for Handler {
+        // Holds `!Send` state shared with the registering thread, so the object must stay there.
+        fn can_move_to_thread(&self) -> bool {
+            false
+        }
         fn object_data(&self) -> &ObjectData {
             &self.data
         }
