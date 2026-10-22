@@ -117,10 +117,49 @@ fn coalesce_rects(rects: &mut Vec<Rect>) {
 }
 
 /// 2D Region composed of non-overlapping rectangles (`QRegion`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Region {
     rects: Vec<Rect>,
+}
+
+/// Regions are equal when they cover the same area, whatever their rect decomposition
+/// (`QRegion::operator==`).
+impl PartialEq for Region {
+    fn eq(&self, other: &Self) -> bool {
+        if self.rects == other.rects {
+            return true;
+        }
+        // Rects within a region are disjoint, so equal area plus empty difference means equal sets.
+        let area = |r: &Region| r.rects.iter().map(|r| r.width as i64 * r.height as i64).sum::<i64>();
+        area(self) == area(other) && self.subtracted(other).is_empty()
+    }
+}
+
+impl Eq for Region {}
+
+#[cfg(test)]
+mod eq_tests {
+    use super::*;
+
+    #[test]
+    fn equal_area_different_decomposition_is_equal() {
+        let a = Region { rects: vec![Rect::new(0, 0, 10, 5), Rect::new(0, 5, 10, 5)] };
+        let b = Region { rects: vec![Rect::new(0, 0, 5, 10), Rect::new(5, 0, 5, 10)] };
+        assert_ne!(a.rects(), b.rects());
+        assert_eq!(a, b);
+        assert_eq!(a, Region::from_rect(Rect::new(0, 0, 10, 10)));
+    }
+
+    #[test]
+    fn different_area_is_not_equal() {
+        let a = Region::from_rect(Rect::new(0, 0, 10, 10));
+        let b = Region::from_rect(Rect::new(0, 0, 10, 11));
+        let c = Region::from_rect(Rect::new(1, 0, 10, 10));
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, Region::new());
+    }
 }
 
 impl Region {

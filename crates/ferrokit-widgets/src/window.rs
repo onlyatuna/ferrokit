@@ -24,7 +24,9 @@ type WindowEventCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&mut
 /// handler stands in for the `QWidget` subclass that overrides `closeEvent`, `moveEvent`, ...
 #[derive(Clone)]
 struct WindowCore {
-    platform_window: std::rc::Rc<std::cell::RefCell<Box<dyn PlatformWindow>>>,
+    /// Weak: the platform window owns the window event handler that owns this core, so a strong
+    /// reference would be a cycle. `Window` is the owner of the platform window.
+    platform_window: std::rc::Weak<std::cell::RefCell<Box<dyn PlatformWindow>>>,
     render: std::rc::Rc<RenderState>,
     event_cb: WindowEventCallback,
     visible: std::rc::Rc<std::cell::Cell<bool>>,
@@ -109,12 +111,16 @@ impl WindowCore {
             show_children_first(&root);
             self.send_to_window(&mut Event::new(EventKind::Show));
         }
-        self.platform_window.borrow_mut().show();
+        if let Some(pw) = self.platform_window.upgrade() {
+            pw.borrow_mut().show();
+        }
     }
 
     /// `QHideEvent`s: the window itself first, then every child that is not explicitly hidden.
     fn hide(&self) {
-        self.platform_window.borrow_mut().hide();
+        if let Some(pw) = self.platform_window.upgrade() {
+            pw.borrow_mut().hide();
+        }
         if self.visible.replace(false) {
             crate::application::Application::set_window_visible(self.id, false);
             self.send_to_window(&mut Event::new(EventKind::Hide));
@@ -717,7 +723,6 @@ impl Window {
 
         let native_double_clicks = platform_win.reports_native_double_clicks();
         let pw_rc = std::rc::Rc::new(std::cell::RefCell::new(platform_win));
-        let pw_clone = std::rc::Rc::clone(&pw_rc);
 
         let render_state = RenderState::register(
             window_id,
@@ -729,14 +734,14 @@ impl Window {
             origin,
         );
         let core = WindowCore {
-            platform_window: std::rc::Rc::clone(&pw_rc),
+            platform_window: std::rc::Rc::downgrade(&pw_rc),
             render: std::rc::Rc::clone(&render_state),
             event_cb: std::rc::Rc::new(std::cell::RefCell::new(None)),
             visible: std::rc::Rc::new(std::cell::Cell::new(false)),
             id: window_id,
         };
         let handler = WindowEventHandler {
-            platform_window: pw_clone,
+            platform_window: std::rc::Rc::downgrade(&pw_rc),
             backing_store: bs_clone,
             geometry: geom_clone,
             core: core.clone(),
@@ -1682,7 +1687,8 @@ impl WindowEventHandler {
 }
 
 struct WindowEventHandler {
-    platform_window: std::rc::Rc<std::cell::RefCell<Box<dyn PlatformWindow>>>,
+    /// Weak, for the same reason as `WindowCore::platform_window`.
+    platform_window: std::rc::Weak<std::cell::RefCell<Box<dyn PlatformWindow>>>,
     backing_store: std::rc::Rc<std::cell::RefCell<BackingStore>>,
     geometry: std::rc::Rc<std::cell::Cell<Rect>>,
     core: WindowCore,
@@ -1976,15 +1982,17 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     root_borrow.update();
                 }
 
-                if let Ok(mut pw) = self.platform_window.try_borrow_mut() {
-                    let mut bs = self.backing_store.borrow_mut();
-                    do_render_and_present(
-                        &mut **pw,
-                        &mut bs,
-                        &root,
-                        cur_geom,
-                        self.render.device_pixel_ratio.get(),
-                    );
+                if let Some(pw_rc) = self.platform_window.upgrade() {
+                    if let Ok(mut pw) = pw_rc.try_borrow_mut() {
+                        let mut bs = self.backing_store.borrow_mut();
+                        do_render_and_present(
+                            &mut **pw,
+                            &mut bs,
+                            &root,
+                            cur_geom,
+                            self.render.device_pixel_ratio.get(),
+                        );
+                    }
                 }
             }
             WindowSystemEvent::InputMethod {

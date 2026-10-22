@@ -34,13 +34,13 @@ pub struct Pen {
 }
 
 impl Pen {
-    // Creates a Pen with color and width, defaulting to round caps.
+    // Creates a Pen with color and width; like `QPen`, caps default to square and joins to bevel.
     pub fn new(color: Color, width: f32) -> Self {
         Self {
             color,
             width,
-            cap: LineCap::Round,
-            join: LineJoin::Round,
+            cap: LineCap::Square,
+            join: LineJoin::Bevel,
             dash_pattern: None,
         }
     }
@@ -501,7 +501,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Brush::LinearGradient(gradient) => {
-                if let Some(shader) = gradient.to_shader(Transform::identity()) {
+                if let Some(shader) = gradient.to_shader(Transform::identity(), opacity) {
                     let paint = Paint {
                         shader,
                         blend_mode,
@@ -514,7 +514,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Brush::RadialGradient(gradient) => {
-                if let Some(shader) = gradient.to_shader(Transform::identity()) {
+                if let Some(shader) = gradient.to_shader(Transform::identity(), opacity) {
                     let paint = Paint {
                         shader,
                         blend_mode,
@@ -1281,8 +1281,8 @@ mod tests {
     fn test_pen_creation_and_customization() {
         let pen = Pen::new(Color::from_rgba8(255, 0, 0, 255), 2.5);
         assert_eq!(pen.width, 2.5);
-        assert_eq!(pen.cap, LineCap::Round);
-        assert_eq!(pen.join, LineJoin::Round);
+        assert_eq!(pen.cap, LineCap::Square);
+        assert_eq!(pen.join, LineJoin::Bevel);
         assert!(pen.dash_pattern.is_none());
 
         let customized = pen
@@ -1299,6 +1299,30 @@ mod tests {
         assert_eq!(stroke.line_cap, LineCap::Square);
         assert_eq!(stroke.line_join, LineJoin::Miter);
         assert!(stroke.dash.is_some());
+    }
+
+    #[test]
+    fn gradient_fills_honor_painter_opacity() {
+        use crate::paint::brush::{LinearGradient, RadialGradient};
+        let red = Color::from_rgba8(255, 0, 0, 255);
+        let mut lin = LinearGradient::new(PointF::new(0.0, 0.0), PointF::new(20.0, 0.0));
+        lin.add_stop(0.0, red);
+        lin.add_stop(1.0, red);
+        let mut rad = RadialGradient::new(PointF::new(10.0, 10.0), 30.0);
+        rad.add_stop(0.0, red);
+        rad.add_stop(1.0, red);
+        for brush in [Brush::linear_gradient(lin), Brush::radial_gradient(rad)] {
+            let mut pm = crate::paint::pixmap::Pixmap::new(20, 20).unwrap();
+            {
+                let mut p = Painter::begin(&mut pm);
+                p.set_pen(None);
+                p.set_brush(brush);
+                p.set_opacity(0.5);
+                p.draw_rect(RectF::new(0.0, 0.0, 20.0, 20.0));
+            }
+            let a = pm.pixel(10, 10).unwrap().alpha();
+            assert!((126..=129).contains(&a), "alpha {a}");
+        }
     }
 
     #[test]

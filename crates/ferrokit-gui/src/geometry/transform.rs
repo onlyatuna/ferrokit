@@ -335,7 +335,8 @@ impl Transform {
             m32: dy,
             m33: 1.0,
         };
-        *self = *self * t;
+        // `QTransform::translate` computes `T * M`: the new operation applies first.
+        *self = t * *self;
     }
 
     /// Scales by (sx, sy).
@@ -351,7 +352,7 @@ impl Transform {
             m32: 0.0,
             m33: 1.0,
         };
-        *self = *self * s;
+        *self = s * *self;
     }
 
     /// Rotates by angle in degrees.
@@ -370,7 +371,7 @@ impl Transform {
             m32: 0.0,
             m33: 1.0,
         };
-        *self = *self * r;
+        *self = r * *self;
     }
 
     /// Maps a 2D point with projective division by `w = m13 * x + m23 * y + m33`.
@@ -487,3 +488,46 @@ impl std::ops::Mul for Transform {
 
 /// Canonical Qt alias.
 pub type QTransform = Transform;
+
+#[cfg(test)]
+mod compose_order_tests {
+    use super::*;
+
+    fn close(a: PointF, x: f32, y: f32) {
+        assert!((a.x - x).abs() < 1e-4 && (a.y - y).abs() < 1e-4, "{a:?} != ({x}, {y})");
+    }
+
+    // Hand-computed from QTransform semantics: each call pre-multiplies, so the
+    // most recent operation is applied to the point first.
+    #[test]
+    fn scale_then_translate_applies_translate_first() {
+        let mut t = Transform::identity();
+        t.scale(2.0, 2.0);
+        t.translate(10.0, 0.0);
+        close(t.map_point(PointF::new(0.0, 0.0)), 20.0, 0.0);
+    }
+
+    #[test]
+    fn translate_then_scale_applies_scale_first() {
+        let mut t = Transform::identity();
+        t.translate(10.0, 0.0);
+        t.scale(2.0, 2.0);
+        close(t.map_point(PointF::new(1.0, 1.0)), 12.0, 2.0);
+    }
+
+    #[test]
+    fn translate_then_rotate_applies_rotate_first() {
+        let mut t = Transform::identity();
+        t.translate(10.0, 0.0);
+        t.rotate(90.0);
+        close(t.map_point(PointF::new(1.0, 0.0)), 10.0, 1.0);
+    }
+
+    #[test]
+    fn rotate_then_translate_applies_translate_first() {
+        let mut t = Transform::identity();
+        t.rotate(90.0);
+        t.translate(10.0, 0.0);
+        close(t.map_point(PointF::new(0.0, 0.0)), 0.0, 10.0);
+    }
+}
