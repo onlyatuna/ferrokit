@@ -250,6 +250,28 @@ pub mod unix {
         }
     }
 
+    /// Opens a window for the detected `kind`. Detection and the native connect are separate
+    /// steps, so the socket can vanish in between; a failed native connect then falls back to the
+    /// offscreen window like an unreachable display does.
+    pub(super) fn open_window(
+        kind: DisplayServerKind,
+        title: &str,
+        rect: Rect,
+        flags: WindowFlags,
+        open_native: impl FnOnce(
+            DisplayServerKind,
+            &str,
+            Rect,
+            WindowFlags,
+        ) -> Result<Box<dyn PlatformWindow>, &'static str>,
+    ) -> Result<Box<dyn PlatformWindow>, &'static str> {
+        if kind == DisplayServerKind::Generic {
+            return Ok(Box::new(GenericWindow::new(title, rect, flags)));
+        }
+        open_native(kind, title, rect, flags)
+            .or_else(|_| Ok(Box::new(GenericWindow::new(title, rect, flags))))
+    }
+
     impl PlatformIntegration for UnixPlatformIntegration {
         fn create_window(
             &self,
@@ -257,17 +279,25 @@ pub mod unix {
             rect: Rect,
             flags: WindowFlags,
         ) -> Result<Box<dyn PlatformWindow>, &'static str> {
-            match Self::detect_display_server() {
-                DisplayServerKind::Wayland => {
-                    let win = WaylandNativeWindow::new(title, rect, flags)?;
-                    Ok(Box::new(win))
-                }
-                DisplayServerKind::X11 => {
-                    let win = X11NativeWindow::new(title, rect, flags)?;
-                    Ok(Box::new(win))
-                }
-                DisplayServerKind::Generic => Ok(Box::new(GenericWindow::new(title, rect, flags))),
-            }
+            open_window(
+                Self::detect_display_server(),
+                title,
+                rect,
+                flags,
+                |kind, title, rect, flags| -> Result<Box<dyn PlatformWindow>, &'static str> {
+                    match kind {
+                        DisplayServerKind::Wayland => {
+                            Ok(Box::new(WaylandNativeWindow::new(title, rect, flags)?))
+                        }
+                        DisplayServerKind::X11 => {
+                            Ok(Box::new(X11NativeWindow::new(title, rect, flags)?))
+                        }
+                        DisplayServerKind::Generic => {
+                            Ok(Box::new(GenericWindow::new(title, rect, flags)))
+                        }
+                    }
+                },
+            )
         }
 
         fn create_tray_icon(
@@ -616,6 +646,18 @@ mod unreachable_display_tests {
             }
         }
         assert_eq!(kind, DisplayServerKind::Generic);
+        assert!(win.is_ok());
+    }
+
+    #[test]
+    fn failed_native_connect_after_detection_falls_back_to_generic() {
+        let win = super::unix::open_window(
+            DisplayServerKind::X11,
+            "t",
+            Rect::new(0, 0, 100, 100),
+            WindowFlags::default(),
+            |_, _, _, _| Err("Failed to connect to the X11 display"),
+        );
         assert!(win.is_ok());
     }
 }
