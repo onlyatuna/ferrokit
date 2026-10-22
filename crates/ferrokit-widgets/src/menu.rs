@@ -1555,7 +1555,7 @@ impl Menu {
                     painter.draw_ellipse(RectF::new(10.0, mid_y - 4.0, 8.0, 8.0));
                 } else {
                     painter.set_render_hint(RenderHint::Antialiasing, true);
-                    painter.set_pen(Pen::new(check_color, 2.0));
+                    painter.set_pen(Pen::new(check_color, 2.0).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
                     painter.draw_line(PointF::new(9.0, mid_y), PointF::new(12.5, mid_y + 3.5));
                     painter.draw_line(
                         PointF::new(12.5, mid_y + 3.5),
@@ -1620,7 +1620,7 @@ impl Menu {
                 paint_submenu_arrow(painter, rect, color);
             } else {
                 let ax = (width - 14) as f32;
-                painter.set_pen(Pen::new(color, 1.5));
+                painter.set_pen(Pen::new(color, 1.5).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
                 painter.set_render_hint(RenderHint::Antialiasing, true);
                 painter.draw_line(PointF::new(ax, mid_y - 4.0), PointF::new(ax + 4.0, mid_y));
                 painter.draw_line(PointF::new(ax + 4.0, mid_y), PointF::new(ax, mid_y + 4.0));
@@ -1969,7 +1969,7 @@ fn paint_macos_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     let pen_width = (half / 3.0).max(1.25);
     let cx = (rect.x + (rect.width - 1) / 2 + 1) as f32; // QRect::center().x() + 1
     let cy = (rect.y + (rect.height - 1) / 2 + 2) as f32; // QRect::center().y() + 2
-    painter.set_pen(Pen::new(color, pen_width));
+    painter.set_pen(Pen::new(color, pen_width).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
     painter.draw_polyline(&[
         PointF::new(cx - half / 2.0, cy + half),
         PointF::new(cx + half / 2.0, cy),
