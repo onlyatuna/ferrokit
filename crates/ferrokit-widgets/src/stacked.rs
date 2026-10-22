@@ -40,30 +40,101 @@ impl StackedLayout {
     /// Appends a widget to the stack, returning its page index.
     pub fn add_widget(&mut self, widget: WidgetRef) -> usize {
         let index = self.widgets.len();
-        self.widgets.push(widget);
-        self.update_layout();
+        let changes = self.insert_state(index, widget);
+        apply_visibility(changes);
         index
     }
 
-    /// Inserts a widget at the specified index in the stack.
+    /// Inserts a widget at the specified index in the stack (`QStackedLayout::insertWidget`,
+    /// qstackedlayout.cpp:230-260): a page inserted at or before the current one keeps the current
+    /// page current, and a page that does not become current is hidden.
     pub fn insert_widget(&mut self, index: usize, widget: WidgetRef) {
-        let clamped = index.min(self.widgets.len());
-        self.widgets.insert(clamped, widget);
-        self.update_layout();
+        let changes = self.insert_state(index, widget);
+        apply_visibility(changes);
     }
 
-    /// Removes the widget at index from the stack.
+    /// Removes the widget at index from the stack (`QStackedLayout::takeAt`,
+    /// qstackedlayout.cpp:165-190): removing the current page makes its neighbour current, removing
+    /// an earlier one keeps the current page current, and the removed page is hidden.
     pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
-        if index < self.widgets.len() {
-            let removed = self.widgets.remove(index);
-            if self.current_index >= self.widgets.len() && !self.widgets.is_empty() {
-                self.current_index = self.widgets.len() - 1;
-            }
-            self.update_layout();
-            Some(removed)
+        let (removed, changes) = self.remove_state(index);
+        apply_visibility(changes);
+        removed
+    }
+
+    /// `insert_widget` without the visibility changes, which the caller applies with
+    /// `apply_visibility` once no borrow of the layout is held (they send `Show`/`Hide`).
+    pub(crate) fn insert_state(&mut self, index: usize, widget: WidgetRef) -> Vec<(WidgetRef, bool)> {
+        let clamped = index.min(self.widgets.len());
+        let first = self.widgets.is_empty();
+        self.widgets.insert(clamped, widget.clone());
+        self.update_layout();
+        if first {
+            self.current_index = clamped;
+            vec![(widget, true)]
         } else {
-            None
+            if clamped <= self.current_index {
+                self.current_index += 1;
+            }
+            vec![(widget, false)]
         }
+    }
+
+    /// `remove_widget` without the visibility changes (see `insert_state`).
+    pub(crate) fn remove_state(&mut self, index: usize) -> (Option<WidgetRef>, Vec<(WidgetRef, bool)>) {
+        if index >= self.widgets.len() {
+            return (None, Vec::new());
+        }
+        let removed = self.widgets.remove(index);
+        let mut changes = vec![(removed.clone(), false)];
+        if index == self.current_index {
+            if self.widgets.is_empty() {
+                self.current_index = 0;
+            } else {
+                self.current_index = index.min(self.widgets.len() - 1);
+                changes.push((self.widgets[self.current_index].clone(), true));
+            }
+        } else if index < self.current_index {
+            self.current_index -= 1;
+        }
+        self.update_layout();
+        (Some(removed), changes)
+    }
+
+    /// `set_current_index` without the visibility changes (see `insert_state`); `None` when `index`
+    /// is out of range.
+    pub(crate) fn set_current_state(&mut self, index: usize) -> Option<Vec<(WidgetRef, bool)>> {
+        if index >= self.widgets.len() {
+            return None;
+        }
+        let previous = self.current_index;
+        self.current_index = index;
+        self.update_layout();
+        let mut changes = Vec::new();
+        if previous != index {
+            if let Some(page) = self.widgets.get(previous) {
+                changes.push((page.clone(), false));
+            }
+        }
+        changes.push((self.widgets[index].clone(), true));
+        Some(changes)
+    }
+
+    /// The page to place and its rectangle (`QStackedLayout::setGeometry`), clearing the dirty flag.
+    /// The caller sets the geometry once no borrow of the layout is held.
+    pub(crate) fn take_placement(&mut self) -> Option<(WidgetRef, Rect)> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        let widget = self.widgets.get(self.current_index)?.clone();
+        let (min, max) = {
+            let w = widget.borrow();
+            (w.minimum_size(), w.maximum_size())
+        };
+        let width = self.geometry.width.min(max.width).max(min.width);
+        let height = self.geometry.height.min(max.height).max(min.height);
+        Some((widget, Rect::new(self.geometry.x, self.geometry.y, width, height)))
     }
 
     /// Returns the number of widgets in the stack.
@@ -78,9 +149,8 @@ impl StackedLayout {
 
     /// Switches the active visible widget to the specified index.
     pub fn set_current_index(&mut self, index: usize) {
-        if index < self.widgets.len() {
-            self.current_index = index;
-            self.update_layout();
+        if let Some(changes) = self.set_current_state(index) {
+            apply_visibility(changes);
         }
     }
 
@@ -212,35 +282,31 @@ impl Layout for StackedLayout {
     /// not applied, other pages keep their geometry, and `QWidget::setGeometry` clamps the size to
     /// the page's own minimum and maximum size.
     fn activate(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-
-        for (idx, widget) in self.widgets.iter().enumerate() {
-            let current = idx == self.current_index;
-            if current {
-                let old_size = {
-                    let w = widget.borrow();
-                    let g = w.geometry();
-                    Size::new(g.width, g.height)
-                };
-                let w = widget.borrow();
-                let (min, max) = (w.minimum_size(), w.maximum_size());
-                let width = self.geometry.width.min(max.width).max(min.width);
-                let height = self.geometry.height.min(max.height).max(min.height);
-                w.set_geometry(Rect::new(self.geometry.x, self.geometry.y, width, height));
-                drop(w);
-                crate::widget::set_widget_visible(widget, true);
-                crate::layout::relayout_child_after_resize(widget, old_size);
-            } else {
-                crate::widget::set_widget_visible(widget, false);
-            }
+        if let Some((widget, rect)) = self.take_placement() {
+            place_page(&widget, rect);
         }
     }
     fn widgets(&self) -> Vec<WidgetRef> {
         self.widgets.clone()
     }
+}
+
+/// Shows and hides the pages a layout change decided on, in order.
+pub(crate) fn apply_visibility(changes: Vec<(WidgetRef, bool)>) {
+    for (widget, visible) in changes {
+        crate::widget::set_widget_visible(&widget, visible);
+    }
+}
+
+/// `widget->setGeometry(rect)` on the current page, then the relayout its new size needs. It never
+/// changes the page's visibility.
+fn place_page(widget: &WidgetRef, rect: Rect) {
+    let old_size = {
+        let g = widget.borrow().geometry();
+        Size::new(g.width, g.height)
+    };
+    widget.borrow().set_geometry(rect);
+    crate::layout::relayout_child_after_resize(widget, old_size);
 }
 
 /// A container widget that stacks child widgets, displaying one at a time (`QStackedWidget`).
@@ -268,10 +334,47 @@ impl StackedWidget {
 
     /// Appends a widget to the stack and returns its index.
     pub fn add_widget(&mut self, widget: WidgetRef) -> usize {
-        self.base.add_child(widget.clone());
-        let idx = self.layout.get_mut().add_widget(widget);
-        self.update();
+        let idx = self.layout.borrow().count();
+        self.insert_widget(idx, widget);
         idx
+    }
+
+    /// Inserts a page at `index`; see [`StackedLayout::insert_widget`].
+    pub fn insert_widget(&mut self, index: usize, widget: WidgetRef) -> usize {
+        self.base.add_child(widget.clone());
+        let changes = {
+            let mut layout = self.layout.borrow_mut();
+            let at = index.min(layout.count());
+            let first = layout.count() == 0;
+            (at, first, layout.insert_state(index, widget))
+        };
+        let (at, first, changes) = changes;
+        crate::stacked::apply_visibility(changes);
+        if first {
+            self.current_changed.emit(&at);
+        }
+        self.update();
+        at
+    }
+
+    /// Removes the page at `index`, hides it and drops it from the children; the neighbouring page
+    /// becomes current when the current one was removed.
+    pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
+        let (removed, changes, current) = {
+            let mut layout = self.layout.borrow_mut();
+            let was_current = index == layout.current_index();
+            let (removed, changes) = layout.remove_state(index);
+            let current = (was_current && layout.count() > 0).then(|| layout.current_index());
+            (removed, changes, current)
+        };
+        let removed = removed?;
+        crate::stacked::apply_visibility(changes);
+        self.base.remove_child(removed.borrow().id());
+        if let Some(current) = current {
+            self.current_changed.emit(&current);
+        }
+        self.update();
+        Some(removed)
     }
 
     /// Returns the index of the currently active page.
@@ -281,16 +384,16 @@ impl StackedWidget {
 
     /// Sets the active visible page index, emitting `current_changed`.
     pub fn set_current_index(&mut self, index: usize) {
-        let changed = {
+        let changes = {
             let mut layout = self.layout.borrow_mut();
-            if index != layout.current_index() && index < layout.count() {
-                layout.set_current_index(index);
-                true
+            if index != layout.current_index() {
+                layout.set_current_state(index)
             } else {
-                false
+                None
             }
         };
-        if changed {
+        if let Some(changes) = changes {
+            crate::stacked::apply_visibility(changes);
             self.current_changed.emit(&index);
             self.update();
         }
@@ -351,7 +454,17 @@ impl Widget for StackedWidget {
     fn set_geometry(&self, rect: Rect) {
         if self.base.geometry() != rect {
             self.base.set_geometry(rect);
-            self.layout.borrow_mut().set_geometry(Rect::new(0, 0, rect.width, rect.height));
+            // The layout's borrow is released before the page is placed: the page's `Resize` runs
+            // filters and slots that may read the stack.
+            let placement = {
+                let mut layout = self.layout.borrow_mut();
+                layout.geometry = Rect::new(0, 0, rect.width, rect.height);
+                layout.dirty = true;
+                layout.take_placement()
+            };
+            if let Some((page, page_rect)) = placement {
+                place_page(&page, page_rect);
+            }
             self.update();
         }
     }

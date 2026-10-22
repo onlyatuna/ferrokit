@@ -194,6 +194,8 @@ pub struct Menu {
     pub about_to_show: Signal<()>,
     /// Emitted just before the menu is hidden.
     pub about_to_hide: Signal<()>,
+    /// `set_widget_visible` already emitted the signal of the pending `set_visible`.
+    announced: std::cell::Cell<bool>,
 }
 
 pub type QMenu = Menu;
@@ -241,6 +243,7 @@ impl Menu {
             hovered,
             about_to_show,
             about_to_hide,
+            announced: std::cell::Cell::new(false),
         }
     }
 
@@ -650,8 +653,46 @@ impl Menu {
     }
 
     /// Shows the menu at `pos` with `at` highlighted.
+    ///
+    /// `about_to_show` is emitted while `self` is borrowed by the caller; a slot that needs the
+    /// menu (the Qt idiom of filling it from this signal) must use [`Menu::popup_at_shared`].
     pub fn popup_at(&mut self, pos: Point, at: Option<&ActionRef>) {
         self.about_to_show.emit(&());
+        self.popup_at_announced(pos, at);
+    }
+
+    /// `popup_at` for a shared menu: `about_to_show` is emitted with the menu not borrowed.
+    pub fn popup_at_shared(menu: &MenuRef, pos: Point, at: Option<&ActionRef>) {
+        Self::emit_shared(menu, |m| m.about_to_show.clone());
+        menu.borrow_mut().popup_at_announced(pos, at);
+    }
+
+    /// `popup` for a shared menu (see [`Menu::popup_at_shared`]).
+    pub fn popup_shared(menu: &MenuRef, pos: Point) {
+        Self::popup_at_shared(menu, pos, None);
+    }
+
+    /// `exec_popup` for a shared menu: `about_to_show` is emitted with the menu not borrowed.
+    pub fn exec_popup_shared(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
+        Self::emit_shared(menu, |m| m.about_to_show.clone());
+        menu.borrow_mut().exec_popup_announced(pos)
+    }
+
+    /// `hide_menu` for a shared menu: `about_to_hide` is emitted with the menu not borrowed.
+    pub fn hide_menu_shared(menu: &MenuRef) {
+        let visible = menu.borrow().base.is_visible();
+        if visible {
+            Self::emit_shared(menu, |m| m.about_to_hide.clone());
+        }
+        menu.borrow_mut().hide_menu_emitting(false);
+    }
+
+    fn emit_shared(menu: &MenuRef, signal: impl Fn(&Menu) -> Signal<()>) {
+        let signal = signal(&menu.borrow());
+        signal.emit(&());
+    }
+
+    fn popup_at_announced(&mut self, pos: Point, at: Option<&ActionRef>) {
         let geometry = self.popup_geometry(pos);
         self.show_with_geometry(geometry);
         if let Some(action) = at {
@@ -685,6 +726,12 @@ impl Menu {
     /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
     #[cfg(windows)]
     pub fn exec_popup(&mut self, pos: Point) -> Option<ActionRef> {
+        self.about_to_show.emit(&());
+        self.exec_popup_announced(pos)
+    }
+
+    #[cfg(windows)]
+    fn exec_popup_announced(&mut self, pos: Point) -> Option<ActionRef> {
         use crate::window::Window;
         use ferrokit_platform::{platform, WindowFlags};
         use windows_sys::Win32::Foundation::HWND;
@@ -730,7 +777,7 @@ impl Menu {
         let root_origin = Point::new(x, y);
         let initial_rect = Rect::new(x, y, size.width, size.height);
         self.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
-        self.popup_at(Point::new(0, 0), None);
+        self.popup_at_announced(Point::new(0, 0), None);
 
         let mut window = match Window::new(
             "",
@@ -943,9 +990,15 @@ impl Menu {
     }
     #[cfg(not(windows))]
     pub fn exec_popup(&mut self, pos: Point) -> Option<ActionRef> {
+        self.about_to_show.emit(&());
+        self.exec_popup_announced(pos)
+    }
+
+    #[cfg(not(windows))]
+    fn exec_popup_announced(&mut self, pos: Point) -> Option<ActionRef> {
         // No modal loop without a native window system here: an earlier result is not this one.
         self.last_triggered = None;
-        self.popup(pos);
+        self.popup_at_announced(pos, None);
         self.last_triggered.clone()
     }
 
@@ -1766,17 +1819,30 @@ impl Widget for Menu {
         if visible == self.base.is_visible() {
             return;
         }
+        let announced = self.announced.replace(false);
         if visible {
-            self.about_to_show.emit(&());
+            if !announced {
+                self.about_to_show.emit(&());
+            }
             let g = self.base.geometry();
             let size = self.size_hint();
             self.base.set_geometry(Rect::new(g.x, g.y, size.width, size.height));
             self.base.set_visible(true);
         } else {
-            self.about_to_hide.emit(&());
+            if !announced {
+                self.about_to_hide.emit(&());
+            }
             self.base.set_visible(false);
         }
         self.update();
+    }
+
+    fn announce_visibility(&self, visible: bool) -> Option<Signal<()>> {
+        if visible == self.base.is_visible() {
+            return None;
+        }
+        self.announced.set(true);
+        Some(if visible { self.about_to_show.clone() } else { self.about_to_hide.clone() })
     }
 
     fn is_enabled(&self) -> bool {

@@ -53,6 +53,40 @@ fn send_enabled_notices(notices: Vec<EnabledNotice>) {
     }
 }
 
+/// Passes `enable` down to `child`, which was borrowed when its parent's state changed, at the
+/// next flush. It does nothing when the parent's state is no longer `enable`.
+fn defer_enabled(child: &WidgetRef, enable: bool) {
+    let weak = Rc::downgrade(child);
+    crate::command::defer_retry(move || {
+        let Some(child) = weak.upgrade() else { return };
+        let mut notices = Vec::new();
+        let changed = {
+            let Ok(c) = child.try_borrow() else {
+                defer_enabled(&child, enable);
+                return;
+            };
+            let base = c.widget_base();
+            if let Some(parent) = base.parent_widget().and_then(|p| p.upgrade()) {
+                match parent.try_borrow() {
+                    Ok(p) if p.is_enabled() != enable => return,
+                    Ok(_) => {}
+                    Err(_) => {
+                        drop(c);
+                        defer_enabled(&child, enable);
+                        return;
+                    }
+                }
+            }
+            let skip = if enable { base.force_disabled.get() } else { !base.enabled.get() };
+            !skip && base.set_enabled_helper(enable, &mut notices)
+        };
+        if changed {
+            notices.push(EnabledNotice::Changed(child.clone()));
+        }
+        send_enabled_notices(notices);
+    });
+}
+
 /// What `set_enabled_helper` did, in Qt's order, for `set_widget_enabled` to send the events for.
 pub(crate) enum EnabledNotice {
     /// The focus widget was disabled; its window's focus is to move on.
@@ -69,6 +103,10 @@ pub(crate) enum EnabledNotice {
 /// As in `set_widget_enabled`, a widget still borrowed by the caller gets no event.
 pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     let was_shown = is_shown(widget);
+    let announce = widget.borrow().announce_visibility(visible);
+    if let Some(signal) = announce {
+        signal.emit(&());
+    }
     widget.borrow().set_visible(visible);
     let now_shown = is_shown(widget);
     if now_shown && !was_shown {
@@ -81,7 +119,29 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
             notify_borrowed(&mut **w, &mut Event::new(EventKind::Hide));
         }
         hide_children(widget);
+        move_focus_off_hidden(widget);
     }
+}
+
+/// `hide_helper`'s focus handover (qwidget.cpp:8276-8283): when the window's focus widget is
+/// `widget` or below it, the focus moves on with `focusNextChild()`, or is cleared when no widget
+/// is next, so a hidden widget does not keep receiving key events.
+fn move_focus_off_hidden(widget: &WidgetRef) {
+    let anchor = widget.borrow().id();
+    let mut notices = Vec::new();
+    let mut stack = vec![widget.clone()];
+    while let Some(w) = stack.pop() {
+        let Ok(g) = w.try_borrow() else { continue };
+        let base = g.widget_base();
+        if let Some(focus) = base.focus_state.borrow().upgrade() {
+            if focus.lose_via(base.object_data.id(), anchor, true) {
+                base.has_focus.set(false);
+                notices.push(EnabledNotice::FocusLost(focus));
+            }
+        }
+        stack.extend(g.children());
+    }
+    send_enabled_notices(notices);
 }
 
 /// `QWidget::isVisible`: the widget and its ancestors are shown, and so is the window it belongs
@@ -441,6 +501,13 @@ pub trait Widget: QObject + 'static {
     fn is_visible(&self) -> bool;
 
     fn set_visible(&self, visible: bool);
+
+    /// The signal (`QMenu::aboutToShow` / `aboutToHide`) a change to `visible` announces before it
+    /// takes effect. `set_widget_visible` emits it with no widget borrowed, so a slot may use the
+    /// widget; `set_visible` then does not emit it again.
+    fn announce_visibility(&self, _visible: bool) -> Option<ferrokit_core::signal::Signal<()>> {
+        None
+    }
     fn is_enabled(&self) -> bool;
 
     fn update(&self);
@@ -987,7 +1054,12 @@ impl WidgetBase {
             children.extend(layout.widgets());
         }
         for child_ref in children {
-            let Ok(child) = child_ref.try_borrow() else { continue };
+            let Ok(child) = child_ref.try_borrow() else {
+                // The child is on the stack (its own handler disabled an ancestor): it follows
+                // once released.
+                defer_enabled(&child_ref, enable);
+                continue;
+            };
             let base = child.widget_base();
             // Enabling skips explicitly disabled children; disabling skips disabled ones.
             let skip = if enable { base.force_disabled.get() } else { !base.enabled.get() };
