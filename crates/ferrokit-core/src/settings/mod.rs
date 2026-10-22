@@ -5,12 +5,20 @@
 //! hierarchical group management (`begin_group` / `end_group`), typed `Variant` access,
 //! and atomic writes via temporary files and OS renames.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::variant::Variant;
+
+/// Distinguishes the temporary files of concurrent `sync` calls within this process.
+static SYNC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Held across the re-read, merge and replace steps of `sync`.
+static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
 /// Configuration format matching Qt `QSettings::Format`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,6 +40,10 @@ pub struct Settings {
     file_path: Option<PathBuf>,
     entries: HashMap<String, Variant>,
     group_stack: Vec<String>,
+    /// Keys set since the last read of the file; they win over the file's values on `sync`.
+    modified: HashSet<String>,
+    /// Keys removed since the last read of the file; `sync` removes them from the file.
+    removed: HashSet<String>,
     dirty: bool,
     load_failed: bool,
 }
@@ -43,6 +55,8 @@ impl Settings {
             file_path: Some(p.clone()),
             entries: HashMap::new(),
             group_stack: Vec::new(),
+            modified: HashSet::new(),
+            removed: HashSet::new(),
             dirty: false,
             load_failed: false,
         };
@@ -58,6 +72,8 @@ impl Settings {
             file_path: None,
             entries: HashMap::new(),
             group_stack: Vec::new(),
+            modified: HashSet::new(),
+            removed: HashSet::new(),
             dirty: false,
             load_failed: false,
         }
@@ -107,6 +123,8 @@ impl Settings {
     pub fn set_value(&mut self, key: &str, value: impl Into<Variant>) {
         let full_key = self.make_full_key(key);
         let val = value.into();
+        self.removed.remove(&full_key);
+        self.modified.insert(full_key.clone());
         self.entries.insert(full_key, val);
         self.dirty = true;
     }
@@ -132,8 +150,17 @@ impl Settings {
     pub fn remove(&mut self, key: &str) {
         let full_key = self.make_full_key(key);
         let prefix = format!("{}/", full_key);
-        self.entries
-            .retain(|k, _| k != &full_key && !k.starts_with(&prefix));
+        let doomed: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|k| **k == full_key || k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in doomed {
+            self.entries.remove(&k);
+            self.modified.remove(&k);
+            self.removed.insert(k);
+        }
         self.dirty = true;
     }
 
@@ -189,11 +216,17 @@ impl Settings {
 
     /// Clears all settings entries.
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.removed.extend(self.entries.drain().map(|(k, _)| k));
+        self.modified.clear();
         self.dirty = true;
     }
 
     /// Writes unsaved changes to disk atomically.
+    ///
+    /// Like `QSettings::sync`, the file is re-read first and this instance's pending changes
+    /// are merged into it: keys set here win, keys removed here are removed, and keys that
+    /// other instances or processes wrote since this instance last read the file are kept.
+    /// This instance then adopts the merged contents.
     pub fn sync(&mut self) -> std::io::Result<()> {
         if !self.dirty {
             return Ok(());
@@ -213,17 +246,45 @@ impl Settings {
             fs::create_dir_all(parent)?;
         }
 
-        // Write to temporary file first for atomic commit
-        let tmp_path = path.with_extension(format!("tmp_{}", std::process::id()));
-        {
-            let mut file = File::create(&tmp_path)?;
-            self.write_ini_to(&mut file)?;
-            file.flush()?;
-            file.sync_all()?;
+        // Serializes the read-merge-replace cycle among instances of this process so that two
+        // of them cannot each merge into the same stale snapshot.
+        let _guard = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut merged = HashMap::new();
+        read_ini_file(path, &mut merged)?;
+        for key in &self.removed {
+            merged.remove(key);
+        }
+        for key in &self.modified {
+            if let Some(value) = self.entries.get(key) {
+                merged.insert(key.clone(), value.clone());
+            }
         }
 
-        // Atomic replace via rename
-        fs::rename(&tmp_path, path)?;
+        // Write to a uniquely named temporary file first for atomic commit.
+        let (tmp_path, mut file) = loop {
+            let sequence = SYNC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let tmp_path =
+                path.with_extension(format!("tmp_{}_{}", std::process::id(), sequence));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+            {
+                Ok(file) => break (tmp_path, file),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        };
+        let written = Self::write_ini_entries(&merged, &mut file)
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        let committed = written.and_then(|()| fs::rename(&tmp_path, path));
+        if let Err(err) = committed {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
         #[cfg(unix)]
         if let Some(parent) = path.parent() {
             // The rename already committed the data; directory sync failure is not an error.
@@ -231,17 +292,20 @@ impl Settings {
                 let _ = dir.sync_all();
             }
         }
+        self.entries = merged;
+        self.modified.clear();
+        self.removed.clear();
         self.dirty = false;
         Ok(())
     }
 
     /// Serializes entries into INI format grouped by section.
-    fn write_ini_to<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+    fn write_ini_entries<W: Write>(entries: &HashMap<String, Variant>, w: &mut W) -> std::io::Result<()> {
         // Partition entries into root section and named sections
         let mut root_entries = BTreeMap::new();
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
-        for (k, v) in &self.entries {
+        for (k, v) in entries {
             let str_val = serialize_variant_value(v);
             if let Some((section, sub_key)) = k.split_once('/') {
                 sections
@@ -278,56 +342,62 @@ impl Settings {
         let Some(path) = &self.file_path else {
             return Ok(());
         };
-
-        if !path.exists() {
-            return Ok(());
-        }
-
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut current_section: Option<String> = None;
-
-        let mut escaped = false;
-        for (index, line) in reader.lines().enumerate() {
-            let line = line?;
-            let trimmed = line.trim();
-            if index == 0 && trimmed == ESCAPE_MARKER {
-                escaped = true;
-                continue;
-            }
-
-            if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
-                continue;
-            }
-
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                let section_name = &trimmed[1..trimmed.len() - 1];
-                let name = section_name.trim();
-                current_section = Some(if escaped { unescape_text(name) } else { name.to_string() });
-                continue;
-            }
-
-            let pair = if escaped {
-                split_unescaped_eq(trimmed)
-            } else {
-                trimmed.split_once('=')
-            };
-            if let Some((key, val)) = pair {
-                let key = if escaped { unescape_text(key.trim()) } else { key.trim().to_string() };
-                let key = key.as_str();
-                let val = val.trim();
-                let full_key = match &current_section {
-                    Some(s) if !s.is_empty() => format!("{}/{}", s, key),
-                    _ => key.to_string(),
-                };
-                let parsed = parse_variant_value(val, escaped);
-                self.entries.insert(full_key, parsed);
-            }
-        }
-
+        read_ini_file(path, &mut self.entries)?;
         self.dirty = false;
         Ok(())
     }
+}
+
+/// Parses the INI file at `path` into `entries`; a missing file is not an error. Entries parsed
+/// before an I/O error stay in `entries`.
+fn read_ini_file(path: &Path, entries: &mut HashMap<String, Variant>) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut current_section: Option<String> = None;
+
+    let mut escaped = false;
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        let trimmed = line.trim();
+        if index == 0 && trimmed == ESCAPE_MARKER {
+            escaped = true;
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section_name = &trimmed[1..trimmed.len() - 1];
+            let name = section_name.trim();
+            current_section = Some(if escaped { unescape_text(name) } else { name.to_string() });
+            continue;
+        }
+
+        let pair = if escaped {
+            split_unescaped_eq(trimmed)
+        } else {
+            trimmed.split_once('=')
+        };
+        if let Some((key, val)) = pair {
+            let key = if escaped { unescape_text(key.trim()) } else { key.trim().to_string() };
+            let key = key.as_str();
+            let val = val.trim();
+            let full_key = match &current_section {
+                Some(s) if !s.is_empty() => format!("{}/{}", s, key),
+                _ => key.to_string(),
+            };
+            let parsed = parse_variant_value(val, escaped);
+            entries.insert(full_key, parsed);
+        }
+    }
+
+    Ok(())
 }
 
 impl Drop for Settings {
@@ -383,48 +453,68 @@ fn escape_name(s: &str) -> String {
 /// files containing backslashes still load.
 fn unescape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut i = 0;
+    while i < s.len() {
+        let Some(c) = s[i..].chars().next() else { break };
         if c != '\\' {
             out.push(c);
+            i += c.len_utf8();
             continue;
         }
-        match chars.peek().copied() {
-            Some('\\') => out.push('\\'),
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('s') => out.push(' '),
-            Some('t') => out.push('\t'),
-            Some('u') => {
-                let rest: String = chars.clone().collect();
-                let decoded = rest
-                    .strip_prefix("u{")
-                    .and_then(|r| r.split_once('}'))
-                    .and_then(|(hex, _)| Some((hex.len(), char::from_u32(u32::from_str_radix(hex, 16).ok()?)?)));
-                match decoded {
-                    Some((hex_len, ch)) => {
-                        out.push(ch);
-                        // Skip `u{`, the hex digits and `}` (all ASCII).
-                        for _ in 0..hex_len + 3 {
-                            chars.next();
-                        }
-                        continue;
-                    }
-                    None => {
-                        out.push('\\');
-                        continue;
-                    }
+        // Every escape is a backslash plus ASCII, so the byte after it is a char boundary
+        // whenever it is one of the recognised escape letters.
+        let rest = &s[i + 1..];
+        match rest.as_bytes().first().copied() {
+            Some(b'\\') => out.push('\\'),
+            Some(b'n') => out.push('\n'),
+            Some(b'r') => out.push('\r'),
+            Some(b's') => out.push(' '),
+            Some(b't') => out.push('\t'),
+            Some(b'u') => match parse_unicode_escape(&rest[1..]) {
+                Some((ch, consumed)) => {
+                    out.push(ch);
+                    // Backslash, `u` and the `{hex}` part.
+                    i += 2 + consumed;
+                    continue;
                 }
-            }
-            Some(e @ ('=' | ';' | '#' | '[' | ']')) => out.push(e),
+                None => {
+                    out.push('\\');
+                    i += 1;
+                    continue;
+                }
+            },
+            Some(e @ (b'=' | b';' | b'#' | b'[' | b']')) => out.push(e as char),
             _ => {
                 out.push('\\');
+                i += 1;
                 continue;
             }
         }
-        chars.next();
+        i += 2;
     }
     out
+}
+
+/// Parses the `{hex}` part of a `\u{hex}` escape (`s` starts right after the `u`), returning
+/// the character and the number of bytes consumed. Looks at no more than 10 bytes, so a long
+/// run of malformed escapes is still linear overall.
+fn parse_unicode_escape(s: &str) -> Option<(char, usize)> {
+    // `char::MAX` needs six hex digits; allow a little leading-zero padding.
+    const MAX_DIGITS: usize = 8;
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let digits = bytes[1..]
+        .iter()
+        .take(MAX_DIGITS + 1)
+        .take_while(|b| b.is_ascii_hexdigit())
+        .count();
+    if digits == 0 || digits > MAX_DIGITS || bytes.get(1 + digits) != Some(&b'}') {
+        return None;
+    }
+    let value = u32::from_str_radix(&s[1..1 + digits], 16).ok()?;
+    Some((char::from_u32(value)?, digits + 2))
 }
 
 /// Splits at the first `=` that is not preceded by an escaping backslash.

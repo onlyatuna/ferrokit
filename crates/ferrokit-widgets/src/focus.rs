@@ -70,6 +70,11 @@ fn collect_tab_chain(
     if is_from || borrow.focus_policy().accepts_tab() {
         out.push(root.clone());
     }
+    // A hidden `from` (the focus widget, or the ancestor being hidden) keeps its place, but its
+    // subtree is not a candidate.
+    if is_from && !borrow.is_visible() {
+        return Ok(());
+    }
     let children = borrow.children();
     drop(borrow);
     for child in children {
@@ -121,6 +126,8 @@ pub(crate) struct FocusState {
 #[derive(Debug, Clone, Copy)]
 struct LostFocus {
     id: ObjectId,
+    /// Where `focusNextChild()` starts: `id`, or the hidden ancestor.
+    anchor: ObjectId,
     next: NextFocus,
 }
 
@@ -148,13 +155,19 @@ impl FocusState {
     /// parent is disabled. Only the state changes here; `move_lost_focus` sends the events.
     /// Returns whether `id` had focus.
     pub(crate) fn lose(self: &Rc<Self>, id: ObjectId, parent_enabled: bool) -> bool {
+        self.lose_via(id, id, parent_enabled)
+    }
+
+    /// `lose` for a focus widget `id` that stops being shown because its ancestor `anchor` (or
+    /// itself) was hidden: `focusNextChild()` runs from `anchor` (`hide_helper`, qwidget.cpp:8276-8283).
+    pub(crate) fn lose_via(self: &Rc<Self>, id: ObjectId, anchor: ObjectId, parent_enabled: bool) -> bool {
         if self.focused.get() != Some(id) {
             return false;
         }
         let root = parent_enabled
             .then(|| self.root.borrow().upgrade())
             .flatten();
-        let next = match root.map(|root| next_in_tab_chain(&root, id)) {
+        let next = match root.map(|root| next_in_tab_chain(&root, anchor)) {
             _ if !parent_enabled => NextFocus::Cleared,
             Some(Ok(Some(widget))) => match widget.try_borrow() {
                 Ok(w) => {
@@ -171,7 +184,7 @@ impl FocusState {
             NextFocus::To(next) => Some(next),
             _ => None,
         });
-        self.lost.borrow_mut().push(LostFocus { id, next });
+        self.lost.borrow_mut().push(LostFocus { id, anchor, next });
         true
     }
 }
@@ -222,7 +235,7 @@ fn move_lost_focus(state: &Rc<FocusState>, root: &WidgetRef) {
         let next = match lost.next {
             NextFocus::Cleared => None,
             NextFocus::To(id) => find_widget_by_id(root, id),
-            NextFocus::Later => next_in_tab_chain(root, lost.id).ok().flatten(),
+            NextFocus::Later => next_in_tab_chain(root, lost.anchor).ok().flatten(),
         };
         let reason = if next.is_some() {
             FocusReason::Tab

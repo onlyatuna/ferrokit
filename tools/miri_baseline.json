@@ -75,7 +75,8 @@
     "test_delete_later_destroys_subtree",
     "test_epoll_real_fds",
     "test_kill_timer_ownership",
-    "test_move_to_thread_handler_adds_child"
+    "test_move_to_thread_handler_adds_child",
+    "test_property_clone_and_race"
   ],
   "excluded": {
     "test_object_timer_native_release": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -182,6 +183,20 @@
     },
     "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale": {
       "reason": "Reads the wall clock (SystemTime) for the guard's age, which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_io_system::settings_load_unicode_escape_flood_is_linear": {
+      "reason": "Creates a TemporaryDir and reads/writes files, which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_application_exit_from_worker_thread::exit_from_worker_thread_emits_about_to_quit": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
       "expected": {
         "SB": "pass",
         "TB": "pass"
@@ -1264,6 +1279,22 @@
     "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale::SB": "unsupported",
     "test_io_system::settings_roundtrip_edge_whitespace_in_keys_and_sections::SB": "unsupported",
     "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale::TB": "unsupported",
-    "test_io_system::settings_roundtrip_edge_whitespace_in_keys_and_sections::TB": "unsupported"
+    "test_io_system::settings_roundtrip_edge_whitespace_in_keys_and_sections::TB": "unsupported",
+    "test_io_system::settings_load_unicode_escape_flood_is_linear::SB": "unsupported",
+    "test_io_system::settings_load_unicode_escape_flood_is_linear::TB": "unsupported",
+    "test_io_system::settings_sync_merges_changes_from_other_instances::SB": "unsupported",
+    "test_io_system::settings_sync_merges_changes_from_other_instances::TB": "unsupported",
+    "test_io_system::settings_concurrent_syncs_on_one_file_lose_nothing::SB": "unsupported",
+    "test_io_system::settings_concurrent_syncs_on_one_file_lose_nothing::TB": "unsupported",
+    "test_thread_system::test_spawn_async_tasks_awaiting_same_pool_do_not_deadlock::SB": "pass",
+    "test_thread_system::test_spawn_async_tasks_awaiting_same_pool_do_not_deadlock::TB": "pass",
+    "test_thread_system::test_thread_pool_last_arc_dropped_on_worker_thread::SB": "pass",
+    "test_thread_system::test_thread_pool_last_arc_dropped_on_worker_thread::TB": "pass",
+    "test_application_exit_from_worker_thread::exit_from_worker_thread_emits_about_to_quit::SB": "unsupported",
+    "test_application_exit_from_worker_thread::exit_from_worker_thread_emits_about_to_quit::TB": "unsupported",
+    "test_property_clone_and_race::dropping_a_clone_keeps_dependents_invalidated::SB": "pass",
+    "test_property_clone_and_race::dropping_a_clone_keeps_dependents_invalidated::TB": "pass",
+    "test_property_clone_and_race::invalidation_during_binding_is_not_lost::SB": "pass",
+    "test_property_clone_and_race::invalidation_during_binding_is_not_lost::TB": "pass"
   }
 }

@@ -219,17 +219,19 @@ impl DBusMenu {
     }
 
     pub fn handle_event(&self, id: u32, event_id: &str) -> bool {
-        let items = self.items.lock().unwrap();
-        for item in items.iter() {
-            if item.id == id && event_id == "clicked" && *item.enabled.lock().unwrap() {
-                if item.checkable {
-                    let mut chk = item.checked.lock().unwrap();
-                    *chk = !*chk;
-                    self.revision.fetch_add(1, Ordering::SeqCst);
-                }
-                item.activated.emit(&());
-                return true;
+        // Release the items lock before emitting so slots may call back into the menu.
+        let found = self.items.lock().unwrap().iter().find(|i| i.id == id).cloned();
+        let Some(item) = found else {
+            return false;
+        };
+        if event_id == "clicked" && *item.enabled.lock().unwrap() {
+            if item.checkable {
+                let mut chk = item.checked.lock().unwrap();
+                *chk = !*chk;
+                self.revision.fetch_add(1, Ordering::SeqCst);
             }
+            item.activated.emit(&());
+            return true;
         }
         false
     }

@@ -43,7 +43,7 @@ fn exec_popup_triggers_the_action_it_returns() {
 
     post_key(VK_DOWN);
     post_key(VK_RETURN);
-    let chosen = menu.borrow_mut().exec_popup(Point::new(50, 50));
+    let chosen = Menu::exec_popup(&menu, Point::new(50, 50));
 
     let chosen = chosen.expect("Return chose the first item");
     assert!(std::rc::Rc::ptr_eq(&chosen, &action));
@@ -58,7 +58,7 @@ fn a_quit_posted_while_the_menu_is_open_survives_it() {
     ensure_queue();
     unsafe { PostQuitMessage(7) };
 
-    let chosen = menu.borrow_mut().exec_popup(Point::new(50, 50));
+    let chosen = Menu::exec_popup(&menu, Point::new(50, 50));
 
     assert!(chosen.is_none());
     let mut msg: MSG = unsafe { std::mem::zeroed() };

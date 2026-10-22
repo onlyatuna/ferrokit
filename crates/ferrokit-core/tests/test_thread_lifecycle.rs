@@ -238,3 +238,25 @@ fn idle_priority_sets_sched_idle() {
         "Idle must run as SCHED_IDLE (qthread_unix.cpp:729-767)"
     );
 }
+
+#[test]
+fn exit_ends_nested_event_loops_too() {
+    use ferrokit_core::event_loop::EventLoop;
+
+    let (entered_tx, entered_rx) = channel::<()>();
+    let entered_tx = std::sync::Mutex::new(entered_tx);
+    let handle = Thread::spawn_with_event_loop(move |sender| {
+        let task = Box::new(move |_: &mut dyn std::any::Any| {
+            let inner = EventLoop::new();
+            let _ = entered_tx.lock().unwrap().send(());
+            inner.exec();
+        });
+        sender.post_event(ObjectId(0), Event::new(EventKind::MetaCall(task)));
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("nested loop did not start");
+    handle.exit(5);
+    let code = with_watchdog(10, move || handle.join());
+    assert_eq!(code.unwrap(), 5);
+}

@@ -199,12 +199,11 @@ fn stacked_hides_non_current_page_and_hit_test_skips_it() {
     use ferrokit_gui::geometry::primitives::Point;
     use ferrokit_widgets::hit_test::hit_test;
 
-    let mut stack = StackedWidget::new();
     let page0: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
     let page1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
-    stack.add_widget(Rc::clone(&page0));
-    stack.add_widget(Rc::clone(&page1));
-    let root: WidgetRef = Rc::new(RefCell::new(Box::new(stack)));
+    let root: WidgetRef = Rc::new(RefCell::new(Box::new(StackedWidget::new())));
+    StackedWidget::add_widget(&root, Rc::clone(&page0));
+    StackedWidget::add_widget(&root, Rc::clone(&page1));
     root.borrow().set_geometry(Rect::new(0, 0, 200, 100));
 
     assert!(page0.borrow().is_visible(), "current page must be visible");
@@ -215,11 +214,7 @@ fn stacked_hides_non_current_page_and_hit_test_skips_it() {
     let (hit, _) = hit_test(&root, Point::new(10, 10)).expect("point inside the stack");
     assert_eq!(hit.borrow().id(), page0.borrow().id());
 
-    root.borrow_mut()
-        .as_any_mut()
-        .downcast_mut::<StackedWidget>()
-        .unwrap()
-        .set_current_index(1);
+    StackedWidget::set_current_index(&root, 1);
 
     assert!(
         !page0.borrow().is_visible(),

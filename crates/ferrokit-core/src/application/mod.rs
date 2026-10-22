@@ -71,7 +71,7 @@ static ABOUT_TO_QUIT: RwLock<Option<Signal<()>>> = RwLock::new(None);
 static IN_EXEC: AtomicBool = AtomicBool::new(false);
 /// `QCoreApplicationPrivate::aboutToQuitEmitted` (qcoreapplication.cpp:1468, 1532-1534).
 static ABOUT_TO_QUIT_EMITTED: AtomicBool = AtomicBool::new(false);
-/// Thread that owns the application; `aboutToQuit` is only emitted there.
+/// Thread that owns the application.
 static APP_THREAD: RwLock<Option<ThreadId>> = RwLock::new(None);
 /// Window veto installed by the widget layer (`QApplication::event(Quit)`, qapplication.cpp:1679-1697).
 /// Returns false when a visible window refuses to close; `None` accepts every Quit.
@@ -143,9 +143,6 @@ pub(crate) fn app_object_on_current_thread() -> Option<ObjectId> {
 /// Emits `aboutToQuit` at most once per exec (qcoreapplication.cpp:1532-1535). The flag is set
 /// before emitting so a slot that calls `exit()` does not recurse.
 pub(crate) fn emit_about_to_quit_once() {
-    if !is_app_thread() {
-        return;
-    }
     if ABOUT_TO_QUIT_EMITTED.swap(true, Ordering::SeqCst) {
         return;
     }
