@@ -207,6 +207,9 @@ pub struct X11NativeWindow {
 static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0x02000001);
 
+/// Error returned when the X11 display socket cannot be connected.
+pub(crate) const X11_CONNECT_FAILED: &str = "Failed to connect to the X11 display";
+
 impl X11NativeWindow {
     /// Whether the display named by `DISPLAY` (default `:0`) accepts a connection.
     pub fn display_reachable() -> bool {
@@ -241,7 +244,7 @@ impl X11NativeWindow {
                 .and_then(|s| s.split('.').next())
                 .unwrap_or("0");
             let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{}", display_num))
-                .map_err(|_| "Failed to connect to the X11 display")?;
+                .map_err(|_| X11_CONNECT_FAILED)?;
             let _ = stream.set_nonblocking(true);
             Self::build(title, rect, flags, display_name, Some(stream))
         }

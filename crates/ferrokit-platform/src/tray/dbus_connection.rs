@@ -827,12 +827,13 @@ impl DbusConnection {
         }
     }
 
-    /// Reads once from the transport into `rx_buf`; `Ok(0)` means nothing is available.
+    /// Reads once from the transport into `rx_buf`; `Ok(0)` means nothing is available. An `Err`
+    /// leaves the connection open so the caller can still decode what was buffered first.
     fn read_chunk(&mut self) -> Result<usize, &'static str> {
         let mut chunk = [0u8; 4096];
         loop {
             match self.transport.read(&mut chunk) {
-                Ok(0) => return Err(self.close("The D-Bus connection was closed by the bus")),
+                Ok(0) => return Err("The D-Bus connection was closed by the bus"),
                 Ok(n) => {
                     self.rx_buf.extend_from_slice(&chunk[..n]);
                     return Ok(n);
@@ -846,7 +847,7 @@ impl DbusConnection {
                     return Ok(0);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return Err(self.close("Failed to read from the D-Bus connection")),
+                Err(_) => return Err("Failed to read from the D-Bus connection"),
             }
         }
     }
@@ -864,8 +865,10 @@ impl DbusConnection {
             if let Some(position) = position {
                 return Ok(self.inbox.remove(position).unwrap());
             }
-            if self.read_chunk()? == 0 {
-                return Err("Timed out waiting for a D-Bus reply");
+            match self.read_chunk() {
+                Ok(0) => return Err("Timed out waiting for a D-Bus reply"),
+                Ok(_) => {}
+                Err(e) => return Err(self.close(e)),
             }
         }
     }
@@ -879,16 +882,36 @@ impl DbusConnection {
     /// several reads is returned once its last byte arrives. Also retries queued output.
     pub fn read_incoming(&mut self) -> Result<Vec<DbusMessage>, &'static str> {
         if self.closed {
-            return Err("The D-Bus connection is closed");
+            // Messages queued before the close (e.g. while waiting for a reply) still go out.
+            if self.inbox.is_empty() {
+                return Err("The D-Bus connection is closed");
+            }
+            return Ok(self.inbox.drain(..).collect());
         }
         self.flush_tx()?;
+        let mut read_error = None;
         for _ in 0..MAX_READS_PER_POLL {
-            if self.read_chunk()? == 0 {
-                break;
+            match self.read_chunk() {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => {
+                    read_error = Some(e);
+                    break;
+                }
             }
         }
-        self.decode_frames()?;
-        Ok(self.inbox.drain(..).collect())
+        // Decode before reporting a read failure: messages that arrived whole are delivered, and
+        // the error surfaces on the next call (the connection is closed).
+        let mut error = self.decode_frames().err();
+        if error.is_none() {
+            if let Some(e) = read_error {
+                error = Some(self.close(e));
+            }
+        }
+        match error {
+            Some(e) if self.inbox.is_empty() => Err(e),
+            _ => Ok(self.inbox.drain(..).collect()),
+        }
     }
 
     /// Bytes queued for the bus that the socket has not accepted yet.
@@ -941,6 +964,7 @@ pub mod scripted {
         received: Vec<DbusMessage>,
         reject_auth: bool,
         fail_hello: bool,
+        eof: bool,
         max_read: Option<usize>,
         write_budget: Option<usize>,
         unique_name: String,
@@ -983,6 +1007,11 @@ pub mod scripted {
         /// Answers `Hello` with an error message instead of a unique name.
         pub fn fail_hello(&self) {
             self.state.lock().unwrap().fail_hello = true;
+        }
+
+        /// Once the queued bytes are read, `read` reports end of stream.
+        pub fn close_after_queued(&self) {
+            self.state.lock().unwrap().eof = true;
         }
 
         /// Hands the client at most `n` bytes per `read`.
@@ -1080,6 +1109,9 @@ pub mod scripted {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let mut state = self.state.lock().unwrap();
             if state.to_client.is_empty() {
+                if state.eof {
+                    return Ok(0);
+                }
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             let n = buf
@@ -1333,6 +1365,43 @@ mod tests {
         bus.push_to_client(&split[split.len() - 1..]);
         let got = conn.read_incoming().unwrap();
         assert_eq!(got, vec![DbusMessage::from_bytes(&split).unwrap()]);
+    }
+
+    #[test]
+    fn complete_messages_are_delivered_before_a_bad_frame_closes() {
+        let (mut conn, bus) = connect(":1.2");
+        let first = DbusMessage::signal("/a", "org.test", "First", 10);
+        let mut stream = first.to_bytes();
+        stream.extend_from_slice(&[b'x'; 32]);
+        bus.push_to_client(&stream);
+        let got = conn.read_incoming().unwrap();
+        assert_eq!(got, vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]);
+        assert!(!conn.is_live_socket());
+        assert!(conn.read_incoming().is_err());
+    }
+
+    #[test]
+    fn complete_messages_are_delivered_before_eof_closes() {
+        let (mut conn, bus) = connect(":1.2");
+        let first = DbusMessage::signal("/a", "org.test", "First", 10);
+        bus.push_to_client(&first.to_bytes());
+        bus.close_after_queued();
+        let got = conn.read_incoming().unwrap();
+        assert_eq!(got, vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]);
+        assert!(!conn.is_live_socket());
+        assert!(conn.read_incoming().is_err());
+    }
+
+    #[test]
+    fn messages_queued_while_waiting_for_a_reply_survive_a_close() {
+        let (mut conn, bus) = connect(":1.2");
+        let sig = DbusMessage::signal("/a", "org.test", "First", 10);
+        bus.push_to_client(&sig.to_bytes());
+        bus.close_after_queued();
+        assert!(conn.wait_for_reply(9999).is_err());
+        let got = conn.read_incoming().unwrap();
+        assert_eq!(got, vec![DbusMessage::from_bytes(&sig.to_bytes()).unwrap()]);
+        assert!(conn.read_incoming().is_err());
     }
 
     #[test]
