@@ -273,6 +273,8 @@ impl CocoaNativeWindow {
             unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), true) };
             if let Some(effect_view) = self.vibrancy_view.take() {
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
+                // Drop our +1 from `alloc`/`init`.
+                unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
         }
     }
@@ -611,6 +613,28 @@ impl PlatformWindow for CocoaNativeWindow {
             self.dispatch_cocoa_event(event);
         }
         count
+    }
+}
+
+impl Drop for CocoaNativeWindow {
+    /// Qt's `~QCocoaWindow` takes the window off screen and releases its views and the window.
+    fn drop(&mut self) {
+        // `release` below is the only release; stop `close` from releasing the window too.
+        unsafe {
+            ObjcMsg::send_bool(self.ns_window, Sel::register("setReleasedWhenClosed:"), false)
+        };
+        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
+        unsafe { ObjcMsg::send_0(self.ns_window, Sel::register("close")) };
+        // Each effect view is a subview (retained by `ns_view`) that was also `alloc`ed here.
+        for view in [self.vibrancy_view.take(), self.backdrop_view.take()]
+            .into_iter()
+            .flatten()
+        {
+            unsafe { ObjcMsg::send_0(view, Sel::register("release")) };
+        }
+        // `setContentView:` retained `ns_view`; the window releases that when it deallocates.
+        unsafe { ObjcMsg::send_0(self.ns_view, Sel::register("release")) };
+        unsafe { ObjcMsg::send_0(self.ns_window, Sel::register("release")) };
     }
 }
 
