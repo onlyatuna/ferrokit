@@ -438,3 +438,95 @@ fn a_click_outside_through_event_emits_about_to_hide_after_the_borrow() {
     assert_eq!(*hidden.lock().unwrap(), 1);
     SHARED.with(|s| *s.borrow_mut() = None);
 }
+
+thread_local! {
+    static CHAIN: RefCell<Vec<MenuRef>> = const { RefCell::new(Vec::new()) };
+}
+
+type Signals = Arc<Mutex<Vec<&'static str>>>;
+
+/// Borrows every menu of the chain mutably: a slot doing this panics while an emitter still holds
+/// one of them.
+fn touch_chain() {
+    CHAIN.with(|c| c.borrow().iter().for_each(|m| drop(m.borrow_mut())));
+}
+
+fn key_event(key: u32) -> Event {
+    Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false })
+}
+
+const VK_RETURN: u32 = 0x0D;
+const VK_ESCAPE: u32 = 0x1B;
+
+/// A top menu whose sub-menu holds one item, popped up with the sub-menu open and the item
+/// selected. Every slot borrows both menus and logs itself.
+fn open_chain() -> (MenuRef, MenuRef, Signals) {
+    WidgetCommandQueue::clear();
+    let top = Menu::new_ref("top");
+    let sub = top.borrow_mut().add_menu("sub");
+    let item = sub.borrow_mut().add_new_action("item");
+    CHAIN.with(|c| *c.borrow_mut() = vec![top.clone(), sub.clone()]);
+    let log: Signals = Arc::new(Mutex::new(Vec::new()));
+    let entry = |name: &'static str| {
+        let log = Arc::clone(&log);
+        move || {
+            touch_chain();
+            log.lock().unwrap().push(name);
+        }
+    };
+    let f = entry("sub hide");
+    sub.borrow().about_to_hide.connect(move |_| f());
+    let f = entry("top hide");
+    top.borrow().about_to_hide.connect(move |_| f());
+    let f = entry("item triggered");
+    item.borrow().triggered.connect(move |_| f());
+    let f = entry("sub triggered");
+    sub.borrow().triggered.connect(move |_| f());
+    let f = entry("top triggered");
+    top.borrow().triggered.connect(move |_| f());
+    Menu::popup(&top, Point::new(0, 0));
+    Menu::dispatch(&top, &mut key_event(0x28)); // Down selects the sub-menu item
+    Menu::dispatch(&top, &mut key_event(0x27)); // Right opens it and selects the item
+    assert!(sub.borrow().is_visible());
+    (top, sub, log)
+}
+
+const ACTIVATION: [&str; 5] = ["sub hide", "top hide", "item triggered", "sub triggered", "top triggered"];
+
+/// Choosing an item of a sub-menu hides the chain deepest first and then triggers the action
+/// (`QMenuPrivate::activateAction`: `hideUpToMenuBar`, then `activate`), all with no menu borrowed.
+#[test]
+fn activating_a_submenu_item_hides_the_chain_then_triggers_with_the_menus_free() {
+    let (top, sub, log) = open_chain();
+    Menu::dispatch(&top, &mut key_event(VK_RETURN));
+    assert!(!top.borrow().is_visible() && !sub.borrow().is_visible());
+    assert_eq!(*log.lock().unwrap(), ACTIVATION);
+    CHAIN.with(|c| c.borrow_mut().clear());
+}
+
+/// The same activation delivered by the event dispatcher, which holds the top menu borrowed while
+/// `event` runs: the signals follow at the next flush, in the same order.
+#[test]
+fn activating_through_event_announces_the_chain_at_the_next_flush() {
+    let (top, sub, log) = open_chain();
+    top.borrow_mut().event(&mut key_event(VK_RETURN));
+    assert!(!top.borrow().is_visible() && !sub.borrow().is_visible());
+    assert!(log.lock().unwrap().is_empty(), "nothing is emitted under the borrow");
+    WidgetCommandQueue::flush();
+    assert_eq!(*log.lock().unwrap(), ACTIVATION);
+    CHAIN.with(|c| c.borrow_mut().clear());
+}
+
+/// Escape closes only the sub-menu, whose `about_to_hide` is emitted at once; a second Escape
+/// closes the top menu.
+#[test]
+fn escape_in_a_submenu_announces_its_hide() {
+    let (top, sub, log) = open_chain();
+    Menu::dispatch(&top, &mut key_event(VK_ESCAPE));
+    assert!(top.borrow().is_visible() && !sub.borrow().is_visible());
+    assert_eq!(*log.lock().unwrap(), ["sub hide"]);
+    Menu::dispatch(&top, &mut key_event(VK_ESCAPE));
+    assert!(!top.borrow().is_visible());
+    assert_eq!(*log.lock().unwrap(), ["sub hide", "top hide"]);
+    CHAIN.with(|c| c.borrow_mut().clear());
+}

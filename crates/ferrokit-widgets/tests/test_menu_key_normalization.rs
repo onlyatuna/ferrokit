@@ -46,6 +46,8 @@ fn function_and_numpad_keys_do_not_match_letter_mnemonics() {
     assert_eq!(fired.load(Ordering::SeqCst), 0);
 
     assert!(press(&mut menu, 0x50), "the 'P' key still activates &Print");
+    // `event` runs with the menu borrowed by its caller: the activation follows at the next flush.
+    ferrokit_widgets::WidgetCommandQueue::flush();
     assert_eq!(fired.load(Ordering::SeqCst), 101);
 }
 

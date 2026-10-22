@@ -119,7 +119,7 @@ fn test_menu_high_dpi_hit_testing() {
     menu.add_separator();
     menu.add_action(act_exit.clone());
 
-    let mut menu = popped(menu, Point::new(0, 0));
+    let menu = popped(menu, Point::new(0, 0));
 
     let exit_geo = menu.action_geometry(&act_exit).expect("Exit action geometry exists");
     let target_logical_pt = Point::new(exit_geo.center().x, exit_geo.center().y);
@@ -243,7 +243,7 @@ fn opacity_menu() -> (
     let autostart = Action::new_ref("Autostart");
     root.add_action(interval.clone());
     root.add_action(autostart.clone());
-    let mut root = popped(root, Point::new(0, 0));
+    let root = popped(root, Point::new(0, 0));
     (root, interval, autostart)
 }
 
