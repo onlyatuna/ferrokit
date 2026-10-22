@@ -349,4 +349,96 @@ mod tests {
         let area = Region::from_rect(Rect::new(80, 0, 50, 10));
         assert!(bs.scroll(&area, -40, 0));
     }
+
+    /// Pixel (x, y) holds [x, y, 0, 255], so every source pixel is unique.
+    fn coordinate_store(w: u32, h: u32, dpr: f32) -> BackingStore {
+        let mut bs =
+            BackingStore::new(Size::new((w as f32 / dpr) as i32, (h as f32 / dpr) as i32), dpr).unwrap();
+        let stride = bs.physical_width() as usize * 4;
+        for (i, px) in bs.data_mut().chunks_exact_mut(4).enumerate() {
+            px.copy_from_slice(&[(i % (stride / 4)) as u8, (i / (stride / 4)) as u8, 0, 255]);
+        }
+        bs
+    }
+
+    fn px(bs: &BackingStore, x: u32, y: u32) -> [u8; 4] {
+        let c = bs.pixel(x, y).unwrap();
+        [c.red(), c.green(), c.blue(), c.alpha()]
+    }
+
+    #[test]
+    fn scroll_right_moves_pixels_and_leaves_the_rest() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 50, 50)), 10, 0));
+        for y in 0..50 {
+            for x in 10..60 {
+                assert_eq!(px(&bs, x, y), [(x - 10) as u8, y as u8, 0, 255], "({x},{y})");
+            }
+            // Vacated strip and everything outside the destination keep their old content.
+            assert_eq!(px(&bs, 5, y), [5, y as u8, 0, 255]);
+            assert_eq!(px(&bs, 70, y), [70, y as u8, 0, 255]);
+        }
+        assert_eq!(px(&bs, 20, 60), [20, 60, 0, 255]);
+    }
+
+    #[test]
+    fn scroll_down_overlapping_copies_from_the_original() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 20, 50)), 0, 3));
+        for y in 3..53 {
+            assert_eq!(px(&bs, 7, y), [7, (y - 3) as u8, 0, 255], "y={y}");
+        }
+    }
+
+    #[test]
+    fn scroll_up_and_left_overlapping_copies_from_the_original() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(10, 10, 40, 40)), -4, -3));
+        for y in 7..47 {
+            for x in 6..46 {
+                assert_eq!(px(&bs, x, y), [(x + 4) as u8, (y + 3) as u8, 0, 255], "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_with_negative_source_clips_to_the_buffer() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(-10, 0, 50, 50)), 20, 0));
+        for x in 20..60 {
+            assert_eq!(px(&bs, x, 3), [(x - 20) as u8, 3, 0, 255], "x={x}");
+        }
+        assert_eq!(px(&bs, 10, 3), [10, 3, 0, 255]);
+    }
+
+    #[test]
+    fn scroll_with_source_past_right_edge_clips_to_the_buffer() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(80, 0, 50, 10)), -40, 0));
+        for y in 0..10 {
+            for x in 40..60 {
+                assert_eq!(px(&bs, x, y), [(x + 40) as u8, y as u8, 0, 255], "({x},{y})");
+            }
+        }
+        // The next row's start must not have been pulled into the last row.
+        assert_eq!(px(&bs, 60, 9), [60, 9, 0, 255]);
+    }
+
+    #[test]
+    fn scroll_scales_logical_offsets_by_dpr() {
+        let mut bs = coordinate_store(200, 200, 2.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 25, 25)), 5, 0));
+        // Logical (0,0,25,25) is physical (0,0,50,50); dx 5 is 10 physical px.
+        for x in 10..60 {
+            assert_eq!(px(&bs, x, 4), [(x - 10) as u8, 4, 0, 255], "x={x}");
+        }
+    }
+
+    #[test]
+    fn scroll_entirely_outside_is_a_no_op() {
+        let mut bs = coordinate_store(100, 100, 1.0);
+        assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 10, 10)), 500, 0));
+        assert_eq!(px(&bs, 3, 3), [3, 3, 0, 255]);
+        assert_eq!(px(&bs, 99, 9), [99, 9, 0, 255]);
+    }
 }

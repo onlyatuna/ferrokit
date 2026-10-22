@@ -159,12 +159,22 @@ impl TextCursor {
                         b.position + b.text().graphemes(true).count()
                     })
                 }
-                MoveOperation::StartOfLine | MoveOperation::StartOfWord => {
+                MoveOperation::StartOfLine => {
+                    let block_idx = doc.block_index_at_grapheme(new_pos);
+                    doc.block_at(block_idx).map_or(0, |b| b.position)
+                }
+                MoveOperation::StartOfWord => {
                     let full = doc.to_plain_text();
                     let pos = TextPosition::from_grapheme(&full, new_pos);
                     pos.prev_word(&full).grapheme.0
                 }
-                MoveOperation::EndOfLine | MoveOperation::EndOfWord => {
+                MoveOperation::EndOfLine => {
+                    let block_idx = doc.block_index_at_grapheme(new_pos);
+                    doc.block_at(block_idx).map_or(total_graphemes, |b| {
+                        b.position + b.text().graphemes(true).count()
+                    })
+                }
+                MoveOperation::EndOfWord => {
                     let full = doc.to_plain_text();
                     let pos = TextPosition::from_grapheme(&full, new_pos);
                     pos.next_word(&full).grapheme.0
@@ -201,13 +211,18 @@ impl TextCursor {
                     pos.next_word(&full).grapheme.0
                 }
                 MoveOperation::Up | MoveOperation::Down => {
-                    // Line-based cursor movement
-                    let full = doc.to_plain_text();
-                    let _lines: Vec<&str> = full.lines().collect();
-                    if op == MoveOperation::Up {
-                        new_pos.saturating_sub(20) // approximate line fallback
+                    // Without a layout every block is one line: keep the column and move to the
+                    // adjacent block, clamped to its length; at the first/last block nothing moves.
+                    let block_idx = doc.block_index_at_grapheme(new_pos);
+                    let column = doc.block_at(block_idx).map_or(0, |b| new_pos - b.position);
+                    let target = if op == MoveOperation::Up {
+                        block_idx.checked_sub(1)
                     } else {
-                        (new_pos + 20).min(total_graphemes)
+                        (block_idx + 1 < doc.block_count()).then_some(block_idx + 1)
+                    };
+                    match target.and_then(|i| doc.block_at(i)) {
+                        Some(b) => b.position + column.min(b.text().graphemes(true).count()),
+                        None => new_pos,
                     }
                 }
             };
@@ -313,6 +328,58 @@ impl TextCursor {
     /// Inserts a new paragraph block at cursor position.
     pub fn insert_block(&mut self, doc: &mut TextDocument) {
         self.insert_text(doc, "\n");
+    }
+}
+
+#[cfg(test)]
+mod line_move_tests {
+    use super::*;
+
+    fn doc(text: &str) -> TextDocument {
+        let mut d = TextDocument::new();
+        d.set_plain_text(text);
+        d
+    }
+
+    fn mv(d: &TextDocument, from: usize, op: MoveOperation) -> usize {
+        let mut c = TextCursor::at_position(from);
+        c.move_position(d, op, MoveMode::MoveAnchor, 1);
+        c.position()
+    }
+
+    #[test]
+    fn home_and_end_stay_on_the_line_not_the_word() {
+        let d = doc("foo bar baz");
+        assert_eq!(mv(&d, 11, MoveOperation::StartOfLine), 0);
+        assert_eq!(mv(&d, 5, MoveOperation::StartOfLine), 0);
+        assert_eq!(mv(&d, 0, MoveOperation::EndOfLine), 11);
+        assert_eq!(mv(&d, 5, MoveOperation::EndOfLine), 11);
+    }
+
+    #[test]
+    fn home_and_end_respect_block_boundaries() {
+        let d = doc("ab\ncdef");
+        // Positions: a0 b1 \n2 c3 d4 e5 f6 end7.
+        assert_eq!(mv(&d, 5, MoveOperation::StartOfLine), 3);
+        assert_eq!(mv(&d, 3, MoveOperation::EndOfLine), 7);
+        assert_eq!(mv(&d, 1, MoveOperation::EndOfLine), 2);
+    }
+
+    #[test]
+    fn up_down_keep_the_column_and_clamp() {
+        let d = doc("abcdef\nxy\nlonger text");
+        // Blocks start at 0, 7, 10.
+        assert_eq!(mv(&d, 4, MoveOperation::Down), 9); // clamped to end of "xy"
+        assert_eq!(mv(&d, 8, MoveOperation::Down), 10 + 1);
+        assert_eq!(mv(&d, 12, MoveOperation::Up), 9); // column 2 of "xy"
+        assert_eq!(mv(&d, 8, MoveOperation::Up), 1);
+    }
+
+    #[test]
+    fn up_on_first_and_down_on_last_block_do_not_move() {
+        let d = doc("abc\ndef");
+        assert_eq!(mv(&d, 2, MoveOperation::Up), 2);
+        assert_eq!(mv(&d, 6, MoveOperation::Down), 6);
     }
 }
 
