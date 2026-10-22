@@ -683,3 +683,25 @@ fn panicking_waker_does_not_break_pool_accounting() {
     // The worker survives and still runs jobs.
     assert_eq!(pool.spawn(|| 7).wait_timeout(GUARD), Ok(Some(7)));
 }
+
+struct FlagWaker(AtomicBool);
+impl Wake for FlagWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn panicking_waker_does_not_starve_other_wakers() {
+    let pool = ThreadPool::new(1);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let mut handle = pool.spawn(move || release_rx.recv().unwrap());
+    let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+    let bad = Waker::from(Arc::new(PanicWaker));
+    let good = Waker::from(Arc::clone(&flag));
+    assert!(Pin::new(&mut handle).poll(&mut Context::from_waker(&bad)).is_pending());
+    assert!(Pin::new(&mut handle).poll(&mut Context::from_waker(&good)).is_pending());
+    release_tx.send(()).unwrap();
+    assert!(pool.wait_for_done_timeout(GUARD));
+    assert!(flag.0.load(Ordering::SeqCst));
+}

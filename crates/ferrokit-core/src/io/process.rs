@@ -313,8 +313,12 @@ impl Process {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(_) => {
-                    self.child = None;
-                    self.finish_readers(start_time, timeout);
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    // Bounded: a grandchild may still hold the pipes open.
+                    self.finish_readers(Instant::now(), Some(Duration::from_secs(1)));
                     self.state = ProcessState::NotRunning;
                     self.exit_status = Some(ExitStatus::CrashExit);
                     self.pid = None;
