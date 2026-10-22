@@ -1720,3 +1720,121 @@ fn test_x11_keymapper_wayland_buffer_release_and_cocoa_multi_monitor() {
     assert_eq!(flipped_rect.width, 400);
     assert_eq!(flipped_rect.height, 300);
 }
+
+#[test]
+fn test_dbus_menu_slot_can_reenter_menu_during_activation() {
+    use ferrokit_platform::menu::{DBusMenu, PlatformMenu};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// `DBusMenu` holds `Box<dyn PlatformMenu>` submenus, so it is neither `Send` nor `Sync`; the
+    /// test only ever touches it from one thread at a time while the box below keeps it alive.
+    struct MenuPtr(*const DBusMenu);
+    // SAFETY: see the type docs; the pointee outlives every use and is accessed by one thread.
+    unsafe impl Send for MenuPtr {}
+    unsafe impl Sync for MenuPtr {}
+    impl MenuPtr {
+        fn get(&self) -> &DBusMenu {
+            // SAFETY: the pointee is alive (owned by the test) for as long as any `MenuPtr` is used.
+            unsafe { &*self.0 }
+        }
+    }
+
+    let mut menu = Box::new(DBusMenu::new());
+    let item = menu.add_action(1, "Reenter");
+    let seen = Arc::new(AtomicUsize::new(0));
+    {
+        let ptr = MenuPtr(&*menu);
+        let seen = Arc::clone(&seen);
+        item.activated().connect(move |()| {
+            // Would self-deadlock if handle_event still held the items lock.
+            let menu = ptr.get();
+            seen.store(
+                menu.items().len() + menu.get_layout(0, -1).children.len(),
+                Ordering::SeqCst,
+            );
+        });
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = MenuPtr(&*menu);
+    std::thread::spawn(move || {
+        let _ = tx.send(worker.get().handle_event(1, "clicked"));
+    });
+    let handled = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("handle_event deadlocked while emitting activated");
+    assert!(handled);
+    assert_eq!(seen.load(Ordering::SeqCst), 2);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn test_cocoa_status_item_icon_has_pixels_and_does_not_leak_images() {
+    use ferrokit_core::object::ThreadContext;
+    use ferrokit_platform::tray::{CocoaStatusItem, PlatformTrayIcon};
+    use ferrokit_platform::{MockObjcRuntime, ObjcMsg, Sel};
+
+    ThreadContext::init_current(true, None);
+    let mut pixmap = Pixmap::new(4, 3).expect("failed to create pixmap");
+    pixmap.fill(Color::from_rgba8(0, 200, 255, 255));
+
+    let mut item = CocoaStatusItem::new(7);
+    item.set_icon(&pixmap).unwrap();
+
+    let runtime = MockObjcRuntime::instance();
+    let button = unsafe { ObjcMsg::send_0(item.native_status_item(), Sel::register("button")) };
+    let image = runtime.get_object_data(button).expect("button").contents;
+    let image_data = runtime.get_object_data(image).expect("button has an image");
+    assert_eq!(
+        image_data.children.len(),
+        1,
+        "the NSImage needs a bitmap representation, otherwise the icon draws nothing"
+    );
+    let rep = runtime
+        .get_object_data(image_data.children[0])
+        .expect("representation alive");
+    assert_eq!(rep.pixels, pixmap.data());
+    assert_eq!(image_data.retain_count, 1, "only the button owns the image");
+    assert_eq!(rep.retain_count, 1, "only the image owns the representation");
+
+    // Replacing the icon releases the previous image.
+    item.set_icon(&pixmap).unwrap();
+    assert!(runtime.get_object_data(image).is_none(), "old image leaked");
+    let new_image = runtime.get_object_data(button).expect("button").contents;
+    assert_ne!(new_image, image);
+    assert!(runtime.get_object_data(new_image).is_some());
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn test_cocoa_window_drop_orders_out_and_releases_native_objects() {
+    use ferrokit_core::object::ThreadContext;
+    use ferrokit_platform::{
+        CocoaNativeWindow, MockObjcRuntime, PlatformWindow, WindowFlags,
+    };
+    use ferrokit_platform::window_cocoa::CocoaVibrancyMaterial;
+
+    ThreadContext::init_current(true, None);
+    let mut win = CocoaNativeWindow::new(
+        "Dropped",
+        Rect::new(10, 10, 200, 100),
+        WindowFlags::empty(),
+    )
+    .expect("failed to create window");
+    win.set_vibrancy(Some(CocoaVibrancyMaterial::Sidebar));
+    win.show();
+
+    let runtime = MockObjcRuntime::instance();
+    let ns_window = win.ns_window();
+    let ns_view = win.ns_view();
+    let view_data = runtime.get_object_data(ns_view).expect("view");
+    assert_eq!(view_data.children.len(), 1, "vibrancy view is a subview");
+    let effect = view_data.children[0];
+    assert!(runtime.get_object_data(ns_window).expect("window").is_visible);
+
+    drop(win);
+
+    assert!(runtime.get_object_data(ns_window).is_none(), "NSWindow leaked");
+    assert!(runtime.get_object_data(ns_view).is_none(), "NSView leaked");
+    assert!(runtime.get_object_data(effect).is_none(), "effect view leaked");
+}
