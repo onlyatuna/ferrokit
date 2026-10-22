@@ -24,6 +24,9 @@ pub struct OutlineFace {
     _data: SharedFontData,
 }
 
+/// Largest glyph bitmap (in pixels) the rasterizer will allocate.
+const MAX_GLYPH_PIXELS: usize = 16 * 1024 * 1024;
+
 impl OutlineFace {
     /// Parses face `face_index` of the font file `data` (reads the table directory only).
     pub fn new(data: SharedFontData, face_index: u32) -> Result<Self, String> {
@@ -148,8 +151,14 @@ impl GlyphFace for OutlineFace {
             return (GlyphMetrics::default(), Vec::new());
         }
         let layout = self.layout(glyph_id, px);
-        let m = layout.metrics;
+        let mut m = layout.metrics;
         if m.width == 0 || m.height == 0 {
+            return (m, Vec::new());
+        }
+        if m.width.checked_mul(m.height).map_or(true, |n| n > MAX_GLYPH_PIXELS) {
+            // Crafted bounding box: drop the glyph instead of allocating gigabytes.
+            m.width = 0;
+            m.height = 0;
             return (m, Vec::new());
         }
 

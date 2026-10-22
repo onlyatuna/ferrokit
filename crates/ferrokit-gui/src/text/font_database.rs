@@ -91,6 +91,9 @@ pub struct FontFamilyInfo {
     pub italic: bool,
 }
 
+/// Most in-memory font faces [`FontDatabase`] keeps alive at once.
+const MAX_MEMORY_FACES: usize = 32;
+
 /// System font cache database (`QFontDatabase` equivalent).
 ///
 /// Searches, loads, and caches system fonts to avoid redundant disk I/O and parsing.
@@ -105,6 +108,8 @@ pub struct FontDatabase {
     application_faces: Vec<FontFamilyInfo>,
     /// One engine per requested family string, shared so glyph caches persist across draw calls.
     engines: HashMap<String, FontEngine>,
+    /// Faces built from `Font::font_data`, so a draw or metrics call does not re-parse the font.
+    memory_faces: Vec<(SharedFontData, SharedGlyphFace)>,
 }
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
@@ -239,6 +244,7 @@ impl FontDatabase {
             system_faces: None,
             application_faces: Vec::new(),
             engines: HashMap::new(),
+            memory_faces: Vec::new(),
         };
 
         db.preload_default_fonts();
@@ -448,7 +454,18 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data {
-            if let Ok(face) = parse_face(shared, 0) {
+            let cached = self.memory_faces.iter().find(|(d, _)| d.ptr_eq(shared)).map(|(_, f)| f.clone());
+            let face = match cached {
+                Some(face) => Some(face),
+                None => parse_face(shared, 0).ok().inspect(|face| {
+                    // Each parse re-registers the font with the platform rasterizer, so remember it.
+                    if self.memory_faces.len() >= MAX_MEMORY_FACES {
+                        self.memory_faces.remove(0);
+                    }
+                    self.memory_faces.push((shared.clone(), face.clone()));
+                }),
+            };
+            if let Some(face) = face {
                 engines.push(
                     FontEngine::new(face)
                         .with_raw_data(shared.clone())
@@ -925,5 +942,27 @@ mod tests {
             assert!(raw.is_some());
             assert_eq!(raw.unwrap().len(), data.len());
         }
+    }
+
+    /// Candidate font files for tests that need real font data on any host.
+    fn any_font_bytes() -> Option<Vec<u8>> {
+        [
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+    }
+
+    #[test]
+    fn in_memory_font_face_is_built_once_per_font_data() {
+        let Some(bytes) = any_font_bytes() else { return };
+        let mut db = FontDatabase::new();
+        let font = Font::new("NoSuchFamily", 12.0).with_font_data(SharedFontData::from_vec(bytes));
+        let a = db.resolve_font_engines(&font);
+        let b = db.resolve_font_engines(&font);
+        assert!(Arc::ptr_eq(&a[0].face, &b[0].face));
     }
 }

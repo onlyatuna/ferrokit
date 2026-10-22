@@ -319,9 +319,11 @@ impl TextCursor {
         if self.has_selection() {
             self.remove_selected_text(doc);
         }
-        let inserted_graphemes = text.graphemes(true).count();
+        let before = doc.character_count();
         doc.insert_formatted_text(self.position, text, format);
-        self.position += inserted_graphemes;
+        // Advance by document growth: a combining mark merges into the previous cluster.
+        let after = doc.character_count();
+        self.position += after.saturating_sub(before);
         self.anchor = self.position;
     }
 

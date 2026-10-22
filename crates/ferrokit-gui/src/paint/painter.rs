@@ -981,7 +981,7 @@ impl<'a> Painter<'a> {
                         }
 
                         let a_factor = (src_raw_a as f32 / 255.0) * self.state.opacity;
-                        let src_a = (a_factor * 255.0).round() as u32;
+                        let src_a = ((a_factor * 255.0).round() as u32).min(255);
                         let inv_a = 255 - src_a;
 
                         // tiny-skia Pixmap is premultiplied RGBA

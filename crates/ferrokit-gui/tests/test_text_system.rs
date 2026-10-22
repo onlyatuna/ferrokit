@@ -5,6 +5,26 @@ use ferrokit_gui::text::*;
 use tiny_skia::Color;
 
 #[test]
+fn test_cursor_advances_by_document_growth_for_combining_marks() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("XY");
+    let mut cursor = TextCursor::at_position(1);
+    cursor.insert_text(&mut doc, "\u{0915}");
+    cursor.insert_text(&mut doc, "\u{093F}"); // vowel sign merges into the previous cluster
+    assert_eq!(doc.to_plain_text(), "X\u{0915}\u{093F}Y");
+    assert_eq!(cursor.position(), 2);
+}
+
+#[test]
+fn test_markdown_deeply_nested_links_do_not_overflow_the_stack() {
+    let n = 20_000;
+    let md = format!("{}a{}", "[".repeat(n), "](u)".repeat(n));
+    let mut doc = TextDocument::new();
+    doc.set_markdown(&md);
+    assert!(doc.character_count() > 0);
+}
+
+#[test]
 fn test_text_coordinates_and_graphemes() {
     // String with ASCII, CJK, and complex ZWJ emoji
     // "Hi! 🇨🇦 👨‍👩‍👧‍👦 世界"
