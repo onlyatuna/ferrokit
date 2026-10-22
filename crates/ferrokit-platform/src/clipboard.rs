@@ -501,8 +501,12 @@ mod tests {
             CloseClipboard();
         }
         let data = Win32Clipboard::mime_data_static().expect("GDI format must not fail the read");
-        assert_eq!(data.text().as_deref(), Some("AAAAAAAA"));
-        assert_eq!(Win32Clipboard::text_static().unwrap(), "AAAAAAAA");
+        // Windows may force a terminator into the last unit, so 7 or 8 units
+        // come back; anything longer means the read ran past the allocation.
+        let bounded = |text: &str| matches!(text, "AAAAAAA" | "AAAAAAAA");
+        assert!(bounded(data.text().as_deref().unwrap_or("")), "{:?}", data.text());
+        let text = Win32Clipboard::text_static().unwrap();
+        assert!(bounded(&text), "{text:?}");
         Win32Clipboard::clear().unwrap();
     }
 
