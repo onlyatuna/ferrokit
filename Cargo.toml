@@ -7,6 +7,8 @@ members = [
     "crates/ferrokit-widgets",
     "crates/ferrokit-derive",
 ]
+# Fuzz harnesses need nightly and are not built by CI (see fuzz/README.md).
+exclude = ["fuzz"]
 
 # One feature set for every member. Cargo unifies features over the packages a command selects, so
 # with per-crate lists `cargo test -p ferrokit-core` built a different windows-sys (and so a different

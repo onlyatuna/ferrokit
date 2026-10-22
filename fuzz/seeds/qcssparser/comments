@@ -1,0 +1,1 @@
+/* c */ QWidget[prop="v"] { /* d */ color: palette(window-text); } @import "x";
