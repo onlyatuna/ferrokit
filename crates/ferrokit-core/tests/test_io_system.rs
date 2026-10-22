@@ -845,3 +845,111 @@ fn settings_roundtrip_edge_whitespace_in_keys_and_sections() {
     assert_eq!(s.value(" sec /\tkey\t"), Some(Variant::String("3".into())));
     assert_eq!(s.value("mid dle"), Some(Variant::String("4".into())));
 }
+
+/// Runs `f` on a helper thread and fails (instead of hanging the suite) if it does not finish.
+fn finish_within_guard<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("operation did not finish: super-linear parsing")
+}
+
+#[test]
+fn settings_load_unicode_escape_flood_is_linear() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("flood.ini");
+    let pairs = if cfg!(miri) { 500 } else { 100_000 };
+    // Bare `\u` repeated, and `\u{` repeated without a closing brace: both used to rescan the
+    // rest of the line for every escape.
+    let bare = "\\u".repeat(pairs);
+    let open = "\\u{".repeat(pairs);
+    fs::write(
+        &path,
+        format!("; ferrokit-settings-escaped-v1\nbare={bare}\nopen={open}\nok=\\u{{e9}}x\n"),
+    )
+    .unwrap();
+    let s = finish_within_guard(move || Settings::new(&path));
+    assert_eq!(s.value("bare"), Some(Variant::String(bare)));
+    assert_eq!(s.value("open"), Some(Variant::String(open)));
+    assert_eq!(s.value("ok"), Some(Variant::String("\u{e9}x".into())));
+}
+
+#[test]
+fn settings_sync_merges_changes_from_other_instances() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("shared.ini");
+    {
+        let mut seed = Settings::new(&path);
+        seed.set_value("keep", "k");
+        seed.set_value("drop", "d");
+        seed.set_value("contested", "seed");
+        seed.sync().unwrap();
+    }
+    let mut a = Settings::new(&path);
+    let mut b = Settings::new(&path);
+    a.set_value("only_a", "1");
+    a.set_value("contested", "from_a");
+    b.set_value("only_b", "2");
+    b.set_value("contested", "from_b");
+    b.remove("drop");
+    a.sync().unwrap();
+    b.sync().unwrap();
+
+    // Local changes win for the keys an instance modified; the other's keys are preserved.
+    let check = Settings::new(&path);
+    assert_eq!(check.value("only_a"), Some(Variant::String("1".into())));
+    assert_eq!(check.value("only_b"), Some(Variant::String("2".into())));
+    assert_eq!(check.value("keep"), Some(Variant::String("k".into())));
+    assert_eq!(check.value("contested"), Some(Variant::String("from_b".into())));
+    assert!(!check.contains("drop"));
+    // The syncing instance also picks up what others wrote.
+    assert_eq!(b.value("only_a"), Some(Variant::String("1".into())));
+
+    // Group removal and clear only remove what the instance knew about.
+    let mut c = Settings::new(&path);
+    a.set_value("late", "x");
+    a.sync().unwrap();
+    c.clear();
+    c.sync().unwrap();
+    let after = Settings::new(&path);
+    assert_eq!(after.value("late"), Some(Variant::String("x".into())));
+    assert!(!after.contains("keep"));
+}
+
+#[test]
+fn settings_concurrent_syncs_on_one_file_lose_nothing() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("race.ini");
+    let (threads, rounds) = if cfg!(miri) { (2, 2) } else { (4, 25) };
+    let workers: Vec<_> = (0..threads)
+        .map(|t| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let mut s = Settings::new(&path);
+                for r in 0..rounds {
+                    s.set_value(&format!("t{t}/k{r}"), r as i64);
+                    s.sync().unwrap();
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().unwrap();
+    }
+    let s = Settings::new(&path);
+    for t in 0..threads {
+        for r in 0..rounds {
+            assert_eq!(s.value(&format!("t{t}/k{r}")), Some(Variant::I64(r as i64)));
+        }
+    }
+    let leftovers = fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(leftovers, 1, "temporary files left behind");
+}

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread as StdThread};
 
-use crate::thread::pool::ThreadPool;
+use crate::thread::pool::{enter_blocking, ThreadPool};
 use crate::thread::task::TaskHandle;
 
 struct ThreadWaker {
@@ -68,8 +68,13 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
         match pinned.as_mut().poll(&mut cx) {
             Poll::Ready(val) => return val,
             Poll::Pending => {
-                while !thread_waker.notified.swap(false, Ordering::SeqCst) {
-                    thread::park();
+                if !thread_waker.notified.swap(false, Ordering::SeqCst) {
+                    // About to park: if this is a pool worker, free its slot so jobs queued
+                    // behind it (possibly the very ones this future awaits) can run.
+                    let _blocked = enter_blocking();
+                    while !thread_waker.notified.swap(false, Ordering::SeqCst) {
+                        thread::park();
+                    }
                 }
             }
         }

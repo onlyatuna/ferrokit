@@ -309,3 +309,57 @@ fn test_async_boundary_block_on_and_spawn() {
     let exec_task = executor.spawn(async { 100 * 2 });
     assert_eq!(exec_task.join().unwrap(), 200);
 }
+
+/// Async tasks that await work queued on their own (saturated) pool must not deadlock: while a
+/// worker is parked in `block_on` the pool must be able to run the queued jobs.
+#[test]
+fn test_spawn_async_tasks_awaiting_same_pool_do_not_deadlock() {
+    const WORKERS: usize = 2;
+    let pool = Arc::new(ThreadPool::new(WORKERS));
+    let executor = Executor::with_pool(Arc::clone(&pool));
+    // Every worker is inside an async task before any of them queues its inner job.
+    let all_running = Arc::new(std::sync::Barrier::new(WORKERS));
+
+    let handles: Vec<_> = (0..WORKERS)
+        .map(|i| {
+            let pool = Arc::clone(&pool);
+            let all_running = Arc::clone(&all_running);
+            executor.spawn(async move {
+                all_running.wait();
+                pool.spawn(move || i * 10).await.unwrap() + 1
+            })
+        })
+        .collect();
+
+    for (i, handle) in handles.into_iter().enumerate() {
+        let value = handle
+            .wait_timeout(Duration::from_secs(60))
+            .expect("task failed")
+            .expect("async task deadlocked: its inner job never ran");
+        assert_eq!(value, i * 10 + 1);
+    }
+}
+
+/// A pool whose last `Arc` is dropped by one of its own workers must shut down without that
+/// worker joining itself.
+#[test]
+fn test_thread_pool_last_arc_dropped_on_worker_thread() {
+    let pool = Arc::new(ThreadPool::new(2));
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let held = Arc::clone(&pool);
+    let handle = pool.spawn(move || {
+        go_rx.recv().unwrap();
+        // The last owner is this worker: dropping the pool runs on it.
+        drop(held);
+        5
+    });
+    drop(pool);
+    go_tx.send(()).unwrap();
+    assert_eq!(
+        handle
+            .wait_timeout(Duration::from_secs(60))
+            .expect("task failed")
+            .expect("pool drop on a worker thread hung"),
+        5
+    );
+}
