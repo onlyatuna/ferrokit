@@ -661,3 +661,25 @@ fn last_sender_drop_wakes_attached_event_senders() {
     );
     assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
 }
+
+struct PanicWaker;
+impl Wake for PanicWaker {
+    fn wake(self: Arc<Self>) {
+        panic!("waker panics");
+    }
+}
+
+#[test]
+fn panicking_waker_does_not_break_pool_accounting() {
+    let pool = ThreadPool::new(1);
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let mut handle = pool.spawn(move || release_rx.recv().unwrap());
+    let waker = Waker::from(Arc::new(PanicWaker));
+    let mut cx = Context::from_waker(&waker);
+    assert!(Pin::new(&mut handle).poll(&mut cx).is_pending());
+    release_tx.send(()).unwrap();
+    assert!(pool.wait_for_done_timeout(GUARD));
+    assert_eq!(pool.active_thread_count(), 0);
+    // The worker survives and still runs jobs.
+    assert_eq!(pool.spawn(|| 7).wait_timeout(GUARD), Ok(Some(7)));
+}

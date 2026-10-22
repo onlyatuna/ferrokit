@@ -811,3 +811,37 @@ fn settings_legacy_unmarked_file_loads_verbatim_and_section_backslash_survives()
     let s = Settings::new(&path2);
     assert_eq!(s.value("sec\\/k"), Some(Variant::String("v".into())));
 }
+
+#[test]
+fn lock_file_empty_reclaim_guard_is_reclaimed_once_stale() {
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("app.lock");
+    fs::write(&path, "PID=4294967294\nAPP=dead\nTIME=0\n").unwrap();
+    let mut guard = path.as_os_str().to_owned();
+    guard.push(".reclaim");
+    fs::write(&guard, "").unwrap();
+    let mut lock = LockFile::new(&path);
+    lock.set_stale_lock_time(Duration::ZERO);
+    assert_eq!(lock.try_lock(Duration::from_secs(10)), Ok(true));
+}
+
+#[test]
+fn settings_roundtrip_edge_whitespace_in_keys_and_sections() {
+    use ferrokit_core::settings::Settings;
+    use ferrokit_core::variant::Variant;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("ws.ini");
+    {
+        let mut s = Settings::new(&path);
+        s.set_value(" lead", "1");
+        s.set_value("trail ", "2");
+        s.set_value(" sec /\tkey\t", "3");
+        s.set_value("mid dle", "4");
+        s.sync().unwrap();
+    }
+    let s = Settings::new(&path);
+    assert_eq!(s.value(" lead"), Some(Variant::String("1".into())));
+    assert_eq!(s.value("trail "), Some(Variant::String("2".into())));
+    assert_eq!(s.value(" sec /\tkey\t"), Some(Variant::String("3".into())));
+    assert_eq!(s.value("mid dle"), Some(Variant::String("4".into())));
+}

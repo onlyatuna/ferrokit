@@ -313,6 +313,8 @@ impl Process {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(_) => {
+                    self.child = None;
+                    self.finish_readers(start_time, timeout);
                     self.state = ProcessState::NotRunning;
                     self.exit_status = Some(ExitStatus::CrashExit);
                     self.pid = None;
