@@ -15,7 +15,7 @@ use ferrokit_gui::application::GuiApplication;
 use ferrokit_gui::paint::palette::Palette;
 use ferrokit_gui::text::font::Font;
 
-use crate::widget::WidgetRef;
+use crate::widget::{WidgetRef, WidgetWeak};
 
 /// Closes a top-level window (`QWidget::close`); returns false when the window refuses.
 type TopLevelCloser = Rc<dyn Fn() -> bool>;
@@ -24,8 +24,19 @@ thread_local! {
     static TOP_LEVEL_WINDOWS: RefCell<Vec<(ObjectId, TopLevelCloser)>> = const { RefCell::new(Vec::new()) };
     static VISIBLE_WINDOWS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
     static ACTIVE_WINDOW_ID: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
-    static FOCUS_WIDGET: RefCell<Option<WidgetRef>> = const { RefCell::new(None) };
+    static FOCUS_WIDGET: RefCell<Option<FocusEntry>> = const { RefCell::new(None) };
+    static FOCUS_CHANGED: RefCell<Option<FocusChangedSignal>> = const { RefCell::new(None) };
     static QUITTING: Cell<bool> = const { Cell::new(false) };
+}
+
+type FocusChangedSignal = Signal<(Option<ObjectId>, Option<ObjectId>)>;
+
+/// The application's focus widget: held weakly, so a window that is dropped is not kept alive.
+/// `owner` identifies the focus state of the window it came from (0 for `set_focus_widget`).
+struct FocusEntry {
+    id: ObjectId,
+    widget: WidgetWeak,
+    owner: usize,
 }
 
 static GLOBAL_CURSOR_FLASH_TIME_MS: RwLock<u32> = RwLock::new(1000);
@@ -76,6 +87,8 @@ impl Application {
             });
 
         let focus_changed = Signal::with_owner(gui_app.object_data());
+        let shared = focus_changed.clone();
+        let _ = FOCUS_CHANGED.try_with(|slot| *slot.borrow_mut() = Some(shared));
         Self {
             gui_app,
             focus_changed,
@@ -291,27 +304,64 @@ impl Application {
 
     // --- Focus Management ---
 
-    /// Returns the currently focused widget reference if any.
+    /// Returns the widget that has the keyboard focus (`QApplication::focusWidget`), if any.
+    ///
+    /// Window focus managers keep it up to date; it holds the widget weakly, so it is `None` once
+    /// the widget or its window is gone.
     pub fn focus_widget() -> Option<WidgetRef> {
         FOCUS_WIDGET
-            .try_with(|fw| fw.borrow().clone())
+            .try_with(|fw| fw.borrow().as_ref().and_then(|entry| entry.widget.upgrade()))
             .unwrap_or(None)
     }
 
-    /// Sets the focused widget and emits focus change notifications.
+    /// Sets the focused widget and emits `focus_changed`.
+    ///
+    /// Window focus managers do this on their own on every focus change; this is for code that
+    /// tracks the focus without one. The widget is held weakly.
     pub fn set_focus_widget(&self, widget: Option<WidgetRef>) {
-        let (old_id, new_id) = FOCUS_WIDGET
+        let new = widget.map(|w| (w.borrow().id(), Rc::downgrade(&w)));
+        Self::update_focus_widget(0, new);
+    }
+
+    /// Records the focus widget of a window's focus state (`owner`) and emits `focus_changed`.
+    pub(crate) fn update_focus_widget(owner: usize, new: Option<(ObjectId, WidgetWeak)>) {
+        let new_id = new.as_ref().map(|(id, _)| *id);
+        let old_id = FOCUS_WIDGET
             .try_with(|fw| {
                 let mut current = fw.borrow_mut();
-                let old_id = current.as_ref().map(|w| w.borrow().id());
-                let new_id = widget.as_ref().map(|w| w.borrow().id());
-                *current = widget;
-                (old_id, new_id)
+                let old_id = current.as_ref().map(|entry| entry.id);
+                *current = new.map(|(id, widget)| FocusEntry { id, widget, owner });
+                old_id
             })
-            .unwrap_or((None, None));
+            .unwrap_or(None);
+        Self::emit_focus_changed(old_id, new_id);
+    }
 
-        if old_id != new_id {
-            self.focus_changed.emit(&(old_id, new_id));
+    /// The window whose focus state is `owner` is gone: the focus widget it supplied is cleared.
+    pub(crate) fn focus_owner_dropped(owner: usize) {
+        let old_id = FOCUS_WIDGET
+            .try_with(|fw| {
+                let mut current = fw.borrow_mut();
+                match current.as_ref() {
+                    Some(entry) if entry.owner == owner => {
+                        current.take().map(|entry| entry.id)
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap_or(None);
+        Self::emit_focus_changed(old_id, None);
+    }
+
+    fn emit_focus_changed(old_id: Option<ObjectId>, new_id: Option<ObjectId>) {
+        if old_id == new_id {
+            return;
+        }
+        let signal = FOCUS_CHANGED
+            .try_with(|slot| slot.borrow().clone())
+            .unwrap_or(None);
+        if let Some(signal) = signal {
+            signal.emit(&(old_id, new_id));
         }
     }
 
@@ -393,6 +443,7 @@ impl Application {
         VISIBLE_WINDOWS.with(|vis| vis.borrow_mut().clear());
         ACTIVE_WINDOW_ID.with(|act| *act.borrow_mut() = None);
         FOCUS_WIDGET.with(|fw| *fw.borrow_mut() = None);
+        FOCUS_CHANGED.with(|slot| *slot.borrow_mut() = None);
         let mut hints = ferrokit_gui::application::GuiApplication::style_hints();
         hints.mouse_double_click_interval_ms = 400;
         ferrokit_gui::application::GuiApplication::set_style_hints(hints);

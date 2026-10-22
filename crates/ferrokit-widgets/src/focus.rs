@@ -134,6 +134,12 @@ enum NextFocus {
     Later,
 }
 
+impl Drop for FocusState {
+    fn drop(&mut self) {
+        crate::application::Application::focus_owner_dropped(self as *const Self as usize);
+    }
+}
+
 impl FocusState {
     /// `id` is being disabled: if it is the focus widget, the focus moves on now, as
     /// `setEnabled_helper` does before it disables the children (qwidget.cpp:3439-3445):
@@ -173,6 +179,13 @@ fn give_focus(state: &Rc<FocusState>, widget: &WidgetRef, reason: FocusReason) {
     state.focused.set(Some(widget.borrow().id()));
     *widget.borrow().widget_base().focus_state.borrow_mut() = Rc::downgrade(state);
     send_focus_in(widget, reason);
+    publish_focus(state, Some(widget));
+}
+
+/// Tells `Application` the window's focus widget changed (`QApplication::focusChanged`).
+fn publish_focus(state: &Rc<FocusState>, widget: Option<&WidgetRef>) {
+    let new = widget.map(|w| (w.borrow().id(), Rc::downgrade(w)));
+    crate::application::Application::update_focus_widget(Rc::as_ptr(state) as usize, new);
 }
 
 fn send_focus_in(widget: &WidgetRef, reason: FocusReason) {
@@ -204,8 +217,11 @@ fn move_lost_focus(state: &Rc<FocusState>, root: &WidgetRef) {
         send_focus_out(root, lost.id, reason);
         match (next, lost.next) {
             (Some(next), NextFocus::Later) => give_focus(state, &next, reason),
-            (Some(next), _) => send_focus_in(&next, reason),
-            (None, _) => {}
+            (Some(next), _) => {
+                send_focus_in(&next, reason);
+                publish_focus(state, Some(&next));
+            }
+            (None, _) => publish_focus(state, None),
         }
     }
 }
@@ -265,6 +281,7 @@ impl FocusManager {
             send_focus_out(root, old_id, reason);
         }
         let Some(new_id) = target_id else {
+            publish_focus(&self.state, None);
             return true;
         };
         match find_widget_by_id(root, new_id) {
@@ -272,7 +289,10 @@ impl FocusManager {
                 give_focus(&self.state, &new_widget, reason);
                 true
             }
-            None => false,
+            None => {
+                publish_focus(&self.state, None);
+                false
+            }
         }
     }
 

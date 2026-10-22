@@ -675,7 +675,10 @@ impl KeySequenceEdit {
             recorded: Vec::new(),
             prev_key: None,
             maximum_sequence_length: KeySequence::MAX_KEY_COUNT,
-            finishing_key_combinations: Vec::new(),
+            finishing_key_combinations: vec![
+                KeyCombination::new(qt_key::TAB, 0),
+                KeyCombination::new(qt_key::BACKTAB, 0),
+            ],
             clear_button_enabled: false,
             release_timer: TimerId::INVALID,
             text: String::new(),
@@ -734,6 +737,7 @@ impl KeySequenceEdit {
     }
 
     /// Combinations that finish editing instead of being recorded (`finishingKeyCombinations`).
+    /// The default is Tab and Backtab, which then keep their usual meaning of moving the focus.
     pub fn finishing_key_combinations(&self) -> &[KeyCombination] {
         &self.finishing_key_combinations
     }
@@ -807,9 +811,20 @@ impl KeySequenceEdit {
         )
     }
 
+    /// Shift+Tab is Backtab: the combination a finishing list is compared with.
+    fn finishing_candidate(combo: KeyCombination) -> KeyCombination {
+        if combo.key == qt_key::TAB && combo.modifiers == key_modifier::SHIFT {
+            KeyCombination::new(qt_key::BACKTAB, 0)
+        } else if combo.key == qt_key::BACKTAB {
+            KeyCombination::new(qt_key::BACKTAB, combo.modifiers & !key_modifier::SHIFT)
+        } else {
+            combo
+        }
+    }
+
     fn record_key_press(&mut self, key: u32, modifiers: u32) {
         let combo = KeyCombination::from_key_event(key, modifiers);
-        if self.finishing_key_combinations.contains(&combo) {
+        if self.finishing_key_combinations.contains(&Self::finishing_candidate(combo)) {
             self.finish_editing();
             return;
         }
@@ -1038,6 +1053,15 @@ impl Widget for KeySequenceEdit {
         {
             self.clear();
         }
+    }
+
+    /// `QKeySequenceEdit::event`: Tab and Backtab are recorded unless they are finishing keys,
+    /// in which case they move the focus.
+    fn wants_tab_key(&self, key: u32, modifiers: u32) -> bool {
+        let combo = KeyCombination::from_key_event(key, modifiers);
+        !self
+            .finishing_key_combinations
+            .contains(&Self::finishing_candidate(combo))
     }
 
     fn key_press_event(&mut self, key: u32, modifiers: u32, _is_repeat: bool) {
