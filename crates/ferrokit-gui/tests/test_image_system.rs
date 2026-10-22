@@ -169,6 +169,19 @@ fn test_image_view_zero_copy() {
     assert_eq!(sub.height(), 3);
 }
 
+#[test]
+fn test_image_view_sub_view_one_bit_formats() {
+    for format in [ImageFormat::Mono, ImageFormat::MonoLsb] {
+        let img = Image::new(16, 1, format);
+        let view = img.as_view();
+        // Column 10 is not byte aligned: a view cannot start mid-byte, and must not panic.
+        assert!(view.sub_view(Rect::new(10, 0, 6, 1)).is_none());
+        // Column 8 starts at byte 1.
+        let sub = view.sub_view(Rect::new(8, 0, 8, 1)).expect("aligned sub view");
+        assert_eq!(sub.scan_line(0).map(<[u8]>::len), Some(1));
+    }
+}
+
 // =============================================================================
 // 6. Pixmap Decoupling and Image Roundtrip Tests
 // =============================================================================

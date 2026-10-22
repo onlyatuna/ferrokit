@@ -351,6 +351,18 @@
     "lib::application::hardening_tests::last_window_closed_slot_can_reregister_signal::SB": "unsupported",
     "lib::application::hardening_tests::last_window_closed_slot_can_reregister_signal::TB": "unsupported",
     "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::SB": "panic",
-    "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::TB": "panic"
+    "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::TB": "panic",
+    "lib::text::font_database::tests::in_memory_font_face_is_built_once_per_font_data::SB": "unsupported",
+    "lib::text::font_database::tests::in_memory_font_face_is_built_once_per_font_data::TB": "unsupported",
+    "lib::text::glyph_face::budget_tests::glyph_budget_rejects_crafted_bounding_boxes_without_allocating::SB": "pass",
+    "lib::text::glyph_face::budget_tests::glyph_budget_rejects_crafted_bounding_boxes_without_allocating::TB": "pass",
+    "lib::text::glyph_face::budget_tests::glyph_budget_rejects_directwrite_texture_bounds_from_i32_extremes::SB": "pass",
+    "lib::text::glyph_face::budget_tests::glyph_budget_rejects_directwrite_texture_bounds_from_i32_extremes::TB": "pass",
+    "test_image_system::test_image_view_sub_view_one_bit_formats::SB": "pass",
+    "test_image_system::test_image_view_sub_view_one_bit_formats::TB": "pass",
+    "test_text_system::test_cursor_advances_by_document_growth_for_combining_marks::SB": "pass",
+    "test_text_system::test_cursor_advances_by_document_growth_for_combining_marks::TB": "pass",
+    "test_text_system::test_markdown_deeply_nested_links_do_not_overflow_the_stack::SB": "pass",
+    "test_text_system::test_markdown_deeply_nested_links_do_not_overflow_the_stack::TB": "pass"
   }
 }

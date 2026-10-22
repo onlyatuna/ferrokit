@@ -204,6 +204,9 @@ pub fn rasterize_color_glyph(
         let advance = metrics.advance_width.round().max(px_size) as usize;
         (advance, px_size.round().max(1.0) as usize, 0, 0)
     };
+    if crate::text::glyph_face::exceeds_glyph_budget(width, height) {
+        return None;
+    }
 
     let mut pixmap = Pixmap::new(width.max(1) as u32, height.max(1) as u32)?;
     pixmap.fill(Color::TRANSPARENT);

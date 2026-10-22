@@ -1133,7 +1133,19 @@ fn find_closing(s: &str, delim: char, run: usize) -> Option<usize> {
     None
 }
 
+/// Maximum nesting of emphasis/link spans; deeper content is kept as literal text.
+const MAX_INLINE_DEPTH: usize = 32;
+
 fn parse_inline(text: &str, fmt: &TextCharFormat, out: &mut Vec<TextFragment>) {
+    parse_inline_at(text, fmt, out, 0);
+}
+
+fn parse_inline_at(text: &str, fmt: &TextCharFormat, out: &mut Vec<TextFragment>, depth: usize) {
+    if depth > MAX_INLINE_DEPTH {
+        let mut literal = text.to_string();
+        push_fragment(out, &mut literal, fmt);
+        return;
+    }
     let mut buf = String::new();
     let mut i = 0;
     let mut prev: Option<char> = None;
@@ -1195,7 +1207,7 @@ fn parse_inline(text: &str, fmt: &TextCharFormat, out: &mut Vec<TextFragment>) {
                                 inner.font_italic = Some(true);
                             }
                         }
-                        parse_inline(&rest[run..run + close], &inner, out);
+                        parse_inline_at(&rest[run..run + close], &inner, out, depth + 1);
                         prev = Some(c);
                         i += run + close + run;
                         continue;
@@ -1211,7 +1223,7 @@ fn parse_inline(text: &str, fmt: &TextCharFormat, out: &mut Vec<TextFragment>) {
                     push_fragment(out, &mut buf, fmt);
                     let mut inner = fmt.clone();
                     apply_link_style(&mut inner, href);
-                    parse_inline(label, &inner, out);
+                    parse_inline_at(label, &inner, out, depth + 1);
                     prev = Some(')');
                     i += consumed;
                     continue;

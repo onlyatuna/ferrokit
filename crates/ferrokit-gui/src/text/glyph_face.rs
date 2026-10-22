@@ -89,6 +89,36 @@ pub trait GlyphFace: Send + Sync {
     }
 }
 
+/// Largest glyph bitmap (in pixels) any rasterizer backend will allocate.
+pub(crate) const MAX_GLYPH_PIXELS: usize = 16 * 1024 * 1024;
+
+/// Whether a `width` x `height` glyph bitmap is too large to allocate.
+pub(crate) fn exceeds_glyph_budget(width: usize, height: usize) -> bool {
+    width.checked_mul(height).map_or(true, |n| n > MAX_GLYPH_PIXELS)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_budget_rejects_crafted_bounding_boxes_without_allocating() {
+        assert!(!exceeds_glyph_budget(64, 64));
+        assert!(!exceeds_glyph_budget(4096, 4096));
+        assert!(exceeds_glyph_budget(4097, 4096));
+        assert!(exceeds_glyph_budget(49_152, 49_152));
+        assert!(exceeds_glyph_budget(usize::MAX, 2));
+    }
+
+    #[test]
+    fn glyph_budget_rejects_directwrite_texture_bounds_from_i32_extremes() {
+        // DirectWrite texture bounds are i32 rectangles; the widest possible one must be refused.
+        let span = (i32::MAX as i64 - i32::MIN as i64) as usize;
+        assert!(exceeds_glyph_budget(span, 1));
+        assert!(exceeds_glyph_budget(span, span));
+    }
+}
+
 /// Shared handle to a face (Qt's ref-counted `QFontEngine*`).
 pub type SharedGlyphFace = Arc<dyn GlyphFace>;
 

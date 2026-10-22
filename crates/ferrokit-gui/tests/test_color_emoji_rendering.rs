@@ -63,3 +63,12 @@ fn test_color_emoji_renders_multi_color_pixels_aligned_with_qt6() {
         "Refresh emoji 🔄 must render its signature blue background from Segoe UI Emoji COLR table!"
     );
 }
+
+#[test]
+fn test_color_glyph_with_out_of_range_opacity_does_not_underflow() {
+    let mut pixmap = Pixmap::new(80, 60).expect("create pixmap");
+    pixmap.fill(Color::BLACK);
+    let mut painter = Painter::begin(&mut pixmap);
+    painter.state_mut().opacity = 1.5;
+    painter.draw_text(PointF::new(10.0, 40.0), "🔄", &Font::new("Segoe UI", 24.0));
+}

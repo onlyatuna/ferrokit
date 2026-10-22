@@ -12,7 +12,7 @@
 //! `tests/test_outline_face_parity.rs`).
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics};
+use crate::text::glyph_face::{exceeds_glyph_budget, GlyphFace, GlyphMetrics};
 use ab_glyph_rasterizer::{point, Point, Rasterizer};
 use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder};
 
@@ -148,8 +148,14 @@ impl GlyphFace for OutlineFace {
             return (GlyphMetrics::default(), Vec::new());
         }
         let layout = self.layout(glyph_id, px);
-        let m = layout.metrics;
+        let mut m = layout.metrics;
         if m.width == 0 || m.height == 0 {
+            return (m, Vec::new());
+        }
+        if exceeds_glyph_budget(m.width, m.height) {
+            // Crafted bounding box: drop the glyph instead of allocating gigabytes.
+            m.width = 0;
+            m.height = 0;
             return (m, Vec::new());
         }
 

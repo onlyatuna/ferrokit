@@ -108,9 +108,15 @@ impl<'a> ImageView<'a> {
             return None;
         }
 
-        let bpp = self.format.bytes_per_pixel();
-        let offset = (ry as usize) * self.bytes_per_line + (rx as usize) * bpp;
-        let sub_data = &self.data[offset..];
+        let bits = self.format.bits_per_pixel();
+        // A view cannot carry a sub-byte start offset, so reject unaligned columns.
+        if (rx as usize).checked_mul(bits)? % 8 != 0 {
+            return None;
+        }
+        let offset = (ry as usize)
+            .checked_mul(self.bytes_per_line)?
+            .checked_add((rx as usize) * bits / 8)?;
+        let sub_data = self.data.get(offset..)?;
 
         Some(ImageView {
             data: sub_data,
