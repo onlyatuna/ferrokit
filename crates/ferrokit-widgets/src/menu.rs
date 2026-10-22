@@ -127,8 +127,17 @@ fn hide_shared(submenu: &MenuRef) {
     if let Some(signal) = signal {
         signal.emit(&());
     }
-    if let Ok(mut sub) = submenu.try_borrow_mut() {
-        sub.hide_menu_emitting(false);
+    match submenu.try_borrow_mut() {
+        Ok(mut sub) => sub.hide_menu_emitting(false),
+        Err(_) => {
+            // Borrowed (e.g. a slot is running on it): hide it once it is free.
+            let weak = std::rc::Rc::downgrade(submenu);
+            crate::command::defer_retry(move || {
+                if let Some(submenu) = weak.upgrade() {
+                    hide_shared(&submenu);
+                }
+            });
+        }
     }
 }
 
@@ -1266,8 +1275,14 @@ impl Menu {
     pub(crate) fn handle_key(&mut self, key: u32, modifiers: u32) -> MenuOutcome {
         let key = crate::key_sequence_edit::normalize_key(key, modifiers).0;
         let modifiers = keys::normalize_modifiers(modifiers);
+        self.handle_normalized_key(key, modifiers)
+    }
+
+    /// `handle_key` for a key already run through `normalize_key`; recursion must not normalize
+    /// again (the apostrophe, 0x27, would become VK_RIGHT).
+    fn handle_normalized_key(&mut self, key: u32, modifiers: u32) -> MenuOutcome {
         if let Some((_, submenu)) = self.open_submenu.clone() {
-            let outcome = submenu.borrow_mut().handle_key(key, modifiers);
+            let outcome = submenu.borrow_mut().handle_normalized_key(key, modifiers);
             return self.outcome_from_child(outcome);
         }
         match key {

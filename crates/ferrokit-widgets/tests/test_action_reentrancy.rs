@@ -87,3 +87,23 @@ fn dropped_actions_do_not_pile_up_in_a_group() {
     assert!(std::rc::Rc::ptr_eq(&group.actions()[0], &keep));
     assert!(group.member_slots() <= 2, "dead entries are pruned: {}", group.member_slots());
 }
+
+#[test]
+fn a_borrowed_previous_action_is_unchecked_at_the_next_flush() {
+    use ferrokit_widgets::command::WidgetCommandQueue;
+    WidgetCommandQueue::clear();
+    let mut group = ActionGroup::new();
+    let a: ActionRef = group.add_new_action("A");
+    let b: ActionRef = group.add_new_action("B");
+    for x in [&a, &b] {
+        x.borrow_mut().set_checkable(true);
+    }
+    Action::trigger(&a);
+    {
+        let _held = a.borrow_mut(); // e.g. a slot of `a` is running
+        Action::trigger(&b);
+    }
+    WidgetCommandQueue::flush();
+    assert!(!a.borrow().is_checked(), "only one action stays checked");
+    assert!(b.borrow().is_checked());
+}

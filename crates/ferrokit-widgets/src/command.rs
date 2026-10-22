@@ -242,6 +242,11 @@ fn on_deferred_delete(id: ObjectId) {
     }
 }
 
+/// Queues `task` to run at the next flush, after the current one finished.
+pub(crate) fn defer_retry(task: impl FnOnce() + 'static) {
+    RETRY_QUEUE.with(|q| q.borrow_mut().push(WidgetCommand::Task(Box::new(task))));
+}
+
 /// Removes `id` from `parent`'s children and relayouts `parent`. If `parent`, or a child that
 /// cannot be told from `id`, is borrowed, the removal is retried at the next flush.
 pub fn remove_child_from(parent: &WidgetRef, id: ObjectId) {
