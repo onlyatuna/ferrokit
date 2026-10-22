@@ -167,6 +167,7 @@ impl Process {
             cmd.env(k, v);
         }
 
+        let mut merged_reader = None;
         match self.channel_mode {
             ProcessChannelMode::SeparateChannels => {
                 cmd.stdin(Stdio::piped());
@@ -174,9 +175,26 @@ impl Process {
                 cmd.stderr(Stdio::piped());
             }
             ProcessChannelMode::MergedChannels => {
+                // Qt semantics: the child's stderr is the same pipe as its stdout, read by a
+                // single reader, so interleaving is the child's write order and stderr reads empty.
+                let (reader, writer) = match io::pipe() {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        self.state = ProcessState::NotRunning;
+                        return Err(error);
+                    }
+                };
+                let writer_err = match writer.try_clone() {
+                    Ok(clone) => clone,
+                    Err(error) => {
+                        self.state = ProcessState::NotRunning;
+                        return Err(error);
+                    }
+                };
                 cmd.stdin(Stdio::piped());
-                cmd.stdout(Stdio::piped());
-                cmd.stderr(Stdio::piped());
+                cmd.stdout(writer);
+                cmd.stderr(writer_err);
+                merged_reader = Some(reader);
             }
             ProcessChannelMode::ForwardedChannels => {
                 cmd.stdin(Stdio::inherit());
@@ -191,7 +209,10 @@ impl Process {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let mut child = match cmd.spawn() {
+        let spawned = cmd.spawn();
+        // The command owns the pipe's write ends; drop them so the reader sees EOF at exit.
+        drop(cmd);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 self.state = ProcessState::NotRunning;
@@ -205,7 +226,14 @@ impl Process {
         // Fresh buffers per run so a detached reader from a previous run cannot append here.
         self.stdout_buf = Arc::new(Mutex::new(Vec::new()));
         self.stderr_buf = Arc::new(Mutex::new(Vec::new()));
-        self.stdout_reader = child.stdout.take().map(|mut out| {
+        let stdout_source: Option<Box<dyn Read + Send>> = match merged_reader {
+            Some(reader) => Some(Box::new(reader)),
+            None => child
+                .stdout
+                .take()
+                .map(|out| Box::new(out) as Box<dyn Read + Send>),
+        };
+        self.stdout_reader = stdout_source.map(|mut out| {
             let output = Arc::clone(&self.stdout_buf);
             thread::spawn(move || {
                 let mut chunk = [0u8; 4096];

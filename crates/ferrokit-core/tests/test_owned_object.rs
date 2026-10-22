@@ -239,6 +239,10 @@ impl Drop for Reactor {
 }
 
 impl QObject for Reactor {
+    // Holds `!Send` state shared with the registering thread, so the object must stay there.
+    fn can_move_to_thread(&self) -> bool {
+        false
+    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -305,6 +309,10 @@ impl Drop for SelfDropper {
 }
 
 impl QObject for SelfDropper {
+    // Holds `!Send` state shared with the registering thread, so the object must stay there.
+    fn can_move_to_thread(&self) -> bool {
+        false
+    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -434,6 +442,10 @@ impl Drop for ParentObserver {
 }
 
 impl QObject for ParentObserver {
+    // Holds `!Send` state shared with the registering thread, so the object must stay there.
+    fn can_move_to_thread(&self) -> bool {
+        false
+    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -566,6 +578,10 @@ struct Gate {
 }
 
 impl QObject for Gate {
+    // Holds `!Send` state shared with the registering thread, so the object must stay there.
+    fn can_move_to_thread(&self) -> bool {
+        false
+    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }

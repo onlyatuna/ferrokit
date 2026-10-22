@@ -54,7 +54,16 @@ pub trait EventDispatcher {
     /// Delivers due timers. Implementations lock `registry` only around bookkeeping, never while
     /// the timer event is sent, so a slot may stop or restart timers.
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>);
+    /// Starts polling the notifier's descriptor so it fires `activated` when the descriptor is
+    /// ready (`QAbstractEventDispatcher::registerSocketNotifier`).
+    ///
+    /// Real descriptor polling exists on Linux only (an `epoll` set in the Unix dispatcher). On
+    /// every other platform, including macOS and the other Unix systems, the default
+    /// implementation is a no-op: the notifier is never activated by the descriptor, so
+    /// `activated` fires only when the code emits it itself.
     fn register_socket_notifier(&self, _notifier: &Arc<crate::event_loop::SocketNotifier>) {}
+    /// Stops polling the notifier's descriptor; a no-op wherever
+    /// [`register_socket_notifier`](Self::register_socket_notifier) is.
     fn unregister_socket_notifier(&self, _notifier: &Arc<crate::event_loop::SocketNotifier>) {}
     /// The concrete dispatcher's type name, like Qt's
     /// the class name of the thread's `QAbstractEventDispatcher` instance.
