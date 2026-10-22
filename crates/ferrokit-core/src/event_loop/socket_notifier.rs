@@ -16,6 +16,11 @@ pub enum SocketEvent {
 /// `unregisterSocketNotifier`).
 pub(crate) type EnableHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Watches a descriptor for readiness (`QSocketNotifier`).
+///
+/// Platform support: only the Linux event dispatcher polls the descriptor (with `epoll`) and
+/// emits `activated` when it is ready. On Windows, macOS and other Unix systems registration is a
+/// no-op, so the notifier is never activated by the descriptor itself.
 pub struct SocketNotifier {
     descriptor: SocketDescriptor,
     event_type: SocketEvent,

@@ -638,6 +638,22 @@ fn process_large_output_is_drained_without_deadlock() {
 }
 
 #[test]
+fn process_merged_channels_put_stderr_on_stdout_in_write_order() {
+    let mut proc = Process::new();
+    proc.set_channel_mode(ProcessChannelMode::MergedChannels);
+    #[cfg(windows)]
+    set_shell(&mut proc, "echo out& echo err 1>&2");
+    #[cfg(not(windows))]
+    set_shell(&mut proc, "echo out; echo err >&2");
+    proc.start().unwrap();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(30))));
+    let merged = String::from_utf8_lossy(&proc.read_all_stdout()).into_owned();
+    let lines: Vec<&str> = merged.lines().map(str::trim).collect();
+    assert_eq!(lines, ["out", "err"]);
+    assert!(proc.read_all_stderr().is_empty());
+}
+
+#[test]
 fn process_wait_times_out_and_kill_reaps() {
     let mut proc = Process::new();
     set_shell(&mut proc, long_running_script());

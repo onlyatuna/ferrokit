@@ -348,12 +348,26 @@ impl EventTreeDispatcher {
                 let mods = keys::normalize_modifiers(*modifiers);
                 if mods & (keys::MOD_CTRL | keys::MOD_ALT) == 0 {
                     let tab = *key == 0x09 || *key == keys::TAB;
-                    if *key == keys::BACKTAB || (tab && mods & keys::MOD_SHIFT != 0) {
-                        if self.focus_manager.focus_previous(root) {
+                    let backtab = *key == keys::BACKTAB || (tab && mods & keys::MOD_SHIFT != 0);
+                    // A focus widget can keep the key for itself (`QWidget::event` is
+                    // overridable in Qt).
+                    let kept = (tab || backtab)
+                        && self
+                            .focus_manager
+                            .focused_widget_id()
+                            .and_then(|id| find_widget_by_id(root, id))
+                            .is_some_and(|w| {
+                                w.try_borrow()
+                                    .is_ok_and(|w| w.wants_tab_key(*key, *modifiers))
+                            });
+                    if !kept {
+                        if backtab {
+                            if self.focus_manager.focus_previous(root) {
+                                return true;
+                            }
+                        } else if tab && self.focus_manager.focus_next(root) {
                             return true;
                         }
-                    } else if tab && self.focus_manager.focus_next(root) {
-                        return true;
                     }
                 }
 

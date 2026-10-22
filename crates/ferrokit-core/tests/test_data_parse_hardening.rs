@@ -128,6 +128,40 @@ fn variant_u64_above_i64_max_has_no_int_value() {
 }
 
 #[test]
+fn variant_f64_to_integer_rounds_half_away_from_zero() {
+    for (input, expected) in [
+        (1.5, 2),
+        (-1.5, -2),
+        (1.7, 2),
+        (-1.7, -2),
+        (1.4, 1),
+        (0.5, 1),
+        (-0.5, -1),
+        (2.5, 3),
+    ] {
+        assert_eq!(Variant::F64(input).to_int(), Some(expected), "to_int({input})");
+    }
+    assert_eq!(Variant::F64(1.5).to_uint(), Some(2));
+    assert_eq!(Variant::F64(1.7).to_uint(), Some(2));
+    assert_eq!(Variant::F64(2.5).to_uint(), Some(3));
+    assert_eq!(Variant::F64(-0.4).to_uint(), Some(0));
+    assert_eq!(Variant::F64(-0.5).to_uint(), None);
+    assert_eq!(Variant::F64(-1.5).to_uint(), None);
+    assert_eq!(i32::from_variant(&Variant::F64(-1.5)), Some(-2));
+    assert_eq!(u32::from_variant(&Variant::F64(1.5)), Some(2));
+}
+
+#[test]
+fn variant_f64_non_finite_and_out_of_range_have_no_integer_value() {
+    for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e19, -1e19] {
+        assert_eq!(Variant::F64(f).to_int(), None, "to_int({f})");
+    }
+    for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 2e19, -1.0] {
+        assert_eq!(Variant::F64(f).to_uint(), None, "to_uint({f})");
+    }
+}
+
+#[test]
 fn temporal_extremes_saturate() {
     let d = Date::new(i32::MAX, 6, 1);
     assert_eq!(d.add_years(i32::MAX).year, i32::MAX);
