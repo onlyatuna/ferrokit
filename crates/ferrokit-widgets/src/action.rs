@@ -208,8 +208,12 @@ impl GroupState {
             let previous = self.current.replace(Some(id));
             let prev_id = previous.filter(|p| *p != id)?;
             let prev = self.find(prev_id)?;
-            let mut prev = prev.try_borrow_mut().ok()?;
-            prev.change_checked(false)
+            let Ok(mut prev_mut) = prev.try_borrow_mut() else {
+                // Borrowed (e.g. mid-slot): uncheck once it is free, so two actions are not left checked.
+                defer_uncheck(Rc::downgrade(&prev));
+                return None;
+            };
+            prev_mut.change_checked(false)
         } else {
             if self.current.get() == Some(id) {
                 self.current.set(None);
@@ -217,6 +221,25 @@ impl GroupState {
             None
         }
     }
+}
+
+/// Unchecks `prev` at the next flush if it is no longer its group's current action.
+fn defer_uncheck(prev: ActionWeak) {
+    crate::command::defer_retry(move || {
+        let Some(action) = prev.upgrade() else { return };
+        let Ok(mut a) = action.try_borrow_mut() else {
+            defer_uncheck(prev);
+            return;
+        };
+        let superseded = a
+            .group_state()
+            .is_some_and(|g| g.current.get() != Some(a.id()));
+        let notice = if superseded { a.change_checked(false) } else { None };
+        drop(a);
+        if let Some(notice) = notice {
+            notice.emit();
+        }
+    });
 }
 
 /// Signals owed after a checked-state change, to emit with no action borrowed.

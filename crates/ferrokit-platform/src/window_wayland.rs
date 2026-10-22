@@ -110,6 +110,9 @@ pub struct WaylandNativeWindow {
 static WAYLAND_SURFACE_ID_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1);
 
+/// Error returned when the Wayland display socket cannot be connected.
+pub(crate) const WAYLAND_CONNECT_FAILED: &str = "Failed to connect to the Wayland display";
+
 impl WaylandNativeWindow {
     /// Whether the compositor named by `WAYLAND_DISPLAY` accepts a connection.
     pub fn display_reachable() -> bool {
@@ -143,7 +146,7 @@ impl WaylandNativeWindow {
             // An absolute WAYLAND_DISPLAY is the socket path itself (`Path::join` replaces).
             let socket_path = std::path::Path::new(&runtime_dir).join(&display_name);
             let stream = UnixStream::connect(socket_path)
-                .map_err(|_| "Failed to connect to the Wayland display")?;
+                .map_err(|_| WAYLAND_CONNECT_FAILED)?;
             let _ = stream.set_nonblocking(true);
             Self::build(title, rect, flags, display_name, Some(stream))
         }

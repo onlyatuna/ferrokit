@@ -78,7 +78,9 @@
     "test_scroll_area_input",
     "test_show_hide_borrowed_child",
     "test_widget_property_dirty",
-    "layout_qt_oracle"
+    "layout_qt_oracle",
+    "test_application_focus_widget",
+    "test_tab_key_hook"
   ],
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -173,6 +175,34 @@
       }
     },
     "test_last_window_closed_signal::last_window_closed_is_emitted_when_last_visible_window_closes": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_application_focus_widget::focus_manager_updates_the_focus_widget_and_emits_focus_changed": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_application_focus_widget::only_the_active_windows_focus_is_the_application_focus_widget": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_application_focus_widget::the_focus_widget_does_not_keep_a_dropped_window_alive": {
+      "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
+    },
+    "test_application_focus_widget::the_focus_widget_is_current_while_focus_in_runs_and_focus_changed_follows_in_order": {
       "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
       "expected": {
         "SB": "pass",
@@ -874,6 +904,32 @@
     "layout_qt_oracle::known_mismatches_are_reported::TB": "pass",
     "layout_qt_oracle::layout_matches_pyside6_oracle::TB": "pass",
     "layout_qt_oracle::nested_add_layout_children_are_container_relative::TB": "pass",
-    "layout_qt_oracle::oracle_covers_required_features::TB": "pass"
+    "layout_qt_oracle::oracle_covers_required_features::TB": "pass",
+    "test_application_focus_widget::focus_manager_updates_the_focus_widget_and_emits_focus_changed::SB": "unsupported",
+    "test_application_focus_widget::focus_manager_updates_the_focus_widget_and_emits_focus_changed::TB": "unsupported",
+    "test_application_focus_widget::only_the_active_windows_focus_is_the_application_focus_widget::SB": "unsupported",
+    "test_application_focus_widget::only_the_active_windows_focus_is_the_application_focus_widget::TB": "unsupported",
+    "test_application_focus_widget::the_focus_widget_does_not_keep_a_dropped_window_alive::SB": "unsupported",
+    "test_application_focus_widget::the_focus_widget_does_not_keep_a_dropped_window_alive::TB": "unsupported",
+    "test_application_focus_widget::the_focus_widget_is_current_while_focus_in_runs_and_focus_changed_follows_in_order::SB": "unsupported",
+    "test_application_focus_widget::the_focus_widget_is_current_while_focus_in_runs_and_focus_changed_follows_in_order::TB": "unsupported",
+    "test_tab_key_hook::ctrl_tab_still_does_not_move_the_focus::SB": "pass",
+    "test_tab_key_hook::default_finishing_combinations_are_tab_and_backtab::SB": "pass",
+    "test_tab_key_hook::only_the_listed_tab_key_moves_the_focus::SB": "pass",
+    "test_tab_key_hook::shift_tab_matches_only_the_default_backtab_entry::SB": "pass",
+    "test_tab_key_hook::tab_and_backtab_move_the_focus_off_a_key_sequence_edit_by_default::SB": "pass",
+    "test_tab_key_hook::tab_is_recorded_when_it_is_not_a_finishing_combination::SB": "pass",
+    "test_tab_key_hook::ctrl_tab_still_does_not_move_the_focus::TB": "pass",
+    "test_tab_key_hook::default_finishing_combinations_are_tab_and_backtab::TB": "pass",
+    "test_tab_key_hook::only_the_listed_tab_key_moves_the_focus::TB": "pass",
+    "test_tab_key_hook::shift_tab_matches_only_the_default_backtab_entry::TB": "pass",
+    "test_tab_key_hook::tab_and_backtab_move_the_focus_off_a_key_sequence_edit_by_default::TB": "pass",
+    "test_tab_key_hook::tab_is_recorded_when_it_is_not_a_finishing_combination::TB": "pass",
+    "test_menu_key_normalization::submenu_keys_are_normalized_once::SB": "unsupported",
+    "test_menu_key_normalization::submenu_keys_are_normalized_once::TB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_emits_about_to_hide_once::SB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_emits_about_to_hide_once::TB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_is_still_hidden_when_its_parent_hides::SB": "unsupported",
+    "test_menu_reentrancy::a_borrowed_submenu_is_still_hidden_when_its_parent_hides::TB": "unsupported"
   }
 }
