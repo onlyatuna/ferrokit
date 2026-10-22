@@ -558,6 +558,13 @@ pub trait Widget: QObject + 'static {
         FocusPolicy::NoFocus
     }
 
+    /// Whether this focus widget takes the Tab/Shift+Tab/Backtab key press `key`/`modifiers`
+    /// itself instead of letting it move the focus. Qt handles Tab inside `QWidget::event`, which
+    /// a widget can override (`QKeySequenceEdit::event` does). The default is `false`.
+    fn wants_tab_key(&self, _key: u32, _modifiers: u32) -> bool {
+        false
+    }
+
     fn set_focus_policy(&self, _policy: FocusPolicy) {}
     fn has_focus(&self) -> bool {
         false

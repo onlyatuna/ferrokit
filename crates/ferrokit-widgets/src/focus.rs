@@ -3,6 +3,7 @@ use crate::widget::{WidgetRef, WidgetWeak};
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::ObjectId;
 use std::cell::{Cell, RefCell};
+use crate::application::{Application, FocusTicket};
 use std::rc::Rc;
 
 /// Focus policy defining how a widget accepts keyboard focus (`Qt::FocusPolicy`).
@@ -134,6 +135,12 @@ enum NextFocus {
     Later,
 }
 
+impl Drop for FocusState {
+    fn drop(&mut self) {
+        crate::application::Application::focus_owner_dropped(self as *const Self as usize);
+    }
+}
+
 impl FocusState {
     /// `id` is being disabled: if it is the focus widget, the focus moves on now, as
     /// `setEnabled_helper` does before it disables the children (qwidget.cpp:3439-3445):
@@ -172,7 +179,28 @@ impl FocusState {
 fn give_focus(state: &Rc<FocusState>, widget: &WidgetRef, reason: FocusReason) {
     state.focused.set(Some(widget.borrow().id()));
     *widget.borrow().widget_base().focus_state.borrow_mut() = Rc::downgrade(state);
+    // `QApplicationPrivate::setFocusWidget`: the focus widget is current while `FocusIn` runs;
+    // `focusChanged` follows it.
+    let ticket = begin_publish(state, Some(widget));
     send_focus_in(widget, reason);
+    Application::finish_focus_publish(ticket);
+}
+
+/// Records the window's focus widget with `Application` (see `Application::begin_focus_publish`).
+fn begin_publish(state: &Rc<FocusState>, widget: Option<&WidgetRef>) -> FocusTicket {
+    let window = widget
+        .and_then(|w| w.try_borrow().ok().and_then(|w| w.window_id()))
+        .or_else(|| {
+            let root = state.root.borrow().upgrade()?;
+            let id = root.try_borrow().ok()?.window_id();
+            id
+        });
+    let new = widget.map(|w| (w.borrow().id(), Rc::downgrade(w)));
+    Application::begin_focus_publish(Rc::as_ptr(state) as usize, window, new)
+}
+
+fn publish_focus(state: &Rc<FocusState>, widget: Option<&WidgetRef>) {
+    Application::finish_focus_publish(begin_publish(state, widget));
 }
 
 fn send_focus_in(widget: &WidgetRef, reason: FocusReason) {
@@ -204,8 +232,12 @@ fn move_lost_focus(state: &Rc<FocusState>, root: &WidgetRef) {
         send_focus_out(root, lost.id, reason);
         match (next, lost.next) {
             (Some(next), NextFocus::Later) => give_focus(state, &next, reason),
-            (Some(next), _) => send_focus_in(&next, reason),
-            (None, _) => {}
+            (Some(next), _) => {
+                let ticket = begin_publish(state, Some(&next));
+                send_focus_in(&next, reason);
+                Application::finish_focus_publish(ticket);
+            }
+            (None, _) => publish_focus(state, None),
         }
     }
 }
@@ -265,6 +297,7 @@ impl FocusManager {
             send_focus_out(root, old_id, reason);
         }
         let Some(new_id) = target_id else {
+            publish_focus(&self.state, None);
             return true;
         };
         match find_widget_by_id(root, new_id) {
@@ -272,7 +305,10 @@ impl FocusManager {
                 give_focus(&self.state, &new_widget, reason);
                 true
             }
-            None => false,
+            None => {
+                publish_focus(&self.state, None);
+                false
+            }
         }
     }
 

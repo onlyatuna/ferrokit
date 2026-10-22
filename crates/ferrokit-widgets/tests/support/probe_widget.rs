@@ -22,6 +22,8 @@ pub struct ProbeWidget {
     pub consume_keys: bool,
     /// Runs from `mouse_press_event`, with this widget's `RefCell` mutably borrowed.
     pub on_press: Option<Box<dyn FnMut()>>,
+    /// Runs from `focus_in_event`, with this widget's `RefCell` mutably borrowed.
+    pub on_focus_in: Option<Box<dyn FnMut()>>,
 }
 
 impl ProbeWidget {
@@ -31,6 +33,7 @@ impl ProbeWidget {
             log: Rc::clone(log),
             consume_keys: false,
             on_press: None,
+            on_focus_in: None,
         }
     }
 
@@ -177,6 +180,9 @@ impl Widget for ProbeWidget {
     }
     fn focus_in_event(&mut self, _reason: ferrokit_core::event::FocusReason) {
         self.note("focus_in");
+        if let Some(hook) = self.on_focus_in.as_mut() {
+            hook();
+        }
     }
     fn focus_out_event(&mut self, _reason: ferrokit_core::event::FocusReason) {
         self.note("focus_out");
