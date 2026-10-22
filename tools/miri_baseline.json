@@ -179,6 +179,13 @@
         "SB": "pass",
         "TB": "pass"
       }
+    },
+    "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale": {
+      "reason": "Reads the wall clock (SystemTime) for the guard's age, which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
+      "expected": {
+        "SB": "pass",
+        "TB": "pass"
+      }
     }
   },
   "results": {
@@ -1253,6 +1260,10 @@
     "test_move_to_thread_handler_adds_child::a_child_attached_by_a_thread_change_handler_moves_with_its_parent::SB": "pass",
     "test_move_to_thread_handler_adds_child::a_child_attached_by_a_thread_change_handler_moves_with_its_parent::TB": "pass",
     "test_io_system::process_merged_channels_put_stderr_on_stdout_in_write_order::SB": "unsupported",
-    "test_io_system::process_merged_channels_put_stderr_on_stdout_in_write_order::TB": "unsupported"
+    "test_io_system::process_merged_channels_put_stderr_on_stdout_in_write_order::TB": "unsupported",
+    "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale::SB": "unsupported",
+    "test_io_system::settings_roundtrip_edge_whitespace_in_keys_and_sections::SB": "unsupported",
+    "test_io_system::lock_file_empty_reclaim_guard_is_reclaimed_once_stale::TB": "unsupported",
+    "test_io_system::settings_roundtrip_edge_whitespace_in_keys_and_sections::TB": "unsupported"
   }
 }
