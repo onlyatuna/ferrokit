@@ -265,6 +265,29 @@ impl Win32Clipboard {
         unsafe { CloseClipboard() };
         Ok(())
     }
+    /// Whether `format` is backed by an `HGLOBAL`. GDI-handle formats (bitmaps, palettes,
+    /// metafiles and the private GDI object range) are not, and `GlobalLock` fails on them.
+    fn is_global_memory_format(format: u32) -> bool {
+        const CF_METAFILEPICT: u32 = 3;
+        const CF_BITMAP: u32 = 2;
+        const CF_PALETTE: u32 = 9;
+        const CF_ENHMETAFILE: u32 = 14;
+        const CF_DSPBITMAP: u32 = 0x0082;
+        const CF_DSPMETAFILEPICT: u32 = 0x0083;
+        const CF_DSPENHMETAFILE: u32 = 0x008E;
+        const CF_GDIOBJ_RANGE: std::ops::RangeInclusive<u32> = 0x0300..=0x03FF;
+        !matches!(
+            format,
+            CF_BITMAP
+                | CF_METAFILEPICT
+                | CF_PALETTE
+                | CF_ENHMETAFILE
+                | CF_DSPBITMAP
+                | CF_DSPMETAFILEPICT
+                | CF_DSPENHMETAFILE
+        ) && !CF_GDIOBJ_RANGE.contains(&format)
+    }
+
     pub fn mime_data_static() -> Result<MimeData, &'static str> {
         if !Self::open_with_retry() {
             return Err("Failed to open clipboard");
@@ -276,14 +299,17 @@ impl Win32Clipboard {
             if format == 0 {
                 break;
             }
+            if !Self::is_global_memory_format(format) {
+                continue;
+            }
             let hmem = unsafe { GetClipboardData(format) };
             if hmem.is_null() {
                 continue;
             }
             let ptr = unsafe { GlobalLock(hmem) as *const u8 };
             if ptr.is_null() {
-                unsafe { CloseClipboard() };
-                return Err("GlobalLock failed to read");
+                // One unreadable format must not discard the others.
+                continue;
             }
             let size = unsafe { GlobalSize(hmem) };
             let bytes = unsafe { std::slice::from_raw_parts(ptr, size).to_vec() };
@@ -364,8 +390,10 @@ impl Win32Clipboard {
                 return Err("GlobalLock failed to read");
             }
 
+            // Never scan past the allocation when the producer omitted the terminator.
+            let max_units = GlobalSize(hmem) / std::mem::size_of::<u16>();
             let mut len = 0;
-            while *ptr.add(len) != 0 {
+            while len < max_units && *ptr.add(len) != 0 {
                 len += 1;
             }
 
@@ -448,6 +476,38 @@ mod tests {
 
         Win32Clipboard::clear().expect("failed to clear");
         assert!(clipboard.mime_data().unwrap().formats().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_win32_clipboard_skips_gdi_formats_and_bounds_unterminated_text() {
+        use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
+        // Single test: both cases share the process-wide clipboard.
+        let hbm = unsafe { CreateBitmap(1, 1, 1, 32, ptr::null()) };
+        assert!(!hbm.is_null());
+        // Unterminated CF_UNICODETEXT: 8 non-zero units, exactly the allocation size.
+        let units = [0x41u16; 8];
+        unsafe {
+            let hmem = GlobalAlloc(GMEM_MOVEABLE, 16);
+            assert!(!hmem.is_null());
+            let p = GlobalLock(hmem) as *mut u16;
+            ptr::copy_nonoverlapping(units.as_ptr(), p, 8);
+            GlobalUnlock(hmem);
+            assert!(Win32Clipboard::open_with_retry());
+            EmptyClipboard();
+            assert!(!SetClipboardData(CF_UNICODETEXT as u32, hmem).is_null());
+            // CF_BITMAP (2) is a GDI handle, not an HGLOBAL.
+            assert!(!SetClipboardData(2, hbm as _).is_null());
+            CloseClipboard();
+        }
+        let data = Win32Clipboard::mime_data_static().expect("GDI format must not fail the read");
+        // Windows may force a terminator into the last unit, so 7 or 8 units
+        // come back; anything longer means the read ran past the allocation.
+        let bounded = |text: &str| matches!(text, "AAAAAAA" | "AAAAAAAA");
+        assert!(bounded(data.text().as_deref().unwrap_or("")), "{:?}", data.text());
+        let text = Win32Clipboard::text_static().unwrap();
+        assert!(bounded(&text), "{text:?}");
+        Win32Clipboard::clear().unwrap();
     }
 
     #[test]

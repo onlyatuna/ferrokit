@@ -937,6 +937,25 @@ mod tests {
     }
 
     #[test]
+    fn create_tray_icon_keeps_router_address_and_owns_icon() {
+        use crate::integration::{PlatformIntegration, Win32PlatformIntegration};
+        let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");
+        pixmap.fill(Color::from_rgba8(1, 2, 3, 255));
+        let tray = Win32PlatformIntegration::default()
+            .create_tray_icon("Router Test", &pixmap)
+            .expect("create_tray_icon");
+        let addr = &*tray as *const dyn crate::platform_tray::PlatformTrayIcon as *const () as usize;
+        {
+            let guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(
+                guard.as_ref().unwrap().values().any(|&a| a == addr),
+                "router table must point at the returned allocation"
+            );
+        }
+        drop(tray);
+    }
+
+    #[test]
     fn test_create_hicon_from_pixmap() {
         let mut pixmap = Pixmap::new(32, 32).expect("failed to create pixmap");
         pixmap.fill(Color::from_rgba8(255, 128, 0, 200));
