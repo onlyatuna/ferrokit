@@ -76,6 +76,16 @@ pub struct Property<T: Clone + PartialEq + Send + Sync + 'static> {
     notify_signal: Signal<T>,
     dirty: Arc<AtomicBool>,
     in_evaluation: Arc<AtomicBool>,
+    /// Shared by all clones; unregisters the dirty notifier when the last clone drops.
+    _registration: Arc<NotifierRegistration>,
+}
+
+struct NotifierRegistration(PropertyId);
+
+impl Drop for NotifierRegistration {
+    fn drop(&mut self) {
+        unregister_property_notifier(self.0);
+    }
 }
 
 impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Property<T> {
@@ -88,13 +98,8 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Property<T> {
             notify_signal: self.notify_signal.clone(),
             dirty: Arc::clone(&self.dirty),
             in_evaluation: Arc::clone(&self.in_evaluation),
+            _registration: Arc::clone(&self._registration),
         }
-    }
-}
-
-impl<T: Clone + PartialEq + Send + Sync + 'static> Drop for Property<T> {
-    fn drop(&mut self) {
-        unregister_property_notifier(self.id);
     }
 }
 
@@ -131,6 +136,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             notify_signal: Signal::new(),
             dirty,
             in_evaluation,
+            _registration: Arc::new(NotifierRegistration(id)),
         }
     }
 
@@ -218,12 +224,14 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
                 return;
             }
 
+            // Clear before computing: an invalidation that lands during compute()
+            // leaves the flag set so the next read recomputes.
+            self.dirty.store(false, Ordering::Release);
             CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().push(self.id));
             let new_val = compute();
             CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().pop());
 
             self.in_evaluation.store(false, Ordering::Release);
-            self.dirty.store(false, Ordering::Release);
 
             let changed = {
                 let mut val_lock = self.value.write().unwrap();
