@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - name: Require every Miri shard to succeed (or Miri to be irrelevant to this change)
+      - name: Require every Miri shard to succeed (or Miri not requested for this run)
         env:
           RELEVANT: ${{ needs.miri-changes.outputs.run }}
           CHANGES_RESULT: ${{ needs.miri-changes.result }}
@@ -200,7 +200,7 @@ jobs:
             echo "::error::Miri relevance check failed ($CHANGES_RESULT)"; exit 1
           fi
           if [ "$RELEVANT" != "true" ]; then
-            echo "No Miri-relevant files changed; shards skipped."; exit 0
+            echo "Miri not requested (no 'miri' label, no Miri tooling change); shards skipped."; exit 0
           fi
           if [ "$SHARD_RESULT" != "success" ]; then
             echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
