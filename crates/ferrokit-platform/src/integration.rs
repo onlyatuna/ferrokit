@@ -78,9 +78,10 @@ pub mod win32 {
             tooltip: &str,
             pixmap: &Pixmap,
         ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
-            let hicon = TrayIcon::create_hicon_from_pixmap(pixmap)?;
-            let tray = TrayIcon::new(tooltip, hicon)?;
-            Ok(Box::new(*tray))
+            // Keep the original allocation: the window-procedure router holds its address.
+            // `from_pixmap` also makes the tray own (and later destroy) the icon.
+            let tray = TrayIcon::from_pixmap(tooltip, pixmap)?;
+            Ok(tray)
         }
 
         fn primary_screen(&self) -> Box<dyn PlatformScreen> {

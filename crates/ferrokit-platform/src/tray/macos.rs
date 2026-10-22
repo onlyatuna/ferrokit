@@ -151,10 +151,33 @@ impl PlatformTrayIcon for CocoaStatusItem {
             let image =
                 unsafe { ObjcMsg::send_size(image_alloc, Sel::register("initWithSize:"), cg_size) };
             if !image.is_nil() {
+                // Give the image its pixels: an NSBitmapImageRep holding the pixmap's
+                // premultiplied RGBA bytes (without a representation the button draws nothing).
+                let rep_class = Class::get("NSBitmapImageRep").unwrap_or(Class::NIL);
+                let rep_alloc =
+                    unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };
+                let rep = unsafe {
+                    ObjcMsg::send_bitmap_rep_init(
+                        rep_alloc,
+                        self.icon_width as usize,
+                        self.icon_height as usize,
+                        &self.icon_bytes,
+                    )
+                };
+                if rep.is_nil() {
+                    unsafe { ObjcMsg::send_0(image, Sel::register("release")) };
+                    return Err("Cannot create NSBitmapImageRep from icon pixmap");
+                }
+                unsafe { ObjcMsg::send_id(image, Sel::register("addRepresentation:"), rep) };
+                // The image retains the representation.
+                unsafe { ObjcMsg::send_0(rep, Sel::register("release")) };
                 unsafe {
                     ObjcMsg::send_bool(image, Sel::register("setTemplate:"), self.is_template)
                 };
+                // The button retains the image (and releases the previous one); drop our +1 from
+                // `alloc`.
                 unsafe { ObjcMsg::send_id(button, Sel::register("setImage:"), image) };
+                unsafe { ObjcMsg::send_0(image, Sel::register("release")) };
             }
         }
         Ok(())
