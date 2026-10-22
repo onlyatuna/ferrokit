@@ -48,6 +48,15 @@ class TestParseTestTargets(unittest.TestCase):
         self.assertEqual([name for name, _ in found], ["ferrokit-core test_z"])
         self.assertEqual(found[0][1][4], "2")
 
+    def test_package_filter_keeps_only_named_packages(self):
+        lines = [artifact("test", "a", "ferrokit-core"), artifact("test", "b", "ferrokit-widgets")]
+        found = run_test_binaries.parse_test_targets(lines, "1", packages=["ferrokit-widgets"])
+        self.assertEqual([name for name, _ in found], ["ferrokit-widgets b"])
+
+    def test_test_threads_is_passed_after_the_separator(self):
+        found = run_test_binaries.parse_test_targets([artifact("test", "a", "ferrokit-core")], "1", test_threads="1")
+        self.assertEqual(found[0][1][-3:], ["--", "--test-threads", "1"])
+
     def test_no_lines_yields_no_targets(self):
         self.assertEqual(run_test_binaries.parse_test_targets([], "1"), [])
 

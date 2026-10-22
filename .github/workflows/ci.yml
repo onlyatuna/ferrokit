@@ -93,6 +93,39 @@ jobs:
         timeout-minutes: 15
         run: cargo test --workspace --doc --locked
 
+  # Non-required: the platform and widget tests that need an X server, run under a virtual one.
+  # Not in the protect-main required checks; the required `Workspace Test (ubuntu-22.04)` is separate.
+  test-xvfb:
+    name: Workspace Test (ubuntu-22.04, Xvfb)
+    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux deps and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libx11-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxinerama-dev \
+            libgl1-mesa-dev libgles2-mesa-dev pkg-config xvfb
+          echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+            | sudo debconf-set-selections
+          sudo apt-get install -y ttf-mscorefonts-installer fonts-noto-cjk
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run platform and widget test binaries under xvfb-run
+        run: >-
+          xvfb-run -a python tools/run_test_binaries.py --timeout 120 --jobs 4
+          --package ferrokit-platform --package ferrokit-widgets --test-threads 1
+
   miri-changes:
     name: Miri relevance
     runs-on: ubuntu-22.04
