@@ -1758,9 +1758,16 @@ impl QObject for Menu {
         ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
     }
 
-    /// The event handler runs with the menu borrowed by its caller, so the hides and the
-    /// activation it decides on are announced at the next flush; `Menu::dispatch` announces them
-    /// at once.
+    /// The event handler runs with the menu borrowed by its caller, so the `about_to_hide` and
+    /// `triggered` signals of the hides and the activation it decides on are posted to the next
+    /// `WidgetCommandQueue::flush` (the window's event dispatcher flushes after every event).
+    /// A direct caller that needs them at once uses [`Menu::dispatch`], which emits them
+    /// before it returns.
+    ///
+    /// The posted signals keep their owners' rules: a menu destroyed before the flush emits no
+    /// `about_to_hide` or `triggered` (`Signal::emit` of a gone owner calls no slot, as a deleted
+    /// `QObject` has no receivers); the chosen action's own `triggered` still runs while the
+    /// action is alive.
     fn event(&mut self, event: &mut Event) -> bool {
         let handled = self.handle_event(event);
         self.announce_later();
