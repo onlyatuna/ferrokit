@@ -240,7 +240,7 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
         }
         PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0);
     }
-    assert!(menu.exec_popup(Point::new(1900, 100)).is_none());
+    assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(1900, 100)).is_none());
 
     let log = log.lock();
     (log.frames.clone(), log.created[0])

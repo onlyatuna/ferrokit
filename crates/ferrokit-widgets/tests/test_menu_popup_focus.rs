@@ -41,6 +41,17 @@ fn get_popup_hwnd() -> HWND {
     found
 }
 
+/// `Menu::popup` needs a shared menu (`aboutToShow` runs with it free); these tests drive an
+/// owned one, so hand it over for the popup and take it back.
+fn popped(menu: Menu, pos: Point) -> Menu {
+    let shared = std::rc::Rc::new(std::cell::RefCell::new(menu));
+    Menu::popup(&shared, pos);
+    match std::rc::Rc::try_unwrap(shared) {
+        Ok(cell) => cell.into_inner(),
+        Err(_) => unreachable!("the popup keeps no handle to its menu"),
+    }
+}
+
 #[test]
 fn test_popup_exits_on_kill_focus() {
     let _guard = POPUP_TEST_LOCK.lock();
@@ -59,7 +70,7 @@ fn test_popup_exits_on_kill_focus() {
         }
     });
 
-    let chosen = menu.exec_popup(Point::new(100, 100));
+    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
     finished_clone.store(true, Ordering::SeqCst);
     assert!(chosen.is_none());
 
@@ -83,7 +94,7 @@ fn test_popup_exits_on_activateapp_deactivated() {
         }
     });
 
-    let chosen = menu.exec_popup(Point::new(100, 100));
+    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -105,7 +116,7 @@ fn test_popup_exits_on_capture_changed() {
         }
     });
 
-    let chosen = menu.exec_popup(Point::new(100, 100));
+    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -126,7 +137,7 @@ fn test_popup_exits_on_cancel_mode() {
         }
     });
 
-    let chosen = menu.exec_popup(Point::new(100, 100));
+    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -146,7 +157,7 @@ fn test_submenu_flips_left_when_near_right_screen_edge() {
     let s_geom = ferrokit_gui::geometry::primitives::Rect::new(0, 0, 1920, 1040);
     let root_origin = Point::new(1700, 500);
     menu.set_popup_bounds(Some(s_geom.translated(-root_origin.x, -root_origin.y)));
-    menu.popup_at(Point::new(0, 0), None);
+    let mut menu = popped(menu, Point::new(0, 0));
 
     // Open submenu at index 0
     menu.handle_mouse_move_at(Point::new(10, 10));

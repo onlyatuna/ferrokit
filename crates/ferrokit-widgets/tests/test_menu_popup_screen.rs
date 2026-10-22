@@ -183,7 +183,7 @@ fn popup_rect(secondary: Rect, pos: Point) -> (Rect, (i32, i32)) {
     let size = menu.size_hint();
     // The popup's own loop ends on the first `WM_CANCELMODE` it reads.
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0) };
-    assert!(menu.exec_popup(pos).is_none());
+    assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), pos).is_none());
 
     let rect = *created.lock().unwrap().first().expect("the popup window");
     (rect, (size.width, size.height))
