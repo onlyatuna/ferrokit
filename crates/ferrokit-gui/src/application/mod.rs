@@ -355,14 +355,16 @@ impl GuiApplication {
 
     /// Emits `lastWindowClosed` if registered (`qguiapplication.cpp:3939`).
     pub fn emit_last_window_closed() {
-        if let Some(sig) = LAST_WINDOW_CLOSED_SIGNAL.read().unwrap().as_ref() {
+        let sig = LAST_WINDOW_CLOSED_SIGNAL.read().unwrap().clone();
+        if let Some(sig) = sig {
             sig.emit(&());
         }
     }
 
     /// Emits `focusWindowChanged` if registered (`qguiapplication.cpp:2417`).
     pub fn emit_focus_window_changed(window_id: Option<ObjectId>) {
-        if let Some(sig) = FOCUS_WINDOW_CHANGED_SIGNAL.read().unwrap().as_ref() {
+        let sig = FOCUS_WINDOW_CHANGED_SIGNAL.read().unwrap().clone();
+        if let Some(sig) = sig {
             sig.emit(&window_id);
         }
     }
@@ -419,5 +421,32 @@ mod hardening_tests {
         };
         app.set_application_state(next);
         assert!(observed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn last_window_closed_slot_can_reregister_signal() {
+        let app = GuiApplication::new(Vec::new());
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_in_slot = Arc::clone(&ran);
+        app.last_window_closed().connect(move |_| {
+            // Takes the registry write lock, as a slot constructing a new app would.
+            *LAST_WINDOW_CLOSED_SIGNAL.write().unwrap() = Some(Signal::new());
+            ran_in_slot.store(true, Ordering::SeqCst);
+        });
+        GuiApplication::emit_last_window_closed();
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn focus_window_changed_slot_can_reregister_signal() {
+        let app = GuiApplication::new(Vec::new());
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_in_slot = Arc::clone(&ran);
+        app.focus_window_changed().connect(move |_| {
+            *FOCUS_WINDOW_CHANGED_SIGNAL.write().unwrap() = Some(Signal::new());
+            ran_in_slot.store(true, Ordering::SeqCst);
+        });
+        GuiApplication::emit_focus_window_changed(None);
+        assert!(ran.load(Ordering::SeqCst));
     }
 }
