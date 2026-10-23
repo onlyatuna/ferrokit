@@ -32,6 +32,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 /// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
+#[cfg(windows)]
 const NIN_KEYSELECT: u32 = NIN_SELECT | 0x1;
 pub const WM_TRAY_CALLBACK: u32 = 0x8000 + 101;
 
