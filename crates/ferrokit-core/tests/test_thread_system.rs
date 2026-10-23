@@ -390,15 +390,9 @@ impl Future for ReleasedBy {
     }
 }
 
-thread_local! {
-    /// How many test jobs the current thread is in the middle of (more than one when a parked
-    /// worker runs queued jobs inline).
-    static JOB_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Jobs that all park in `block_on` must not grow the pool past its hard cap of
-/// `max_thread_count` extra workers. At the cap, parked workers run the remaining queued jobs
-/// inline instead, so every job still starts without getting its own OS thread.
+/// `max_thread_count` extra workers: the jobs beyond the cap stay queued until a parked worker
+/// resumes, instead of each getting its own OS thread.
 #[test]
 fn test_thread_pool_blocked_workers_growth_is_capped() {
     const MAX: usize = 2;
@@ -406,69 +400,72 @@ fn test_thread_pool_blocked_workers_growth_is_capped() {
     const JOBS: usize = 4 * CAP;
     let pool = Arc::new(ThreadPool::new(MAX));
     let executor = Executor::with_pool(Arc::clone(&pool));
-    // Threads running test jobs at the same time, and the highest count seen.
-    let threads = Arc::new(AtomicUsize::new(0));
+    // Jobs running at the same time, each on its own worker thread, and the highest count seen.
+    let running = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let (started_tx, started_rx) = std::sync::mpsc::channel::<usize>();
+    let next_started = || {
+        started_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("a job never started")
+    };
 
     // Dropped before `pool` (declared after it), so the pool never joins a parked worker.
     let mut releases = Vec::with_capacity(JOBS);
-    let handles: Vec<_> = (0..JOBS)
+    let mut handles: Vec<_> = (0..JOBS)
         .map(|i| {
             let (release, released_by) = release_gate();
-            releases.push(release);
-            let threads = Arc::clone(&threads);
+            releases.push(Some(release));
+            let running = Arc::clone(&running);
             let peak = Arc::clone(&peak);
             let started_tx = started_tx.clone();
-            executor.spawn(async move {
-                if JOB_DEPTH.with(|depth| depth.replace(depth.get() + 1)) == 0 {
-                    let now = threads.fetch_add(1, Ordering::SeqCst) + 1;
-                    peak.fetch_max(now, Ordering::SeqCst);
-                }
+            Some(executor.spawn(async move {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
                 started_tx.send(i).unwrap();
                 released_by.await;
-                if JOB_DEPTH.with(|depth| depth.replace(depth.get() - 1)) == 1 {
-                    threads.fetch_sub(1, Ordering::SeqCst);
-                }
+                running.fetch_sub(1, Ordering::SeqCst);
                 i
-            })
+            }))
         })
         .collect();
 
-    // Every job starts while none is released: the ones beyond the cap run nested on the
-    // parked workers.
-    for _ in 0..JOBS {
-        started_rx
-            .recv_timeout(Duration::from_secs(60))
-            .expect("a queued job never started: the parked workers did not run it");
-    }
-    assert_eq!(pool.queued_task_count(), 0);
-    assert!(pool.active_thread_count() <= CAP);
-    assert!(peak.load(Ordering::SeqCst) <= CAP);
+    // The cap is reached: every worker the pool may have is busy with a parked job, so none is
+    // left to take the rest of the queue.
+    let mut parked: std::collections::VecDeque<usize> = (0..CAP).map(|_| next_started()).collect();
+    let mut started = CAP;
+    assert_eq!(pool.active_thread_count(), CAP);
+    assert_eq!(pool.queued_task_count(), JOBS - started);
 
-    drop(releases);
-    for (i, handle) in handles.into_iter().enumerate() {
-        let value = handle
+    // Release the parked jobs one at a time. Each finished job frees exactly one worker, which
+    // takes exactly one queued job: the pool never gets another thread for it.
+    while let Some(id) = parked.pop_front() {
+        drop(releases[id].take());
+        let value = handles[id]
+            .take()
+            .unwrap()
             .wait_timeout(Duration::from_secs(60))
             .expect("task failed")
             .expect("released job never finished");
-        assert_eq!(value, i);
+        assert_eq!(value, id);
+        if started < JOBS {
+            parked.push_back(next_started());
+            started += 1;
+            assert_eq!(pool.active_thread_count(), CAP);
+            assert_eq!(pool.queued_task_count(), JOBS - started);
+        }
     }
-    let peak = peak.load(Ordering::SeqCst);
-    assert!(
-        (MAX..=CAP).contains(&peak),
-        "{peak} threads ran jobs, the cap is {CAP}"
-    );
+    assert_eq!(peak.load(Ordering::SeqCst), CAP);
 }
 
-/// More async tasks than the thread cap (`2 * max_thread_count`) that each await a task of
-/// their own pool must all complete. The parents are all queued before any child, so with the
-/// cap reached every worker parks on a parent while the children wait behind other parents in
-/// the queue; only parked workers running queued jobs inline can finish them.
+/// A fan-out of far more async tasks than the thread cap (`2 * max_thread_count`), each
+/// awaiting a child task of its own pool, must complete. All parents are queued before any
+/// child, so every child waits behind the remaining parents: a parent's worker has to run the
+/// child it awaits inline (as `QThreadPool::tryTake` does).
 #[test]
-fn test_thread_pool_nested_tasks_beyond_cap_complete() {
+fn test_thread_pool_fan_out_awaiting_own_children_completes() {
     const MAX: usize = 2;
-    const PARENTS: usize = 6 * MAX;
+    const PARENTS: usize = 128;
     let pool = Arc::new(ThreadPool::new(MAX));
     let executor = Executor::with_pool(Arc::clone(&pool));
     // Held until every parent is queued; the first parents wait for it without `block_on`.
@@ -492,12 +489,80 @@ fn test_thread_pool_nested_tasks_beyond_cap_complete() {
     for _ in 0..PARENTS {
         let (i, value) = done_rx
             .recv_timeout(Duration::from_secs(60))
-            .expect("nested tasks beyond the thread cap hung");
+            .expect("a parent awaiting its own child hung");
         assert_eq!(value, i * 10 + 1);
         assert!(
             !std::mem::replace(&mut seen[i], true),
             "parent {i} finished twice"
         );
+    }
+}
+
+thread_local! {
+    /// Per-thread state that a task keeps borrowed across an `.await`.
+    static WORKER_STATE: RefCell<u32> = const { RefCell::new(0) };
+}
+
+/// A task that holds a borrow across an `.await` must not have unrelated queued jobs run inline
+/// on its thread while it waits, even with the pool at its thread cap: those jobs would find
+/// the state borrowed. Only a task the future awaits may run inline.
+#[test]
+fn test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline() {
+    const UNRELATED: usize = 8;
+    // One thread plus one replacement: both are busy once the two outer tasks park.
+    let pool = Arc::new(ThreadPool::new(1));
+    let (release_a, gate_a) = release_gate();
+    let (release_b, gate_b) = release_gate();
+    let (holding_tx, holding_rx) = std::sync::mpsc::channel::<Vec<TaskHandle<()>>>();
+
+    let outer_b = {
+        let pool = Arc::clone(&pool);
+        move || {
+            WORKER_STATE.with(|state| {
+                block_on(async {
+                    let _held = state.borrow_mut();
+                    let unrelated = (0..UNRELATED)
+                        .map(|_| pool.spawn(|| WORKER_STATE.with(|s| *s.borrow_mut() += 1)))
+                        .collect();
+                    holding_tx.send(unrelated).unwrap();
+                    gate_b.await;
+                })
+            })
+        }
+    };
+    let outer_a = {
+        let inner_pool = Arc::clone(&pool);
+        pool.spawn(move || {
+            WORKER_STATE.with(|state| {
+                block_on(async {
+                    let _held = state.borrow_mut();
+                    // Not awaited: it runs on the replacement worker started when this parks.
+                    let outer_b = inner_pool.spawn(outer_b);
+                    gate_a.await;
+                    outer_b
+                })
+            })
+        })
+    };
+
+    let unrelated = holding_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the second outer task never started");
+    // Both workers are busy with a parked outer task and no other may start.
+    assert_eq!(pool.active_thread_count(), 2);
+    assert_eq!(pool.queued_task_count(), UNRELATED);
+
+    drop(release_a);
+    drop(release_b);
+    let outer_b = outer_a
+        .wait_timeout(Duration::from_secs(60))
+        .expect("first outer task failed")
+        .expect("first outer task hung");
+    for handle in std::iter::once(outer_b).chain(unrelated) {
+        handle
+            .wait_timeout(Duration::from_secs(60))
+            .expect("a job found the state borrowed: it ran inside an outer task")
+            .expect("a job hung");
     }
 }
 

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread as StdThread};
 
-use crate::thread::pool::{enter_blocking, ThreadPool};
+use crate::thread::pool::{
+    enter_blocking, poll_noting_awaited_jobs, steal_awaited_job, ThreadPool,
+};
 use crate::thread::task::TaskHandle;
 
 struct ThreadWaker {
@@ -59,8 +61,8 @@ fn create_thread_waker(waker: Arc<ThreadWaker>) -> Waker {
 
 /// Runs a Rust asynchronous `Future` to completion on the current thread, blocking until done.
 ///
-/// On a [`ThreadPool`] worker at the pool's thread cap, the wait may run queued jobs of that
-/// pool inline (see [`ThreadPool`]).
+/// On a [`ThreadPool`] worker, a task of the same pool that the future awaits and that has not
+/// started yet is run inline (see [`ThreadPool`]).
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let mut pinned = unsafe { Pin::new_unchecked(&mut future) };
     let thread_waker = Arc::new(ThreadWaker::new());
@@ -68,32 +70,22 @@ pub fn block_on<F: Future>(mut future: F) -> F::Output {
     let mut cx = Context::from_waker(&waker);
 
     loop {
-        match pinned.as_mut().poll(&mut cx) {
-            Poll::Ready(val) => return val,
-            Poll::Pending => {
-                if thread_waker.notified.swap(false, Ordering::SeqCst) {
-                    continue;
-                }
-                // About to park: if this is a pool worker, free its slot so jobs queued behind
-                // it (possibly the very ones this future awaits) can run.
-                let inline_job = {
-                    let blocked = enter_blocking();
-                    loop {
-                        if thread_waker.notified.swap(false, Ordering::SeqCst) {
-                            break None;
-                        }
-                        // At the thread cap, run a queued job here instead of waiting for it.
-                        if let Some(job) = blocked.as_ref().and_then(|b| b.take_job()) {
-                            break Some(job);
-                        }
-                        thread::park();
-                    }
-                };
-                // Run with the blocked guard dropped: this worker is busy again, not parked.
-                // Re-polled afterwards, as the job may be what this future awaits.
-                if let Some(job) = inline_job {
-                    job.run();
-                }
+        let (poll, awaited) = poll_noting_awaited_jobs(|| pinned.as_mut().poll(&mut cx));
+        if let Poll::Ready(val) = poll {
+            return val;
+        }
+        // The future awaits a task of this worker's pool that is still queued: take it out of
+        // the queue and run it here, as `QThreadPool::tryTake` does, then poll again.
+        if let Some(job) = awaited.iter().find_map(steal_awaited_job) {
+            job.run();
+            continue;
+        }
+        if !thread_waker.notified.swap(false, Ordering::SeqCst) {
+            // About to park: if this is a pool worker, free its slot so jobs queued behind it
+            // can run.
+            let _blocked = enter_blocking();
+            while !thread_waker.notified.swap(false, Ordering::SeqCst) {
+                thread::park();
             }
         }
     }

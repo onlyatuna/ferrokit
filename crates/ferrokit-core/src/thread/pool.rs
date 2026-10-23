@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
-use std::thread::{Builder as StdThreadBuilder, JoinHandle, Thread};
+use std::thread::{Builder as StdThreadBuilder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::thread::task::{CancellationToken, TaskError, TaskHandle, TaskShared};
@@ -12,12 +12,21 @@ use crate::thread::task::{CancellationToken, TaskError, TaskHandle, TaskShared};
 /// A queued unit of work. The closure is told whether it is being run (`true`) or discarded
 /// without running (`false`), so a job dropped from the queue still completes its task handle.
 struct Job {
+    /// Identifies the job in its pool's queue (see [`JobRef`]).
+    id: u64,
     work: Option<Box<dyn FnOnce(bool) + Send + 'static>>,
 }
 
+/// Returns a job id never handed out before.
+fn next_job_id() -> u64 {
+    static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
+    NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Job {
-    fn new(work: impl FnOnce(bool) + Send + 'static) -> Self {
+    fn new(id: u64, work: impl FnOnce(bool) + Send + 'static) -> Self {
         Self {
+            id,
             work: Some(Box::new(work)),
         }
     }
@@ -45,8 +54,6 @@ pub(crate) struct PoolState {
     blocked_workers: usize,
     shutdown: bool,
     queue: VecDeque<Job>,
-    /// Workers parked in `block_on` that may run queued jobs inline (see [`BlockedWorker`]).
-    helpers: Vec<Thread>,
 }
 
 impl PoolState {
@@ -57,11 +64,6 @@ impl PoolState {
         self.max_threads + self.blocked_workers.min(self.max_threads)
     }
 }
-
-/// How many queued jobs one worker runs nested inside its `block_on` calls at most. Each level
-/// keeps the stack frames of the jobs below it alive, so the depth is bounded to keep the
-/// worker's stack bounded; a worker at this depth only parks.
-const MAX_INLINE_DEPTH: usize = 16;
 
 pub(crate) struct PoolShared {
     pub(crate) state: Mutex<PoolState>,
@@ -75,89 +77,105 @@ pub(crate) struct PoolShared {
 thread_local! {
     /// The pool whose worker the current thread is, if any.
     static WORKER_POOL: RefCell<Option<Weak<PoolShared>>> = const { RefCell::new(None) };
-    /// How many queued jobs the current worker is running inline (nested in `block_on`).
-    static INLINE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// While `block_on` polls its future: the queued pool jobs that future is awaiting.
+    static AWAITED_JOBS: RefCell<Option<Vec<JobRef>>> = const { RefCell::new(None) };
 }
 
 /// Marks the current pool worker as parked in `block_on` for as long as it lives.
-///
-/// Once the pool is at its thread cap, no replacement can be started for queued jobs, and they
-/// may be the very ones the parked futures await. A parked worker then helps: it takes a queued
-/// job with [`BlockedWorker::take_job`] and runs it inline, like Qt's
-/// `QFuture::waitForFinished` running the awaited runnable on the waiting thread.
-pub(crate) struct BlockedWorker {
-    shared: Arc<PoolShared>,
-    /// Whether this worker may run queued jobs inline (it is below [`MAX_INLINE_DEPTH`]).
-    helps: bool,
-}
+pub(crate) struct BlockedWorker(Arc<PoolShared>);
 
 /// If the current thread is a pool worker, releases its slot for the duration of the returned
 /// guard and starts replacement workers for queued jobs, within [`PoolState::capacity`].
 pub(crate) fn enter_blocking() -> Option<BlockedWorker> {
     let shared = WORKER_POOL.with(|pool| pool.borrow().as_ref().and_then(Weak::upgrade))?;
-    let helps = INLINE_DEPTH.with(Cell::get) < MAX_INLINE_DEPTH;
     let (first_id, count) = {
         let mut state = shared.state.lock().unwrap();
         state.blocked_workers += 1;
-        if helps {
-            state.helpers.push(std::thread::current());
-        }
         shared.reserve_workers(&state)
     };
     for id in first_id..first_id + count {
         shared.spawn_worker_thread(id);
     }
-    Some(BlockedWorker { shared, helps })
-}
-
-impl BlockedWorker {
-    /// Takes a queued job for this parked worker to run inline (with [`InlineJob::run`],
-    /// after dropping this guard), if the pool is at its thread cap and some queued job has no
-    /// worker to run it.
-    pub(crate) fn take_job(&self) -> Option<InlineJob> {
-        if !self.helps {
-            return None;
-        }
-        let mut state = self.shared.state.lock().unwrap();
-        if self.shared.has_uncovered_jobs(&state) {
-            state.queue.pop_front().map(InlineJob)
-        } else {
-            None
-        }
-    }
+    Some(BlockedWorker(shared))
 }
 
 impl Drop for BlockedWorker {
     fn drop(&mut self) {
         let surplus = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = self.0.state.lock().unwrap();
             state.blocked_workers -= 1;
-            if self.helps {
-                let current = std::thread::current().id();
-                if let Some(pos) = state.helpers.iter().position(|t| t.id() == current) {
-                    state.helpers.swap_remove(pos);
-                }
-            }
-            self.shared.has_surplus_workers(&state)
+            self.0.has_surplus_workers(&state)
         };
         if surplus {
             // Idle workers beyond the limit notice this and retire.
-            self.shared.work_cond.notify_all();
+            self.0.work_cond.notify_all();
         }
     }
 }
 
-/// A queued job taken by a worker parked in `block_on`, to be run on that worker's stack.
+/// The pool job behind a [`TaskHandle`] returned by [`ThreadPool::spawn`].
+#[derive(Clone)]
+pub(crate) struct JobRef {
+    pool: Weak<PoolShared>,
+    id: u64,
+}
+
+/// Records that the future `block_on` is polling awaits `job`, which has not started yet.
+/// Outside a `block_on` poll this does nothing.
+pub(crate) fn note_awaited_job(job: &JobRef) {
+    AWAITED_JOBS.with(|jobs| {
+        if let Some(jobs) = jobs.borrow_mut().as_mut() {
+            jobs.push(job.clone());
+        }
+    });
+}
+
+/// Runs `poll` and returns its result with the jobs it awaited (see [`note_awaited_job`]).
+pub(crate) fn poll_noting_awaited_jobs<R>(poll: impl FnOnce() -> R) -> (R, Vec<JobRef>) {
+    /// Restores the enclosing `block_on`'s list (`None` outside one), also if `poll` panics.
+    struct Restore(Option<Vec<JobRef>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            AWAITED_JOBS.with(|jobs| *jobs.borrow_mut() = outer);
+        }
+    }
+
+    let _restore = Restore(AWAITED_JOBS.with(|jobs| jobs.replace(Some(Vec::new()))));
+    let result = poll();
+    let awaited = AWAITED_JOBS
+        .with(|jobs| jobs.borrow_mut().take())
+        .unwrap_or_default();
+    (result, awaited)
+}
+
+/// Removes `job` from its pool's queue so the current thread can run it inline, like
+/// `QThreadPool::tryTake`. Only done on a worker of that same pool, and only while the job is
+/// still queued.
+pub(crate) fn steal_awaited_job(job: &JobRef) -> Option<InlineJob> {
+    let on_own_worker = WORKER_POOL.with(|pool| {
+        pool.borrow()
+            .as_ref()
+            .is_some_and(|pool| Weak::ptr_eq(pool, &job.pool))
+    });
+    if !on_own_worker {
+        return None;
+    }
+    let shared = job.pool.upgrade()?;
+    let mut state = shared.state.lock().unwrap();
+    let pos = state.queue.iter().position(|queued| queued.id == job.id)?;
+    state.queue.remove(pos).map(InlineJob)
+}
+
+/// A queued job taken by the worker awaiting it, to be run on that worker's stack.
 pub(crate) struct InlineJob(Job);
 
 impl InlineJob {
-    /// Runs the job on the current worker, one inline level deeper.
+    /// Runs the job on the current worker, which stays busy (it is not parked) meanwhile.
     pub(crate) fn run(self) {
-        INLINE_DEPTH.with(|depth| depth.set(depth.get() + 1));
         // As in the worker loop: a panicking waker/completion must not unwind into the
         // `block_on` that is running this job.
         let _ = catch_unwind(std::panic::AssertUnwindSafe(|| self.0.run()));
-        INLINE_DEPTH.with(|depth| depth.set(depth.get() - 1));
     }
 }
 
@@ -165,14 +183,6 @@ impl PoolShared {
     /// Whether more workers exist than the current capacity allows.
     fn has_surplus_workers(&self, state: &PoolState) -> bool {
         self.total_threads.load(Ordering::SeqCst) > state.capacity()
-    }
-
-    /// Whether the pool is at its thread cap and has more queued jobs than idle workers, so
-    /// some queued job can only run if a parked worker runs it inline.
-    fn has_uncovered_jobs(&self, state: &PoolState) -> bool {
-        let total = self.total_threads.load(Ordering::SeqCst);
-        let available = total.saturating_sub(state.busy_workers);
-        total >= state.capacity() && state.queue.len() > available
     }
 
     /// Reserves as many new workers as the queue needs and the thread limit allows, and returns
@@ -270,14 +280,16 @@ impl PoolShared {
 /// queued behind blocked workers can still run. At most `max_thread_count` such extra workers
 /// exist at a time, so the pool never runs more than twice `max_thread_count` threads.
 ///
-/// Once that cap is reached, a parked worker whose future is not ready runs queued jobs itself,
-/// inline on its own stack, and re-polls its future after each one (as Qt's
-/// `QFuture::waitForFinished` runs the awaited runnable on the waiting thread). So tasks awaiting
-/// tasks of the same pool still complete however many there are. The parked future is re-polled
-/// only once the inline job returns. A worker nests at most 16 inline jobs; one at that depth
-/// only parks, so dependency chains that need more nesting than all workers together provide
-/// can still wait forever. The extra workers retire once they are idle and the blocked ones
-/// have resumed.
+/// A task on a worker that awaits a task of the same pool which has not started yet takes that
+/// task out of the queue and runs it itself, inline, then re-polls its future: like Qt's
+/// `QFuture::waitForFinished`, which steals the awaited runnable with `QThreadPool::tryTake`.
+/// So tasks awaiting tasks of their own pool complete however many there are, and the nesting
+/// depth follows the program's own chain of awaits. Only the awaited task runs inline, never
+/// unrelated queued jobs; it runs on the awaiting worker's thread (and sees its thread-locals).
+/// Anything else a parked worker waits for (I/O, channels, tasks already running) does not need
+/// the pool to finish, so the worker simply waits; once the cap is reached, queued jobs wait
+/// for a worker to become free. The extra workers retire once they are idle and the blocked
+/// ones have resumed.
 pub struct ThreadPool {
     shared: Arc<PoolShared>,
 }
@@ -350,11 +362,18 @@ impl ThreadPool {
         T: Send + 'static,
     {
         let cancel_token = CancellationToken::new();
-        let shared = Arc::new(TaskShared::new(cancel_token.clone()));
+        let job_id = next_job_id();
+        let shared = Arc::new(TaskShared::new(
+            cancel_token.clone(),
+            Some(JobRef {
+                pool: Arc::downgrade(&self.shared),
+                id: job_id,
+            }),
+        ));
         let handle = TaskHandle::new(Arc::clone(&shared));
 
         let job_shared = Arc::clone(&shared);
-        let job = Job::new(move |run| {
+        let job = Job::new(job_id, move |run| {
             if !run {
                 // Dropped from the queue (clear / pool teardown) without ever running.
                 job_shared.cancel_unstarted();
@@ -386,18 +405,10 @@ impl ThreadPool {
     }
 
     fn submit_job(&self, job: Job) {
-        let (first_id, count, helper) = {
+        let (first_id, count) = {
             let mut state = self.shared.state.lock().unwrap();
             state.queue.push_back(job);
-            let (first_id, count) = self.shared.reserve_workers(&state);
-            // At the thread cap with no idle worker for the job: wake a parked worker so it
-            // runs the job inline (see `BlockedWorker`).
-            let helper = if self.shared.has_uncovered_jobs(&state) {
-                state.helpers.last().cloned()
-            } else {
-                None
-            };
-            (first_id, count, helper)
+            self.shared.reserve_workers(&state)
         };
 
         for id in first_id..first_id + count {
@@ -405,9 +416,6 @@ impl ThreadPool {
         }
 
         self.shared.work_cond.notify_one();
-        if let Some(helper) = helper {
-            helper.unpark();
-        }
     }
 
     /// Current maximum number of worker threads.
@@ -535,7 +543,6 @@ impl ThreadPoolBuilder {
                 blocked_workers: 0,
                 shutdown: false,
                 queue: VecDeque::new(),
-                helpers: Vec::new(),
             }),
             work_cond: Condvar::new(),
             done_cond: Condvar::new(),
@@ -558,11 +565,11 @@ mod tests {
     #[test]
     fn clear_queue_wakes_wait_for_done_when_idle() {
         let pool = Arc::new(ThreadPool::new(1));
-        let task_shared = Arc::new(TaskShared::<()>::new(CancellationToken::new()));
+        let task_shared = Arc::new(TaskShared::<()>::new(CancellationToken::new(), None));
         {
             let canceled = Arc::clone(&task_shared);
             let mut state = pool.shared.state.lock().unwrap();
-            state.queue.push_back(Job::new(move |run| {
+            state.queue.push_back(Job::new(next_job_id(), move |run| {
                 assert!(!run);
                 canceled.cancel_unstarted();
             }));
