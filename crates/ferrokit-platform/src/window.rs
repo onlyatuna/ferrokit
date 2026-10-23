@@ -806,6 +806,13 @@ fn mouse_buttons_from_mk(wparam: WPARAM) -> ferrokit_core::event::MouseButtons {
 }
 
 #[cfg(windows)]
+thread_local! {
+    /// Windows with an IME composition in progress (`WM_IME_STARTCOMPOSITION` seen).
+    static IME_COMPOSING: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+#[cfg(windows)]
 fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
     unsafe {
         let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
@@ -1541,15 +1548,23 @@ unsafe fn native_window_proc_inner(
                 y: global_y,
             };
             windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
+                get_window_dpr(hwnd),
+            );
+            let global_pos = crate::screen::win32_screen::from_native_global_point(
+                ferrokit_gui::geometry::primitives::Point::new(global_x, global_y),
+                hwnd as isize,
+            );
 
             if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                 handle.post_event(
                     receiver,
                     Event::new_spontaneous(EventKind::ContextMenu {
-                        x: pt.x,
-                        y: pt.y,
-                        global_x,
-                        global_y,
+                        x: pos.x,
+                        y: pos.y,
+                        global_x: global_pos.x,
+                        global_y: global_pos.y,
                         reason: if keyboard {
                             ferrokit_core::event::ContextMenuReason::Keyboard
                         } else {
@@ -1608,17 +1623,7 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-        windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_SETCONTEXT => {
-            const ISC_SHOWUICOMPOSITIONWINDOW: u32 = 0x8000_0000;
-            // Qt draws the preedit itself: hide the IME's native composition window
-            // (`QWindowsInputContext::windowsInputContextProc`).
-            let lparam = if wparam != 0 {
-                lparam & !(ISC_SHOWUICOMPOSITIONWINDOW as isize)
-            } else {
-                lparam
-            };
+            let _ = IME_COMPOSING.try_with(|c| c.borrow_mut().insert(hwnd as isize));
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
@@ -1628,9 +1633,7 @@ unsafe fn native_window_proc_inner(
             let commit_string = commit_opt.unwrap_or_default();
             let preedit_string = preedit_opt.unwrap_or_default();
 
-            // `lparam == 0` is a cancelled composition: Qt (`QWindowsInputContext::composition`)
-            // then sends an empty event so the preedit is cleared.
-            if lparam == 0 || !commit_string.is_empty() || !preedit_string.is_empty() {
+            if !commit_string.is_empty() || !preedit_string.is_empty() {
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
@@ -1655,6 +1658,32 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
+            // `QWindowsInputContext::endComposition`: a composition that was running is closed
+            // with an empty event so a cancelled preedit is cleared.
+            let was_composing = IME_COMPOSING
+                .try_with(|c| c.borrow_mut().remove(&(hwnd as isize)))
+                .unwrap_or(false);
+            if was_composing {
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::InputMethod {
+                        commit_string: String::new(),
+                        preedit_string: String::new(),
+                        cursor_position: 0,
+                    },
+                );
+                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                    handle.post_event(
+                        receiver,
+                        Event::new_spontaneous(EventKind::InputMethod {
+                            commit_string: String::new(),
+                            preedit_string: String::new(),
+                            cursor_position: 0,
+                        }),
+                    );
+                }
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         0x0218 => {
@@ -1887,6 +1916,11 @@ impl NativeWindow {
         } else {
             None
         };
+
+        // A click-through window needs `WS_EX_LAYERED` with attributes (`setWindowLayered`).
+        if flags.contains(WindowFlags::CLICK_THROUGH) && !flags.contains(WindowFlags::LAYERED) {
+            apply_system_window_opacity(hwnd, 1.0, true);
+        }
 
         Ok(Self {
             hwnd,

@@ -91,6 +91,20 @@ fn an_opacity_round_trip_keeps_a_click_through_window_layered() {
     assert!(!is_layered(hwnd), "an opaque window that stops being click-through is not layered");
 }
 
+/// A window created click-through is layered from the start (`setWindowLayered`).
+#[test]
+fn a_window_created_click_through_is_layered() {
+    let win = NativeWindow::new(
+        "created-click-through",
+        Rect::new(50, 50, 120, 80),
+        WindowFlags::FRAMELESS | WindowFlags::CLICK_THROUGH,
+    )
+    .expect("native window");
+    let hwnd = win.hwnd() as isize;
+    assert!(is_layered(hwnd));
+    assert_eq!(layered_alpha(hwnd), Some(255));
+}
+
 /// Needs a machine where `DCompSurface::new` succeeds. It is `#[ignore]`d rather than silently
 /// passing without DirectComposition (as `test_dcomp_*` do): run it with `-- --ignored`; where
 /// DirectComposition is unavailable it fails loudly instead of reporting a pass.
