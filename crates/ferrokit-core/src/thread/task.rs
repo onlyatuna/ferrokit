@@ -7,6 +7,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use crate::thread::pool::{note_awaited_job, JobRef};
+
 /// Status of a task in its execution lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskStatus {
@@ -81,10 +83,15 @@ pub(crate) struct TaskShared<T> {
     pub(crate) taken: AtomicBool,
     pub(crate) cancel_token: CancellationToken,
     pub(crate) wakers: Mutex<Vec<Waker>>,
+    /// The pool job that runs this task, if it was spawned on a [`ThreadPool`]. Lets a worker
+    /// of that pool awaiting the task run it inline while it is still queued.
+    ///
+    /// [`ThreadPool`]: crate::thread::ThreadPool
+    pub(crate) queued_job: Option<JobRef>,
 }
 
 impl<T> TaskShared<T> {
-    pub(crate) fn new(cancel_token: CancellationToken) -> Self {
+    pub(crate) fn new(cancel_token: CancellationToken, queued_job: Option<JobRef>) -> Self {
         Self {
             status: Mutex::new(TaskStatus::Queued),
             cond: Condvar::new(),
@@ -92,6 +99,7 @@ impl<T> TaskShared<T> {
             taken: AtomicBool::new(false),
             cancel_token,
             wakers: Mutex::new(Vec::new()),
+            queued_job,
         }
     }
 
@@ -275,17 +283,26 @@ impl<T: Clone> Future for TaskHandle<T> {
     type Output = Result<T, TaskError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let res = self.shared.result.lock().unwrap();
-        if let Some(r) = res.as_ref() {
-            Poll::Ready(r.clone())
-        } else if self.shared.taken.load(Ordering::SeqCst) {
-            Poll::Ready(Err(TaskError::ResultTaken))
-        } else {
+        {
+            let res = self.shared.result.lock().unwrap();
+            if let Some(r) = res.as_ref() {
+                return Poll::Ready(r.clone());
+            }
+            if self.shared.taken.load(Ordering::SeqCst) {
+                return Poll::Ready(Err(TaskError::ResultTaken));
+            }
             let mut wakers = self.shared.wakers.lock().unwrap();
             if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
                 wakers.push(cx.waker().clone());
             }
-            Poll::Pending
         }
+        // Checked with `result` released: `settle` takes `status` before `result`.
+        if let Some(job) = &self.shared.queued_job {
+            if *self.shared.status.lock().unwrap() == TaskStatus::Queued {
+                // Lets `block_on` on a worker of the same pool run the task inline.
+                note_awaited_job(job);
+            }
+        }
+        Poll::Pending
     }
 }

@@ -1295,6 +1295,12 @@
     "test_property_clone_and_race::dropping_a_clone_keeps_dependents_invalidated::SB": "pass",
     "test_property_clone_and_race::dropping_a_clone_keeps_dependents_invalidated::TB": "pass",
     "test_property_clone_and_race::invalidation_during_binding_is_not_lost::SB": "pass",
-    "test_property_clone_and_race::invalidation_during_binding_is_not_lost::TB": "pass"
+    "test_property_clone_and_race::invalidation_during_binding_is_not_lost::TB": "pass",
+    "test_thread_system::test_thread_pool_blocked_workers_growth_is_capped::SB": "pass",
+    "test_thread_system::test_thread_pool_blocked_workers_growth_is_capped::TB": "pass",
+    "test_thread_system::test_thread_pool_fan_out_awaiting_own_children_completes::SB": "pass",
+    "test_thread_system::test_thread_pool_fan_out_awaiting_own_children_completes::TB": "pass",
+    "test_thread_system::test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline::SB": "pass",
+    "test_thread_system::test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline::TB": "pass"
   }
 }
