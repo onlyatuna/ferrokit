@@ -398,6 +398,8 @@ pub struct MockObjectData {
     pub pixels: Vec<u8>,
     /// Owners of the object; `alloc` starts at one, containers add one per held child.
     pub retain_count: usize,
+    /// `-[NSWindow releasedWhenClosed]`: AppKit's default is YES, so `close` releases the window.
+    pub released_when_closed: bool,
 }
 
 // SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
@@ -431,6 +433,7 @@ impl Default for MockObjectData {
             action: Sel::NIL,
             pixels: Vec::new(),
             retain_count: 1,
+            released_when_closed: true,
         }
     }
 }
@@ -440,6 +443,8 @@ pub struct MockObjcRuntime {
     selectors: Mutex<HashMap<String, usize>>,
     objects: Mutex<HashMap<usize, MockObjectData>>,
     next_id: Mutex<usize>,
+    /// Ids sent `release` after they were deallocated (ids are never reused).
+    over_released: Mutex<Vec<usize>>,
 }
 
 impl Default for MockObjcRuntime {
@@ -476,6 +481,7 @@ impl MockObjcRuntime {
             selectors: Mutex::new(HashMap::new()),
             objects: Mutex::new(HashMap::new()),
             next_id: Mutex::new(100),
+            over_released: Mutex::new(Vec::new()),
         }
     }
 
@@ -564,6 +570,11 @@ impl MockObjcRuntime {
             let mut objects = self.objects.lock().unwrap();
             let key = id.0 as usize;
             let Some(obj) = objects.get_mut(&key) else {
+                drop(objects);
+                // `allocate_object` locks `next_id` before `objects`; never the reverse.
+                if key < *self.next_id.lock().unwrap() {
+                    self.over_released.lock().unwrap().push(key);
+                }
                 continue;
             };
             obj.retain_count = obj.retain_count.saturating_sub(1);
@@ -572,6 +583,29 @@ impl MockObjcRuntime {
                     pending.extend(dead.children);
                 }
             }
+        }
+    }
+
+    /// Whether `id` was sent `release` after it had already been deallocated.
+    pub fn was_over_released(&self, id: Id) -> bool {
+        self.over_released
+            .lock()
+            .unwrap()
+            .contains(&(id.0 as usize))
+    }
+
+    /// `-[NSWindow close]`: orders the window out and, if `releasedWhenClosed`, releases it.
+    #[cfg(not(target_os = "macos"))]
+    fn close_window(&self, id: Id) {
+        let Some(data) = self.get_object_data(id) else {
+            return;
+        };
+        self.update_object(id, |d| {
+            d.is_visible = false;
+            d.is_key = false;
+        });
+        if data.released_when_closed {
+            self.release(id);
         }
     }
 }
@@ -645,6 +679,9 @@ impl ObjcMsg {
                 }
             } else if sel_name == "release" {
                 runtime.release(receiver);
+                return Id::NIL;
+            } else if sel_name == "close" {
+                runtime.close_window(receiver);
                 return Id::NIL;
             } else if sel_name == "removeFromSuperview" {
                 if let Some(parent) = runtime.get_object_data(receiver).map(|d| d.parent) {
@@ -819,6 +856,8 @@ impl ObjcMsg {
                 runtime.update_object(receiver, |data| {
                     data.is_visible = true;
                 });
+            } else if sel_name == "performClose:" {
+                runtime.close_window(receiver);
             } else if sel_name == "orderOut:" {
                 runtime.update_object(receiver, |data| {
                     data.is_visible = false;
@@ -978,6 +1017,10 @@ impl ObjcMsg {
             if sel_name == "setIgnoresMouseEvents:" {
                 runtime.update_object(receiver, |data| {
                     data.ignores_mouse_events = val;
+                });
+            } else if sel_name == "setReleasedWhenClosed:" {
+                runtime.update_object(receiver, |data| {
+                    data.released_when_closed = val;
                 });
             } else if sel_name == "setEnabled:" {
                 runtime.update_object(receiver, |data| {
