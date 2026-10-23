@@ -409,7 +409,7 @@ impl CocoaNativeWindow {
             CocoaNativeEvent::WindowResized { width, height } => {
                 self.geometry.width = width as i32;
                 self.geometry.height = height as i32;
-                let _ = self.surface.resize(width as u32, height as u32);
+                let _ = self.surface.resize(surface_dim(width as i32), surface_dim(height as i32));
                 handler.handle_window_event(WindowSystemEvent::Resize {
                     size: Size::new(width as i32, height as i32),
                 });

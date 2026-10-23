@@ -48,6 +48,8 @@ pub struct SingleInstanceGuard {
     socket_path: Option<std::path::PathBuf>,
     #[cfg(not(windows))]
     listener_stop: Arc<AtomicBool>,
+    #[cfg(not(windows))]
+    listener_thread: Option<std::thread::JoinHandle<()>>,
     command_callbacks: Arc<Mutex<Vec<CommandCallback>>>,
 }
 
@@ -92,6 +94,12 @@ impl Drop for SingleInstanceGuard {
         #[cfg(not(windows))]
         {
             self.listener_stop.store(true, Ordering::SeqCst);
+            // Join so no callback fires after the guard is gone (skip if dropped from a callback).
+            if let Some(t) = self.listener_thread.take() {
+                if t.thread().id() != std::thread::current().id() {
+                    let _ = t.join();
+                }
+            }
             if let Some(sock) = &self.socket_path {
                 let _ = std::fs::remove_file(sock);
             }
@@ -252,6 +260,7 @@ impl SingleInstance {
         // Bind UnixListener
         let listener_stop = Arc::new(AtomicBool::new(false));
         let command_callbacks: Arc<Mutex<Vec<CommandCallback>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut listener_thread = None;
 
         if let Ok(listener) = UnixListener::bind(&socket_path) {
             let _ = listener.set_nonblocking(true);
@@ -259,7 +268,7 @@ impl SingleInstance {
             let callbacks = Arc::clone(&command_callbacks);
 
             // Background polling thread for IPC listener
-            std::thread::spawn(move || {
+            listener_thread = Some(std::thread::spawn(move || {
                 while !stop_flag.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
@@ -282,16 +291,22 @@ impl SingleInstance {
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
-                        Err(_) => break,
+                        Err(_) => {
+                            if stop_flag.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
                     }
                 }
-            });
+            }));
         }
 
         SingleInstanceResult::Primary(SingleInstanceGuard {
             lock_file: Some(file),
             socket_path: Some(socket_path),
             listener_stop,
+            listener_thread,
             command_callbacks,
         })
     }

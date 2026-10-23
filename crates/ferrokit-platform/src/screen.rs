@@ -521,7 +521,8 @@ pub mod cocoa_screen {
 
         pub fn primary() -> Self {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
-            // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen.
+            // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen
+            // (the primary is the CGDisplayIsMain display, which is screens[0]).
             let screens_array =
                 unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
             let main_screen = if screens_array.is_nil()
