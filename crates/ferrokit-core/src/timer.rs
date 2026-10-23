@@ -210,13 +210,21 @@ impl TimerRegistry {
         timer_type: TimerType,
         single_shot: bool,
     ) -> TimerId {
-        let id = allocate_timer_id();
-        self.register_with_id(id, receiver, interval_ms, timer_type, single_shot);
+        // The counter wraps after 2^32 allocations: skip an id that a live timer still holds.
+        let id = loop {
+            let candidate = allocate_timer_id();
+            if !self.entries.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let registered = self.register_with_id(id, receiver, interval_ms, timer_type, single_shot);
+        debug_assert!(registered);
         id
     }
 
     /// Registers `id` for `receiver`. A moved timer keeps its id on the target thread (Qt
     /// `registerTimer` with an existing id, qobject.cpp:1496-1500); the phase restarts from now.
+    /// Returns `false`, leaving the live timer untouched, when `id` is already registered here.
     fn register_with_id(
         &mut self,
         id: TimerId,
@@ -224,7 +232,10 @@ impl TimerRegistry {
         interval_ms: u64,
         timer_type: TimerType,
         single_shot: bool,
-    ) {
+    ) -> bool {
+        if self.entries.contains_key(&id) {
+            return false;
+        }
         let now = current_time_ms();
         let mut actual_type = timer_type;
         let (adjusted_interval, next_fire_ms) =
@@ -241,10 +252,9 @@ impl TimerRegistry {
             single_shot,
         };
 
-        if let Some(replaced) = self.entries.insert(id, entry) {
-            self.unindex(replaced.receiver, id);
-        }
+        self.entries.insert(id, entry);
         self.by_receiver.entry(receiver).or_default().push(id);
+        true
     }
 
     fn unindex(&mut self, receiver: ObjectId, id: TimerId) {
@@ -557,13 +567,16 @@ fn adopt_entries(entries: Vec<TimerEntry>) {
     let armed = with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         for entry in local {
-            reg.register_with_id(
+            if !reg.register_with_id(
                 entry.id,
                 entry.receiver,
                 entry.interval_ms,
                 entry.timer_type,
                 entry.single_shot,
-            );
+            ) {
+                eprintln!("ferrokit: moved timer {:?} dropped: its id is already in use on this thread", entry.id);
+                continue;
+            }
             arm_source(ctx, entry.id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
@@ -2243,8 +2256,16 @@ mod receiver_index_tests {
         assert_eq!(of_a, vec![a1, a2]);
         assert_eq!(reg.ids_for_receiver(b), &[b1]);
 
-        // A moved timer re-registers under its id: no duplicate, and a new receiver replaces the old.
-        reg.register_with_id(a1, b, 10, TimerType::Coarse, false);
+        // A live id is never replaced: the registration is refused and the timer stays with `a`.
+        assert!(!reg.register_with_id(a1, b, 10, TimerType::Coarse, false));
+        let mut of_a = reg.ids_for_receiver(a).to_vec();
+        of_a.sort_by_key(|id| id.0);
+        assert_eq!(of_a, vec![a1, a2]);
+        assert_eq!(reg.ids_for_receiver(b), &[b1]);
+        assert_eq!(reg.len(), 3);
+        assert!(reg.unregister(a1).is_some());
+        // A freed id registers again under a new receiver, as a moved timer does.
+        assert!(reg.register_with_id(a1, b, 10, TimerType::Coarse, false));
         assert_eq!(reg.ids_for_receiver(a), &[a2]);
         let mut of_b = reg.ids_for_receiver(b).to_vec();
         of_b.sort_by_key(|id| id.0);

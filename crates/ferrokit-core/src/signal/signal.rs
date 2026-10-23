@@ -228,6 +228,20 @@ pub fn unregister_connection(id: ConnectionId) {
     write_unpoisoned(&GLOBAL_CONNECTIONS).remove(&id);
 }
 
+/// Drops subscribers removed from a signal (after its lock is released: a captured value's
+/// destructor may use the signal) and retires their `GLOBAL_CONNECTIONS` entries.
+fn retire_registry_entries<T>(removed: Vec<Subscriber<T>>) {
+    let ids: Vec<ConnectionId> = removed.iter().map(|sub| sub.id).collect();
+    drop(removed);
+    if ids.is_empty() {
+        return;
+    }
+    let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
+    for id in ids {
+        conns.remove(&id);
+    }
+}
+
 pub fn disconnect_all_for_object(object_id: ObjectId) {
     let to_disconnect: Vec<Arc<dyn Fn() + Send + Sync>> = {
         let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
@@ -508,13 +522,15 @@ impl<T> Signal<T> {
             .inner
             .lock()
             .remove_where(|sub| sub.receiver_id == Some(receiver_id));
-        removed.len()
+        let count = removed.len();
+        retire_registry_entries(removed);
+        count
     }
 
     /// Disconnects all connections from this signal.
     pub fn disconnect_all(&self) {
         let removed = self.inner.lock().remove_where(|_| true);
-        drop(removed);
+        retire_registry_entries(removed);
     }
 
     /// Emits the signal to all connected subscribers.
@@ -637,7 +653,7 @@ impl<T: 'static> Signal<T> {
         ScopedConnection::new(id, move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
                 let removed = inner_arc.lock().remove_where(|sub| sub.id == conn_id);
-                drop(removed);
+                retire_registry_entries(removed);
             }
         })
     }
@@ -1207,6 +1223,23 @@ mod tests {
         assert_eq!(*received_msg.lock(), "hello queued");
         // SAFETY: `receiver` was registered above and is still alive.
         unsafe { crate::object::unregister_qobject(receiver_id) };
+    }
+
+    /// Bulk disconnects retire the connections' registry entries, as `disconnect` does.
+    #[test]
+    fn test_bulk_disconnect_retires_registry_entries() {
+        let receiver_id = ObjectId::next();
+        let registered = |id: ConnectionId| write_unpoisoned(&GLOBAL_CONNECTIONS).contains_key(&id);
+
+        let signal = Signal::<i32>::new();
+        let a = signal.connect_direct_object(receiver_id, |_| {});
+        assert!(registered(a));
+        assert_eq!(signal.disconnect_receiver(receiver_id), 1);
+        assert!(!registered(a), "disconnect_receiver leaked the registry entry");
+
+        let b = signal.connect_direct_object(receiver_id, |_| {});
+        signal.disconnect_all();
+        assert!(!registered(b), "disconnect_all leaked the registry entry");
     }
 
     #[test]

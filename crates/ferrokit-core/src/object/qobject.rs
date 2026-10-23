@@ -237,11 +237,13 @@ impl Drop for ObjectBorrowGuard {
                 .swap(false, Ordering::AcqRel)
             {
                 let changes = std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
-                // A dead object is not written to: its memory may already be freed. Every drop of a
-                // registered object marks the shared liveness token dead before the memory goes.
-                if self._entry.liveness.load(Ordering::Acquire) {
+                // A destroyed object is not written to: its memory may already be freed. Every
+                // drop of an object marks its memory destroyed before the memory goes. An object
+                // that was only unregistered (its liveness token is false) still owns its
+                // children, so queued `DeleteOwned` edits are applied to it.
+                if !self.borrow_state.memory_destroyed.load(Ordering::Acquire) {
                     // SAFETY: the callback that held this borrow has returned, so no reference into
-                    // the object is live, and the object is alive.
+                    // the object is live, and the object's memory is not destroyed.
                     let mut data = unsafe { (*self.ptr).object_data_mut() };
                     for change in &changes {
                         released.extend(change.apply(ObjectDataMut::new(data.raw_data_mut())));
@@ -6622,6 +6624,44 @@ mod tests {
 
         assert!(parent.with(|p| p.0.owned_children().is_empty() && p.0.children().is_empty()).unwrap());
         assert!(with_object(child_id, |_| ()).is_none());
+    }
+
+    /// A `DeferredDelete` of an owned child that lands while a callback of its parent runs is
+    /// finished when that callback returns, even if the parent was unregistered in between (its
+    /// own `deleteLater` with an unreachable owner): the child is destroyed then, not when the
+    /// parent's memory is freed.
+    #[test]
+    fn test_deferred_delete_of_owned_child_is_finished_after_the_parent_is_unregistered_mid_callback() {
+        struct Tracked(ObjectData, Arc<AtomicBool>);
+        impl QObject for Tracked {
+            fn object_data(&self) -> &ObjectData { &self.0 }
+            fn object_data_mut(&mut self) -> ObjectDataMut<'_> { ObjectDataMut::new(&mut self.0) }
+        }
+        impl Drop for Tracked {
+            fn drop(&mut self) { self.1.store(true, Ordering::SeqCst); }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        // SAFETY: the parent is owned here and dropped at the end, on this thread.
+        let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        let parent_id = OwnedObject::object_id(&parent);
+        // SAFETY: the child is not used directly; the parent owns it.
+        let child_id = unsafe {
+            add_owned_child(parent_id, Box::new(Tracked(ObjectData::new(ObjectId::next()), Arc::clone(&dropped))))
+        }
+        .map_err(|(error, _)| error)
+        .unwrap();
+
+        with_object_mut(parent_id, |_| {
+            destroy_deferred(child_id);
+            destroy_deferred(parent_id);
+        })
+        .unwrap();
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the owned child must be destroyed when the parent's callback returns"
+        );
+        drop(parent);
     }
     /// Objects whose own lists name each other (the safe `reparent` builds that without any
     /// parent link) are registered: a child that is registered under another parent is not listed,

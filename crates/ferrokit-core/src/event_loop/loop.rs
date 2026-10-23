@@ -182,6 +182,28 @@ fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
     true
 }
 
+thread_local! {
+    /// Set when an event filter consumed the `DeferredDelete` being sent on this thread.
+    static DEFERRED_DELETE_FILTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn note_deferred_delete_filtered(event: &Event) {
+    if matches!(event.kind, EventKind::DeferredDelete { .. }) {
+        DEFERRED_DELETE_FILTERED.with(|flag| flag.set(true));
+    }
+}
+
+/// Sends a posted `DeferredDelete` and destroys the receiver unless an event filter consumed the
+/// event: Qt deletes the object in `QObject::event`, which a consuming filter never reaches
+/// (qcoreapplication.cpp:1118-1131 notify; qobject.cpp `QObject::event` DeferredDelete).
+fn deliver_deferred_delete(receiver: ObjectId, event: &mut Event) {
+    DEFERRED_DELETE_FILTERED.with(|flag| flag.set(false));
+    let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, event)));
+    if !DEFERRED_DELETE_FILTERED.with(|flag| flag.replace(false)) {
+        let _ = catch_unwind(AssertUnwindSafe(|| finish_deferred_delete(receiver)));
+    }
+}
+
 pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     // QScopedScopeLevelCounter in QCoreApplication::notify (qcoreapplication.cpp:1118).
     let _scope = ScopeLevelGuard::enter();
@@ -198,6 +220,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         }
     }
     if app_filters_consumed(receiver, event) {
+        note_deferred_delete_filtered(event);
         return true;
     }
 
@@ -228,6 +251,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     }
 
     if object_filters_consumed(receiver, event) {
+        note_deferred_delete_filtered(event);
         return true;
     }
 
@@ -1030,8 +1054,7 @@ impl EventLoop {
             };
             // As in `pump_posted_events`: the panic hook logs a raising handler, and the receiver
             // is unregistered all the same.
-            let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
-            let _ = catch_unwind(AssertUnwindSafe(|| finish_deferred_delete(receiver)));
+            deliver_deferred_delete(receiver, &mut event);
             delivered += 1;
         }
         delivered
@@ -1352,10 +1375,10 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 
         // Python/PySide6 reports a raising handler and keeps delivering later events; the panic
         // hook logs it. The in-flight event is dropped, as Python drops it.
-        let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
-
         if let EventKind::DeferredDelete { .. } = event.kind {
-            finish_deferred_delete(receiver);
+            deliver_deferred_delete(receiver, &mut event);
+        } else {
+            let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
         }
 
         delivered_count += 1;
@@ -2910,6 +2933,56 @@ mod tests {
         el.send_posted_events();
         assert_eq!(*log.lock().unwrap(), vec!["b", "c", "outer returns", "d"]);
         assert!(el.queue().lock().unwrap().events.is_empty());
+    }
+
+    /// An event filter that consumes the `DeferredDelete` keeps the object alive: Qt deletes in
+    /// `QObject::event`, which a consuming filter never lets run.
+    #[test]
+    fn test_a_filter_consuming_deferred_delete_keeps_the_object_alive() {
+        struct Consumer(ObjectData);
+        impl QObject for Consumer {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+            fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
+                true
+            }
+        }
+        struct Target(ObjectData);
+        impl QObject for Target {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+        }
+
+        let el = EventLoop::new();
+        let mut filter = Consumer(ObjectData::new(ObjectId::next()));
+        let filter_id = filter.0.id();
+        let mut target = Target(ObjectData::new(ObjectId::next()));
+        let target_id = target.0.id();
+        target.0.install_event_filter(filter_id);
+        // SAFETY: both objects stay on this thread, unmoved, until unregistered below.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+        }
+        target.0.delete_later();
+        el.send_posted_events();
+        assert!(
+            crate::object::with_object(target_id, |_| ()).is_some(),
+            "a consumed DeferredDelete must not destroy the object"
+        );
+        // SAFETY: registered above, unregistered once.
+        unsafe {
+            crate::object::unregister_qobject(target_id);
+            crate::object::unregister_qobject(filter_id);
+        }
     }
 
     /// An object deleted later from the outer loop survives a nested loop and is deleted once
