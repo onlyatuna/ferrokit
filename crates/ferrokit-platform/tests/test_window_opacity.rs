@@ -67,6 +67,30 @@ fn a_standard_window_becomes_translucent_through_the_trait() {
     assert!(!is_layered(hwnd), "an opaque standard window drops the layered style again");
 }
 
+/// `WindowTransparentForInput` keeps a window layered whatever its opacity (`setWindowLayered`,
+/// `qwindowswindow.cpp:498`), so an opacity round trip must not end click-through, and the
+/// layered window is given an opaque alpha rather than left without layered attributes.
+#[test]
+fn an_opacity_round_trip_keeps_a_click_through_window_layered() {
+    let mut win = NativeWindow::new("click-through", Rect::new(50, 50, 120, 80), WindowFlags::FRAMELESS)
+        .expect("native window");
+    let hwnd = win.hwnd() as isize;
+    let dynamic: &mut dyn PlatformWindow = &mut win;
+
+    dynamic.set_click_through(true);
+    assert!(is_layered(hwnd), "click-through needs WS_EX_LAYERED");
+    assert_eq!(layered_alpha(hwnd), Some(255), "an opaque click-through window has alpha 255");
+
+    dynamic.set_opacity(0.5);
+    assert_eq!(layered_alpha(hwnd), Some(128));
+    dynamic.set_opacity(1.0);
+    assert!(is_layered(hwnd), "opacity 1.0 must keep a click-through window layered");
+    assert_eq!(layered_alpha(hwnd), Some(255));
+
+    dynamic.set_click_through(false);
+    assert!(!is_layered(hwnd), "an opaque window that stops being click-through is not layered");
+}
+
 /// Needs a machine where `DCompSurface::new` succeeds. It is `#[ignore]`d rather than silently
 /// passing without DirectComposition (as `test_dcomp_*` do): run it with `-- --ignored`; where
 /// DirectComposition is unavailable it fails loudly instead of reporting a pass.

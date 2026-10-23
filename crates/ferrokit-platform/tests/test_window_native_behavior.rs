@@ -199,3 +199,29 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
         seen.lock()
     );
 }
+
+/// A cancelled composition (`lparam == 0`) must reach the handler as an empty input-method event
+/// so the preedit is cleared (`QWindowsInputContext::composition`).
+#[test]
+fn a_cancelled_ime_composition_clears_the_preedit() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION;
+    let mut win = window("ImeCancel");
+    let hwnd = win.native_handle() as HWND;
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
+        sink.lock().push(ev);
+    })));
+    unsafe {
+        SendMessageW(hwnd, WM_IME_COMPOSITION, 0, 0);
+    }
+    let seen = seen.lock();
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            WindowSystemEvent::InputMethod { commit_string, preedit_string, .. }
+                if commit_string.is_empty() && preedit_string.is_empty()
+        )),
+        "an empty InputMethod event"
+    );
+}

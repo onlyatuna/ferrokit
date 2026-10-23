@@ -815,10 +815,11 @@ fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
 }
 
 /// `QWindowsWindow::setWindowLayered` + `setWindowOpacity` for a window that is not `LAYERED`:
-/// translucent (`opacity < 1`) means `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)`
-/// with `qRound(255 * opacity)`; opaque removes the style again and repaints.
+/// a translucent (`opacity < 1`) or click-through (`WindowTransparentForInput`) window needs
+/// `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)` with `qRound(255 * opacity)`;
+/// any other window drops the style again and repaints.
 #[cfg(windows)]
-fn apply_system_window_opacity(hwnd: HWND, opacity: f32) {
+fn apply_system_window_opacity(hwnd: HWND, opacity: f32, click_through: bool) {
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, IsWindowVisible, SetLayeredWindowAttributes, SetWindowLongPtrW,
@@ -827,7 +828,7 @@ fn apply_system_window_opacity(hwnd: HWND, opacity: f32) {
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let is_layered = ex_style & WS_EX_LAYERED as isize != 0;
-        let needs_layered = opacity < 1.0;
+        let needs_layered = click_through || opacity < 1.0;
         if needs_layered != is_layered {
             let new_style = if needs_layered {
                 ex_style | WS_EX_LAYERED as isize
@@ -1472,8 +1473,8 @@ unsafe fn native_window_proc_inner(
                 handle.post_event(
                     receiver,
                     Event::new_spontaneous(EventKind::Wheel {
-                        x: pt.x,
-                        y: pt.y,
+                        x: pos.x,
+                        y: pos.y,
                         pixel_delta_x: 0,
                         pixel_delta_y: 0,
                         angle_delta_x: delta_x,
@@ -1609,6 +1610,17 @@ unsafe fn native_window_proc_inner(
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_SETCONTEXT => {
+            const ISC_SHOWUICOMPOSITIONWINDOW: u32 = 0x8000_0000;
+            // Qt draws the preedit itself: hide the IME's native composition window
+            // (`QWindowsInputContext::windowsInputContextProc`).
+            let lparam = if wparam != 0 {
+                lparam & !(ISC_SHOWUICOMPOSITIONWINDOW as isize)
+            } else {
+                lparam
+            };
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
             let mut ime_ctx = crate::ime::Win32InputContext::new(hwnd);
             let (commit_opt, preedit_opt, cursor_pos) = ime_ctx.handle_composition(lparam);
@@ -1616,7 +1628,9 @@ unsafe fn native_window_proc_inner(
             let commit_string = commit_opt.unwrap_or_default();
             let preedit_string = preedit_opt.unwrap_or_default();
 
-            if !commit_string.is_empty() || !preedit_string.is_empty() {
+            // `lparam == 0` is a cancelled composition: Qt (`QWindowsInputContext::composition`)
+            // then sends an empty event so the preedit is cleared.
+            if lparam == 0 || !commit_string.is_empty() || !preedit_string.is_empty() {
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
@@ -2019,24 +2033,20 @@ impl NativeWindow {
             };
             unsafe {
                 let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) as u32;
-                let mut new_style = if enabled {
+                let new_style = if enabled {
                     ex_style | WS_EX_TRANSPARENT
                 } else {
                     ex_style & !WS_EX_TRANSPARENT
                 };
-                // `qwindowswindow.cpp:498`: Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
-                // in combination with `WS_EX_TRANSPARENT`. If the window doesn't have `LAYERED` flag,
-                // dynamically manage `WS_EX_LAYERED` so mouse events actually pass through.
-                if !self.flags.contains(WindowFlags::LAYERED) {
-                    if enabled {
-                        new_style |= WS_EX_LAYERED;
-                    } else if self.opacity >= 1.0 {
-                        new_style &= !WS_EX_LAYERED;
-                    }
-                }
                 SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, new_style as isize);
             }
             self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
+            // `qwindowswindow.cpp:498`: Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
+            // in combination with `WS_EX_TRANSPARENT`, with layered attributes set so the window is
+            // drawn. A `LAYERED` window is managed by its presenter.
+            if !self.flags.contains(WindowFlags::LAYERED) {
+                apply_system_window_opacity(self.hwnd, self.opacity, enabled);
+            }
         }
     }
 
@@ -2082,7 +2092,11 @@ impl NativeWindow {
             p.set_opacity(opacity);
         }
         if changed && !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED) {
-            apply_system_window_opacity(self.hwnd, opacity);
+            apply_system_window_opacity(
+                self.hwnd,
+                opacity,
+                self.flags.contains(WindowFlags::CLICK_THROUGH),
+            );
         }
     }
 
