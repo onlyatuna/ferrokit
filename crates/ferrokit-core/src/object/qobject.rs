@@ -2382,6 +2382,13 @@ impl<'a> ObjectDataMut<'a> {
         self.data.timers.push(id);
     }
 
+    /// Re-labels a moved timer that the target thread registered under a fresh id.
+    pub(crate) fn replace_timer(&mut self, old: crate::timer::TimerId, new: crate::timer::TimerId) {
+        if let Some(slot) = self.data.timers.iter_mut().find(|t| **t == old) {
+            *slot = new;
+        }
+    }
+
     #[inline]
     pub(crate) fn remove_timer(&mut self, id: crate::timer::TimerId) -> bool {
         let before = self.data.timers.len();
@@ -4146,7 +4153,7 @@ pub trait QObject: std::any::Any {
         if !self.object_data_mut().remove_timer(id) {
             return false;
         }
-        crate::timer::kill_object_timer(id)
+        crate::timer::kill_receiver_timer(self.object_data().id(), id)
     }
 
     /// Schedules this object for deferred deletion (`QObject::deleteLater`).
