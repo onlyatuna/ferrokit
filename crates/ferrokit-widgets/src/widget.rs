@@ -95,6 +95,21 @@ pub(crate) enum EnabledNotice {
     Changed(WidgetRef),
 }
 
+/// Calls `parent.child_resized(child)`, or retries at the next flush while `parent` is mutably
+/// borrowed.
+fn tell_child_resized(parent: &WidgetRef, child: ObjectId) {
+    if let Ok(p) = parent.try_borrow() {
+        p.child_resized(child);
+        return;
+    }
+    let weak = Rc::downgrade(parent);
+    crate::command::defer_retry(move || {
+        if let Some(parent) = weak.upgrade() {
+            tell_child_resized(&parent, child);
+        }
+    });
+}
+
 /// `QWidget::setVisible` for a widget its owner holds: records the flag, then sends the events the
 /// change of shown state implies (qwidget.cpp:8401-8443). Showing sends `Show` to the children
 /// first, then to the widget (`show_helper`, qwidget.cpp:8074-8130); hiding sends `Hide` to the
@@ -768,6 +783,9 @@ pub trait Widget: QObject + 'static {
 pub struct WidgetBase {
     pub object_data: ObjectData,
     pub geometry: Cell<Rect>,
+    /// Raised on every size change, for an owner that watches this widget without a parent link
+    /// (`QScrollArea::setWidget` -> `installEventFilter`): see [`WidgetBase::subscribe_resize`].
+    resize_flag: RefCell<Option<Rc<Cell<bool>>>>,
     pub visible: Cell<bool>,
     /// Effective state (`!WA_Disabled`): false when this widget or an ancestor is disabled.
     pub enabled: Cell<bool>,
@@ -819,6 +837,7 @@ impl WidgetBase {
         Self {
             object_data: ObjectData::new(id),
             geometry: Cell::new(Rect::new(0, 0, 100, 30)),
+            resize_flag: RefCell::new(None),
             visible: Cell::new(true),
             enabled: Cell::new(true),
             force_disabled: Cell::new(false),
@@ -886,13 +905,24 @@ impl WidgetBase {
         }
     }
 
-    /// Tells the parent widget (when it is not mutably borrowed) that this widget was resized.
-    pub(crate) fn notify_parent_resized(&self) {
+    /// Has `flag` raised whenever this widget changes size, whether or not it has a parent yet.
+    /// `None` ends the subscription.
+    pub fn subscribe_resize(&self, flag: Option<Rc<Cell<bool>>>) {
+        *self.resize_flag.borrow_mut() = flag;
+    }
+
+    /// The size-change notification (`QEvent::Resize` for the parent's event filter): raises the
+    /// subscription flag and calls the parent's `child_resized`. A parent that is mutably
+    /// borrowed is told at the next flush instead. `WidgetBase::set_geometry` and
+    /// `EmptyWidget::set_geometry` call it; a widget that stores its size in `geometry` itself
+    /// must call it after a size change.
+    pub fn notify_parent_resized(&self) {
+        if let Some(flag) = self.resize_flag.borrow().as_ref() {
+            flag.set(true);
+        }
         let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
         if let Some(parent) = parent {
-            if let Ok(parent) = parent.try_borrow() {
-                parent.child_resized(self.object_data.id());
-            }
+            tell_child_resized(&parent, self.object_data.id());
         }
     }
 

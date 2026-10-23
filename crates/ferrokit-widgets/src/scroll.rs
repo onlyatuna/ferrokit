@@ -424,6 +424,11 @@ pub struct ScrollArea {
     scroll_y: std::cell::Cell<i32>,
     /// The bar a mouse press started on; moves and the release go to it.
     bar_grab: std::cell::Cell<Option<Orientation>>,
+    /// Raised by the content widget's resizes (`set_widget` subscribes), also before the content
+    /// has a parent link; consumed by `sync_content`.
+    content_resized: std::rc::Rc<std::cell::Cell<bool>>,
+    /// `update_scrollbars` is running: its own resizes of the content do not start another pass.
+    updating: std::cell::Cell<bool>,
 }
 
 impl ScrollArea {
@@ -445,11 +450,24 @@ impl ScrollArea {
             scroll_x: std::cell::Cell::new(0),
             scroll_y: std::cell::Cell::new(0),
             bar_grab: std::cell::Cell::new(None),
+            content_resized: std::rc::Rc::new(std::cell::Cell::new(false)),
+            updating: std::cell::Cell::new(false),
         }
     }
 
     /// Sets the child content widget inside the scroll area.
     pub fn set_widget(&mut self, widget: WidgetRef) {
+        // `QScrollArea::setWidget` installs itself as the content's event filter: watch its
+        // resizes from now on, with or without a parent link.
+        if let Some(old) = &self.widget {
+            if let Ok(old) = old.try_borrow() {
+                old.widget_base().subscribe_resize(None);
+            }
+        }
+        widget
+            .borrow()
+            .widget_base()
+            .subscribe_resize(Some(self.content_resized.clone()));
         self.base.add_child(widget.clone());
         self.widget = Some(widget);
         self.update_scrollbars();
@@ -460,18 +478,22 @@ impl ScrollArea {
     }
 
     pub fn horizontal_scroll_bar(&self) -> &ScrollBar {
+        self.sync_content();
         &self.h_scrollbar
     }
 
     pub fn horizontal_scroll_bar_mut(&mut self) -> &mut ScrollBar {
+        self.sync_content();
         &mut self.h_scrollbar
     }
 
     pub fn vertical_scroll_bar(&self) -> &ScrollBar {
+        self.sync_content();
         &self.v_scrollbar
     }
 
     pub fn vertical_scroll_bar_mut(&mut self) -> &mut ScrollBar {
+        self.sync_content();
         &mut self.v_scrollbar
     }
 
@@ -486,10 +508,12 @@ impl ScrollArea {
     }
 
     pub fn scroll_position(&self) -> Point {
+        self.sync_content();
         Point::new(self.scroll_x.get(), self.scroll_y.get())
     }
 
     pub fn set_scroll_position(&mut self, x: i32, y: i32) {
+        self.sync_content();
         self.h_scrollbar.set_value(x);
         self.v_scrollbar.set_value(y);
         self.scroll_x.set(self.h_scrollbar.value());
@@ -504,6 +528,7 @@ impl ScrollArea {
 
     /// Calculates the inner viewport bounds excluding any active scrollbars.
     pub fn viewport_rect(&self) -> Rect {
+        self.sync_content();
         let geom = self.base.geometry();
         let bar_size = 10;
         let v_visible = self.v_scrollbar.is_visible();
@@ -566,7 +591,23 @@ impl ScrollArea {
         moved
     }
 
+    /// Runs the scroll bar pass a resize of the content asked for.
+    fn sync_content(&self) {
+        if self.content_resized.get() && !self.updating.get() {
+            self.update_scrollbars();
+        }
+    }
+
     fn update_scrollbars(&self) {
+        if self.updating.replace(true) {
+            return;
+        }
+        self.update_scrollbars_pass();
+        self.updating.set(false);
+        self.content_resized.set(false);
+    }
+
+    fn update_scrollbars_pass(&self) {
         let geom = self.base.geometry();
         if geom.width <= 0 || geom.height <= 0 {
             return;
@@ -672,6 +713,7 @@ impl QObject for ScrollArea {
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
+        self.sync_content();
         match &event.kind {
             EventKind::Wheel {
                 angle_delta_x,
@@ -839,6 +881,7 @@ impl Widget for ScrollArea {
     }
 
     fn paint_over_children(&mut self, painter: &mut Painter) {
+        self.sync_content();
         if self.v_scrollbar.is_visible() {
             painter.save();
             let g = self.v_scrollbar.geometry();
