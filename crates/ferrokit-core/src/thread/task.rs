@@ -262,7 +262,7 @@ impl<T> TaskHandle<T> {
     ///
     /// Inside a job of the task's own [`ThreadPool`](crate::thread::ThreadPool) a task that is
     /// still queued is run by the waiting job itself first. That run is not cut short by
-    /// `timeout`: the call then returns the task's result.
+    /// `timeout`: it can last past it, and the call then returns the task's result.
     pub fn wait_timeout(&self, timeout: Duration) -> Result<Option<T>, TaskError>
     where
         T: Clone,

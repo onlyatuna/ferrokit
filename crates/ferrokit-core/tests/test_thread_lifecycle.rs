@@ -57,19 +57,22 @@ fn event_loop_thread_quit_does_not_set_interruption() {
 fn quit_ends_event_loop_after_queued_events_run() {
     let ran = Arc::new(AtomicBool::new(false));
     let ran_in_setup = Arc::clone(&ran);
+    let (ran_tx, ran_rx) = channel::<()>();
+    let ran_tx = std::sync::Mutex::new(ran_tx);
     let handle = Thread::spawn_with_event_loop(move |sender| {
         let task = Box::new(move |_: &mut dyn std::any::Any| {
             ran_in_setup.store(true, Ordering::SeqCst);
+            let _ = ran_tx.lock().unwrap().send(());
         });
         sender.post_event(ObjectId(0), Event::new(EventKind::MetaCall(task)));
     });
+    ran_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the posted event did not run");
     handle.quit();
     let code = with_watchdog(5, move || handle.join());
     assert_eq!(code.unwrap(), 0);
-    assert!(
-        ran.load(Ordering::SeqCst),
-        "event posted before quit() did not run before the loop exited"
-    );
+    assert!(ran.load(Ordering::SeqCst));
 }
 
 #[test]

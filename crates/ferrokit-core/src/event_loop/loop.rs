@@ -1075,9 +1075,9 @@ impl EventLoop {
     /// `exec`, for a thread whose own exit request (`QThread::exit`) may arrive before this loop
     /// runs. `pending_exit` is asked once the loop is registered as running, so an exit issued
     /// at any earlier point is seen here and one issued later reaches the loop through
-    /// [`EventLoopHandle::exit`]. When it returns `Some(code)` the events already queued are
-    /// delivered once and the loop returns `code`, as `QThread::exec` returns the code of an
-    /// `exit` that came before it (qthread.cpp:685-689).
+    /// [`EventLoopHandle::exit`]. When it returns `Some(code)` the loop returns `code` at once,
+    /// without delivering events, as `QThread::exec` returns the code of an `exit` that came
+    /// before it (qthread.cpp:685-689).
     pub(crate) fn exec_after(&self, pending_exit: impl FnOnce() -> Option<i32>) -> i32 {
         // qeventloop.cpp:157-158: entering a loop resets the exit flag, so exit() issued before
         // exec() does not end this loop.
@@ -1090,8 +1090,8 @@ impl EventLoop {
         let _running = RunningLoop(Arc::clone(&self.state.running));
         let _level = LoopLevelGuard::enter();
         if let Some(code) = pending_exit() {
-            self.process_events(false);
-            self.exit.request(code);
+            // No events are delivered: the exit came first (qthread.cpp:686-689).
+            return code;
         }
         while !self.exit.exit_requested.load(Ordering::SeqCst) {
             self.process_events(true);
@@ -3341,6 +3341,24 @@ mod tests {
         fn drop(&mut self) {
             self.done.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// An exit that was requested before the loop ran returns its code at once and delivers no
+    /// events (`QThread::exec`, qthread.cpp:686-689).
+    #[test]
+    fn exec_after_a_pending_exit_returns_its_code_without_delivering_events() {
+        let _watchdog = Watchdog::arm(Duration::from_secs(10));
+        let event_loop = EventLoop::new();
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_in_call = Arc::clone(&ran);
+        event_loop.sender().post_event(
+            ObjectId(0),
+            Event::new(EventKind::MetaCall(Box::new(move |_| {
+                ran_in_call.store(true, Ordering::SeqCst);
+            }))),
+        );
+        assert_eq!(event_loop.exec_after(|| Some(9)), 9);
+        assert!(!ran.load(Ordering::SeqCst), "an event was delivered after the exit");
     }
 
     /// An inner loop that returns must not disturb the outer loop's timers or exit.

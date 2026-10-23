@@ -528,7 +528,7 @@ impl EventLoopThreadHandle {
     /// The loops are told directly, not through an event posted to the thread, so an event
     /// filter cannot swallow the request. The loop that is delivering events at that moment
     /// finishes its current pass first. An `exit` that comes before the thread's loop runs is
-    /// remembered: the loop delivers the events already queued once and returns `code`.
+    /// remembered: the loop then returns `code` at once, without delivering events.
     pub fn exit(&self, code: i32) {
         // Recorded before the loops are told: a loop that starts in between sees the code.
         let mut pending = self.pending_exit.lock();
