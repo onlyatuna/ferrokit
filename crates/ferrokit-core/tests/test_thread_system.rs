@@ -390,9 +390,15 @@ impl Future for ReleasedBy {
     }
 }
 
+thread_local! {
+    /// How many test jobs the current thread is in the middle of (more than one when a parked
+    /// worker runs queued jobs inline).
+    static JOB_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Jobs that all park in `block_on` must not grow the pool past its hard cap of
-/// `max_thread_count` extra workers: the jobs beyond the cap stay queued until a parked worker
-/// resumes, instead of each getting its own OS thread.
+/// `max_thread_count` extra workers. At the cap, parked workers run the remaining queued jobs
+/// inline instead, so every job still starts without getting its own OS thread.
 #[test]
 fn test_thread_pool_blocked_workers_growth_is_capped() {
     const MAX: usize = 2;
@@ -400,58 +406,99 @@ fn test_thread_pool_blocked_workers_growth_is_capped() {
     const JOBS: usize = 4 * CAP;
     let pool = Arc::new(ThreadPool::new(MAX));
     let executor = Executor::with_pool(Arc::clone(&pool));
-    // Jobs running at the same time, each on its own worker thread, and the highest count seen.
-    let running = Arc::new(AtomicUsize::new(0));
+    // Threads running test jobs at the same time, and the highest count seen.
+    let threads = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let (started_tx, started_rx) = std::sync::mpsc::channel::<usize>();
 
     // Dropped before `pool` (declared after it), so the pool never joins a parked worker.
     let mut releases = Vec::with_capacity(JOBS);
-    let mut handles: Vec<_> = (0..JOBS)
+    let handles: Vec<_> = (0..JOBS)
         .map(|i| {
             let (release, released_by) = release_gate();
-            releases.push(Some(release));
-            let running = Arc::clone(&running);
+            releases.push(release);
+            let threads = Arc::clone(&threads);
             let peak = Arc::clone(&peak);
             let started_tx = started_tx.clone();
-            Some(executor.spawn(async move {
-                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(now, Ordering::SeqCst);
+            executor.spawn(async move {
+                if JOB_DEPTH.with(|depth| depth.replace(depth.get() + 1)) == 0 {
+                    let now = threads.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                }
                 started_tx.send(i).unwrap();
                 released_by.await;
-                running.fetch_sub(1, Ordering::SeqCst);
+                if JOB_DEPTH.with(|depth| depth.replace(depth.get() - 1)) == 1 {
+                    threads.fetch_sub(1, Ordering::SeqCst);
+                }
                 i
-            }))
+            })
         })
         .collect();
 
-    // The cap is reached: every worker the pool may have is busy with a parked job, so none is
-    // left to take the rest of the queue.
-    let mut parked: std::collections::VecDeque<usize> =
-        (0..CAP).map(|_| started_rx.recv().unwrap()).collect();
-    let mut started = CAP;
-    assert_eq!(pool.active_thread_count(), CAP);
-    assert_eq!(pool.queued_task_count(), JOBS - started);
+    // Every job starts while none is released: the ones beyond the cap run nested on the
+    // parked workers.
+    for _ in 0..JOBS {
+        started_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("a queued job never started: the parked workers did not run it");
+    }
+    assert_eq!(pool.queued_task_count(), 0);
+    assert!(pool.active_thread_count() <= CAP);
+    assert!(peak.load(Ordering::SeqCst) <= CAP);
 
-    // Release the parked jobs one at a time. Each finished job frees exactly one worker, which
-    // takes exactly one queued job: the pool never gets another thread for it.
-    while let Some(id) = parked.pop_front() {
-        drop(releases[id].take());
-        let value = handles[id]
-            .take()
-            .unwrap()
+    drop(releases);
+    for (i, handle) in handles.into_iter().enumerate() {
+        let value = handle
             .wait_timeout(Duration::from_secs(60))
             .expect("task failed")
             .expect("released job never finished");
-        assert_eq!(value, id);
-        if started < JOBS {
-            parked.push_back(started_rx.recv().unwrap());
-            started += 1;
-            assert_eq!(pool.active_thread_count(), CAP);
-            assert_eq!(pool.queued_task_count(), JOBS - started);
-        }
+        assert_eq!(value, i);
     }
-    assert_eq!(peak.load(Ordering::SeqCst), CAP);
+    let peak = peak.load(Ordering::SeqCst);
+    assert!(
+        (MAX..=CAP).contains(&peak),
+        "{peak} threads ran jobs, the cap is {CAP}"
+    );
+}
+
+/// More async tasks than the thread cap (`2 * max_thread_count`) that each await a task of
+/// their own pool must all complete. The parents are all queued before any child, so with the
+/// cap reached every worker parks on a parent while the children wait behind other parents in
+/// the queue; only parked workers running queued jobs inline can finish them.
+#[test]
+fn test_thread_pool_nested_tasks_beyond_cap_complete() {
+    const MAX: usize = 2;
+    const PARENTS: usize = 6 * MAX;
+    let pool = Arc::new(ThreadPool::new(MAX));
+    let executor = Executor::with_pool(Arc::clone(&pool));
+    // Held until every parent is queued; the first parents wait for it without `block_on`.
+    let go = Arc::new(std::sync::RwLock::new(()));
+    let go_guard = go.write().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, usize)>();
+
+    for i in 0..PARENTS {
+        let pool = Arc::clone(&pool);
+        let go = Arc::clone(&go);
+        let done_tx = done_tx.clone();
+        executor.spawn(async move {
+            drop(go.read().unwrap());
+            let value = pool.spawn(move || i * 10).await.unwrap() + 1;
+            done_tx.send((i, value)).unwrap();
+        });
+    }
+    drop(go_guard);
+
+    let mut seen = [false; PARENTS];
+    for _ in 0..PARENTS {
+        let (i, value) = done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("nested tasks beyond the thread cap hung");
+        assert_eq!(value, i * 10 + 1);
+        assert!(
+            !std::mem::replace(&mut seen[i], true),
+            "parent {i} finished twice"
+        );
+    }
 }
 
 /// A pool whose last `Arc` is dropped by one of its own workers must shut down without that
