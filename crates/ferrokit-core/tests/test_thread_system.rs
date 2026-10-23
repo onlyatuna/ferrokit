@@ -507,6 +507,8 @@ thread_local! {
 /// on its thread while it waits, even with the pool at its thread cap: those jobs would find
 /// the state borrowed. Only a task the future awaits may run inline.
 #[test]
+// Holding the borrow across the await is the point of the test.
+#[allow(clippy::await_holding_refcell_ref)]
 fn test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline() {
     const UNRELATED: usize = 8;
     // One thread plus one replacement: both are busy once the two outer tasks park.
@@ -515,31 +517,26 @@ fn test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline() {
     let (release_b, gate_b) = release_gate();
     let (holding_tx, holding_rx) = std::sync::mpsc::channel::<Vec<TaskHandle<()>>>();
 
-    let outer_b = {
-        let pool = Arc::clone(&pool);
-        move || {
-            WORKER_STATE.with(|state| {
-                block_on(async {
-                    let _held = state.borrow_mut();
-                    let unrelated = (0..UNRELATED)
-                        .map(|_| pool.spawn(|| WORKER_STATE.with(|s| *s.borrow_mut() += 1)))
-                        .collect();
-                    holding_tx.send(unrelated).unwrap();
-                    gate_b.await;
-                })
+    // Runs on the first worker and parks, so the pool starts its replacement for `outer_b`.
+    let outer_a = pool.spawn(move || {
+        WORKER_STATE.with(|state| {
+            block_on(async {
+                let _held = state.borrow_mut();
+                gate_a.await;
             })
-        }
-    };
-    let outer_a = {
-        let inner_pool = Arc::clone(&pool);
+        })
+    });
+    let outer_b = {
+        let pool_b = Arc::clone(&pool);
         pool.spawn(move || {
             WORKER_STATE.with(|state| {
                 block_on(async {
                     let _held = state.borrow_mut();
-                    // Not awaited: it runs on the replacement worker started when this parks.
-                    let outer_b = inner_pool.spawn(outer_b);
-                    gate_a.await;
-                    outer_b
+                    let unrelated = (0..UNRELATED)
+                        .map(|_| pool_b.spawn(|| WORKER_STATE.with(|s| *s.borrow_mut() += 1)))
+                        .collect();
+                    holding_tx.send(unrelated).unwrap();
+                    gate_b.await;
                 })
             })
         })
@@ -554,11 +551,7 @@ fn test_thread_pool_awaiting_task_does_not_run_unrelated_jobs_inline() {
 
     drop(release_a);
     drop(release_b);
-    let outer_b = outer_a
-        .wait_timeout(Duration::from_secs(60))
-        .expect("first outer task failed")
-        .expect("first outer task hung");
-    for handle in std::iter::once(outer_b).chain(unrelated) {
+    for handle in [outer_a, outer_b].into_iter().chain(unrelated) {
         handle
             .wait_timeout(Duration::from_secs(60))
             .expect("a job found the state borrowed: it ran inside an outer task")
