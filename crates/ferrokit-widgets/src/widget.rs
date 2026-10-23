@@ -123,11 +123,18 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
-/// `hide_helper`'s focus handover (qwidget.cpp:8276-8283): when the window's focus widget is
+/// `hide_helper`'s focus handover (qwidget.cpp:8180-8190): when the window's focus widget is
 /// `widget` or below it, the focus moves on with `focusNextChild()`, or is cleared when no widget
-/// is next, so a hidden widget does not keep receiving key events.
+/// is next, so a hidden widget does not keep receiving key events. A hidden window (a widget with
+/// no parent: a top level or popup) keeps its focus widget, as the loop stops at `isWindow()`.
 fn move_focus_off_hidden(widget: &WidgetRef) {
-    let anchor = widget.borrow().id();
+    let (anchor, is_window) = {
+        let w = widget.borrow();
+        (w.id(), w.parent_widget().and_then(|p| p.upgrade()).is_none())
+    };
+    if is_window {
+        return;
+    }
     let mut notices = Vec::new();
     let mut stack = vec![widget.clone()];
     while let Some(w) = stack.pop() {
@@ -775,6 +782,8 @@ pub struct WidgetBase {
     pub has_focus: Cell<bool>,
     /// The focus slot of the window that last gave this widget focus (`FocusManager`).
     pub(crate) focus_state: RefCell<Weak<crate::focus::FocusState>>,
+    /// `QWidgetPrivate::focus_child`: the descendant that last got focus (`QWidget::focusWidget`).
+    pub(crate) focus_child: RefCell<WidgetWeak>,
     pub size_policy: Cell<QSizePolicy>,
     pub style_sheet: RefCell<Option<QStyleSheetStyle>>,
     pub properties: RefCell<Vec<(String, String)>>,
@@ -821,6 +830,7 @@ impl WidgetBase {
             focus_policy: Cell::new(FocusPolicy::NoFocus),
             has_focus: Cell::new(false),
             focus_state: RefCell::new(Weak::new()),
+            focus_child: RefCell::new(Weak::new()),
             size_policy: Cell::new(QSizePolicy::default()),
             style_sheet: RefCell::new(None),
             properties: RefCell::new(Vec::new()),

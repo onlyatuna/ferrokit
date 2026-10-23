@@ -248,7 +248,7 @@ fn stacked_widget_insert_and_remove_follow_the_layout() {
     assert!(Rc::ptr_eq(&removed, &pages[0]));
     assert!(!removed.borrow().is_visible());
     assert_eq!(count(&s), 2);
-    assert!(!s.borrow().children().iter().any(|c| Rc::ptr_eq(c, &removed)));
+    assert!(s.borrow().children().iter().any(|c| Rc::ptr_eq(c, &removed)), "Qt keeps the parent");
 }
 
 /// `QWidgetPrivate::hide_helper` moves the focus on when the focus widget, or an ancestor of it,
@@ -294,6 +294,149 @@ fn hiding_the_only_focus_widget_clears_the_focus() {
     set_widget_visible(&a, false);
     assert_eq!(d.focus_manager().focused_widget_id(), None);
     assert!(!a.borrow().has_focus());
+}
+
+/// A window holding a stack (page 0: `a0`, `a1`; page 1: `x` with no focus, then `b1`) and,
+/// after it, a widget `o` outside the stack. `focus` gets the focus.
+fn stack_window(focus: &str) -> (WidgetRef, WidgetRef, Vec<WidgetRef>, EventTreeDispatcher, Log) {
+    let log = Log::default();
+    let root = probe("root", FocusPolicy::NoFocus, &log);
+    let s = stack();
+    let page0 = probe("p0", FocusPolicy::NoFocus, &log);
+    let page1 = probe("p1", FocusPolicy::NoFocus, &log);
+    let ws: Vec<_> = [("a0", FocusPolicy::StrongFocus), ("a1", FocusPolicy::StrongFocus),
+        ("x", FocusPolicy::NoFocus), ("b1", FocusPolicy::StrongFocus), ("o", FocusPolicy::StrongFocus)]
+        .into_iter()
+        .map(|(n, p)| probe(n, p, &log))
+        .collect();
+    page0.borrow_mut().add_child(ws[0].clone());
+    page0.borrow_mut().add_child(ws[1].clone());
+    page1.borrow_mut().add_child(ws[2].clone());
+    page1.borrow_mut().add_child(ws[3].clone());
+    add(&s, &page0);
+    add(&s, &page1);
+    root.borrow_mut().add_child(s.clone());
+    root.borrow_mut().add_child(ws[4].clone());
+    adopt_tree(&root);
+    let mut d = EventTreeDispatcher::new();
+    let target = ws.iter().find(|w| probe_name(w) == focus).unwrap().borrow().id();
+    assert!(d.focus_manager_mut().set_focus(&root, Some(target), FocusReason::Other));
+    log.borrow_mut().clear();
+    let mut all = vec![page0, page1];
+    all.extend(ws);
+    (root, s, all, d, log)
+}
+
+fn probe_name(w: &WidgetRef) -> &'static str {
+    w.borrow().as_any().downcast_ref::<Probe>().unwrap().name
+}
+
+fn focused(d: &EventTreeDispatcher, ws: &[WidgetRef]) -> Option<&'static str> {
+    let id = d.focus_manager().focused_widget_id()?;
+    ws.iter().find(|w| w.borrow().id() == id).map(probe_name)
+}
+
+fn focus_log(log: &Log) -> Vec<String> {
+    log.borrow().iter().filter(|e| e.contains(":In:") || e.contains(":Out:")).cloned().collect()
+}
+
+/// `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:302-336): focus on the old page is
+/// cleared before the page is hidden and moves to the new page's first Tab child, never to a
+/// widget outside the stack.
+#[test]
+fn a_page_switch_keeps_the_focus_in_the_stack() {
+    let (_root, s, ws, d, log) = stack_window("a0");
+    StackedWidget::set_current_index(&s, 1);
+    assert_eq!(focused(&d, &ws), Some("b1"));
+    assert_eq!(focus_log(&log), ["a0:Out:Other", "b1:In:Other"]);
+    assert!(!ws[6].borrow().has_focus(), "o must not get the focus");
+}
+
+/// Switching back gives the focus to the page's own focus widget (`next->focusWidget()`).
+#[test]
+fn switching_back_restores_the_pages_focus_widget() {
+    let (_root, s, ws, d, _log) = stack_window("a1");
+    StackedWidget::set_current_index(&s, 1);
+    StackedWidget::set_current_index(&s, 0);
+    assert_eq!(focused(&d, &ws), Some("a1"));
+}
+
+/// A page with no Tab child gets the focus itself (third best, qstackedlayout.cpp:331-332).
+#[test]
+fn a_page_without_a_tab_child_gets_the_focus_itself() {
+    let (_root, s, ws, d, _log) = stack_window("a0");
+    set_widget_enabled(&ws[5], false);
+    StackedWidget::set_current_index(&s, 1);
+    assert_eq!(focused(&d, &ws), Some("p1"));
+}
+
+/// Focus outside the stack stays where it is.
+#[test]
+fn a_page_switch_leaves_focus_outside_the_stack() {
+    let (_root, s, ws, d, log) = stack_window("o");
+    StackedWidget::set_current_index(&s, 1);
+    assert_eq!(focused(&d, &ws), Some("o"));
+    assert!(focus_log(&log).is_empty());
+}
+
+/// `setCurrentIndex(currentIndex())` returns at once (qstackedlayout.cpp:295-297): an explicitly
+/// hidden current page stays hidden and no signal is emitted.
+#[test]
+fn setting_the_current_index_again_is_a_no_op() {
+    let log = Log::default();
+    let mut layout = StackedLayout::new();
+    let page = probe("p", FocusPolicy::NoFocus, &log);
+    layout.add_widget(page.clone());
+    set_widget_visible(&page, false);
+    layout.set_current_index(0);
+    assert!(!page.borrow().is_visible());
+
+    let s = stack();
+    add(&s, &page);
+    set_widget_visible(&page, false);
+    let fired = Arc::new(Mutex::new(Vec::<i64>::new()));
+    let f = fired.clone();
+    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap()
+        .current_changed.connect(move |i| f.lock().unwrap().push(*i as i64));
+    StackedWidget::set_current_index(&s, 0);
+    assert!(!page.borrow().is_visible());
+    assert!(fired.lock().unwrap().is_empty());
+}
+
+/// `QStackedLayout::takeAt` (qstackedlayout.cpp:240-262): removing the current page shows the
+/// neighbour and announces it before the removed page is hidden; removing the last page
+/// announces -1.
+#[test]
+fn removing_pages_announces_the_new_current_then_hides() {
+    let log = Log::default();
+    let s = stack();
+    let (a, b) = (probe("a", FocusPolicy::NoFocus, &log), probe("b", FocusPolicy::NoFocus, &log));
+    add(&s, &a);
+    add(&s, &b);
+    let fired = Arc::new(Mutex::new(Vec::<i64>::new()));
+    let f = fired.clone();
+    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap()
+        .current_changed.connect(move |i| f.lock().unwrap().push(*i as i64));
+    // Each page's handler logs the signals emitted before it ran.
+    for w in [&a, &b] {
+        let (l, f) = (log.clone(), fired.clone());
+        set_hook(w, move || l.borrow_mut().push(format!("seen:{:?}", f.lock().unwrap())));
+    }
+    log.borrow_mut().clear();
+    StackedWidget::remove_widget(&s, 0);
+    assert_eq!(*log.borrow(), ["b:Show", "seen:[]", "a:Hide", "seen:[0]"]);
+    log.borrow_mut().clear();
+    StackedWidget::remove_widget(&s, 0);
+    assert_eq!(*log.borrow(), ["b:Hide", "seen:[0, -1]"]);
+}
+
+/// `hide_helper` stops at `isWindow()` (qwidget.cpp:8184): hiding the window keeps its focus
+/// widget.
+#[test]
+fn hiding_a_window_keeps_its_focus_widget() {
+    let (root, a, _b, _c, d, _log) = focus_tree();
+    set_widget_visible(&root, false);
+    assert_eq!(d.focus_manager().focused_widget_id(), Some(a.borrow().id()));
 }
 
 /// Disabling a container from a child's own handler: the child is borrowed, so it is disabled

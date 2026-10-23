@@ -963,6 +963,20 @@
     "test_r3_visibility_focus::activating_a_submenu_item_hides_the_chain_then_triggers_with_the_menus_free::TB": "unsupported",
     "test_r3_visibility_focus::activating_through_event_announces_the_chain_at_the_next_flush::TB": "unsupported",
     "test_r3_visibility_focus::escape_in_a_submenu_announces_its_hide::TB": "unsupported",
-    "test_r3_visibility_focus::popup_emits_about_to_show_with_the_menu_free::TB": "unsupported"
+    "test_r3_visibility_focus::popup_emits_about_to_show_with_the_menu_free::TB": "unsupported",
+    "test_r3_visibility_focus::a_page_switch_keeps_the_focus_in_the_stack::SB": "pass",
+    "test_r3_visibility_focus::switching_back_restores_the_pages_focus_widget::SB": "pass",
+    "test_r3_visibility_focus::a_page_without_a_tab_child_gets_the_focus_itself::SB": "pass",
+    "test_r3_visibility_focus::a_page_switch_leaves_focus_outside_the_stack::SB": "pass",
+    "test_r3_visibility_focus::setting_the_current_index_again_is_a_no_op::SB": "pass",
+    "test_r3_visibility_focus::removing_pages_announces_the_new_current_then_hides::SB": "pass",
+    "test_r3_visibility_focus::hiding_a_window_keeps_its_focus_widget::SB": "pass",
+    "test_r3_visibility_focus::a_page_switch_keeps_the_focus_in_the_stack::TB": "pass",
+    "test_r3_visibility_focus::switching_back_restores_the_pages_focus_widget::TB": "pass",
+    "test_r3_visibility_focus::a_page_without_a_tab_child_gets_the_focus_itself::TB": "pass",
+    "test_r3_visibility_focus::a_page_switch_leaves_focus_outside_the_stack::TB": "pass",
+    "test_r3_visibility_focus::setting_the_current_index_again_is_a_no_op::TB": "pass",
+    "test_r3_visibility_focus::removing_pages_announces_the_new_current_then_hides::TB": "pass",
+    "test_r3_visibility_focus::hiding_a_window_keeps_its_focus_widget::TB": "pass"
   }
 }
