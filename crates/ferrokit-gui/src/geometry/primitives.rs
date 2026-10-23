@@ -575,22 +575,23 @@ impl Rect {
         self.y
     }
 
-    /// Exclusive right edge: `x + width`.
+    /// Exclusive right edge: `x + width`, saturating at `i32::MAX`.
     ///
     /// This is NOT `QRect::right()`, which is the inclusive last column `x + width - 1`.
-    /// The Qt-equivalent last column is `right() - 1`.
+    /// The Qt-equivalent last column is `right() - 1`. `QRect` computes `x + w - 1` in plain
+    /// `int` arithmetic, which is undefined on overflow; saturating keeps debug builds panic-free.
     #[inline]
     pub const fn right(&self) -> i32 {
-        self.x + self.width
+        self.x.saturating_add(self.width)
     }
 
-    /// Exclusive bottom edge: `y + height`.
+    /// Exclusive bottom edge: `y + height`, saturating at `i32::MAX`.
     ///
     /// This is NOT `QRect::bottom()`, which is the inclusive last row `y + height - 1`.
     /// The Qt-equivalent last row is `bottom() - 1`.
     #[inline]
     pub const fn bottom(&self) -> i32 {
-        self.y + self.height
+        self.y.saturating_add(self.height)
     }
 
     // Center
@@ -623,7 +624,10 @@ impl Rect {
     /// `Rect` is a half-open (exclusive-edge) type by design.
     #[inline]
     pub const fn center(&self) -> Point {
-        Point::new(self.x + self.width / 2, self.y + self.height / 2)
+        Point::new(
+            self.x.saturating_add(self.width / 2),
+            self.y.saturating_add(self.height / 2),
+        )
     }
 
     #[inline]
@@ -680,7 +684,7 @@ impl Rect {
         let r = self.right().min(other.right());
         let t = self.top().max(other.top());
         let b = self.bottom().min(other.bottom());
-        Rect::new(l, t, r - l, b - t)
+        Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
     }
 
     // Returns bounding union of two rectangles.
@@ -696,7 +700,7 @@ impl Rect {
         let r = self.right().max(other.right());
         let t = self.top().min(other.top());
         let b = self.bottom().max(other.bottom());
-        Rect::new(l, t, r - l, b - t)
+        Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
     }
 
     // Adjusts rectangle coordinates by deltas.

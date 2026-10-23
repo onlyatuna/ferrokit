@@ -94,7 +94,16 @@ impl Pixmap {
             rgba_image.height(),
             rgba_image.device_pixel_ratio(),
         )?;
-        pm.data_mut().copy_from_slice(rgba_image.data());
+        let row_bytes = rgba_image.width() as usize * 4;
+        let stride = rgba_image.bytes_per_line();
+        if stride == row_bytes {
+            pm.data_mut().copy_from_slice(rgba_image.data());
+        } else {
+            let src = rgba_image.data();
+            for (y, dst_row) in pm.data_mut().chunks_exact_mut(row_bytes).enumerate() {
+                dst_row.copy_from_slice(&src[y * stride..y * stride + row_bytes]);
+            }
+        }
         Some(pm)
     }
 

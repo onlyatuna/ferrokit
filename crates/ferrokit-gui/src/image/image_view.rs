@@ -27,6 +27,9 @@ impl<'a> ImageView<'a> {
             return None;
         }
 
+        if bytes_per_line < format.bytes_per_line(width, 1) {
+            return None;
+        }
         let required_len = bytes_per_line.checked_mul(height as usize)?;
         if data.len() < required_len {
             return None;

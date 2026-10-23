@@ -2,6 +2,7 @@
 //! 4x4 Matrix for 3D transformations, projections, and viewports (`QMatrix4x4` equivalent).
 
 use super::super::primitives::PointF;
+use super::super::transform::{finite_f32, SINGULAR_REL_EPS};
 use super::vector3d::Vector3D;
 use super::vector4d::Vector4D;
 use std::f32::consts::PI;
@@ -258,51 +259,23 @@ impl Matrix4x4 {
                     + a[1][2] * (a[2][0] * a[3][1] - a[2][1] * a[3][0]))
     }
 
-    /// Inverts the matrix using Gaussian elimination with partial pivoting.
+    /// Inverts the matrix using Gauss-Jordan elimination with partial pivoting (`QMatrix4x4::inverted`).
+    ///
+    /// Elimination runs in `f64`. A pivot counts as zero when it is negligible relative to the
+    /// largest entry of its original column, so the test is scale-invariant: uniformly tiny or
+    /// mixed-magnitude diagonal matrices invert, while rank-deficient ones are rejected.
     #[allow(clippy::needless_range_loop)]
     pub fn inverted(&self) -> Option<Self> {
-        let mut a = [
-            [
-                self.m[0][0],
-                self.m[0][1],
-                self.m[0][2],
-                self.m[0][3],
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            [
-                self.m[1][0],
-                self.m[1][1],
-                self.m[1][2],
-                self.m[1][3],
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-            ],
-            [
-                self.m[2][0],
-                self.m[2][1],
-                self.m[2][2],
-                self.m[2][3],
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-            ],
-            [
-                self.m[3][0],
-                self.m[3][1],
-                self.m[3][2],
-                self.m[3][3],
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ],
-        ];
+        let mut a = [[0.0f64; 8]; 4];
+        let mut col_scale = [0.0f64; 4];
+        for r in 0..4 {
+            for c in 0..4 {
+                let v = self.m[r][c] as f64;
+                a[r][c] = v;
+                col_scale[c] = col_scale[c].max(v.abs());
+            }
+            a[r][4 + r] = 1.0;
+        }
 
         for i in 0..4 {
             let mut max_row = i;
@@ -311,13 +284,13 @@ impl Matrix4x4 {
                     max_row = k;
                 }
             }
-            if a[max_row][i].abs() < 1e-9 {
+            // Written as a negated `>` so NaN pivots are rejected as well.
+            if !(a[max_row][i].abs() > SINGULAR_REL_EPS * col_scale[i]) {
                 return None;
             }
             a.swap(i, max_row);
 
-            let pivot = a[i][i];
-            let inv_pivot = 1.0 / pivot;
+            let inv_pivot = 1.0 / a[i][i];
             for val in &mut a[i] {
                 *val *= inv_pivot;
             }
@@ -332,14 +305,13 @@ impl Matrix4x4 {
             }
         }
 
-        Some(Self {
-            m: [
-                [a[0][4], a[0][5], a[0][6], a[0][7]],
-                [a[1][4], a[1][5], a[1][6], a[1][7]],
-                [a[2][4], a[2][5], a[2][6], a[2][7]],
-                [a[3][4], a[3][5], a[3][6], a[3][7]],
-            ],
-        })
+        let mut flat = [0.0f64; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                flat[r * 4 + c] = a[r][4 + c];
+            }
+        }
+        finite_f32(&flat).map(Self::from_array)
     }
 }
 
