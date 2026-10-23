@@ -91,9 +91,6 @@ pub struct FontFamilyInfo {
     pub italic: bool,
 }
 
-/// Most in-memory font faces [`FontDatabase`] keeps alive at once.
-const MAX_MEMORY_FACES: usize = 32;
-
 /// System font cache database (`QFontDatabase` equivalent).
 ///
 /// Searches, loads, and caches system fonts to avoid redundant disk I/O and parsing.
@@ -109,7 +106,11 @@ pub struct FontDatabase {
     /// One engine per requested family string, shared so glyph caches persist across draw calls.
     engines: HashMap<String, FontEngine>,
     /// Faces built from `Font::font_data`, so a draw or metrics call does not re-parse the font.
-    memory_faces: Vec<(SharedFontData, SharedGlyphFace)>,
+    ///
+    /// Weak, so the cache never pins a (possibly huge) font blob: once every engine using a face is
+    /// dropped the face and its data are released. Keyed by the data buffer's address and length,
+    /// which stay unique for as long as the face (which owns the data) is alive.
+    memory_faces: Vec<((usize, usize), std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>)>,
 }
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
@@ -454,15 +455,14 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data {
-            let cached = self.memory_faces.iter().find(|(d, _)| d.ptr_eq(shared)).map(|(_, f)| f.clone());
+            self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
+            let key = (shared.as_slice().as_ptr() as usize, shared.len());
+            let cached = self.memory_faces.iter().find(|(k, _)| *k == key).and_then(|(_, f)| f.upgrade());
             let face = match cached {
                 Some(face) => Some(face),
                 None => parse_face(shared, 0).ok().inspect(|face| {
                     // Each parse re-registers the font with the platform rasterizer, so remember it.
-                    if self.memory_faces.len() >= MAX_MEMORY_FACES {
-                        self.memory_faces.remove(0);
-                    }
-                    self.memory_faces.push((shared.clone(), face.clone()));
+                    self.memory_faces.push((key, Arc::downgrade(face)));
                 }),
             };
             if let Some(face) = face {

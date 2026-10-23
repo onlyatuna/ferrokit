@@ -101,7 +101,7 @@ impl Icon {
                 .collect();
         }
 
-        sizes.sort_by_key(|s| s.width * s.height);
+        sizes.sort_by_key(|s| area(*s));
         sizes.dedup();
         sizes
     }
@@ -114,9 +114,9 @@ impl Icon {
         }
 
         // Find exact match or smallest size that is >= target
-        let target_area = target.width * target.height;
+        let target_area = area(target);
         for s in &sizes {
-            if s.width * s.height >= target_area {
+            if area(*s) >= target_area {
                 return *s;
             }
         }
@@ -209,13 +209,12 @@ impl Icon {
         }
 
         // Find exact size or closest >= target
-        let target_area = (target_size.width.max(0) as u32) * (target_size.height.max(0) as u32);
+        let target_area = area(target_size);
         let mut best = matching[0];
-        let mut best_diff = (best.image.width() * best.image.height()).abs_diff(target_area);
+        let mut best_diff = area(best.image.size()).abs_diff(target_area);
 
         for e in &matching[1..] {
-            let area = e.image.width() * e.image.height();
-            let diff = area.abs_diff(target_area);
+            let diff = area(e.image.size()).abs_diff(target_area);
             if diff < best_diff {
                 best = e;
                 best_diff = diff;
@@ -224,4 +223,9 @@ impl Icon {
 
         Some(best.image.clone())
     }
+}
+
+/// Pixel area in `i64`; negative extents count as zero.
+fn area(s: Size) -> i64 {
+    i64::from(s.width.max(0)) * i64::from(s.height.max(0))
 }
