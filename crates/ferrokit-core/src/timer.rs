@@ -567,17 +567,20 @@ fn adopt_entries(entries: Vec<TimerEntry>) {
     let armed = with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         for entry in local {
-            if !reg.register_with_id(
+            // Ids are allocated process-wide, so a collision only happens after the counter
+            // wrapped; the moved timer then gets a fresh id here instead of being dropped.
+            let id = if reg.register_with_id(
                 entry.id,
                 entry.receiver,
                 entry.interval_ms,
                 entry.timer_type,
                 entry.single_shot,
             ) {
-                eprintln!("ferrokit: moved timer {:?} dropped: its id is already in use on this thread", entry.id);
-                continue;
-            }
-            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms, entry.timer_type);
+                entry.id
+            } else {
+                reg.register(entry.receiver, entry.interval_ms, entry.timer_type, entry.single_shot)
+            };
+            arm_source(ctx, id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
     if armed.is_none() {
@@ -2275,6 +2278,42 @@ mod receiver_index_tests {
         assert!(reg.ids_for_receiver(a).is_empty());
         assert!(reg.unregister(a2).is_none());
         assert_eq!(reg.len(), 2);
+    }
+
+    /// A moved timer whose id is already live on the target thread is re-registered under a
+    /// fresh id, not dropped.
+    #[test]
+    fn adopting_a_timer_with_a_live_id_gives_it_a_fresh_id() {
+        let registry = Arc::new(Mutex::new(TimerRegistry::new()));
+        #[cfg(windows)]
+        register_thread_timer_context(Arc::clone(&registry), std::ptr::null_mut());
+        #[cfg(not(windows))]
+        register_thread_timer_context(Arc::clone(&registry));
+        let held = Timer::new();
+        let mover = Timer::new();
+        let held_id = held.start();
+        let entry = TimerEntry {
+            id: held_id,
+            interval_ms: 50,
+            next_fire_ms: 0,
+            timer_type: TimerType::Coarse,
+            receiver: mover.object_id(),
+            win32_timer_id: 0,
+            in_timer_event: false,
+            single_shot: false,
+        };
+        adopt_entries(vec![entry]);
+        {
+            let reg = registry.lock().unwrap();
+            assert_eq!(reg.len(), 2, "the moved timer was dropped");
+            assert_eq!(reg.get(held_id).unwrap().receiver, held.object_id());
+            let ids = reg.ids_for_receiver(mover.object_id());
+            assert_eq!(ids.len(), 1);
+            assert_ne!(ids[0], held_id);
+        }
+        drop(held);
+        drop(mover);
+        unregister_thread_timer_context();
     }
 
     #[test]
