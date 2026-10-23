@@ -54,8 +54,8 @@ impl StackedLayout {
     }
 
     /// Removes the widget at index from the stack (`QStackedLayout::takeAt`,
-    /// qstackedlayout.cpp:165-190): removing the current page makes its neighbour current, removing
-    /// an earlier one keeps the current page current, and the removed page is hidden.
+    /// qstackedlayout.cpp:240-262): removing the current page shows its neighbour, removing an
+    /// earlier one keeps the current page current, and the removed page is hidden last.
     pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
         let (removed, changes) = self.remove_state(index);
         apply_visibility(changes);
@@ -80,13 +80,14 @@ impl StackedLayout {
         }
     }
 
-    /// `remove_widget` without the visibility changes (see `insert_state`).
+    /// `remove_widget` without the visibility changes (see `insert_state`), in Qt's order: the new
+    /// current page is shown before the removed one is hidden.
     pub(crate) fn remove_state(&mut self, index: usize) -> (Option<WidgetRef>, Vec<(WidgetRef, bool)>) {
         if index >= self.widgets.len() {
             return (None, Vec::new());
         }
         let removed = self.widgets.remove(index);
-        let mut changes = vec![(removed.clone(), false)];
+        let mut changes = Vec::new();
         if index == self.current_index {
             if self.widgets.is_empty() {
                 self.current_index = 0;
@@ -97,27 +98,22 @@ impl StackedLayout {
         } else if index < self.current_index {
             self.current_index -= 1;
         }
+        changes.push((removed.clone(), false));
         self.update_layout();
         (Some(removed), changes)
     }
 
-    /// `set_current_index` without the visibility changes (see `insert_state`); `None` when `index`
-    /// is out of range.
-    pub(crate) fn set_current_state(&mut self, index: usize) -> Option<Vec<(WidgetRef, bool)>> {
-        if index >= self.widgets.len() {
+    /// `set_current_index` without the page switch (see `insert_state`): the old and the new
+    /// page, for `switch_page`. `None` when `index` is out of range or already current
+    /// (qstackedlayout.cpp:295-297).
+    pub(crate) fn set_current_state(&mut self, index: usize) -> Option<(Option<WidgetRef>, WidgetRef)> {
+        if index >= self.widgets.len() || index == self.current_index {
             return None;
         }
-        let previous = self.current_index;
+        let previous = self.widgets.get(self.current_index).cloned();
         self.current_index = index;
         self.update_layout();
-        let mut changes = Vec::new();
-        if previous != index {
-            if let Some(page) = self.widgets.get(previous) {
-                changes.push((page.clone(), false));
-            }
-        }
-        changes.push((self.widgets[index].clone(), true));
-        Some(changes)
+        Some((previous, self.widgets[index].clone()))
     }
 
     /// The page to place and its rectangle (`QStackedLayout::setGeometry`), clearing the dirty flag.
@@ -149,8 +145,8 @@ impl StackedLayout {
 
     /// Switches the active visible widget to the specified index.
     pub fn set_current_index(&mut self, index: usize) {
-        if let Some(changes) = self.set_current_state(index) {
-            apply_visibility(changes);
+        if let Some((prev, next)) = self.set_current_state(index) {
+            switch_page(prev.as_ref(), &next);
         }
     }
 
@@ -298,6 +294,20 @@ pub(crate) fn apply_visibility(changes: Vec<(WidgetRef, bool)>) {
     }
 }
 
+/// The page switch of `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:302-336): when the
+/// focus is on `prev` it is cleared before `prev` is hidden, and once `next` is shown it moves
+/// into `next`, so it never leaves the stack.
+pub(crate) fn switch_page(prev: Option<&WidgetRef>, next: &WidgetRef) {
+    let focus = prev.and_then(crate::focus::take_page_focus);
+    if let Some(prev) = prev {
+        crate::widget::set_widget_visible(prev, false);
+    }
+    crate::widget::set_widget_visible(next, true);
+    if let Some(focus) = focus {
+        crate::focus::give_page_focus(focus, next);
+    }
+}
+
 /// `widget->setGeometry(rect)` on the current page, then the relayout its new size needs. It never
 /// changes the page's visibility.
 fn place_page(widget: &WidgetRef, rect: Rect) {
@@ -313,7 +323,8 @@ fn place_page(widget: &WidgetRef, rect: Rect) {
 pub struct StackedWidget {
     base: WidgetBase,
     layout: std::cell::RefCell<StackedLayout>,
-    pub current_changed: Signal<usize>,
+    /// `QStackedWidget::currentChanged(int)`: the new current index, -1 once the stack is empty.
+    pub current_changed: Signal<i32>,
 }
 
 impl StackedWidget {
@@ -361,31 +372,34 @@ impl StackedWidget {
         });
         apply_visibility(changes);
         if first {
-            signal.emit(&at);
+            signal.emit(&(at as i32));
         }
         stack.borrow().update();
         at
     }
 
-    /// Removes the page at `index`, hides it and drops it from the children; the neighbouring page
-    /// becomes current when the current one was removed.
+    /// Removes the page at `index` (`QStackedWidget::removeWidget`): the neighbouring page becomes
+    /// current when the current one was removed, and `current_changed` reports it (-1 when the
+    /// stack is now empty) before the removed page is hidden. The page stays a child of the stack,
+    /// as Qt keeps its parent.
     pub fn remove_widget(stack: &WidgetRef, index: usize) -> Option<WidgetRef> {
-        let (removed, changes, current, signal) = Self::with(stack, |s| {
+        let (removed, mut changes, current, signal) = Self::with(stack, |s| {
             let mut layout = s.layout.borrow_mut();
             let was_current = index == layout.current_index();
             let (removed, changes) = layout.remove_state(index);
-            let current = (was_current && layout.count() > 0).then(|| layout.current_index());
-            drop(layout);
-            if let Some(removed) = &removed {
-                s.base.remove_child(removed.borrow().id());
-            }
+            let current = was_current.then(|| match layout.count() {
+                0 => -1,
+                _ => layout.current_index() as i32,
+            });
             (removed, changes, current, s.current_changed.clone())
         });
         let removed = removed?;
+        let hide = changes.pop();
         apply_visibility(changes);
         if let Some(current) = current {
             signal.emit(&current);
         }
+        apply_visibility(hide.into_iter().collect());
         stack.borrow().update();
         Some(removed)
     }
@@ -395,21 +409,16 @@ impl StackedWidget {
         self.layout.borrow().current_index()
     }
 
-    /// Sets the active visible page index, emitting `current_changed`. The old page is hidden and
-    /// the new one shown with the stack not borrowed.
+    /// Sets the active visible page index, emitting `current_changed`; see
+    /// [`StackedLayout::set_current_index`]. The pages switch with the stack not borrowed.
     pub fn set_current_index(stack: &WidgetRef, index: usize) {
-        let (changes, signal) = Self::with(stack, |s| {
-            let mut layout = s.layout.borrow_mut();
-            let changes = if index != layout.current_index() {
-                layout.set_current_state(index)
-            } else {
-                None
-            };
-            (changes, s.current_changed.clone())
+        let (pages, signal) = Self::with(stack, |s| {
+            let pages = s.layout.borrow_mut().set_current_state(index);
+            (pages, s.current_changed.clone())
         });
-        if let Some(changes) = changes {
-            apply_visibility(changes);
-            signal.emit(&index);
+        if let Some((prev, next)) = pages {
+            switch_page(prev.as_ref(), &next);
+            signal.emit(&(index as i32));
             stack.borrow().update();
         }
     }

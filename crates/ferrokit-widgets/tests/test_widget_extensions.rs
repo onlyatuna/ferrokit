@@ -42,8 +42,8 @@ fn test_stacked_widget_page_switching() {
         .downcast_ref::<StackedWidget>()
         .unwrap()
         .current_changed
-        .connect(move |idx: &usize| {
-            changed_clone.store(*idx, Ordering::SeqCst);
+        .connect(move |idx: &i32| {
+            changed_clone.store(*idx as usize, Ordering::SeqCst);
         });
 
     StackedWidget::set_current_index(&stack, 1);

@@ -173,7 +173,9 @@ impl FocusState {
                 Ok(w) => {
                     *w.widget_base().focus_state.borrow_mut() = Rc::downgrade(self);
                     w.set_has_focus(true);
-                    NextFocus::To(w.id())
+                    drop(w);
+                    record_focus_child(&widget);
+                    NextFocus::To(widget.borrow().id())
                 }
                 Err(_) => NextFocus::Later,
             },
@@ -189,9 +191,71 @@ impl FocusState {
     }
 }
 
+/// `QWidget::setFocus` updating `focus_child` of every ancestor (qwidget.cpp `setFocus`), so
+/// `focus_widget_of` can name the widget that last had focus below a container.
+fn record_focus_child(widget: &WidgetRef) {
+    let weak = Rc::downgrade(widget);
+    let mut parent = widget.try_borrow().ok().and_then(|w| w.parent_widget());
+    while let Some(p) = parent.and_then(|p| p.upgrade()) {
+        let Ok(g) = p.try_borrow() else { break };
+        *g.widget_base().focus_child.borrow_mut() = weak.clone();
+        parent = g.parent_widget();
+    }
+}
+
+/// `QWidget::focusWidget()` of `container`: the descendant that last had focus, if it is still
+/// below `container`.
+fn focus_widget_of(container: &WidgetRef) -> Option<WidgetRef> {
+    let child = container.try_borrow().ok()?.widget_base().focus_child.borrow().upgrade()?;
+    let id = child.try_borrow().ok()?.id();
+    find_widget_by_id(container, id).filter(|w| !Rc::ptr_eq(w, container))
+}
+
+/// The window focus a stack page switch takes over (`QStackedLayout::setCurrentIndex`,
+/// qstackedlayout.cpp:302-310): the focus widget when it is `page` or below it.
+pub(crate) struct PageFocus {
+    state: Rc<FocusState>,
+}
+
+/// Records whether the focus is on `page` and, when it is, clears it (`prev->clearFocus()`), so
+/// hiding the page does not hand the focus to a widget outside the stack.
+pub(crate) fn take_page_focus(page: &WidgetRef) -> Option<PageFocus> {
+    let mut stack = vec![page.clone()];
+    while let Some(w) = stack.pop() {
+        let Ok(g) = w.try_borrow() else { continue };
+        let state = g.widget_base().focus_state.borrow().upgrade();
+        if let Some(state) = state.filter(|s| s.focused.get() == Some(g.id())) {
+            let id = g.id();
+            drop(g);
+            state.focused.set(None);
+            send_focus_out(&w, id, FocusReason::Other);
+            publish_focus(&state, None);
+            return Some(PageFocus { state });
+        }
+        stack.extend(g.children());
+    }
+    None
+}
+
+/// After `next` was shown, moves the focus taken from the old page into it
+/// (qstackedlayout.cpp:316-336): `next`'s focus widget, else its first Tab-focusable descendant,
+/// else `next` itself.
+pub(crate) fn give_page_focus(focus: PageFocus, next: &WidgetRef) {
+    let target = focus_widget_of(next)
+        .filter(|w| w.try_borrow().is_ok_and(|w| w.is_visible() && w.is_enabled()))
+        .or_else(|| {
+            let mut chain = Vec::new();
+            collect_tab_chain(next, None, &mut chain).ok()?;
+            chain.into_iter().find(|w| !Rc::ptr_eq(w, next))
+        })
+        .unwrap_or_else(|| next.clone());
+    give_focus(&focus.state, &target, FocusReason::Other);
+}
+
 fn give_focus(state: &Rc<FocusState>, widget: &WidgetRef, reason: FocusReason) {
     state.focused.set(Some(widget.borrow().id()));
     *widget.borrow().widget_base().focus_state.borrow_mut() = Rc::downgrade(state);
+    record_focus_child(widget);
     // `QApplicationPrivate::setFocusWidget`: the focus widget is current while `FocusIn` runs;
     // `focusChanged` follows it.
     let ticket = begin_publish(state, Some(widget));
