@@ -88,3 +88,10 @@ fn cursor_insert_multiline_advances_past_inserted_text() {
     assert_eq!(doc.to_plain_text(), "xab\ncdy");
     assert_eq!(c.position(), 6);
 }
+
+#[test]
+fn html_raw_text_end_tag_requires_a_delimiter() {
+    let doc = TextDocument::from_html("<style>a</styles>b</style>after");
+    let text = doc.to_plain_text();
+    assert!(text.contains("after") && !text.contains('b'), "{text:?}");
+}

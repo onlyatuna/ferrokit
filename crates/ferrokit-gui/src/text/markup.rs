@@ -251,6 +251,11 @@ impl HtmlImporter {
                     rest.as_bytes()[pos..]
                         .get(..closing.len())
                         .is_some_and(|b| b.eq_ignore_ascii_case(closing.as_bytes()))
+                        // `</styles` is not the end tag of `<style>`.
+                        && matches!(
+                            rest.as_bytes().get(pos + closing.len()),
+                            None | Some(b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+                        )
                 });
                 let (content, after) = match found {
                     Some(pos) => {
