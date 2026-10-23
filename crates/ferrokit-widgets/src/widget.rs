@@ -123,25 +123,20 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
-/// `hide_helper`'s focus handover (qwidget.cpp:8180-8190): when the window's focus widget is
+/// `hide_helper`'s focus handover (qwidget.cpp:8226-8238): when the window's focus widget is
 /// `widget` or below it, the focus moves on with `focusNextChild()`, or is cleared when no widget
-/// is next, so a hidden widget does not keep receiving key events. A hidden window (a widget with
-/// no parent: a top level or popup) keeps its focus widget, as the loop stops at `isWindow()`.
+/// is next, so a hidden widget does not keep receiving key events. A hidden window keeps its focus
+/// widget, as the loop stops at `isWindow()`: that is the root its focus state works on, not any
+/// widget without a parent link (those exist only after `adopt_tree`).
 fn move_focus_off_hidden(widget: &WidgetRef) {
-    let (anchor, is_window) = {
-        let w = widget.borrow();
-        (w.id(), w.parent_widget().and_then(|p| p.upgrade()).is_none())
-    };
-    if is_window {
-        return;
-    }
+    let anchor = widget.borrow().id();
     let mut notices = Vec::new();
     let mut stack = vec![widget.clone()];
     while let Some(w) = stack.pop() {
         let Ok(g) = w.try_borrow() else { continue };
         let base = g.widget_base();
         if let Some(focus) = base.focus_state.borrow().upgrade() {
-            if focus.lose_via(base.object_data.id(), anchor, true) {
+            if !focus.is_root(widget) && focus.lose_via(base.object_data.id(), anchor, true) {
                 base.has_focus.set(false);
                 notices.push(EnabledNotice::FocusLost(focus));
             }
@@ -628,6 +623,11 @@ pub trait Widget: QObject + 'static {
 
     fn resize_event(&self, _new_size: Size, _old_size: Size) {}
 
+    /// A child of this widget changed size: the hook of `QObject::eventFilter` on the child's
+    /// `Resize`, which `QScrollArea` uses to follow its content widget. Runs with this widget
+    /// shared-borrowed; it is skipped while this widget is mutably borrowed.
+    fn child_resized(&self, _child: ObjectId) {}
+
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NoFocus
     }
@@ -880,6 +880,19 @@ impl WidgetBase {
             self.geometry.set(clamped);
             self.invalidate_vacated_rect(old);
             self.update();
+            if old.width != clamped.width || old.height != clamped.height {
+                self.notify_parent_resized();
+            }
+        }
+    }
+
+    /// Tells the parent widget (when it is not mutably borrowed) that this widget was resized.
+    pub(crate) fn notify_parent_resized(&self) {
+        let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
+        if let Some(parent) = parent {
+            if let Ok(parent) = parent.try_borrow() {
+                parent.child_resized(self.object_data.id());
+            }
         }
     }
 
@@ -1496,6 +1509,7 @@ impl Widget for EmptyWidget {
                     layout.set_geometry(Rect::new(0, 0, rect.width, rect.height));
                 }
             }
+            self.base.notify_parent_resized();
         }
 
         self.update();
