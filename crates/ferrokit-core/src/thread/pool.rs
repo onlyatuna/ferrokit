@@ -40,10 +40,20 @@ impl Drop for Job {
 pub(crate) struct PoolState {
     max_threads: usize,
     busy_workers: usize,
-    /// Busy workers currently parked in `block_on`; they do not count against `max_threads`.
+    /// Busy workers currently parked in `block_on`. Up to `max_threads` of them do not count
+    /// against `max_threads` (see [`PoolState::capacity`]).
     blocked_workers: usize,
     shutdown: bool,
     queue: VecDeque<Job>,
+}
+
+impl PoolState {
+    /// How many workers may exist right now: `max_threads`, plus one replacement per worker
+    /// parked in `block_on`, but never more than `max_threads` replacements. The hard cap keeps
+    /// jobs that all block (on I/O, say) from growing the pool to one OS thread per job.
+    fn capacity(&self) -> usize {
+        self.max_threads + self.blocked_workers.min(self.max_threads)
+    }
 }
 
 pub(crate) struct PoolShared {
@@ -64,7 +74,7 @@ thread_local! {
 pub(crate) struct BlockedWorker(Arc<PoolShared>);
 
 /// If the current thread is a pool worker, releases its slot for the duration of the returned
-/// guard and starts replacement workers for queued jobs.
+/// guard and starts replacement workers for queued jobs, within [`PoolState::capacity`].
 pub(crate) fn enter_blocking() -> Option<BlockedWorker> {
     let shared = WORKER_POOL.with(|pool| pool.borrow().as_ref().and_then(Weak::upgrade))?;
     let (first_id, count) = {
@@ -93,9 +103,9 @@ impl Drop for BlockedWorker {
 }
 
 impl PoolShared {
-    /// Whether more workers exist than the limit (plus the parked ones) allows.
+    /// Whether more workers exist than the current capacity allows.
     fn has_surplus_workers(&self, state: &PoolState) -> bool {
-        self.total_threads.load(Ordering::SeqCst) > state.max_threads + state.blocked_workers
+        self.total_threads.load(Ordering::SeqCst) > state.capacity()
     }
 
     /// Reserves as many new workers as the queue needs and the thread limit allows, and returns
@@ -103,12 +113,13 @@ impl PoolShared {
     ///
     /// A worker that exists but has not picked up a job yet counts as available, so a burst of
     /// submissions grows the pool by one worker per queued job instead of waiting for the first
-    /// worker to become busy. Workers parked in `block_on` raise the limit by one each.
+    /// worker to become busy. Workers parked in `block_on` raise the limit by one each, up to
+    /// `max_threads` extra workers in total.
     fn reserve_workers(&self, state: &PoolState) -> (usize, usize) {
         let total = self.total_threads.load(Ordering::SeqCst);
         let available = total.saturating_sub(state.busy_workers);
         let wanted = state.queue.len().saturating_sub(available);
-        let room = (state.max_threads + state.blocked_workers).saturating_sub(total);
+        let room = state.capacity().saturating_sub(total);
         let count = wanted.min(room);
         self.total_threads.fetch_add(count, Ordering::SeqCst);
         (total + 1, count)
@@ -163,6 +174,15 @@ impl PoolShared {
         match handle_res {
             Ok(handle) => {
                 let mut workers = self.workers.lock().unwrap();
+                // Checked under the `workers` lock: `Drop` sets `shutdown` before it takes the
+                // list, so a handle pushed while `shutdown` is unset is joined by `Drop`.
+                if self.state.lock().unwrap().shutdown {
+                    drop(workers);
+                    // `Drop` has taken (or is taking) the list without this handle. The pool
+                    // has shut down, so the new worker exits at once: join it here instead.
+                    let _ = handle.join();
+                    return;
+                }
                 // Retired workers leave finished handles behind.
                 workers.retain(|worker| !worker.is_finished());
                 workers.push(handle);
@@ -180,8 +200,10 @@ impl PoolShared {
 /// A worker that parks in [`block_on`](crate::thread::block_on) (for example an async task
 /// awaiting another task of the same pool) does not occupy one of the `max_thread_count`
 /// slots while it waits: the pool temporarily starts an extra worker in its place, so work
-/// queued behind blocked workers can still run. The extra workers retire once they are idle
-/// and the blocked ones have resumed.
+/// queued behind blocked workers can still run. At most `max_thread_count` such extra workers
+/// exist at a time, so the pool never runs more than twice `max_thread_count` threads; once
+/// that cap is reached, queued jobs wait for a parked worker to resume. The extra workers
+/// retire once they are idle and the blocked ones have resumed.
 pub struct ThreadPool {
     shared: Arc<PoolShared>,
 }
