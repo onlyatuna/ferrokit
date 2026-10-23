@@ -260,3 +260,125 @@ fn exit_ends_nested_event_loops_too() {
     let code = with_watchdog(10, move || handle.join());
     assert_eq!(code.unwrap(), 5);
 }
+
+mod swallowed_exit {
+    use std::cell::RefCell;
+
+    use ferrokit_core::event::{Event, EventKind};
+    use ferrokit_core::event_loop::install_application_event_filter;
+    use ferrokit_core::object::{
+        register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject,
+    };
+
+    /// Consumes the posted calls after the first `pass` of them, as an application filter on
+    /// the thread may do.
+    struct SwallowCalls {
+        data: ObjectData,
+        pass: u32,
+    }
+
+    impl QObject for SwallowCalls {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+            ObjectDataMut::new(&mut self.data)
+        }
+        fn event_filter(&mut self, _watched: ObjectId, event: &mut Event) -> bool {
+            if !matches!(event.kind, EventKind::MetaCall(_)) {
+                return false;
+            }
+            match self.pass.checked_sub(1) {
+                Some(rest) => {
+                    self.pass = rest;
+                    false
+                }
+                None => true,
+            }
+        }
+    }
+
+    thread_local! {
+        /// Dropped with the thread, which unregisters the filter.
+        static FILTER: RefCell<Option<OwnedObject<SwallowCalls>>> = const { RefCell::new(None) };
+    }
+
+    /// Installs the filter on the calling thread.
+    pub fn install_on_this_thread(pass: u32) {
+        let data = ObjectData::new(ObjectId::next());
+        let id = data.id();
+        // SAFETY: the object lives in a thread-local, in place, until the thread ends; nothing
+        // else touches it.
+        let filter = unsafe { register_owned_qobject(SwallowCalls { data, pass }) };
+        install_application_event_filter(id);
+        FILTER.with(|slot| *slot.borrow_mut() = Some(filter));
+    }
+}
+
+/// `QThread::exit` ends the loops directly (qthread.cpp:775-788); it does not depend on an event
+/// that the thread's filters could consume.
+#[test]
+fn exit_is_not_swallowed_by_an_application_event_filter() {
+    let handle = Thread::spawn_with_event_loop(|_| swallowed_exit::install_on_this_thread(0));
+    handle.exit(7);
+    let code = with_watchdog(10, move || handle.join());
+    assert_eq!(code.unwrap(), 7);
+}
+
+/// Same, for a thread that is already inside its loop when `exit` is called.
+#[test]
+fn exit_reaches_a_running_loop_behind_an_application_event_filter() {
+    let (running_tx, running_rx) = channel::<()>();
+    let running_tx = std::sync::Mutex::new(running_tx);
+    let handle = Thread::spawn_with_event_loop(move |sender| {
+        // The filter lets this one call through; it proves the loop is running.
+        swallowed_exit::install_on_this_thread(1);
+        let running = Box::new(move |_: &mut dyn std::any::Any| {
+            let _ = running_tx.lock().unwrap().send(());
+        });
+        sender.post_event(ObjectId(0), Event::new(EventKind::MetaCall(running)));
+    });
+    running_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("event loop thread did not run its loop");
+    handle.exit(3);
+    let code = with_watchdog(10, move || handle.join());
+    assert_eq!(code.unwrap(), 3);
+}
+
+/// A panic out of the thread's setup must not leave the thread's sender registered.
+#[test]
+fn event_loop_thread_that_panics_clears_its_sender_registration() {
+    use ferrokit_core::object::query_thread_sender;
+    use std::cell::RefCell;
+    use std::sync::Mutex;
+
+    thread_local! {
+        /// Dropped when the thread's locals are destroyed, which is after its body unwound.
+        static ENDED: RefCell<Option<std::sync::mpsc::Sender<()>>> = const { RefCell::new(None) };
+    }
+
+    let (ended_tx, ended_rx) = channel::<()>();
+    let thread_id = Arc::new(Mutex::new(None));
+    let recorded = Arc::clone(&thread_id);
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Thread::spawn_with_event_loop(move |_| {
+            ENDED.with(|slot| *slot.borrow_mut() = Some(ended_tx));
+            *recorded.lock().unwrap() = Some(ThreadId::current());
+            panic!("setup failed");
+        })
+    }));
+    assert!(spawned.is_err(), "the spawn must report the failed setup");
+
+    // The sender is dropped, disconnecting the channel, when the thread's locals are destroyed.
+    assert_eq!(
+        ended_rx.recv_timeout(Duration::from_secs(10)),
+        Err(RecvTimeoutError::Disconnected),
+        "the thread did not end"
+    );
+    let id = thread_id.lock().unwrap().expect("setup did not run");
+    assert!(
+        query_thread_sender(id).is_none(),
+        "the sender stayed registered for a thread that has ended"
+    );
+}

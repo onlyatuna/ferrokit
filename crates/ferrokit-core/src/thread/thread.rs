@@ -7,9 +7,8 @@ use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 
-use crate::event::{Event, EventKind};
-use crate::event_loop::EventLoop;
-use crate::object::{unregister_thread_sender, EventSender, ObjectId, ThreadContext, ThreadId};
+use crate::event_loop::{EventLoop, EventLoopHandle};
+use crate::object::{EventSender, ThreadContext, ThreadId};
 use crate::signal::Signal;
 
 /// Thread priority levels, modeled after Qt's `QThread::Priority`.
@@ -205,6 +204,8 @@ impl Thread {
         let flag_clone = Arc::clone(&interruption_flag);
         let completion = Arc::new(Completion::new());
         let thread_completion = Arc::clone(&completion);
+        let pending_exit = Arc::new(Mutex::new(None));
+        let thread_pending_exit = Arc::clone(&pending_exit);
         let started = Signal::new();
         let finished = Signal::new();
         let thread_started = started.clone();
@@ -216,6 +217,10 @@ impl Thread {
             .name("ferrokit-event-thread".to_string())
             .spawn(move || {
                 os_priority::apply(priority);
+                // Declared before `FinishGuard`, so `finished` is emitted while the context is
+                // installed; the context and sender registration are cleared on every exit path,
+                // including a panic in `setup` or in the loop.
+                let _clear_context = ClearContextOnDrop;
                 let guard = FinishGuard {
                     completion: thread_completion,
                     finished: thread_finished,
@@ -234,23 +239,27 @@ impl Thread {
                 });
 
                 setup(&sender);
-                let _ = tx.send((thread_id, sender.clone()));
+                let _ = tx.send((thread_id, sender.clone(), event_loop.handle()));
 
                 thread_started.emit(&());
-                let code = event_loop.exec();
+                // `QThread::exec` (qthread.cpp:685-698): an `exit` that came before the loop ran
+                // is returned at once, and the request is spent once the loop has ended.
+                let code = event_loop.exec_after(|| *thread_pending_exit.lock());
+                *thread_pending_exit.lock() = None;
                 // `finished` is emitted while this thread's context is still installed.
                 drop(guard);
-                ThreadContext::clear_current();
-                unregister_thread_sender(thread_id);
                 code
             })
             .expect("failed to spawn event loop thread");
 
-        let (thread_id, sender) = rx.recv().expect("event loop thread failed to initialize");
+        let (thread_id, sender, loop_handle) =
+            rx.recv().expect("event loop thread failed to initialize");
 
         EventLoopThreadHandle {
             thread_id,
             sender,
+            loop_handle,
+            pending_exit,
             interruption_flag,
             join_handle: Some(handle),
             completion,
@@ -491,6 +500,10 @@ impl<T> ThreadHandle<T> {
 pub struct EventLoopThreadHandle {
     thread_id: ThreadId,
     sender: EventSender,
+    loop_handle: EventLoopHandle,
+    /// The code of an [`EventLoopThreadHandle::exit`] the thread's loop may not have seen yet
+    /// (`QThread::exited` and `returnCode`, qthread.cpp:779-780).
+    pending_exit: Arc<Mutex<Option<i32>>>,
     interruption_flag: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<i32>>,
     completion: Arc<Completion>,
@@ -509,19 +522,18 @@ impl EventLoopThreadHandle {
         &self.sender
     }
 
-    /// Ends every event loop running on the thread (including nested ones) with `code`, once
-    /// the events already queued have run, matching `QThread::exit`. The code is returned by
-    /// [`EventLoopThreadHandle::join`].
+    /// Ends every event loop running on the thread (including nested ones) with `code`, matching
+    /// `QThread::exit`. The code is returned by [`EventLoopThreadHandle::join`].
+    ///
+    /// The loops are told directly, not through an event posted to the thread, so an event
+    /// filter cannot swallow the request. The loop that is delivering events at that moment
+    /// finishes its current pass first. An `exit` that comes before the thread's loop runs is
+    /// remembered: the loop delivers the events already queued once and returns `code`.
     pub fn exit(&self, code: i32) {
-        // A posted `Quit` would end only the innermost loop that pumps it; the call below runs
-        // on the thread and ends all of them.
-        let end_all_loops = Box::new(move |_: &mut dyn std::any::Any| {
-            if let Some(handle) = crate::event_loop::get_thread_event_sender(ThreadId::current()) {
-                handle.exit(code);
-            }
-        });
-        self.sender
-            .post_event(ObjectId(0), Event::new(EventKind::MetaCall(end_all_loops)));
+        // Recorded before the loops are told: a loop that starts in between sees the code.
+        let mut pending = self.pending_exit.lock();
+        *pending = Some(code);
+        self.loop_handle.exit(code);
     }
 
     /// Tells the thread's event loop to quit with code 0, matching `QThread::quit`.

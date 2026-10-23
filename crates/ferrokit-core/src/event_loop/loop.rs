@@ -1069,6 +1069,16 @@ impl EventLoop {
     }
 
     pub fn exec(&self) -> i32 {
+        self.exec_after(|| None)
+    }
+
+    /// `exec`, for a thread whose own exit request (`QThread::exit`) may arrive before this loop
+    /// runs. `pending_exit` is asked once the loop is registered as running, so an exit issued
+    /// at any earlier point is seen here and one issued later reaches the loop through
+    /// [`EventLoopHandle::exit`]. When it returns `Some(code)` the events already queued are
+    /// delivered once and the loop returns `code`, as `QThread::exec` returns the code of an
+    /// `exit` that came before it (qthread.cpp:685-689).
+    pub(crate) fn exec_after(&self, pending_exit: impl FnOnce() -> Option<i32>) -> i32 {
         // qeventloop.cpp:157-158: entering a loop resets the exit flag, so exit() issued before
         // exec() does not end this loop.
         self.exit.exit_requested.store(false, Ordering::SeqCst);
@@ -1079,6 +1089,10 @@ impl EventLoop {
         self.state.running.lock().push(self.exit.clone());
         let _running = RunningLoop(Arc::clone(&self.state.running));
         let _level = LoopLevelGuard::enter();
+        if let Some(code) = pending_exit() {
+            self.process_events(false);
+            self.exit.request(code);
+        }
         while !self.exit.exit_requested.load(Ordering::SeqCst) {
             self.process_events(true);
         }

@@ -78,6 +78,34 @@ impl LockFile {
         let lock_content = format!("PID={}\nAPP={}\nTIME={}\n", pid, app_name, now_epoch_secs());
 
         loop {
+            // Creating the lock file and reclaiming a stale one both happen under the guard
+            // file, so a reclaimer that has judged a lock stale cannot remove the fresh lock of
+            // a waiter that created it in between.
+            match self.take_guard() {
+                Ok(Some(guard)) => {
+                    let attempt = self.create_lock_file(&lock_content);
+                    drop(guard);
+                    if attempt? {
+                        self.is_locked = true;
+                        return Ok(true);
+                    }
+                }
+                // Another process holds the guard, for a moment.
+                Ok(None) => {}
+                Err(error) => return Err(error),
+            }
+
+            if start.elapsed() >= timeout {
+                return Err(LockError::LockFailedError);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Creates the lock file, first removing one that is stale. Returns `false` while a live
+    /// lock is in the way. Must be called with the guard held.
+    fn create_lock_file(&self, content: &str) -> Result<bool, LockError> {
+        loop {
             // Attempt atomic creation with create_new
             match OpenOptions::new()
                 .write(true)
@@ -85,28 +113,20 @@ impl LockFile {
                 .open(&self.file_path)
             {
                 Ok(mut file) => {
-                    let _ = file.write_all(lock_content.as_bytes());
+                    let _ = file.write_all(content.as_bytes());
                     let _ = file.flush();
-                    self.is_locked = true;
                     return Ok(true);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    // Check if stale
-                    if self.reclaim_if_stale() {
+                    if self.is_stale() && fs::remove_file(&self.file_path).is_ok() {
                         continue;
                     }
-
-                    if start.elapsed() >= timeout {
-                        return Err(LockError::LockFailedError);
-                    }
-                    thread::sleep(Duration::from_millis(25));
+                    return Ok(false);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::PermissionDenied => {
                     return Err(LockError::PermissionError);
                 }
-                Err(_) => {
-                    return Err(LockError::UnknownError);
-                }
+                Err(_) => return Err(LockError::UnknownError),
             }
         }
     }
@@ -171,9 +191,10 @@ impl LockFile {
         false
     }
 
-    /// Removes the lock file if it is stale. Stale checks and removal are serialized through a
-    /// guard file so that one waiter cannot delete a fresh lock another waiter just created.
-    fn reclaim_if_stale(&self) -> bool {
+    /// Takes the guard file `<lock>.reclaim`, which serializes every change of the lock file.
+    /// Returns `None` while another process holds it. A guard left behind by a crashed holder is
+    /// removed once its owner is gone, and taken on a later attempt.
+    fn take_guard(&self) -> Result<Option<GuardFile>, LockError> {
         let mut guard_name = self.file_path.as_os_str().to_owned();
         guard_name.push(".reclaim");
         let guard = PathBuf::from(guard_name);
@@ -181,12 +202,10 @@ impl LockFile {
             Ok(mut guard_file) => {
                 let _ = write!(guard_file, "PID={}\nAPP=reclaim\n", std::process::id());
                 drop(guard_file);
-                let removed = self.is_stale() && fs::remove_file(&self.file_path).is_ok();
-                let _ = fs::remove_file(&guard);
-                removed
+                Ok(Some(GuardFile(guard)))
             }
-            Err(_) => {
-                // A crashed reclaimer may have left the guard behind; drop it once its
+            Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // A crashed holder may have left the guard behind; drop it once its
                 // owner process is gone (same PID rule as the lock itself).
                 let owner_dead = match LockFile::new(&guard).get_lock_info() {
                     Some((pid, _)) => !is_process_alive(pid),
@@ -200,14 +219,27 @@ impl LockFile {
                 if owner_dead {
                     let _ = fs::remove_file(&guard);
                 }
-                false
+                Ok(None)
             }
+            Err(ref e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                Err(LockError::PermissionError)
+            }
+            Err(_) => Err(LockError::UnknownError),
         }
     }
 
     /// Removes a stale lock file from disk.
     pub fn remove_stale_lock_file(&self) -> bool {
         fs::remove_file(&self.file_path).is_ok()
+    }
+}
+
+/// The guard file of a lock file; removed when dropped.
+struct GuardFile(PathBuf);
+
+impl Drop for GuardFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 

@@ -291,7 +291,8 @@ pub enum MoveByIdError {
     Busy,
     /// The object or a descendant answers `false` to
     /// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread). Nothing was
-    /// sent or changed.
+    /// changed; `ThreadChange` was sent only if a descendant was attached by a `ThreadChange`
+    /// handler during the move.
     NotMovable,
 }
 
@@ -345,6 +346,8 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 ///    sent or changed. The inspection borrows are released before step 2.
 /// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change, then
 ///    collects the subtree again: a child a handler attached moves too, one it destroyed is left out.
+///    If a handler made the subtree busy or unmovable, the move fails with that error and changes
+///    nothing (the `ThreadChange` events were sent).
 /// 3. Detaches their timers from the source thread and updates each node's `ObjectData.thread_id`
 ///    through a separate short-lived registry borrow (`qobject.cpp:1490-1502`).
 /// 4. Flips the physical registration thread and moves queued posted events to the target queue
@@ -368,8 +371,10 @@ pub fn move_to_thread_by_id(
     // A handler may have attached children, so the subtree is collected again while a node lists
     // an object that was not in it (Qt walks the children after the event, qobject.cpp:1782-1792),
     // and each object found that way gets its own `ThreadChange` (Qt `setThreadData_helper`). If
-    // it can't be collected now (a handler made a part of it busy or unmovable), the objects found
-    // before are moved. One that a handler destroyed is left out below.
+    // it can't be collected now (a handler made a part of it busy or unmovable), the move fails
+    // with that error and changes nothing: moving the objects found before would leave the one
+    // a handler attached on the source thread under a parent on the target thread. One that a
+    // handler destroyed is left out below.
     let mut all_ids = all_ids;
     let mut known: std::collections::HashSet<ObjectId> = all_ids.iter().copied().collect();
     loop {
@@ -387,7 +392,7 @@ pub fn move_to_thread_by_id(
         ) {
             Ok(Some(ids)) => ids,
             Ok(None) => return Ok(()),
-            Err(_) => break,
+            Err(error) => return Err(error),
         };
         let added: Vec<ObjectId> = ids.iter().copied().filter(|n| !known.contains(n)).collect();
         known.extend(added.iter().copied());

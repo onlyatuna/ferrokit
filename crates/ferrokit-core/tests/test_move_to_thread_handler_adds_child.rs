@@ -14,7 +14,7 @@ use std::ptr::NonNull;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
     move_to_thread_by_id, query_object_thread, register_qobject_ptr, set_parent_by_id,
-    unregister_qobject, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
+    unregister_qobject, MoveByIdError, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
 };
 
 struct Root {
@@ -98,6 +98,63 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
         1,
         "the attached child gets its own ThreadChange (Qt setThreadData_helper)"
     );
+
+    // SAFETY: no callback runs; the root was made by `Box::into_raw` above.
+    unsafe {
+        unregister_qobject(late_id);
+        unregister_qobject(root_id);
+        drop(Box::from_raw(root_ptr));
+    }
+}
+
+/// A child that must stay on its thread.
+struct Pinned {
+    data: ObjectData,
+}
+
+impl QObject for Pinned {
+    fn object_data(&self) -> &ObjectData {
+        &self.data
+    }
+    fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+        ObjectDataMut::new(&mut self.data)
+    }
+    fn can_move_to_thread(&self) -> bool {
+        false
+    }
+}
+
+/// A handler attaches a child that cannot move. Moving the parent anyway would leave that child
+/// on the source thread under a parent on the target thread, so the move fails and changes nothing.
+#[test]
+fn an_unmovable_child_attached_by_a_handler_stops_the_move() {
+    let source = ThreadId::current();
+    let target = std::thread::spawn(ThreadId::current).join().unwrap();
+
+    let mut late = Pinned {
+        data: ObjectData::new(ObjectId::next()),
+    };
+    let late_id = late.data.id();
+    let root = Root {
+        data: ObjectData::new(ObjectId::next()),
+        late: Cell::new(Some(late_id)),
+    };
+    let root_id = root.data.id();
+    let root_ptr = Box::into_raw(Box::new(root));
+    let late_ptr = &raw mut late;
+    // SAFETY: both objects stay at these addresses until unregistered below; nothing touches them
+    // directly while a callback runs.
+    unsafe {
+        register_qobject_ptr(NonNull::new_unchecked(root_ptr));
+        register_qobject_ptr(NonNull::new_unchecked(late_ptr));
+    }
+
+    assert_eq!(
+        move_to_thread_by_id(root_id, target, source),
+        Err(MoveByIdError::NotMovable)
+    );
+    assert_eq!(query_object_thread(root_id), Some(source), "the parent moved alone");
+    assert_eq!(query_object_thread(late_id), Some(source));
 
     // SAFETY: no callback runs; the root was made by `Box::into_raw` above.
     unsafe {

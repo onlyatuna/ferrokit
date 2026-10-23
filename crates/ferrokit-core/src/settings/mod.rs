@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::io::{LockError, LockFile};
 use crate::variant::Variant;
 
 /// Distinguishes the temporary files of concurrent `sync` calls within this process.
@@ -249,6 +250,9 @@ impl Settings {
         // Serializes the read-merge-replace cycle among instances of this process so that two
         // of them cannot each merge into the same stale snapshot.
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Serializes it with other processes through `<file>.lock`, as `QSettings` does
+        // (qsettings.cpp:1349-1368). Released when `sync` returns.
+        let _file_lock = lock_settings_file(path)?;
 
         let mut merged = HashMap::new();
         read_ini_file(path, &mut merged)?;
@@ -345,6 +349,24 @@ impl Settings {
         read_ini_file(path, &mut self.entries)?;
         self.dirty = false;
         Ok(())
+    }
+}
+
+/// Takes the lock file `<path>.lock` that keeps other processes from rewriting the settings
+/// file at the same time.
+fn lock_settings_file(path: &Path) -> std::io::Result<LockFile> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let mut lock = LockFile::new(lock_path);
+    match lock.lock() {
+        Ok(()) => Ok(lock),
+        Err(LockError::PermissionError) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "settings lock file could not be created",
+        )),
+        Err(_) => Err(std::io::Error::other(
+            "settings lock file could not be acquired",
+        )),
     }
 }
 
