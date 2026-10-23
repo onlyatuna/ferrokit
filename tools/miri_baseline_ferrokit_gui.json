@@ -381,6 +381,8 @@
     "test_gui_p2_hardening::html_raw_text_elements_close_case_insensitively::TB": "pass",
     "test_gui_p2_hardening::icon_sizing_with_huge_target_does_not_overflow::TB": "pass",
     "test_gui_p2_hardening::ppm_zero_width_with_huge_height_is_rejected_fast::TB": "pass",
-    "test_gui_p2_hardening::scroll_with_i32_min_offsets_does_not_overflow::TB": "pass"
+    "test_gui_p2_hardening::scroll_with_i32_min_offsets_does_not_overflow::TB": "pass",
+    "test_gui_p2_hardening::html_raw_text_end_tag_requires_a_delimiter::SB": "pass",
+    "test_gui_p2_hardening::html_raw_text_end_tag_requires_a_delimiter::TB": "pass"
   }
 }
