@@ -150,6 +150,9 @@ impl CocoaNativeWindow {
             )
         };
 
+        // `releasedWhenClosed` defaults to YES: a user close would free the window we still own
+        // and `Drop` would then message freed memory. Qt: qcocoawindow.mm:2079.
+        unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setReleasedWhenClosed:"), false) };
         unsafe { ObjcMsg::send_str(ns_window, Sel::register("setTitle:"), title) };
 
         let ns_view_alloc = unsafe { ObjcMsg::send_class_0(view_class, Sel::register("alloc")) };
