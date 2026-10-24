@@ -37,6 +37,13 @@ impl EventTreeDispatcher {
         }
     }
 
+    /// Records the device pixel ratio the widget tree was last scaled to, so the next
+    /// `DpiChanged` reports it as `old_dpr`. A window that applies a DPI change itself (without
+    /// routing the event through this dispatcher) keeps the dispatcher in step with this.
+    pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+        self.last_dpr = dpr;
+    }
+
     pub fn popup_manager(&self) -> &PopupManager {
         &self.popup_manager
     }

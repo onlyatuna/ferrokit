@@ -220,6 +220,9 @@ pub struct Menu {
     pub about_to_hide: Signal<()>,
     /// `set_widget_visible` already emitted the signal of the pending `set_visible`.
     announced: std::cell::Cell<bool>,
+    /// `set_visible(false)` hid the menu through a shared borrow, which cannot drop the active
+    /// item or the open sub-menu; they are stale until the next `&mut` entry (`settle`).
+    closed: std::cell::Cell<bool>,
     /// Signals the input handlers produced while this menu was borrowed; they are emitted once
     /// the borrow is released (`Menu::dispatch`, `Menu::exec_popup`, or the next flush).
     pending: Announcements,
@@ -271,6 +274,7 @@ impl Menu {
             about_to_show,
             about_to_hide,
             announced: std::cell::Cell::new(false),
+            closed: std::cell::Cell::new(false),
             pending: Announcements::default(),
         }
     }
@@ -615,6 +619,9 @@ impl Menu {
 
     /// Currently highlighted action.
     pub fn active_action(&self) -> Option<ActionRef> {
+        if self.closed.get() {
+            return None;
+        }
         self.active.and_then(|i| self.actions.get(i).cloned())
     }
 
@@ -633,6 +640,9 @@ impl Menu {
 
     /// Currently open sub-menu, if any.
     pub fn open_submenu(&self) -> Option<MenuRef> {
+        if self.closed.get() {
+            return None;
+        }
         self.open_submenu.as_ref().map(|(_, m)| m.clone())
     }
 
@@ -1155,6 +1165,7 @@ impl Menu {
 
     /// Shows the menu at `geometry` without emitting `about_to_show` (callers do).
     pub(crate) fn show_with_geometry(&mut self, geometry: Rect) {
+        self.settle();
         self.close_submenu();
         self.active = None;
         self.base.set_geometry(geometry);
@@ -1784,7 +1795,16 @@ impl QObject for Menu {
 }
 
 impl Menu {
+    /// Drops the active item and the open sub-menu a `set_visible(false)` left behind.
+    fn settle(&mut self) {
+        if self.closed.replace(false) {
+            self.open_submenu = None;
+            self.active = None;
+        }
+    }
+
     fn handle_event(&mut self, event: &mut Event) -> bool {
+        self.settle();
         // `QWidget::changeEvent(EnabledChange)` repaints; the menu's dirty area is its own.
         if matches!(event.kind, EventKind::EnabledChange) {
             self.update();
@@ -1892,6 +1912,11 @@ impl Widget for Menu {
                 self.about_to_hide.emit(&());
             }
             self.base.set_visible(false);
+            // `QMenu::hideEvent` clears the current action, which closes the open sub-menu.
+            self.closed.set(true);
+            if let Some((_, submenu)) = &self.open_submenu {
+                hide_shared(submenu);
+            }
         }
         self.update();
     }

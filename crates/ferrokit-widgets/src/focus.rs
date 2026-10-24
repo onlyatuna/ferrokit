@@ -149,6 +149,14 @@ impl Drop for FocusState {
 }
 
 impl FocusState {
+    /// Whether `widget` is the window root this focus state works on.
+    pub(crate) fn is_root(&self, widget: &WidgetRef) -> bool {
+        self.root
+            .borrow()
+            .upgrade()
+            .is_some_and(|root| Rc::ptr_eq(&root, widget))
+    }
+
     /// `id` is being disabled: if it is the focus widget, the focus moves on now, as
     /// `setEnabled_helper` does before it disables the children (qwidget.cpp:3439-3445):
     /// `focusNextChild()` (which can pick a child about to be disabled), or `clearFocus()` when the
@@ -212,24 +220,29 @@ fn focus_widget_of(container: &WidgetRef) -> Option<WidgetRef> {
 }
 
 /// The window focus a stack page switch takes over (`QStackedLayout::setCurrentIndex`,
-/// qstackedlayout.cpp:302-310): the focus widget when it is `page` or below it.
+/// qstackedlayout.cpp:291-336): the focus widget when it is `page` or below it.
 pub(crate) struct PageFocus {
     state: Rc<FocusState>,
 }
 
-/// Records whether the focus is on `page` and, when it is, clears it (`prev->clearFocus()`), so
-/// hiding the page does not hand the focus to a widget outside the stack.
+/// Records whether the focus is on `page` or below it (`QWidget::isAncestorOf` counts the widget
+/// itself). Focus on `page` itself is cleared (`prev->clearFocus()` clears only a widget that has
+/// the focus). Focus on a descendant is left alone: hiding the page moves it with
+/// `focusNextChild()` (`hide_helper`, qwidget.cpp:8226-8238), possibly to a widget outside the
+/// stack, before it is moved into the new page.
 pub(crate) fn take_page_focus(page: &WidgetRef) -> Option<PageFocus> {
     let mut stack = vec![page.clone()];
     while let Some(w) = stack.pop() {
         let Ok(g) = w.try_borrow() else { continue };
         let state = g.widget_base().focus_state.borrow().upgrade();
         if let Some(state) = state.filter(|s| s.focused.get() == Some(g.id())) {
-            let id = g.id();
-            drop(g);
-            state.focused.set(None);
-            send_focus_out(&w, id, FocusReason::Other);
-            publish_focus(&state, None);
+            if Rc::ptr_eq(&w, page) {
+                let id = g.id();
+                drop(g);
+                state.focused.set(None);
+                send_focus_out(&w, id, FocusReason::Other);
+                publish_focus(&state, None);
+            }
             return Some(PageFocus { state });
         }
         stack.extend(g.children());
@@ -249,6 +262,13 @@ pub(crate) fn give_page_focus(focus: PageFocus, next: &WidgetRef) {
             chain.into_iter().find(|w| !Rc::ptr_eq(w, next))
         })
         .unwrap_or_else(|| next.clone());
+    // Hiding the page may have handed the focus to another widget (`focusNextChild()`); the
+    // `setFocus()` below takes it from there.
+    let current = focus.state.focused.get();
+    let root = focus.state.root.borrow().upgrade();
+    if let (Some(current), Some(root)) = (current, root) {
+        send_focus_out(&root, current, FocusReason::Other);
+    }
     give_focus(&focus.state, &target, FocusReason::Other);
 }
 
