@@ -953,3 +953,106 @@ fn settings_concurrent_syncs_on_one_file_lose_nothing() {
     let leftovers = fs::read_dir(dir.path()).unwrap().count();
     assert_eq!(leftovers, 1, "temporary files left behind");
 }
+
+#[test]
+fn lock_file_is_not_created_while_a_live_reclaim_guard_is_held() {
+    // A reclaimer that holds the guard may be about to remove the lock file it judged stale; a
+    // creator that went ahead would have its fresh lock removed by it.
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("app.lock");
+    let mut guard = path.as_os_str().to_owned();
+    guard.push(".reclaim");
+    fs::write(&guard, format!("PID={}\nAPP=reclaim\n", std::process::id())).unwrap();
+
+    let mut lock = LockFile::new(&path);
+    assert_eq!(lock.try_lock_now(), Err(LockError::LockFailedError));
+    assert!(!path.exists(), "the lock was created behind the reclaimer's back");
+
+    fs::remove_file(&guard).unwrap();
+    assert_eq!(lock.try_lock_now(), Ok(true));
+    assert!(!PathBuf::from(&guard).exists(), "the guard outlived the acquisition");
+}
+
+#[test]
+fn process_wait_with_zero_timeout_returns_the_output_written_before_exit() {
+    // Enough output that the reader is still draining the pipe when the child has exited.
+    const LINES: usize = 5000;
+    let mut proc = Process::new();
+    #[cfg(windows)]
+    set_shell(
+        &mut proc,
+        "for /L %i in (1,1,5000) do @echo 0123456789012345678901234567890123456789",
+    );
+    #[cfg(not(windows))]
+    set_shell(
+        &mut proc,
+        "i=0; while [ $i -lt 5000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done",
+    );
+    proc.start().unwrap();
+    // A zero timeout only polls: the deadline has passed by the time the exit is seen.
+    while !proc.wait_for_finished(Some(Duration::ZERO)) {
+        std::thread::yield_now();
+    }
+    let output = String::from_utf8_lossy(&proc.read_all_stdout()).into_owned();
+    assert_eq!(output.lines().count(), LINES, "the tail of the output was lost");
+}
+
+#[test]
+fn settings_sync_reclaims_a_stale_lock_file_and_releases_its_own() {
+    use ferrokit_core::settings::Settings;
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("locked.ini");
+    // QSettings serializes syncs through `<file>.lock` (qsettings.cpp:1349): a lock left by a
+    // process that is gone must not stop this one.
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    fs::write(&lock_path, "PID=4294967294\nAPP=dead\nTIME=0\n").unwrap();
+
+    let mut s = Settings::new(&path);
+    s.set_value("k", "v");
+    s.sync().unwrap();
+
+    assert!(path.exists());
+    assert!(!lock_path.exists(), "the lock file was left behind by sync");
+}
+
+#[test]
+fn settings_sync_waits_for_a_lock_held_by_another_process() {
+    use ferrokit_core::settings::Settings;
+    use std::sync::mpsc::{channel, TryRecvError};
+    let dir = TemporaryDir::new().unwrap();
+    let path = dir.path().join("held.ini");
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let mut other = LockFile::new(PathBuf::from(lock_path));
+    assert_eq!(other.try_lock_now(), Ok(true));
+
+    let (done_tx, done_rx) = channel();
+    let syncing = {
+        let path = path.clone();
+        std::thread::spawn(move || {
+            let mut s = Settings::new(&path);
+            s.set_value("k", "v");
+            let result = s.sync();
+            let _ = done_tx.send(());
+            result
+        })
+    };
+    // Gives the thread every chance to finish; it cannot while the lock is held.
+    for _ in 0..20_000 {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        done_rx.try_recv(),
+        Err(TryRecvError::Empty),
+        "sync wrote while another holder had the lock"
+    );
+
+    drop(other);
+    done_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("sync never got the lock after it was released");
+    syncing.join().unwrap().unwrap();
+    assert!(path.exists());
+}

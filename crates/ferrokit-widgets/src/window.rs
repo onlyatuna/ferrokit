@@ -1967,6 +1967,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 let old_dpr = self.render.device_pixel_ratio.get();
                 let new_dpr = ferrokit_gui::round_scale_factor(dpi_x as f64 / 96.0) as f32;
                 self.render.device_pixel_ratio.set(new_dpr);
+                self.dispatcher.set_device_pixel_ratio(new_dpr);
                 let cur_geom = self.geometry.get();
                 let size = Size::new(cur_geom.width, cur_geom.height);
                 self.backing_store.borrow_mut().resize(size, new_dpr);

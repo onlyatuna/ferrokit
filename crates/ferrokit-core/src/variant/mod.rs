@@ -1332,7 +1332,7 @@ impl FromVariant for bool {
 
 impl FromVariant for i32 {
     fn from_variant(v: &Variant) -> Option<Self> {
-        v.to_int().map(|i| i as i32)
+        v.to_int().and_then(|i| i32::try_from(i).ok())
     }
 }
 
@@ -1344,7 +1344,7 @@ impl FromVariant for i64 {
 
 impl FromVariant for u32 {
     fn from_variant(v: &Variant) -> Option<Self> {
-        v.to_uint().map(|u| u as u32)
+        v.to_uint().and_then(|u| u32::try_from(u).ok())
     }
 }
 
@@ -1638,7 +1638,7 @@ impl DataSerializable for Variant {
             }
             Self::List(list) => {
                 stream.write_u8(26)?;
-                stream.write_u32(list.len() as u32)?;
+                stream.write_len(list.len())?;
                 for item in list {
                     item.serialize(stream)?;
                 }
@@ -1646,7 +1646,7 @@ impl DataSerializable for Variant {
             }
             Self::Map(map) => {
                 stream.write_u8(27)?;
-                stream.write_u32(map.len() as u32)?;
+                stream.write_len(map.len())?;
                 for (k, v) in map {
                     stream.write_str(k)?;
                     v.serialize(stream)?;

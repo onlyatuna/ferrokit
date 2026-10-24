@@ -26,6 +26,16 @@ static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// object's timers keep their ids on the target thread (Qt `reRegisterTimers`, qobject.cpp:1496-1500).
 static NEXT_TIMER_ID: AtomicU32 = AtomicU32::new(1);
 
+thread_local! {
+    /// `(receiver, old id) -> new id` for moved timers that were given a fresh id on adoption.
+    /// A `Timer` handle learns its new id from here.
+    static REIDENTIFIED: RefCell<HashMap<(ObjectId, TimerId), TimerId>> = RefCell::new(HashMap::new());
+}
+
+fn take_reidentified(receiver: ObjectId, old: TimerId) -> Option<TimerId> {
+    REIDENTIFIED.try_with(|map| map.borrow_mut().remove(&(receiver, old))).ok().flatten()
+}
+
 pub fn allocate_timer_id() -> TimerId {
     loop {
         let id = NEXT_TIMER_ID.fetch_add(1, Ordering::Relaxed);
@@ -210,13 +220,21 @@ impl TimerRegistry {
         timer_type: TimerType,
         single_shot: bool,
     ) -> TimerId {
-        let id = allocate_timer_id();
-        self.register_with_id(id, receiver, interval_ms, timer_type, single_shot);
+        // The counter wraps after 2^32 allocations: skip an id that a live timer still holds.
+        let id = loop {
+            let candidate = allocate_timer_id();
+            if !self.entries.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let registered = self.register_with_id(id, receiver, interval_ms, timer_type, single_shot);
+        debug_assert!(registered);
         id
     }
 
     /// Registers `id` for `receiver`. A moved timer keeps its id on the target thread (Qt
     /// `registerTimer` with an existing id, qobject.cpp:1496-1500); the phase restarts from now.
+    /// Returns `false`, leaving the live timer untouched, when `id` is already registered here.
     fn register_with_id(
         &mut self,
         id: TimerId,
@@ -224,7 +242,10 @@ impl TimerRegistry {
         interval_ms: u64,
         timer_type: TimerType,
         single_shot: bool,
-    ) {
+    ) -> bool {
+        if self.entries.contains_key(&id) {
+            return false;
+        }
         let now = current_time_ms();
         let mut actual_type = timer_type;
         let (adjusted_interval, next_fire_ms) =
@@ -241,10 +262,9 @@ impl TimerRegistry {
             single_shot,
         };
 
-        if let Some(replaced) = self.entries.insert(id, entry) {
-            self.unindex(replaced.receiver, id);
-        }
+        self.entries.insert(id, entry);
         self.by_receiver.entry(receiver).or_default().push(id);
+        true
     }
 
     fn unindex(&mut self, receiver: ObjectId, id: TimerId) {
@@ -557,14 +577,33 @@ fn adopt_entries(entries: Vec<TimerEntry>) {
     let armed = with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         for entry in local {
-            reg.register_with_id(
+            // Ids are allocated process-wide, so a collision only happens after the counter
+            // wrapped; the moved timer then gets a fresh id here instead of being dropped.
+            let id = if reg.register_with_id(
                 entry.id,
                 entry.receiver,
                 entry.interval_ms,
                 entry.timer_type,
                 entry.single_shot,
-            );
-            arm_source(ctx, entry.id, entry.receiver, entry.interval_ms, entry.timer_type);
+            ) {
+                entry.id
+            } else {
+                let fresh = reg.register(
+                    entry.receiver,
+                    entry.interval_ms,
+                    entry.timer_type,
+                    entry.single_shot,
+                );
+                // The owner still holds the old id: tell its `Timer` handle and object list.
+                REIDENTIFIED.with(|map| {
+                    map.borrow_mut().insert((entry.receiver, entry.id), fresh);
+                });
+                crate::object::with_object_mut(entry.receiver, |obj| {
+                    obj.object_data_mut().replace_timer(entry.id, fresh);
+                });
+                fresh
+            };
+            arm_source(ctx, id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
     if armed.is_none() {
@@ -639,8 +678,14 @@ fn arm_source(
 
 /// Removes a timer and disarms its delivery source (`QObject::killTimer` → `unregisterTimer`,
 /// qeventdispatcher_win.cpp:383-392). Uses the REGISTERED interval, not the mutable `Timer` field.
-fn disarm_in_context(ctx: &ThreadTimerContext, id: TimerId) -> bool {
+/// With `receiver`, a timer registered for another object is left alone.
+fn disarm_in_context(ctx: &ThreadTimerContext, receiver: Option<ObjectId>, id: TimerId) -> bool {
     let mut reg = lock_unpoisoned(&ctx.registry);
+    if let Some(receiver) = receiver {
+        if reg.get(id).is_some_and(|entry| entry.receiver != receiver) {
+            return false;
+        }
+    }
     let Some(entry) = reg.unregister(id) else {
         return false;
     };
@@ -764,7 +809,12 @@ pub(crate) fn dispatch_single_shot_callback(receiver: ObjectId) -> bool {
 
 /// Kills an object timer by TimerId in the current thread's timer registry.
 pub fn kill_object_timer(id: TimerId) -> bool {
-    with_thread_timer_context(|ctx| disarm_in_context(ctx, id)).unwrap_or(false)
+    with_thread_timer_context(|ctx| disarm_in_context(ctx, None, id)).unwrap_or(false)
+}
+
+/// Kills `receiver`'s timer `id`; a timer of another object with that id is refused.
+pub(crate) fn kill_receiver_timer(receiver: ObjectId, id: TimerId) -> bool {
+    with_thread_timer_context(|ctx| disarm_in_context(ctx, Some(receiver), id)).unwrap_or(false)
 }
 
 /// Timer event structure matching `QTimerEvent`.
@@ -793,6 +843,18 @@ struct TimerControl {
 }
 
 impl TimerControl {
+    /// The timer's current id, following a re-id from a thread move.
+    fn current_id(&self) -> TimerId {
+        let id = self.id.get();
+        if id.is_valid() {
+            if let Some(fresh) = take_reidentified(self.object_id, id) {
+                self.id.set(fresh);
+                return fresh;
+            }
+        }
+        id
+    }
+
     fn is_active(&self) -> bool {
         self.id.get().is_valid()
     }
@@ -836,11 +898,11 @@ impl TimerControl {
 
     fn stop(&self) {
         if self.is_active() {
-            let id = self.id.get();
+            let id = self.current_id();
             let _ = THREAD_TIMER_CONTEXT.try_with(|ctx| {
                 if let Ok(borrow) = ctx.try_borrow() {
                     if let Some(ctx) = borrow.as_ref() {
-                        disarm_in_context(ctx, id);
+                        disarm_in_context(ctx, Some(self.object_id), id);
                     }
                 }
             });
@@ -861,7 +923,7 @@ impl TimerControl {
     fn set_single_shot(&self, v: bool) {
         self.single_shot.set(v);
         if self.is_active() {
-            let id = self.id.get();
+            let id = self.current_id();
             with_thread_timer_context(|ctx| {
                 if let Some(entry) = lock_unpoisoned(&ctx.registry).get_mut(id) {
                     entry.single_shot = v;
@@ -917,7 +979,7 @@ impl TimerControl {
         dispatcher: &mut D,
     ) {
         if self.is_active() {
-            if let Some(entry) = registry.unregister(self.id.get()) {
+            if let Some(entry) = registry.unregister(self.current_id()) {
                 dispatcher.unregister_timer(&entry);
             }
             self.id.set(TimerId::INVALID);
@@ -926,7 +988,7 @@ impl TimerControl {
 
     fn stop_with_registry(&self, registry: &mut TimerRegistry) {
         if self.is_active() {
-            registry.unregister(self.id.get());
+            registry.unregister(self.current_id());
             self.id.set(TimerId::INVALID);
         }
     }
@@ -1045,7 +1107,7 @@ impl Timer {
     /// The id of the currently scheduled timer, `TimerId::INVALID` when stopped. It changes on
     /// every start. It is not the identity of the object: see [`Timer::object_id`].
     pub fn timer_id(&self) -> TimerId {
-        self.control.id.get()
+        self.control.current_id()
     }
 
     /// Returns remaining time in milliseconds (`QTimer::remainingTime`).
@@ -1056,7 +1118,7 @@ impl Timer {
         let now = current_time_ms();
         let deadline_opt = with_thread_timer_context(|ctx| {
             lock_unpoisoned(&ctx.registry)
-                .get(self.control.id.get())
+                .get(self.control.current_id())
                 .map(|e| e.next_fire_ms)
         })
         .flatten();
@@ -1101,7 +1163,7 @@ impl Timer {
     }
 
     pub fn timer_event_with_registry(&self, event: &TimerEvent, registry: &mut TimerRegistry) {
-        if event.timer_id == self.control.id.get() {
+        if event.timer_id == self.control.current_id() {
             if self.control.single_shot.get() {
                 self.control.stop_with_registry(registry);
             }
@@ -1344,7 +1406,7 @@ impl QObject for TimerCore {
         if control.retired.get() {
             return;
         }
-        if timer_id == control.id.get().0 as u64 {
+        if timer_id == control.current_id().0 as u64 {
             if control.single_shot.get() {
                 control.stop();
             }
@@ -2243,8 +2305,16 @@ mod receiver_index_tests {
         assert_eq!(of_a, vec![a1, a2]);
         assert_eq!(reg.ids_for_receiver(b), &[b1]);
 
-        // A moved timer re-registers under its id: no duplicate, and a new receiver replaces the old.
-        reg.register_with_id(a1, b, 10, TimerType::Coarse, false);
+        // A live id is never replaced: the registration is refused and the timer stays with `a`.
+        assert!(!reg.register_with_id(a1, b, 10, TimerType::Coarse, false));
+        let mut of_a = reg.ids_for_receiver(a).to_vec();
+        of_a.sort_by_key(|id| id.0);
+        assert_eq!(of_a, vec![a1, a2]);
+        assert_eq!(reg.ids_for_receiver(b), &[b1]);
+        assert_eq!(reg.len(), 3);
+        assert!(reg.unregister(a1).is_some());
+        // A freed id registers again under a new receiver, as a moved timer does.
+        assert!(reg.register_with_id(a1, b, 10, TimerType::Coarse, false));
         assert_eq!(reg.ids_for_receiver(a), &[a2]);
         let mut of_b = reg.ids_for_receiver(b).to_vec();
         of_b.sort_by_key(|id| id.0);
@@ -2254,6 +2324,54 @@ mod receiver_index_tests {
         assert!(reg.ids_for_receiver(a).is_empty());
         assert!(reg.unregister(a2).is_none());
         assert_eq!(reg.len(), 2);
+    }
+
+    /// A moved timer whose id is already live on the target thread is re-registered under a
+    /// fresh id, not dropped.
+    #[test]
+    fn adopting_a_timer_with_a_live_id_gives_it_a_fresh_id() {
+        let registry = Arc::new(Mutex::new(TimerRegistry::new()));
+        #[cfg(windows)]
+        register_thread_timer_context(Arc::clone(&registry), std::ptr::null_mut());
+        #[cfg(not(windows))]
+        register_thread_timer_context(Arc::clone(&registry));
+        let held = Timer::new();
+        let mover = Timer::new();
+        let moved_id = mover.start();
+        // The timer leaves its registry, as `detach_timers_for_objects` does on a thread move.
+        let entry = registry.lock().unwrap().unregister(moved_id).unwrap();
+        // The target thread already has a live timer of another object under that id.
+        assert!(registry.lock().unwrap().register_with_id(
+            moved_id,
+            held.object_id(),
+            50,
+            TimerType::Coarse,
+            false
+        ));
+        adopt_entries(vec![entry]);
+        let fresh = {
+            let reg = registry.lock().unwrap();
+            assert_eq!(reg.len(), 2, "the moved timer was dropped");
+            assert_eq!(reg.get(moved_id).unwrap().receiver, held.object_id());
+            let ids = reg.ids_for_receiver(mover.object_id());
+            assert_eq!(ids.len(), 1);
+            assert_ne!(ids[0], moved_id);
+            ids[0]
+        };
+        // The owner follows the re-id: it reports the new id, and stop() kills only its own timer.
+        assert_eq!(mover.timer_id(), fresh);
+        mover.stop();
+        let reg = registry.lock().unwrap();
+        assert!(reg.get(fresh).is_none(), "the moved timer was not stopped");
+        assert_eq!(
+            reg.get(moved_id).map(|e| e.receiver),
+            Some(held.object_id()),
+            "an unrelated timer was killed"
+        );
+        drop(reg);
+        drop(held);
+        drop(mover);
+        unregister_thread_timer_context();
     }
 
     #[test]

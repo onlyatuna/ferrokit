@@ -13,6 +13,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// How long, after the child has exited, the pipe readers get to reach the end of their pipes
+/// when the wait has a time limit: long enough to collect what the child wrote, short enough
+/// not to hang on a grandchild that holds the pipe open.
+const READER_DRAIN: Duration = Duration::from_secs(1);
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -301,7 +306,9 @@ impl Process {
                     } else {
                         ExitStatus::CrashExit
                     });
-                    self.finish_readers(start_time, timeout);
+                    // The wait's own deadline does not apply to what the child had already
+                    // written: its tail is collected for `READER_DRAIN` from this exit.
+                    self.finish_readers(timeout.map(|_| READER_DRAIN));
                     self.state = ProcessState::NotRunning;
                     self.pid = None;
                     return true;
@@ -318,7 +325,7 @@ impl Process {
                         let _ = child.wait();
                     }
                     // Bounded: a grandchild may still hold the pipes open.
-                    self.finish_readers(Instant::now(), Some(Duration::from_secs(1)));
+                    self.finish_readers(Some(READER_DRAIN));
                     self.state = ProcessState::NotRunning;
                     self.exit_status = Some(ExitStatus::CrashExit);
                     self.pid = None;
@@ -328,9 +335,11 @@ impl Process {
         }
     }
 
-    /// Joins reader threads that have finished; once `timeout` (measured from `start`) has
-    /// elapsed, unfinished readers are detached instead of blocking on a grandchild-held pipe.
-    fn finish_readers(&mut self, start: Instant, timeout: Option<Duration>) {
+    /// Joins the reader threads. With `Some(grace)`, readers that have not reached the end of
+    /// their pipe `grace` after this call are detached instead of blocking on a pipe that a
+    /// grandchild still holds open; with `None` they are always joined.
+    fn finish_readers(&mut self, grace: Option<Duration>) {
+        let start = Instant::now();
         for reader in [self.stdout_reader.take(), self.stderr_reader.take()]
             .into_iter()
             .flatten()
@@ -340,7 +349,7 @@ impl Process {
                     let _ = reader.join();
                     break;
                 }
-                if timeout.is_some_and(|t| start.elapsed() >= t) {
+                if grace.is_some_and(|g| start.elapsed() >= g) {
                     break;
                 }
                 thread::sleep(Duration::from_millis(1));
@@ -384,7 +393,7 @@ impl Process {
             self.exit_status = Some(ExitStatus::CrashExit);
             self.child = None;
             self.stdin_handle = None;
-            self.finish_readers(Instant::now(), Some(Duration::from_millis(100)));
+            self.finish_readers(Some(Duration::from_millis(100)));
             self.state = ProcessState::NotRunning;
             self.pid = None;
         }
