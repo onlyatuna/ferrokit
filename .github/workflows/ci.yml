@@ -130,6 +130,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       run: ${{ steps.diff.outputs.run }}
+      matrix: ${{ steps.diff.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -141,23 +142,46 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: |
-          # Miri (8 shards) runs nightly, on manual dispatch, and on PRs labelled `miri`.
-          # PRs that change the sweep tooling or baselines always run it, since nothing
-          # else checks a baseline edit. Pushes to main rely on the nightly run.
+          # Decide which crates' Miri shards to run. Dependents follow their dependencies:
+          # core -> gui -> widgets. Nightly and manual runs cover every crate; a PR runs only the
+          # crates its changed paths affect. The `miri` label runs the crates derived from the
+          # paths (all of them when none are derived). Pushes to main rely on the nightly run.
+          core=false; gui=false; widgets=false
+          all() { core=true; gui=true; widgets=true; }
           case "$EVENT" in
-            schedule|workflow_dispatch) echo "run=true" >> "$GITHUB_OUTPUT"; exit 0;;
-            pull_request) ;;
-            *) echo "run=false" >> "$GITHUB_OUTPUT"; exit 0;;
+            schedule|workflow_dispatch) all;;
+            pull_request)
+              changed=$(git diff --name-only "$BASE" "$HEAD")
+              while IFS= read -r f; do
+                case "$f" in
+                  crates/ferrokit-core/*|tools/miri_baseline.json) core=true; gui=true; widgets=true;;
+                  crates/ferrokit-gui/*|tools/miri_baseline_ferrokit_gui.json) gui=true; widgets=true;;
+                  crates/ferrokit-widgets/*|tools/miri_baseline_ferrokit_widgets.json) widgets=true;;
+                  tools/miri_sweep.py|tools/test_miri_sweep.py|.github/workflows/ci.yml|Cargo.toml|rust-toolchain|rust-toolchain.toml) all;;
+                esac
+              done <<< "$changed"
+              if [ "$HAS_LABEL" = true ] && [ $core = false ] && [ $gui = false ] && [ $widgets = false ]; then
+                all
+              fi;;
           esac
-          if [ "$HAS_LABEL" = true ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          changed=$(git diff --name-only "$BASE" "$HEAD")
-          if echo "$changed" | grep -qE '^tools/(miri_|test_miri_)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
+          include=""
+          add() { include="${include:+$include,}{\"crate\":\"$1\",\"baseline\":\"$2\",\"model\":\"$3\",\"shard\":$4,\"shards\":$5}"; }
+          for model in SB TB; do
+            if [ $core = true ]; then
+              add ferrokit-core tools/miri_baseline.json $model 1 2
+              add ferrokit-core tools/miri_baseline.json $model 2 2
+            fi
+            if [ $gui = true ]; then
+              add ferrokit-gui tools/miri_baseline_ferrokit_gui.json $model 1 1
+            fi
+            if [ $widgets = true ]; then
+              add ferrokit-widgets tools/miri_baseline_ferrokit_widgets.json $model 1 2
+              add ferrokit-widgets tools/miri_baseline_ferrokit_widgets.json $model 2 2
+            fi
+          done
+          if [ -n "$include" ]; then run=true; else run=false; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":[$include]}" >> "$GITHUB_OUTPUT"
 
   miri-shard:
     needs: miri-changes
@@ -168,16 +192,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One entry per (crate, model, shard); a shard's sweep is estimated well under 40 minutes.
-        include:
-          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 1, shards: 2}
-          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: SB, shard: 2, shards: 2}
-          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 1, shards: 2}
-          - {crate: ferrokit-core, baseline: tools/miri_baseline.json, model: TB, shard: 2, shards: 2}
-          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: SB, shard: 1, shards: 1}
-          - {crate: ferrokit-gui, baseline: tools/miri_baseline_ferrokit_gui.json, model: TB, shard: 1, shards: 1}
-          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: SB, shard: 1, shards: 1}
-          - {crate: ferrokit-widgets, baseline: tools/miri_baseline_ferrokit_widgets.json, model: TB, shard: 1, shards: 1}
+        # One entry per (crate, model, shard), computed by `miri-changes` from the changed paths;
+        # a shard's sweep is estimated well under 40 minutes.
+        include: ${{ fromJSON(needs.miri-changes.outputs.matrix).include }}
     steps:
       - uses: actions/checkout@v7
 
@@ -231,7 +248,7 @@ jobs:
             echo "::error::Miri relevance check failed ($CHANGES_RESULT)"; exit 1
           fi
           if [ "$RELEVANT" != "true" ]; then
-            echo "Miri not requested (no 'miri' label, no Miri tooling change); shards skipped."; exit 0
+            echo "No Miri-relevant crate affected by this run; shards skipped."; exit 0
           fi
           if [ "$SHARD_RESULT" != "success" ]; then
             echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
