@@ -133,6 +133,17 @@ impl Default for RenderHints {
     }
 }
 
+/// A rect clip taken through a rotating or shearing transform: a quadrilateral in root logical
+/// coordinates (device pixels divided by the device-pixel ratio), the way Qt keeps it as a
+/// transformed path clip (`QPainter::setClipRect` -> `QPaintEngine::clip(QVectorPath)`,
+/// `qpainter.cpp:2744-2770`). `anti_alias` is the `Antialiasing` hint when the clip was set;
+/// `QRasterPaintEngine::rasterize` takes it from the state at that time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipQuad {
+    pub points: [tiny_skia::Point; 4],
+    pub anti_alias: bool,
+}
+
 /// Painter state snapshot (modeled after Qt `QPainter` state stack).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PainterState {
@@ -142,7 +153,11 @@ pub struct PainterState {
     pub opacity: f32,
     pub render_hints: RenderHints,
     pub composition_mode: CompositionMode,
+    /// Bounding box of the clip in root logical coordinates; exact unless `clip_quads` is
+    /// non-empty.
     pub clip_rect: Option<tiny_skia::Rect>,
+    /// Rotated rect clips intersected with `clip_rect`; empty while every clip is axis-aligned.
+    pub clip_quads: Vec<ClipQuad>,
 }
 
 impl Default for PainterState {
@@ -155,7 +170,40 @@ impl Default for PainterState {
             render_hints: RenderHints::default(),
             composition_mode: CompositionMode::SourceOver,
             clip_rect: None,
+            clip_quads: Vec::new(),
         }
+    }
+}
+
+/// Half-open pixel rectangle `(x0, y0, x1, y1)` on the device.
+type PixelBounds = (u32, u32, u32, u32);
+
+/// Coverage multiplication matching `premultiply_u8` rounding.
+fn mul_u8(a: u8, b: u8) -> u8 {
+    ((a as u32 * b as u32 + 127) / 255) as u8
+}
+
+/// Device pixels a logical-space box touches, grown by `pad` and clamped to the device.
+fn pixel_bounds([l, t, r, b]: [f32; 4], scale: f32, pad: i64, (w, h): (u32, u32)) -> PixelBounds {
+    let clamp = |v: f32, floor: bool, max: u32| -> u32 {
+        let v = v * scale;
+        let v = if floor { v.floor() as i64 - pad } else { v.ceil() as i64 + pad };
+        v.clamp(0, max as i64) as u32
+    };
+    (clamp(l, true, w), clamp(t, true, h), clamp(r, false, w), clamp(b, false, h))
+}
+
+/// Zeroes `bounds` of `mask`, clamped to the mask.
+fn zero_mask_region(mask: &mut Mask, bounds: PixelBounds) {
+    let (w, h) = (mask.width(), mask.height());
+    let (x0, y0, x1, y1) = (bounds.0.min(w), bounds.1.min(h), bounds.2.min(w), bounds.3.min(h));
+    if x0 >= x1 {
+        return;
+    }
+    let data = mask.data_mut();
+    for y in y0..y1 {
+        let row = (y * w) as usize;
+        data[row + x0 as usize..row + x1 as usize].fill(0);
     }
 }
 
@@ -168,6 +216,14 @@ pub struct Painter<'a> {
     saved_states: Vec<PainterState>,
     cached_mask: Option<Mask>,
     cached_clip_rect: Option<tiny_skia::Rect>,
+    cached_clip_quads: Vec<ClipQuad>,
+    /// Mask buffer kept while no clip is active, so a clip change reuses it instead of
+    /// allocating a device-sized one.
+    spare_mask: Option<Mask>,
+    /// Second device-sized buffer the quads are rasterised into before being multiplied in.
+    scratch_mask: Option<Mask>,
+    /// Pixels of `cached_mask` / `spare_mask` that may be non-zero.
+    mask_dirty: PixelBounds,
     /// Gamma table of LCD (ClearType) text; `None` draws grey-scale text. Fixed when painting
     /// starts, like `QRasterPaintEngine::begin` fixes the glyph cache format.
     lcd_lut: Option<Arc<TrcLut>>,
@@ -188,6 +244,10 @@ impl<'a> Painter<'a> {
             saved_states: Vec::new(),
             cached_mask: None,
             cached_clip_rect: None,
+            cached_clip_quads: Vec::new(),
+            spare_mask: None,
+            scratch_mask: None,
+            mask_dirty: (0, 0, 0, 0),
             lcd_lut: smoothing.cleartype.then(|| gamma_lut(smoothing.gamma)),
         }
     }
@@ -321,40 +381,78 @@ impl<'a> Painter<'a> {
 
     // Replaces the clip with `rect` given in the current user space, like
     // `QPainter::setClipRect(QRectF)` (qpainter.cpp:2816,2828; qpainter.h:187): the rect is taken
-    // through the current transform and the clip is replaced, not intersected. An empty or
-    // unmappable rect clips everything.
+    // through the current transform and the clip is replaced, not intersected. Under a rotating
+    // or shearing transform the clip is the transformed rectangle, not its bounding box
+    // (`QRasterPaintEngine::clip(QRect)` falls back to a path clip, qpaintengine_raster.cpp:1212).
+    // An empty or unmappable rect clips everything.
     pub fn set_clip_rect(&mut self, rect: RectF) {
-        self.state.clip_rect = Some(self.user_rect_to_root_clip(rect));
+        let (bounds, quad) = self.user_rect_to_root_clip(rect);
+        self.state.clip_rect = Some(bounds);
+        self.state.clip_quads.clear();
+        self.state.clip_quads.extend(quad);
     }
 
     // Intersects the clip with `rect` given in the current user space, like
     // `QPainter::setClipRect(rect, Qt::IntersectClip)` (qpainter.cpp:2798-2816): the rect is taken
     // through the current transform. An empty intersection clips everything.
     pub fn clip_to_rect(&mut self, rect: RectF) {
-        let new = self.user_rect_to_root_clip(rect);
+        let (new, quad) = self.user_rect_to_root_clip(rect);
         let clipped = match self.state.clip_rect {
             Some(current) => current.intersect(&new),
             None => Some(new),
         };
-        self.state.clip_rect = Some(clipped.unwrap_or_else(Self::empty_clip));
+        match clipped {
+            Some(bounds) => {
+                self.state.clip_rect = Some(bounds);
+                self.state.clip_quads.extend(quad);
+            }
+            None => {
+                self.state.clip_rect = Some(Self::empty_clip());
+                self.state.clip_quads.clear();
+            }
+        }
     }
 
     // Maps a user-space rect through the current transform into the root logical coordinates in
     // which the clip is stored (`update_clip_mask_if_needed` scales it by the device-pixel ratio
-    // only, so the mapped rect is divided by that ratio). Unmappable rects become the empty clip.
-    fn user_rect_to_root_clip(&self, rect: RectF) -> tiny_skia::Rect {
+    // only, so the mapped rect is divided by that ratio). Returns the bounding box and, when the
+    // transform rotates or shears, the exact quadrilateral. Unmappable rects become the empty
+    // clip.
+    fn user_rect_to_root_clip(&self, rect: RectF) -> (tiny_skia::Rect, Option<ClipQuad>) {
         let dpr = self.device.device_pixel_ratio();
-        tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)
-            .and_then(|r| r.transform(self.state.transform))
-            .and_then(|m| {
-                tiny_skia::Rect::from_ltrb(
+        let t = self.state.transform;
+        let mapped = (|| {
+            let r = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)?;
+            if t.kx == 0.0 && t.ky == 0.0 {
+                let m = r.transform(t)?;
+                let bounds = tiny_skia::Rect::from_ltrb(
                     m.left() / dpr,
                     m.top() / dpr,
                     m.right() / dpr,
                     m.bottom() / dpr,
-                )
-            })
-            .unwrap_or_else(Self::empty_clip)
+                )?;
+                return Some((bounds, None));
+            }
+            let mut points = [
+                tiny_skia::Point::from_xy(r.left(), r.top()),
+                tiny_skia::Point::from_xy(r.right(), r.top()),
+                tiny_skia::Point::from_xy(r.right(), r.bottom()),
+                tiny_skia::Point::from_xy(r.left(), r.bottom()),
+            ];
+            t.map_points(&mut points);
+            for p in &mut points {
+                p.x /= dpr;
+                p.y /= dpr;
+            }
+            let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+            let min_y = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            let max_x = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+            let max_y = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+            let bounds = tiny_skia::Rect::from_ltrb(min_x, min_y, max_x, max_y)?;
+            let anti_alias = self.state.render_hints.contains(RenderHint::Antialiasing);
+            Some((bounds, Some(ClipQuad { points, anti_alias })))
+        })();
+        mapped.unwrap_or_else(|| (Self::empty_clip(), None))
     }
 
     // A zero-area clip admits no pixels; it is the representation of an empty intersection.
@@ -376,34 +474,101 @@ impl<'a> Painter<'a> {
 
     // -------------------------------------------------------------------------
 
-    // Updates or clears the cached clip mask based on current state.
+    // Updates or clears the cached clip mask based on current state. The mask buffer is reused
+    // across clip changes: only the pixels the previous clip painted are zeroed.
     fn update_clip_mask_if_needed(&mut self) {
-        if self.state.clip_rect == self.cached_clip_rect && (self.cached_mask.is_some() || self.state.clip_rect.is_none()) {
+        let up_to_date = self.state.clip_rect == self.cached_clip_rect
+            && self.state.clip_quads == self.cached_clip_quads
+            && (self.cached_mask.is_some() || self.state.clip_rect.is_none());
+        if up_to_date {
             return;
         }
         self.cached_clip_rect = self.state.clip_rect;
-        self.cached_mask = if let Some(clip) = self.state.clip_rect {
-            if let Some(mut mask) = Mask::new(self.device.physical_width(), self.device.physical_height()) {
-                let path = PathBuilder::from_rect(clip);
-                let dpr = self.device.device_pixel_ratio();
-                let scale = if dpr != 1.0 {
-                    tiny_skia::Transform::from_scale(dpr, dpr)
-                } else {
-                    tiny_skia::Transform::identity()
-                };
-                mask.fill_path(
-                    &path,
-                    tiny_skia::FillRule::Winding,
-                    false,
-                    scale,
-                );
-                Some(mask)
-            } else {
-                None
-            }
-        } else {
-            None
+        self.cached_clip_quads.clone_from(&self.state.clip_quads);
+
+        let mut buffer = self.cached_mask.take().or_else(|| self.spare_mask.take());
+        if let Some(m) = buffer.as_mut() {
+            zero_mask_region(m, self.mask_dirty);
+        }
+        self.mask_dirty = (0, 0, 0, 0);
+        let Some(clip) = self.state.clip_rect else {
+            self.spare_mask = buffer;
+            return;
         };
+
+        let (pw, ph) = (self.device.physical_width(), self.device.physical_height());
+        let mut mask = match buffer {
+            Some(m) if m.width() == pw && m.height() == ph => m,
+            _ => match Mask::new(pw, ph) {
+                Some(m) => m,
+                None => return,
+            },
+        };
+        let dpr = self.device.device_pixel_ratio();
+        let scale = if dpr != 1.0 {
+            tiny_skia::Transform::from_scale(dpr, dpr)
+        } else {
+            tiny_skia::Transform::identity()
+        };
+        mask.fill_path(
+            &PathBuilder::from_rect(clip),
+            tiny_skia::FillRule::Winding,
+            false,
+            scale,
+        );
+        let clip_bounds = pixel_bounds(
+            [clip.left(), clip.top(), clip.right(), clip.bottom()],
+            dpr,
+            0,
+            (pw, ph),
+        );
+        self.mask_dirty = clip_bounds;
+
+        // Each rotated rect is rasterised into the scratch mask and multiplied in.
+        for quad in &self.state.clip_quads {
+            let mut scratch = match self.scratch_mask.take() {
+                Some(m) if m.width() == pw && m.height() == ph => m,
+                _ => match Mask::new(pw, ph) {
+                    Some(m) => m,
+                    None => break,
+                },
+            };
+            let mut builder = PathBuilder::new();
+            builder.move_to(quad.points[0].x, quad.points[0].y);
+            for p in &quad.points[1..] {
+                builder.line_to(p.x, p.y);
+            }
+            builder.close();
+            let xs = quad.points.iter().map(|p| p.x);
+            let ys = quad.points.iter().map(|p| p.y);
+            let quad_bounds = pixel_bounds(
+                [
+                    xs.clone().fold(f32::INFINITY, f32::min),
+                    ys.clone().fold(f32::INFINITY, f32::min),
+                    xs.fold(f32::NEG_INFINITY, f32::max),
+                    ys.fold(f32::NEG_INFINITY, f32::max),
+                ],
+                dpr,
+                1,
+                (pw, ph),
+            );
+            if let Some(path) = builder.finish() {
+                scratch.fill_path(&path, tiny_skia::FillRule::Winding, quad.anti_alias, scale);
+            }
+            let (x0, y0, x1, y1) = clip_bounds;
+            if x0 < x1 {
+                let w = pw as usize;
+                let (dst, src) = (mask.data_mut(), scratch.data());
+                for y in y0 as usize..y1 as usize {
+                    for i in y * w + x0 as usize..y * w + x1 as usize {
+                        dst[i] = mul_u8(dst[i], src[i]);
+                    }
+                }
+            }
+            zero_mask_region(&mut scratch, quad_bounds);
+            self.scratch_mask = Some(scratch);
+        }
+        self.cached_mask = Some(mask);
     }
 
     pub fn fill_path(&mut self, path: &Path) {
@@ -917,6 +1082,13 @@ impl<'a> Painter<'a> {
         let lcd_lut = self.lcd_lut.clone();
         let dpr = self.device.device_pixel_ratio();
         let transform = self.state.transform;
+        // A rotated clip is not a pixel box, so the glyph blits read its coverage from the mask.
+        self.update_clip_mask_if_needed();
+        let clip_cov = if self.state.clip_quads.is_empty() {
+            None
+        } else {
+            self.cached_mask.as_ref().map(|m| (m.data(), m.width() as usize))
+        };
         let mut pixmap = self.device.as_pixmap_mut();
         let pw = pixmap.width();
         let ph = pixmap.height();
@@ -970,6 +1142,13 @@ impl<'a> Painter<'a> {
                                 continue;
                             }
                         }
+                        let cf = match clip_cov {
+                            Some((cov, mw)) => cov[dst_y as usize * mw + dst_x as usize],
+                            None => 255,
+                        };
+                        if cf == 0 {
+                            continue;
+                        }
 
                         let src_idx = (gy * c_w + gx) * 4;
                         let src_raw_r = color_data[src_idx] as u32;
@@ -980,7 +1159,7 @@ impl<'a> Painter<'a> {
                             continue;
                         }
 
-                        let op = self.state.opacity.clamp(0.0, 1.0);
+                        let op = self.state.opacity.clamp(0.0, 1.0) * cf as f32 / 255.0;
                         let a_factor = (src_raw_a as f32 / 255.0) * op;
                         let src_a = ((a_factor * 255.0).round() as u32).min(255);
                         let inv_a = 255 - src_a;
@@ -1057,6 +1236,14 @@ impl<'a> Painter<'a> {
                             continue;
                         }
                     }
+                    let cf = match clip_cov {
+                        Some((cov, mw)) => cov[dst_y as usize * mw + dst_x as usize],
+                        None => 255,
+                    };
+                    if cf == 0 {
+                        continue;
+                    }
+                    let base_alpha = base_alpha * cf as f32 / 255.0;
 
                     let dst_idx = ((dst_y as usize) * (pw as usize) + (dst_x as usize)) * 4;
                     let px = &mut pix_data[dst_idx..dst_idx + 4];
@@ -1456,6 +1643,31 @@ mod tests {
         p.draw_pixmap(RectF::new(0.0, 0.0, 50.0, 50.0), &src, None);
 
         assert!(dest.data().iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn clip_change_reuses_the_mask_buffer() {
+        let mut dest = Pixmap::new(64, 64).unwrap();
+        let mut p = Painter::begin(&mut dest);
+        let fill = |p: &mut Painter| p.fill_rect(RectF::new(0.0, 0.0, 64.0, 64.0), Color::WHITE);
+        p.set_clip_rect(RectF::new(0.0, 0.0, 32.0, 32.0));
+        fill(&mut p);
+        let first = p.cached_mask.as_ref().unwrap().data().as_ptr();
+        p.set_clip_rect(RectF::new(16.0, 16.0, 32.0, 32.0));
+        fill(&mut p);
+        let second = p.cached_mask.as_ref().unwrap().data().as_ptr();
+        assert_eq!(first, second, "a clip change must reuse the device-sized mask");
+        // Dropping the clip and setting another still reuses the same buffer.
+        p.state_mut().clip_rect = None;
+        fill(&mut p);
+        assert!(p.cached_mask.is_none());
+        p.set_clip_rect(RectF::new(8.0, 8.0, 8.0, 8.0));
+        fill(&mut p);
+        assert_eq!(first, p.cached_mask.as_ref().unwrap().data().as_ptr());
+        // Only the new clip's pixels are non-zero: the buffer was cleared where it was dirty.
+        let mask = p.cached_mask.as_ref().unwrap();
+        let covered = mask.data().iter().filter(|&&a| a != 0).count();
+        assert_eq!(covered, 8 * 8);
     }
 
     // -------------------------------------------------------------------------

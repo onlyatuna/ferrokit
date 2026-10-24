@@ -3,3 +3,5 @@ target/
 *.pdb
 *.obj
 .vscode/
+__pycache__/
+*.pyc

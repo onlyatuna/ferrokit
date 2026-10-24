@@ -6,6 +6,33 @@
 use crate::geometry::primitives::{PointF, RectF};
 use tiny_skia::Transform as SkiaTransform;
 
+/// Relative tolerance below which a determinant counts as zero.
+///
+/// Qt's `QTransform::inverted` tests `qFuzzyIsNull(det)`, an absolute `1e-12` on `double`, and
+/// `QMatrix4x4::inverted` tests `det == 0`; both wrongly reject tiny-scale matrices or accept
+/// ill-scaled ones when mapped onto `f32` storage. Comparing against the summed magnitude of the
+/// determinant's own terms is scale-invariant, so only genuine rank loss (cancellation to rounding
+/// noise of the `f32` inputs, about 1e-7 relative) is rejected.
+pub(crate) const SINGULAR_REL_EPS: f64 = 1e-6;
+
+/// `true` if `det` is zero relative to `magnitude` (the sum of absolute values of its terms) or not finite.
+#[inline]
+pub(crate) fn is_singular(det: f64, magnitude: f64) -> bool {
+    !det.is_finite() || !magnitude.is_finite() || det.abs() <= SINGULAR_REL_EPS * magnitude
+}
+
+/// Narrows to `f32`, returning `None` if any element is not finite (the inverse overflows `f32`).
+pub(crate) fn finite_f32<const N: usize>(v: &[f64; N]) -> Option<[f32; N]> {
+    let mut out = [0.0f32; N];
+    for (o, &x) in out.iter_mut().zip(v) {
+        *o = x as f32;
+        if !o.is_finite() {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 /// 2D affine transformation matrix.
 ///
 /// | sx  ky  0 |
@@ -174,20 +201,40 @@ impl Transform2D {
         RectF::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
 
-    /// Inverts the affine transform if invertible.
+    /// Inverts the affine transform if invertible (`QTransform::inverted`).
+    ///
+    /// Singularity is judged relative to the magnitude of the determinant's terms, so uniformly
+    /// tiny (or huge) but well-conditioned transforms invert. The determinant and inverse are
+    /// evaluated in `f64`, matching Qt's `qreal`.
     pub fn inverted(&self) -> Option<Self> {
-        let det = self.sx * self.sy - self.ky * self.kx;
-        if det.abs() < 1e-6 {
+        let (sx, ky, kx, sy, tx, ty) = (
+            self.sx as f64,
+            self.ky as f64,
+            self.kx as f64,
+            self.sy as f64,
+            self.tx as f64,
+            self.ty as f64,
+        );
+        let det = sx * sy - ky * kx;
+        if is_singular(det, (sx * sy).abs() + (ky * kx).abs()) {
             return None;
         }
         let inv_det = 1.0 / det;
-        Some(Self {
-            sx: self.sy * inv_det,
-            ky: -self.ky * inv_det,
-            kx: -self.kx * inv_det,
-            sy: self.sx * inv_det,
-            tx: (self.kx * self.ty - self.sy * self.tx) * inv_det,
-            ty: (self.ky * self.tx - self.sx * self.ty) * inv_det,
+        finite_f32(&[
+            sy * inv_det,
+            -ky * inv_det,
+            -kx * inv_det,
+            sx * inv_det,
+            (kx * ty - sy * tx) * inv_det,
+            (ky * tx - sx * ty) * inv_det,
+        ])
+        .map(|v| Self {
+            sx: v[0],
+            ky: v[1],
+            kx: v[2],
+            sy: v[3],
+            tx: v[4],
+            ty: v[5],
         })
     }
 
@@ -398,26 +445,48 @@ impl Transform {
             + self.m13 * (self.m21 * self.m32 - self.m22 * self.m31)
     }
 
-    /// Inverts the 3x3 matrix.
+    /// Inverts the 3x3 matrix (`QTransform::inverted`).
+    ///
+    /// Singularity is judged relative to the magnitude of the determinant's terms (see
+    /// [`Transform2D::inverted`]).
     pub fn inverted(&self) -> Option<Self> {
-        let det = self.determinant();
-        if det.abs() < 1e-8 {
+        let (m11, m12, m13) = (self.m11 as f64, self.m12 as f64, self.m13 as f64);
+        let (m21, m22, m23) = (self.m21 as f64, self.m22 as f64, self.m23 as f64);
+        let (m31, m32, m33) = (self.m31 as f64, self.m32 as f64, self.m33 as f64);
+
+        let c1 = m22 * m33 - m23 * m32;
+        let c2 = m21 * m33 - m23 * m31;
+        let c3 = m21 * m32 - m22 * m31;
+        let det = m11 * c1 - m12 * c2 + m13 * c3;
+        let magnitude = m11.abs() * ((m22 * m33).abs() + (m23 * m32).abs())
+            + m12.abs() * ((m21 * m33).abs() + (m23 * m31).abs())
+            + m13.abs() * ((m21 * m32).abs() + (m22 * m31).abs());
+        if is_singular(det, magnitude) {
             return None;
         }
         let inv = 1.0 / det;
 
-        Some(Self {
-            m11: (self.m22 * self.m33 - self.m23 * self.m32) * inv,
-            m12: (self.m13 * self.m32 - self.m12 * self.m33) * inv,
-            m13: (self.m12 * self.m23 - self.m13 * self.m22) * inv,
-
-            m21: (self.m23 * self.m31 - self.m21 * self.m33) * inv,
-            m22: (self.m11 * self.m33 - self.m13 * self.m31) * inv,
-            m23: (self.m13 * self.m21 - self.m11 * self.m23) * inv,
-
-            m31: (self.m21 * self.m32 - self.m22 * self.m31) * inv,
-            m32: (self.m12 * self.m31 - self.m11 * self.m32) * inv,
-            m33: (self.m11 * self.m22 - self.m12 * self.m21) * inv,
+        finite_f32(&[
+            c1 * inv,
+            (m13 * m32 - m12 * m33) * inv,
+            (m12 * m23 - m13 * m22) * inv,
+            (m23 * m31 - m21 * m33) * inv,
+            (m11 * m33 - m13 * m31) * inv,
+            (m13 * m21 - m11 * m23) * inv,
+            c3 * inv,
+            (m12 * m31 - m11 * m32) * inv,
+            (m11 * m22 - m12 * m21) * inv,
+        ])
+        .map(|v| Self {
+            m11: v[0],
+            m12: v[1],
+            m13: v[2],
+            m21: v[3],
+            m22: v[4],
+            m23: v[5],
+            m31: v[6],
+            m32: v[7],
+            m33: v[8],
         })
     }
 
@@ -445,10 +514,12 @@ impl Transform {
             let dx2 = q[3].x - q[2].x;
             let dy2 = q[3].y - q[2].y;
 
-            let det = dx1 * dy2 - dx2 * dy1;
-            if det.abs() < 1e-7 {
+            let det = dx1 as f64 * dy2 as f64 - dx2 as f64 * dy1 as f64;
+            let magnitude = (dx1 as f64 * dy2 as f64).abs() + (dx2 as f64 * dy1 as f64).abs();
+            if is_singular(det, magnitude) {
                 return None;
             }
+            let det = det as f32;
             let g = (dx3 * dy2 - dx2 * dy3) / det;
             let h = (dx1 * dy3 - dx3 * dy1) / det;
 

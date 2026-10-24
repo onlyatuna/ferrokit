@@ -575,22 +575,23 @@ impl Rect {
         self.y
     }
 
-    /// Exclusive right edge: `x + width`.
+    /// Exclusive right edge: `x + width`, saturating at `i32::MAX`.
     ///
     /// This is NOT `QRect::right()`, which is the inclusive last column `x + width - 1`.
-    /// The Qt-equivalent last column is `right() - 1`.
+    /// The Qt-equivalent last column is `right() - 1`. `QRect` computes `x + w - 1` in plain
+    /// `int` arithmetic, which is undefined on overflow; saturating keeps debug builds panic-free.
     #[inline]
     pub const fn right(&self) -> i32 {
-        self.x + self.width
+        self.x.saturating_add(self.width)
     }
 
-    /// Exclusive bottom edge: `y + height`.
+    /// Exclusive bottom edge: `y + height`, saturating at `i32::MAX`.
     ///
     /// This is NOT `QRect::bottom()`, which is the inclusive last row `y + height - 1`.
     /// The Qt-equivalent last row is `bottom() - 1`.
     #[inline]
     pub const fn bottom(&self) -> i32 {
-        self.y + self.height
+        self.y.saturating_add(self.height)
     }
 
     // Center
@@ -623,7 +624,10 @@ impl Rect {
     /// `Rect` is a half-open (exclusive-edge) type by design.
     #[inline]
     pub const fn center(&self) -> Point {
-        Point::new(self.x + self.width / 2, self.y + self.height / 2)
+        Point::new(
+            self.x.saturating_add(self.width / 2),
+            self.y.saturating_add(self.height / 2),
+        )
     }
 
     #[inline]
@@ -680,7 +684,7 @@ impl Rect {
         let r = self.right().min(other.right());
         let t = self.top().max(other.top());
         let b = self.bottom().min(other.bottom());
-        Rect::new(l, t, r - l, b - t)
+        Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
     }
 
     // Returns bounding union of two rectangles.
@@ -696,17 +700,17 @@ impl Rect {
         let r = self.right().max(other.right());
         let t = self.top().min(other.top());
         let b = self.bottom().max(other.bottom());
-        Rect::new(l, t, r - l, b - t)
+        Rect::new(l, t, r.saturating_sub(l), b.saturating_sub(t))
     }
 
     // Adjusts rectangle coordinates by deltas.
     #[inline]
     pub const fn adjusted(&self, dx1: i32, dy1: i32, dx2: i32, dy2: i32) -> Rect {
         Rect {
-            x: self.x + dx1,
-            y: self.y + dy1,
-            width: self.width + dx2 - dx1,
-            height: self.height + dy2 - dy1,
+            x: self.x.saturating_add(dx1),
+            y: self.y.saturating_add(dy1),
+            width: self.width.saturating_add(dx2).saturating_sub(dx1),
+            height: self.height.saturating_add(dy2).saturating_sub(dy1),
         }
     }
 
@@ -714,10 +718,10 @@ impl Rect {
     #[inline]
     pub const fn margins_added(&self, m: Margins) -> Rect {
         Rect {
-            x: self.x - m.left,
-            y: self.y - m.top,
-            width: self.width + m.left + m.right,
-            height: self.height + m.top + m.bottom,
+            x: self.x.saturating_sub(m.left),
+            y: self.y.saturating_sub(m.top),
+            width: self.width.saturating_add(m.left).saturating_add(m.right),
+            height: self.height.saturating_add(m.top).saturating_add(m.bottom),
         }
     }
 
@@ -725,18 +729,18 @@ impl Rect {
     #[inline]
     pub const fn margins_removed(&self, m: Margins) -> Rect {
         Rect {
-            x: self.x + m.left,
-            y: self.y + m.top,
-            width: self.width - m.left - m.right,
-            height: self.height - m.top - m.bottom,
+            x: self.x.saturating_add(m.left),
+            y: self.y.saturating_add(m.top),
+            width: self.width.saturating_sub(m.left).saturating_sub(m.right),
+            height: self.height.saturating_sub(m.top).saturating_sub(m.bottom),
         }
     }
 
     #[inline]
     pub const fn translated(&self, dx: i32, dy: i32) -> Rect {
         Rect {
-            x: self.x + dx,
-            y: self.y + dy,
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
             width: self.width,
             height: self.height,
         }

@@ -12,8 +12,38 @@ use crate::text::font_metrics::FontMetrics;
 use crate::text::format::FormatRange;
 use crate::text::line::{Edge, TextLine};
 use crate::text::position::TextPosition;
+use std::sync::Arc;
 use tiny_skia::Color;
 use unicode_segmentation::UnicodeSegmentation;
+
+/// The text plus pre-edit as one string with the byte offset of every grapheme, built once per
+/// layout run so `create_line` does not rebuild and re-segment it for every line.
+#[derive(Debug)]
+struct CompositeText {
+    text: String,
+    /// Byte offset where each grapheme starts, followed by `text.len()`.
+    starts: Vec<usize>,
+}
+
+impl CompositeText {
+    fn grapheme_count(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    fn grapheme(&self, index: usize) -> &str {
+        &self.text[self.starts[index]..self.starts[index + 1]]
+    }
+}
+
+/// Lazily built [`CompositeText`]; a cache, so it never takes part in layout equality.
+#[derive(Debug, Clone, Default)]
+struct CompositeCache(Option<Arc<CompositeText>>);
+
+impl PartialEq for CompositeCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
 
 /// Multi-line text layout engine (`QTextLayout`).
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +67,8 @@ pub struct TextLayout {
     position: PointF,
     /// Internal layout iterator state for `create_line()`.
     layout_cursor: usize,
+    /// Composite text of the layout in progress; reset by every change that restarts layout.
+    composite: CompositeCache,
 }
 
 impl TextLayout {
@@ -53,6 +85,7 @@ impl TextLayout {
             lines: Vec::new(),
             position: PointF::new(0.0, 0.0),
             layout_cursor: 0,
+            composite: CompositeCache::default(),
         }
     }
 
@@ -137,18 +170,19 @@ impl TextLayout {
     pub fn clear_layout(&mut self) {
         self.lines.clear();
         self.layout_cursor = 0;
+        self.composite = CompositeCache::default();
     }
 
     /// Begins line-by-line layout.
     pub fn begin_layout(&mut self) {
-        self.lines.clear();
-        self.layout_cursor = 0;
+        self.clear_layout();
     }
 
     /// Produces the next `TextLine` from the layout, wrapping words if necessary.
     pub fn create_line(&mut self) -> Option<TextLine> {
-        let full_text = self.composite_text();
-        let total_graphemes = full_text.graphemes(true).count();
+        let composite = self.composite();
+        let full_text = composite.text.as_str();
+        let total_graphemes = composite.grapheme_count();
 
         if self.layout_cursor >= total_graphemes && !full_text.is_empty() {
             return None;
@@ -180,7 +214,7 @@ impl TextLayout {
         let metrics = FontMetrics::from_font(&self.font);
         let max_width = self.wrap_width.unwrap_or(f32::MAX);
 
-        let grapheme_list: Vec<&str> = full_text.graphemes(true).collect();
+        // `layout_cursor < total_graphemes` here, so `starts` has an entry for it.
         let line_start_grapheme = self.layout_cursor;
 
         let mut curr_grapheme = line_start_grapheme;
@@ -189,15 +223,12 @@ impl TextLayout {
         let mut last_break_grapheme = None;
         let mut last_break_advances_len = 0;
 
-        let mut byte_start = 0;
-        for g in &grapheme_list[..line_start_grapheme] {
-            byte_start += g.len();
-        }
+        let byte_start = composite.starts[line_start_grapheme];
 
         let mut line_bytes = 0;
 
         while curr_grapheme < total_graphemes {
-            let g = grapheme_list[curr_grapheme];
+            let g = composite.grapheme(curr_grapheme);
             if g == "\n" {
                 // Hard line break
                 curr_grapheme += 1;
@@ -214,10 +245,7 @@ impl TextLayout {
                         curr_grapheme = break_pos;
                         advances.truncate(last_break_advances_len);
                         // Recompute byte count up to break_pos
-                        line_bytes = grapheme_list[line_start_grapheme..curr_grapheme]
-                            .iter()
-                            .map(|s| s.len())
-                            .sum();
+                        line_bytes = composite.starts[curr_grapheme] - byte_start;
                         break;
                     }
                 }
@@ -415,8 +443,24 @@ impl TextLayout {
         }
     }
 
+    /// The composite text for the layout in progress, built on first use after the layout was
+    /// (re)started.
+    fn composite(&mut self) -> Arc<CompositeText> {
+        if let Some(cached) = &self.composite.0 {
+            return Arc::clone(cached);
+        }
+        let text = self.composite_text();
+        let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        starts.push(text.len());
+        let built = Arc::new(CompositeText { text, starts });
+        self.composite.0 = Some(Arc::clone(&built));
+        built
+    }
+
     /// Produces combined text including preedit IME text.
     fn composite_text(&self) -> String {
+        #[cfg(test)]
+        tests::COMPOSITE_BUILDS.with(|c| c.set(c.get() + 1));
         if self.preedit_text.is_empty() {
             return self.text.clone();
         }
@@ -433,3 +477,38 @@ impl TextLayout {
 
 /// Canonical Qt alias.
 pub type QTextLayout = TextLayout;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// `composite_text` calls on this thread.
+        pub(super) static COMPOSITE_BUILDS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn do_layout_builds_the_composite_text_once() {
+        let mut layout = TextLayout::new("one\ntwo\nthree\nfour\nfive", Font::new("Segoe UI", 12.0));
+        layout.set_preedit_area(3, "ime");
+        COMPOSITE_BUILDS.with(|c| c.set(0));
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 5);
+        assert_eq!(COMPOSITE_BUILDS.with(Cell::get), 1, "one composite per layout, not per line");
+    }
+
+    #[test]
+    fn cached_composite_text_follows_text_and_preedit_changes() {
+        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 2);
+        layout.set_text("ab\ncd\nef");
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 3);
+        layout.set_preedit_area(2, "X\nY");
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 4);
+        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\\n\"");
+    }
+}

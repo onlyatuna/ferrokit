@@ -8,112 +8,208 @@
 use super::primitives::{Point, Rect};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Sub, SubAssign};
 
-/// Subtracts rectangle `b` from rectangle `a`, writing 0 to 4 disjoint remainder rectangles into `out`.
-fn subtract_rect(a: &Rect, b: &Rect, out: &mut Vec<Rect>) {
-    if a.is_empty() {
-        return;
-    }
-    if b.is_empty() || !a.intersects(b) {
-        out.push(*a);
-        return;
-    }
+// --- Band sweep -------------------------------------------------------------------------------
+//
+// Every boolean operation is a single scanline sweep. The y-edges of all input rectangles split
+// the plane into horizontal bands; inside a band the inputs reduce to sorted x-spans, which are
+// combined per operation. Adjacent bands with identical spans are merged, so the result is the
+// canonical decomposition of the area (maximal horizontal runs, maximal vertical merging, ordered
+// by y then x). Cost is `O(n log n)` for sorting plus the size of the swept bands, instead of the
+// pairwise merge loops this replaced.
+//
+// Rectangles are interpreted through half-open edges that saturate at `i32::MAX`, so degenerate
+// extents (`x + width > i32::MAX`) never overflow. A single output rect also cannot be wider than
+// `i32::MAX`; a span that long (from `i32::MIN` to `i32::MAX`) is clipped to `i32::MAX` wide.
 
-    let a_left = a.x;
-    let a_top = a.y;
-    let a_right = a.x + a.width;
-    let a_bottom = a.y + a.height;
+/// Per-band set operation.
+#[derive(Clone, Copy)]
+enum Op {
+    Union,
+    Intersect,
+    Subtract,
+    Xor,
+}
 
-    let b_left = b.x;
-    let b_top = b.y;
-    let b_right = b.x + b.width;
-    let b_bottom = b.y + b.height;
-
-    // If b completely covers a, remainder is empty
-    if b_left <= a_left && b_right >= a_right && b_top <= a_top && b_bottom >= a_bottom {
-        return;
-    }
-
-    // Top slice
-    if b_top > a_top {
-        out.push(Rect::new(a_left, a_top, a.width, b_top - a_top));
-    }
-
-    // Bottom slice
-    if b_bottom < a_bottom {
-        out.push(Rect::new(a_left, b_bottom, a.width, a_bottom - b_bottom));
-    }
-
-    // Middle vertical span (clamped to a's top and bottom)
-    let mid_top = a_top.max(b_top);
-    let mid_bottom = a_bottom.min(b_bottom);
-    let mid_height = mid_bottom - mid_top;
-
-    if mid_height > 0 {
-        // Left slice
-        if b_left > a_left {
-            out.push(Rect::new(a_left, mid_top, b_left - a_left, mid_height));
-        }
-
-        // Right slice
-        if b_right < a_right {
-            out.push(Rect::new(b_right, mid_top, a_right - b_right, mid_height));
+impl Op {
+    #[inline]
+    fn apply(self, a: bool, b: bool) -> bool {
+        match self {
+            Op::Union => a || b,
+            Op::Intersect => a && b,
+            Op::Subtract => a && !b,
+            Op::Xor => a != b,
         }
     }
 }
 
-/// Coalesces adjacent rectangles sharing the same x/width or y/height.
-fn coalesce_rects(rects: &mut Vec<Rect>) {
-    if rects.len() <= 1 {
-        return;
+/// Half-open edges `[x0, x1) x [y0, y1)` with `x0 < x1` and `y0 < y1`.
+#[derive(Clone, Copy)]
+struct Edges {
+    x0: i32,
+    x1: i32,
+    y0: i32,
+    y1: i32,
+}
+
+/// Edges of `r`, or `None` when it covers no pixel. Right/bottom saturate at `i32::MAX`.
+fn edges(r: &Rect) -> Option<Edges> {
+    if r.width <= 0 || r.height <= 0 {
+        return None;
     }
+    let x1 = r.x.saturating_add(r.width);
+    let y1 = r.y.saturating_add(r.height);
+    (x1 > r.x && y1 > r.y).then_some(Edges {
+        x0: r.x,
+        x1,
+        y0: r.y,
+        y1,
+    })
+}
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let mut i = 0;
-        while i < rects.len() {
-            let mut j = i + 1;
-            while j < rects.len() {
-                let r1 = rects[i];
-                let r2 = rects[j];
+/// Length of `[a, b)` clipped to `i32::MAX`.
+#[inline]
+fn span(a: i32, b: i32) -> i32 {
+    (b as i64 - a as i64).min(i32::MAX as i64) as i32
+}
 
-                // Merge vertically if same x and width and touching
-                if r1.x == r2.x && r1.width == r2.width {
-                    if r1.y + r1.height == r2.y {
-                        rects[i].height += r2.height;
-                        rects.swap_remove(j);
-                        changed = true;
-                        continue;
-                    } else if r2.y + r2.height == r1.y {
-                        rects[i].y = r2.y;
-                        rects[i].height += r2.height;
-                        rects.swap_remove(j);
-                        changed = true;
-                        continue;
-                    }
-                }
+#[inline]
+fn rect_from_edges(x0: i32, x1: i32, y0: i32, y1: i32) -> Rect {
+    Rect::new(x0, y0, span(x0, x1), span(y0, y1))
+}
 
-                // Merge horizontally if same y and height and touching
-                if r1.y == r2.y && r1.height == r2.height {
-                    if r1.x + r1.width == r2.x {
-                        rects[i].width += r2.width;
-                        rects.swap_remove(j);
-                        changed = true;
-                        continue;
-                    } else if r2.x + r2.width == r1.x {
-                        rects[i].x = r2.x;
-                        rects[i].width += r2.width;
-                        rects.swap_remove(j);
-                        changed = true;
-                        continue;
-                    }
-                }
+/// One input operand of the sweep: its rectangles sorted by top edge plus the currently active set.
+struct Side {
+    edges: Vec<Edges>,
+    next: usize,
+    active: Vec<Edges>,
+}
 
-                j += 1;
-            }
-            i += 1;
+impl Side {
+    fn new(rects: &[Rect]) -> Self {
+        let mut edges: Vec<Edges> = rects.iter().filter_map(edges).collect();
+        edges.sort_unstable_by_key(|e| e.y0);
+        Self {
+            edges,
+            next: 0,
+            active: Vec::new(),
         }
     }
+
+    /// Moves the sweep to the band starting at `y`.
+    fn advance(&mut self, y: i32) {
+        self.active.retain(|e| e.y1 > y);
+        while self.next < self.edges.len() && self.edges[self.next].y0 <= y {
+            self.active.push(self.edges[self.next]);
+            self.next += 1;
+        }
+    }
+
+    /// Writes the union of the active rects as sorted, disjoint, non-touching x-spans.
+    fn spans(&mut self, out: &mut Vec<(i32, i32)>) {
+        out.clear();
+        self.active.sort_unstable_by_key(|e| e.x0);
+        for e in &self.active {
+            match out.last_mut() {
+                Some(last) if e.x0 <= last.1 => last.1 = last.1.max(e.x1),
+                _ => out.push((e.x0, e.x1)),
+            }
+        }
+    }
+}
+
+/// Applies `op` to two span lists (each sorted, disjoint, non-touching), merging touching output spans.
+fn combine_spans(a: &[(i32, i32)], b: &[(i32, i32)], op: Op, out: &mut Vec<(i32, i32)>) {
+    #[inline]
+    fn boundary(list: &[(i32, i32)], k: usize) -> Option<i32> {
+        list.get(k / 2).map(|s| if k % 2 == 0 { s.0 } else { s.1 })
+    }
+
+    out.clear();
+    let (mut ia, mut ib) = (0, 0);
+    let (mut in_a, mut in_b) = (false, false);
+    let mut start = None;
+    loop {
+        let (xa, xb) = (boundary(a, ia), boundary(b, ib));
+        let x = match (xa, xb) {
+            (None, None) => break,
+            (Some(x), None) | (None, Some(x)) => x,
+            (Some(p), Some(q)) => p.min(q),
+        };
+        if xa == Some(x) {
+            in_a = !in_a;
+            ia += 1;
+        }
+        if xb == Some(x) {
+            in_b = !in_b;
+            ib += 1;
+        }
+        match (start, op.apply(in_a, in_b)) {
+            (None, true) => start = Some(x),
+            (Some(s), false) => {
+                out.push((s, x));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+struct Band {
+    y0: i32,
+    y1: i32,
+    spans: Vec<(i32, i32)>,
+}
+
+/// Canonical rectangles of `op(a, b)`. Operands may overlap internally (their union is used).
+fn combine(a: &[Rect], b: &[Rect], op: Op) -> Vec<Rect> {
+    let mut sa = Side::new(a);
+    let mut sb = Side::new(b);
+    if sa.edges.is_empty() && sb.edges.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ys: Vec<i32> = sa
+        .edges
+        .iter()
+        .chain(&sb.edges)
+        .flat_map(|e| [e.y0, e.y1])
+        .collect();
+    ys.sort_unstable();
+    ys.dedup();
+
+    let mut bands: Vec<Band> = Vec::new();
+    let (mut spans_a, mut spans_b, mut spans_out) = (Vec::new(), Vec::new(), Vec::new());
+    for w in ys.windows(2) {
+        let (y0, y1) = (w[0], w[1]);
+        sa.advance(y0);
+        sb.advance(y0);
+        if sa.active.is_empty() && sb.active.is_empty() {
+            continue;
+        }
+        sa.spans(&mut spans_a);
+        sb.spans(&mut spans_b);
+        combine_spans(&spans_a, &spans_b, op, &mut spans_out);
+        if spans_out.is_empty() {
+            continue;
+        }
+        match bands.last_mut() {
+            Some(last) if last.y1 == y0 && last.spans == spans_out => last.y1 = y1,
+            _ => bands.push(Band {
+                y0,
+                y1,
+                spans: std::mem::take(&mut spans_out),
+            }),
+        }
+    }
+
+    bands
+        .iter()
+        .flat_map(|band| {
+            band.spans
+                .iter()
+                .map(move |&(x0, x1)| rect_from_edges(x0, x1, band.y0, band.y1))
+        })
+        .collect()
 }
 
 /// 2D Region composed of non-overlapping rectangles (`QRegion`).
@@ -131,7 +227,7 @@ impl PartialEq for Region {
             return true;
         }
         // Rects within a region are disjoint, so equal area plus empty difference means equal sets.
-        let area = |r: &Region| r.rects.iter().map(|r| r.width as i64 * r.height as i64).sum::<i64>();
+        let area = |r: &Region| r.rects.iter().map(|r| r.width as i128 * r.height as i128).sum::<i128>();
         area(self) == area(other) && self.subtracted(other).is_empty()
     }
 }
@@ -170,10 +266,11 @@ impl Region {
 
     /// Constructs a region from a single rectangle.
     pub fn from_rect(r: Rect) -> Self {
-        if r.is_empty() || r.width <= 0 || r.height <= 0 {
-            Self::new()
-        } else {
-            Self { rects: vec![r] }
+        match edges(&r) {
+            Some(e) => Self {
+                rects: vec![rect_from_edges(e.x0, e.x1, e.y0, e.y1)],
+            },
+            None => Self::new(),
         }
     }
 
@@ -184,11 +281,9 @@ impl Region {
 
     /// Constructs a region by uniting multiple rectangles.
     pub fn from_rects(rects: &[Rect]) -> Self {
-        let mut r = Self::new();
-        for &rect in rects {
-            r = r.united_rect(&rect);
+        Self {
+            rects: combine(rects, &[], Op::Union),
         }
-        r
     }
 
     /// Returns `true` if the region contains no area.
@@ -215,29 +310,15 @@ impl Region {
             return Rect::default();
         }
 
-        let mut min_x = self.rects[0].x;
-        let mut min_y = self.rects[0].y;
-        let mut max_x = self.rects[0].x + self.rects[0].width;
-        let mut max_y = self.rects[0].y + self.rects[0].height;
-
-        for r in &self.rects[1..] {
-            if r.x < min_x {
-                min_x = r.x;
-            }
-            if r.y < min_y {
-                min_y = r.y;
-            }
-            let right = r.x + r.width;
-            let bottom = r.y + r.height;
-            if right > max_x {
-                max_x = right;
-            }
-            if bottom > max_y {
-                max_y = bottom;
-            }
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for r in &self.rects {
+            min_x = min_x.min(r.x);
+            min_y = min_y.min(r.y);
+            max_x = max_x.max(r.right());
+            max_y = max_y.max(r.bottom());
         }
 
-        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+        Rect::new(min_x, min_y, span(min_x, max_x), span(min_y, max_y))
     }
 
     /// Returns whether the point is contained within the region.
@@ -257,14 +338,7 @@ impl Region {
 
     /// Returns whether the region intersects with another region.
     pub fn intersects(&self, other: &Region) -> bool {
-        for r1 in &self.rects {
-            for r2 in &other.rects {
-                if r1.intersects(r2) {
-                    return true;
-                }
-            }
-        }
-        false
+        !combine(&self.rects, &other.rects, Op::Intersect).is_empty()
     }
 
     /// Returns whether the region intersects with a rectangle.
@@ -277,10 +351,21 @@ impl Region {
 
     /// Translates all rectangles by (dx, dy).
     pub fn translate(&mut self, dx: i32, dy: i32) {
-        for r in &mut self.rects {
-            r.x += dx;
-            r.y += dy;
-        }
+        // Edges clamp to the i32 range; rects pushed entirely out of range vanish.
+        let shift = |lo: i32, hi: i32, d: i32| {
+            let clamp = |v: i64| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+            (clamp(lo as i64 + d as i64), clamp(hi as i64 + d as i64))
+        };
+        self.rects.retain_mut(|r| {
+            let Some(e) = edges(r) else { return false };
+            let (x0, x1) = shift(e.x0, e.x1, dx);
+            let (y0, y1) = shift(e.y0, e.y1, dy);
+            if x1 <= x0 || y1 <= y0 {
+                return false;
+            }
+            *r = rect_from_edges(x0, x1, y0, y1);
+            true
+        });
     }
 
     /// Returns a translated copy of the region.
@@ -294,108 +379,51 @@ impl Region {
 
     /// Subtracts rectangle `other` from this region (`self - other`).
     pub fn subtracted_rect(&self, other: &Rect) -> Self {
-        if self.is_empty() || other.is_empty() {
-            return self.clone();
+        Self {
+            rects: combine(&self.rects, std::slice::from_ref(other), Op::Subtract),
         }
-
-        let mut result = Vec::new();
-        for r in &self.rects {
-            subtract_rect(r, other, &mut result);
-        }
-        coalesce_rects(&mut result);
-        Self { rects: result }
     }
 
     /// Subtracts `other` region from this region (`self - other`).
     pub fn subtracted(&self, other: &Region) -> Self {
-        if self.is_empty() || other.is_empty() {
-            return self.clone();
+        Self {
+            rects: combine(&self.rects, &other.rects, Op::Subtract),
         }
-
-        let mut current = self.clone();
-        for r in &other.rects {
-            current = current.subtracted_rect(r);
-            if current.is_empty() {
-                break;
-            }
-        }
-        current
     }
 
     /// Intersects this region with a rectangle (`self & other`).
     pub fn intersected_rect(&self, other: &Rect) -> Self {
-        if self.is_empty() || other.is_empty() {
-            return Self::new();
+        Self {
+            rects: combine(&self.rects, std::slice::from_ref(other), Op::Intersect),
         }
-
-        let mut result = Vec::new();
-        for r in &self.rects {
-            let inter = r.intersected(other);
-            if !inter.is_empty() && inter.width > 0 && inter.height > 0 {
-                result.push(inter);
-            }
-        }
-        coalesce_rects(&mut result);
-        Self { rects: result }
     }
 
     /// Intersects this region with another region (`self & other`).
     pub fn intersected(&self, other: &Region) -> Self {
-        if self.is_empty() || other.is_empty() {
-            return Self::new();
+        Self {
+            rects: combine(&self.rects, &other.rects, Op::Intersect),
         }
-
-        let mut result = Vec::new();
-        for r1 in &self.rects {
-            for r2 in &other.rects {
-                let inter = r1.intersected(r2);
-                if !inter.is_empty() && inter.width > 0 && inter.height > 0 {
-                    result.push(inter);
-                }
-            }
-        }
-        coalesce_rects(&mut result);
-        Self { rects: result }
     }
 
     /// Unites this region with a rectangle (`self | other`).
     pub fn united_rect(&self, other: &Rect) -> Self {
-        if other.is_empty() || other.width <= 0 || other.height <= 0 {
-            return self.clone();
+        Self {
+            rects: combine(&self.rects, std::slice::from_ref(other), Op::Union),
         }
-        if self.is_empty() {
-            return Self::from_rect(*other);
-        }
-
-        // other - self gives the disjoint additions
-        let addition = Region::from_rect(*other).subtracted(self);
-        let mut new_rects = self.rects.clone();
-        new_rects.extend(addition.rects);
-        coalesce_rects(&mut new_rects);
-        Self { rects: new_rects }
     }
 
     /// Unites this region with another region (`self | other`).
     pub fn united(&self, other: &Region) -> Self {
-        if other.is_empty() {
-            return self.clone();
+        Self {
+            rects: combine(&self.rects, &other.rects, Op::Union),
         }
-        if self.is_empty() {
-            return other.clone();
-        }
-
-        let addition = other.subtracted(self);
-        let mut new_rects = self.rects.clone();
-        new_rects.extend(addition.rects);
-        coalesce_rects(&mut new_rects);
-        Self { rects: new_rects }
     }
 
     /// Symmetric difference / XOR of two regions (`self ^ other`).
     pub fn xored(&self, other: &Region) -> Self {
-        let diff1 = self.subtracted(other);
-        let diff2 = other.subtracted(self);
-        diff1.united(&diff2)
+        Self {
+            rects: combine(&self.rects, &other.rects, Op::Xor),
+        }
     }
 }
 
