@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # `labeled` lets adding the `miri` label start the Miri sweep on an open PR.
+    # `labeled` lets adding `miri` (run the affected crates) or `miri-full` (run every crate) start the sweep.
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
   schedule:
@@ -138,50 +138,18 @@ jobs:
       - id: diff
         env:
           EVENT: ${{ github.event_name }}
-          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'miri') }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: |
-          # Decide which crates' Miri shards to run. Dependents follow their dependencies:
-          # core -> gui -> widgets. Nightly and manual runs cover every crate; a PR runs only the
-          # crates its changed paths affect. The `miri` label runs the crates derived from the
-          # paths (all of them when none are derived). Pushes to main rely on the nightly run.
-          core=false; gui=false; widgets=false
-          all() { core=true; gui=true; widgets=true; }
-          case "$EVENT" in
-            schedule|workflow_dispatch) all;;
-            pull_request)
-              changed=$(git diff --name-only "$BASE" "$HEAD")
-              while IFS= read -r f; do
-                case "$f" in
-                  crates/ferrokit-core/*|tools/miri_baseline.json) core=true; gui=true; widgets=true;;
-                  crates/ferrokit-gui/*|tools/miri_baseline_ferrokit_gui.json) gui=true; widgets=true;;
-                  crates/ferrokit-widgets/*|crates/ferrokit-platform/*|tools/miri_baseline_ferrokit_widgets.json) widgets=true;;
-                  tools/miri_*|tools/test_miri_*|crates/ferrokit-derive/*|.cargo/*|.github/workflows/ci.yml|Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml) all;;
-                esac
-              done <<< "$changed"
-              if [ "$HAS_LABEL" = true ] && [ $core = false ] && [ $gui = false ] && [ $widgets = false ]; then
-                all
-              fi;;
-          esac
-          include=""
-          add() { include="${include:+$include,}{\"crate\":\"$1\",\"baseline\":\"$2\",\"model\":\"$3\",\"shard\":$4,\"shards\":$5}"; }
-          for model in SB TB; do
-            if [ $core = true ]; then
-              add ferrokit-core tools/miri_baseline.json $model 1 2
-              add ferrokit-core tools/miri_baseline.json $model 2 2
-            fi
-            if [ $gui = true ]; then
-              add ferrokit-gui tools/miri_baseline_ferrokit_gui.json $model 1 1
-            fi
-            if [ $widgets = true ]; then
-              add ferrokit-widgets tools/miri_baseline_ferrokit_widgets.json $model 1 2
-              add ferrokit-widgets tools/miri_baseline_ferrokit_widgets.json $model 2 2
-            fi
-          done
-          if [ -n "$include" ]; then run=true; else run=false; fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-          echo "matrix={\"include\":[$include]}" >> "$GITHUB_OUTPUT"
+          # tools/miri_scope.py maps changed paths to the crates whose Miri shards must run and
+          # prints the shard matrix. Only pull requests have a base to diff against.
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only "$BASE" "$HEAD" > changed.txt
+          else
+            : > changed.txt
+          fi
+          python3 tools/miri_scope.py --event "$EVENT" --labels-json "$LABELS" < changed.txt >> "$GITHUB_OUTPUT"
 
   miri-shard:
     needs: miri-changes
