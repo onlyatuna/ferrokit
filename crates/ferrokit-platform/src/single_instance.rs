@@ -47,9 +47,9 @@ pub struct SingleInstanceGuard {
     #[cfg(not(windows))]
     socket_path: Option<std::path::PathBuf>,
     #[cfg(not(windows))]
-    lock_path: Option<std::path::PathBuf>,
-    #[cfg(not(windows))]
     listener_stop: Arc<AtomicBool>,
+    #[cfg(not(windows))]
+    listener_thread: Option<std::thread::JoinHandle<()>>,
     command_callbacks: Arc<Mutex<Vec<CommandCallback>>>,
 }
 
@@ -94,12 +94,18 @@ impl Drop for SingleInstanceGuard {
         #[cfg(not(windows))]
         {
             self.listener_stop.store(true, Ordering::SeqCst);
+            // Join so no callback fires after the guard is gone (skip if dropped from a callback).
+            if let Some(t) = self.listener_thread.take() {
+                if t.thread().id() != std::thread::current().id() {
+                    let _ = t.join();
+                }
+            }
             if let Some(sock) = &self.socket_path {
                 let _ = std::fs::remove_file(sock);
             }
-            if let Some(lock) = &self.lock_path {
-                let _ = std::fs::remove_file(lock);
-            }
+            // The lock file is deliberately left in place: unlinking it while the flock is held
+            // lets a new instance lock the old inode while a third creates a fresh file, giving
+            // two primaries. An unlocked leftover file is harmless; flock is the source of truth.
         }
     }
 }
@@ -254,6 +260,7 @@ impl SingleInstance {
         // Bind UnixListener
         let listener_stop = Arc::new(AtomicBool::new(false));
         let command_callbacks: Arc<Mutex<Vec<CommandCallback>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut listener_thread = None;
 
         if let Ok(listener) = UnixListener::bind(&socket_path) {
             let _ = listener.set_nonblocking(true);
@@ -261,10 +268,16 @@ impl SingleInstance {
             let callbacks = Arc::clone(&command_callbacks);
 
             // Background polling thread for IPC listener
-            std::thread::spawn(move || {
+            listener_thread = Some(std::thread::spawn(move || {
                 while !stop_flag.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
+                            // The accepted socket can inherit O_NONBLOCK (macOS); make it
+                            // blocking with a deadline so neither a late byte nor a silent
+                            // client breaks the listener.
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream
+                                .set_read_timeout(Some(std::time::Duration::from_millis(500)));
                             let mut buf = [0u8; 1];
                             if stream.read_exact(&mut buf).is_ok() {
                                 if let Some(cmd) = SingleInstanceCommand::from_u8(buf[0]) {
@@ -278,17 +291,22 @@ impl SingleInstance {
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
-                        Err(_) => break,
+                        Err(_) => {
+                            if stop_flag.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
                     }
                 }
-            });
+            }));
         }
 
         SingleInstanceResult::Primary(SingleInstanceGuard {
             lock_file: Some(file),
             socket_path: Some(socket_path),
-            lock_path: Some(lock_path),
             listener_stop,
+            listener_thread,
             command_callbacks,
         })
     }

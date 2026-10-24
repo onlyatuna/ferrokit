@@ -28,9 +28,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, DestroyWindow, GetCursorPos, RegisterClassExW, RegisterWindowMessageW,
     SetForegroundWindow, TrackPopupMenuEx, HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED,
     MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSEXW,
+    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WNDCLASSEXW,
 };
 
+/// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
+#[cfg(windows)]
+const NIN_KEYSELECT: u32 = NIN_SELECT | 0x1;
 pub const WM_TRAY_CALLBACK: u32 = 0x8000 + 101;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,7 +292,10 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         } else if msg == WM_TRAY_CALLBACK {
             let event_type = (lparam & 0xFFFF) as u32;
             match event_type {
-                NIN_SELECT | WM_LBUTTONUP => {
+                // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
+                // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
+                // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
+                NIN_SELECT | NIN_KEYSELECT => {
                     // The release that ends a double click is not a click (Qt:
                     // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
                     if tray().ignore_next_release.replace(false) {
@@ -305,7 +311,7 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     activated.emit(&TrayActivation::DoubleClick);
                     return 0;
                 }
-                WM_RBUTTONUP | WM_CONTEXTMENU => {
+                WM_CONTEXTMENU => {
                     let mut pt = POINT { x: 0, y: 0 };
                     GetCursorPos(&mut pt);
                     let pos = crate::screen::native_cursor_to_logical(Point::new(pt.x, pt.y));
@@ -1016,22 +1022,7 @@ mod tests {
             }
         });
 
-        // Simulate Win32 taskbar callback with WM_LBUTTONUP
-        unsafe {
-            SendMessageW(
-                tray.hwnd(),
-                WM_TRAY_CALLBACK,
-                0,
-                windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP as isize,
-            );
-        }
-
-        assert!(
-            activated_called.load(Ordering::SeqCst),
-            "receiving WM_LBUTTONUP should trigger on_activated signal"
-        );
-        // Simulate Windows 7+ NIN_SELECT notification triggering Trigger
-        activated_called.store(false, Ordering::SeqCst);
+        // Simulate the shell's NIN_SELECT notification triggering Trigger
         unsafe {
             SendMessageW(tray.hwnd(), WM_TRAY_CALLBACK, 0, NIN_SELECT as isize);
         }

@@ -199,3 +199,40 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
         seen.lock()
     );
 }
+
+/// Ending a running composition clears the preedit with an empty event
+/// (`QWindowsInputContext::endComposition`); an end without a start sends nothing.
+#[test]
+fn ending_an_ime_composition_clears_the_preedit() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
+    };
+    let mut win = window("ImeEnd");
+    let hwnd = win.native_handle() as HWND;
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
+        sink.lock().push(ev);
+    })));
+    let count = || {
+        seen.lock()
+            .iter()
+            .filter(|e| matches!(e, WindowSystemEvent::InputMethod { .. }))
+            .count()
+    };
+    unsafe {
+        SendMessageW(hwnd, WM_IME_COMPOSITION, 0, 0);
+        SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
+    }
+    assert_eq!(count(), 0, "lparam 0 and an unstarted end send nothing");
+    unsafe {
+        SendMessageW(hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
+        SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
+    }
+    assert_eq!(count(), 1, "a started composition ends with one empty event");
+    assert!(seen.lock().iter().any(|e| matches!(
+        e,
+        WindowSystemEvent::InputMethod { commit_string, preedit_string, .. }
+            if commit_string.is_empty() && preedit_string.is_empty()
+    )));
+}

@@ -521,8 +521,20 @@ pub mod cocoa_screen {
 
         pub fn primary() -> Self {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
-            let main_screen =
-                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("mainScreen")) };
+            // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen
+            // (the primary is the CGDisplayIsMain display, which is screens[0]).
+            let screens_array =
+                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
+            let main_screen = if screens_array.is_nil()
+                || unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) }
+                    == 0
+            {
+                Id::NIL
+            } else {
+                unsafe {
+                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
+                }
+            };
             if !main_screen.is_nil() {
                 let frame =
                     unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };

@@ -106,6 +106,13 @@ pub struct CocoaNativeWindow {
 // Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
 // thread, and the boxed `WindowSystemEventHandler` has no thread-safety bound.
 
+/// Backing-surface extent for a window dimension. Qt accepts empty and negative window sizes,
+/// so they get a 1px surface (the buffer cannot be empty) instead of failing after the NSWindow
+/// is already allocated.
+fn surface_dim(v: i32) -> u32 {
+    v.max(1) as u32
+}
+
 impl CocoaNativeWindow {
     pub fn new(title: &str, rect: Rect, flags: WindowFlags) -> Result<Self, &'static str> {
         ThreadContext::assert_main_thread("CocoaNativeWindow::new");
@@ -183,11 +190,19 @@ impl CocoaNativeWindow {
             unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true) };
         }
 
-        let surface = CocoaLayerSurface::new(
+        let surface = match CocoaLayerSurface::new(
             layer.as_ptr() as usize,
-            rect.width as u32,
-            rect.height as u32,
-        )?;
+            surface_dim(rect.width),
+            surface_dim(rect.height),
+        ) {
+            Ok(surface) => surface,
+            Err(err) => {
+                // Nothing owns the window yet: undo the `alloc`/`init` and the view's +1.
+                unsafe { ObjcMsg::send_0(ns_view, Sel::register("release")) };
+                unsafe { ObjcMsg::send_0(ns_window, Sel::register("release")) };
+                return Err(err);
+            }
+        };
 
         Ok(Self {
             ns_window,
@@ -394,7 +409,7 @@ impl CocoaNativeWindow {
             CocoaNativeEvent::WindowResized { width, height } => {
                 self.geometry.width = width as i32;
                 self.geometry.height = height as i32;
-                let _ = self.surface.resize(width as u32, height as u32);
+                let _ = self.surface.resize(surface_dim(width as i32), surface_dim(height as i32));
                 handler.handle_window_event(WindowSystemEvent::Resize {
                     size: Size::new(width as i32, height as i32),
                 });
@@ -458,7 +473,9 @@ impl PlatformWindow for CocoaNativeWindow {
                 true,
             )
         };
-        let _ = self.surface.resize(rect.width as u32, rect.height as u32);
+        let _ = self
+            .surface
+            .resize(surface_dim(rect.width), surface_dim(rect.height));
     }
 
     fn set_stays_on_top(&mut self, enabled: bool) {
