@@ -216,6 +216,11 @@ impl ImageReader {
             .ok_or("Missing PPM max_val")?
             .parse()
             .map_err(|e| format!("{e}"))?;
+        // Qt's read_pbm_header rejects `w <= 0 || w > 32767 || h <= 0 || h > 32767 || mcc == 0`;
+        // without the zero check a 0 x 4294967295 header spins through billions of empty rows.
+        if !(1..=32767).contains(&width) || !(1..=32767).contains(&height) {
+            return Err("PPM dimensions must be in 1..=32767".to_string());
+        }
         if !(1..=65535).contains(&max_val) {
             return Err("PPM max value must be in 1..=65535".to_string());
         }
@@ -465,7 +470,10 @@ mod codec_tests {
 
     #[test]
     fn ppm_huge_header_does_not_allocate() {
+        // Qt's PPM reader caps each dimension at 32767; a header past it is rejected up front.
         let e = ImageReader::read_from_memory(b"P3\n4000000000 4000000000 255 0 0 0").unwrap_err();
+        assert!(e.contains("32767"), "{e}");
+        let e = ImageReader::read_from_memory(b"P3\n32767 32767 255 0 0 0").unwrap_err();
         assert!(e.contains("shorter") || e.contains("overflow"), "{e}");
     }
 

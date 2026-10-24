@@ -98,3 +98,55 @@ fn test_single_instance_primary_and_secondary_conflict() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn silent_client_does_not_block_later_commands() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let app_name = "FerrokitTestSilentClient";
+    let SingleInstanceResult::Primary(guard) =
+        SingleInstance::acquire(app_name, SingleInstanceCommand::WakeUp)
+    else {
+        panic!("first acquire must be Primary");
+    };
+    let (tx, rx) = mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    guard.on_command(move |c| {
+        let _ = tx.lock().unwrap().send(c);
+    });
+
+    // A client that connects and never sends a byte.
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let _silent = std::os::unix::net::UnixStream::connect(base.join(format!("{app_name}.sock")))
+        .expect("connect");
+
+    match SingleInstance::acquire(app_name, SingleInstanceCommand::Show) {
+        SingleInstanceResult::Secondary { command_sent } => assert!(command_sent),
+        SingleInstanceResult::Primary(_) => panic!("must be Secondary"),
+    }
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(10)).expect("listener hung on the silent client"),
+        SingleInstanceCommand::Show
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn drop_keeps_lock_file_so_inode_cannot_split() {
+    let app_name = "FerrokitTestLockInode";
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let lock = base.join(format!("{app_name}.lock"));
+    let SingleInstanceResult::Primary(guard) =
+        SingleInstance::acquire(app_name, SingleInstanceCommand::WakeUp)
+    else {
+        panic!("Primary expected");
+    };
+    drop(guard);
+    assert!(lock.exists(), "unlinking the lock file races with a new locker");
+}
