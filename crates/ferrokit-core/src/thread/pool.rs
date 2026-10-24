@@ -70,6 +70,8 @@ pub(crate) struct PoolShared {
     pub(crate) work_cond: Condvar,
     pub(crate) done_cond: Condvar,
     pub(crate) total_threads: AtomicUsize,
+    /// The id the next worker thread is named with.
+    next_worker_id: AtomicUsize,
     name_prefix: String,
     workers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -199,7 +201,10 @@ impl PoolShared {
         let room = state.capacity().saturating_sub(total);
         let count = wanted.min(room);
         self.total_threads.fetch_add(count, Ordering::SeqCst);
-        (total + 1, count)
+        // Ids are never handed out twice: a worker that retired or failed to start leaves its
+        // id behind, so no two workers (live or not) share a thread name.
+        let first_id = self.next_worker_id.fetch_add(count, Ordering::SeqCst);
+        (first_id, count)
     }
 
     fn spawn_worker_thread(self: &Arc<Self>, id: usize) {
@@ -283,13 +288,18 @@ impl PoolShared {
 /// A task on a worker that awaits a task of the same pool which has not started yet takes that
 /// task out of the queue and runs it itself, inline, then re-polls its future: like Qt's
 /// `QFuture::waitForFinished`, which steals the awaited runnable with `QThreadPool::tryTake`.
-/// So tasks awaiting tasks of their own pool complete however many there are, and the nesting
-/// depth follows the program's own chain of awaits. Only the awaited task runs inline, never
-/// unrelated queued jobs; it runs on the awaiting worker's thread (and sees its thread-locals).
-/// Anything else a parked worker waits for (I/O, channels, tasks already running) does not need
-/// the pool to finish, so the worker simply waits; once the cap is reached, queued jobs wait
-/// for a worker to become free. The extra workers retire once they are idle and the blocked
-/// ones have resumed.
+/// [`TaskHandle::wait_result`], [`TaskHandle::wait_timeout`] and [`TaskHandle::join`] called
+/// from a job of the same pool do the same. So tasks awaiting tasks of their own pool complete
+/// however many there are, and the nesting depth follows the program's own chain of awaits.
+/// Only the awaited task runs inline, never unrelated queued jobs; it runs on the awaiting
+/// worker's thread (and sees its thread-locals).
+///
+/// Waiting for anything else is not helped this way: when a worker waits for I/O, for a channel,
+/// or for a task that is already running, the pool cannot know which queued job would unblock
+/// it. A worker parked in `block_on` or in one of those task waits frees its slot meanwhile
+/// (within the cap above), so a queued job that feeds a channel it waits on can still run, but
+/// once the cap is reached queued jobs wait for a worker to become free. The extra workers
+/// retire once they are idle and the blocked ones have resumed.
 pub struct ThreadPool {
     shared: Arc<PoolShared>,
 }
@@ -547,6 +557,7 @@ impl ThreadPoolBuilder {
             work_cond: Condvar::new(),
             done_cond: Condvar::new(),
             total_threads: AtomicUsize::new(0),
+            next_worker_id: AtomicUsize::new(1),
             name_prefix: self.name_prefix,
             workers: Mutex::new(Vec::new()),
         });
@@ -590,6 +601,29 @@ mod tests {
         assert_eq!(
             *task_shared.status.lock().unwrap(),
             crate::thread::TaskStatus::Canceled
+        );
+    }
+
+    /// A worker that retired or failed to start gives its slot back, not its id: the next
+    /// workers get names that no earlier worker had.
+    #[test]
+    fn reserved_worker_ids_are_never_reused() {
+        let pool = ThreadPool::new(2);
+        let mut state = pool.shared.state.lock().unwrap();
+        for _ in 0..2 {
+            state.queue.push_back(Job::new(next_job_id(), |_| {}));
+        }
+
+        let (first, count) = pool.shared.reserve_workers(&state);
+        assert_eq!((first, count), (1, 2));
+        // Both of them retire (or never started).
+        pool.shared.total_threads.fetch_sub(2, Ordering::SeqCst);
+
+        let (again, count) = pool.shared.reserve_workers(&state);
+        assert_eq!(count, 2);
+        assert!(
+            again >= first + 2,
+            "worker ids {first}.. were handed out again from {again}"
         );
     }
 }

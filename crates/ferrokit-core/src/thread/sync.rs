@@ -504,9 +504,20 @@ impl Semaphore {
 // =============================================================================
 
 /// A condition variable used to synchronize threads, modeled after Qt's `QWaitCondition`.
+///
+/// Like Qt's, it counts the wake-ups it was asked for, so a spurious wake of the underlying
+/// condition variable is not reported as a wake-up (qwaitcondition_unix.cpp:
+/// `QWaitConditionPrivate::wait`).
 pub struct WaitCondition {
-    gate: StdMutex<()>,
+    gate: StdMutex<WaitState>,
     cond: Condvar,
+}
+
+/// Threads inside `wait` and the wake-ups requested for them, guarded by the gate.
+#[derive(Default)]
+struct WaitState {
+    waiters: usize,
+    wakeups: usize,
 }
 
 impl Default for WaitCondition {
@@ -519,7 +530,10 @@ impl WaitCondition {
     /// Creates a new wait condition.
     pub const fn new() -> Self {
         Self {
-            gate: StdMutex::new(()),
+            gate: StdMutex::new(WaitState {
+                waiters: 0,
+                wakeups: 0,
+            }),
             cond: Condvar::new(),
         }
     }
@@ -527,15 +541,22 @@ impl WaitCondition {
     /// Atomically releases `guard`, waits until signaled, and re-acquires the lock upon waking.
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         let mutex = guard.mutex;
-        let gate_lock = self.gate.lock().unwrap();
+        let mut state = self.gate.lock().unwrap();
+        state.waiters += 1;
 
         // Releasing through the guard unlocks exactly once. The gate stays held until the
         // condvar parks us, so a `wake_*` issued after the release cannot be missed.
         drop(guard);
 
-        // Sleep on condition variable. The gate must be released before re-locking the mutex:
-        // another waiter holding the mutex may itself be blocked on the gate.
-        drop(self.cond.wait(gate_lock).unwrap());
+        while state.wakeups == 0 {
+            state = self.cond.wait(state).unwrap();
+        }
+        state.waiters -= 1;
+        state.wakeups -= 1;
+
+        // The gate must be released before re-locking the mutex: another waiter holding the
+        // mutex may itself be blocked on the gate.
+        drop(state);
 
         // Re-acquire mutex
         mutex.lock().unwrap()
@@ -552,26 +573,78 @@ impl WaitCondition {
     ) -> (Option<MutexGuard<'a, T>>, bool) {
         let deadline = Instant::now() + timeout;
         let mutex = guard.mutex;
-        let gate_lock = self.gate.lock().unwrap();
+        let mut state = self.gate.lock().unwrap();
+        state.waiters += 1;
 
         drop(guard);
 
-        let (gate_lock, timeout_res) = self.cond.wait_timeout(gate_lock, timeout).unwrap();
-        let signaled = !timeout_res.timed_out();
-        drop(gate_lock);
+        let mut signaled = true;
+        while state.wakeups == 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                signaled = false;
+                break;
+            }
+            state = self.cond.wait_timeout(state, deadline - now).unwrap().0;
+        }
+        state.waiters -= 1;
+        if signaled {
+            state.wakeups -= 1;
+        }
+        drop(state);
         let acquired = mutex.try_lock_until(deadline);
         (acquired, signaled)
     }
 
     /// Wakes one waiting thread.
     pub fn wake_one(&self) {
-        let _gate = self.gate.lock().unwrap();
+        let mut state = self.gate.lock().unwrap();
+        state.wakeups = (state.wakeups + 1).min(state.waiters);
         self.cond.notify_one();
     }
 
     /// Wakes all waiting threads.
     pub fn wake_all(&self) {
-        let _gate = self.gate.lock().unwrap();
+        let mut state = self.gate.lock().unwrap();
+        state.wakeups = state.waiters;
         self.cond.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wake of the underlying condition variable that no `wake_*` asked for is not a
+    /// wake-up: the waiter keeps waiting and times out unsignaled.
+    #[test]
+    fn wait_timeout_ignores_a_spurious_wake() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let cond = WaitCondition::new();
+        let mutex = Mutex::new(());
+        let holding = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                let guard = mutex.lock().unwrap();
+                holding.store(true, Ordering::SeqCst);
+                let (guard, signaled) = cond.wait_timeout(guard, Duration::from_millis(200));
+                drop(guard);
+                signaled
+            });
+            while !holding.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            // `wait_timeout` releases the mutex while it holds the gate and parks on it, so once
+            // the mutex can be taken the gate is free only after the waiter is waiting.
+            drop(mutex.lock().unwrap());
+            let gate = cond.gate.lock().unwrap();
+            cond.cond.notify_all();
+            drop(gate);
+            assert!(
+                !waiter.join().unwrap(),
+                "a spurious wake was reported as a signal"
+            );
+        });
     }
 }

@@ -7,7 +7,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use crate::thread::pool::{note_awaited_job, JobRef};
+use crate::thread::pool::{
+    enter_blocking, note_awaited_job, steal_awaited_job, BlockedWorker, JobRef,
+};
 
 /// Status of a task in its execution lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -217,11 +219,35 @@ impl<T> TaskHandle<T> {
         self.shared.cancel_token.clone()
     }
 
+    /// Before a synchronous wait: on a worker of the task's own pool, takes the task out of the
+    /// queue if it has not started and runs it here, as `QFuture::waitForFinished` does through
+    /// `QThreadPool::tryTake`; otherwise, if the task is still unfinished, frees the worker's
+    /// slot until the returned guard is dropped (as `block_on` does), so jobs queued behind the
+    /// waiting one can run. The guard must outlive the wait.
+    fn prepare_to_wait(&self) -> Option<BlockedWorker> {
+        if let Some(job) = self.shared.queued_job.as_ref().and_then(steal_awaited_job) {
+            job.run();
+        }
+        if self.is_settled() {
+            return None;
+        }
+        enter_blocking()
+    }
+
+    /// Whether the result is there or has been moved out by `join`.
+    fn is_settled(&self) -> bool {
+        self.shared.result.lock().unwrap().is_some() || self.shared.taken.load(Ordering::SeqCst)
+    }
+
     /// Blocks until the task completes and returns a copy/clone of the result if `T: Clone`.
+    ///
+    /// Inside a job of the task's own [`ThreadPool`](crate::thread::ThreadPool) a task that is
+    /// still queued is run by the waiting job itself, instead of waiting for a free worker.
     pub fn wait_result(&self) -> Result<T, TaskError>
     where
         T: Clone,
     {
+        let _blocked = self.prepare_to_wait();
         let mut res = self.shared.result.lock().unwrap();
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             res = self.shared.cond.wait(res).unwrap();
@@ -233,11 +259,16 @@ impl<T> TaskHandle<T> {
     }
 
     /// Blocks until the task completes within `timeout`.
+    ///
+    /// Inside a job of the task's own [`ThreadPool`](crate::thread::ThreadPool) a task that is
+    /// still queued is run by the waiting job itself first. That run is not cut short by
+    /// `timeout`: it can last past it, and the call then returns the task's result.
     pub fn wait_timeout(&self, timeout: Duration) -> Result<Option<T>, TaskError>
     where
         T: Clone,
     {
         let deadline = Instant::now() + timeout;
+        let _blocked = self.prepare_to_wait();
         let mut res = self.shared.result.lock().unwrap();
 
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
@@ -264,7 +295,11 @@ impl<T> TaskHandle<T> {
     ///
     /// The result is moved out, so other clones of the handle observe
     /// [`TaskError::ResultTaken`] instead of the value.
+    ///
+    /// Inside a job of the task's own [`ThreadPool`](crate::thread::ThreadPool) a task that is
+    /// still queued is run by the joining job itself, instead of waiting for a free worker.
     pub fn join(self) -> Result<T, TaskError> {
+        let _blocked = self.prepare_to_wait();
         let mut res = self.shared.result.lock().unwrap();
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             res = self.shared.cond.wait(res).unwrap();

@@ -159,11 +159,13 @@ impl<T> TextStream<T> {
 
     /// Formats an arbitrary text representation applying field width, padding, and alignment.
     fn format_field(&self, text: &str) -> String {
-        if self.field_width == 0 || text.len() >= self.field_width {
+        // Counted in characters, not bytes: non-ASCII text is padded to the same width.
+        let length = text.chars().count();
+        if self.field_width == 0 || length >= self.field_width {
             return text.to_string();
         }
 
-        let padding_needed = self.field_width - text.chars().count();
+        let padding_needed = self.field_width - length;
         let mut out = String::with_capacity(self.field_width);
 
         match self.alignment {

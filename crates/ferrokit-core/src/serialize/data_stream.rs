@@ -166,9 +166,26 @@ impl<W: Write> DataStreamWriter<W> {
         }
     }
 
+    /// Writes a count or byte length as the 32-bit prefix of the Qt formats. A length above
+    /// `u32::MAX` cannot be represented: the write fails with `InvalidInput` and
+    /// `Status::WriteFailed`, and nothing is written, instead of a truncated prefix that makes
+    /// the stream unreadable.
+    pub(crate) fn write_len(&mut self, len: usize) -> io::Result<()> {
+        match u32::try_from(len) {
+            Ok(len) => self.write_u32(len),
+            Err(_) => {
+                self.status = Status::WriteFailed;
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "length does not fit the 32-bit length prefix",
+                ))
+            }
+        }
+    }
+
     /// Writes a byte slice with a 32-bit length prefix (Qt `QByteArray` serialization format).
     pub fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.write_u32(bytes.len() as u32)?;
+        self.write_len(bytes.len())?;
         self.write_raw(bytes)
     }
 
@@ -184,7 +201,7 @@ impl<W: Write> DataStreamWriter<W> {
 
     /// Writes a `StringList` (length prefix followed by strings).
     pub fn write_string_list(&mut self, list: &StringList) -> io::Result<()> {
-        self.write_u32(list.len() as u32)?;
+        self.write_len(list.len())?;
         for s in list.iter() {
             self.write_str(s)?;
         }
@@ -612,5 +629,38 @@ impl DataSerializable for StringList {
     }
     fn deserialize<R: Read>(stream: &mut DataStreamReader<R>) -> io::Result<Self> {
         stream.read_string_list()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A length that does not fit the 32-bit prefix fails the write; a payload that large cannot
+    /// be built in a test, so the prefix writer that every length goes through is called with it.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_length_above_u32_max_fails_the_write_and_writes_nothing() {
+        let mut out = Vec::new();
+        let (error, status) = {
+            let mut writer = DataStreamWriter::new(&mut out);
+            let error = writer.write_len(u32::MAX as usize + 1).unwrap_err();
+            (error, writer.status())
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(status, Status::WriteFailed);
+        assert!(out.is_empty(), "a truncated length prefix was written");
+    }
+
+    #[test]
+    fn a_length_within_u32_is_written_as_the_prefix() {
+        let mut out = Vec::new();
+        let status = {
+            let mut writer = DataStreamWriter::new(&mut out);
+            writer.write_len(0x0102_0304).unwrap();
+            writer.status()
+        };
+        assert_eq!(status, Status::Ok);
+        assert_eq!(out, [1, 2, 3, 4]);
     }
 }

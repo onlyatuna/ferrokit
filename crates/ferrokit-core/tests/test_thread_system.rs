@@ -582,3 +582,74 @@ fn test_thread_pool_last_arc_dropped_on_worker_thread() {
         5
     );
 }
+
+/// Runs `wait` inside a job on the only worker of a pool, with the task it waits for queued
+/// behind that job on the same pool, and returns what `wait` returned.
+fn wait_inside_pool_job_for_queued_task<R: Send + 'static>(
+    wait: impl FnOnce(TaskHandle<u32>) -> R + Send + 'static,
+) -> R {
+    let pool = Arc::new(ThreadPool::new(1));
+    let inner_pool = Arc::clone(&pool);
+    // The job keeps its own `Arc`: if the wait hangs, the pool is never dropped, which would
+    // otherwise join the stuck worker.
+    let outer = pool.spawn(move || {
+        let inner = inner_pool.spawn(|| 41);
+        wait(inner)
+    });
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(outer.join());
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("a job waiting for a task queued behind it on its own pool hung")
+        .expect("the waiting job failed")
+}
+
+/// Qt's `QFuture::waitForFinished` takes the awaited runnable out of the pool's queue and runs
+/// it on the waiting thread (`QThreadPool::tryTake`), so a worker waiting for a task that is
+/// still queued does not need a second worker.
+#[test]
+fn test_task_wait_result_in_pool_job_runs_the_queued_task() {
+    assert_eq!(
+        wait_inside_pool_job_for_queued_task(|inner| inner.wait_result()),
+        Ok(41)
+    );
+}
+
+#[test]
+fn test_task_wait_timeout_in_pool_job_runs_the_queued_task() {
+    assert_eq!(
+        wait_inside_pool_job_for_queued_task(|inner| inner.wait_timeout(Duration::from_secs(2))),
+        Ok(Some(41))
+    );
+}
+
+#[test]
+fn test_task_join_in_pool_job_runs_the_queued_task() {
+    assert_eq!(wait_inside_pool_job_for_queued_task(|inner| inner.join()), Ok(41));
+}
+
+/// A worker that waits for a task it cannot take over (here: one running on another pool)
+/// gives up its slot, so the job queued behind it on its own pool can run and unblock that task.
+#[test]
+fn test_task_wait_in_pool_job_releases_the_worker_slot() {
+    let pool = Arc::new(ThreadPool::new(1));
+    let other = Arc::new(ThreadPool::new(1));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    // Ends by itself if the release never comes, so a failing test does not leave the pool's
+    // teardown joining a stuck worker.
+    let awaited = other.spawn(move || release_rx.recv_timeout(Duration::from_secs(30)).is_ok());
+
+    let inner_pool = Arc::clone(&pool);
+    let waiting = pool.spawn(move || {
+        // Queued behind the only worker, which is about to wait.
+        let _releaser = inner_pool.spawn(move || release_tx.send(()).unwrap());
+        awaited.wait_result()
+    });
+    assert_eq!(
+        waiting.wait_timeout(Duration::from_secs(60)),
+        Ok(Some(Ok(true))),
+        "the queued job never got a worker while the other one waited"
+    );
+}
