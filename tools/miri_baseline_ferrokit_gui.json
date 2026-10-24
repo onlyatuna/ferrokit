@@ -410,6 +410,10 @@
     "test_p2_geometry_overflow_singular::transform2d_singular_still_rejected::TB": "pass",
     "test_p2_geometry_overflow_singular::transform2d_tiny_scale_is_invertible::TB": "pass",
     "test_p2_geometry_overflow_singular::transform_singular_still_rejected::TB": "pass",
-    "test_p2_geometry_overflow_singular::transform_tiny_scale_is_invertible::TB": "pass"
+    "test_p2_geometry_overflow_singular::transform_tiny_scale_is_invertible::TB": "pass",
+    "test_p2_geometry_overflow_singular::f32_rounded_singular_matrices_are_rejected::SB": "pass",
+    "test_p2_geometry_overflow_singular::rect_adjust_translate_and_margins_saturate::SB": "pass",
+    "test_p2_geometry_overflow_singular::f32_rounded_singular_matrices_are_rejected::TB": "pass",
+    "test_p2_geometry_overflow_singular::rect_adjust_translate_and_margins_saturate::TB": "pass"
   }
 }
