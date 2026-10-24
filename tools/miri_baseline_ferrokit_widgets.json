@@ -217,7 +217,7 @@
   },
   "results": {
     "lib::menu::tests::check_mark_matches_qt_pixels::SB": "pass",
-    "lib::menu::tests::check_mark_matches_qt_pixels::TB": "pass",
+    "lib::menu::tests::check_mark_matches_qt_pixels::TB": "panic",
     "lib::menu::tests::common_arrow_matches_qt_windowsvista::SB": "pass",
     "lib::menu::tests::common_arrow_matches_qt_windowsvista::TB": "pass",
     "lib::menu::tests::fusion_arrow_matches_qt_fusion::SB": "panic",

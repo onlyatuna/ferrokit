@@ -106,6 +106,26 @@ pub struct LayeredStats {
     pub ulw_rect_changed_by_ulw_count: u64,
 }
 
+/// The screen device context (`GetDC(NULL)`) for one scope, released on drop. Never stored: the
+/// handle stops being valid for `UpdateLayeredWindow` after a display change, so each user
+/// acquires its own.
+pub(crate) struct ScreenDc(pub(crate) HDC);
+
+impl ScreenDc {
+    /// Acquires the screen DC; the held handle is null if `GetDC` failed.
+    pub(crate) fn acquire() -> Self {
+        Self(unsafe { GetDC(ptr::null_mut()) })
+    }
+}
+
+impl Drop for ScreenDc {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ReleaseDC(ptr::null_mut(), self.0) };
+        }
+    }
+}
+
 pub struct Win32LayeredSurface {
     hwnd: HWND,
     /// Visible size: what is presented (`psize`) and the size of the source pixmap.
@@ -114,7 +134,6 @@ pub struct Win32LayeredSurface {
     /// DIB allocation. `>=` the visible size; rows are `alloc_width * 4` bytes apart.
     alloc_width: u32,
     alloc_height: u32,
-    screen_dc: HDC,
     mem_dc: HDC,
     hbitmap: HBITMAP,
     old_hbitmap: HGDIOBJ,
@@ -145,19 +164,17 @@ impl Win32LayeredSurface {
             if (ex_style as u32 & WS_EX_LAYERED) == 0 {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED as isize);
             }
-            let screen_dc = GetDC(ptr::null_mut());
-            if screen_dc.is_null() {
+            let screen = ScreenDc::acquire();
+            if screen.0.is_null() {
                 return Err("Failed to get screen DC (GetDC)");
             }
 
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let mem_dc = CreateCompatibleDC(screen.0);
             if mem_dc.is_null() {
-                ReleaseDC(ptr::null_mut(), screen_dc);
                 return Err("Failed to create compatible DC (CreateCompatibleDC)");
             }
 
             let Some((hbitmap, bits)) = create_dib(mem_dc, width, height) else {
-                ReleaseDC(ptr::null_mut(), screen_dc);
                 DeleteDC(mem_dc);
                 return Err("CreateDIBSection failed to create layered bitmap");
             };
@@ -170,7 +187,6 @@ impl Win32LayeredSurface {
                 height,
                 alloc_width: width,
                 alloc_height: height,
-                screen_dc,
                 mem_dc,
                 hbitmap,
                 old_hbitmap,
@@ -482,9 +498,13 @@ impl Win32LayeredSurface {
                 bottom: clipped_dirty.y + clipped_dirty.height,
             };
 
+            // Fetched per present: a cached screen DC goes stale across display-mode changes,
+            // monitor hot-plug, RDP attach/detach and sleep/resume. Released when `screen` drops,
+            // after the update below. `NULL` is accepted by `UpdateLayeredWindow` if `GetDC` fails.
+            let screen = ScreenDc::acquire();
             let mut info: UPDATELAYEREDWINDOWINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32;
-            info.hdcDst = self.screen_dc;
+            info.hdcDst = screen.0;
             info.pptDst = &pt_dst;
             info.psize = &size;
             info.hdcSrc = self.mem_dc;
@@ -655,9 +675,21 @@ impl Drop for Win32LayeredSurface {
             if !self.mem_dc.is_null() {
                 DeleteDC(self.mem_dc);
             }
-            if !self.screen_dc.is_null() {
-                ReleaseDC(ptr::null_mut(), self.screen_dc);
-            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScreenDc;
+
+    /// A leaked screen DC would exhaust the per-process GDI quota (10 000 handles by default)
+    /// and `GetDC` would start returning NULL.
+    #[test]
+    fn screen_dc_is_released_on_drop() {
+        for i in 0..12_000 {
+            let dc = ScreenDc::acquire();
+            assert!(!dc.0.is_null(), "GetDC(NULL) failed at iteration {i}: DCs leaked");
         }
     }
 }

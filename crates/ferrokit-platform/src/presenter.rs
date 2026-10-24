@@ -43,7 +43,6 @@ pub mod win32 {
         hwnd: HWND,
         width: u32,
         height: u32,
-        screen_dc: HDC,
         mem_dc: HDC,
         hbitmap: HBITMAP,
         old_hbitmap: HGDIOBJ,
@@ -56,13 +55,13 @@ pub mod win32 {
     impl Win32DcPresenter {
         pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self, &'static str> {
             unsafe {
-                let screen_dc = GetDC(ptr::null_mut());
-                if screen_dc.is_null() {
+                // Only needed to make `mem_dc` compatible; never kept (see `ScreenDc`).
+                let screen = crate::surface::win32::ScreenDc::acquire();
+                if screen.0.is_null() {
                     return Err("GetDC failed on screen");
                 }
-                let mem_dc = CreateCompatibleDC(screen_dc);
+                let mem_dc = CreateCompatibleDC(screen.0);
                 if mem_dc.is_null() {
-                    ReleaseDC(ptr::null_mut(), screen_dc);
                     return Err("CreateCompatibleDC failed");
                 }
 
@@ -78,7 +77,6 @@ pub mod win32 {
                 let hbitmap =
                     CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
                 if hbitmap.is_null() || bits.is_null() {
-                    ReleaseDC(ptr::null_mut(), screen_dc);
                     DeleteDC(mem_dc);
                     return Err("CreateDIBSection failed");
                 }
@@ -89,7 +87,6 @@ pub mod win32 {
                     hwnd,
                     width: width.max(1),
                     height: height.max(1),
-                    screen_dc,
                     mem_dc,
                     hbitmap,
                     old_hbitmap,
@@ -118,9 +115,6 @@ pub mod win32 {
                 }
                 if !self.mem_dc.is_null() {
                     DeleteDC(self.mem_dc);
-                }
-                if !self.screen_dc.is_null() {
-                    ReleaseDC(ptr::null_mut(), self.screen_dc);
                 }
             }
         }

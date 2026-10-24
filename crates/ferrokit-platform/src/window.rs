@@ -821,12 +821,52 @@ fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
     }
 }
 
+/// Everything that decides whether a window keeps `WS_EX_LAYERED` (see
+/// [`LayeredNeeds::layered_ex_style`]).
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LayeredNeeds {
+    opacity: f32,
+    click_through: bool,
+    /// The window is presented per pixel (`LAYERED` flag, or a layered surface / presenter):
+    /// `UpdateLayeredWindow` needs the style for as long as the window lives.
+    per_pixel: bool,
+    /// A DWM backdrop is applied: the style is never stripped while the window has it.
+    backdrop: bool,
+}
+
+#[cfg(windows)]
+impl LayeredNeeds {
+    /// `SetLayeredWindowAttributes(LWA_ALPHA)` applies to every layered window that is not
+    /// presented per pixel, including one whose style is merely kept (backdrop) at opacity 1.0:
+    /// skipping the call there would leave the previous alpha in force. A per-pixel window must
+    /// not get it: once `UpdateLayeredWindow` drives the window the call is rejected, and it would
+    /// also make the next `UpdateLayeredWindow` fail; its opacity is in each present's blend.
+    fn wants_alpha_attributes(self, ex_style_after: isize) -> bool {
+        !self.per_pixel && ex_style_after & WS_EX_LAYERED as isize != 0
+    }
+
+    /// The extended style for `ex_style` after this state: layered whenever translucent,
+    /// click-through or per-pixel; left untouched while a backdrop is active; otherwise plain.
+    fn layered_ex_style(self, ex_style: isize) -> isize {
+        let layered = WS_EX_LAYERED as isize;
+        if self.click_through || self.opacity < 1.0 || self.per_pixel {
+            ex_style | layered
+        } else if self.backdrop {
+            ex_style
+        } else {
+            ex_style & !layered
+        }
+    }
+}
+
 /// `QWindowsWindow::setWindowLayered` + `setWindowOpacity` for a window that is not `LAYERED`:
 /// a translucent (`opacity < 1`) or click-through (`WindowTransparentForInput`) window needs
 /// `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)` with `qRound(255 * opacity)`;
-/// any other window drops the style again and repaints.
+/// a window that is presented per pixel or has a backdrop keeps the style; any other window drops
+/// it again and repaints.
 #[cfg(windows)]
-fn apply_system_window_opacity(hwnd: HWND, opacity: f32, click_through: bool) {
+fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, IsWindowVisible, SetLayeredWindowAttributes, SetWindowLongPtrW,
@@ -834,20 +874,14 @@ fn apply_system_window_opacity(hwnd: HWND, opacity: f32, click_through: bool) {
     };
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let is_layered = ex_style & WS_EX_LAYERED as isize != 0;
-        let needs_layered = click_through || opacity < 1.0;
-        if needs_layered != is_layered {
-            let new_style = if needs_layered {
-                ex_style | WS_EX_LAYERED as isize
-            } else {
-                ex_style & !(WS_EX_LAYERED as isize)
-            };
+        let new_style = needs.layered_ex_style(ex_style);
+        if new_style != ex_style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
         }
-        if needs_layered {
-            let alpha = (opacity * 255.0).round() as u8;
+        if needs.wants_alpha_attributes(new_style) {
+            let alpha = (needs.opacity * 255.0).round() as u8;
             SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
-        } else if IsWindowVisible(hwnd) != 0 {
+        } else if new_style & WS_EX_LAYERED as isize == 0 && IsWindowVisible(hwnd) != 0 {
             InvalidateRect(hwnd, ptr::null(), 1);
         }
     }
@@ -1804,6 +1838,8 @@ pub struct NativeWindow {
     ime_enabled: std::cell::Cell<bool>,
     target_pos: Option<ferrokit_gui::geometry::Point>,
     dcomp_downgraded: bool,
+    /// A backdrop other than `BackdropType::None` is applied (it keeps `WS_EX_LAYERED` in place).
+    backdrop_active: bool,
 }
 
 // Deliberately neither `Send` nor `Sync`: it owns an `HWND` (window APIs such as `DestroyWindow`
@@ -1919,7 +1955,15 @@ impl NativeWindow {
 
         // A click-through window needs `WS_EX_LAYERED` with attributes (`setWindowLayered`).
         if flags.contains(WindowFlags::CLICK_THROUGH) && !flags.contains(WindowFlags::LAYERED) {
-            apply_system_window_opacity(hwnd, 1.0, true);
+            apply_system_window_opacity(
+                hwnd,
+                LayeredNeeds {
+                    opacity: 1.0,
+                    click_through: true,
+                    per_pixel: layered_surface.is_some(),
+                    backdrop: false,
+                },
+            );
         }
 
         Ok(Self {
@@ -1937,6 +1981,7 @@ impl NativeWindow {
             ime_enabled: std::cell::Cell::new(false),
             target_pos: None,
             dcomp_downgraded: false,
+            backdrop_active: false,
         })
     }
 
@@ -2079,7 +2124,7 @@ impl NativeWindow {
             // in combination with `WS_EX_TRANSPARENT`, with layered attributes set so the window is
             // drawn. A `LAYERED` window is managed by its presenter.
             if !self.flags.contains(WindowFlags::LAYERED) {
-                apply_system_window_opacity(self.hwnd, self.opacity, enabled);
+                apply_system_window_opacity(self.hwnd, self.layered_needs());
             }
         }
     }
@@ -2126,16 +2171,22 @@ impl NativeWindow {
             p.set_opacity(opacity);
         }
         if changed && !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED) {
-            apply_system_window_opacity(
-                self.hwnd,
-                opacity,
-                self.flags.contains(WindowFlags::CLICK_THROUGH),
-            );
+            apply_system_window_opacity(self.hwnd, self.layered_needs());
         }
     }
 
     pub fn opacity(&self) -> f32 {
         self.opacity
+    }
+
+    /// What this window needs `WS_EX_LAYERED` for right now.
+    fn layered_needs(&self) -> LayeredNeeds {
+        LayeredNeeds {
+            opacity: self.opacity,
+            click_through: self.flags.contains(WindowFlags::CLICK_THROUGH),
+            per_pixel: self.flags.contains(WindowFlags::LAYERED) || self.layered_surface.is_some(),
+            backdrop: self.backdrop_active,
+        }
     }
 
     /// `QWindow::setMinimumSize` (logical pixels). Windows learns it through `WM_GETMINMAXINFO`,
@@ -2520,7 +2571,16 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
-        crate::backdrop::set_window_backdrop(self.hwnd, backdrop, dark_mode)
+        let applied = crate::backdrop::set_window_backdrop(self.hwnd, backdrop, dark_mode);
+        // Tracks the request, not the outcome: the DWM calls can fail after changing part of the
+        // state, so a failed request may still leave a backdrop that the style must not strip.
+        self.backdrop_active = backdrop != crate::backdrop::BackdropType::None;
+        // Dropping the backdrop lets a window that nothing else keeps layered go plain again.
+        let plain = !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED);
+        if !self.backdrop_active && plain {
+            apply_system_window_opacity(self.hwnd, self.layered_needs());
+        }
+        applied
     }
 
     fn set_ime_focus(&mut self, pos: ferrokit_gui::geometry::primitives::Point) {
@@ -3014,5 +3074,83 @@ mod tests {
         });
         rx.recv_timeout(std::time::Duration::from_secs(20))
             .expect("unregister deadlocked: handler dropped while registry locks held");
+    }
+
+    fn needs(opacity: f32, click_through: bool, per_pixel: bool, backdrop: bool) -> LayeredNeeds {
+        LayeredNeeds {
+            opacity,
+            click_through,
+            per_pixel,
+            backdrop,
+        }
+    }
+
+    const LAYERED_BIT: isize = WS_EX_LAYERED as isize;
+
+    /// Opacity 0.5 -> 1.0 -> 0.5 on a plain window drops and restores the style, and only the
+    /// translucent states ask for `LWA_ALPHA`.
+    #[test]
+    fn layered_style_follows_opacity_round_trip_on_plain_window() {
+        let mut ex = 0isize;
+        for (opacity, layered) in [(0.5, true), (1.0, false), (0.5, true)] {
+            let n = needs(opacity, false, false, false);
+            ex = n.layered_ex_style(ex);
+            assert_eq!(ex & LAYERED_BIT != 0, layered, "opacity {opacity}");
+            assert_eq!(n.wants_alpha_attributes(ex), layered, "opacity {opacity}");
+        }
+    }
+
+    /// A click-through window stays layered at opacity 1.0 and through an opacity round trip.
+    #[test]
+    fn click_through_keeps_layered_across_opacity_round_trip() {
+        let mut ex = WS_EX_TRANSPARENT as isize;
+        for opacity in [0.5, 1.0, 0.5, 1.0] {
+            let n = needs(opacity, true, false, false);
+            ex = n.layered_ex_style(ex);
+            assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
+            assert_ne!(ex & WS_EX_TRANSPARENT as isize, 0, "transparent bit untouched");
+            assert!(n.wants_alpha_attributes(ex), "click-through draws via LWA_ALPHA");
+        }
+        // Turning click-through off at opacity 1.0 releases the style again.
+        assert_eq!(needs(1.0, false, false, false).layered_ex_style(ex) & LAYERED_BIT, 0);
+    }
+
+    /// A per-pixel window never loses the style, whatever opacity / click-through do, and never
+    /// gets `SetLayeredWindowAttributes`, which would break `UpdateLayeredWindow`.
+    #[test]
+    fn per_pixel_window_keeps_layered_and_skips_alpha_attributes() {
+        let mut ex = LAYERED_BIT;
+        let steps = [(0.5, false), (1.0, false), (1.0, true), (0.5, true), (1.0, false)];
+        for (opacity, click_through) in steps {
+            let n = needs(opacity, click_through, true, false);
+            ex = n.layered_ex_style(ex);
+            assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}, click_through {click_through}");
+            assert!(!n.wants_alpha_attributes(ex));
+        }
+    }
+
+    /// An active backdrop pins the style that is already there, and does not add it by itself.
+    #[test]
+    fn backdrop_keeps_existing_layered_but_does_not_add_it() {
+        let n = needs(1.0, false, false, true);
+        assert_ne!(n.layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
+        assert_eq!(n.layered_ex_style(0) & LAYERED_BIT, 0);
+        // Without the backdrop the same state strips it.
+        assert_eq!(needs(1.0, false, false, false).layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
+    }
+
+    /// 0.5 -> 1.0 with a backdrop: the style stays, so alpha must be written again (255), or the
+    /// window stays at the old 128 while the code believes it is opaque.
+    #[test]
+    fn backdrop_opacity_round_trip_rewrites_alpha() {
+        let mut ex = 0isize;
+        for opacity in [0.5, 1.0, 0.5, 1.0] {
+            let n = needs(opacity, false, false, true);
+            ex = n.layered_ex_style(ex);
+            assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
+            assert!(n.wants_alpha_attributes(ex), "opacity {opacity}: alpha must be applied");
+        }
+        // Not layered (backdrop never added the style): nothing to write.
+        assert!(!needs(1.0, false, false, true).wants_alpha_attributes(0));
     }
 }
