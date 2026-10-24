@@ -837,12 +837,13 @@ struct LayeredNeeds {
 
 #[cfg(windows)]
 impl LayeredNeeds {
-    /// `SetLayeredWindowAttributes(LWA_ALPHA)` applies only to a window that is not presented
-    /// per pixel: once `UpdateLayeredWindow` drives the window, the call is rejected, and it would
-    /// also make the next `UpdateLayeredWindow` fail. A per-pixel window carries its opacity in
-    /// the blend function of each present.
-    fn wants_alpha_attributes(self) -> bool {
-        !self.per_pixel && (self.click_through || self.opacity < 1.0)
+    /// `SetLayeredWindowAttributes(LWA_ALPHA)` applies to every layered window that is not
+    /// presented per pixel, including one whose style is merely kept (backdrop) at opacity 1.0:
+    /// skipping the call there would leave the previous alpha in force. A per-pixel window must
+    /// not get it: once `UpdateLayeredWindow` drives the window the call is rejected, and it would
+    /// also make the next `UpdateLayeredWindow` fail; its opacity is in each present's blend.
+    fn wants_alpha_attributes(self, ex_style_after: isize) -> bool {
+        !self.per_pixel && ex_style_after & WS_EX_LAYERED as isize != 0
     }
 
     /// The extended style for `ex_style` after this state: layered whenever translucent,
@@ -877,7 +878,7 @@ fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
         if new_style != ex_style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
         }
-        if needs.wants_alpha_attributes() {
+        if needs.wants_alpha_attributes(new_style) {
             let alpha = (needs.opacity * 255.0).round() as u8;
             SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
         } else if new_style & WS_EX_LAYERED as isize == 0 && IsWindowVisible(hwnd) != 0 {
@@ -2571,12 +2572,13 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
         let applied = crate::backdrop::set_window_backdrop(self.hwnd, backdrop, dark_mode);
-        if applied {
-            self.backdrop_active = backdrop != crate::backdrop::BackdropType::None;
-            // Dropping the backdrop lets a window that nothing else keeps layered go plain again.
-            if !self.backdrop_active && !self.flags.contains(WindowFlags::LAYERED) {
-                apply_system_window_opacity(self.hwnd, self.layered_needs());
-            }
+        // Tracks the request, not the outcome: the DWM calls can fail after changing part of the
+        // state, so a failed request may still leave a backdrop that the style must not strip.
+        self.backdrop_active = backdrop != crate::backdrop::BackdropType::None;
+        // Dropping the backdrop lets a window that nothing else keeps layered go plain again.
+        let plain = !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED);
+        if !self.backdrop_active && plain {
+            apply_system_window_opacity(self.hwnd, self.layered_needs());
         }
         applied
     }
@@ -3094,7 +3096,7 @@ mod tests {
             let n = needs(opacity, false, false, false);
             ex = n.layered_ex_style(ex);
             assert_eq!(ex & LAYERED_BIT != 0, layered, "opacity {opacity}");
-            assert_eq!(n.wants_alpha_attributes(), layered, "opacity {opacity}");
+            assert_eq!(n.wants_alpha_attributes(ex), layered, "opacity {opacity}");
         }
     }
 
@@ -3107,7 +3109,7 @@ mod tests {
             ex = n.layered_ex_style(ex);
             assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
             assert_ne!(ex & WS_EX_TRANSPARENT as isize, 0, "transparent bit untouched");
-            assert!(n.wants_alpha_attributes(), "click-through draws via LWA_ALPHA");
+            assert!(n.wants_alpha_attributes(ex), "click-through draws via LWA_ALPHA");
         }
         // Turning click-through off at opacity 1.0 releases the style again.
         assert_eq!(needs(1.0, false, false, false).layered_ex_style(ex) & LAYERED_BIT, 0);
@@ -3123,7 +3125,7 @@ mod tests {
             let n = needs(opacity, click_through, true, false);
             ex = n.layered_ex_style(ex);
             assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}, click_through {click_through}");
-            assert!(!n.wants_alpha_attributes());
+            assert!(!n.wants_alpha_attributes(ex));
         }
     }
 
@@ -3133,8 +3135,22 @@ mod tests {
         let n = needs(1.0, false, false, true);
         assert_ne!(n.layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
         assert_eq!(n.layered_ex_style(0) & LAYERED_BIT, 0);
-        assert!(!n.wants_alpha_attributes());
         // Without the backdrop the same state strips it.
         assert_eq!(needs(1.0, false, false, false).layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
+    }
+
+    /// 0.5 -> 1.0 with a backdrop: the style stays, so alpha must be written again (255), or the
+    /// window stays at the old 128 while the code believes it is opaque.
+    #[test]
+    fn backdrop_opacity_round_trip_rewrites_alpha() {
+        let mut ex = 0isize;
+        for opacity in [0.5, 1.0, 0.5, 1.0] {
+            let n = needs(opacity, false, false, true);
+            ex = n.layered_ex_style(ex);
+            assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
+            assert!(n.wants_alpha_attributes(ex), "opacity {opacity}: alpha must be applied");
+        }
+        // Not layered (backdrop never added the style): nothing to write.
+        assert!(!needs(1.0, false, false, true).wants_alpha_attributes(0));
     }
 }
