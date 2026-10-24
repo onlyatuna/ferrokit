@@ -156,8 +156,8 @@ jobs:
                 case "$f" in
                   crates/ferrokit-core/*|tools/miri_baseline.json) core=true; gui=true; widgets=true;;
                   crates/ferrokit-gui/*|tools/miri_baseline_ferrokit_gui.json) gui=true; widgets=true;;
-                  crates/ferrokit-widgets/*|tools/miri_baseline_ferrokit_widgets.json) widgets=true;;
-                  tools/miri_sweep.py|tools/test_miri_sweep.py|.github/workflows/ci.yml|Cargo.toml|rust-toolchain|rust-toolchain.toml) all;;
+                  crates/ferrokit-widgets/*|crates/ferrokit-platform/*|tools/miri_baseline_ferrokit_widgets.json) widgets=true;;
+                  tools/miri_*|tools/test_miri_*|crates/ferrokit-derive/*|.cargo/*|.github/workflows/ci.yml|Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml) all;;
                 esac
               done <<< "$changed"
               if [ "$HAS_LABEL" = true ] && [ $core = false ] && [ $gui = false ] && [ $widgets = false ]; then
