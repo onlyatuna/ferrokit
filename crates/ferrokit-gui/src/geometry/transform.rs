@@ -12,8 +12,8 @@ use tiny_skia::Transform as SkiaTransform;
 /// `QMatrix4x4::inverted` tests `det == 0`; both wrongly reject tiny-scale matrices or accept
 /// ill-scaled ones when mapped onto `f32` storage. Comparing against the summed magnitude of the
 /// determinant's own terms is scale-invariant, so only genuine rank loss (cancellation to rounding
-/// noise of the `f64` evaluation) is rejected.
-pub(crate) const SINGULAR_REL_EPS: f64 = 1e-12;
+/// noise of the `f32` inputs, about 1e-7 relative) is rejected.
+pub(crate) const SINGULAR_REL_EPS: f64 = 1e-6;
 
 /// `true` if `det` is zero relative to `magnitude` (the sum of absolute values of its terms) or not finite.
 #[inline]

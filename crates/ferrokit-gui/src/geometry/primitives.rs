@@ -707,10 +707,10 @@ impl Rect {
     #[inline]
     pub const fn adjusted(&self, dx1: i32, dy1: i32, dx2: i32, dy2: i32) -> Rect {
         Rect {
-            x: self.x + dx1,
-            y: self.y + dy1,
-            width: self.width + dx2 - dx1,
-            height: self.height + dy2 - dy1,
+            x: self.x.saturating_add(dx1),
+            y: self.y.saturating_add(dy1),
+            width: self.width.saturating_add(dx2).saturating_sub(dx1),
+            height: self.height.saturating_add(dy2).saturating_sub(dy1),
         }
     }
 
@@ -718,10 +718,10 @@ impl Rect {
     #[inline]
     pub const fn margins_added(&self, m: Margins) -> Rect {
         Rect {
-            x: self.x - m.left,
-            y: self.y - m.top,
-            width: self.width + m.left + m.right,
-            height: self.height + m.top + m.bottom,
+            x: self.x.saturating_sub(m.left),
+            y: self.y.saturating_sub(m.top),
+            width: self.width.saturating_add(m.left).saturating_add(m.right),
+            height: self.height.saturating_add(m.top).saturating_add(m.bottom),
         }
     }
 
@@ -729,18 +729,18 @@ impl Rect {
     #[inline]
     pub const fn margins_removed(&self, m: Margins) -> Rect {
         Rect {
-            x: self.x + m.left,
-            y: self.y + m.top,
-            width: self.width - m.left - m.right,
-            height: self.height - m.top - m.bottom,
+            x: self.x.saturating_add(m.left),
+            y: self.y.saturating_add(m.top),
+            width: self.width.saturating_sub(m.left).saturating_sub(m.right),
+            height: self.height.saturating_sub(m.top).saturating_sub(m.bottom),
         }
     }
 
     #[inline]
     pub const fn translated(&self, dx: i32, dy: i32) -> Rect {
         Rect {
-            x: self.x + dx,
-            y: self.y + dy,
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
             width: self.width,
             height: self.height,
         }

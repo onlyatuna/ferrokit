@@ -232,3 +232,23 @@ fn matrix4x4_singular_still_rejected() {
     tiny_singular.scale(1e-8, 0.0, 1e-8);
     assert!(tiny_singular.inverted().is_none());
 }
+
+#[test]
+fn f32_rounded_singular_matrices_are_rejected() {
+    // Rank 1 in exact arithmetic; the f32 roundings of 0.1/0.2/0.3/0.6 leave ~1e-8 relative noise.
+    assert!(Transform2D::from_row_matrix(0.1, 0.2, 0.3, 0.6, 0.0, 0.0).inverted().is_none());
+    let t = Transform { m11: 0.1, m12: 0.2, m21: 0.3, m22: 0.6, ..Transform::identity() };
+    assert!(t.inverted().is_none());
+}
+
+#[test]
+fn rect_adjust_translate_and_margins_saturate() {
+    use ferrokit_gui::geometry::primitives::Margins;
+    let r = Rect::new(i32::MAX - 1, i32::MIN + 1, i32::MAX, 10);
+    let _ = r.adjusted(i32::MAX, i32::MIN, i32::MAX, i32::MAX);
+    assert_eq!(r.translated(i32::MAX, i32::MIN).x, i32::MAX);
+    assert_eq!(r.translated(i32::MAX, i32::MIN).y, i32::MIN);
+    let m = Margins { left: i32::MAX, top: i32::MIN, right: i32::MAX, bottom: i32::MAX };
+    let _ = r.margins_added(m);
+    let _ = r.margins_removed(m);
+}
