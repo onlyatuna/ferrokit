@@ -99,7 +99,8 @@ fn assert_disjoint_and_inside(r: &Region) {
 #[test]
 fn region_ops_match_bitmap_reference() {
     let mut g = Lcg(0x1234_5678);
-    for _ in 0..300 {
+    let rounds = if cfg!(miri) { 4 } else { 300 };
+    for _ in 0..rounds {
         let ra: Vec<Rect> = (0..(g.next(6) + 1)).map(|_| random_rect(&mut g)).collect();
         let rb: Vec<Rect> = (0..(g.next(6) + 1)).map(|_| random_rect(&mut g)).collect();
         let a = Region::from_rects(&ra);
@@ -125,16 +126,18 @@ fn region_ops_match_bitmap_reference() {
     }
 }
 
+const GRID: i32 = if cfg!(miri) { 6 } else { 60 };
+
 #[test]
 fn region_coalesces_a_large_grid_to_one_rect() {
     // 60x60 unit cells united one by one: must collapse to a single rect.
-    let cells: Vec<Rect> = (0..60).flat_map(|y| (0..60).map(move |x| Rect::new(x, y, 1, 1))).collect();
+    let cells: Vec<Rect> = (0..GRID).flat_map(|y| (0..GRID).map(move |x| Rect::new(x, y, 1, 1))).collect();
     let r = Region::from_rects(&cells);
-    assert_eq!(r.rects(), &[Rect::new(0, 0, 60, 60)]);
+    assert_eq!(r.rects(), &[Rect::new(0, 0, GRID, GRID)]);
     // Removing the whole thing in strips leaves nothing.
     let mut shrinking = r.clone();
-    for y in 0..60 {
-        shrinking = shrinking.subtracted_rect(&Rect::new(0, y, 60, 1));
+    for y in 0..GRID {
+        shrinking = shrinking.subtracted_rect(&Rect::new(0, y, GRID, 1));
     }
     assert!(shrinking.is_empty());
 }
