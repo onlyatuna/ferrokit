@@ -806,6 +806,13 @@ fn mouse_buttons_from_mk(wparam: WPARAM) -> ferrokit_core::event::MouseButtons {
 }
 
 #[cfg(windows)]
+thread_local! {
+    /// Windows with an IME composition in progress (`WM_IME_STARTCOMPOSITION` seen).
+    static IME_COMPOSING: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+#[cfg(windows)]
 fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
     unsafe {
         let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
@@ -815,10 +822,11 @@ fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
 }
 
 /// `QWindowsWindow::setWindowLayered` + `setWindowOpacity` for a window that is not `LAYERED`:
-/// translucent (`opacity < 1`) means `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)`
-/// with `qRound(255 * opacity)`; opaque removes the style again and repaints.
+/// a translucent (`opacity < 1`) or click-through (`WindowTransparentForInput`) window needs
+/// `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)` with `qRound(255 * opacity)`;
+/// any other window drops the style again and repaints.
 #[cfg(windows)]
-fn apply_system_window_opacity(hwnd: HWND, opacity: f32) {
+fn apply_system_window_opacity(hwnd: HWND, opacity: f32, click_through: bool) {
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, IsWindowVisible, SetLayeredWindowAttributes, SetWindowLongPtrW,
@@ -827,7 +835,7 @@ fn apply_system_window_opacity(hwnd: HWND, opacity: f32) {
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let is_layered = ex_style & WS_EX_LAYERED as isize != 0;
-        let needs_layered = opacity < 1.0;
+        let needs_layered = click_through || opacity < 1.0;
         if needs_layered != is_layered {
             let new_style = if needs_layered {
                 ex_style | WS_EX_LAYERED as isize
@@ -1472,8 +1480,8 @@ unsafe fn native_window_proc_inner(
                 handle.post_event(
                     receiver,
                     Event::new_spontaneous(EventKind::Wheel {
-                        x: pt.x,
-                        y: pt.y,
+                        x: pos.x,
+                        y: pos.y,
                         pixel_delta_x: 0,
                         pixel_delta_y: 0,
                         angle_delta_x: delta_x,
@@ -1540,15 +1548,23 @@ unsafe fn native_window_proc_inner(
                 y: global_y,
             };
             windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
+                get_window_dpr(hwnd),
+            );
+            let global_pos = crate::screen::win32_screen::from_native_global_point(
+                ferrokit_gui::geometry::primitives::Point::new(global_x, global_y),
+                hwnd as isize,
+            );
 
             if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                 handle.post_event(
                     receiver,
                     Event::new_spontaneous(EventKind::ContextMenu {
-                        x: pt.x,
-                        y: pt.y,
-                        global_x,
-                        global_y,
+                        x: pos.x,
+                        y: pos.y,
+                        global_x: global_pos.x,
+                        global_y: global_pos.y,
                         reason: if keyboard {
                             ferrokit_core::event::ContextMenuReason::Keyboard
                         } else {
@@ -1607,6 +1623,7 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
+            let _ = IME_COMPOSING.try_with(|c| c.borrow_mut().insert(hwnd as isize));
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
@@ -1641,6 +1658,32 @@ unsafe fn native_window_proc_inner(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
+            // `QWindowsInputContext::endComposition`: a composition that was running is closed
+            // with an empty event so a cancelled preedit is cleared.
+            let was_composing = IME_COMPOSING
+                .try_with(|c| c.borrow_mut().remove(&(hwnd as isize)))
+                .unwrap_or(false);
+            if was_composing {
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::InputMethod {
+                        commit_string: String::new(),
+                        preedit_string: String::new(),
+                        cursor_position: 0,
+                    },
+                );
+                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                    handle.post_event(
+                        receiver,
+                        Event::new_spontaneous(EventKind::InputMethod {
+                            commit_string: String::new(),
+                            preedit_string: String::new(),
+                            cursor_position: 0,
+                        }),
+                    );
+                }
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         0x0218 => {
@@ -1874,6 +1917,11 @@ impl NativeWindow {
             None
         };
 
+        // A click-through window needs `WS_EX_LAYERED` with attributes (`setWindowLayered`).
+        if flags.contains(WindowFlags::CLICK_THROUGH) && !flags.contains(WindowFlags::LAYERED) {
+            apply_system_window_opacity(hwnd, 1.0, true);
+        }
+
         Ok(Self {
             hwnd,
             title: title.to_string(),
@@ -2019,24 +2067,20 @@ impl NativeWindow {
             };
             unsafe {
                 let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) as u32;
-                let mut new_style = if enabled {
+                let new_style = if enabled {
                     ex_style | WS_EX_TRANSPARENT
                 } else {
                     ex_style & !WS_EX_TRANSPARENT
                 };
-                // `qwindowswindow.cpp:498`: Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
-                // in combination with `WS_EX_TRANSPARENT`. If the window doesn't have `LAYERED` flag,
-                // dynamically manage `WS_EX_LAYERED` so mouse events actually pass through.
-                if !self.flags.contains(WindowFlags::LAYERED) {
-                    if enabled {
-                        new_style |= WS_EX_LAYERED;
-                    } else if self.opacity >= 1.0 {
-                        new_style &= !WS_EX_LAYERED;
-                    }
-                }
                 SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, new_style as isize);
             }
             self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
+            // `qwindowswindow.cpp:498`: Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
+            // in combination with `WS_EX_TRANSPARENT`, with layered attributes set so the window is
+            // drawn. A `LAYERED` window is managed by its presenter.
+            if !self.flags.contains(WindowFlags::LAYERED) {
+                apply_system_window_opacity(self.hwnd, self.opacity, enabled);
+            }
         }
     }
 
@@ -2082,7 +2126,11 @@ impl NativeWindow {
             p.set_opacity(opacity);
         }
         if changed && !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED) {
-            apply_system_window_opacity(self.hwnd, opacity);
+            apply_system_window_opacity(
+                self.hwnd,
+                opacity,
+                self.flags.contains(WindowFlags::CLICK_THROUGH),
+            );
         }
     }
 
