@@ -400,6 +400,8 @@ pub struct MockObjectData {
     pub retain_count: usize,
     /// `-[NSWindow releasedWhenClosed]`: AppKit's default is YES, so `close` releases the window.
     pub released_when_closed: bool,
+    /// `-[NSWindow styleMask]`, set by `initWithContentRect:styleMask:backing:defer:`.
+    pub style_mask: NSUInteger,
 }
 
 // SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
@@ -434,6 +436,7 @@ impl Default for MockObjectData {
             pixels: Vec::new(),
             retain_count: 1,
             released_when_closed: true,
+            style_mask: 0,
         }
     }
 }
@@ -684,7 +687,12 @@ impl ObjcMsg {
                 runtime.close_window(receiver);
                 return Id::NIL;
             } else if sel_name == "removeFromSuperview" {
-                if let Some(parent) = runtime.get_object_data(receiver).map(|d| d.parent) {
+                // A view without a superview has nothing to remove (and no superview retain).
+                if let Some(parent) = runtime
+                    .get_object_data(receiver)
+                    .map(|d| d.parent)
+                    .filter(|p| !p.is_nil())
+                {
                     runtime.update_object(parent, |p| p.children.retain(|c| *c != receiver));
                     runtime.update_object(receiver, |d| d.parent = Id::NIL);
                     // The superview's retain is gone.
@@ -857,7 +865,13 @@ impl ObjcMsg {
                     data.is_visible = true;
                 });
             } else if sel_name == "performClose:" {
-                runtime.close_window(receiver);
+                // AppKit only closes (and otherwise beeps) when the window has a close button.
+                let closable = runtime
+                    .get_object_data(receiver)
+                    .is_some_and(|d| d.style_mask & NS_WINDOW_STYLE_MASK_CLOSABLE != 0);
+                if closable {
+                    runtime.close_window(receiver);
+                }
             } else if sel_name == "orderOut:" {
                 runtime.update_object(receiver, |data| {
                     data.is_visible = false;
@@ -1141,6 +1155,7 @@ impl ObjcMsg {
             let runtime = MockObjcRuntime::instance();
             runtime.update_object(receiver, |data| {
                 data.frame = rect;
+                data.style_mask = style_mask;
             });
             receiver
         }
@@ -1354,7 +1369,8 @@ impl ObjcMsg {
     /// bytes, the layout AppKit's default bitmap format expects) into its pixel buffer.
     ///
     /// `receiver` is the `alloc`ed (+1) `NSBitmapImageRep`; the result is that +1 object, or nil
-    /// when the size is zero, `rgba` is too short, or AppKit fails.
+    /// when the size is zero, `rgba` is too short, or AppKit fails. On nil the receiver is
+    /// already released, so the caller must not release it again.
     ///
     /// # Safety
     /// See [`ObjcMsg`].
@@ -1367,12 +1383,15 @@ impl ObjcMsg {
         if receiver.is_nil() {
             return Id::NIL;
         }
-        let Some(len) = width.checked_mul(height).and_then(|n| n.checked_mul(4)) else {
+        let len = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(4))
+            .filter(|&n| n != 0 && rgba.len() >= n);
+        let Some(len) = len else {
+            // Consume the +1 `alloc`: an uninitialized object must still be released.
+            Self::send_0(receiver, Sel::register("release"));
             return Id::NIL;
         };
-        if len == 0 || rgba.len() < len {
-            return Id::NIL;
-        }
 
         #[cfg(not(target_os = "macos"))]
         {
