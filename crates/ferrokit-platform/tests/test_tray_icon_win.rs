@@ -13,7 +13,7 @@ use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CONTEXTMENU,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
 };
 
 fn pixmap() -> Pixmap {
@@ -37,12 +37,29 @@ fn the_release_that_ends_a_double_click_is_not_a_click() {
 
     send(tray.hwnd(), WM_LBUTTONDBLCLK);
     send(tray.hwnd(), NIN_SELECT);
-    send(tray.hwnd(), WM_LBUTTONUP);
+    send(tray.hwnd(), NIN_SELECT);
     assert_eq!(
         *seen.lock(),
         vec![TrayActivation::DoubleClick, TrayActivation::Trigger],
         "double click, ignored release, then an ordinary click"
     );
+}
+
+/// Under `NOTIFYICON_VERSION_4` the raw button-up messages accompany `NIN_SELECT` /
+/// `WM_CONTEXTMENU`; Qt acts on the latter only, so a click is one `Trigger`, not two.
+#[test]
+fn raw_button_up_messages_do_not_activate_the_icon() {
+    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    tray.on_activated.connect(move |a| sink.lock().push(*a));
+
+    send(tray.hwnd(), WM_LBUTTONUP);
+    send(tray.hwnd(), WM_RBUTTONUP);
+    assert!(seen.lock().is_empty(), "button-up messages alone activate nothing");
+    send(tray.hwnd(), NIN_SELECT);
+    send(tray.hwnd(), WM_CONTEXTMENU);
+    assert_eq!(*seen.lock(), vec![TrayActivation::Trigger, TrayActivation::Context]);
 }
 
 #[test]
