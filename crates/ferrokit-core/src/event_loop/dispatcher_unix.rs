@@ -314,9 +314,20 @@ impl EpollReactor {
         self.sync_fd(key.0);
     }
 
+    /// Removes `notifier` only if it is the one registered for its `(fd, kind)`: a stale
+    /// notifier of a closed descriptor must not remove a live one registered for the reused fd.
     pub fn unregister_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
         let key = (notifier.descriptor(), notifier.event_type());
-        self.socket_notifiers.lock().unwrap().remove(&key);
+        {
+            let mut notifiers = self.socket_notifiers.lock().unwrap();
+            if !notifiers
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, notifier))
+            {
+                return;
+            }
+            notifiers.remove(&key);
+        }
         self.sync_fd(key.0);
     }
 
@@ -730,5 +741,28 @@ mod tests {
         assert_eq!(*triggered_fd.lock().unwrap(), None);
 
         dispatcher.unregister_socket_notifier(&notifier);
+    }
+
+    /// Unregistering a stale notifier whose fd was reused does not remove the live notifier
+    /// registered for that fd (Qt `QEventDispatcherUNIX::unregisterSocketNotifier` matches the
+    /// notifier itself).
+    #[test]
+    fn test_unregistering_a_stale_notifier_keeps_the_live_one_for_a_reused_fd() {
+        let dispatcher = UnixEventDispatcher::new();
+        let fd = 43;
+        let stale = Arc::new(SocketNotifier::new(fd, SocketEvent::Read));
+        let live = Arc::new(SocketNotifier::new(fd, SocketEvent::Read));
+        let hits = Arc::new(Mutex::new(0));
+        let sink = Arc::clone(&hits);
+        live.activated().connect(move |_| *sink.lock().unwrap() += 1);
+
+        dispatcher.register_socket_notifier(&stale);
+        dispatcher.register_socket_notifier(&live);
+        dispatcher.unregister_socket_notifier(&stale);
+
+        dispatcher.reactor.trigger_socket_event(fd, SocketEvent::Read);
+        dispatcher.process_events(false, None);
+        assert_eq!(*hits.lock().unwrap(), 1, "the live notifier was removed");
+        dispatcher.unregister_socket_notifier(&live);
     }
 }

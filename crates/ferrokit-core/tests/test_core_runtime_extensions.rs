@@ -449,3 +449,16 @@ fn test_filesystem_watcher_notifications() {
     // Cleanup
     let _ = fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_animation_step_with_huge_delta_does_not_overflow() {
+    let mut anim = VariantAnimation::new();
+    anim.set_duration(1000);
+    anim.set_loop_count(-1);
+    anim.set_start_value(0.0f32);
+    anim.set_end_value(1.0f32);
+    anim.start();
+    assert!(anim.step(1));
+    // A saturating advance finishes the loop instead of overflowing the elapsed time.
+    assert!(anim.step(u64::MAX));
+}

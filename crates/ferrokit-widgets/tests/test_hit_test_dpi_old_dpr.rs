@@ -144,3 +144,19 @@ fn successive_dpi_changes_preserve_old_dpr() {
         "second transition: 1.25 -> 1.5"
     );
 }
+
+#[test]
+fn a_dispatcher_told_the_tree_ratio_reports_it_as_old_dpr() {
+    let history = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let root: WidgetRef = Rc::new(RefCell::new(Box::new(DpiHistoryWidget::new(Arc::clone(
+        &history,
+    )))));
+    let mut dispatcher = EventTreeDispatcher::new();
+    // A window applied 2.0 itself; the dispatcher did not see that event.
+    dispatcher.set_device_pixel_ratio(2.0);
+
+    let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x: 144, dpi_y: 144 });
+    dispatcher.dispatch_event(&root, &mut ev);
+
+    assert_eq!(history.lock().clone(), vec![(2.0, 1.5)]);
+}

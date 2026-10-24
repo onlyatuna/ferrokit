@@ -91,6 +91,8 @@ fn disconnect_receiver_during_emit_stops_that_receivers_slots() {
     signal.emit(&1);
 
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // The first slot holds a clone of the signal: break that cycle so the test leaks nothing.
+    signal.disconnect_all();
 }
 
 #[test]

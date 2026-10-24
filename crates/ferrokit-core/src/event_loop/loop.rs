@@ -182,6 +182,35 @@ fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
     true
 }
 
+thread_local! {
+    /// Receivers whose `DeferredDelete` an event filter consumed on this thread. Keyed by
+    /// receiver so a nested send to another object cannot change an outer delivery's outcome.
+    static DEFERRED_DELETE_FILTERED: std::cell::RefCell<Vec<ObjectId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_deferred_delete_filtered(receiver: ObjectId, event: &Event) {
+    if matches!(event.kind, EventKind::DeferredDelete { .. }) {
+        DEFERRED_DELETE_FILTERED.with(|list| list.borrow_mut().push(receiver));
+    }
+}
+
+/// Sends a posted `DeferredDelete` and destroys the receiver unless an event filter consumed the
+/// event: Qt deletes the object in `QObject::event`, which a consuming filter never reaches
+/// (qcoreapplication.cpp:1118-1131 notify; qobject.cpp `QObject::event` DeferredDelete).
+fn deliver_deferred_delete(receiver: ObjectId, event: &mut Event) {
+    DEFERRED_DELETE_FILTERED.with(|list| list.borrow_mut().retain(|id| *id != receiver));
+    let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, event)));
+    let filtered = DEFERRED_DELETE_FILTERED.with(|list| {
+        let mut list = list.borrow_mut();
+        let before = list.len();
+        list.retain(|id| *id != receiver);
+        list.len() != before
+    });
+    if !filtered {
+        let _ = catch_unwind(AssertUnwindSafe(|| finish_deferred_delete(receiver)));
+    }
+}
+
 pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     // QScopedScopeLevelCounter in QCoreApplication::notify (qcoreapplication.cpp:1118).
     let _scope = ScopeLevelGuard::enter();
@@ -198,6 +227,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         }
     }
     if app_filters_consumed(receiver, event) {
+        note_deferred_delete_filtered(receiver, event);
         return true;
     }
 
@@ -228,6 +258,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     }
 
     if object_filters_consumed(receiver, event) {
+        note_deferred_delete_filtered(receiver, event);
         return true;
     }
 
@@ -1030,8 +1061,7 @@ impl EventLoop {
             };
             // As in `pump_posted_events`: the panic hook logs a raising handler, and the receiver
             // is unregistered all the same.
-            let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
-            let _ = catch_unwind(AssertUnwindSafe(|| finish_deferred_delete(receiver)));
+            deliver_deferred_delete(receiver, &mut event);
             delivered += 1;
         }
         delivered
@@ -1366,10 +1396,10 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 
         // Python/PySide6 reports a raising handler and keeps delivering later events; the panic
         // hook logs it. The in-flight event is dropped, as Python drops it.
-        let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
-
         if let EventKind::DeferredDelete { .. } = event.kind {
-            finish_deferred_delete(receiver);
+            deliver_deferred_delete(receiver, &mut event);
+        } else {
+            let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, &mut event)));
         }
 
         delivered_count += 1;
@@ -2924,6 +2954,143 @@ mod tests {
         el.send_posted_events();
         assert_eq!(*log.lock().unwrap(), vec!["b", "c", "outer returns", "d"]);
         assert!(el.queue().lock().unwrap().events.is_empty());
+    }
+
+    /// An event filter that consumes the `DeferredDelete` keeps the object alive: Qt deletes in
+    /// `QObject::event`, which a consuming filter never lets run.
+    #[test]
+    fn test_a_filter_consuming_deferred_delete_keeps_the_object_alive() {
+        struct Consumer(ObjectData, Arc<AtomicBool>);
+        impl QObject for Consumer {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+            fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
+                self.1.store(true, Ordering::SeqCst);
+                true
+            }
+        }
+        struct Target(ObjectData);
+        impl QObject for Target {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+        }
+
+        let el = EventLoop::new();
+        let consumed = Arc::new(AtomicBool::new(false));
+        let mut filter = Consumer(ObjectData::new(ObjectId::next()), Arc::clone(&consumed));
+        let filter_id = filter.0.id();
+        let mut target = Target(ObjectData::new(ObjectId::next()));
+        let target_id = target.0.id();
+        target.0.install_event_filter(filter_id);
+        // SAFETY: both objects stay on this thread, unmoved, until unregistered below.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
+        }
+        ThreadContext::set_current_loop_level(1);
+        target.0.delete_later();
+        el.process_events(false);
+        ThreadContext::set_current_loop_level(0);
+        assert!(consumed.load(Ordering::SeqCst), "the DeferredDelete never reached the filter");
+        assert!(
+            crate::object::qobject::registration_thread_of(target_id).is_some(),
+            "a consumed DeferredDelete must not destroy the object"
+        );
+        // SAFETY: registered above, unregistered once.
+        unsafe {
+            crate::object::unregister_qobject(target_id);
+            crate::object::unregister_qobject(filter_id);
+        }
+    }
+
+    /// A nested `DeferredDelete` that a filter consumes for another object does not keep the
+    /// outer object alive.
+    #[test]
+    fn test_a_nested_filtered_deferred_delete_does_not_save_the_outer_object() {
+        struct Consumer(ObjectData, Arc<AtomicBool>);
+        impl QObject for Consumer {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+            fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
+                self.1.store(true, Ordering::SeqCst);
+                true
+            }
+        }
+        struct Nester(ObjectData, ObjectId);
+        impl QObject for Nester {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+            fn event_filter(&mut self, _watched: ObjectId, event: &mut Event) -> bool {
+                if matches!(event.kind, EventKind::DeferredDelete { .. }) {
+                    let mut nested = Event::new(EventKind::DeferredDelete {
+                        loop_level: 0,
+                        scope_level: 0,
+                    });
+                    send_event(self.1, &mut nested);
+                }
+                false
+            }
+        }
+        struct Plain(ObjectData);
+        impl QObject for Plain {
+            fn object_data(&self) -> &ObjectData {
+                &self.0
+            }
+            fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+                crate::object::ObjectDataMut::new(&mut self.0)
+            }
+        }
+
+        let el = EventLoop::new();
+        let consumed = Arc::new(AtomicBool::new(false));
+        let mut filter = Consumer(ObjectData::new(ObjectId::next()), Arc::clone(&consumed));
+        let filter_id = filter.0.id();
+        let mut shielded = Plain(ObjectData::new(ObjectId::next()));
+        let shielded_id = shielded.0.id();
+        shielded.0.install_event_filter(filter_id);
+        let mut nester = Nester(ObjectData::new(ObjectId::next()), shielded_id);
+        let nester_id = nester.0.id();
+        let mut outer = Plain(ObjectData::new(ObjectId::next()));
+        let outer_id = outer.0.id();
+        outer.0.install_event_filter(nester_id);
+        // SAFETY: the objects stay on this thread, unmoved, until unregistered below.
+        unsafe {
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut shielded));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut nester));
+            register_qobject_ptr(NonNull::new_unchecked(&raw mut outer));
+        }
+        ThreadContext::set_current_loop_level(1);
+        outer.0.delete_later();
+        el.process_events(false);
+        ThreadContext::set_current_loop_level(0);
+        assert!(consumed.load(Ordering::SeqCst), "the nested DeferredDelete never reached the filter");
+        assert!(
+            crate::object::qobject::registration_thread_of(outer_id).is_none(),
+            "the outer object must be destroyed"
+        );
+        // SAFETY: registered above, unregistered once.
+        unsafe {
+            crate::object::unregister_qobject(shielded_id);
+            crate::object::unregister_qobject(nester_id);
+            crate::object::unregister_qobject(filter_id);
+        }
     }
 
     /// An object deleted later from the outer loop survives a nested loop and is deleted once

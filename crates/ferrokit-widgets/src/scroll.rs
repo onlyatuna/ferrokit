@@ -130,9 +130,9 @@ impl ScrollBar {
         if delta == 0 {
             return false;
         }
-        let steps = self.single_step.get() * 3;
+        let steps = self.single_step.get().saturating_mul(3);
         let before = self.value.get();
-        self.set_value(before + if delta > 0 { -steps } else { steps });
+        self.set_value(before.saturating_add(if delta > 0 { -steps } else { steps }));
         self.value.get() != before
     }
 
@@ -153,18 +153,19 @@ impl ScrollBar {
 
     fn thumb_geometry(&self) -> (i32, i32) {
         let track_len = self.track_length();
-        let range = (self.maximum.get() - self.minimum.get()).max(0);
+        let range = self.maximum.get().saturating_sub(self.minimum.get()).max(0);
         if range == 0 {
             return (0, track_len);
         }
 
-        let total_steps = range + self.page_step.get();
+        let total_steps = range as f32 + self.page_step.get() as f32;
         let thumb_len =
             ((track_len as f32 * self.page_step.get() as f32) / total_steps as f32).round() as i32;
         let thumb_len = thumb_len.clamp(16, track_len.max(16));
 
         let available_track = (track_len - thumb_len).max(0);
-        let thumb_offset = ((available_track as f32 * (self.value.get() - self.minimum.get()) as f32)
+        let thumb_offset = ((available_track as f32
+            * self.value.get().saturating_sub(self.minimum.get()) as f32)
             / range as f32)
             .round() as i32;
 
@@ -328,10 +329,10 @@ impl Widget for ScrollBar {
             self.drag_start_value.set(self.value.get());
         } else if coord < thumb_off {
             // Page up
-            self.set_value(self.value.get() - self.page_step.get());
+            self.set_value(self.value.get().saturating_sub(self.page_step.get()));
         } else {
             // Page down
-            self.set_value(self.value.get() + self.page_step.get());
+            self.set_value(self.value.get().saturating_add(self.page_step.get()));
         }
     }
 
@@ -351,15 +352,15 @@ impl Widget for ScrollBar {
             Orientation::Vertical => pos.y,
         };
 
-        let delta_pixels = coord - self.drag_start_coord.get();
+        let delta_pixels = coord.saturating_sub(self.drag_start_coord.get());
         let track_len = self.track_length();
         let (_, thumb_len) = self.thumb_geometry();
         let available_track = (track_len - thumb_len).max(1);
-        let range = self.maximum.get() - self.minimum.get();
+        let range = self.maximum.get().saturating_sub(self.minimum.get());
 
         let delta_val =
             ((delta_pixels as f32 * range as f32) / available_track as f32).round() as i32;
-        self.set_value(self.drag_start_value.get() + delta_val);
+        self.set_value(self.drag_start_value.get().saturating_add(delta_val));
     }
 
     fn wheel_event(&mut self, _pos: Point, delta_y: i32, _modifiers: u32) {
@@ -423,6 +424,11 @@ pub struct ScrollArea {
     scroll_y: std::cell::Cell<i32>,
     /// The bar a mouse press started on; moves and the release go to it.
     bar_grab: std::cell::Cell<Option<Orientation>>,
+    /// Raised by the content widget's resizes (`set_widget` subscribes), also before the content
+    /// has a parent link; consumed by `sync_content`.
+    content_resized: std::rc::Rc<std::cell::Cell<bool>>,
+    /// `update_scrollbars` is running: its own resizes of the content do not start another pass.
+    updating: std::cell::Cell<bool>,
 }
 
 impl ScrollArea {
@@ -444,11 +450,24 @@ impl ScrollArea {
             scroll_x: std::cell::Cell::new(0),
             scroll_y: std::cell::Cell::new(0),
             bar_grab: std::cell::Cell::new(None),
+            content_resized: std::rc::Rc::new(std::cell::Cell::new(false)),
+            updating: std::cell::Cell::new(false),
         }
     }
 
     /// Sets the child content widget inside the scroll area.
     pub fn set_widget(&mut self, widget: WidgetRef) {
+        // `QScrollArea::setWidget` installs itself as the content's event filter: watch its
+        // resizes from now on, with or without a parent link.
+        if let Some(old) = &self.widget {
+            if let Ok(old) = old.try_borrow() {
+                old.widget_base().subscribe_resize(None);
+            }
+        }
+        widget
+            .borrow()
+            .widget_base()
+            .subscribe_resize(Some(self.content_resized.clone()));
         self.base.add_child(widget.clone());
         self.widget = Some(widget);
         self.update_scrollbars();
@@ -459,18 +478,22 @@ impl ScrollArea {
     }
 
     pub fn horizontal_scroll_bar(&self) -> &ScrollBar {
+        self.sync_content();
         &self.h_scrollbar
     }
 
     pub fn horizontal_scroll_bar_mut(&mut self) -> &mut ScrollBar {
+        self.sync_content();
         &mut self.h_scrollbar
     }
 
     pub fn vertical_scroll_bar(&self) -> &ScrollBar {
+        self.sync_content();
         &self.v_scrollbar
     }
 
     pub fn vertical_scroll_bar_mut(&mut self) -> &mut ScrollBar {
+        self.sync_content();
         &mut self.v_scrollbar
     }
 
@@ -485,10 +508,12 @@ impl ScrollArea {
     }
 
     pub fn scroll_position(&self) -> Point {
+        self.sync_content();
         Point::new(self.scroll_x.get(), self.scroll_y.get())
     }
 
     pub fn set_scroll_position(&mut self, x: i32, y: i32) {
+        self.sync_content();
         self.h_scrollbar.set_value(x);
         self.v_scrollbar.set_value(y);
         self.scroll_x.set(self.h_scrollbar.value());
@@ -503,6 +528,7 @@ impl ScrollArea {
 
     /// Calculates the inner viewport bounds excluding any active scrollbars.
     pub fn viewport_rect(&self) -> Rect {
+        self.sync_content();
         let geom = self.base.geometry();
         let bar_size = 10;
         let v_visible = self.v_scrollbar.is_visible();
@@ -565,7 +591,23 @@ impl ScrollArea {
         moved
     }
 
+    /// Runs the scroll bar pass a resize of the content asked for.
+    fn sync_content(&self) {
+        if self.content_resized.get() && !self.updating.get() {
+            self.update_scrollbars();
+        }
+    }
+
     fn update_scrollbars(&self) {
+        if self.updating.replace(true) {
+            return;
+        }
+        self.update_scrollbars_pass();
+        self.updating.set(false);
+        self.content_resized.set(false);
+    }
+
+    fn update_scrollbars_pass(&self) {
         let geom = self.base.geometry();
         if geom.width <= 0 || geom.height <= 0 {
             return;
@@ -612,12 +654,12 @@ impl ScrollArea {
         if show_v {
             self.v_scrollbar
                 .set_geometry(Rect::new(geom.width - bar_size, 0, bar_size, view_h));
-            let max_v = (content_size.height - view_h).max(0);
+            let max_v = content_size.height.saturating_sub(view_h).max(0);
             self.v_scrollbar.set_range(0, max_v);
             self.v_scrollbar.set_page_step(view_h);
         } else if self.v_policy == ScrollBarPolicy::AlwaysOff {
             // Qt keeps the range of a bar that is switched off; the wheel still scrolls.
-            self.v_scrollbar.set_range(0, (content_size.height - view_h).max(0));
+            self.v_scrollbar.set_range(0, content_size.height.saturating_sub(view_h).max(0));
             self.v_scrollbar.set_page_step(view_h);
         } else {
             self.v_scrollbar.set_range(0, 0);
@@ -627,11 +669,11 @@ impl ScrollArea {
         if show_h {
             self.h_scrollbar
                 .set_geometry(Rect::new(0, geom.height - bar_size, view_w, bar_size));
-            let max_h = (content_size.width - view_w).max(0);
+            let max_h = content_size.width.saturating_sub(view_w).max(0);
             self.h_scrollbar.set_range(0, max_h);
             self.h_scrollbar.set_page_step(view_w);
         } else if self.h_policy == ScrollBarPolicy::AlwaysOff {
-            self.h_scrollbar.set_range(0, (content_size.width - view_w).max(0));
+            self.h_scrollbar.set_range(0, content_size.width.saturating_sub(view_w).max(0));
             self.h_scrollbar.set_page_step(view_w);
         } else {
             self.h_scrollbar.set_range(0, 0);
@@ -671,6 +713,7 @@ impl QObject for ScrollArea {
     }
 
     fn event(&mut self, event: &mut Event) -> bool {
+        self.sync_content();
         match &event.kind {
             EventKind::Wheel {
                 angle_delta_x,
@@ -757,6 +800,13 @@ impl Widget for ScrollArea {
         Size::new(200, 200)
     }
 
+    fn child_resized(&self, child: ObjectId) {
+        let Some(content) = &self.widget else { return };
+        if content.try_borrow().is_ok_and(|c| c.id() == child) {
+            self.update_scrollbars();
+        }
+    }
+
     fn is_visible(&self) -> bool {
         self.base.is_visible()
     }
@@ -831,6 +881,7 @@ impl Widget for ScrollArea {
     }
 
     fn paint_over_children(&mut self, painter: &mut Painter) {
+        self.sync_content();
         if self.v_scrollbar.is_visible() {
             painter.save();
             let g = self.v_scrollbar.geometry();

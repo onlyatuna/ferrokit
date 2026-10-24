@@ -242,7 +242,7 @@ impl VariantAnimation {
             return false;
         }
 
-        let new_time = self.current_time_ms + delta_ms;
+        let new_time = self.current_time_ms.saturating_add(delta_ms);
         if new_time >= self.duration_ms {
             self.current_time_ms = self.duration_ms;
             let val = self.current_value();

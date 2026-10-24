@@ -126,7 +126,9 @@ impl FrameStyle {
             FrameShape::NoFrame => 0,
             FrameShape::Box | FrameShape::HLine | FrameShape::VLine => match self.shadow {
                 FrameShadow::Plain => lw,
-                FrameShadow::Raised | FrameShadow::Sunken => lw * 2 + mlw,
+                FrameShadow::Raised | FrameShadow::Sunken => {
+                    lw.saturating_mul(2).saturating_add(mlw)
+                }
             },
             FrameShape::Panel => lw,
             FrameShape::WinPanel => 2,
@@ -138,10 +140,10 @@ impl FrameStyle {
     pub fn contents_rect(&self, frame_rect: Rect) -> Rect {
         let fw = self.frame_width();
         Rect::new(
-            frame_rect.x + fw,
-            frame_rect.y + fw,
-            (frame_rect.width - 2 * fw).max(0),
-            (frame_rect.height - 2 * fw).max(0),
+            frame_rect.x.saturating_add(fw),
+            frame_rect.y.saturating_add(fw),
+            frame_rect.width.saturating_sub(fw.saturating_mul(2)).max(0),
+            frame_rect.height.saturating_sub(fw.saturating_mul(2)).max(0),
         )
     }
 
@@ -150,7 +152,9 @@ impl FrameStyle {
         let lw = self.line_width.max(0);
         match self.shadow {
             FrameShadow::Plain => lw,
-            FrameShadow::Raised | FrameShadow::Sunken => lw * 2 + self.mid_line_width.max(0),
+            FrameShadow::Raised | FrameShadow::Sunken => lw
+                .saturating_mul(2)
+                .saturating_add(self.mid_line_width.max(0)),
         }
     }
 
@@ -168,6 +172,9 @@ impl FrameStyle {
         let role = |r: ColorRole| palette.color(group, r);
         let lw = self.line_width.max(0);
         let mlw = self.mid_line_width.max(0);
+        // A ring whose inset reaches half the rect paints nothing, so a huge line width never
+        // needs more rings than this.
+        let rings = rect.width.min(rect.height).saturating_add(1) / 2;
         let sunken = self.shadow == FrameShadow::Sunken;
         let (top_left, bottom_right) = if sunken {
             (role(ColorRole::Dark), role(ColorRole::Light))
@@ -180,20 +187,22 @@ impl FrameStyle {
             FrameShape::NoFrame => {}
             FrameShape::Box => match self.shadow {
                 FrameShadow::Plain => {
-                    for i in 0..lw {
+                    for i in 0..lw.min(rings) {
                         draw_ring(painter, rect, i, foreground, foreground);
                     }
                 }
                 FrameShadow::Raised | FrameShadow::Sunken => {
                     // qDrawShadeRect: outer bevel, mid band, reversed inner bevel (etched box).
-                    for i in 0..lw {
+                    for i in 0..lw.min(rings) {
                         draw_ring(painter, rect, i, top_left, bottom_right);
                     }
                     let mid = role(ColorRole::Mid);
-                    for i in lw..lw + mlw {
+                    for i in lw.min(rings)..lw.saturating_add(mlw).min(rings) {
                         draw_ring(painter, rect, i, mid, mid);
                     }
-                    for i in lw + mlw..2 * lw + mlw {
+                    for i in lw.saturating_add(mlw).min(rings)
+                        ..lw.saturating_mul(2).saturating_add(mlw).min(rings)
+                    {
                         draw_ring(painter, rect, i, bottom_right, top_left);
                     }
                 }
@@ -205,7 +214,7 @@ impl FrameStyle {
                 } else {
                     (top_left, bottom_right)
                 };
-                for i in 0..lw {
+                for i in 0..lw.min(rings) {
                     draw_ring(painter, rect, i, tl, br);
                 }
             }
@@ -294,20 +303,20 @@ impl FrameStyle {
                     let band = if horizontal {
                         RectF::new(
                             rect.x as f32,
-                            (rect.y + offset) as f32,
+                            rect.y.saturating_add(offset) as f32,
                             rect.width as f32,
                             size as f32,
                         )
                     } else {
                         RectF::new(
-                            (rect.x + offset) as f32,
+                            rect.x.saturating_add(offset) as f32,
                             rect.y as f32,
                             size as f32,
                             rect.height as f32,
                         )
                     };
                     painter.fill_rect(band, color);
-                    offset += size;
+                    offset = offset.saturating_add(size);
                 }
             }
         }
@@ -558,7 +567,10 @@ impl Widget for Frame {
             _ => match self.base.layout.borrow().as_ref() {
                 Some(layout) => {
                     let hint = layout.size_hint();
-                    Size::new(hint.width + 2 * fw, hint.height + 2 * fw)
+                    Size::new(
+                        hint.width.saturating_add(fw.saturating_mul(2)),
+                        hint.height.saturating_add(fw.saturating_mul(2)),
+                    )
                 }
                 None => Size::new(-1, -1),
             },
@@ -583,7 +595,10 @@ impl Widget for Frame {
             _ => match self.base.layout.borrow().as_ref() {
                 Some(layout) => {
                     let min = layout.minimum_size();
-                    Size::new(min.width + 2 * fw, min.height + 2 * fw)
+                    Size::new(
+                        min.width.saturating_add(fw.saturating_mul(2)),
+                        min.height.saturating_add(fw.saturating_mul(2)),
+                    )
                 }
                 None => Size::new(-1, -1),
             },

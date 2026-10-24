@@ -340,16 +340,41 @@ fn focus_log(log: &Log) -> Vec<String> {
     log.borrow().iter().filter(|e| e.contains(":In:") || e.contains(":Out:")).cloned().collect()
 }
 
-/// `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:302-336): focus on the old page is
-/// cleared before the page is hidden and moves to the new page's first Tab child, never to a
-/// widget outside the stack.
+/// `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:291-336): `prev->clearFocus()` does not
+/// touch a focus widget below the page, so hiding the page runs `hide_helper`'s
+/// `focusNextChild()` first (qwidget.cpp:8226-8238), which lands outside the stack here; then the
+/// focus moves to the new page's first Tab child.
 #[test]
-fn a_page_switch_keeps_the_focus_in_the_stack() {
+fn a_page_switch_moves_focus_below_the_old_page_out_then_into_the_new_page() {
     let (_root, s, ws, d, log) = stack_window("a0");
     StackedWidget::set_current_index(&s, 1);
     assert_eq!(focused(&d, &ws), Some("b1"));
-    assert_eq!(focus_log(&log), ["a0:Out:Other", "b1:In:Other"]);
-    assert!(!ws[6].borrow().has_focus(), "o must not get the focus");
+    assert_eq!(focus_log(&log), ["a0:Out:Tab", "o:In:Tab", "o:Out:Other", "b1:In:Other"]);
+    assert!(!ws[6].borrow().has_focus(), "o does not keep the focus");
+}
+
+/// With nothing outside the stack to take the handover, the focus is cleared and then set into
+/// the new page.
+#[test]
+fn a_page_switch_with_no_widget_outside_the_stack_still_focuses_the_new_page() {
+    let (_root, s, ws, d, log) = stack_window("a0");
+    set_widget_enabled(&ws[6], false);
+    log.borrow_mut().clear();
+    StackedWidget::set_current_index(&s, 1);
+    assert_eq!(focused(&d, &ws), Some("b1"));
+}
+
+/// The page itself holding the focus: `isAncestorOf` counts the widget itself
+/// (qwidget.cpp `QWidget::isAncestorOf`: `child == this` returns true), so `clearFocus()` runs and
+/// the focus then moves into the new page.
+#[test]
+fn focus_on_the_page_itself_moves_into_the_new_page() {
+    let (root, s, ws, mut d, log) = stack_window("a0");
+    let page0 = ws[0].borrow().id();
+    assert!(d.focus_manager_mut().set_focus(&root, Some(page0), FocusReason::Other));
+    log.borrow_mut().clear();
+    StackedWidget::set_current_index(&s, 1);
+    assert_eq!(focused(&d, &ws), Some("b1"));
 }
 
 /// Switching back gives the focus to the page's own focus widget (`next->focusWidget()`).
@@ -672,4 +697,29 @@ fn escape_in_a_submenu_announces_its_hide() {
     assert!(!top.borrow().is_visible());
     assert_eq!(*log.lock().unwrap(), ["sub hide", "top hide"]);
     CHAIN.with(|c| c.borrow_mut().clear());
+}
+
+/// `hide_helper`'s loop stops at `isWindow()`, not at a widget whose parent link is missing: a
+/// container hidden before `adopt_tree` ran still hands its focus widget on.
+#[test]
+fn hiding_an_unadopted_container_moves_the_focus() {
+    let log = Log::default();
+    let root = probe("root", FocusPolicy::NoFocus, &log);
+    let a = probe("a", FocusPolicy::StrongFocus, &log);
+    let b = probe("b", FocusPolicy::StrongFocus, &log);
+    let c = probe("c", FocusPolicy::NoFocus, &log);
+    root.borrow_mut().add_child(b.clone());
+    adopt_tree(&root);
+    // `c` joins after the adoption, so it and `a` have no parent link.
+    c.borrow_mut().add_child(a.clone());
+    root.borrow_mut().add_child(c.clone());
+    let mut d = EventTreeDispatcher::new();
+    let id = a.borrow().id();
+    assert!(d.focus_manager_mut().set_focus(&root, Some(id), FocusReason::Other));
+    assert!(c.borrow().parent_widget().is_none(), "precondition: c is not adopted");
+
+    set_widget_visible(&c, false);
+
+    assert_eq!(d.focus_manager().focused_widget_id(), Some(b.borrow().id()));
+    assert!(!a.borrow().has_focus());
 }
