@@ -204,13 +204,15 @@ impl BackingStore {
         let phys_dx = (dx as f32 * self.dpr).round() as i32;
         let phys_dy = (dy as f32 * self.dpr).round() as i32;
 
-        let w = self.pixmap.physical_width() as i32;
-        let h = self.pixmap.physical_height() as i32;
+        // i64 so i32::MIN shifts and huge rects cannot overflow.
+        let w = self.pixmap.physical_width() as i64;
+        let h = self.pixmap.physical_height() as i64;
+        let (phys_dx, phys_dy) = (phys_dx as i64, phys_dy as i64);
 
-        let left = src_rect.x.max(0).max(-phys_dx);
-        let top = src_rect.y.max(0).max(-phys_dy);
-        let right = (src_rect.x + src_rect.width).min(w).min(w - phys_dx);
-        let bottom = (src_rect.y + src_rect.height).min(h).min(h - phys_dy);
+        let left = (src_rect.x as i64).max(0).max(-phys_dx);
+        let top = (src_rect.y as i64).max(0).max(-phys_dy);
+        let right = (src_rect.x as i64 + src_rect.width as i64).min(w).min(w - phys_dx);
+        let bottom = (src_rect.y as i64 + src_rect.height as i64).min(h).min(h - phys_dy);
         if left >= right || top >= bottom {
             return true;
         }
@@ -218,6 +220,9 @@ impl BackingStore {
         let height = bottom - top;
         let dst_x = left + phys_dx;
         let dst_y = top + phys_dy;
+        let (w, phys_dy) = (w as i32, phys_dy as i32);
+        let (left, top, width, height, dst_x, dst_y) =
+            (left as i32, top as i32, width as i32, height as i32, dst_x as i32, dst_y as i32);
         let dst_slice = self.pixmap.data_mut();
         let bpp = 4;
         let stride = w as usize * bpp;

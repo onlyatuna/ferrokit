@@ -244,9 +244,20 @@ impl HtmlImporter {
             }
             if let Some(raw_name) = self.tag(inner) {
                 // Raw text element: consume everything up to its closing tag.
+                // Case-insensitive search without lowercasing a copy of the rest of the
+                // document, which made every raw element O(remaining length).
                 let closing = format!("</{raw_name}");
-                let lowered = rest.to_ascii_lowercase();
-                let (content, after) = match lowered.find(&closing) {
+                let found = rest.match_indices("</").map(|(pos, _)| pos).find(|&pos| {
+                    rest.as_bytes()[pos..]
+                        .get(..closing.len())
+                        .is_some_and(|b| b.eq_ignore_ascii_case(closing.as_bytes()))
+                        // `</styles` is not the end tag of `<style>`.
+                        && matches!(
+                            rest.as_bytes().get(pos + closing.len()),
+                            None | Some(b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+                        )
+                });
+                let (content, after) = match found {
                     Some(pos) => {
                         let after_tag = rest[pos..].find('>').map_or(rest.len(), |gt| pos + gt + 1);
                         (&rest[..pos], &rest[after_tag..])
@@ -659,7 +670,8 @@ fn apply_css(
     preformatted
 }
 
-/// Parses a CSS/HTML color: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(r,g,b)`, `rgba(r,g,b,a)` or a basic named color.
+/// Parses a CSS/HTML color: `#rgb`, `#rrggbb`, `#aarrggbb` (Qt's `QColor::fromString` order),
+/// `rgb(r,g,b)`, `rgba(r,g,b,a)` or a basic named color.
 pub(crate) fn parse_color(value: &str) -> Option<Color> {
     let v = value.trim();
     if let Some(hex) = v.strip_prefix('#') {
@@ -724,7 +736,7 @@ fn parse_hex(s: &str) -> Option<Color> {
             Some(Color::from_rgba8(nib(0)?, nib(1)?, nib(2)?, 255))
         }
         6 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, 255)),
-        8 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
+        8 => Some(Color::from_rgba8(byte(2)?, byte(4)?, byte(6)?, byte(0)?)),
         _ => None,
     }
 }
@@ -837,12 +849,13 @@ fn color_hex(c: Color) -> String {
     if u.alpha() == 255 {
         format!("#{:02x}{:02x}{:02x}", u.red(), u.green(), u.blue())
     } else {
+        // QColor::fromString reads 8 hex digits as #AARRGGBB.
         format!(
             "#{:02x}{:02x}{:02x}{:02x}",
+            u.alpha(),
             u.red(),
             u.green(),
-            u.blue(),
-            u.alpha()
+            u.blue()
         )
     }
 }

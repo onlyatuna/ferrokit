@@ -91,8 +91,8 @@ pub struct FontFamilyInfo {
     pub italic: bool,
 }
 
-/// Most in-memory font faces [`FontDatabase`] keeps alive at once.
-const MAX_MEMORY_FACES: usize = 32;
+/// In-memory faces [`FontDatabase`] keeps alive strongly after their last use.
+const RECENT_MEMORY_FACES: usize = 4;
 
 /// System font cache database (`QFontDatabase` equivalent).
 ///
@@ -109,7 +109,16 @@ pub struct FontDatabase {
     /// One engine per requested family string, shared so glyph caches persist across draw calls.
     engines: HashMap<String, FontEngine>,
     /// Faces built from `Font::font_data`, so a draw or metrics call does not re-parse the font.
-    memory_faces: Vec<(SharedFontData, SharedGlyphFace)>,
+    ///
+    /// Weak, so the cache never pins a (possibly huge) font blob: once every engine using a face is
+    /// dropped the face and its data are released. Keyed by the data buffer's address and length,
+    /// which stay unique for as long as the face (which owns the data) is alive.
+    ///
+    /// The draw and metrics paths drop their engines after every call, so the last few faces are also
+    /// held strongly ([`RECENT_MEMORY_FACES`], most recent last) to avoid re-parsing (and, on Windows,
+    /// re-registering with DirectWrite) on each draw.
+    recent_memory_faces: Vec<SharedGlyphFace>,
+    memory_faces: Vec<((usize, usize), std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>)>,
 }
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
@@ -244,6 +253,7 @@ impl FontDatabase {
             system_faces: None,
             application_faces: Vec::new(),
             engines: HashMap::new(),
+            recent_memory_faces: Vec::new(),
             memory_faces: Vec::new(),
         };
 
@@ -454,18 +464,22 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data {
-            let cached = self.memory_faces.iter().find(|(d, _)| d.ptr_eq(shared)).map(|(_, f)| f.clone());
+            self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
+            let key = (shared.as_slice().as_ptr() as usize, shared.len());
+            let cached = self.memory_faces.iter().find(|(k, _)| *k == key).and_then(|(_, f)| f.upgrade());
             let face = match cached {
                 Some(face) => Some(face),
                 None => parse_face(shared, 0).ok().inspect(|face| {
                     // Each parse re-registers the font with the platform rasterizer, so remember it.
-                    if self.memory_faces.len() >= MAX_MEMORY_FACES {
-                        self.memory_faces.remove(0);
-                    }
-                    self.memory_faces.push((shared.clone(), face.clone()));
+                    self.memory_faces.push((key, Arc::downgrade(face)));
                 }),
             };
             if let Some(face) = face {
+                self.recent_memory_faces.retain(|f| !Arc::ptr_eq(f, &face));
+                if self.recent_memory_faces.len() >= RECENT_MEMORY_FACES {
+                    self.recent_memory_faces.remove(0);
+                }
+                self.recent_memory_faces.push(face.clone());
                 engines.push(
                     FontEngine::new(face)
                         .with_raw_data(shared.clone())
