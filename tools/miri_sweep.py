@@ -53,6 +53,8 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 LEAK_PSEUDO_TEST = "(leaks at process exit)"
 
 
+DETERMINISTIC_FLOATS = "-Zmiri-deterministic-floats"
+
 FORBIDDEN_FLAGS = {
     "-Zmiri-disable-stacked-borrows",
     "-Zmiri-disable-isolation",
@@ -169,7 +171,11 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
     # no display, so drop these to get the same result everywhere.
     for var in ("WAYLAND_DISPLAY", "DISPLAY"):
         env.pop(var, None)
-    flags = validate_flags(args.flags)
+    # Miri randomises some float results by seed (a NaN `min`/`max`, a multiply-add that may be
+    # fused). Rendering code that sits on a rounding tie (tiny-skia strokes at half-pixel
+    # coordinates) then changes with how much randomness earlier code consumed, so adding an
+    # unrelated test flipped `check_mark_matches_qt_pixels`. Native builds are deterministic.
+    flags = [DETERMINISTIC_FLOATS] + validate_flags(args.flags)
     if extra_miri_flags:
         flags.extend(extra_miri_flags)
     if model == "TB":

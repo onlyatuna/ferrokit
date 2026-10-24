@@ -15,6 +15,7 @@ from miri_sweep import (
     failure_section,
     isolation_outcome,
     parse_shard,
+    run_miri,
     scan_outcomes,
     shard_targets,
     sweep_target,
@@ -361,3 +362,15 @@ class TestMiriTimeoutClassification(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMiriFloatDeterminism(unittest.TestCase):
+    def test_every_run_uses_deterministic_floats(self):
+        args = argparse.Namespace(flags="", toolchain="t", crate="c", cross=None, timeout=1)
+        for model, extra in (("SB", None), ("TB", None), ("SB", ["-Zmiri-disable-isolation"])):
+            with self.subTest(model=model, extra=extra), mock.patch("miri_sweep.subprocess.run") as run:
+                run.return_value = mock.Mock(stdout="", stderr="", returncode=0)
+                run_miri(args, "lib", model, set(), extra_miri_flags=extra)
+                flags = run.call_args.kwargs["env"]["MIRIFLAGS"].split()
+                self.assertIn("-Zmiri-deterministic-floats", flags)
+
