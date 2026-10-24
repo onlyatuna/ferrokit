@@ -69,11 +69,14 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
     let layer_off = u32::from_be_bytes(colr[8..12].try_into().ok()?) as usize;
     let num_layers = u16::from_be_bytes([colr[12], colr[13]]) as usize;
 
-    if base_off + num_base * 6 > colr.len() || layer_off + num_layers * 4 > colr.len() {
+    // Checked: on 32-bit targets an offset near u32::MAX would wrap past the length test.
+    let base_end = base_off.checked_add(num_base * 6)?;
+    let layer_end = layer_off.checked_add(num_layers * 4)?;
+    if base_end > colr.len() || layer_end > colr.len() {
         return None;
     }
 
-    let base_records = &colr[base_off..base_off + num_base * 6];
+    let base_records = &colr[base_off..base_end];
     let mut left = 0;
     let mut right = num_base;
     let mut found_record: Option<(u16, u16)> = None;
@@ -113,7 +116,7 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
         0
     };
 
-    let layer_records = &colr[layer_off..layer_off + num_layers * 4];
+    let layer_records = &colr[layer_off..layer_end];
     let mut result = Vec::with_capacity(n_layers);
 
     for i in 0..n_layers {

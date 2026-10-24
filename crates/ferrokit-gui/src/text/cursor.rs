@@ -319,11 +319,9 @@ impl TextCursor {
         if self.has_selection() {
             self.remove_selected_text(doc);
         }
-        let before = doc.character_count();
-        doc.insert_formatted_text(self.position, text, format);
-        // Advance by document growth: a combining mark merges into the previous cluster.
-        let after = doc.character_count();
-        self.position += after.saturating_sub(before);
+        // The document reports where the inserted text ends: a combining mark merges into the
+        // previous cluster, and a following mark merges into the inserted one.
+        self.position = doc.insert_formatted_text_end(self.position, text, format);
         self.anchor = self.position;
     }
 

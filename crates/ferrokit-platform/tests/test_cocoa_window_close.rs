@@ -50,3 +50,58 @@ fn close_then_drop_does_not_over_release() {
         ObjcMsg::send_0(win.ns_window(), Sel::register("close"));
     });
 }
+
+#[test]
+fn perform_close_without_close_button_keeps_window_open() {
+    ThreadContext::init_current(true, None);
+    let mock = MockObjcRuntime::instance();
+    let win = CocoaNativeWindow::new(
+        "borderless",
+        Rect::new(0, 0, 200, 100),
+        WindowFlags::FRAMELESS,
+    )
+    .expect("window");
+    let ns_window = win.ns_window();
+    unsafe { ObjcMsg::send_id(ns_window, Sel::register("makeKeyAndOrderFront:"), ns_window) };
+
+    unsafe { ObjcMsg::send_id(ns_window, Sel::register("performClose:"), ns_window) };
+    let data = mock.get_object_data(ns_window).expect("window alive");
+    assert!(
+        data.is_visible,
+        "performClose: on a window without a close button beeps and does not close"
+    );
+}
+
+#[test]
+fn zero_size_window_is_created_without_leaking_the_ns_window() {
+    ThreadContext::init_current(true, None);
+    let mock = MockObjcRuntime::instance();
+    let win = CocoaNativeWindow::new("empty", Rect::new(0, 0, 0, 0), WindowFlags::empty())
+        .expect("Qt accepts an empty window rect");
+    let ns_window = win.ns_window();
+    drop(win);
+    assert!(mock.get_object_data(ns_window).is_none());
+}
+
+#[test]
+fn remove_from_superview_without_parent_does_not_release() {
+    ThreadContext::init_current(true, None);
+    let mock = MockObjcRuntime::instance();
+    let class = ferrokit_platform::Class::get("NSView").expect("NSView");
+    let view = unsafe { ObjcMsg::send_class_0(class, Sel::register("alloc")) };
+    unsafe { ObjcMsg::send_0(view, Sel::register("removeFromSuperview")) };
+    assert_eq!(mock.get_object_data(view).expect("alive").retain_count, 1);
+    assert!(!mock.was_over_released(view));
+    unsafe { ObjcMsg::send_0(view, Sel::register("release")) };
+}
+
+#[test]
+fn bitmap_rep_init_releases_receiver_on_invalid_input() {
+    ThreadContext::init_current(true, None);
+    let mock = MockObjcRuntime::instance();
+    let class = ferrokit_platform::Class::get("NSBitmapImageRep").expect("class");
+    let rep = unsafe { ObjcMsg::send_class_0(class, Sel::register("alloc")) };
+    let out = unsafe { ObjcMsg::send_bitmap_rep_init(rep, 4, 4, &[0u8; 3]) };
+    assert!(out.is_nil());
+    assert!(mock.get_object_data(rep).is_none(), "receiver leaked");
+}

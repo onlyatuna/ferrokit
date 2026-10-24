@@ -122,13 +122,14 @@ impl Pixmap {
             return;
         }
 
-        let p_w = self.pixmap.width() as i32;
-        let p_h = self.pixmap.height() as i32;
+        // i64 so `x + width` of a huge rect cannot overflow i32.
+        let p_w = self.pixmap.width() as i64;
+        let p_h = self.pixmap.height() as i64;
 
-        let x0 = rect.x.max(0).min(p_w) as usize;
-        let y0 = rect.y.max(0).min(p_h) as usize;
-        let x1 = (rect.x + rect.width).max(0).min(p_w) as usize;
-        let y1 = (rect.y + rect.height).max(0).min(p_h) as usize;
+        let x0 = (rect.x as i64).clamp(0, p_w) as usize;
+        let y0 = (rect.y as i64).clamp(0, p_h) as usize;
+        let x1 = (rect.x as i64 + rect.width as i64).clamp(0, p_w) as usize;
+        let y1 = (rect.y as i64 + rect.height as i64).clamp(0, p_h) as usize;
 
         if x1 <= x0 || y1 <= y0 {
             return;
