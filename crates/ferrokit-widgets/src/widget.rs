@@ -95,6 +95,21 @@ pub(crate) enum EnabledNotice {
     Changed(WidgetRef),
 }
 
+/// Calls `parent.child_resized(child)`, or retries at the next flush while `parent` is mutably
+/// borrowed.
+fn tell_child_resized(parent: &WidgetRef, child: ObjectId) {
+    if let Ok(p) = parent.try_borrow() {
+        p.child_resized(child);
+        return;
+    }
+    let weak = Rc::downgrade(parent);
+    crate::command::defer_retry(move || {
+        if let Some(parent) = weak.upgrade() {
+            tell_child_resized(&parent, child);
+        }
+    });
+}
+
 /// `QWidget::setVisible` for a widget its owner holds: records the flag, then sends the events the
 /// change of shown state implies (qwidget.cpp:8401-8443). Showing sends `Show` to the children
 /// first, then to the widget (`show_helper`, qwidget.cpp:8074-8130); hiding sends `Hide` to the
@@ -123,25 +138,20 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
-/// `hide_helper`'s focus handover (qwidget.cpp:8180-8190): when the window's focus widget is
+/// `hide_helper`'s focus handover (qwidget.cpp:8226-8238): when the window's focus widget is
 /// `widget` or below it, the focus moves on with `focusNextChild()`, or is cleared when no widget
-/// is next, so a hidden widget does not keep receiving key events. A hidden window (a widget with
-/// no parent: a top level or popup) keeps its focus widget, as the loop stops at `isWindow()`.
+/// is next, so a hidden widget does not keep receiving key events. A hidden window keeps its focus
+/// widget, as the loop stops at `isWindow()`: that is the root its focus state works on, not any
+/// widget without a parent link (those exist only after `adopt_tree`).
 fn move_focus_off_hidden(widget: &WidgetRef) {
-    let (anchor, is_window) = {
-        let w = widget.borrow();
-        (w.id(), w.parent_widget().and_then(|p| p.upgrade()).is_none())
-    };
-    if is_window {
-        return;
-    }
+    let anchor = widget.borrow().id();
     let mut notices = Vec::new();
     let mut stack = vec![widget.clone()];
     while let Some(w) = stack.pop() {
         let Ok(g) = w.try_borrow() else { continue };
         let base = g.widget_base();
         if let Some(focus) = base.focus_state.borrow().upgrade() {
-            if focus.lose_via(base.object_data.id(), anchor, true) {
+            if !focus.is_root(widget) && focus.lose_via(base.object_data.id(), anchor, true) {
                 base.has_focus.set(false);
                 notices.push(EnabledNotice::FocusLost(focus));
             }
@@ -628,6 +638,11 @@ pub trait Widget: QObject + 'static {
 
     fn resize_event(&self, _new_size: Size, _old_size: Size) {}
 
+    /// A child of this widget changed size: the hook of `QObject::eventFilter` on the child's
+    /// `Resize`, which `QScrollArea` uses to follow its content widget. Runs with this widget
+    /// shared-borrowed; it is skipped while this widget is mutably borrowed.
+    fn child_resized(&self, _child: ObjectId) {}
+
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NoFocus
     }
@@ -768,6 +783,9 @@ pub trait Widget: QObject + 'static {
 pub struct WidgetBase {
     pub object_data: ObjectData,
     pub geometry: Cell<Rect>,
+    /// Raised on every size change, for an owner that watches this widget without a parent link
+    /// (`QScrollArea::setWidget` -> `installEventFilter`): see [`WidgetBase::subscribe_resize`].
+    resize_flag: RefCell<Option<Rc<Cell<bool>>>>,
     pub visible: Cell<bool>,
     /// Effective state (`!WA_Disabled`): false when this widget or an ancestor is disabled.
     pub enabled: Cell<bool>,
@@ -819,6 +837,7 @@ impl WidgetBase {
         Self {
             object_data: ObjectData::new(id),
             geometry: Cell::new(Rect::new(0, 0, 100, 30)),
+            resize_flag: RefCell::new(None),
             visible: Cell::new(true),
             enabled: Cell::new(true),
             force_disabled: Cell::new(false),
@@ -880,6 +899,30 @@ impl WidgetBase {
             self.geometry.set(clamped);
             self.invalidate_vacated_rect(old);
             self.update();
+            if old.width != clamped.width || old.height != clamped.height {
+                self.notify_parent_resized();
+            }
+        }
+    }
+
+    /// Has `flag` raised whenever this widget changes size, whether or not it has a parent yet.
+    /// `None` ends the subscription.
+    pub fn subscribe_resize(&self, flag: Option<Rc<Cell<bool>>>) {
+        *self.resize_flag.borrow_mut() = flag;
+    }
+
+    /// The size-change notification (`QEvent::Resize` for the parent's event filter): raises the
+    /// subscription flag and calls the parent's `child_resized`. A parent that is mutably
+    /// borrowed is told at the next flush instead. `WidgetBase::set_geometry` and
+    /// `EmptyWidget::set_geometry` call it; a widget that stores its size in `geometry` itself
+    /// must call it after a size change.
+    pub fn notify_parent_resized(&self) {
+        if let Some(flag) = self.resize_flag.borrow().as_ref() {
+            flag.set(true);
+        }
+        let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
+        if let Some(parent) = parent {
+            tell_child_resized(&parent, self.object_data.id());
         }
     }
 
@@ -1496,6 +1539,7 @@ impl Widget for EmptyWidget {
                     layout.set_geometry(Rect::new(0, 0, rect.width, rect.height));
                 }
             }
+            self.base.notify_parent_resized();
         }
 
         self.update();

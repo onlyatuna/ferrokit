@@ -109,3 +109,18 @@ fn dragging_the_thumb_scrolls_the_content() {
     assert!(y > 0, "the thumb moved the content: {y}");
     assert_eq!(content.borrow().geometry().y, -y);
 }
+
+#[test]
+fn the_scroll_range_follows_the_content_widget_when_it_resizes() {
+    // `QScrollArea::eventFilter` updates the scroll bars on the widget's `Resize`.
+    let (a, content) = area(110, 100, 100, 100);
+    assert!(!with_area(&a, |s| s.vertical_scroll_bar().is_visible()));
+
+    content.borrow().set_geometry(Rect::new(0, 0, 100, 500));
+
+    assert!(with_area(&a, |s| s.vertical_scroll_bar().is_visible()), "the content overflows");
+    assert_eq!(with_area(&a, |s| s.vertical_scroll_bar().maximum()), 400);
+
+    content.borrow().set_geometry(Rect::new(0, 0, 100, 100));
+    assert!(!with_area(&a, |s| s.vertical_scroll_bar().is_visible()), "and fits again");
+}

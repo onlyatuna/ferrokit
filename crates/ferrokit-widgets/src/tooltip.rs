@@ -28,6 +28,7 @@ use crate::label::Label;
 use crate::widget::{Widget, WidgetRef, WidgetWeak};
 use crate::window::{window_shows_tool_tips, Window};
 use ferrokit_core::event::{Event, EventKind};
+use ferrokit_core::event_loop::{filters_consume, notify_borrowed};
 use ferrokit_core::object::ObjectId;
 use ferrokit_core::timer::Timer;
 use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
@@ -302,10 +303,16 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
             global_x: global_pos.x,
             global_y: global_pos.y,
         });
-        let handled = widget
-            .try_borrow_mut()
-            .map(|mut w| w.event(&mut event))
-            .unwrap_or(false);
+        // `QApplication::notify` runs the application and object event filters before the
+        // receiver's `event()`. A widget that is already borrowed cannot run `event()`, but its
+        // filters still see the event when it is only shared-borrowed.
+        let handled = match widget.try_borrow_mut() {
+            Ok(mut w) => notify_borrowed(&mut **w, &mut event),
+            Err(_) => match widget.try_borrow() {
+                Ok(w) => filters_consume(w.object_data(), &mut event),
+                Err(_) => false,
+            },
+        };
         let accepted = if handled {
             event.is_accepted()
         } else {
@@ -314,9 +321,11 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
         if accepted {
             return true;
         }
-        let parent = widget.borrow().parent_widget().and_then(|p| p.upgrade());
+        let Ok(held) = widget.try_borrow() else { return false };
+        let parent = held.parent_widget().and_then(|p| p.upgrade());
+        let g = held.geometry();
+        drop(held);
         let Some(parent) = parent else { return false };
-        let g = widget.borrow().geometry();
         rel = Point::new(rel.x + g.x, rel.y + g.y);
         widget = parent;
     }
@@ -325,10 +334,13 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
 /// `QWidget::event(ToolTip)` (qwidget.cpp:9381-9386): show the widget's own tool tip, or ignore
 /// the event when it has none. Returns whether the event ends up accepted.
 fn default_tool_tip_event(widget: &WidgetRef, global_pos: Point, event: &mut Event) -> bool {
-    let (text, duration, id) = {
-        let w = widget.borrow();
-        (w.tool_tip(), w.tool_tip_duration(), w.id())
+    // A widget that is mutably borrowed cannot answer: it shows no tip and the event moves on.
+    let Ok(w) = widget.try_borrow() else {
+        event.ignore();
+        return false;
     };
+    let (text, duration, id) = (w.tool_tip(), w.tool_tip_duration(), w.id());
+    drop(w);
     if text.is_empty() {
         event.ignore();
         return false;
@@ -581,5 +593,70 @@ impl ToolTip {
                 tip.window.show();
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::EmptyWidget;
+    use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, QObject};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
+
+    /// Event filter that records the `ToolTip` events it sees and consumes them.
+    struct ToolTipSpy {
+        data: ObjectData,
+        seen: Arc<Mutex<Vec<ObjectId>>>,
+    }
+
+    impl QObject for ToolTipSpy {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+            ferrokit_core::object::ObjectDataMut::new(&mut self.data)
+        }
+        fn event(&mut self, _event: &mut Event) -> bool {
+            false
+        }
+        fn event_filter(&mut self, watched: ObjectId, event: &mut Event) -> bool {
+            if matches!(event.kind, EventKind::ToolTip { .. }) {
+                self.seen.lock().unwrap().push(watched);
+                return true;
+            }
+            false
+        }
+    }
+
+    fn filtered_widget() -> (WidgetRef, Arc<Mutex<Vec<ObjectId>>>, impl Sized) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let spy = ToolTipSpy { data: ObjectData::with_auto_id(), seen: Arc::clone(&seen) };
+        // SAFETY: test-only; the owner stays on this thread for the whole test and nothing
+        // touches the spy while a callback of it runs.
+        let owner = unsafe { register_owned_qobject(spy) };
+        let widget: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
+        widget
+            .borrow_mut()
+            .object_data_mut()
+            .install_event_filter(ferrokit_core::object::OwnedObject::object_id(&owner));
+        (widget, seen, owner)
+    }
+
+    #[test]
+    fn an_event_filter_sees_the_tool_tip_event() {
+        let (widget, seen, _owner) = filtered_widget();
+        let id = widget.borrow().id();
+        let accepted = send_tool_tip(&widget, Point::new(1, 1), Point::new(1, 1));
+        assert!(accepted, "the consuming filter accepted the event");
+        assert_eq!(*seen.lock().unwrap(), vec![id]);
+    }
+
+    #[test]
+    fn a_mutably_borrowed_widget_does_not_panic_the_tool_tip_walk() {
+        let widget: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
+        let _held = widget.borrow_mut();
+        assert!(!send_tool_tip(&widget, Point::new(1, 1), Point::new(1, 1)));
     }
 }
