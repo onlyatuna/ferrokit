@@ -319,10 +319,27 @@ impl TextDocument {
     /// formatting of surrounding text. Line breaks split the block; new blocks inherit the
     /// paragraph format of the block they split (`QTextCursor::insertText`).
     pub fn insert_formatted_text(&mut self, pos: usize, text: &str, format: &TextCharFormat) {
+        self.insert_formatted_text_end(pos, text, format);
+    }
+
+    /// Like [`insert_formatted_text`](Self::insert_formatted_text), returning the grapheme position
+    /// just after the inserted text. When the text merges with the cluster that follows it, the
+    /// end lies after the merged cluster. Only the affected block is re-segmented.
+    pub(crate) fn insert_formatted_text_end(
+        &mut self,
+        pos: usize,
+        text: &str,
+        format: &TextCharFormat,
+    ) -> usize {
         if text.is_empty() {
-            return;
+            return pos;
         }
-        let (bi, _) = self.locate(pos);
+        let (bi, byte) = self.locate(pos);
+        let paragraphs = split_paragraphs(text).count();
+        let end_byte = match split_paragraphs(text).last() {
+            Some(last) if paragraphs > 1 => last.len(),
+            _ => byte + text.len(),
+        };
         let block_format = self.blocks[bi].block_format.clone();
         let block_char_format = self.blocks[bi].char_format.clone();
         let blocks = split_paragraphs(text)
@@ -337,6 +354,13 @@ impl TextDocument {
             })
             .collect();
         self.insert_document_fragment(pos, &TextDocumentFragment::from_blocks(blocks));
+        let end_block = &self.blocks[bi + paragraphs - 1];
+        let block_text = end_block.text();
+        let clusters = block_text
+            .grapheme_indices(true)
+            .take_while(|&(start, _)| start < end_byte)
+            .count();
+        end_block.position + clusters
     }
 
     /// Removes `count` grapheme clusters starting at `pos`, merging blocks when a block

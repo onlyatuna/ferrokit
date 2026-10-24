@@ -23,7 +23,9 @@
     "test_rich_text_detection",
     "test_shaping_face_cache",
     "test_solid_fill_blend",
-    "test_text_system"
+    "test_text_system",
+    "test_font_memory_face_cache",
+    "test_gui_p2_hardening"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -414,6 +416,24 @@
     "test_p2_geometry_overflow_singular::f32_rounded_singular_matrices_are_rejected::SB": "pass",
     "test_p2_geometry_overflow_singular::rect_adjust_translate_and_margins_saturate::SB": "pass",
     "test_p2_geometry_overflow_singular::f32_rounded_singular_matrices_are_rejected::TB": "pass",
-    "test_p2_geometry_overflow_singular::rect_adjust_translate_and_margins_saturate::TB": "pass"
+    "test_p2_geometry_overflow_singular::rect_adjust_translate_and_margins_saturate::TB": "pass",
+    "test_gui_p2_hardening::clear_rect_with_huge_extent_does_not_overflow::SB": "pass",
+    "test_gui_p2_hardening::cursor_insert_merging_with_following_cluster_lands_after_it::SB": "pass",
+    "test_gui_p2_hardening::cursor_insert_multiline_advances_past_inserted_text::SB": "pass",
+    "test_gui_p2_hardening::html_eight_digit_hex_is_aarrggbb::SB": "pass",
+    "test_gui_p2_hardening::html_raw_text_elements_close_case_insensitively::SB": "pass",
+    "test_gui_p2_hardening::icon_sizing_with_huge_target_does_not_overflow::SB": "pass",
+    "test_gui_p2_hardening::ppm_zero_width_with_huge_height_is_rejected_fast::SB": "pass",
+    "test_gui_p2_hardening::scroll_with_i32_min_offsets_does_not_overflow::SB": "pass",
+    "test_gui_p2_hardening::clear_rect_with_huge_extent_does_not_overflow::TB": "pass",
+    "test_gui_p2_hardening::cursor_insert_merging_with_following_cluster_lands_after_it::TB": "pass",
+    "test_gui_p2_hardening::cursor_insert_multiline_advances_past_inserted_text::TB": "pass",
+    "test_gui_p2_hardening::html_eight_digit_hex_is_aarrggbb::TB": "pass",
+    "test_gui_p2_hardening::html_raw_text_elements_close_case_insensitively::TB": "pass",
+    "test_gui_p2_hardening::icon_sizing_with_huge_target_does_not_overflow::TB": "pass",
+    "test_gui_p2_hardening::ppm_zero_width_with_huge_height_is_rejected_fast::TB": "pass",
+    "test_gui_p2_hardening::scroll_with_i32_min_offsets_does_not_overflow::TB": "pass",
+    "test_gui_p2_hardening::html_raw_text_end_tag_requires_a_delimiter::SB": "pass",
+    "test_gui_p2_hardening::html_raw_text_end_tag_requires_a_delimiter::TB": "pass"
   }
 }

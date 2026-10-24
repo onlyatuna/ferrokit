@@ -56,7 +56,7 @@ impl CocoaLayerSurface {
             return Err("Width and height must be greater than 0");
         }
 
-        let buffer_size = (width * height * 4) as usize;
+        let buffer_size = buffer_len(width, height)?;
         let pixel_buffer = vec![0u8; buffer_size];
 
         Ok(Self {
@@ -194,9 +194,9 @@ impl PlatformSurface for CocoaLayerSurface {
             return Ok(());
         }
 
+        let new_size = buffer_len(width, height)?;
         self.width = width;
         self.height = height;
-        let new_size = (width * height * 4) as usize;
         self.pixel_buffer.resize(new_size, 0);
 
         Ok(())
@@ -211,7 +211,7 @@ impl PlatformSurface for CocoaLayerSurface {
         }
 
         let src_data = pixmap.data();
-        let target_len = (self.width * self.height * 4) as usize;
+        let target_len = self.pixel_buffer.len();
         let copy_len = src_data.len().min(target_len);
 
         self.pixel_buffer[..copy_len].copy_from_slice(&src_data[..copy_len]);
@@ -256,4 +256,16 @@ impl PlatformSurface for CocoaLayerSurface {
         self.commit_to_layer()?;
         Ok(())
     }
+}
+
+/// `width * height * 4` without the u32 overflow of the naive product.
+fn buffer_len(width: u32, height: u32) -> Result<usize, &'static str> {
+    if width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err("Surface size overflows");
+    }
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or("Surface size overflows")
 }
