@@ -177,8 +177,20 @@ impl PlatformDialogs for SystemDialogs {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 static SYSTEM_DIALOGS: SystemDialogs = SystemDialogs;
-/// Returns the OS-native dialog implementation.
+#[cfg(target_os = "macos")]
+static COCOA_DIALOGS: crate::dialogs_cocoa::CocoaDialogs<crate::dialogs_cocoa::NativeRuntime> =
+    crate::dialogs_cocoa::CocoaDialogs::new(crate::dialogs_cocoa::NativeRuntime);
+
+/// Returns the OS-native dialog implementation (AppKit panels and alerts on macOS).
 pub fn platform_dialogs() -> &'static dyn PlatformDialogs {
-    &SYSTEM_DIALOGS
+    #[cfg(target_os = "macos")]
+    {
+        &COCOA_DIALOGS
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &SYSTEM_DIALOGS
+    }
 }
