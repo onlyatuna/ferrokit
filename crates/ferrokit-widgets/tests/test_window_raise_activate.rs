@@ -101,6 +101,42 @@ fn activate_window_asks_the_system_to_make_the_window_the_foreground_window() {
     assert_eq!(foreground(), hwnd(&a), "Widget::activate_window on a child");
 }
 
+#[test]
+fn activate_window_from_a_show_handler_is_applied_once_the_window_is_shown() {
+    let (mut a, mut b) = (window("a"), window("b"));
+    a.show();
+    a.activate_window();
+    if foreground() != hwnd(&a) {
+        eprintln!("{SKIP}");
+        return;
+    }
+    let root = b.root_widget();
+    let (c, d) = (
+        Rc::new(RefCell::new(Box::new(EmptyWidget::new()) as Box<dyn Widget>)),
+        Rc::new(RefCell::new(Box::new(EmptyWidget::new()) as Box<dyn Widget>)),
+    );
+    root.borrow_mut().add_child(c.clone());
+    root.borrow_mut().add_child(d.clone());
+    adopt_tree(&root);
+    let target = d.clone();
+    c.borrow()
+        .as_any()
+        .downcast_ref::<EmptyWidget>()
+        .unwrap()
+        .set_show_handler(move || target.borrow().activate_window());
+
+    b.show();
+    // Whatever the show itself did, put the foreground elsewhere; only the deferred request
+    // made by the handler can bring it back to `b`.
+    a.activate_window();
+    if foreground() != hwnd(&a) {
+        eprintln!("{SKIP}");
+        return;
+    }
+    ferrokit_widgets::command::WidgetCommandQueue::flush();
+    assert_eq!(foreground(), hwnd(&b));
+}
+
 fn on_hide(w: &WidgetRef, f: impl FnMut() + 'static) {
     let g = w.borrow();
     g.as_any()

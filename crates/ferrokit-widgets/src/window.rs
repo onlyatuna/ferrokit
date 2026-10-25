@@ -108,6 +108,9 @@ impl WindowCore {
     fn show(&self) {
         if !self.visible.replace(true) {
             crate::application::Application::set_window_visible(self.id, true);
+            // The platform window is shown after the Show handlers run, so an activation asked
+            // for by a handler is deferred (see `request_window_activation`).
+            let _showing = ShowingGuard::enter(self.id);
             let root = self.root();
             show_children_first(&root);
             self.send_to_window(&mut Event::new(EventKind::Show));
@@ -438,7 +441,37 @@ pub(crate) fn request_window_activation(window_id: ObjectId) -> bool {
     if !crate::application::Application::is_window_visible(window_id) {
         return false;
     }
+    // The native window is still hidden while the window's Show handlers run, where the request
+    // would be lost: ask again at the next command flush, when the window is shown. That
+    // deferred request returns false here.
+    if SHOWING.with(|s| s.borrow().contains(&window_id)) {
+        crate::command::defer_retry(move || {
+            request_window_activation(window_id);
+        });
+        return false;
+    }
     with_platform_window(window_id, |pw| pw.request_activate_window())
+}
+
+thread_local! {
+    /// Windows whose `Show` events are being delivered; their platform window is not shown yet.
+    static SHOWING: std::cell::RefCell<Vec<ObjectId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Marks a window as showing for the duration of its `Show` delivery, on every exit path.
+struct ShowingGuard(ObjectId);
+
+impl ShowingGuard {
+    fn enter(id: ObjectId) -> Self {
+        SHOWING.with(|s| s.borrow_mut().push(id));
+        Self(id)
+    }
+}
+
+impl Drop for ShowingGuard {
+    fn drop(&mut self) {
+        let _ = SHOWING.try_with(|s| s.borrow_mut().retain(|&id| id != self.0));
+    }
 }
 
 /// Clears a flag on every exit path, including unwinding.

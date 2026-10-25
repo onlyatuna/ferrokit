@@ -30,8 +30,8 @@ pub trait PlatformWindow: 'static {
     /// `QPlatformWindow::raise`: puts the window above its sibling top-level windows in the
     /// window system's stacking order (the topmost band stays above the others). It does not
     /// activate the window or give it the keyboard focus; that is
-    /// [`request_activate_window`](Self::request_activate_window). A backend without a window
-    /// system to order windows in does nothing, as `QPlatformWindow::raise` does by default.
+    /// [`request_activate_window`](Self::request_activate_window). A backend that does not
+    /// implement it does nothing, as `QPlatformWindow::raise` does by default.
     fn raise(&self) {}
     /// `QPlatformWindow::requestActivateWindow`: asks the window system to make this window the
     /// active one. It is a request: the window becomes active ([`is_active`](Self::is_active))
@@ -42,8 +42,8 @@ pub trait PlatformWindow: 'static {
     /// input-injection tricks), so the system's foreground lock applies: a process that is not the
     /// foreground process, and has not received the last input event, cannot take the foreground,
     /// and the window's taskbar button flashes instead. That is the behaviour `QWidget::activateWindow`
-    /// documents. A minimized window is not restored. A backend without a window system to
-    /// ask does nothing, as `QPlatformWindow::requestActivateWindow` does by default.
+    /// documents. A minimized window is not restored. A backend that does not implement it does
+    /// nothing, as `QPlatformWindow::requestActivateWindow` does by default.
     fn request_activate_window(&self) {}
     fn geometry(&self) -> Rect;
     fn set_geometry(&mut self, rect: Rect);

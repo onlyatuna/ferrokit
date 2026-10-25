@@ -2180,7 +2180,8 @@ impl EmptyWidget {
 
     /// Runs `handler` for every `Show` this widget receives (what overriding
     /// `QWidget::showEvent` does). It runs with the widget borrowed mutably, so it must not use
-    /// this widget; it may use others.
+    /// this widget; it may use others. It must not hide a widget whose own show or hide handler
+    /// is running (two handlers hiding each other would borrow a widget twice and panic).
     pub fn set_show_handler<F: FnMut() + 'static>(&self, handler: F) {
         *self.show_handler.borrow_mut() = Some(Box::new(handler));
     }
@@ -2188,7 +2189,8 @@ impl EmptyWidget {
     /// Runs `handler` for every `Hide` this widget receives (what overriding
     /// `QWidget::hideEvent` does), whether the widget was hidden itself or with its parent or
     /// window. It runs with the widget borrowed mutably, so it must not use this widget; it may
-    /// use others.
+    /// use others. It must not hide a widget whose own show or hide handler is running (two
+    /// handlers hiding each other would borrow a widget twice and panic).
     pub fn set_hide_handler<F: FnMut() + 'static>(&self, handler: F) {
         *self.hide_handler.borrow_mut() = Some(Box::new(handler));
     }
