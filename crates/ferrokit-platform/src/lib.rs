@@ -13,6 +13,7 @@ pub(crate) fn current_uid() -> u32 {
 }
 
 pub mod dialogs;
+pub mod dialogs_cocoa;
 pub use dialogs::{
     platform_dialogs, DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs,
     SystemDialogs,
@@ -21,7 +22,9 @@ pub mod desktop_services;
 pub use desktop_services::{open_file, open_url, set_url_handler, UrlHandler};
 pub mod backdrop;
 pub mod clipboard;
+pub mod clipboard_cocoa;
 pub mod cursor;
+pub mod cursor_cocoa;
 pub mod cursor_bitmap;
 pub mod drag_drop;
 pub mod high_dpi;
@@ -62,6 +65,7 @@ pub use windows_sys::Win32::Foundation::HWND;
 pub type HWND = isize;
 #[cfg(windows)]
 pub use clipboard::Win32Clipboard;
+pub use clipboard_cocoa::CocoaClipboard;
 pub use clipboard::{Clipboard, GenericClipboard, MimeData, PlatformClipboard};
 #[cfg(windows)]
 pub use cursor::Win32Cursor;
