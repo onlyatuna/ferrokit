@@ -454,14 +454,15 @@ impl Win32EventDispatcher {
                 return DispatchResult::Timeout;
             }
 
+            // A timer that is due is delivered by a `WM_TIMER` that `SetTimer` posts a little after
+            // the deadline (its clock ticks about every 15 ms). Returning at once for a deadline
+            // that has passed made the caller loop with a zero timeout and spin on the processor
+            // until the message came; the wait is never shorter than 1 ms and never rounds down.
             let timeout_ms = match deadline {
                 Some(dl) => {
-                    let now = std::time::Instant::now();
-                    if now >= dl {
-                        return DispatchResult::Timeout;
-                    }
-                    let remaining = dl - now;
-                    remaining.as_millis().min(u32::MAX as u128) as u32
+                    let remaining = dl.saturating_duration_since(std::time::Instant::now());
+                    let ms = remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                    ms.clamp(1, u32::MAX as u128 - 1) as u32
                 }
                 None => INFINITE,
             };
