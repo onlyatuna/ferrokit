@@ -31,6 +31,9 @@ pub struct FileFilter {
 }
 
 /// Synchronous native dialog operations provided by the platform backend.
+///
+/// On macOS every method must be called on the main thread (AppKit constraint) and panics
+/// otherwise, before any dialog is created. Other platforms accept calls from any thread.
 pub trait PlatformDialogs: Send + Sync {
     fn message_box(
         &self,
@@ -177,8 +180,20 @@ impl PlatformDialogs for SystemDialogs {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 static SYSTEM_DIALOGS: SystemDialogs = SystemDialogs;
-/// Returns the OS-native dialog implementation.
+#[cfg(target_os = "macos")]
+static COCOA_DIALOGS: crate::dialogs_cocoa::CocoaDialogs<crate::dialogs_cocoa::NativeRuntime> =
+    crate::dialogs_cocoa::CocoaDialogs::new(crate::dialogs_cocoa::NativeRuntime);
+
+/// Returns the OS-native dialog implementation (AppKit panels and alerts on macOS).
 pub fn platform_dialogs() -> &'static dyn PlatformDialogs {
-    &SYSTEM_DIALOGS
+    #[cfg(target_os = "macos")]
+    {
+        &COCOA_DIALOGS
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &SYSTEM_DIALOGS
+    }
 }
