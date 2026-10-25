@@ -63,6 +63,16 @@ impl Icon {
         Self::from_image(pixmap.to_image())
     }
 
+    /// Creates an icon from the frames of a Windows ICO file, one representation per frame
+    /// (`QIcon` of an `.ico` exposes every stored size through `available_sizes`).
+    pub fn from_ico_data(bytes: &[u8]) -> Result<Self, String> {
+        let mut icon = Self::new();
+        for image in crate::image::io::ImageReader::read_ico_frames(bytes)? {
+            icon.add_image(image, IconMode::Normal, IconState::Off);
+        }
+        Ok(icon)
+    }
+
     /// Returns `true` if this icon has no representations.
     #[inline]
     pub fn is_null(&self) -> bool {

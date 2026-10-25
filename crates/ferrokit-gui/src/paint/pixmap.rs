@@ -79,6 +79,13 @@ impl Pixmap {
         self.pixmap.height() as f32 / self.dpr
     }
 
+    /// Decodes an encoded image (PNG, BMP, PPM or ICO; an ICO yields its largest frame) like
+    /// `QPixmap::loadFromData`. `None` when the data cannot be decoded.
+    pub fn load_from_data(bytes: &[u8]) -> Option<Self> {
+        let image = crate::image::ImageReader::read_from_memory(bytes).ok()?;
+        Self::from_image(&image)
+    }
+
     /// Creates a Pixmap from a canonical CPU `Image`.
     pub fn from_image(image: &crate::image::Image) -> Option<Self> {
         if image.is_null() {

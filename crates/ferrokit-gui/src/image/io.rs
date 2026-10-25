@@ -21,6 +21,117 @@ pub enum ImageFileFormat {
 /// Image reader for reading and detecting image formats matching `QImageReader`.
 pub struct ImageReader;
 
+/// Largest decoded pixel count accepted from an ICO (summed over all frames read).
+const ICO_MAX_TOTAL_PIXELS: u64 = 4 * 1024 * 1024;
+/// Largest width/height an ICO DIB frame may declare (the ICO format limit).
+const ICO_MAX_DIB_DIMENSION: i32 = 256;
+/// Largest width/height accepted from a PNG header before decoding.
+const PNG_MAX_DIMENSION: u32 = 16384;
+
+/// Validated layout of a BMP-style ICO frame.
+struct IcoDib {
+    width: usize,
+    height: usize,
+    bpp: usize,
+    palette_off: usize,
+    xor_off: usize,
+    xor_stride: usize,
+    has_mask: bool,
+    and_off: usize,
+    and_stride: usize,
+}
+
+impl IcoDib {
+    /// Parses and bounds-checks the DIB header against `data`. All sizes are validated here,
+    /// so a hostile header cannot demand a huge image or reads past the frame.
+    fn parse(data: &[u8]) -> Result<Self, String> {
+        if data.len() < 40 {
+            return Err("ICO DIB frame too short".to_string());
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        let header_size = u32_at(0) as usize;
+        if header_size < 40 || header_size > data.len() {
+            return Err("Unsupported ICO DIB header size".to_string());
+        }
+        let width = i32::from_le_bytes(data[4..8].try_into().unwrap());
+        let height_field = i32::from_le_bytes(data[8..12].try_into().unwrap());
+        let bpp = u16::from_le_bytes([data[14], data[15]]) as usize;
+        if u32_at(16) != 0 {
+            return Err("Compressed ICO DIB not supported".to_string());
+        }
+        if !matches!(bpp, 1 | 4 | 8 | 24 | 32) {
+            return Err(format!("Unsupported ICO bits per pixel: {bpp}"));
+        }
+        if width <= 0
+            || width > ICO_MAX_DIB_DIMENSION
+            || height_field <= 0
+            || height_field > 2 * ICO_MAX_DIB_DIMENSION
+        {
+            return Err("Invalid ICO frame dimensions".to_string());
+        }
+        let w = width as usize;
+
+        let palette_len = if bpp <= 8 {
+            match u32_at(32) as usize {
+                0 => 1usize << bpp,
+                n => n.min(1usize << bpp),
+            }
+        } else {
+            0
+        };
+        let palette_off = header_size;
+        let xor_off = palette_off + palette_len * 4;
+        let xor_stride = (w * bpp).div_ceil(32) * 4;
+        let and_stride = w.div_ceil(32) * 4;
+
+        // Candidate interpretations, most conventional first: the height covers XOR + AND
+        // (doubled); a 32-bpp frame whose AND mask was left out; a plain XOR-only bitmap
+        // whose height is not doubled.
+        let field = height_field as usize;
+        let mut candidates = [(0usize, false); 3];
+        let mut n = 0;
+        if field >= 2 && field % 2 == 0 {
+            candidates[n] = (field / 2, true);
+            n += 1;
+            if bpp == 32 {
+                candidates[n] = (field / 2, false);
+                n += 1;
+            }
+        }
+        if field <= ICO_MAX_DIB_DIMENSION as usize {
+            candidates[n] = (field, false);
+            n += 1;
+        }
+        let size_of = |(h, mask): (usize, bool)| {
+            xor_off + xor_stride * h + if mask { and_stride * h } else { 0 }
+        };
+        // An exact fit disambiguates (an undoubled bitmap also "fits" a doubled reading).
+        let chosen = candidates[..n]
+            .iter()
+            .copied()
+            .find(|&c| size_of(c) == data.len())
+            .or_else(|| {
+                candidates[..n]
+                    .iter()
+                    .copied()
+                    .find(|&c| size_of(c) <= data.len())
+            })
+            .ok_or("ICO frame pixel data shorter than its header declares")?;
+        let (height, has_mask) = chosen;
+        Ok(Self {
+            width: w,
+            height,
+            bpp,
+            palette_off,
+            xor_off,
+            xor_stride,
+            has_mask,
+            and_off: xor_off + xor_stride * height,
+            and_stride,
+        })
+    }
+}
+
 impl ImageReader {
     /// Detects the image file format by inspecting file magic bytes.
     pub fn detect_format(bytes: &[u8]) -> ImageFileFormat {
@@ -51,8 +162,166 @@ impl ImageReader {
             ImageFileFormat::Png => Self::read_png(bytes),
             ImageFileFormat::Bmp => Self::read_bmp(bytes),
             ImageFileFormat::Ppm => Self::read_ppm(bytes),
+            // Qt's ICO plugin loads the largest frame when no size is requested. The frame is
+            // picked from the directory/headers first so only that one is decoded.
+            ImageFileFormat::Ico => {
+                let count = Self::ico_frame_count(bytes)?;
+                let mut best: Option<(&[u8], u64)> = None;
+                for i in 0..count {
+                    let data = Self::ico_frame_data(bytes, i)?;
+                    let (w, h) = Self::ico_frame_dims(data)?;
+                    let pixels = u64::from(w) * u64::from(h);
+                    if best.is_none_or(|(_, p)| pixels > p) {
+                        best = Some((data, pixels));
+                    }
+                }
+                let (data, pixels) = best.ok_or("ICO file contains no frames")?;
+                if pixels > ICO_MAX_TOTAL_PIXELS {
+                    return Err("ICO frame exceeds the decoded pixel budget".to_string());
+                }
+                Self::read_ico_frame(data)
+            }
             _ => Err("Unsupported or unknown image file format".to_string()),
         }
+    }
+
+    /// Decodes every frame of a Windows ICO file, in directory order (what `QIcon` exposes as
+    /// its sizes). Frames are PNG-compressed or BMP-style DIBs (1/4/8/24/32 bpp, uncompressed,
+    /// normally with the AND mask; 32-bpp frames may omit it and the DIB height may be
+    /// undoubled). A frame that cannot be decoded fails the whole read, as does a file whose
+    /// frames together exceed [`ICO_MAX_TOTAL_PIXELS`] decoded pixels.
+    pub fn read_ico_frames(bytes: &[u8]) -> Result<Vec<Image>, String> {
+        let count = Self::ico_frame_count(bytes)?;
+        // Sizes come from the headers, so the whole budget is enforced before anything is
+        // decoded (directory entries may all point at the same data).
+        let mut total_pixels = 0u64;
+        for i in 0..count {
+            let (w, h) = Self::ico_frame_dims(Self::ico_frame_data(bytes, i)?)?;
+            total_pixels += u64::from(w) * u64::from(h);
+            if total_pixels > ICO_MAX_TOTAL_PIXELS {
+                return Err("ICO frames exceed the decoded pixel budget".to_string());
+            }
+        }
+        (0..count)
+            .map(|i| Self::read_ico_frame(Self::ico_frame_data(bytes, i)?))
+            .collect()
+    }
+
+    /// Validates the ICO header and directory and returns the number of frames.
+    fn ico_frame_count(bytes: &[u8]) -> Result<usize, String> {
+        if bytes.len() < 6 || bytes[0..4] != [0, 0, 1, 0] {
+            return Err("Invalid ICO header".to_string());
+        }
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        if count == 0 {
+            return Err("ICO file contains no frames".to_string());
+        }
+        if bytes.len() < 6 + count * 16 {
+            return Err("ICO directory shorter than its header declares".to_string());
+        }
+        Ok(count)
+    }
+
+    /// The payload of directory entry `i` (`i` below [`Self::ico_frame_count`]).
+    fn ico_frame_data(bytes: &[u8], i: usize) -> Result<&[u8], String> {
+        let e = &bytes[6 + i * 16..][..16];
+        let size = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+        let offset = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+        offset
+            .checked_add(size)
+            .and_then(|end| bytes.get(offset..end))
+            .ok_or_else(|| "ICO frame lies outside the file".to_string())
+    }
+
+    /// Pixel size of an ICO frame, read from its PNG `IHDR` or DIB header without decoding.
+    fn ico_frame_dims(data: &[u8]) -> Result<(u32, u32), String> {
+        if Self::is_png(data) {
+            let (w, h) = Self::png_dimensions(data)?;
+            Ok((w, h))
+        } else {
+            let dib = IcoDib::parse(data)?;
+            Ok((dib.width as u32, dib.height as u32))
+        }
+    }
+
+    fn read_ico_frame(data: &[u8]) -> Result<Image, String> {
+        if Self::is_png(data) {
+            Self::read_png(data)
+        } else {
+            Self::read_ico_dib(data)
+        }
+    }
+
+    fn is_png(data: &[u8]) -> bool {
+        data.len() >= 8 && Self::detect_format(data) == ImageFileFormat::Png
+    }
+
+    /// Width and height from the PNG `IHDR` chunk, capped at [`PNG_MAX_DIMENSION`].
+    fn png_dimensions(data: &[u8]) -> Result<(u32, u32), String> {
+        if data.len() < 24 || &data[12..16] != b"IHDR" {
+            return Err("PNG missing IHDR chunk".to_string());
+        }
+        let w = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        let h = u32::from_be_bytes(data[20..24].try_into().unwrap());
+        if w == 0 || h == 0 || w > PNG_MAX_DIMENSION || h > PNG_MAX_DIMENSION {
+            return Err(format!("PNG dimensions {w}x{h} out of range"));
+        }
+        Ok((w, h))
+    }
+
+    /// Decodes one BMP-style ICO frame: a `BITMAPINFOHEADER`, the palette, the XOR bitmap and
+    /// (usually) the 1-bpp AND mask.
+    fn read_ico_dib(data: &[u8]) -> Result<Image, String> {
+        let dib = IcoDib::parse(data)?;
+        let (w, h, bpp) = (dib.width, dib.height, dib.bpp);
+        let palette = &data[dib.palette_off..dib.xor_off];
+        let xor = &data[dib.xor_off..dib.xor_off + dib.xor_stride * h];
+        let and = dib
+            .has_mask
+            .then(|| &data[dib.and_off..dib.and_off + dib.and_stride * h]);
+        let (xor_stride, and_stride) = (dib.xor_stride, dib.and_stride);
+
+        // 32-bpp frames carry alpha themselves; without any non-zero alpha (old-style icons)
+        // the AND mask decides transparency, as Windows does (opaque when there is no mask).
+        let use_alpha = bpp == 32 && xor.chunks_exact(4).any(|p| p[3] != 0);
+
+        let mut image = Image::new(w as u32, h as u32, ImageFormat::Rgba8888);
+        for y in 0..h {
+            // DIB rows are stored bottom-up.
+            let src_y = h - 1 - y;
+            let row = &xor[src_y * xor_stride..][..xor_stride];
+            let mask_row = and.map(|a| &a[src_y * and_stride..][..and_stride]);
+            for x in 0..w {
+                let (r, g, b) = match bpp {
+                    32 => {
+                        let p = &row[x * 4..][..4];
+                        (p[2], p[1], p[0])
+                    }
+                    24 => {
+                        let p = &row[x * 3..][..3];
+                        (p[2], p[1], p[0])
+                    }
+                    _ => {
+                        let bit = x * bpp;
+                        let mask = ((1u16 << bpp) - 1) as u8;
+                        let idx = ((row[bit / 8] >> (8 - bpp - bit % 8)) & mask) as usize;
+                        match palette.get(idx * 4..idx * 4 + 3) {
+                            Some(c) => (c[2], c[1], c[0]),
+                            None => (0, 0, 0),
+                        }
+                    }
+                };
+                let a = if use_alpha {
+                    row[x * 4 + 3]
+                } else if mask_row.is_some_and(|m| m[x / 8] & (0x80 >> (x % 8)) != 0) {
+                    0
+                } else {
+                    255
+                };
+                image.set_pixel_color(x as u32, y as u32, Color::from_rgba8(r, g, b, a));
+            }
+        }
+        Ok(image)
     }
 
     fn read_png(bytes: &[u8]) -> Result<Image, String> {
@@ -64,6 +333,11 @@ impl ImageReader {
         let mut reader = decoder
             .read_info()
             .map_err(|e| format!("PNG read_info error: {e}"))?;
+        // Checked before the output buffer is allocated, so a hostile IHDR cannot demand it.
+        let (hdr_w, hdr_h) = (reader.info().width, reader.info().height);
+        if hdr_w > PNG_MAX_DIMENSION || hdr_h > PNG_MAX_DIMENSION {
+            return Err(format!("PNG dimensions {hdr_w}x{hdr_h} out of range"));
+        }
         let mut buf = vec![0u8; reader.output_buffer_size()];
         let info = reader
             .next_frame(&mut buf)

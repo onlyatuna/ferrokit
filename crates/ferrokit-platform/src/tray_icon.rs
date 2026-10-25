@@ -614,6 +614,63 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        const NIIF_NONE: u32 = 0x00000000;
+        const NIIF_INFO: u32 = 0x00000001;
+        const NIIF_WARNING: u32 = 0x00000002;
+        const NIIF_ERROR: u32 = 0x00000003;
+
+        let flags = match icon {
+            crate::platform_tray::TrayMessageIcon::NoIcon => NIIF_NONE,
+            crate::platform_tray::TrayMessageIcon::Information => NIIF_INFO,
+            crate::platform_tray::TrayMessageIcon::Warning => NIIF_WARNING,
+            crate::platform_tray::TrayMessageIcon::Critical => NIIF_ERROR,
+        };
+        self.notify_balloon(title, msg, flags, ptr::null_mut(), duration_ms)
+    }
+
+    /// Shows a balloon whose icon is `icon` (`QSystemTrayIcon::showMessage(title, msg, QIcon,
+    /// msecs)`): `NIIF_USER | NIIF_LARGE_ICON` with a 32x32 `hBalloonIcon` made from the icon.
+    /// A null icon shows the balloon without one.
+    pub fn show_message_with_icon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        icon: &ferrokit_gui::image::Icon,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
+        use ferrokit_gui::image::{IconMode, IconState};
+        if icon.is_null() {
+            return self.show_message(
+                title,
+                msg,
+                crate::platform_tray::TrayMessageIcon::NoIcon,
+                duration_ms,
+            );
+        }
+        const NIIF_USER: u32 = 0x00000004;
+        const NIIF_LARGE_ICON: u32 = 0x00000020;
+        let pixmap = icon.pixmap(
+            ferrokit_gui::geometry::primitives::Size::new(32, 32),
+            IconMode::Normal,
+            IconState::Off,
+        );
+        let hballoon = Self::create_hicon_from_pixmap(&pixmap)?;
+        // The shell copies the balloon icon while handling `NIM_MODIFY`, so it is ours to free
+        // as soon as the call returns.
+        let result =
+            self.notify_balloon(title, msg, NIIF_USER | NIIF_LARGE_ICON, hballoon, duration_ms);
+        Self::destroy_hicon(hballoon);
+        result
+    }
+
+    fn notify_balloon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        info_flags: u32,
+        balloon_icon: HICON,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = self.hwnd;
@@ -632,18 +689,8 @@ impl TrayIcon {
         nid.szInfoTitle[title_len] = 0;
 
         nid.Anonymous.uTimeout = if duration_ms == 0 { 10000 } else { duration_ms };
-
-        const NIIF_NONE: u32 = 0x00000000;
-        const NIIF_INFO: u32 = 0x00000001;
-        const NIIF_WARNING: u32 = 0x00000002;
-        const NIIF_ERROR: u32 = 0x00000003;
-
-        nid.dwInfoFlags = match icon {
-            crate::platform_tray::TrayMessageIcon::NoIcon => NIIF_NONE,
-            crate::platform_tray::TrayMessageIcon::Information => NIIF_INFO,
-            crate::platform_tray::TrayMessageIcon::Warning => NIIF_WARNING,
-            crate::platform_tray::TrayMessageIcon::Critical => NIIF_ERROR,
-        };
+        nid.dwInfoFlags = info_flags;
+        nid.hBalloonIcon = balloon_icon;
 
         let res = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
         if res == 0 {
@@ -808,6 +855,16 @@ impl crate::platform_tray::PlatformTrayIcon for TrayIcon {
         self.show_message(title, msg, icon, duration_ms)
     }
 
+    fn show_message_with_icon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        icon: &ferrokit_gui::image::Icon,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
+        self.show_message_with_icon(title, msg, icon, duration_ms)
+    }
+
     fn supports_messages(&self) -> bool {
         true
     }
@@ -885,6 +942,16 @@ impl TrayIcon {
         duration_ms: u32,
     ) -> Result<(), &'static str> {
         self.inner.show_message(title, msg, icon, duration_ms)
+    }
+
+    pub fn show_message_with_icon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        icon: &ferrokit_gui::image::Icon,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
+        self.inner.show_message_with_icon(title, msg, icon, duration_ms)
     }
 }
 #[cfg(all(test, windows))]

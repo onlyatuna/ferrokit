@@ -11,7 +11,7 @@
 //! - [`ImageFormat`]: Pixel format enumeration (RGBA8888, BGRA8888, Mono, Grayscale8, etc.).
 //! - [`Bitmap`]: 1-bit monochrome mask for cursors, window masks, and clipping (`QBitmap`).
 //! - [`Icon`]: Multi-resolution, multi-state icon management (`QIcon`).
-//! - [`ImageReader`] / [`ImageWriter`]: Format detection and codecs (PNG, BMP, PPM) (`QImageReader` / `QImageWriter`).
+//! - [`ImageReader`] / [`ImageWriter`]: Format detection and codecs (PNG, BMP, PPM; ICO read) (`QImageReader` / `QImageWriter`).
 //! - [`Pixmap`]: Platform/display representation backed by rasterization buffer (`QPixmap`).
 
 pub mod bitmap;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::menu::PlatformMenu;
+use ferrokit_gui::image::Icon;
 use ferrokit_gui::paint::Pixmap;
 
 /// Aligned with `QPlatformSystemTrayIcon::MessageIcon` (qtbase)
@@ -32,6 +33,24 @@ pub trait PlatformTrayIcon {
         Ok(())
     }
 
+    /// Displays a balloon or toast message with a custom icon, aligned with the
+    /// `QSystemTrayIcon::showMessage(title, msg, QIcon, msecs)` overload.
+    /// `duration_ms` defaults to 10,000 ms if 0.
+    ///
+    /// The default falls back to [`TrayMessageIcon::NoIcon`]: back ends that cannot show an
+    /// arbitrary image in a notification (D-Bus notifications, macOS user notifications) keep
+    /// the title and text but drop the icon. A null `icon` also shows no icon.
+    fn show_message_with_icon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        icon: &Icon,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
+        let _ = icon;
+        self.show_message(title, msg, TrayMessageIcon::NoIcon, duration_ms)
+    }
+
     /// Returns true if this platform tray implementation supports showing system messages.
     fn supports_messages(&self) -> bool {
         true
@@ -44,6 +63,7 @@ pub struct GenericTrayIcon {
     visible: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, TrayMessageIcon, u32)>,
+    last_message_icon: Option<Icon>,
 }
 
 impl GenericTrayIcon {
@@ -54,6 +74,7 @@ impl GenericTrayIcon {
             visible: false,
             menu: None,
             last_message: None,
+            last_message_icon: None,
         }
     }
 
@@ -73,6 +94,12 @@ impl GenericTrayIcon {
         self.last_message
             .as_ref()
             .map(|(t, m, i, d)| (t.as_str(), m.as_str(), *i, *d))
+    }
+
+    /// The custom icon of the last `show_message_with_icon` call; `None` after a message
+    /// shown with a standard `TrayMessageIcon` (or when the icon was null).
+    pub fn last_message_icon(&self) -> Option<&Icon> {
+        self.last_message_icon.as_ref()
     }
 }
 
@@ -110,6 +137,19 @@ impl PlatformTrayIcon for GenericTrayIcon {
     ) -> Result<(), &'static str> {
         let dur = if duration_ms == 0 { 10000 } else { duration_ms };
         self.last_message = Some((title.to_string(), msg.to_string(), icon, dur));
+        self.last_message_icon = None;
+        Ok(())
+    }
+
+    fn show_message_with_icon(
+        &mut self,
+        title: &str,
+        msg: &str,
+        icon: &Icon,
+        duration_ms: u32,
+    ) -> Result<(), &'static str> {
+        self.show_message(title, msg, TrayMessageIcon::NoIcon, duration_ms)?;
+        self.last_message_icon = (!icon.is_null()).then(|| icon.clone());
         Ok(())
     }
 
