@@ -120,8 +120,6 @@ fn wheel(x: i32, y: i32) -> Event {
 #[test]
 fn application_filters_run_before_object_filters_and_last_installed_object_filter_first() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     let (app_id, _a) = spy("app", &log, &[]);
@@ -151,8 +149,6 @@ fn application_filters_run_before_object_filters_and_last_installed_object_filte
 #[test]
 fn filters_see_context_menu_press_and_tracking_move() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     let (id, _s) = spy("f", &log, &[]);
@@ -188,8 +184,6 @@ fn filters_see_context_menu_press_and_tracking_move() {
 #[test]
 fn consuming_filter_hides_the_event_from_the_widget_and_stops_propagation() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     let (child_filter, _c) = spy("child", &log, &["Wheel"]);
@@ -208,8 +202,6 @@ fn consuming_filter_hides_the_event_from_the_widget_and_stops_propagation() {
 #[test]
 fn enter_and_leave_reach_filters_and_under_mouse_follows_the_cursor() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     let (id, _s) = spy("f", &log, &[]);
@@ -234,8 +226,6 @@ fn enter_and_leave_reach_filters_and_under_mouse_follows_the_cursor() {
 #[test]
 fn an_application_filter_that_consumes_enter_keeps_under_mouse_unset() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     let (app_id, _a) = spy("app", &log, &["Enter"]);
@@ -253,8 +243,6 @@ fn an_application_filter_that_consumes_enter_keeps_under_mouse_unset() {
 #[test]
 fn key_press_goes_through_the_focus_widget_filters() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    CoreApplication::reset_for_test();
-    let _app = CoreApplication::new(vec![]);
     let log: Log = Arc::default();
     let (root, child) = tree();
     child
