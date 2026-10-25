@@ -4,6 +4,7 @@ use crate::popup::PopupManager;
 use crate::widget::WidgetRef;
 use ferrokit_core::event::FocusReason;
 use ferrokit_core::event::{Event, EventKind, EventPointPos, MouseButtons};
+use ferrokit_core::event_loop::notify_borrowed_with;
 use ferrokit_core::object::ObjectId;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 
@@ -64,7 +65,7 @@ impl EventTreeDispatcher {
             // Leaving the window leaves the whole chain (qapplication.cpp:2082-2101 with no new receiver).
             for w in ancestors(&old_widget) {
                 let mut leave_ev = Event::new_spontaneous(EventKind::Leave);
-                let _ = w.borrow_mut().event(&mut leave_ev);
+                let _ = notify_widget(&w, &mut leave_ev);
             }
         }
         crate::tooltip::leave();
@@ -128,6 +129,20 @@ impl EventTreeDispatcher {
                     });
                 }
 
+                if buttons.is_empty() {
+                    if let Some(path) = grab_path(root, win_pos) {
+                        // `QWidget::grabMouse`: the grabber gets the move wherever the cursor is.
+                        return deliver_tracking_move(&path);
+                    }
+                } else if self.press_grab.is_none() {
+                    if let Some(path) = grab_path(root, win_pos) {
+                        return deliver_with_propagation(&path, |pos| EventKind::MouseMove {
+                            x: pos.x,
+                            y: pos.y,
+                        });
+                    }
+                }
+
                 let path = hit_path(root, win_pos);
                 match path.last().map(|s| (s.widget.clone(), s.pos)) {
                     Some((target, local_pos)) => {
@@ -146,7 +161,7 @@ impl EventTreeDispatcher {
                             x: local_pos.x,
                             y: local_pos.y,
                         });
-                        target.borrow_mut().event(&mut local_event)
+                        notify_widget(&target, &mut local_event)
                     }
                     None => {
                         self.handle_mouse_leave();
@@ -167,11 +182,11 @@ impl EventTreeDispatcher {
                             y: win_pos.y - g.y,
                             button: *button,
                         });
-                        return grabber.borrow_mut().event(&mut local_event);
+                        return notify_widget(&grabber, &mut local_event);
                     }
                 }
 
-                let path = hit_path(root, win_pos);
+                let path = grab_path(root, win_pos).unwrap_or_else(|| hit_path(root, win_pos));
                 self.note_press(*button, path.last());
                 if let Some(target) = path.last() {
                     if *button == 1 {
@@ -229,7 +244,7 @@ impl EventTreeDispatcher {
                         old_pos: *old_pos,
                         modifiers: *modifiers,
                     });
-                    return target.borrow_mut().event(&mut local_event);
+                    return notify_widget(&target, &mut local_event);
                 }
                 false
             }
@@ -245,7 +260,7 @@ impl EventTreeDispatcher {
                         old_pos: *old_pos,
                         modifiers: *modifiers,
                     });
-                    return target.borrow_mut().event(&mut local_event);
+                    return notify_widget(&target, &mut local_event);
                 }
                 false
             }
@@ -255,7 +270,7 @@ impl EventTreeDispatcher {
                         old_pos: *old_pos,
                         modifiers: *modifiers,
                     });
-                    return old_widget.borrow_mut().event(&mut local_event);
+                    return notify_widget(&old_widget, &mut local_event);
                 }
                 false
             }
@@ -277,13 +292,13 @@ impl EventTreeDispatcher {
                                 y: win_pos.y - g.y,
                                 button: *button,
                             });
-                        return grabber.borrow_mut().event(&mut local_event);
+                        return notify_widget(&grabber, &mut local_event);
                     }
                 }
                 let button = *button;
                 let path = match &grab {
                     Some((_, g)) => path_to(g, win_pos),
-                    None => hit_path(root, win_pos),
+                    None => grab_path(root, win_pos).unwrap_or_else(|| hit_path(root, win_pos)),
                 };
                 deliver_with_propagation(&path, |pos| EventKind::MouseButtonRelease {
                     x: pos.x,
@@ -304,7 +319,7 @@ impl EventTreeDispatcher {
                 let (pixel_delta_x, pixel_delta_y) = (*pixel_delta_x, *pixel_delta_y);
                 let (angle_delta_x, angle_delta_y, modifiers) =
                     (*angle_delta_x, *angle_delta_y, *modifiers);
-                let path = hit_path(root, win_pos);
+                let path = grab_path(root, win_pos).unwrap_or_else(|| hit_path(root, win_pos));
                 deliver_with_propagation(&path, |pos| EventKind::Wheel {
                     x: pos.x,
                     y: pos.y,
@@ -333,20 +348,20 @@ impl EventTreeDispatcher {
             EventKind::FocusIn { reason } => {
                 if let Some(focused_id) = self.focus_manager.focused_widget_id() {
                     if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        focused_widget.borrow_mut().event(event);
+                        notify_widget(&focused_widget, event);
                     }
                 } else if *reason == FocusReason::ActiveWindow {
                     self.focus_manager.focus_next(root);
                 }
-                root.borrow_mut().event(event)
+                notify_widget(root, event)
             }
             EventKind::FocusOut { .. } => {
                 if let Some(focused_id) = self.focus_manager.focused_widget_id() {
                     if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        focused_widget.borrow_mut().event(event);
+                        notify_widget(&focused_widget, event);
                     }
                 }
-                root.borrow_mut().event(event)
+                notify_widget(root, event)
             }
             EventKind::KeyPress { key, modifiers, .. } => {
                 // `QWidget::event` (qwidget.cpp, KeyPress): Tab, Shift+Tab and Backtab move the focus
@@ -381,32 +396,32 @@ impl EventTreeDispatcher {
                 // Route key event to focused widget first
                 if let Some(focused_id) = self.focus_manager.focused_widget_id() {
                     if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if focused_widget.borrow_mut().event(event) {
+                        if notify_widget(&focused_widget, event) {
                             return true;
                         }
                     }
                 }
-                root.borrow_mut().event(event)
+                notify_widget(root, event)
             }
             EventKind::KeyRelease { .. } => {
                 if let Some(focused_id) = self.focus_manager.focused_widget_id() {
                     if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if focused_widget.borrow_mut().event(event) {
+                        if notify_widget(&focused_widget, event) {
                             return true;
                         }
                     }
                 }
-                root.borrow_mut().event(event)
+                notify_widget(root, event)
             }
             EventKind::InputMethod { .. } => {
                 if let Some(focused_id) = self.focus_manager.focused_widget_id() {
                     if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if focused_widget.borrow_mut().event(event) {
+                        if notify_widget(&focused_widget, event) {
                             return true;
                         }
                     }
                 }
-                root.borrow_mut().event(event)
+                notify_widget(root, event)
             }
             EventKind::DpiChanged { dpi_x, .. } => {
                 let new_dpr = ferrokit_gui::round_scale_factor(*dpi_x as f64 / 96.0) as f32;
@@ -460,12 +475,12 @@ impl EventTreeDispatcher {
         };
         for w in &old_chain[..leave_end] {
             let mut ev = Event::new_spontaneous(EventKind::Leave);
-            let _ = w.borrow_mut().event(&mut ev);
+            let _ = notify_widget(w, &mut ev);
         }
         for i in (0..enter_end).rev() {
             let p = local_pos(&new_chain[i..], win_pos);
             let mut ev = Event::new_spontaneous(EventKind::Enter { x: p.x, y: p.y });
-            let _ = new_chain[i].borrow_mut().event(&mut ev);
+            let _ = notify_widget(&new_chain[i], &mut ev);
         }
         self.last_hovered = Some((target_id, target.clone()));
     }
@@ -599,7 +614,7 @@ fn deliver_with_propagation(path: &[HitStep], make_kind: impl Fn(Point) -> Event
             continue;
         }
         let mut ev = Event::new_spontaneous(make_kind(step.pos));
-        let handled = step.widget.borrow_mut().event(&mut ev);
+        let handled = notify_widget(&step.widget, &mut ev);
         if handled && ev.is_accepted() {
             return true;
         }
@@ -634,7 +649,7 @@ fn deliver_tracking_move(path: &[HitStep]) -> bool {
             x: step.pos.x,
             y: step.pos.y,
         });
-        let handled = step.widget.borrow_mut().event(&mut ev);
+        let handled = notify_widget(&step.widget, &mut ev);
         if handled && ev.is_accepted() {
             return true;
         }
@@ -665,7 +680,7 @@ fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
             y: step.pos.y,
             button,
         });
-        let handled = step.widget.borrow_mut().event(&mut dbl);
+        let handled = notify_widget(&step.widget, &mut dbl);
         if handled {
             if dbl.is_accepted() {
                 return true;
@@ -677,7 +692,7 @@ fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
             y: step.pos.y,
             button,
         });
-        if step.widget.borrow_mut().event(&mut press) && press.is_accepted() {
+        if notify_widget(&step.widget, &mut press) && press.is_accepted() {
             return true;
         }
         if step
@@ -690,6 +705,29 @@ fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
         }
     }
     false
+}
+
+/// `QApplication::notify` for one widget: application filters, the `WA_UnderMouse` toggle of
+/// `Enter` / `Leave` (qapplication.cpp:3246-3254, after the application filters and before the
+/// object filters), the widget's own filters, then `event()`. A widget whose handler is running
+/// cannot be reached and does not see the event.
+pub(crate) fn notify_widget(widget: &WidgetRef, event: &mut Event) -> bool {
+    let Ok(mut w) = widget.try_borrow_mut() else {
+        return false;
+    };
+    notify_borrowed_with(&mut **w, event, |w, ev| match ev.kind {
+        EventKind::Enter { .. } => w.widget_base().under_mouse.set(true),
+        EventKind::Leave => w.widget_base().under_mouse.set(false),
+        _ => {}
+    })
+}
+
+/// The path to the widget holding `QWidget::grabMouse`, when it is part of `root`'s tree: it gets
+/// the mouse events instead of the widget under the cursor (qwidgetwindow.cpp `handleMouseEvent`).
+fn grab_path(root: &WidgetRef, win_pos: Point) -> Option<Vec<HitStep>> {
+    let id = crate::widget::mouse_grabber_id()?;
+    let grabber = find_widget_by_id(root, id)?;
+    Some(path_to(&grabber, win_pos))
 }
 
 pub fn dispatch_event_to_tree(root: &WidgetRef, event: &mut Event) -> bool {

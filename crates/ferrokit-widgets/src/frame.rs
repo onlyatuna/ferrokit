@@ -494,6 +494,8 @@ impl Frame {
 }
 
 impl QObject for Frame {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }

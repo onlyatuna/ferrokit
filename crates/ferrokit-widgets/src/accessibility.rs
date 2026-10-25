@@ -119,6 +119,7 @@ impl AccessibleTree {
                 let id = AccessibleId(widget.id().0);
                 let mut node =
                     AccessibleNode::new(id, widget.accessible_role(), widget.accessible_name());
+                node.description = widget.accessible_description();
                 node.value = widget.accessible_value();
                 node.actions = widget.accessible_actions();
                 if !widget.is_enabled() {

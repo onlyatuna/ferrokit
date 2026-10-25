@@ -650,6 +650,47 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
     }
 }
 
+/// `QObject::property` as the trait default does it, for an override that handles some
+/// names itself and defers the rest.
+pub fn default_property<T: QObject + ?Sized>(obj: &T, name: &str) -> Option<Variant> {
+    let mo = obj.meta_object();
+    if let Some(idx) = mo.index_of_property(name) {
+        if let Some(prop) = mo.property(idx) {
+            if let Some(any) = obj.as_qobject_any() {
+                if let Some(val) = prop.read(any) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    obj.object_data().property(name).cloned()
+}
+
+/// `QObject::setProperty` as the trait default does it (see [`QObject::set_property`]).
+pub fn default_set_property<T: QObject + ?Sized>(obj: &mut T, name: &str, value: Variant) -> bool {
+    let mo = obj.meta_object();
+    if let Some(idx) = mo.index_of_property(name) {
+        if let Some(prop) = mo.property(idx).cloned() {
+            if !prop.is_writable() {
+                return false;
+            }
+            if let Some(any_mut) = obj.as_qobject_any_mut() {
+                return prop.write(any_mut, value).is_ok();
+            }
+            return false;
+        }
+    }
+
+    let changed = obj.object_data_mut().set_property(name, value);
+    if changed {
+        let mut ev = Event::new(EventKind::DynamicPropertyChange {
+            property_name: name.to_string(),
+        });
+        obj.event(&mut ev);
+    }
+    false
+}
+
 /// Calls `f` with the registered QObject on its physical registration thread.
 ///
 /// The callback receives exclusive mutable access; registration's unsafe contract
@@ -4029,17 +4070,7 @@ pub trait QObject: std::any::Any {
 
     /// Retrieves property value, prioritizing static MetaProperty then dynamic property (`QObject::property`).
     fn property(&self, name: &str) -> Option<Variant> {
-        let mo = self.meta_object();
-        if let Some(idx) = mo.index_of_property(name) {
-            if let Some(prop) = mo.property(idx) {
-                if let Some(any) = self.as_qobject_any() {
-                    if let Some(val) = prop.read(any) {
-                        return Some(val);
-                    }
-                }
-            }
-        }
-        self.object_data().property(name).cloned()
+        default_property(self, name)
     }
 
     /// Sets property value, prioritizing static MetaProperty then fallback to dynamic property (`QObject::setProperty`).
@@ -4049,27 +4080,7 @@ pub trait QObject: std::any::Any {
     /// - Dynamic property (not declared in meta-object): returns `false` (both on add/change and removal).
     ///   A `DynamicPropertyChange` event is dispatched if the dynamic property was added, modified, or removed.
     fn set_property(&mut self, name: &str, value: Variant) -> bool {
-        let mo = self.meta_object();
-        if let Some(idx) = mo.index_of_property(name) {
-            if let Some(prop) = mo.property(idx).cloned() {
-                if !prop.is_writable() {
-                    return false;
-                }
-                if let Some(any_mut) = self.as_qobject_any_mut() {
-                    return prop.write(any_mut, value).is_ok();
-                }
-                return false;
-            }
-        }
-
-        let changed = self.object_data_mut().set_property(name, value);
-        if changed {
-            let mut ev = Event::new(EventKind::DynamicPropertyChange {
-                property_name: name.to_string(),
-            });
-            self.event(&mut ev);
-        }
-        false
+        default_set_property(self, name, value)
     }
 
     /// Dynamically invokes a method by signature or name (`QMetaObject::invokeMethod`).

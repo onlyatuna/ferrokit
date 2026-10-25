@@ -406,6 +406,8 @@ impl Drop for ProgressBar {
 }
 
 impl QObject for ProgressBar {
+    crate::widget::widget_object_properties!();
+
     leaf_qobject_common!();
 
     fn event(&mut self, event: &mut Event) -> bool {

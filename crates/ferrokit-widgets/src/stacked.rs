@@ -174,6 +174,14 @@ impl Default for StackedLayout {
 }
 
 impl Layout for StackedLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn geometry(&self) -> Rect {
         self.geometry
     }
@@ -441,6 +449,8 @@ impl Default for StackedWidget {
 }
 
 impl QObject for StackedWidget {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }

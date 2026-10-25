@@ -58,6 +58,23 @@ pub fn round_scale_factor(raw: f64) -> f64 {
     rounded.max(1.0)
 }
 
+/// The user's motion setting, `Qt::MotionPreference` (`QStyleHints::motionPreference`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionPreference {
+    /// No preference: animations play.
+    NoPreference,
+    /// The user asked for less motion (on Windows: client area animations are off,
+    /// `SPI_GETCLIENTAREAANIMATION`, `QWindowsTheme::motionPreference`).
+    ReducedMotion,
+}
+
+static SYSTEM_REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+
+/// Hands over the system motion setting; the platform layer calls this when it reads it.
+pub fn set_system_motion_preference(pref: MotionPreference) {
+    SYSTEM_REDUCED_MOTION.store(pref == MotionPreference::ReducedMotion, Ordering::Relaxed);
+}
+
 /// Global system style hints matching `QStyleHints`.
 #[derive(Debug, Clone)]
 pub struct StyleHints {
@@ -247,6 +264,25 @@ impl GuiApplication {
 
     pub fn set_style_hints(hints: StyleHints) {
         *GLOBAL_STYLE_HINTS.write().unwrap() = Some(hints);
+    }
+
+    /// `QStyleHints::motionPreference`: the system setting handed over by the platform layer.
+    pub fn motion_preference() -> MotionPreference {
+        if SYSTEM_REDUCED_MOTION.load(Ordering::Relaxed) {
+            MotionPreference::ReducedMotion
+        } else {
+            MotionPreference::NoPreference
+        }
+    }
+
+    /// Factor to scale animation durations by: `0.0` under [`MotionPreference::ReducedMotion`]
+    /// (the animation jumps to its end), `1.0` otherwise. Qt has no such accessor; it derives
+    /// from `motion_preference`.
+    pub fn animation_duration_factor() -> f64 {
+        match Self::motion_preference() {
+            MotionPreference::ReducedMotion => 0.0,
+            MotionPreference::NoPreference => 1.0,
+        }
     }
 
     // --- Layout Direction ---

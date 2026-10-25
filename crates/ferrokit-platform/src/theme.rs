@@ -52,6 +52,10 @@ pub trait PlatformTheme: Send + Sync {
     fn text_smoothing(&self) -> ferrokit_gui::text::smoothing::TextSmoothing {
         ferrokit_gui::text::smoothing::TextSmoothing::OFF
     }
+    /// `QPlatformTheme::motionPreference`.
+    fn motion_preference(&self) -> ferrokit_gui::application::MotionPreference {
+        ferrokit_gui::application::MotionPreference::NoPreference
+    }
 }
 
 #[cfg(windows)]
@@ -76,6 +80,7 @@ pub mod win32_theme {
             // Qt reads the font smoothing state once, when the first painter starts
             // (`QRasterPaintEngine::clearTypeFontsEnabled`, a function-local static).
             ferrokit_gui::text::smoothing::set_text_smoothing(theme.text_smoothing());
+            ferrokit_gui::application::set_system_motion_preference(theme.motion_preference());
             theme
         }
     }
@@ -215,6 +220,24 @@ pub mod win32_theme {
             }
         }
 
+        /// `SPI_GETCLIENTAREAANIMATION` off means reduced motion; a failed query counts as off
+        /// (`QWindowsTheme::motionPreference`, `booleanSystemParametersInfo(.., false)`).
+        fn motion_preference(&self) -> ferrokit_gui::application::MotionPreference {
+            use ferrokit_gui::application::MotionPreference;
+            use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
+            const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
+            let mut on: i32 = 0;
+            // SAFETY: the query writes one `BOOL` through the pointer.
+            let ok = unsafe {
+                SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &mut on as *mut _ as *mut _, 0)
+            };
+            if ok != 0 && on != 0 {
+                MotionPreference::NoPreference
+            } else {
+                MotionPreference::ReducedMotion
+            }
+        }
+
         /// `SPI_GETFONTSMOOTHINGTYPE` is ClearType (`winClearTypeFontsEnabled`) and the
         /// gamma is `SPI_GETFONTSMOOTHINGCONTRAST / 1000`, 1.4 when out of 1..=5
         /// (`QWindowsFontDatabase::fontSmoothingGamma`).
@@ -258,6 +281,7 @@ pub mod win32_theme {
         }
 
         fn refresh(&self) {
+            ferrokit_gui::application::set_system_motion_preference(self.motion_preference());
             let current = Self::query_color_scheme();
             let previous =
                 ColorScheme::from(self.cached_scheme.swap(current as u8, Ordering::AcqRel));
