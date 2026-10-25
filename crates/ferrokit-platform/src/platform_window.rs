@@ -152,9 +152,10 @@ pub trait PlatformWindow: 'static {
     }
     /// `QPlatformWindow::setMask` (`qplatformwindow.cpp`): clips the window to `region`, in
     /// native pixels of the window's client area (`QWindow::setMask` hands it the region scaled
-    /// by `QHighDpi::toNativeLocalRegion`). An empty region removes the mask. Only Windows
-    /// (`SetWindowRgn`, `QWindowsWindow::setMask`) applies it; a backend without window regions
-    /// ignores it, as `QPlatformWindow::setMask` does by default.
+    /// by `QHighDpi::toNativeLocalRegion`). An empty region removes the mask. Windows applies it
+    /// with `SetWindowRgn` (`QWindowsWindow::setMask`); Cocoa clips the content layer to it (a
+    /// layer mask, which makes the window non-opaque while it is set). A backend without window
+    /// regions ignores it, as `QPlatformWindow::setMask` does by default.
     fn set_mask(&mut self, _region: &ferrokit_gui::geometry::Region) {}
     /// `QWindow::setTransientParent` as the window system sees it: the native handle
     /// (`native_handle`) of the window that owns this top-level window, or `None` to remove the

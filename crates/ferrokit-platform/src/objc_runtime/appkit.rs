@@ -1063,12 +1063,13 @@ mod native {
     extern "C" fn first_rect_for_character_range(
         this: *mut c_void,
         _cmd: *const c_void,
-        _range: NSRange,
+        range: NSRange,
         actual: *mut NSRange,
     ) -> CGRect {
         if !actual.is_null() {
-            // SAFETY: AppKit passes a writable NSRange or NULL.
-            unsafe { *actual = NSRange::NOT_FOUND };
+            // SAFETY: AppKit passes a writable NSRange or NULL. The rectangle is for the range
+            // asked about, whatever it is.
+            unsafe { *actual = range };
         }
         guarded(CGRect::ZERO, || input::text_input_first_rect(Id(this)))
     }
