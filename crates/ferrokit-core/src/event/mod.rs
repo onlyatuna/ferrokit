@@ -383,6 +383,9 @@ pub enum EventKind {
     },
     /// The widget's stacking order changed (`QEvent::ZOrderChange`, `QWidget::raise`/`lower`).
     ZOrderChange,
+    /// The widget's cursor was set or unset (`QEvent::CursorChange`, qwidget.cpp:4996-4997,
+    /// 5016-5017).
+    CursorChange,
 }
 
 impl fmt::Debug for EventKind {
@@ -732,6 +735,7 @@ impl fmt::Debug for EventKind {
                 write!(f, "ChildPolished(child={:?})", child_id)
             }
             EventKind::ZOrderChange => write!(f, "ZOrderChange"),
+            EventKind::CursorChange => write!(f, "CursorChange"),
         }
     }
 }
@@ -794,6 +798,7 @@ impl EventKind {
             EventKind::Polish => EventType::Polish,
             EventKind::ChildPolished { .. } => EventType::ChildPolished,
             EventKind::ZOrderChange => EventType::ZOrderChange,
+            EventKind::CursorChange => EventType::CursorChange,
             EventKind::TabletPress { .. } => EventType::TabletPress,
             EventKind::TabletMove { .. } => EventType::TabletMove,
             EventKind::TabletRelease { .. } => EventType::TabletRelease,

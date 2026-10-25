@@ -55,6 +55,21 @@ pub trait PlatformWindow: 'static {
         false
     }
     fn set_cursor(&mut self, _shape: crate::cursor::CursorShape) {}
+    /// `QWindow::unsetCursor`: the window no longer asks for a cursor of its own and shows the
+    /// default one (the application override, or the arrow).
+    fn unset_cursor(&mut self) {}
+    /// `QPlatformWindow::setMouseGrabEnabled`: while grabbed the window receives every mouse event
+    /// of the application, wherever the pointer is. Returns `grab` when it took effect, `false`
+    /// when the window cannot grab (a hidden window, or a backend without grabs: Qt's default
+    /// `QPlatformWindow::setMouseGrabEnabled` also returns `false`, qplatformwindow.cpp:443-448).
+    fn set_mouse_grab_enabled(&mut self, _grab: bool) -> bool {
+        false
+    }
+    /// Whether the window holds the mouse grab ([`set_mouse_grab_enabled`](Self::set_mouse_grab_enabled)
+    /// or the automatic grab of a button press; `QWindowsWindow::hasMouseCapture`).
+    fn has_mouse_grab(&self) -> bool {
+        false
+    }
     fn set_opacity(&mut self, opacity: f32);
     fn opacity(&self) -> f32;
     /// `QWindow::setMinimumSize` as `QPlatformWindow::propagateSizeHints` hands it to the window

@@ -29,6 +29,7 @@ thread_local! {
     static FOCUS_QUEUE: RefCell<Vec<Option<(Option<ObjectId>, Option<ObjectId>)>>> = const { RefCell::new(Vec::new()) };
     static FOCUS_CHANGED: RefCell<Option<FocusChangedSignal>> = const { RefCell::new(None) };
     static QUITTING: Cell<bool> = const { Cell::new(false) };
+    static OVERRIDE_CURSORS: RefCell<Vec<ferrokit_platform::cursor::CursorShape>> = const { RefCell::new(Vec::new()) };
 }
 
 type FocusChangedSignal = Signal<(Option<ObjectId>, Option<ObjectId>)>;
@@ -501,6 +502,58 @@ impl Application {
         *GLOBAL_CURSOR_FLASH_TIME_MS.write().unwrap() = ms;
     }
 
+    /// `QGuiApplication::mouseButtons` (qguiapplication.cpp:1974): the buttons the application has
+    /// seen pressed and not yet released, as of the last mouse event.
+    pub fn mouse_buttons() -> ferrokit_core::event::MouseButtons {
+        ferrokit_platform::window::app_mouse_buttons()
+    }
+
+    /// `QGuiApplication::overrideCursor` (qguiapplication.cpp:4344-4348): the active override
+    /// cursor, `None` when none was set.
+    pub fn override_cursor() -> Option<ferrokit_platform::cursor::CursorShape> {
+        OVERRIDE_CURSORS.with(|s| s.borrow().last().copied())
+    }
+
+    /// `QGuiApplication::setOverrideCursor` (qguiapplication.cpp:4449-4456): pushes `shape` on the
+    /// override stack; it shows in all the application's windows until `restore_override_cursor`
+    /// or another `set_override_cursor`. A backend with override cursors (Windows) shows it
+    /// itself; any other applies it to every window, as Qt does for plugins without them.
+    pub fn set_override_cursor(shape: ferrokit_platform::cursor::CursorShape) {
+        OVERRIDE_CURSORS.with(|s| s.borrow_mut().push(shape));
+        Self::apply_override_cursor(Some(shape));
+    }
+
+    /// `QGuiApplication::changeOverrideCursor` (qguiapplication.cpp:4358-4365): replaces the active
+    /// override cursor; nothing happens while none is set.
+    pub fn change_override_cursor(shape: ferrokit_platform::cursor::CursorShape) {
+        let had = OVERRIDE_CURSORS.with(|s| s.borrow_mut().pop().is_some());
+        if had {
+            Self::set_override_cursor(shape);
+        }
+    }
+
+    /// `QGuiApplication::restoreOverrideCursor` (qguiapplication.cpp:4470-4487): pops the active
+    /// override cursor, which shows the one below it, or the widgets' cursors again when it was
+    /// the last. Nothing happens while none is set.
+    pub fn restore_override_cursor() {
+        let popped = OVERRIDE_CURSORS.with(|s| s.borrow_mut().pop().is_some());
+        if popped {
+            Self::apply_override_cursor(Self::override_cursor());
+        }
+    }
+
+    fn apply_override_cursor(shape: Option<ferrokit_platform::cursor::CursorShape>) {
+        let mut cursor = ferrokit_platform::platform().cursor();
+        match shape {
+            Some(shape) => {
+                cursor.set_override_cursor(shape);
+            }
+            None => cursor.clear_override_cursor(),
+        }
+        // Each window shows the override, or its own cursor once the override is gone.
+        crate::window::refresh_all_cursors();
+    }
+
     pub fn wheel_scroll_lines() -> i32 {
         *GLOBAL_WHEEL_SCROLL_LINES.read().unwrap()
     }
@@ -545,6 +598,7 @@ impl Application {
         *GLOBAL_START_DRAG_DISTANCE.write().unwrap() = 10;
         *GLOBAL_START_DRAG_TIME_MS.write().unwrap() = 500;
         *GLOBAL_STYLESHEET.write().unwrap() = None;
+        OVERRIDE_CURSORS.with(|s| s.borrow_mut().clear());
     }
 }
 

@@ -22,6 +22,7 @@ pub use desktop_services::{open_file, open_url, set_url_handler, UrlHandler};
 pub mod backdrop;
 pub mod clipboard;
 pub mod cursor;
+pub mod cursor_bitmap;
 pub mod drag_drop;
 pub mod high_dpi;
 pub use high_dpi::*;

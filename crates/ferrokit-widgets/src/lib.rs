@@ -7,6 +7,8 @@ pub mod focus;
 pub use focus::*;
 pub mod size_policy;
 pub use size_policy::*;
+pub mod cursor;
+pub use cursor::Cursor;
 
 pub mod widget;
 pub use widget::*;
