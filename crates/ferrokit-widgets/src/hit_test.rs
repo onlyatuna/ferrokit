@@ -60,6 +60,12 @@ impl EventTreeDispatcher {
     pub fn focus_manager_mut(&mut self) -> &mut FocusManager {
         &mut self.focus_manager
     }
+
+    /// The widget the pointer is over (`qt_last_mouse_receiver`), if it is in the window.
+    pub fn hovered_widget(&self) -> Option<WidgetRef> {
+        self.last_hovered.as_ref().map(|(_, w)| w.clone())
+    }
+
     pub fn handle_mouse_leave(&mut self) {
         if let Some((_old_id, old_widget)) = self.last_hovered.take() {
             // Leaving the window leaves the whole chain (qapplication.cpp:2082-2101 with no new receiver).

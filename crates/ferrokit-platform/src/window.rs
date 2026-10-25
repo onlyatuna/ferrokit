@@ -257,6 +257,11 @@ pub fn set_window_cursor_shape(hwnd: HWND, shape: crate::cursor::CursorShape) {
     let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().insert(hwnd as isize, shape));
 }
 
+/// `QWindow::unsetCursor`: the window asks for no cursor of its own.
+pub fn unset_window_cursor_shape(hwnd: HWND) {
+    let _ = WINDOW_CURSORS.try_with(|m| m.borrow_mut().remove(&(hwnd as isize)));
+}
+
 pub fn set_window_event_handler(hwnd: HWND, handler: Box<dyn WindowSystemEventHandler>) {
     let replaced = WINDOW_EVENT_HANDLERS
         .try_with(|map| map.borrow_mut().insert(hwnd as isize, handler))
@@ -399,6 +404,40 @@ thread_local! {
         const { std::cell::Cell::new(ferrokit_core::event::MouseButtons::NO_BUTTON) };
 }
 
+/// `QGuiApplication::mouseButtons` (qguiapplication.cpp:1974): the buttons the application has
+/// seen pressed and not yet released. UI thread only.
+pub fn app_mouse_buttons() -> ferrokit_core::event::MouseButtons {
+    APP_MOUSE_BUTTONS
+        .try_with(|b| b.get())
+        .unwrap_or(ferrokit_core::event::MouseButtons::NO_BUTTON)
+}
+
+/// Stores the button state of a mouse event (`QGuiApplicationPrivate::mouse_buttons = e->buttons`,
+/// qguiapplication.cpp:2455): the widget window layer calls it for every press and release, so
+/// backends that do not track buttons themselves (and tests with a fake window) report them too.
+pub fn set_app_mouse_buttons(buttons: ferrokit_core::event::MouseButtons) {
+    let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(buttons));
+}
+
+thread_local! {
+    /// `QGuiApplicationPrivate::lastCursorPosition`: the global position of the last mouse event
+    /// (UI thread only).
+    static LAST_CURSOR_POSITION: std::cell::Cell<ferrokit_gui::geometry::primitives::Point> =
+        const { std::cell::Cell::new(ferrokit_gui::geometry::primitives::Point { x: 0, y: 0 }) };
+}
+
+/// `QGuiApplicationPrivate::lastCursorPosition` (logical global position).
+pub fn last_cursor_position() -> ferrokit_gui::geometry::primitives::Point {
+    LAST_CURSOR_POSITION
+        .try_with(|p| p.get())
+        .unwrap_or(ferrokit_gui::geometry::primitives::Point { x: 0, y: 0 })
+}
+
+/// Records the global position of a mouse event (qguiapplication.cpp:2445, 2605).
+pub fn set_last_cursor_position(pos: ferrokit_gui::geometry::primitives::Point) {
+    let _ = LAST_CURSOR_POSITION.try_with(|p| p.set(pos));
+}
+
 thread_local! {
     /// `lastMouseMovePos` in `QWindowsPointerHandler::translateMouseEvent`: the window and native
     /// global position of the last `WM_MOUSEMOVE`; cleared when the window gets `WM_MOUSELEAVE`.
@@ -446,8 +485,8 @@ fn track_button_release(msg: u32) {
         APP_MOUSE_BUTTONS.try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
 }
 
-/// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
-/// button down captures the mouse, so moves and the release keep reaching this window outside it.
+// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
+// button down captures the mouse, so moves and the release keep reaching this window outside it.
 thread_local! {
     /// Set while this thread releases the capture to hand the mouse to the native move/size loop:
     /// the loop swallows the button release, so the pressed buttons must survive the capture loss.
@@ -465,16 +504,47 @@ fn release_capture_for_system_loop() {
 }
 
 #[cfg(windows)]
+thread_local! {
+    /// Windows whose capture is the automatic one of a button press (`QWindowsWindow::AutoMouseCapture`);
+    /// an explicit `set_mouse_grab_enabled` clears it, so the release of the last button no
+    /// longer lets go (qwindowswindow.cpp:3283).
+    static AUTO_MOUSE_CAPTURE: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+#[cfg(windows)]
+fn auto_capture_flag(hwnd: isize) -> bool {
+    AUTO_MOUSE_CAPTURE
+        .try_with(|s| s.borrow().contains(&hwnd))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn set_auto_capture_flag(hwnd: isize, on: bool) {
+    let _ = AUTO_MOUSE_CAPTURE.try_with(|s| {
+        if on {
+            s.borrow_mut().insert(hwnd);
+        } else {
+            s.borrow_mut().remove(&hwnd);
+        }
+    });
+}
+
+/// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:341-345): a press
+/// with no capture captures the mouse automatically.
+#[cfg(windows)]
 fn capture_on_press(hwnd: HWND) {
     // SAFETY: plain Win32 calls on a window handle of this process.
     unsafe {
         if GetCapture() != hwnd {
             SetCapture(hwnd);
+            set_auto_capture_flag(hwnd as isize, true);
         }
     }
 }
 
-/// Release the capture once no button is held (qwindowspointerhandler.cpp:342-347).
+/// Release the automatic capture once no button is held (qwindowspointerhandler.cpp:347-352); an
+/// explicit grab stays.
 #[cfg(windows)]
 fn release_capture_when_idle(hwnd: HWND) {
     let idle = APP_MOUSE_BUTTONS
@@ -482,9 +552,36 @@ fn release_capture_when_idle(hwnd: HWND) {
         .unwrap_or(true);
     // SAFETY: as in `capture_on_press`.
     unsafe {
-        if idle && GetCapture() == hwnd {
+        if idle && GetCapture() == hwnd && auto_capture_flag(hwnd as isize) {
+            set_auto_capture_flag(hwnd as isize, false);
             ReleaseCapture();
         }
+    }
+}
+
+/// `QWindowsWindow::setMouseGrabEnabled` (qwindowswindow.cpp:3269-3292): an explicit grab or
+/// release; it overrides the automatic capture. A hidden window cannot grab.
+#[cfg(windows)]
+fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    if hwnd.is_null() {
+        return false;
+    }
+    // SAFETY: plain Win32 calls on a window handle of this process.
+    unsafe {
+        if grab && IsWindowVisible(hwnd) == 0 {
+            return false;
+        }
+        set_auto_capture_flag(hwnd as isize, false);
+        if (GetCapture() == hwnd) != grab {
+            if grab {
+                SetCapture(hwnd);
+            } else {
+                ReleaseCapture();
+            }
+        }
+        // `SetCapture` can be refused (another thread holds the mouse button down, say).
+        grab && GetCapture() == hwnd
     }
 }
 
@@ -1274,7 +1371,10 @@ unsafe fn native_window_proc_inner(
         WM_SETCURSOR => {
             let hit_test = (lparam & 0xFFFF) as u32;
             if hit_test == HTCLIENT {
-                let shape = window_cursor_shape(hwnd)
+                // The application override cursor beats the window's own (`QWindowsWindow::applyCursor`,
+                // qwindowswindow.cpp:3762-3767).
+                let shape = crate::cursor::win32_cursor::Win32Cursor::override_shape()
+                    .or_else(|| window_cursor_shape(hwnd))
                     .unwrap_or_else(crate::cursor::win32_cursor::Win32Cursor::current_global_shape);
                 crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
                 return 1;
@@ -1537,12 +1637,22 @@ unsafe fn native_window_proc_inner(
             // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
             // lost to another thread or to nothing swallows their releases.
             let new_owner = lparam as HWND;
+            set_auto_capture_flag(hwnd as isize, false);
             let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
                 .try_with(|f| f.get())
                 .unwrap_or(false);
             if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
                 let _ = APP_MOUSE_BUTTONS
                     .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            }
+            if new_owner != hwnd {
+                // Alt-Tab, a popup or the system move loop took the capture: the widget layer
+                // reconciles an explicit `grabMouse` that no longer has a native grab behind it.
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::MouseGrabLost,
+                );
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -2447,7 +2557,28 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     }
     fn set_cursor(&mut self, shape: crate::cursor::CursorShape) {
         set_window_cursor_shape(self.hwnd, shape);
-        crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
+        // An application override cursor stays on top (`QWindowsWindow::applyCursor`).
+        if crate::cursor::win32_cursor::Win32Cursor::override_shape().is_none() {
+            crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
+        }
+    }
+
+    fn unset_cursor(&mut self) {
+        use crate::cursor::win32_cursor::Win32Cursor;
+        unset_window_cursor_shape(self.hwnd);
+        // A window without a cursor shows the default (`QWindowsWindow::applyCursor`, null cursor).
+        if Win32Cursor::override_shape().is_none() {
+            Win32Cursor::apply_shape(Win32Cursor::current_global_shape());
+        }
+    }
+
+    fn set_mouse_grab_enabled(&mut self, grab: bool) -> bool {
+        set_mouse_grab_enabled_native(self.hwnd, grab)
+    }
+
+    fn has_mouse_grab(&self) -> bool {
+        // SAFETY: plain Win32 query.
+        !self.hwnd.is_null() && unsafe { GetCapture() } == self.hwnd
     }
 
     fn set_opacity(&mut self, opacity: f32) {

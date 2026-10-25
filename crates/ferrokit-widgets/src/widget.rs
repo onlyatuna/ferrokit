@@ -9,6 +9,7 @@ use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::event_loop::{filters_consume, notify_borrowed, post_event_to_thread};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
+use ferrokit_platform::cursor::CursorShape;
 use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Painter;
 use std::cell::{Cell, RefCell, RefMut};
@@ -37,6 +38,10 @@ pub fn set_widget_enabled(widget: &WidgetRef, enabled: bool) {
         notices.push(EnabledNotice::Changed(widget.clone()));
     }
     send_enabled_notices(notices);
+    // The cursor shown over a widget follows its enabled state (qwidget.cpp:3412-3417).
+    if let Ok(w) = widget.try_borrow() {
+        crate::window::refresh_cursor_of(&**w);
+    }
 }
 
 /// Sends what `set_enabled_helper` collected: the focus moves and each `EnabledChange` whose widget
@@ -136,6 +141,7 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
         }
         hide_children(widget);
         move_focus_off_hidden(widget);
+        release_grab_in_subtree(widget);
     }
 }
 
@@ -376,6 +382,7 @@ pub enum WidgetAttribute {
     Mapped = 11,
     InputMethodEnabled = 14,
     ForceDisabled = 32,
+    SetCursor = 38,
     CustomWhatsThis = 47,
     LayoutOnEntireRect = 48,
     TransparentForMouseEvents = 51,
@@ -802,6 +809,46 @@ pub trait Widget: QObject + 'static {
         self.widget_base().set_attribute(attr, on);
     }
 
+    /// `QWidget::cursor` (qwidget.cpp:4972-4982): the widget's own cursor, else its parent's, else
+    /// the arrow for a window. A parent that is mutably borrowed right now reads as the arrow.
+    fn cursor(&self) -> CursorShape {
+        let base = self.widget_base();
+        if base.cursor_attr.get() {
+            return base.cursor.get().unwrap_or(CursorShape::Arrow);
+        }
+        match self.parent_widget().and_then(|p| p.upgrade()) {
+            None => CursorShape::Arrow,
+            Some(parent) => parent
+                .try_borrow()
+                .map(|p| p.cursor())
+                .unwrap_or(CursorShape::Arrow),
+        }
+    }
+
+    /// `QWidget::setCursor` (qwidget.cpp:4984-4998): the pointer takes this shape over the widget
+    /// (and over its children without a cursor of their own); when the pointer is over the
+    /// widget now the window shows it at once. Sends `CursorChange` to the widget's event
+    /// filters; the widget's own `event` needs `&mut` and does not see it, as with
+    /// `set_style_sheet`. `Blank` hides the pointer; there is no bitmap cursor.
+    fn set_cursor(&self, shape: CursorShape) {
+        let base = self.widget_base();
+        base.cursor.set(Some(shape));
+        base.cursor_attr.set(true);
+        crate::window::refresh_cursor_of(self);
+        filters_consume(self.object_data(), &mut Event::new(EventKind::CursorChange));
+    }
+
+    /// `QWidget::unsetCursor` (qwidget.cpp:5007-5018): the widget uses its parent's cursor again.
+    fn unset_cursor(&self) {
+        let base = self.widget_base();
+        base.cursor.set(None);
+        if self.parent_widget().and_then(|p| p.upgrade()).is_some() {
+            base.cursor_attr.set(false);
+        }
+        crate::window::refresh_cursor_of(self);
+        filters_consume(self.object_data(), &mut Event::new(EventKind::CursorChange));
+    }
+
     /// `QWidget::mask`: the region set by [`Widget::set_mask`], in widget coordinates; empty when
     /// the widget has no mask (`qwidget.cpp:10246`).
     fn mask(&self) -> Region {
@@ -906,20 +953,72 @@ pub trait Widget: QObject + 'static {
         Point::new(pos.x - offset.x - origin.x, pos.y - offset.y - origin.y)
     }
 
+    /// `QWidget::mapTo` (qwidget.cpp:4218-4236): `pos` in the coordinates of `ancestor`, which has
+    /// to be this widget or one of its parents (`mapTo(this)` is `pos`). Without such a parent
+    /// the walk ends at the top-level widget, as in Qt, which warns.
+    ///
+    /// `ancestor` is a handle, so it need not be borrowable: a parent mutably borrowed by its
+    /// own handler can map a child's point into itself.
+    fn map_to(&self, ancestor: &WidgetRef, pos: Point) -> Point {
+        let parent = self.parent_widget().and_then(|w| w.upgrade());
+        if !in_parent_chain(parent.clone(), ancestor) {
+            // `ancestor` is this widget itself unless it can be read and is another one.
+            let is_self = ancestor.try_borrow().map_or(true, |a| a.id() == self.id());
+            if is_self {
+                return pos;
+            }
+        }
+        let mut p = self.map_to_parent(pos);
+        let mut cur = parent;
+        while let Some(w) = cur {
+            if Rc::ptr_eq(&w, ancestor) {
+                break;
+            }
+            let Ok(b) = w.try_borrow() else { break };
+            p = b.map_to_parent(p);
+            cur = b.parent_widget().and_then(|x| x.upgrade());
+        }
+        p
+    }
+
+    /// `QWidget::mapFrom` (qwidget.cpp:4252-4270): the inverse of [`map_to`](Self::map_to).
+    fn map_from(&self, ancestor: &WidgetRef, pos: Point) -> Point {
+        let parent = self.parent_widget().and_then(|w| w.upgrade());
+        if !in_parent_chain(parent.clone(), ancestor) {
+            let is_self = ancestor.try_borrow().map_or(true, |a| a.id() == self.id());
+            if is_self {
+                return pos;
+            }
+        }
+        let mut p = self.map_from_parent(pos);
+        let mut cur = parent;
+        while let Some(w) = cur {
+            if Rc::ptr_eq(&w, ancestor) {
+                break;
+            }
+            let Ok(b) = w.try_borrow() else { break };
+            p = b.map_from_parent(p);
+            cur = b.parent_widget().and_then(|x| x.upgrade());
+        }
+        p
+    }
+
     /// `QWidget::grabMouse`: the widget gets every mouse event of its window until
-    /// `release_mouse`, wherever the cursor is.
+    /// `release_mouse`, wherever the cursor is; the window grabs the mouse from the window system
+    /// as well (`SetCapture` on Windows). The previous grabber lets go first.
     fn grab_mouse(&self) {
-        MOUSE_GRABBER.with(|g| g.set(Some(self.id())));
+        grab_mouse_for(self, None);
+    }
+
+    /// `QWidget::grabMouse(const QCursor &)`: like [`grab_mouse`](Self::grab_mouse), and `cursor` is
+    /// the application override cursor until the grab is released.
+    fn grab_mouse_with_cursor(&self, cursor: CursorShape) {
+        grab_mouse_for(self, Some(cursor));
     }
 
     /// `QWidget::releaseMouse`: a no-op when this widget does not hold the grab.
     fn release_mouse(&self) {
-        let me = self.id();
-        MOUSE_GRABBER.with(|g| {
-            if g.get() == Some(me) {
-                g.set(None);
-            }
-        });
+        release_mouse_for(self);
     }
 
     /// `QWidget::mouseGrabber() == this`.
@@ -1009,6 +1108,136 @@ thread_local! {
 /// The widget holding the mouse grab (`QWidget::mouseGrabber`), if any.
 pub fn mouse_grabber_id() -> Option<ObjectId> {
     MOUSE_GRABBER.with(|g| g.get())
+}
+
+thread_local! {
+    /// `mouseGrabWithCursor` (qwidget.cpp:12641): the grab was made with `grab_mouse_with_cursor`,
+    /// so releasing it restores the override cursor.
+    static MOUSE_GRAB_WITH_CURSOR: Cell<bool> = const { Cell::new(false) };
+    /// The window that grabbed the mouse for the grabber, so a grabber destroyed without
+    /// `release_mouse` can still let go of it.
+    static MOUSE_GRAB_WINDOW: Cell<Option<ObjectId>> = const { Cell::new(None) };
+}
+
+/// `QWidget::mouseGrabber`: the widget holding the mouse grab, if it is in a window's tree.
+pub fn mouse_grabber() -> Option<WidgetRef> {
+    let id = mouse_grabber_id()?;
+    crate::window::window_roots()
+        .into_iter()
+        .find_map(|root| crate::focus::find_widget_by_id(&root, id))
+}
+
+/// `grabMouseForWidget` (qwidget.cpp:12650-12670): the previous grabber lets go first, an optional
+/// override cursor is pushed, the window grabs the mouse (`QWindow::setMouseGrabEnabled`) and the
+/// widget becomes the grabber. A widget that is in no window records the grab but has no window to
+/// grab with.
+fn grab_mouse_for<W: Widget + ?Sized>(w: &W, cursor: Option<CursorShape>) {
+    if let Some(previous) = mouse_grabber_id() {
+        release_grab_of_id(previous);
+    }
+    MOUSE_GRAB_WITH_CURSOR.with(|c| c.set(false));
+    if crate::window::is_in_window(w) {
+        if let Some(cursor) = cursor {
+            MOUSE_GRAB_WITH_CURSOR.with(|c| c.set(true));
+            crate::application::Application::set_override_cursor(cursor);
+        }
+        crate::window::native_mouse_grab(w, true);
+        MOUSE_GRAB_WINDOW.with(|c| c.set(crate::window::window_id_of(w)));
+    }
+    MOUSE_GRABBER.with(|g| g.set(Some(w.id())));
+}
+
+/// `releaseMouseGrabOfWidget` (qwidget.cpp:12672-12686) for the widget that holds the grab; any
+/// other widget does nothing.
+pub(crate) fn release_mouse_for<W: Widget + ?Sized>(w: &W) {
+    release_grab_of_id(w.id());
+}
+
+/// `releaseMouseGrabOfWidget` for the widget `id`, which needs no borrow: only the grabber's id and
+/// the window it grabbed with are kept. The grabber is cleared first, so the `WM_CAPTURECHANGED`
+/// the native release causes finds no grab left to reconcile. Ends the override cursor of
+/// `grab_mouse_with_cursor`.
+pub(crate) fn release_grab_of_id(id: ObjectId) {
+    let held = MOUSE_GRABBER
+        .try_with(|g| {
+            let held = g.get() == Some(id);
+            if held {
+                g.set(None);
+            }
+            held
+        })
+        .unwrap_or(false);
+    if held {
+        release_grab_of_dropped_widget();
+    }
+}
+
+/// `QWidget::hide` of `widget` (qwidget.cpp:8198-8260 hides the native window of the grab): a mouse
+/// grab held by `widget` or by a widget below it ends, because a hidden widget receives no mouse
+/// events and Windows drops the capture of a hidden window.
+pub(crate) fn release_grab_in_subtree(widget: &WidgetRef) {
+    let Some(id) = mouse_grabber_id() else { return };
+    if subtree_contains(widget, id) {
+        release_grab_of_id(id);
+    }
+}
+
+/// Whether `widget` or a widget below it has `id`; a widget that is borrowed mutably right now is
+/// skipped (it is the one running this call, and `widget` itself was readable).
+fn subtree_contains(widget: &WidgetRef, id: ObjectId) -> bool {
+    let Ok(w) = widget.try_borrow() else {
+        return false;
+    };
+    w.id() == id || w.children().iter().any(|c| subtree_contains(c, id))
+}
+
+/// The window `window_id` lost its native mouse grab (`WM_CAPTURECHANGED`, alt-tab, a popup): a
+/// widget that grabbed through that window no longer has one, so the widget-level grab ends too.
+pub(crate) fn grab_lost_in_window(window_id: ObjectId) {
+    let ours = MOUSE_GRAB_WINDOW.try_with(|c| c.get()).ok().flatten() == Some(window_id);
+    if !ours {
+        return;
+    }
+    if let Some(id) = mouse_grabber_id() {
+        release_grab_of_id(id);
+    }
+}
+
+/// Drops the grab state without telling any window (test resets).
+pub(crate) fn forget_mouse_grab() {
+    MOUSE_GRABBER.with(|g| g.set(None));
+    MOUSE_GRAB_WITH_CURSOR.with(|c| c.set(false));
+    MOUSE_GRAB_WINDOW.with(|c| c.set(None));
+}
+
+/// The grabber is gone or lets go: its window lets go and an override cursor of the grab ends.
+fn release_grab_of_dropped_widget() {
+    if MOUSE_GRAB_WITH_CURSOR
+        .try_with(|c| c.replace(false))
+        .unwrap_or(false)
+    {
+        crate::application::Application::restore_override_cursor();
+    }
+    if let Some(window) = MOUSE_GRAB_WINDOW.try_with(|c| c.take()).ok().flatten() {
+        crate::window::native_mouse_grab_in_window(window, false);
+    }
+}
+
+/// Whether `ancestor` is `start` or one of its parents, by handle identity. A parent that is
+/// borrowed mutably ends the walk unread; `ancestor` is compared before it is borrowed.
+fn in_parent_chain(start: Option<WidgetRef>, ancestor: &WidgetRef) -> bool {
+    let mut cur = start;
+    while let Some(w) = cur {
+        if Rc::ptr_eq(&w, ancestor) {
+            return true;
+        }
+        cur = w
+            .try_borrow()
+            .ok()
+            .and_then(|b| b.parent_widget())
+            .and_then(|p| p.upgrade());
+    }
+    false
 }
 
 /// The offset of `w`'s origin in its tree root's coordinates, and the client origin of the root's
@@ -1169,6 +1398,12 @@ pub struct WidgetBase {
     /// `QWidget::accessibleName` / `accessibleDescription`.
     pub(crate) accessible_name: RefCell<String>,
     pub(crate) accessible_description: RefCell<String>,
+    /// `QWidgetPrivate::extra->curs`: the cursor `set_cursor` stored (`QWidget::setCursor`).
+    pub(crate) cursor: Cell<Option<CursorShape>>,
+    /// `Qt::WA_SetCursor`: the widget has a cursor of its own. Set by `set_cursor`; `unset_cursor`
+    /// clears it, except on a window, which keeps it and then shows the arrow
+    /// (qwidget.cpp:5011-5013).
+    pub(crate) cursor_attr: Cell<bool>,
 }
 
 impl WidgetBase {
@@ -1212,6 +1447,8 @@ impl WidgetBase {
             polished: Cell::new(false),
             accessible_name: RefCell::new(String::new()),
             accessible_description: RefCell::new(String::new()),
+            cursor: Cell::new(None),
+            cursor_attr: Cell::new(false),
         }
     }
     /// Unique object identifier.
@@ -1474,6 +1711,7 @@ impl WidgetBase {
             WidgetAttribute::NoMousePropagation => self.no_mouse_propagation.get(),
             WidgetAttribute::MouseNoMask => self.mouse_no_mask.get(),
             WidgetAttribute::AlwaysShowToolTips => self.always_show_tool_tips.get(),
+            WidgetAttribute::SetCursor => self.cursor_attr.get(),
             _ => false,
         }
     }
@@ -1506,6 +1744,9 @@ impl WidgetBase {
             }
             WidgetAttribute::AlwaysShowToolTips => {
                 self.always_show_tool_tips.set(on);
+            }
+            WidgetAttribute::SetCursor => {
+                self.cursor_attr.set(on);
             }
             _ => {}
         }
@@ -1801,11 +2042,7 @@ impl Drop for WidgetBase {
     /// A destroyed widget ends its mouse grab (`QWidget::~QWidget` -> `releaseMouse`).
     fn drop(&mut self) {
         let id = self.object_data.id();
-        let _ = MOUSE_GRABBER.try_with(|g| {
-            if g.get() == Some(id) {
-                g.set(None);
-            }
-        });
+        release_grab_of_id(id);
     }
 }
 

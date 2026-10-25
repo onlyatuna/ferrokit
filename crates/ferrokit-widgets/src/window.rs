@@ -126,6 +126,7 @@ impl WindowCore {
             crate::application::Application::set_window_visible(self.id, false);
             self.send_to_window(&mut Event::new(EventKind::Hide));
             hide_children(&self.root());
+            crate::widget::grab_lost_in_window(self.id);
         }
     }
 
@@ -243,6 +244,16 @@ struct RenderState {
     /// `QWindow::screenChanged`: emitted after the window's ratio is updated for its new screen.
     screen_changed: ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>>,
     stats: std::cell::Cell<RenderStats>,
+    /// The widget the pointer is over, whose cursor the window shows (`qt_qpa_set_cursor`'s
+    /// `lastUnderMouse`, qwidget.cpp:5043-5050); empty while the pointer is outside the window.
+    cursor_target: std::cell::RefCell<crate::widget::WidgetWeak>,
+    /// The cursor `Window::set_cursor` gave the window itself (`QWindow::setCursor`); shown where
+    /// no widget has a cursor of its own.
+    window_cursor: std::cell::Cell<Option<ferrokit_platform::cursor::CursorShape>>,
+    /// The cursor last handed to the platform window (`None`: none, or unset).
+    applied_cursor: std::cell::Cell<Option<ferrokit_platform::cursor::CursorShape>>,
+    /// A `refresh_cursor` retry is queued (`Some(force)`); see `retry_cursor_refresh`.
+    cursor_retry: std::cell::Cell<Option<bool>>,
 }
 
 /// `QApplication::event(Timer)` gate for showing a tool tip (qapplication.cpp:1715-1726): the tip
@@ -266,6 +277,117 @@ pub(crate) fn window_shows_tool_tips(top_level: &WidgetRef) -> bool {
         .map(|w| w.is_active())
         .unwrap_or(false);
     active
+}
+
+/// The window state of the top-level window `widget` is in (`QWidget::windowHandle` of its
+/// native parent), if it is in a `Window`.
+fn render_state_of<W: crate::widget::Widget + ?Sized>(widget: &W) -> Option<std::rc::Rc<RenderState>> {
+    let mut id = widget.window_id();
+    let mut parent = widget.parent_widget();
+    while id.is_none() {
+        let p = parent?.upgrade()?;
+        let p = p.try_borrow().ok()?;
+        id = p.window_id();
+        parent = p.parent_widget();
+    }
+    RENDER_STATES
+        .try_with(|m| m.borrow().get(&id?).cloned())
+        .ok()
+        .flatten()
+}
+
+/// Whether `widget` is in a `Window` (`grabberWindow` found a window, qwidget.cpp:12640-12647).
+pub(crate) fn is_in_window<W: crate::widget::Widget + ?Sized>(widget: &W) -> bool {
+    render_state_of(widget).is_some()
+}
+
+/// `qt_qpa_set_cursor(widget, false)` (qwidget.cpp:5038-5078): a change to `widget`'s cursor or
+/// enabled state reaches the screen when the pointer is over it now.
+pub(crate) fn refresh_cursor_of<W: crate::widget::Widget + ?Sized>(widget: &W) {
+    if let Some(state) = render_state_of(widget) {
+        if !state.refresh_cursor(false) {
+            retry_cursor_refresh(state.window_id, false);
+        }
+    }
+}
+
+/// Tries `refresh_cursor` again at the next command flush, when no handler is running. One retry
+/// per window is pending at a time (a native move loop would otherwise queue one per move); a
+/// `force` asked for meanwhile is kept.
+fn retry_cursor_refresh(window_id: ObjectId, force: bool) {
+    let state = RENDER_STATES
+        .try_with(|m| m.borrow().get(&window_id).cloned())
+        .ok()
+        .flatten();
+    let Some(state) = state else { return };
+    let pending = state.cursor_retry.get();
+    state.cursor_retry.set(Some(force || pending == Some(true)));
+    if pending.is_some() {
+        return;
+    }
+    crate::command::defer_retry(move || {
+        let state = RENDER_STATES
+            .try_with(|m| m.borrow().get(&window_id).cloned())
+            .ok()
+            .flatten();
+        if let Some(state) = state {
+            let force = state.cursor_retry.take() == Some(true);
+            if !state.refresh_cursor(force) {
+                retry_cursor_refresh(window_id, force);
+            }
+        }
+    });
+}
+
+/// Re-applies the cursor of the windows after the application override cursor changed
+/// (`applyWindowCursor`, qguiapplication.cpp:4415-4427). A backend with override cursors
+/// (`native_override`) has one global cursor, which only the window under the pointer may set;
+/// any other applies it to every window, as Qt does for plugins without them.
+pub(crate) fn refresh_all_cursors(native_override: bool) {
+    let states: Vec<_> = RENDER_STATES
+        .try_with(|m| m.borrow().values().cloned().collect())
+        .unwrap_or_default();
+    for state in states {
+        if native_override && state.cursor_target.borrow().upgrade().is_none() {
+            continue;
+        }
+        if !state.refresh_cursor(true) {
+            retry_cursor_refresh(state.window_id, true);
+        }
+    }
+}
+
+/// The id of the window `widget` is in.
+pub(crate) fn window_id_of<W: crate::widget::Widget + ?Sized>(widget: &W) -> Option<ObjectId> {
+    render_state_of(widget).map(|s| s.window_id)
+}
+
+/// `QWindow::setMouseGrabEnabled` for the window `widget` is in (`QWidget::grabMouse`,
+/// qwidget.cpp:12650-12686). Returns whether the platform window now grabs; false for a widget
+/// in no window or a window that cannot grab (hidden, or a backend without grabs).
+pub(crate) fn native_mouse_grab<W: crate::widget::Widget + ?Sized>(widget: &W, grab: bool) -> bool {
+    match window_id_of(widget) {
+        Some(id) => native_mouse_grab_in_window(id, grab),
+        None => false,
+    }
+}
+
+/// `QWindow::setMouseGrabEnabled` for window `window_id`.
+pub(crate) fn native_mouse_grab_in_window(window_id: ObjectId, grab: bool) -> bool {
+    let state = RENDER_STATES
+        .try_with(|m| m.borrow().get(&window_id).cloned())
+        .ok()
+        .flatten();
+    let Some(state) = state else {
+        return false;
+    };
+    let Some(platform_window) = state.platform_window.upgrade() else {
+        return false;
+    };
+    let Ok(mut platform_window) = platform_window.try_borrow_mut() else {
+        return false;
+    };
+    platform_window.set_mouse_grab_enabled(grab)
 }
 
 /// Clears a flag on every exit path, including unwinding.
@@ -320,6 +442,10 @@ impl RenderState {
             screen_origin: std::cell::Cell::new(screen_origin),
             screen_changed: ferrokit_core::signal::Signal::new(),
             stats: std::cell::Cell::new(RenderStats::default()),
+            cursor_target: std::cell::RefCell::new(std::rc::Weak::new()),
+            window_cursor: std::cell::Cell::new(None),
+            applied_cursor: std::cell::Cell::new(None),
+            cursor_retry: std::cell::Cell::new(None),
         });
         RENDER_STATES.with(|m| m.borrow_mut().insert(window_id, std::rc::Rc::clone(&state)));
         state
@@ -327,6 +453,87 @@ impl RenderState {
 
     fn unregister(window_id: ObjectId) {
         let _ = RENDER_STATES.try_with(|m| m.borrow_mut().remove(&window_id));
+    }
+
+    /// Remembers the widget the pointer is over (none: it left the window) and shows its cursor.
+    fn set_cursor_target(&self, target: Option<WidgetRef>) {
+        *self.cursor_target.borrow_mut() = target.map_or_else(std::rc::Weak::new, |t| std::rc::Rc::downgrade(&t));
+        if !self.refresh_cursor(false) {
+            retry_cursor_refresh(self.window_id, false);
+        }
+    }
+
+    /// The cursor a pointer over `target` asks for, as `qt_qpa_set_cursor` finds it
+    /// (qwidget.cpp:5038-5078, qapplication.cpp:2168-2175): start at the nearest enabled widget,
+    /// climb to the first one with a cursor of its own (or the window). That widget's cursor
+    /// shows when it is enabled; a disabled one clears the window's cursor. `Some(None)` is "no
+    /// widget cursor"; `None` is a widget of the chain that is borrowed and could not be read.
+    fn widget_cursor_for(target: &WidgetRef) -> Option<Option<ferrokit_platform::cursor::CursorShape>> {
+        use ferrokit_platform::cursor::CursorShape;
+        struct Info {
+            parent: Option<WidgetRef>,
+            enabled: bool,
+            own_cursor: bool,
+            shape: CursorShape,
+        }
+        let read = |w: &WidgetRef| -> Option<Info> {
+            let b = w.try_borrow().ok()?;
+            let base = b.widget_base();
+            Some(Info {
+                parent: b.parent_widget().and_then(|p| p.upgrade()),
+                enabled: b.is_enabled(),
+                own_cursor: base.cursor_attr.get(),
+                shape: base.cursor.get().unwrap_or(CursorShape::Arrow),
+            })
+        };
+        let mut info = read(target)?;
+        while let (Some(parent), false) = (info.parent.clone(), info.enabled) {
+            info = read(&parent)?;
+        }
+        while let (Some(parent), false) = (info.parent.clone(), info.own_cursor) {
+            info = read(&parent)?;
+        }
+        if !info.own_cursor {
+            return Some(None);
+        }
+        Some(info.enabled.then_some(info.shape))
+    }
+
+    /// Hands the platform window the cursor the pointer's widget asks for (`qt_qpa_set_cursor`):
+    /// the application override cursor first, then the widget's, then the window's own
+    /// (`Window::set_cursor`); none unsets it. Only a change is passed on unless `force`. While the
+    /// pointer is outside the window nothing changes unless `force`. Returns false when a widget
+    /// of the chain or the platform window is borrowed, so the caller retries later.
+    fn refresh_cursor(&self, force: bool) -> bool {
+        let target = self.cursor_target.borrow().upgrade();
+        if target.is_none() && !force {
+            return true;
+        }
+        let from_widget = match target {
+            Some(t) => match Self::widget_cursor_for(&t) {
+                Some(shape) => shape,
+                None => return false,
+            },
+            None => None,
+        };
+        let want = crate::application::Application::override_cursor()
+            .or(from_widget)
+            .or(self.window_cursor.get());
+        if !force && want == self.applied_cursor.get() {
+            return true;
+        }
+        let Some(platform_window) = self.platform_window.upgrade() else {
+            return true;
+        };
+        let Ok(mut platform_window) = platform_window.try_borrow_mut() else {
+            return false;
+        };
+        match want {
+            Some(shape) => platform_window.set_cursor(shape),
+            None => platform_window.unset_cursor(),
+        }
+        self.applied_cursor.set(want);
+        true
     }
 
     /// `QWindow::screen()`: the platform screen whose origin is `screen_origin`, or the primary
@@ -1225,8 +1432,22 @@ impl Window {
         self.platform_window.borrow().start_system_resize(edges)
     }
 
+    /// `QWindow::setCursor`: the cursor of the window itself, shown wherever no widget has a cursor
+    /// of its own (`QWidget::setCursor`) and no application override cursor is set.
     pub fn set_cursor(&mut self, shape: ferrokit_platform::cursor::CursorShape) {
-        self.platform_window.borrow_mut().set_cursor(shape);
+        self.render_state.window_cursor.set(Some(shape));
+        if !self.render_state.refresh_cursor(true) {
+            retry_cursor_refresh(self.render_state.window_id, true);
+        }
+    }
+
+    /// `QWindow::unsetCursor`: the window shows the default cursor again where no widget asks for
+    /// one.
+    pub fn unset_cursor(&mut self) {
+        self.render_state.window_cursor.set(None);
+        if !self.render_state.refresh_cursor(true) {
+            retry_cursor_refresh(self.render_state.window_id, true);
+        }
     }
 
     pub fn set_mouse_press_handler<F: Fn(Point, ferrokit_platform::MouseButton) -> bool + 'static>(&mut self, handler: F) {
@@ -1954,6 +2175,27 @@ fn clear_pending_press() {
     *PENDING_PRESS.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// `QGuiApplicationPrivate::processMouseEvent` bookkeeping for a press or release
+/// (qguiapplication.cpp:2445-2455): the pointer position and the pressed buttons that
+/// `QCursor::pos` falls back to and `QGuiApplication::mouseButtons` reports.
+fn note_mouse_state(button: ferrokit_platform::MouseButton, down: bool, global_pos: Point) {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::window::{app_mouse_buttons, set_app_mouse_buttons};
+    ferrokit_platform::window::set_last_cursor_position(global_pos);
+    let flag = match button {
+        ferrokit_platform::MouseButton::Left => MouseButtons::LEFT,
+        ferrokit_platform::MouseButton::Right => MouseButtons::RIGHT,
+        ferrokit_platform::MouseButton::Middle => MouseButtons::MIDDLE,
+        _ => return,
+    };
+    let now = app_mouse_buttons();
+    set_app_mouse_buttons(if down {
+        now.union(flag)
+    } else {
+        MouseButtons(now.0 & !flag.0)
+    });
+}
+
 impl WindowEventHandler {
     /// `QWidgetWindow` delivers a double click as a MouseButtonDblClick event, and falls back to
     /// the press handler when nothing accepts it (`QWidget::mouseDoubleClickEvent`). A press the
@@ -2029,8 +2271,14 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 if !self.native_double_clicks {
                     move_cancels_press(global_pos);
                 }
+                ferrokit_platform::window::set_last_cursor_position(global_pos);
+                // `mouse_buttons` follows what the window system reports for the move
+                // (qguiapplication.cpp:2455), including the X buttons, so a missed release heals.
+                ferrokit_platform::window::set_app_mouse_buttons(buttons);
                 self.dispatcher
                     .dispatch_mouse_move(&root, pos, global_pos, buttons);
+                self.render
+                    .set_cursor_target(self.dispatcher.hovered_widget());
                 if let Some(cb) = self.mouse_move_cb.borrow().as_ref() {
                     cb(pos);
                 }
@@ -2038,8 +2286,21 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     self.render.request_render();
                 }
             }
+            WindowSystemEvent::MouseGrabLost => {
+                // Only a window that really lost the capture ends the widget-level grab: a
+                // release followed at once by a new grab leaves the capture with this window.
+                let still_grabbing = self
+                    .platform_window
+                    .upgrade()
+                    .and_then(|pw| pw.try_borrow().ok().map(|pw| pw.has_mouse_grab()))
+                    .unwrap_or(false);
+                if !still_grabbing {
+                    crate::widget::grab_lost_in_window(self.core.id);
+                }
+            }
             WindowSystemEvent::MouseLeave => {
                 self.dispatcher.handle_mouse_leave();
+                self.render.set_cursor_target(None);
                 if self.render.has_pending_invalidation() {
                     self.render.request_render();
                 }
@@ -2051,6 +2312,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 timestamp,
                 ..
             } => {
+                note_mouse_state(button, true, global_pos);
                 // Platforms that report their own double clicks never synthesize one here.
                 if !self.native_double_clicks
                     && press_is_double(self.core.id, button, global_pos, timestamp)
@@ -2077,6 +2339,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 }
             }
             WindowSystemEvent::MouseRelease { pos, global_pos, button, .. } => {
+                note_mouse_state(button, false, global_pos);
                 let btn = match button {
                     ferrokit_platform::MouseButton::Left => 1,
                     ferrokit_platform::MouseButton::Right => 2,
@@ -2117,17 +2380,21 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     }
                 }
             }
-            WindowSystemEvent::MouseDoubleClick { pos, button, .. } => {
+            WindowSystemEvent::MouseDoubleClick { pos, global_pos, button, .. } => {
+                note_mouse_state(button, true, global_pos);
                 // A native double click ends the press pair, so the next press starts a new one.
                 clear_pending_press();
                 self.deliver_double_click(pos, button);
             }
             WindowSystemEvent::Wheel {
                 pos,
+                global_pos,
                 delta,
                 modifiers,
                 ..
             } => {
+                // qguiapplication.cpp:2605
+                ferrokit_platform::window::set_last_cursor_position(global_pos);
                 let mut ev = Event::new_spontaneous(EventKind::Wheel {
                     x: pos.x,
                     y: pos.y,
