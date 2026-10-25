@@ -502,7 +502,10 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
     {
         let r = root.borrow();
         let g = r.geometry();
-        if !r.is_visible() || !Rect::new(0, 0, g.width, g.height).contains(pos) {
+        if !r.is_visible()
+            || !Rect::new(0, 0, g.width, g.height).contains(pos)
+            || !r.widget_base().mask_accepts(pos)
+        {
             return path;
         }
         path.push(HitStep {
@@ -528,17 +531,21 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
         };
         let mut next = None;
         for child in children.into_iter().rev() {
-            let (visible, geom, child_enabled, transparent) = {
+            let (visible, geom, child_enabled, transparent, masked_out) = {
                 let b = child.borrow();
                 let base = b.widget_base();
+                let geom = b.geometry();
                 (
                     b.is_visible(),
-                    b.geometry(),
+                    geom,
                     b.is_enabled(),
                     base.is_transparent_for_mouse_events(),
+                    // `QWidgetPrivate::pointInsideRectAndMask`: a masked widget is hit only
+                    // inside its mask (unless `WA_MouseNoMask`).
+                    !base.mask_accepts(Point::new(pos.x - geom.x, pos.y - geom.y)),
                 )
             };
-            if visible && !transparent && geom.contains(pos) {
+            if visible && !transparent && geom.contains(pos) && !masked_out {
                 next = Some(HitStep {
                     pos: Point::new(pos.x - geom.x, pos.y - geom.y),
                     enabled: enabled && child_enabled,

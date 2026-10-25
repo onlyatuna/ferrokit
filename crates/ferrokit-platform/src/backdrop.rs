@@ -14,6 +14,95 @@ pub enum BackdropType {
     Acrylic,
     /// Windows 7 / 10 Classic DWM Aero Glass blur behind (`DwmEnableBlurBehindWindow`).
     BlurBehind,
+    /// Flat tinted panel without blur, the Acrylic tint on `ACCENT_ENABLE_TRANSPARENTGRADIENT`.
+    /// Windows only: Cocoa removes the effect view and reports `false` (the tint is not drawn);
+    /// X11 and Wayland keep their stub behaviour.
+    FlatTint,
+}
+
+/// Gradient colour (`0xAABBGGRR` accent format) shared by the `Acrylic` and `FlatTint` accents.
+pub fn accent_tint_color(dark_mode: bool) -> u32 {
+    if dark_mode {
+        0x99161a22
+    } else {
+        0x99f0f2f8
+    }
+}
+
+/// Tracks a window's requested backdrop and whether its Acrylic blur is suspended.
+///
+/// Suspending replaces the expensive Acrylic blur with the flat tint of the same colour (used
+/// while a window is dragged or resized); every other backdrop type is unaffected by suspension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackdropState {
+    requested: BackdropType,
+    dark_mode: bool,
+    suspended: bool,
+}
+
+impl Default for BackdropState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BackdropState {
+    /// No backdrop requested, not suspended.
+    pub const fn new() -> Self {
+        Self {
+            requested: BackdropType::None,
+            dark_mode: false,
+            suspended: false,
+        }
+    }
+
+    /// Records the requested backdrop and tint. A suspension survives only for `Acrylic`.
+    pub fn request(&mut self, backdrop: BackdropType, dark_mode: bool) {
+        self.requested = backdrop;
+        self.dark_mode = dark_mode;
+        self.suspended = self.suspended && backdrop == BackdropType::Acrylic;
+    }
+
+    /// The last requested backdrop, regardless of suspension.
+    pub fn requested(&self) -> BackdropType {
+        self.requested
+    }
+
+    /// The remembered tint (dark or light gradient).
+    pub fn dark_mode(&self) -> bool {
+        self.dark_mode
+    }
+
+    /// Whether the Acrylic blur is currently suspended.
+    pub fn is_suspended(&self) -> bool {
+        self.suspended
+    }
+
+    /// The backdrop that must be applied now: `FlatTint` for a suspended `Acrylic`, else the request.
+    pub fn effective(&self) -> BackdropType {
+        if self.suspended && self.requested == BackdropType::Acrylic {
+            BackdropType::FlatTint
+        } else {
+            self.requested
+        }
+    }
+
+    /// Suspends the Acrylic blur. Returns `true` if the effective backdrop changed, i.e. only
+    /// when `Acrylic` is requested and not already suspended.
+    pub fn suspend(&mut self) -> bool {
+        if self.requested != BackdropType::Acrylic || self.suspended {
+            return false;
+        }
+        self.suspended = true;
+        true
+    }
+
+    /// Ends a suspension. Returns `true` if the effective backdrop changed.
+    pub fn resume(&mut self) -> bool {
+        let changed = self.suspended;
+        self.suspended = false;
+        changed
+    }
 }
 
 /// Applies the specified backdrop material effect to the window.
@@ -90,8 +179,12 @@ pub fn set_window_backdrop(
                 // Use SetWindowCompositionAttribute (ACCENT_ENABLE_ACRYLICBLURBEHIND)
                 // Compatible with WS_EX_LAYERED + UpdateLayeredWindow
                 // (DWMWA_SYSTEMBACKDROP_TYPE DWMSBT_TRANSIENTWINDOW breaks UpdateLayeredWindow with error 87)
-                let grad_color = if dark_mode { 0x99161a22 } else { 0x99f0f2f8 };
-                set_win10_accent(hwnd, 4, 2, grad_color)
+                set_win10_accent(hwnd, 4, 2, accent_tint_color(dark_mode))
+            }
+            BackdropType::FlatTint => {
+                // ACCENT_ENABLE_TRANSPARENTGRADIENT (2): the same tint as Acrylic without the
+                // blur, so a window can drop the expensive blur while it is dragged or resized.
+                set_win10_accent(hwnd, 2, 2, accent_tint_color(dark_mode))
             }
             BackdropType::BlurBehind => {
                 let bb = DWM_BLURBEHIND {
@@ -188,7 +281,7 @@ pub fn set_cocoa_window_backdrop(
     }
 
     match backdrop {
-        BackdropType::None => {
+        BackdropType::None | BackdropType::FlatTint => {
             // Qt removes the area's effect view from its superview and forgets it; the content
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
             if let Some(effect_view) = backdrop_view.take() {
@@ -196,7 +289,9 @@ pub fn set_cocoa_window_backdrop(
                 // Drop our +1 from `alloc`/`init`; the superview's retain went with the removal.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
-            true
+            // `FlatTint` is a Windows accent tint that AppKit has no counterpart for: the tint
+            // is not drawn, so it reports `false` while `None` reports `true`.
+            backdrop != BackdropType::FlatTint
         }
         BackdropType::Mica
         | BackdropType::MicaAlt
@@ -224,7 +319,7 @@ pub fn set_cocoa_window_backdrop(
                 BackdropType::Mica | BackdropType::MicaAlt => 13,
                 BackdropType::Acrylic => 6,
                 BackdropType::BlurBehind => 2,
-                BackdropType::None => 0,
+                BackdropType::None | BackdropType::FlatTint => 0,
             };
 
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material) };
@@ -282,5 +377,102 @@ pub fn set_cocoa_window_backdrop(
 
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod backdrop_state_tests {
+    use super::{accent_tint_color, BackdropState, BackdropType};
+
+    #[test]
+    fn tint_color_matches_the_hud_accent() {
+        assert_eq!(accent_tint_color(true), 0x99161a22);
+        assert_eq!(accent_tint_color(false), 0x99f0f2f8);
+    }
+
+    #[test]
+    fn new_state_has_no_backdrop() {
+        let state = BackdropState::new();
+        assert_eq!(state.effective(), BackdropType::None);
+        assert_eq!(state.requested(), BackdropType::None);
+        assert!(!state.is_suspended());
+    }
+
+    #[test]
+    fn suspend_turns_acrylic_into_flat_tint_and_resume_restores_it() {
+        let mut state = BackdropState::new();
+        state.request(BackdropType::Acrylic, true);
+        assert_eq!(state.effective(), BackdropType::Acrylic);
+        assert!(state.suspend());
+        assert_eq!(state.effective(), BackdropType::FlatTint);
+        assert_eq!(state.requested(), BackdropType::Acrylic);
+        assert!(state.resume());
+        assert_eq!(state.effective(), BackdropType::Acrylic);
+    }
+
+    #[test]
+    fn suspend_and_resume_report_only_real_changes() {
+        let mut state = BackdropState::new();
+        state.request(BackdropType::Acrylic, false);
+        assert!(!state.resume());
+        assert!(state.suspend());
+        assert!(!state.suspend());
+        assert!(state.resume());
+        assert!(!state.resume());
+    }
+
+    #[test]
+    fn tint_is_remembered_across_suspend_and_resume() {
+        for dark in [true, false] {
+            let mut state = BackdropState::new();
+            state.request(BackdropType::Acrylic, dark);
+            state.suspend();
+            assert_eq!(state.dark_mode(), dark);
+            state.resume();
+            assert_eq!(state.dark_mode(), dark);
+        }
+    }
+
+    #[test]
+    fn only_acrylic_is_suspended() {
+        for backdrop in [
+            BackdropType::None,
+            BackdropType::Mica,
+            BackdropType::MicaAlt,
+            BackdropType::BlurBehind,
+            BackdropType::FlatTint,
+        ] {
+            let mut state = BackdropState::new();
+            state.request(backdrop, true);
+            assert!(!state.suspend(), "{backdrop:?} must not be suspended");
+            assert_eq!(state.effective(), backdrop);
+            assert!(!state.is_suspended());
+            assert!(!state.resume());
+        }
+    }
+
+    #[test]
+    fn acrylic_request_while_suspended_stays_suspended_with_new_tint() {
+        let mut state = BackdropState::new();
+        state.request(BackdropType::Acrylic, true);
+        assert!(state.suspend());
+        state.request(BackdropType::Acrylic, false);
+        assert_eq!(state.effective(), BackdropType::FlatTint);
+        assert!(!state.dark_mode());
+        assert!(state.resume());
+        assert_eq!(state.effective(), BackdropType::Acrylic);
+    }
+
+    #[test]
+    fn other_request_while_suspended_drops_the_suspension() {
+        let mut state = BackdropState::new();
+        state.request(BackdropType::Acrylic, true);
+        assert!(state.suspend());
+        state.request(BackdropType::Mica, true);
+        assert_eq!(state.effective(), BackdropType::Mica);
+        assert!(!state.is_suspended());
+        state.request(BackdropType::Acrylic, true);
+        assert_eq!(state.effective(), BackdropType::Acrylic);
+        assert!(!state.resume());
     }
 }

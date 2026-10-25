@@ -4,6 +4,7 @@ use ferrokit_core::event::{ContextMenuReason, Event, EventKind};
 use ferrokit_core::event_loop::filters_consume;
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
+use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::{BackingStore, Painter};
 use ferrokit_platform::size_limits::{clamp_size_limit, SizeLimits, WINDOW_SIZE_MAX};
 use ferrokit_platform::{
@@ -144,7 +145,11 @@ impl WindowCore {
             return false;
         }
         self.hide();
-        if was_visible {
+        // A window with a transient parent is not a primary window and does not end the
+        // application when it closes (`QWindowPrivate::participatesInLastWindowClosed`).
+        if was_visible
+            && crate::application::Application::transient_parent_of(self.id).is_none()
+        {
             crate::application::Application::maybe_last_window_closed();
         }
         true
@@ -647,6 +652,51 @@ fn screen_mapping(screen: &dyn ferrokit_platform::screen::PlatformScreen) -> (Po
     (screen.geometry().top_left(), screen.device_pixel_ratio())
 }
 
+/// `QHighDpi::toNativeLocalRect`: a rect in device-independent pixels in native pixels.
+fn native_rect(rect: Rect, dpr: f32) -> Rect {
+    if dpr > 1.0 {
+        // The edges are scaled and rounded, not the origin and the size, so rects that share an
+        // edge still share it in native pixels (no gaps at 125%).
+        let edge = |v: i32| (v as f32 * dpr).round() as i32;
+        let (x0, y0) = (edge(rect.x), edge(rect.y));
+        Rect::new(x0, y0, edge(rect.right()) - x0, edge(rect.bottom()) - y0)
+    } else {
+        rect
+    }
+}
+
+/// `QHighDpi::toNativeLocalRegion`: the rectangles of `mask` in native pixels.
+fn native_mask(mask: &Region, dpr: f32) -> Region {
+    if dpr > 1.0 && !mask.is_empty() {
+        let rects: Vec<Rect> = mask.rects().iter().map(|r| native_rect(*r, dpr)).collect();
+        Region::from_rects(&rects)
+    } else {
+        mask.clone()
+    }
+}
+
+/// `QWidgetPrivate::setMask_sys` for a window's root widget: gives the window's platform window
+/// `mask` (widget coordinates, empty for none). False when the window is gone or its platform
+/// window is busy (a native call that led here is still running); the root widget then keeps the
+/// mask stale for the next render (`WidgetBase::set_mask`).
+pub(crate) fn apply_window_mask(window_id: ObjectId, mask: &Region) -> bool {
+    let Some(state) = RENDER_STATES
+        .try_with(|m| m.borrow().get(&window_id).cloned())
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    let Some(platform_window) = state.platform_window.upgrade() else {
+        return false;
+    };
+    let Ok(mut platform_window) = platform_window.try_borrow_mut() else {
+        return false;
+    };
+    platform_window.set_mask(&native_mask(mask, state.device_pixel_ratio.get()));
+    true
+}
+
 pub struct Window {
     object_data: ObjectData,
     platform_window: std::rc::Rc<std::cell::RefCell<Box<dyn PlatformWindow>>>,
@@ -794,6 +844,12 @@ impl Window {
             .borrow_mut()
             .set_geometry(Rect::new(0, 0, geom.width, geom.height));
         widget.borrow_mut().set_window_id(Some(self.object_data.id()));
+        // The platform window holds the previous root's mask until the next render.
+        {
+            let new_root = widget.borrow();
+            new_root.widget_base().mark_mask_stale();
+            new_root.update();
+        }
         *self.render_state.root.borrow_mut() = widget.clone();
         self.root_widget = widget;
     }
@@ -947,6 +1003,65 @@ impl Window {
 
     pub fn set_click_through(&mut self, enabled: bool) {
         self.platform_window.borrow_mut().set_click_through(enabled);
+    }
+
+    /// `QWidget::setMask(const QRegion &)` on the window: the window is clipped to `region`
+    /// (window coordinates, device-independent pixels; `QWindowsWindow::setMask` is a window
+    /// region, `SetWindowRgn`) and the content outside it is not painted. Empty removes the mask.
+    /// The same as [`Widget::set_mask`] on the root widget.
+    pub fn set_mask(&mut self, region: &Region) {
+        self.root_widget.borrow().set_mask(region);
+    }
+
+    /// `QWidget::clearMask` on the window.
+    pub fn clear_mask(&mut self) {
+        self.root_widget.borrow().clear_mask();
+    }
+
+    /// `QWidget::mask` of the window: empty when it has none.
+    pub fn mask(&self) -> Region {
+        self.root_widget.borrow().mask()
+    }
+
+    /// A top-level window whose parent is `parent`, as `QWidget(parent, flags)` makes one when
+    /// `flags` hold a window type (`Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint`
+    /// for a tool window): its own native window, which `parent` owns (see
+    /// [`Window::set_transient_parent`]).
+    pub fn with_parent(
+        parent: &Window,
+        title: &str,
+        geometry: Rect,
+        flags: WindowFlags,
+    ) -> Result<Self, &'static str> {
+        let mut window = Self::new(title, geometry, flags)?;
+        window.set_transient_parent(Some(parent));
+        Ok(window)
+    }
+
+    /// `QWindow::setTransientParent` (`QWidgetPrivate::create`, qwidget.cpp:1298-1315): `parent`
+    /// owns this window. On Windows the system keeps it above `parent`, hides, minimizes and
+    /// shows it with `parent`, and gives it no taskbar button (`QWindowsWindow::updateTransientParent`).
+    /// A window with a transient parent is a secondary window: closing it never ends the
+    /// application, and it does not keep the application alive when the last primary window closes
+    /// (`QWindowPrivate::participatesInLastWindowClosed`). `None` removes the owner. A `parent`
+    /// that is itself transient to this window is refused (a cycle) and the owner stays.
+    ///
+    /// The owner relationship ends when either window is dropped; dropping `parent` neither
+    /// destroys nor closes this window.
+    pub fn set_transient_parent(&mut self, parent: Option<&Window>) {
+        if !crate::application::Application::set_transient_parent(
+            self.object_data.id(),
+            parent.map(|p| p.object_data.id()),
+        ) {
+            return;
+        }
+        let handle = parent.map(|p| p.platform_window.borrow().native_handle());
+        self.platform_window.borrow_mut().set_transient_parent(handle);
+    }
+
+    /// `QWindow::transientParent`: the window that owns this one, while it exists.
+    pub fn transient_parent(&self) -> Option<ObjectId> {
+        crate::application::Application::transient_parent_of(self.object_data.id())
     }
 
     /// Sets or clears a window flag (`QWidget::setWindowFlag`, qwidget.cpp:10641-10648).
@@ -1133,6 +1248,17 @@ impl Window {
         dark_mode: bool,
     ) -> bool {
         self.platform_window.borrow_mut().set_backdrop(backdrop, dark_mode)
+    }
+
+    /// Replaces an applied Acrylic blur with the flat tint of the same colour while the window
+    /// is dragged or resized. Returns whether the applied backdrop changed.
+    pub fn suspend_backdrop(&mut self) -> bool {
+        self.platform_window.borrow_mut().suspend_backdrop()
+    }
+
+    /// Restores the backdrop suspended by `suspend_backdrop`. Returns whether it changed.
+    pub fn resume_backdrop(&mut self) -> bool {
+        self.platform_window.borrow_mut().resume_backdrop()
     }
 
     pub fn set_ime_focus(&mut self, pos: Point) {
@@ -1425,6 +1551,10 @@ impl QObject for Window {
 pub fn propagate_dpi_change_recursive(widget_ref: &WidgetRef, old_dpr: f32, new_dpr: f32) {
     let mut widget = widget_ref.borrow_mut();
     widget.dpi_changed_event(old_dpr, new_dpr);
+    // The window region of a masked root is in native pixels: it follows the ratio.
+    if widget.widget_base().has_mask() {
+        widget.widget_base().mark_mask_stale();
+    }
     let geom = widget.geometry();
     if let Some(layout) = widget.layout_mut() {
         layout.set_geometry(Rect::new(0, 0, geom.width, geom.height));
@@ -1456,7 +1586,119 @@ pub fn deliver_paint_event(
     }
 }
 
+/// The pixels of a rectangle of a paint device, kept to put back some of them later.
+struct PixelSnapshot {
+    rect: Rect,
+    bytes: Vec<u8>,
+}
+
+impl PixelSnapshot {
+    /// Copies the pixels of `rect`, which lies inside the device.
+    fn take(device: &mut dyn ferrokit_gui::paint::PaintDevice, rect: Rect) -> Self {
+        let mut pixmap = device.as_pixmap_mut();
+        let stride = pixmap.width() as usize * 4;
+        let data = pixmap.data_mut();
+        let row = rect.width as usize * 4;
+        let mut bytes = Vec::with_capacity(row * rect.height as usize);
+        for y in rect.y..rect.bottom() {
+            let at = y as usize * stride + rect.x as usize * 4;
+            bytes.extend_from_slice(&data[at..at + row]);
+        }
+        Self { rect, bytes }
+    }
+
+    /// Puts the pixels of `area`, which lies inside the snapshot, back.
+    fn restore(&self, device: &mut dyn ferrokit_gui::paint::PaintDevice, area: Rect) {
+        let mut pixmap = device.as_pixmap_mut();
+        let stride = pixmap.width() as usize * 4;
+        let data = pixmap.data_mut();
+        let row = area.width as usize * 4;
+        for y in area.y..area.bottom() {
+            let from = ((y - self.rect.y) as usize * self.rect.width as usize
+                + (area.x - self.rect.x) as usize)
+                * 4;
+            let to = y as usize * stride + area.x as usize * 4;
+            data[to..to + row].copy_from_slice(&self.bytes[from..from + row]);
+        }
+    }
+}
+
+/// The device pixels a rect covers under `transform` (a translation and a scale): the edges are
+/// rounded, so rects that share an edge share it on the device.
+fn device_rect(transform: &ferrokit_gui::tiny_skia::Transform, rect: Rect) -> Rect {
+    let edge = |v: i32, scale: f32, shift: f32| (v as f32 * scale + shift).round() as i32;
+    let (x0, x1) = (
+        edge(rect.x, transform.sx, transform.tx),
+        edge(rect.right(), transform.sx, transform.tx),
+    );
+    let (y0, y1) = (
+        edge(rect.y, transform.sy, transform.ty),
+        edge(rect.bottom(), transform.sy, transform.ty),
+    );
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// Paints `widget_ref` and its subtree. A child with a mask is painted only inside it, as
+/// `QWidgetPrivate::drawWidget` limits the region to paint to the widget's mask
+/// (qwidget.cpp:5403, 5823). The painter has no region clip, so the widget is painted once,
+/// clipped to the mask's bounding box, and the pixels of that box outside the mask are put back
+/// from a copy taken before. A window's root is not handled here; its mask is a window region and
+/// the area outside it is cleared once after painting (`do_render_and_present`).
 fn render_widget_recursive(widget_ref: &WidgetRef, painter: &mut Painter, dirty_in_parent: Rect) {
+    let masked = {
+        let widget = widget_ref.borrow();
+        let base = widget.widget_base();
+        (base.has_mask() && base.parent_widget().is_some())
+            .then(|| (base.mask(), widget.geometry()))
+    };
+    let Some((mask, geom)) = masked else {
+        render_widget_unmasked(widget_ref, painter, dirty_in_parent);
+        return;
+    };
+    let in_parent = |r: &Rect| Rect::new(geom.x + r.x, geom.y + r.y, r.width, r.height);
+    let bounds = in_parent(&mask.bounding_rect()).intersected(&dirty_in_parent);
+    if bounds.is_empty() {
+        return;
+    }
+    let transform = painter.state().transform;
+    let device = painter.device();
+    let device_rect_all = Rect::new(
+        0,
+        0,
+        device.physical_width() as i32,
+        device.physical_height() as i32,
+    );
+    // One pixel more on every side: the clip may round outwards.
+    let saved_rect = {
+        let r = device_rect(&transform, bounds);
+        Rect::new(r.x - 1, r.y - 1, r.width + 2, r.height + 2).intersected(&device_rect_all)
+    };
+    let snapshot = (!saved_rect.is_empty()).then(|| PixelSnapshot::take(painter.device_mut(), saved_rect));
+
+    painter.save();
+    painter.clip_to_rect(RectF::new(
+        bounds.x as f32,
+        bounds.y as f32,
+        bounds.width as f32,
+        bounds.height as f32,
+    ));
+    render_widget_unmasked(widget_ref, painter, bounds);
+    painter.restore();
+
+    if let Some(snapshot) = snapshot {
+        let inside: Vec<Rect> = mask
+            .rects()
+            .iter()
+            .map(|r| device_rect(&transform, in_parent(r)))
+            .collect();
+        let outside = Region::from_rect(saved_rect).subtracted(&Region::from_rects(&inside));
+        for r in outside.rects() {
+            snapshot.restore(painter.device_mut(), *r);
+        }
+    }
+}
+
+fn render_widget_unmasked(widget_ref: &WidgetRef, painter: &mut Painter, dirty_in_parent: Rect) {
     let mut widget = widget_ref.borrow_mut();
     if !widget.is_visible() {
         return;
@@ -1581,6 +1823,18 @@ fn do_render_and_present(
     // ferrokit queues it on the parent (`WidgetBase::request_layout`), which the root does not have.
     crate::layout_scheduler::LayoutScheduler::activate_if_dirty(root_widget);
     crate::widget::adopt_tree(root_widget);
+    // A window's root mask that the platform window does not hold yet (`WidgetBase::set_mask`
+    // found it busy, or the ratio changed): hand it over before painting.
+    let root_mask = {
+        let root = root_widget.borrow();
+        let base = root.widget_base();
+        let stale = base.take_mask_stale();
+        let mask = base.mask();
+        if stale {
+            platform_window.set_mask(&native_mask(&mask, dpr));
+        }
+        mask
+    };
     let logical_size = Size::new(geometry.width, geometry.height);
 
     // --- Lazy Backing Store Resize (Qt QWidgetRepaintManager::paintAndFlush parity) ---
@@ -1625,6 +1879,13 @@ fn do_render_and_present(
             dirty.height as f32,
         ));
         render_widget_recursive(root_widget, &mut painter, dirty);
+    }
+    // Qt does not paint outside the mask of the widget being drawn (`QWidgetPrivate::drawWidget`,
+    // qwidget.cpp:5403): the window's content outside its mask stays clear.
+    if !root_mask.is_empty() {
+        for r in Region::from_rect(dirty).subtracted(&root_mask).rects() {
+            backing_store.clear_rect(native_rect(*r, dpr));
+        }
     }
     ferrokit_platform::resize_debug::end(ferrokit_platform::resize_debug::Phase::Paint, dbg_paint);
     drop(_paint_span);

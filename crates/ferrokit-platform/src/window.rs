@@ -1793,7 +1793,7 @@ pub fn set_dcomp_enabled(enabled: Option<bool>) {
 #[cfg(windows)]
 static REGISTER_WINDOW_CLASS_ONCE: Once = Once::new();
 #[cfg(windows)]
-const NATIVE_WINDOW_CLASS_NAME: &[u16] = &[
+pub(crate) const NATIVE_WINDOW_CLASS_NAME: &[u16] = &[
     'Q' as u16, 't' as u16, 'r' as u16, 's' as u16, 'N' as u16, 'a' as u16, 't' as u16, 'i' as u16,
     'v' as u16, 'e' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 'd' as u16, 'o' as u16, 'w' as u16,
     'C' as u16, 'l' as u16, 'a' as u16, 's' as u16, 's' as u16, 0,
@@ -1840,6 +1840,8 @@ pub struct NativeWindow {
     dcomp_downgraded: bool,
     /// A backdrop other than `BackdropType::None` is applied (it keeps `WS_EX_LAYERED` in place).
     backdrop_active: bool,
+    /// The requested backdrop and whether its Acrylic blur is suspended.
+    backdrop_state: crate::backdrop::BackdropState,
 }
 
 // Deliberately neither `Send` nor `Sync`: it owns an `HWND` (window APIs such as `DestroyWindow`
@@ -1982,6 +1984,7 @@ impl NativeWindow {
             target_pos: None,
             dcomp_downgraded: false,
             backdrop_active: false,
+            backdrop_state: crate::backdrop::BackdropState::new(),
         })
     }
 
@@ -2189,6 +2192,26 @@ impl NativeWindow {
         }
     }
 
+    /// Applies the state's effective backdrop and refreshes `backdrop_active` and the layered style.
+    fn apply_backdrop_state(&mut self) -> bool {
+        let effective = self.backdrop_state.effective();
+        let applied = crate::backdrop::set_window_backdrop(
+            self.hwnd,
+            effective,
+            self.backdrop_state.dark_mode(),
+        );
+        // Tracks the request, not the outcome: the DWM calls can fail after changing part of the
+        // state, so a failed request may still leave a backdrop that the style must not strip.
+        // `FlatTint` is a backdrop too: it is an accent policy that needs the layered style.
+        self.backdrop_active = effective != crate::backdrop::BackdropType::None;
+        // Dropping the backdrop lets a window that nothing else keeps layered go plain again.
+        let plain = !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED);
+        if !self.backdrop_active && plain {
+            apply_system_window_opacity(self.hwnd, self.layered_needs());
+        }
+        applied
+    }
+
     /// `QWindow::setMinimumSize` (logical pixels). Windows learns it through `WM_GETMINMAXINFO`,
     /// which converts it with the window's ratio at that moment (`SizeLimits::native_track`).
     pub fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {
@@ -2328,6 +2351,8 @@ impl NativeWindow {
             self.drop_target = std::ptr::null_mut();
         }
         if !self.hwnd.is_null() {
+            // Windows would destroy the windows this one owns with it (QTBUG-35499).
+            crate::window_region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
             remove_window_size_limits(self.hwnd);
             unsafe {
                 DestroyWindow(self.hwnd);
@@ -2570,17 +2595,38 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         (w > 0 && h > 0).then_some((w as u32, h as u32))
     }
 
+    fn set_mask(&mut self, region: &ferrokit_gui::geometry::Region) {
+        crate::window_region::set_window_mask(self.hwnd, region);
+    }
+
+    fn set_transient_parent(&mut self, parent: Option<isize>) {
+        crate::window_region::set_owner(self.hwnd, parent.map(|p| p as HWND));
+    }
+
+    fn transient_parent(&self) -> Option<isize> {
+        crate::window_region::owner_of(self.hwnd).map(|h| h as isize)
+    }
+
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
-        let applied = crate::backdrop::set_window_backdrop(self.hwnd, backdrop, dark_mode);
-        // Tracks the request, not the outcome: the DWM calls can fail after changing part of the
-        // state, so a failed request may still leave a backdrop that the style must not strip.
-        self.backdrop_active = backdrop != crate::backdrop::BackdropType::None;
-        // Dropping the backdrop lets a window that nothing else keeps layered go plain again.
-        let plain = !self.hwnd.is_null() && !self.flags.contains(WindowFlags::LAYERED);
-        if !self.backdrop_active && plain {
-            apply_system_window_opacity(self.hwnd, self.layered_needs());
+        self.backdrop_state.request(backdrop, dark_mode);
+        self.apply_backdrop_state()
+    }
+
+    fn suspend_backdrop(&mut self) -> bool {
+        // Tracks the request, not the outcome, like `set_backdrop`.
+        let changed = self.backdrop_state.suspend();
+        if changed {
+            self.apply_backdrop_state();
         }
-        applied
+        changed
+    }
+
+    fn resume_backdrop(&mut self) -> bool {
+        let changed = self.backdrop_state.resume();
+        if changed {
+            self.apply_backdrop_state();
+        }
+        changed
     }
 
     fn set_ime_focus(&mut self, pos: ferrokit_gui::geometry::primitives::Point) {
@@ -3152,5 +3198,36 @@ mod tests {
         }
         // Not layered (backdrop never added the style): nothing to write.
         assert!(!needs(1.0, false, false, true).wants_alpha_attributes(0));
+    }
+
+    /// Suspending Acrylic swaps in the flat tint and resuming restores it; the window keeps
+    /// counting as backdrop-active throughout, so its layered style is never stripped.
+    #[test]
+    fn test_suspend_and_resume_backdrop_keep_backdrop_active() {
+        use crate::backdrop::BackdropType;
+        use crate::platform_window::PlatformWindow;
+        let mut win = NativeWindow::new(
+            "Backdrop Suspend",
+            Rect::new(100, 100, 300, 200),
+            WindowFlags::NORMAL,
+        )
+        .expect("failed to create window");
+
+        assert!(!win.suspend_backdrop(), "nothing to suspend without a backdrop");
+        assert!(!win.resume_backdrop(), "nothing to resume without a suspension");
+
+        win.set_backdrop(BackdropType::Acrylic, true);
+        assert!(win.backdrop_active);
+        assert!(win.suspend_backdrop());
+        assert!(win.backdrop_active, "FlatTint is an active backdrop");
+        assert_eq!(win.backdrop_state.effective(), BackdropType::FlatTint);
+        assert!(!win.suspend_backdrop(), "already suspended");
+        assert!(win.resume_backdrop());
+        assert!(win.backdrop_active);
+        assert_eq!(win.backdrop_state.effective(), BackdropType::Acrylic);
+        assert!(!win.resume_backdrop(), "already resumed");
+
+        win.set_backdrop(BackdropType::None, false);
+        assert!(!win.backdrop_active);
     }
 }
