@@ -399,6 +399,7 @@ impl Win32EventDispatcher {
         loop {
             let mut processed_ui_message = false;
             let mut awoken = false;
+            let mut timer_dispatched = false;
 
             unsafe {
                 let mut msg: MSG = std::mem::zeroed();
@@ -431,6 +432,7 @@ impl Win32EventDispatcher {
                     if msg.hwnd == self.internal_hwnd {
                         if msg.message == WM_TIMER {
                             DispatchMessageW(&msg);
+                            timer_dispatched = true;
                         } else {
                             DefWindowProcW(msg.hwnd, msg.message, msg.wParam, msg.lParam);
                         }
@@ -450,6 +452,12 @@ impl Win32EventDispatcher {
                 return DispatchResult::Normal;
             }
 
+            // The tick was queued for `send_timer_events`, which the caller runs next; waiting
+            // here would hold the timer back until the next wake.
+            if timer_dispatched {
+                return DispatchResult::Timeout;
+            }
+
             if !can_wait {
                 return DispatchResult::Timeout;
             }
@@ -461,7 +469,8 @@ impl Win32EventDispatcher {
             let timeout_ms = match deadline {
                 Some(dl) => {
                     let remaining = dl.saturating_duration_since(std::time::Instant::now());
-                    let ms = remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                    let ms = remaining.as_millis()
+                        + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
                     ms.clamp(1, u32::MAX as u128 - 1) as u32
                 }
                 None => INFINITE,
