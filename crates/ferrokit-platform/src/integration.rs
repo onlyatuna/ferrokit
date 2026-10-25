@@ -355,7 +355,6 @@ pub mod unix {
 
 pub mod cocoa {
     use super::*;
-    use crate::clipboard::GenericClipboard;
     use crate::cursor::CocoaCursor;
     use crate::hotkey::CocoaHotkeyManager;
     use crate::platform_tray::GenericTrayIcon;
@@ -560,11 +559,18 @@ pub mod cocoa {
         }
 
         fn clipboard(&self) -> Box<dyn PlatformClipboard> {
-            Box::new(GenericClipboard::new())
+            #[cfg(target_os = "macos")]
+            {
+                Box::new(crate::clipboard_cocoa::CocoaClipboard::new())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Box::new(crate::clipboard::GenericClipboard::new())
+            }
         }
 
         fn create_hotkey_manager(&self) -> Result<Box<dyn PlatformHotkeyManager>, &'static str> {
-            Ok(Box::new(CocoaHotkeyManager::new()))
+            CocoaHotkeyManager::try_new().map(|m| Box::new(m) as Box<dyn PlatformHotkeyManager>)
         }
 
         fn cursor(&self) -> Box<dyn PlatformCursor> {

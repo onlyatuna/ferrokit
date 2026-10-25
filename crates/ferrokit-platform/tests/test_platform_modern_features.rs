@@ -329,32 +329,36 @@ fn test_cross_platform_cursor_shapes() {
 
 #[test]
 fn test_cross_platform_hotkeys() {
-    use ferrokit_platform::hotkey::{
-        CocoaHotkeyManager, HotkeyModifiers, PlatformHotkeyManager, UnixHotkeyManager,
-    };
-    use ferrokit_platform::integration::{
-        CocoaPlatformIntegration, PlatformIntegration, UnixPlatformIntegration,
-    };
+    use ferrokit_platform::hotkey::{HotkeyModifiers, PlatformHotkeyManager, UnixHotkeyManager};
+    use ferrokit_platform::integration::{PlatformIntegration, UnixPlatformIntegration};
 
-    // Cocoa hotkeys
-    let cocoa_integration = CocoaPlatformIntegration::default();
-    let mut cocoa_mgr = cocoa_integration
-        .create_hotkey_manager()
-        .expect("Cocoa hotkey manager");
-    assert!(cocoa_mgr
-        .register_hotkey(9527, HotkeyModifiers::ALT, 8)
-        .is_err());
-    assert!(cocoa_mgr
-        .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 8)
-        .is_err());
-    assert!(cocoa_mgr.unregister_hotkey(9527).is_err());
-    assert!(cocoa_mgr.unregister_hotkey(9528).is_err());
+    // Cocoa hotkeys: off macOS the manager has no OS back end and every registration fails. On
+    // macOS it registers real Carbon hotkeys (the mock-backed lifecycle is in
+    // tests/test_cocoa_hotkey.rs).
+    #[cfg(not(target_os = "macos"))]
+    {
+        use ferrokit_platform::hotkey::CocoaHotkeyManager;
+        use ferrokit_platform::integration::CocoaPlatformIntegration;
 
-    let mut standalone_cocoa = CocoaHotkeyManager::new();
-    assert!(standalone_cocoa
-        .register_hotkey(1, HotkeyModifiers::ALT, 8)
-        .is_err());
-    assert_eq!(standalone_cocoa.registered_ids().len(), 0);
+        let cocoa_integration = CocoaPlatformIntegration::default();
+        let mut cocoa_mgr = cocoa_integration
+            .create_hotkey_manager()
+            .expect("Cocoa hotkey manager");
+        assert!(cocoa_mgr
+            .register_hotkey(9527, HotkeyModifiers::ALT, 8)
+            .is_err());
+        assert!(cocoa_mgr
+            .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 8)
+            .is_err());
+        assert!(cocoa_mgr.unregister_hotkey(9527).is_err());
+        assert!(cocoa_mgr.unregister_hotkey(9528).is_err());
+
+        let mut standalone_cocoa = CocoaHotkeyManager::new();
+        assert!(standalone_cocoa
+            .register_hotkey(1, HotkeyModifiers::ALT, 8)
+            .is_err());
+        assert_eq!(standalone_cocoa.registered_ids().len(), 0);
+    }
 
     // Unix hotkeys
     let unix_integration = UnixPlatformIntegration::default();
