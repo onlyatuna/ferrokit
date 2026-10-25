@@ -345,6 +345,16 @@ pub mod cocoa_hotkey {
         }
     }
 
+    /// `Err` unless the thread asking is the main thread (`is_main`): Carbon hotkeys belong to
+    /// the main thread's event target.
+    pub fn require_main_thread(is_main: bool) -> Result<(), &'static str> {
+        if is_main {
+            Ok(())
+        } else {
+            Err("CocoaHotkeyManager: must be created on the main thread")
+        }
+    }
+
     #[cfg(not(target_os = "macos"))]
     struct UnavailableBackend;
 
@@ -369,6 +379,10 @@ pub mod cocoa_hotkey {
     ///
     /// Neither `Send` nor `Sync`: Carbon hotkeys belong to the main thread's event target. Every
     /// hotkey still registered is unregistered on drop.
+    ///
+    /// Newer macOS versions can reject a combination whose only modifiers are Option or
+    /// Option+Shift (it would type a character), so registering one may fail; add Command or
+    /// Control.
     pub struct CocoaHotkeyManager {
         backend: Box<dyn HotkeyBackend>,
         instance: u64,
@@ -402,6 +416,15 @@ pub mod cocoa_hotkey {
             Self::with_backend(backend)
         }
 
+        /// Like [`new`](Self::new), but fails instead of panicking when the Carbon back end
+        /// cannot be used: on macOS, if the calling thread is not the main thread (no
+        /// `CoreApplication` yet, or another thread). Off macOS it always succeeds.
+        pub fn try_new() -> Result<Self, &'static str> {
+            #[cfg(target_os = "macos")]
+            require_main_thread(ferrokit_core::object::ThreadContext::is_main_thread())?;
+            Ok(Self::new())
+        }
+
         /// A manager on `backend`, owned by the calling thread.
         pub fn with_backend(backend: Box<dyn HotkeyBackend>) -> Self {
             Self {
@@ -431,6 +454,11 @@ pub mod cocoa_hotkey {
 
         /// Carbon virtual key code for the virtual key `vk`, or `vk` unchanged if the key has no
         /// Mac counterpart (see [`carbon_keycode`]).
+        ///
+        /// `vk` has Windows virtual-key semantics. Earlier versions also accepted lowercase ASCII
+        /// letters (`'a'..='z'`); those values are now the numeric keypad and function keys
+        /// (`0x61..=0x7A`), so they map to those keys, not to the letters. Pass uppercase
+        /// `'A'..='Z'`.
         pub fn map_to_mac_keycode(vk: u32) -> u32 {
             carbon_keycode(vk).unwrap_or(vk)
         }
@@ -512,9 +540,12 @@ pub mod cocoa_hotkey {
         next_handle: usize,
     }
 
-    /// An in-memory hotkey table with Carbon's conflict behaviour: a combination can be held
-    /// once, by this table or by an [`occupy`](Self::occupy)ing "other application". Clones share
-    /// the table, so a test keeps one while the manager owns the other.
+    /// An in-memory hotkey table modelled on Carbon's conflicts: a combination can be held once,
+    /// by this table or by an [`occupy`](Self::occupy)ing "other application".
+    /// `eventHotKeyExistsErr` is mainly what Carbon reports for a duplicate registration by the
+    /// same application; whether it also reports a combination held by another application, or
+    /// a system shortcut, depends on the macOS version. Clones share the table, so a test keeps
+    /// one while the manager owns the other.
     #[derive(Debug, Clone, Default)]
     pub struct MockHotkeyBackend {
         state: Rc<RefCell<MockState>>,
@@ -684,7 +715,13 @@ pub mod cocoa_hotkey {
                     &mut id as *mut EventHotKeyId as *mut c_void,
                 )
             };
-            if status == NO_ERR && id.signature == SIGNATURE && route_press(id.id) {
+            // A panic must not unwind into Carbon's C frames (undefined behaviour): treat it as
+            // "not handled".
+            let routed = std::panic::catch_unwind(|| {
+                status == NO_ERR && id.signature == SIGNATURE && route_press(id.id)
+            })
+            .unwrap_or(false);
+            if routed {
                 NO_ERR
             } else {
                 EVENT_NOT_HANDLED_ERR
@@ -866,6 +903,20 @@ mod tests {
     fn test_cocoa_hotkey_manager() {
         assert_eq!(CocoaHotkeyManager::map_to_mac_keycode(b'C' as u32), 8);
         assert_eq!(CocoaHotkeyManager::map_to_mac_keycode(b'A' as u32), 0);
+    }
+
+    #[test]
+    fn test_cocoa_hotkey_off_main_thread_is_an_error_not_a_panic() {
+        use crate::hotkey::cocoa_hotkey::require_main_thread;
+        assert_eq!(require_main_thread(true), Ok(()));
+        let err = require_main_thread(false).unwrap_err();
+        assert!(err.contains("main thread"), "{err}");
+    }
+
+    #[test]
+    fn test_cocoa_hotkey_lowercase_ascii_is_a_windows_vk_not_a_letter() {
+        // 'a' is VK_NUMPAD1 (0x61), not the letter A.
+        assert_eq!(CocoaHotkeyManager::map_to_mac_keycode(b'a' as u32), 83);
     }
 
     #[cfg(not(target_os = "macos"))]

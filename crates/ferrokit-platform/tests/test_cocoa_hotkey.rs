@@ -101,3 +101,20 @@ fn press_without_a_handler_is_ignored() {
     assert!(mock.press(CARBON_A, CARBON_OPTION_KEY));
     CoreApplication::process_events(false);
 }
+
+/// On macOS the integration must refuse, not panic, off the main thread (a spawned thread is
+/// never the main thread). Unverified: cannot run without a Mac.
+#[cfg(target_os = "macos")]
+#[test]
+fn integration_create_hotkey_manager_off_main_thread_is_an_error() {
+    use ferrokit_platform::integration::{CocoaPlatformIntegration, PlatformIntegration};
+    let err = std::thread::spawn(|| {
+        CocoaPlatformIntegration::default()
+            .create_hotkey_manager()
+            .err()
+    })
+    .join()
+    .expect("must not panic")
+    .expect("must fail off the main thread");
+    assert!(err.contains("main thread"), "{err}");
+}
