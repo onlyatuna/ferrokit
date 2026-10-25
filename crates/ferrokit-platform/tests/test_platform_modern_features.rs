@@ -847,3 +847,33 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         );
     }
 }
+
+#[test]
+fn test_platform_tray_message_with_custom_icon() {
+    ferrokit_core::object::ThreadContext::init_current(true, None);
+    use ferrokit_gui::image::Icon;
+    use ferrokit_gui::paint::Pixmap;
+    use ferrokit_platform::{
+        DbusStatusNotifierItem, GenericTrayIcon, PlatformTrayIcon, TrayMessageIcon,
+    };
+
+    let pm = Pixmap::new(16, 16).unwrap();
+    let icon = Icon::from_pixmap(&pm);
+
+    // The generic back end keeps the custom icon and shows no standard icon.
+    let mut generic = GenericTrayIcon::new("Generic", &pm);
+    assert!(generic.last_message_icon().is_none());
+    generic.show_message_with_icon("T", "B", &icon, 0).unwrap();
+    assert_eq!(generic.last_message(), Some(("T", "B", TrayMessageIcon::NoIcon, 10000)));
+    assert!(generic.last_message_icon().is_some());
+    // A later standard-icon message drops it again, and a null icon never counts as custom.
+    generic.show_message("T2", "B2", TrayMessageIcon::Warning, 1000).unwrap();
+    assert!(generic.last_message_icon().is_none());
+    generic.show_message_with_icon("T3", "B3", &Icon::new(), 1000).unwrap();
+    assert!(generic.last_message_icon().is_none());
+
+    // Back ends that cannot show an arbitrary image fall back to NoIcon.
+    let mut dbus = DbusStatusNotifierItem::new("claude-hud", "ClaudeHUD");
+    dbus.show_message_with_icon("Alert", "Body", &icon, 2000).unwrap();
+    assert_eq!(dbus.last_message(), Some(("Alert", "Body", TrayMessageIcon::NoIcon, 2000)));
+}

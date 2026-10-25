@@ -51,8 +51,145 @@ impl ImageReader {
             ImageFileFormat::Png => Self::read_png(bytes),
             ImageFileFormat::Bmp => Self::read_bmp(bytes),
             ImageFileFormat::Ppm => Self::read_ppm(bytes),
+            // Qt's ICO plugin loads the largest frame when no size is requested.
+            ImageFileFormat::Ico => Self::read_ico_frames(bytes)?
+                .into_iter()
+                .reduce(|best, f| {
+                    if u64::from(f.width()) * u64::from(f.height())
+                        > u64::from(best.width()) * u64::from(best.height())
+                    {
+                        f
+                    } else {
+                        best
+                    }
+                })
+                .ok_or_else(|| "ICO file contains no frames".to_string()),
             _ => Err("Unsupported or unknown image file format".to_string()),
         }
+    }
+
+    /// Decodes every frame of a Windows ICO file, in directory order (what `QIcon` exposes as
+    /// its sizes). Frames are PNG-compressed or BMP-style DIBs (1/4/8/24/32 bpp, uncompressed,
+    /// with the AND mask). A frame that cannot be decoded fails the whole read.
+    pub fn read_ico_frames(bytes: &[u8]) -> Result<Vec<Image>, String> {
+        if bytes.len() < 6 || bytes[0..4] != [0, 0, 1, 0] {
+            return Err("Invalid ICO header".to_string());
+        }
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        if count == 0 {
+            return Err("ICO file contains no frames".to_string());
+        }
+        let dir_end = 6 + count * 16;
+        if bytes.len() < dir_end {
+            return Err("ICO directory shorter than its header declares".to_string());
+        }
+        let mut frames = Vec::with_capacity(count);
+        for i in 0..count {
+            let e = &bytes[6 + i * 16..][..16];
+            let size = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+            let offset = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+            let data = offset
+                .checked_add(size)
+                .and_then(|end| bytes.get(offset..end))
+                .ok_or("ICO frame lies outside the file")?;
+            let frame = if data.len() >= 8 && Self::detect_format(data) == ImageFileFormat::Png {
+                Self::read_png(data)?
+            } else {
+                Self::read_ico_dib(data)?
+            };
+            frames.push(frame);
+        }
+        Ok(frames)
+    }
+
+    /// Decodes one BMP-style ICO frame: a `BITMAPINFOHEADER`, the palette, the XOR bitmap and
+    /// the 1-bpp AND mask (the header height covers both bitmaps).
+    fn read_ico_dib(data: &[u8]) -> Result<Image, String> {
+        if data.len() < 40 {
+            return Err("ICO DIB frame too short".to_string());
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
+        let header_size = u32_at(0) as usize;
+        if header_size < 40 || header_size > data.len() {
+            return Err("Unsupported ICO DIB header size".to_string());
+        }
+        let width = i32::from_le_bytes(data[4..8].try_into().unwrap());
+        let height2 = i32::from_le_bytes(data[8..12].try_into().unwrap());
+        let bpp = u16::from_le_bytes([data[14], data[15]]) as usize;
+        if u32_at(16) != 0 {
+            return Err("Compressed ICO DIB not supported".to_string());
+        }
+        if !matches!(bpp, 1 | 4 | 8 | 24 | 32) {
+            return Err(format!("Unsupported ICO bits per pixel: {bpp}"));
+        }
+        // The DIB height is twice the image height (XOR + AND bitmaps).
+        if width <= 0 || width > 32767 || height2 <= 1 || height2 / 2 > 32767 {
+            return Err("Invalid ICO frame dimensions".to_string());
+        }
+        let (w, h) = (width as usize, (height2 / 2) as usize);
+
+        let palette_len = if bpp <= 8 {
+            match u32_at(32) as usize {
+                0 => 1usize << bpp,
+                n => n.min(1usize << bpp),
+            }
+        } else {
+            0
+        };
+        let palette_off = header_size;
+        let xor_off = palette_off + palette_len * 4;
+        let xor_stride = (w * bpp).div_ceil(32) * 4;
+        let and_off = xor_off + xor_stride * h;
+        let and_stride = w.div_ceil(32) * 4;
+        // Checked before allocating, so a hostile header cannot demand a huge image.
+        if and_off + and_stride * h > data.len() {
+            return Err("ICO frame pixel data shorter than its header declares".to_string());
+        }
+        let palette = &data[palette_off..xor_off];
+        let xor = &data[xor_off..and_off];
+        let and = &data[and_off..and_off + and_stride * h];
+
+        // 32-bpp frames carry alpha themselves; without any non-zero alpha (old-style icons)
+        // the AND mask decides transparency, as Windows does.
+        let use_alpha = bpp == 32 && xor.chunks_exact(4).any(|p| p[3] != 0);
+
+        let mut image = Image::new(w as u32, h as u32, ImageFormat::Rgba8888);
+        for y in 0..h {
+            // DIB rows are stored bottom-up.
+            let src_y = h - 1 - y;
+            let row = &xor[src_y * xor_stride..][..xor_stride];
+            let mask_row = &and[src_y * and_stride..][..and_stride];
+            for x in 0..w {
+                let (r, g, b) = match bpp {
+                    32 => {
+                        let p = &row[x * 4..][..4];
+                        (p[2], p[1], p[0])
+                    }
+                    24 => {
+                        let p = &row[x * 3..][..3];
+                        (p[2], p[1], p[0])
+                    }
+                    _ => {
+                        let bit = x * bpp;
+                        let mask = ((1u16 << bpp) - 1) as u8;
+                        let idx = ((row[bit / 8] >> (8 - bpp - bit % 8)) & mask) as usize;
+                        match palette.get(idx * 4..idx * 4 + 3) {
+                            Some(c) => (c[2], c[1], c[0]),
+                            None => (0, 0, 0),
+                        }
+                    }
+                };
+                let a = if use_alpha {
+                    row[x * 4 + 3]
+                } else if mask_row[x / 8] & (0x80 >> (x % 8)) != 0 {
+                    0
+                } else {
+                    255
+                };
+                image.set_pixel_color(x as u32, y as u32, Color::from_rgba8(r, g, b, a));
+            }
+        }
+        Ok(image)
     }
 
     fn read_png(bytes: &[u8]) -> Result<Image, String> {

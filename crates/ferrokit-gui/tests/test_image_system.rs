@@ -336,3 +336,129 @@ fn test_canonical_qt_image_aliases() {
     let _qbm: QBitmap = QBitmap::from_image(&qimg);
     let _qicon: QIcon = QIcon::from_image(qimg);
 }
+
+// =============================================================================
+// 11. ICO decoding
+// =============================================================================
+
+/// Builds an ICO file from `(declared width, declared height, frame bytes)` entries.
+fn build_ico(frames: &[(u8, u8, Vec<u8>)]) -> Vec<u8> {
+    let mut out = vec![0, 0, 1, 0];
+    out.extend_from_slice(&(frames.len() as u16).to_le_bytes());
+    let mut offset = 6 + frames.len() * 16;
+    for (w, h, data) in frames {
+        out.extend_from_slice(&[*w, *h, 0, 0, 1, 0, 32, 0]);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += data.len();
+    }
+    for (_, _, data) in frames {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// A 2x2 DIB frame header: `bpp` bits, `colors` palette entries; height covers XOR + AND.
+fn dib_header(bpp: u16, colors: u32) -> Vec<u8> {
+    let mut h = Vec::new();
+    h.extend_from_slice(&40u32.to_le_bytes());
+    h.extend_from_slice(&2i32.to_le_bytes());
+    h.extend_from_slice(&4i32.to_le_bytes());
+    h.extend_from_slice(&1u16.to_le_bytes());
+    h.extend_from_slice(&bpp.to_le_bytes());
+    h.extend_from_slice(&[0; 4]);
+    h.extend_from_slice(&[0; 12]);
+    h.extend_from_slice(&colors.to_le_bytes());
+    h.extend_from_slice(&[0; 4]);
+    h
+}
+
+fn px(img: &Image, x: u32, y: u32) -> [u8; 4] {
+    let u = img.pixel_color(x, y).unwrap().to_color_u8();
+    [u.red(), u.green(), u.blue(), u.alpha()]
+}
+
+#[test]
+fn test_ico_largest_frame_and_icon_sizes() {
+    // 2x2 24-bpp DIB: top row red, green; bottom row blue, white. The AND mask hides
+    // the top-right pixel. Rows are stored bottom-up and padded to 4 bytes.
+    let mut dib = dib_header(24, 0);
+    dib.extend_from_slice(&[255, 0, 0, 255, 255, 255, 0, 0]); // bottom: blue, white (BGR)
+    dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]); // top: red, green
+    dib.extend_from_slice(&[0, 0, 0, 0]); // AND bottom: opaque
+    dib.extend_from_slice(&[0b0100_0000, 0, 0, 0]); // AND top: pixel 1 transparent
+
+    let mut big = Image::new(4, 4, ImageFormat::Rgba8888);
+    big.fill(Color::from_rgba8(255, 0, 0, 255));
+    let png = ImageWriter::write_to_memory(&big, ImageFileFormat::Png).unwrap();
+
+    let ico = build_ico(&[(2, 2, dib), (4, 4, png)]);
+    assert_eq!(ImageReader::detect_format(&ico), ImageFileFormat::Ico);
+
+    // Default decode picks the largest frame (the PNG one).
+    let best = ImageReader::read_from_memory(&ico).unwrap();
+    assert_eq!((best.width(), best.height()), (4, 4));
+    assert_eq!(px(&best, 3, 3), [255, 0, 0, 255]);
+    let pm = QPixmap::load_from_data(&ico).expect("pixmap");
+    assert_eq!((pm.physical_width(), pm.physical_height()), (4, 4));
+
+    // All frames are exposed; the DIB frame decodes with orientation and mask applied.
+    let frames = ImageReader::read_ico_frames(&ico).unwrap();
+    assert_eq!(frames.len(), 2);
+    let small = &frames[0];
+    assert_eq!(px(small, 0, 0), [255, 0, 0, 255]);
+    assert_eq!(px(small, 1, 0)[3], 0);
+    assert_eq!(px(small, 0, 1), [0, 0, 255, 255]);
+    assert_eq!(px(small, 1, 1), [255, 255, 255, 255]);
+
+    let icon = QIcon::from_ico_data(&ico).unwrap();
+    assert_eq!(
+        icon.available_sizes(IconMode::Normal, IconState::Off),
+        vec![Size::new(2, 2), Size::new(4, 4)]
+    );
+}
+
+#[test]
+fn test_ico_palette_and_32bpp_alpha_frames() {
+    // 4-bpp palette frame: indices bottom row (0, 1), top row (1, 0).
+    let mut dib4 = dib_header(4, 16);
+    let mut pal = vec![0u8; 64];
+    pal[0..3].copy_from_slice(&[30, 20, 10]); // BGR of (10, 20, 30)
+    pal[4..7].copy_from_slice(&[50, 100, 200]); // BGR of (200, 100, 50)
+    dib4.extend_from_slice(&pal);
+    dib4.extend_from_slice(&[0x01, 0, 0, 0, 0x10, 0, 0, 0]);
+    dib4.extend_from_slice(&[0; 8]); // AND: fully opaque
+    let ico = build_ico(&[(2, 2, dib4)]);
+    let img = ImageReader::read_from_memory(&ico).unwrap();
+    assert_eq!(px(&img, 0, 0), [200, 100, 50, 255]);
+    assert_eq!(px(&img, 1, 0), [10, 20, 30, 255]);
+    assert_eq!(px(&img, 0, 1), [10, 20, 30, 255]);
+    assert_eq!(px(&img, 1, 1), [200, 100, 50, 255]);
+
+    // 32-bpp frame: its own alpha wins over the (all-opaque) AND mask.
+    let mut dib32 = dib_header(32, 0);
+    dib32.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // bottom row, alpha 0
+    dib32.extend_from_slice(&[0, 0, 255, 128, 0, 0, 255, 255]); // top row: red @128, red @255
+    dib32.extend_from_slice(&[0; 8]);
+    let ico = build_ico(&[(2, 2, dib32)]);
+    let img = ImageReader::read_from_memory(&ico).unwrap();
+    assert_eq!(px(&img, 0, 0)[3], 128);
+    assert_eq!(px(&img, 1, 0), [255, 0, 0, 255]);
+    assert_eq!(px(&img, 0, 1)[3], 0);
+}
+
+#[test]
+fn test_ico_rejects_malformed_data() {
+    assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 0, 0]).is_err()); // zero frames
+    assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 5, 0]).is_err()); // truncated directory
+    // Frame pointing past the end of the file.
+    let mut ico = build_ico(&[(2, 2, vec![0; 4])]);
+    ico[6 + 8..6 + 12].copy_from_slice(&1000u32.to_le_bytes());
+    assert!(ImageReader::read_from_memory(&ico).is_err());
+    // DIB header promising far more pixels than the data holds.
+    let mut dib = dib_header(32, 0);
+    dib[4..8].copy_from_slice(&32767i32.to_le_bytes());
+    dib[8..12].copy_from_slice(&65534i32.to_le_bytes());
+    assert!(ImageReader::read_from_memory(&build_ico(&[(0, 0, dib)])).is_err());
+    assert!(QPixmap::load_from_data(b"not an image").is_none());
+}
