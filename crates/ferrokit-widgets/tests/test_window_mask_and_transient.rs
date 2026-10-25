@@ -425,6 +425,91 @@ fn a_child_mask_is_not_a_window_region() {
     assert_eq!(child.borrow().mask(), Region::from_rect(Rect::new(0, 0, 30, 60)));
 }
 
+fn channels_at(window: &Window, x: u32, y: u32) -> (u8, u8, u8, u8) {
+    let p = window.backing_store().pixmap().pixel(x, y).expect("pixel inside the store");
+    (p.red(), p.green(), p.blue(), p.alpha())
+}
+
+/// A masked child is painted once however many rectangles its mask has, and the parent's pixels
+/// inside the child's rect but outside its mask are left as they were.
+#[test]
+fn a_scanline_mask_paints_the_child_once_and_keeps_the_parent_beneath() {
+    use ferrokit_gui::geometry::primitives::RectF;
+    let (_log, _g) = install(1.0);
+    let mut win = window(Rect::new(0, 0, 100, 100), WindowFlags::FRAMELESS);
+    win.set_root_widget(colored(Rect::new(0, 0, 100, 100), Color::from_rgba8(0, 255, 0, 255)));
+    let paints = Rc::new(std::cell::Cell::new(0u32));
+    let counter = Rc::clone(&paints);
+    let child: WidgetRef = Rc::new(RefCell::new(Box::new(
+        EmptyWidget::with_geometry(Rect::new(10, 10, 60, 60)).with_paint_handler(move |p| {
+            counter.set(counter.get() + 1);
+            p.fill_rect(RectF::new(0.0, 0.0, 60.0, 60.0), red());
+        }),
+    )));
+    win.root_widget().borrow_mut().add_child(child.clone());
+    // A rounded rectangle as pixel rows: eight rectangles.
+    let mut mask = Region::new();
+    for (i, inset) in [9, 6, 4, 3, 2, 1].into_iter().enumerate() {
+        mask = mask.united_rect(&Rect::new(inset, i as i32, 60 - 2 * inset, 1));
+    }
+    mask = mask.united_rect(&Rect::new(0, 6, 60, 46));
+    assert!(mask.rect_count() >= 7, "a scanline-style mask");
+    child.borrow().set_mask(&mask);
+    win.show();
+
+    assert_eq!(paints.get(), 1, "one paint event per frame, not one per mask rectangle");
+    assert_eq!(channels_at(&win, 40, 40), (255, 0, 0, 255), "the child inside its mask");
+    assert_eq!(
+        channels_at(&win, 10, 10),
+        (0, 255, 0, 255),
+        "the cut corner of the child shows the parent beneath it"
+    );
+}
+
+/// A mask that grows repaints the area it newly covers: the window's render cleared everything
+/// outside the old mask.
+#[test]
+fn a_window_mask_that_grows_repaints_the_area_it_uncovers() {
+    let (_log, _g) = install(1.0);
+    let mut win = window(Rect::new(0, 0, 40, 40), WindowFlags::FRAMELESS);
+    win.set_root_widget(colored(Rect::new(0, 0, 40, 40), red()));
+    win.set_mask(&Region::from_rect(Rect::new(0, 0, 20, 40)));
+    win.show();
+    assert_eq!(alpha_at(&win, 30, 10), 0);
+
+    win.set_mask(&Region::from_rect(Rect::new(0, 0, 40, 40)));
+    win.render_and_present();
+
+    assert_eq!(alpha_at(&win, 30, 10), 255, "no blank band where the mask grew");
+}
+
+/// Rects of a mask that share an edge in device-independent pixels share it in native pixels:
+/// at 125% the edges are scaled and rounded, not the origins and sizes (which left gaps).
+#[test]
+fn the_native_region_has_no_gaps_at_a_fractional_ratio() {
+    let (log, _g) = install(1.25);
+    let mut win = window(Rect::new(0, 0, 100, 60), WindowFlags::FRAMELESS);
+    let handle = win.native_handle();
+    let mask = Region::from_rects(&[
+        Rect::new(0, 0, 10, 1),
+        Rect::new(1, 1, 8, 1),
+        Rect::new(2, 2, 6, 1),
+        Rect::new(3, 3, 4, 1),
+    ]);
+
+    win.set_mask(&mask);
+
+    let native = log.lock().unwrap().masks_of(handle).pop().expect("a native region");
+    // Logical rows 0..4 are native rows 0..5; columns 4..9 are inside every band.
+    for y in 0..5 {
+        assert!(
+            native.contains_point(Point::new(6, y)),
+            "native row {y} is missing from the region"
+        );
+    }
+    assert_eq!(native.bounding_rect().bottom(), 5);
+}
+
 // ---- top-level windows with a parent ---------------------------------------------------------
 
 fn tool_flags() -> WindowFlags {

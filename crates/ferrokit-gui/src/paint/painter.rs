@@ -287,6 +287,12 @@ impl<'a> Painter<'a> {
         &*self.device
     }
 
+    /// Returns the underlying `PaintDevice` mutably, for a caller that has to read or write the
+    /// device's pixels around painting (the clip and state of the painter are unaffected).
+    pub fn device_mut(&mut self) -> &mut dyn PaintDevice {
+        &mut *self.device
+    }
+
     // -------------------------------------------------------------------------
     // State and transform management
     // -------------------------------------------------------------------------

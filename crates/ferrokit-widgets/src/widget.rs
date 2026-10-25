@@ -1116,22 +1116,23 @@ impl WidgetBase {
             }
             return;
         }
-        if window_root.is_some() {
-            return;
-        }
-        // The area the mask now leaves out is repainted on the parent.
-        let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
-        if let Some(parent) = parent {
-            if let Ok(parent) = parent.try_borrow() {
-                let uncovered = Region::from_rect(rect).subtracted(region);
-                for r in uncovered.rects() {
-                    parent
-                        .widget_base()
-                        .update_rect(Rect::new(g.x + r.x, g.y + r.y, r.width, r.height));
+        if window_root.is_none() {
+            // The area the mask now leaves out is repainted on the parent.
+            let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
+            if let Some(parent) = parent {
+                if let Ok(parent) = parent.try_borrow() {
+                    let uncovered = Region::from_rect(rect).subtracted(region);
+                    for r in uncovered.rects() {
+                        parent
+                            .widget_base()
+                            .update_rect(Rect::new(g.x + r.x, g.y + r.y, r.width, r.height));
+                    }
                 }
             }
         }
-        // The newly covered area of this widget is repainted.
+        // The newly covered area of this widget is repainted: a window's render cleared
+        // everything outside the old mask.
+        // Only an existing mask has left something outside to repaint.
         if !old.is_empty() {
             for r in region.subtracted(&old).rects() {
                 self.update_rect(*r);

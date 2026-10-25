@@ -655,7 +655,11 @@ fn screen_mapping(screen: &dyn ferrokit_platform::screen::PlatformScreen) -> (Po
 /// `QHighDpi::toNativeLocalRect`: a rect in device-independent pixels in native pixels.
 fn native_rect(rect: Rect, dpr: f32) -> Rect {
     if dpr > 1.0 {
-        ferrokit_platform::high_dpi::to_native_rect(rect, dpr)
+        // The edges are scaled and rounded, not the origin and the size, so rects that share an
+        // edge still share it in native pixels (no gaps at 125%).
+        let edge = |v: i32| (v as f32 * dpr).round() as i32;
+        let (x0, y0) = (edge(rect.x), edge(rect.y));
+        Rect::new(x0, y0, edge(rect.right()) - x0, edge(rect.bottom()) - y0)
     } else {
         rect
     }
@@ -1544,10 +1548,63 @@ pub fn deliver_paint_event(
     }
 }
 
+/// The pixels of a rectangle of a paint device, kept to put back some of them later.
+struct PixelSnapshot {
+    rect: Rect,
+    bytes: Vec<u8>,
+}
+
+impl PixelSnapshot {
+    /// Copies the pixels of `rect`, which lies inside the device.
+    fn take(device: &mut dyn ferrokit_gui::paint::PaintDevice, rect: Rect) -> Self {
+        let mut pixmap = device.as_pixmap_mut();
+        let stride = pixmap.width() as usize * 4;
+        let data = pixmap.data_mut();
+        let row = rect.width as usize * 4;
+        let mut bytes = Vec::with_capacity(row * rect.height as usize);
+        for y in rect.y..rect.bottom() {
+            let at = y as usize * stride + rect.x as usize * 4;
+            bytes.extend_from_slice(&data[at..at + row]);
+        }
+        Self { rect, bytes }
+    }
+
+    /// Puts the pixels of `area`, which lies inside the snapshot, back.
+    fn restore(&self, device: &mut dyn ferrokit_gui::paint::PaintDevice, area: Rect) {
+        let mut pixmap = device.as_pixmap_mut();
+        let stride = pixmap.width() as usize * 4;
+        let data = pixmap.data_mut();
+        let row = area.width as usize * 4;
+        for y in area.y..area.bottom() {
+            let from = ((y - self.rect.y) as usize * self.rect.width as usize
+                + (area.x - self.rect.x) as usize)
+                * 4;
+            let to = y as usize * stride + area.x as usize * 4;
+            data[to..to + row].copy_from_slice(&self.bytes[from..from + row]);
+        }
+    }
+}
+
+/// The device pixels a rect covers under `transform` (a translation and a scale): the edges are
+/// rounded, so rects that share an edge share it on the device.
+fn device_rect(transform: &ferrokit_gui::tiny_skia::Transform, rect: Rect) -> Rect {
+    let edge = |v: i32, scale: f32, shift: f32| (v as f32 * scale + shift).round() as i32;
+    let (x0, x1) = (
+        edge(rect.x, transform.sx, transform.tx),
+        edge(rect.right(), transform.sx, transform.tx),
+    );
+    let (y0, y1) = (
+        edge(rect.y, transform.sy, transform.ty),
+        edge(rect.bottom(), transform.sy, transform.ty),
+    );
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
 /// Paints `widget_ref` and its subtree. A child with a mask is painted only inside it, as
 /// `QWidgetPrivate::drawWidget` limits the region to paint to the widget's mask
-/// (qwidget.cpp:5403, 5823): the widget is painted once for each rectangle of the mask, with the
-/// painter clipped to it. A window's root is not clipped here; its mask is a window region and
+/// (qwidget.cpp:5403, 5823). The painter has no region clip, so the widget is painted once,
+/// clipped to the mask's bounding box, and the pixels of that box outside the mask are put back
+/// from a copy taken before. A window's root is not handled here; its mask is a window region and
 /// the area outside it is cleared once after painting (`do_render_and_present`).
 fn render_widget_recursive(widget_ref: &WidgetRef, painter: &mut Painter, dirty_in_parent: Rect) {
     let masked = {
@@ -1560,21 +1617,46 @@ fn render_widget_recursive(widget_ref: &WidgetRef, painter: &mut Painter, dirty_
         render_widget_unmasked(widget_ref, painter, dirty_in_parent);
         return;
     };
-    for r in mask.rects() {
-        let part = Rect::new(geom.x + r.x, geom.y + r.y, r.width, r.height)
-            .intersected(&dirty_in_parent);
-        if part.is_empty() {
-            continue;
+    let in_parent = |r: &Rect| Rect::new(geom.x + r.x, geom.y + r.y, r.width, r.height);
+    let bounds = in_parent(&mask.bounding_rect()).intersected(&dirty_in_parent);
+    if bounds.is_empty() {
+        return;
+    }
+    let transform = painter.state().transform;
+    let device = painter.device();
+    let device_rect_all = Rect::new(
+        0,
+        0,
+        device.physical_width() as i32,
+        device.physical_height() as i32,
+    );
+    // One pixel more on every side: the clip may round outwards.
+    let saved_rect = {
+        let r = device_rect(&transform, bounds);
+        Rect::new(r.x - 1, r.y - 1, r.width + 2, r.height + 2).intersected(&device_rect_all)
+    };
+    let snapshot = (!saved_rect.is_empty()).then(|| PixelSnapshot::take(painter.device_mut(), saved_rect));
+
+    painter.save();
+    painter.clip_to_rect(RectF::new(
+        bounds.x as f32,
+        bounds.y as f32,
+        bounds.width as f32,
+        bounds.height as f32,
+    ));
+    render_widget_unmasked(widget_ref, painter, bounds);
+    painter.restore();
+
+    if let Some(snapshot) = snapshot {
+        let inside: Vec<Rect> = mask
+            .rects()
+            .iter()
+            .map(|r| device_rect(&transform, in_parent(r)))
+            .collect();
+        let outside = Region::from_rect(saved_rect).subtracted(&Region::from_rects(&inside));
+        for r in outside.rects() {
+            snapshot.restore(painter.device_mut(), *r);
         }
-        painter.save();
-        painter.clip_to_rect(RectF::new(
-            part.x as f32,
-            part.y as f32,
-            part.width as f32,
-            part.height as f32,
-        ));
-        render_widget_unmasked(widget_ref, painter, part);
-        painter.restore();
     }
 }
 
