@@ -362,6 +362,23 @@ pub(crate) fn window_id_of<W: crate::widget::Widget + ?Sized>(widget: &W) -> Opt
     render_state_of(widget).map(|s| s.window_id)
 }
 
+/// The id of the window `widget` is the root widget of; `None` for any other widget. A root that
+/// is borrowed mutably right now is taken to be `widget` itself: it is the widget whose handler is
+/// running.
+pub(crate) fn window_id_if_root<W: crate::widget::Widget + ?Sized>(widget: &W) -> Option<ObjectId> {
+    let id = widget.window_id()?;
+    let state = RENDER_STATES
+        .try_with(|m| m.borrow().get(&id).cloned())
+        .ok()
+        .flatten()?;
+    let root = state.root.try_borrow().ok()?.clone();
+    let borrowed = root.try_borrow();
+    match borrowed {
+        Ok(root) => (root.id() == widget.id()).then_some(id),
+        Err(_) => Some(id),
+    }
+}
+
 /// `QWindow::setMouseGrabEnabled` for the window `widget` is in (`QWidget::grabMouse`,
 /// qwidget.cpp:12650-12686). Returns whether the platform window now grabs; false for a widget
 /// in no window or a window that cannot grab (hidden, or a backend without grabs).
@@ -388,6 +405,40 @@ pub(crate) fn native_mouse_grab_in_window(window_id: ObjectId, grab: bool) -> bo
         return false;
     };
     platform_window.set_mouse_grab_enabled(grab)
+}
+
+/// The platform window of `window_id`, when it is alive and not borrowed mutably right now.
+fn with_platform_window(window_id: ObjectId, f: impl FnOnce(&dyn PlatformWindow)) -> bool {
+    let state = RENDER_STATES
+        .try_with(|m| m.borrow().get(&window_id).cloned())
+        .ok()
+        .flatten();
+    let Some(platform_window) = state.and_then(|s| s.platform_window.upgrade()) else {
+        return false;
+    };
+    let Ok(platform_window) = platform_window.try_borrow() else {
+        return false;
+    };
+    f(&**platform_window);
+    true
+}
+
+/// `QWidget::raise` on a window (`QPlatformWindow::raise`): puts window `window_id` above the
+/// other top-level windows. Returns false for an unknown window or one whose platform window is
+/// borrowed.
+pub(crate) fn raise_window(window_id: ObjectId) -> bool {
+    with_platform_window(window_id, |pw| pw.raise())
+}
+
+/// `QWidget::activateWindow` on a window: asks the window system to activate window `window_id`
+/// (`QPlatformWindow::requestActivateWindow`), only while it is visible. Returns whether the
+/// request was handed to the platform window; that says nothing about whether the window system
+/// granted it.
+pub(crate) fn request_window_activation(window_id: ObjectId) -> bool {
+    if !crate::application::Application::is_window_visible(window_id) {
+        return false;
+    }
+    with_platform_window(window_id, |pw| pw.request_activate_window())
 }
 
 /// Clears a flag on every exit path, including unwinding.
@@ -1181,6 +1232,22 @@ impl Window {
 
     pub fn hide(&mut self) {
         self.core.hide();
+    }
+
+    /// `QWidget::raise` on the window: puts it above the other top-level windows. It does not
+    /// activate the window; see [`Window::activate_window`].
+    pub fn raise(&self) {
+        raise_window(self.object_data.id());
+    }
+
+    /// `QWidget::activateWindow`: asks the window system to make this window the active one.
+    /// Nothing happens while the window is hidden. The window system decides: on Windows the
+    /// foreground lock lets only the foreground process take the foreground, so for a background
+    /// process this call can do no more than flash the window's taskbar button, as Qt documents.
+    /// The window is active when `WindowActivate` arrives ([`Application::active_window`]), which
+    /// may be after this call returns. A minimized window is not restored.
+    pub fn activate_window(&self) {
+        request_window_activation(self.object_data.id());
     }
 
     /// `QWidget::close`: sends a `Close` event to the window widget and the window event handler;

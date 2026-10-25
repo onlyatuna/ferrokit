@@ -2160,6 +2160,44 @@ impl NativeWindow {
         }
     }
 
+    /// `QWindowsWindow::raise`: `SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`.
+    /// Reorders the window in the z-order without activating it; a topmost window stays in the
+    /// topmost band.
+    pub fn raise(&self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOP;
+        if !self.hwnd.is_null() {
+            // SAFETY: `hwnd` is the live window this value owns.
+            unsafe {
+                SetWindowPos(
+                    self.hwnd,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    /// `QWindowsWindow::requestActivateWindow`: `SetForegroundWindow` on a visible window that
+    /// takes activation. The system's foreground lock is not worked around: when this process may
+    /// not take the foreground, Windows flashes the window's taskbar button instead and the window
+    /// does not become active.
+    pub fn request_activate_window(&self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SetForegroundWindow};
+        if self.hwnd.is_null() || self.flags.contains(WindowFlags::TOOLTIP) {
+            return;
+        }
+        // SAFETY: `hwnd` is the live window this value owns.
+        unsafe {
+            if IsWindowVisible(self.hwnd) != 0 {
+                SetForegroundWindow(self.hwnd);
+            }
+        }
+    }
+
     pub fn set_geometry(&mut self, rect: Rect) {
         if !self.hwnd.is_null() {
             let _guard = SetGeometryGuard::new(&self.state_flags);
@@ -2508,6 +2546,14 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn hide(&self) {
         self.hide();
+    }
+
+    fn raise(&self) {
+        self.raise();
+    }
+
+    fn request_activate_window(&self) {
+        self.request_activate_window();
     }
 
     /// `QWindowsWindow::isActive` (`qwindowswindow.cpp:1904-1910`): the window is the foreground

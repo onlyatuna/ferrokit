@@ -90,7 +90,8 @@
     "test_r3_visibility_focus",
     "test_window_backdrop_suspend",
     "test_window_mask_and_transient",
-    "test_input_cursor"
+    "test_input_cursor",
+    "test_show_hide_hooks"
   ],
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -110,7 +111,8 @@
     "test_tooltip": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_update_reaches_window": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_window_activation_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
-    "test_menu_exec_popup": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
+    "test_menu_exec_popup": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_window_raise_activate": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
   },
   "negative_controls": [],
   "isolation_allowlist": {
@@ -1168,6 +1170,12 @@
     "test_input_cursor::releasing_the_grab_does_not_reenter_through_the_capture_notification::SB": "pass",
     "test_input_cursor::releasing_the_grab_does_not_reenter_through_the_capture_notification::TB": "pass",
     "test_input_cursor::resetting_the_application_clears_the_native_override_too::SB": "pass",
-    "test_input_cursor::resetting_the_application_clears_the_native_override_too::TB": "pass"
+    "test_input_cursor::resetting_the_application_clears_the_native_override_too::TB": "pass",
+    "test_show_hide_hooks::a_hide_handler_can_hide_another_widget_whose_handler_runs_too::SB": "pass",
+    "test_show_hide_hooks::a_hide_handler_can_hide_another_widget_whose_handler_runs_too::TB": "pass",
+    "test_show_hide_hooks::an_empty_widgets_hide_and_show_handlers_run_when_it_is_hidden_and_shown::SB": "pass",
+    "test_show_hide_hooks::an_empty_widgets_hide_and_show_handlers_run_when_it_is_hidden_and_shown::TB": "pass",
+    "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::SB": "pass",
+    "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::TB": "pass"
   }
 }

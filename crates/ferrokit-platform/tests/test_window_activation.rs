@@ -125,6 +125,83 @@ mod win32 {
         w.hide();
         assert!(!PlatformWindow::is_active(&w));
     }
+
+    #[test]
+    fn request_activate_window_makes_a_visible_window_the_foreground_window() {
+        let a = NativeWindow::new("a", rect(), WindowFlags::FRAMELESS).unwrap();
+        let b = NativeWindow::new("b", rect(), WindowFlags::FRAMELESS).unwrap();
+        a.show();
+        b.show();
+        if !take_foreground(&a) {
+            eprintln!("{SKIP}");
+            return;
+        }
+        assert!(!PlatformWindow::is_active(&b));
+
+        // This process holds the foreground, so the system lets it hand the foreground on.
+        PlatformWindow::request_activate_window(&b);
+        assert_eq!(foreground(), b.hwnd() as isize);
+        assert!(PlatformWindow::is_active(&b));
+        assert!(!PlatformWindow::is_active(&a));
+    }
+
+    #[test]
+    fn request_activate_window_does_nothing_for_a_hidden_window() {
+        let owner = NativeWindow::new("owner", rect(), WindowFlags::FRAMELESS).unwrap();
+        owner.show();
+        if !take_foreground(&owner) {
+            eprintln!("{SKIP}");
+            return;
+        }
+        let hidden = NativeWindow::new("hidden", rect(), WindowFlags::FRAMELESS).unwrap();
+        PlatformWindow::request_activate_window(&hidden);
+        assert_eq!(foreground(), owner.hwnd() as isize);
+        assert!(!PlatformWindow::is_active(&hidden));
+    }
+
+    #[test]
+    fn request_activate_window_does_not_activate_a_tooltip_window() {
+        let owner = NativeWindow::new("owner", rect(), WindowFlags::FRAMELESS).unwrap();
+        owner.show();
+        if !take_foreground(&owner) {
+            eprintln!("{SKIP}");
+            return;
+        }
+        let tip = NativeWindow::new("tip", rect(), WindowFlags::TOOLTIP).unwrap();
+        PlatformWindow::show(&tip);
+        PlatformWindow::request_activate_window(&tip);
+        assert_eq!(foreground(), owner.hwnd() as isize);
+        assert!(!PlatformWindow::is_active(&tip));
+    }
+
+    #[test]
+    fn raise_puts_the_window_above_another_without_activating_it() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GW_HWNDNEXT};
+        // Whether `upper` is above `lower` in the system z-order.
+        let is_above = |upper: &NativeWindow, lower: &NativeWindow| {
+            let mut cur = unsafe { GetWindow(upper.hwnd(), GW_HWNDNEXT) };
+            while !cur.is_null() {
+                if cur == lower.hwnd() {
+                    return true;
+                }
+                cur = unsafe { GetWindow(cur, GW_HWNDNEXT) };
+            }
+            false
+        };
+        let a = NativeWindow::new("a", rect(), WindowFlags::FRAMELESS).unwrap();
+        let b = NativeWindow::new("b", rect(), WindowFlags::FRAMELESS).unwrap();
+        a.show();
+        b.show();
+        assert!(is_above(&b, &a), "control: the window shown last is on top");
+        let before = foreground();
+
+        PlatformWindow::raise(&a);
+        assert!(is_above(&a, &b));
+        assert_eq!(foreground(), before, "raise does not activate");
+
+        PlatformWindow::raise(&b);
+        assert!(is_above(&b, &a));
+    }
 }
 
 // ---- Simulated backends: activation comes from the focus events the window system delivers ----
@@ -248,4 +325,16 @@ fn a_tooltip_window_is_not_activated_by_being_shown_on_any_backend() {
     let w = WaylandNativeWindow::new_offscreen("w", rect(), WindowFlags::TOOLTIP).unwrap();
     w.show();
     assert!(!w.is_active());
+}
+
+#[test]
+fn a_backend_without_a_window_system_ignores_raise_and_activation_requests() {
+    let mut g = GenericWindow::new("g", rect(), WindowFlags::NORMAL);
+    g.set_event_handler(noop_handler());
+    g.show();
+    g.raise();
+    g.request_activate_window();
+    g.poll_events();
+    assert!(g.is_visible());
+    assert!(!g.is_active(), "activation arrives as a focus event, never from the request itself");
 }
