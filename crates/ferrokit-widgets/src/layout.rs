@@ -111,6 +111,31 @@ pub trait Layout: 'static {
     fn widgets(&self) -> Vec<WidgetRef> {
         Vec::new()
     }
+
+    /// The concrete layout, to reach what only it has (`QBoxLayout::insertWidget`, ...) once it
+    /// sits behind `Box<dyn Layout>`; see [`dyn Widget::with_layout_as`](crate::widget::Widget).
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// `QLayout::count`: the number of items (widgets, spacers and child layouts).
+    fn count(&self) -> usize {
+        self.widgets().len()
+    }
+
+    /// `QLayout::itemAt`: the widget of item `index`. A spacer or child layout item gives its
+    /// placeholder widget; `None` past the end.
+    fn item_at(&self, index: usize) -> Option<WidgetRef> {
+        self.widgets().into_iter().nth(index)
+    }
+
+    /// `QLayout::takeAt`: removes item `index` from the layout and returns its widget (the
+    /// widget is neither hidden nor destroyed). `None` past the end, or when the layout cannot
+    /// remove items.
+    fn take_at(&mut self, _index: usize) -> Option<WidgetRef> {
+        None
+    }
+
     fn set_margins(&mut self, margins: Margins);
 
     fn margins(&self) -> Margins;
@@ -464,6 +489,22 @@ impl BoxLayout {
 }
 
 impl Layout for BoxLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn count(&self) -> usize {
+        self.items.len()
+    }
+
+    fn take_at(&mut self, index: usize) -> Option<WidgetRef> {
+        self.remove_widget(index)
+    }
+
     fn geometry(&self) -> Rect {
         self.geometry
     }
@@ -1371,6 +1412,20 @@ impl Default for GridLayout {
 }
 
 impl Layout for GridLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn take_at(&mut self, index: usize) -> Option<WidgetRef> {
+        let widget = self.items.get(index)?.widget.clone();
+        GridLayout::remove_widget(self, &widget);
+        Some(widget)
+    }
+
     fn geometry(&self) -> Rect {
         self.geometry
     }

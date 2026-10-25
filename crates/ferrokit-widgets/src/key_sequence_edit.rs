@@ -881,6 +881,8 @@ impl Drop for KeySequenceEdit {
 }
 
 impl QObject for KeySequenceEdit {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }

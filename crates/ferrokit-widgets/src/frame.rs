@@ -494,6 +494,8 @@ impl Frame {
 }
 
 impl QObject for Frame {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
@@ -634,7 +636,7 @@ impl Widget for Frame {
     }
 
     fn layout_ref_mut(&self) -> Option<std::cell::RefMut<'_, Box<dyn Layout>>> {
-        let borrow = self.base.layout.borrow_mut();
+        let borrow = self.base.layout.try_borrow_mut().ok()?;
         if borrow.is_some() {
             Some(std::cell::RefMut::map(borrow, |opt| opt.as_mut().unwrap()))
         } else {

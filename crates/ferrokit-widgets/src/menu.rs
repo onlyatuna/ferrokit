@@ -1761,6 +1761,8 @@ impl Default for Menu {
 }
 
 impl QObject for Menu {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }

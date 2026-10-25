@@ -107,6 +107,28 @@ pub fn notify_borrowed<T: QObject + ?Sized>(receiver: &mut T, event: &mut Event)
     receiver.event(event)
 }
 
+/// `notify_borrowed` that runs `after_app_filters` between the application filters and the
+/// receiver's object filters, where `QApplicationPrivate::notify_helper` does its own work for
+/// widgets (qapplication.cpp:3236-3260: the `WA_UnderMouse` toggle). Not run when an application
+/// filter consumes the event.
+pub fn notify_borrowed_with<T: QObject + ?Sized>(
+    receiver: &mut T,
+    event: &mut Event,
+    after_app_filters: impl FnOnce(&mut T, &Event),
+) -> bool {
+    let _scope = ScopeLevelGuard::enter();
+    let id = receiver.object_data().id();
+    if app_filters_consumed(id, event) {
+        return true;
+    }
+    after_app_filters(receiver, event);
+    let object_slot = |index: usize| receiver.object_data().event_filters.slot_at(index);
+    if consumed_by_filter_chain(object_slot, id, event) {
+        return true;
+    }
+    receiver.event(event)
+}
+
 /// Outcome of delivering a timer tick to its receiver.
 pub enum TimerDelivery {
     /// An application or object filter consumed the `Timer` event; `event()` did not run.

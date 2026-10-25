@@ -375,6 +375,14 @@ pub enum EventKind {
     StyleChange,
     /// The widget's tooltip changed (`QEvent::ToolTipChange`, qwidget.cpp:11798-11799).
     ToolTipChange,
+    /// The widget is polished (`QEvent::Polish`, sent once by `QWidget::ensurePolished`).
+    Polish,
+    /// A child widget has been polished (`QChildEvent` of `QEvent::ChildPolished`).
+    ChildPolished {
+        child_id: ObjectId,
+    },
+    /// The widget's stacking order changed (`QEvent::ZOrderChange`, `QWidget::raise`/`lower`).
+    ZOrderChange,
 }
 
 impl fmt::Debug for EventKind {
@@ -719,6 +727,11 @@ impl fmt::Debug for EventKind {
             EventKind::FontChange => write!(f, "FontChange"),
             EventKind::StyleChange => write!(f, "StyleChange"),
             EventKind::ToolTipChange => write!(f, "ToolTipChange"),
+            EventKind::Polish => write!(f, "Polish"),
+            EventKind::ChildPolished { child_id } => {
+                write!(f, "ChildPolished(child={:?})", child_id)
+            }
+            EventKind::ZOrderChange => write!(f, "ZOrderChange"),
         }
     }
 }
@@ -778,6 +791,9 @@ impl EventKind {
             EventKind::FontChange => EventType::FontChange,
             EventKind::StyleChange => EventType::StyleChange,
             EventKind::ToolTipChange => EventType::ToolTipChange,
+            EventKind::Polish => EventType::Polish,
+            EventKind::ChildPolished { .. } => EventType::ChildPolished,
+            EventKind::ZOrderChange => EventType::ZOrderChange,
             EventKind::TabletPress { .. } => EventType::TabletPress,
             EventKind::TabletMove { .. } => EventType::TabletMove,
             EventKind::TabletRelease { .. } => EventType::TabletRelease,
