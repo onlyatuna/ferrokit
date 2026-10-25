@@ -570,7 +570,7 @@ pub mod cocoa {
         }
 
         fn create_hotkey_manager(&self) -> Result<Box<dyn PlatformHotkeyManager>, &'static str> {
-            Ok(Box::new(CocoaHotkeyManager::new()))
+            CocoaHotkeyManager::try_new().map(|m| Box::new(m) as Box<dyn PlatformHotkeyManager>)
         }
 
         fn cursor(&self) -> Box<dyn PlatformCursor> {
