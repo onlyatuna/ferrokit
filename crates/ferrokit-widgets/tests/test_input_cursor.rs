@@ -626,6 +626,22 @@ fn hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override() 
 }
 
 #[test]
+fn hiding_an_ancestor_from_the_grabbers_own_handler_releases_the_grab() {
+    use ferrokit_widgets::set_widget_visible;
+    let _g = install();
+    let f = fixture();
+    let inner = child(&f.a, Rect::new(5, 5, 20, 20));
+    let mut f = f;
+    f.win.show();
+
+    inner.borrow().grab_mouse();
+    // `inner` is mutably borrowed, as while its mouse handler runs, and hides its parent.
+    let _handler_scope = inner.borrow_mut();
+    set_widget_visible(&f.a, false);
+    assert!(ferrokit_widgets::widget::mouse_grabber_id().is_none());
+}
+
+#[test]
 fn hiding_the_window_releases_the_grab() {
     let _g = install();
     let mut f = fixture();

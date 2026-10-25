@@ -597,6 +597,8 @@ impl ScrollArea {
     fn sync_content(&self) {
         if self.content_resized.get() && !self.updating.get() {
             self.update_scrollbars();
+            // The bars may have moved or appeared; nothing else asks for a repaint of them.
+            self.update();
         }
     }
 

@@ -1161,6 +1161,8 @@
     "test_input_cursor::a_native_override_is_applied_only_to_the_window_under_the_pointer::TB": "pass",
     "test_input_cursor::hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override::SB": "pass",
     "test_input_cursor::hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override::TB": "pass",
+    "test_input_cursor::hiding_an_ancestor_from_the_grabbers_own_handler_releases_the_grab::SB": "pass",
+    "test_input_cursor::hiding_an_ancestor_from_the_grabbers_own_handler_releases_the_grab::TB": "pass",
     "test_input_cursor::hiding_the_window_releases_the_grab::SB": "pass",
     "test_input_cursor::hiding_the_window_releases_the_grab::TB": "pass",
     "test_input_cursor::losing_the_native_capture_ends_the_widget_grab::SB": "pass",

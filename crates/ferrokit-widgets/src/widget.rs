@@ -1182,11 +1182,14 @@ pub(crate) fn release_grab_in_subtree(widget: &WidgetRef) {
     }
 }
 
-/// Whether `widget` or a widget below it has `id`; a widget that is borrowed mutably right now is
-/// skipped (it is the one running this call, and `widget` itself was readable).
+/// Whether `widget` or a widget below it has `id`. A widget that is borrowed mutably right now is
+/// running a handler, so its id cannot be read; it counts as a match, because the grabber is the
+/// widget whose handler is on the stack when a grab ends in a hide. In the rare case that it is
+/// not the grabber, the grab ends early (the window keeps the automatic capture of a pressed
+/// button); skipping a borrowed grabber left the grab set on a hidden widget.
 fn subtree_contains(widget: &WidgetRef, id: ObjectId) -> bool {
     let Ok(w) = widget.try_borrow() else {
-        return false;
+        return true;
     };
     w.id() == id || w.children().iter().any(|c| subtree_contains(c, id))
 }
