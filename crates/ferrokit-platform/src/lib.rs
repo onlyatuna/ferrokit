@@ -49,6 +49,7 @@ pub mod tray;
 pub mod tray_icon;
 pub mod window;
 pub mod window_cocoa;
+pub mod window_cocoa_input;
 pub mod window_system_interface;
 pub mod window_wayland;
 pub mod window_x11;

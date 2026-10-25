@@ -1153,6 +1153,7 @@ fn test_macos_objc_runtime_and_cocoa_window_lifecycle() {
         y: 120.0,
         delta_x: 0.0,
         delta_y: -15.0,
+        modifiers: 0,
     }));
     assert!(win.dispatch_cocoa_event(CocoaNativeEvent::WindowResized {
         width: 800.0,

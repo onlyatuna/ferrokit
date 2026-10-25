@@ -473,16 +473,16 @@ pub mod cocoa_cursor {
             self.current_shape
         }
 
-        pub fn set_shape(shape: CursorShape) {
-            let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
-            let sel_name = match shape {
+        /// The `NSCursor` class method that returns the cursor for `shape`
+        /// (`QCocoaCursor::createCursorFromShape`, qcocoacursor.mm:103-146).
+        pub fn ns_cursor_selector(shape: CursorShape) -> &'static str {
+            match shape {
                 CursorShape::Arrow => "arrowCursor",
                 CursorShape::PointingHand => "pointingHandCursor",
                 CursorShape::IBeam => "IBeamCursor",
                 CursorShape::SizeHor => "resizeLeftRightCursor",
                 CursorShape::SizeVer => "resizeUpDownCursor",
                 CursorShape::Cross => "crosshairCursor",
-                // `QCocoaCursor::createCursorFromShape` (qcocoacursor.mm:103-146).
                 CursorShape::Forbidden => "operationNotAllowedCursor",
                 CursorShape::SplitV => "resizeUpDownCursor",
                 CursorShape::SplitH => "resizeLeftRightCursor",
@@ -492,7 +492,12 @@ pub mod cocoa_cursor {
                 CursorShape::DragCopy => "dragCopyCursor",
                 CursorShape::DragLink => "dragLinkCursor",
                 _ => "arrowCursor",
-            };
+            }
+        }
+
+        pub fn set_shape(shape: CursorShape) {
+            let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
+            let sel_name = Self::ns_cursor_selector(shape);
             let cursor = unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register(sel_name)) };
             if !cursor.is_nil() {
                 unsafe { ObjcMsg::send_0(cursor, Sel::register("set")) };

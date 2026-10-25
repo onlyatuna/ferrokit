@@ -237,7 +237,9 @@ mod objc {
     use std::ffi::{c_char, CStr};
     use std::sync::OnceLock;
 
-    use ferrokit_platform::objc_runtime::{nsstring_from_str, CGRect, Class, Id, ObjcMsg, Sel};
+    use ferrokit_platform::objc_runtime::{
+        nsstring_from_str, CGPoint, CGRect, Class, Id, ObjcMsg, Sel,
+    };
 
     type Preprocessor = extern "C" fn(Id) -> Id;
 
@@ -311,6 +313,86 @@ mod objc {
             .collect()
     }
 
+    /// `+[NSEvent mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:
+    /// eventNumber:clickCount:pressure:]`: a mouse event of `kind` (an `NSEventType`) at `(x, y)`
+    /// in window coordinates, whose origin is the bottom-left corner of the window.
+    pub fn mouse_event(kind: usize, x: f64, y: f64, flags: usize) -> Id {
+        let selector = Sel::register(
+            "mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:",
+        );
+        // SAFETY: the selector takes exactly these argument types (`NSEventType`, `NSPoint`,
+        // `NSEventModifierFlags`, `NSTimeInterval`, `NSInteger`, `id`, `NSInteger`, `NSInteger`,
+        // `float`) and returns the autoreleased event.
+        unsafe {
+            let f: extern "C" fn(
+                Id,
+                Sel,
+                usize,
+                CGPoint,
+                usize,
+                f64,
+                isize,
+                Id,
+                isize,
+                isize,
+                f32,
+            ) -> Id = std::mem::transmute(objc_msgSend as *const ());
+            f(
+                class("NSEvent"),
+                selector,
+                kind,
+                CGPoint::new(x, y),
+                flags,
+                0.0,
+                0,
+                Id::NIL,
+                0,
+                1,
+                1.0,
+            )
+        }
+    }
+
+    /// `+[NSEvent keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:
+    /// characters:charactersIgnoringModifiers:isARepeat:keyCode:]` for a key press or release
+    /// (`kind` 10 or 11) of the key `key_code` that types `characters`.
+    pub fn key_event(kind: usize, flags: usize, characters: &str, key_code: u16) -> Id {
+        let selector = Sel::register(
+            "keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:",
+        );
+        // SAFETY: as for `mouse_event`; the strings are `NSString`s that outlive the call.
+        unsafe {
+            let f: extern "C" fn(
+                Id,
+                Sel,
+                usize,
+                CGPoint,
+                usize,
+                f64,
+                isize,
+                Id,
+                Id,
+                Id,
+                i8,
+                u16,
+            ) -> Id = std::mem::transmute(objc_msgSend as *const ());
+            f(
+                class("NSEvent"),
+                selector,
+                kind,
+                CGPoint::new(0.0, 0.0),
+                flags,
+                0.0,
+                0,
+                Id::NIL,
+                ns_string(characters),
+                ns_string(characters),
+                0,
+                key_code,
+            )
+        }
+    }
+
     static CHECK_NAME: OnceLock<String> = OnceLock::new();
     static PREVIOUS: OnceLock<Option<Preprocessor>> = OnceLock::new();
 
@@ -353,12 +435,14 @@ mod checks {
     use std::fmt::Debug;
     use std::sync::{Arc, Mutex};
 
+    use ferrokit_core::event::MouseButtons;
     use ferrokit_gui::geometry::primitives::{Point, Rect};
+    use ferrokit_gui::geometry::Region;
     use ferrokit_gui::paint::Pixmap;
     use ferrokit_gui::tiny_skia::Color;
     use ferrokit_platform::backdrop::BackdropType;
     use ferrokit_platform::menu::{CocoaMenu, PlatformMenu};
-    use ferrokit_platform::objc_runtime::{CGRect, CGSize, Id};
+    use ferrokit_platform::objc_runtime::{CGRect, CGSize, Id, Sel};
     use ferrokit_platform::theme::PlatformTheme;
     use ferrokit_platform::tray::{CocoaStatusItem, PlatformTrayIcon};
     use ferrokit_platform::{
@@ -369,7 +453,10 @@ mod checks {
     };
 
     use super::cg;
-    use super::objc::{array, class, is_kind_of, ns_string, rect, send, send1, send2, string, yes};
+    use super::objc::{
+        array, class, is_kind_of, key_event, mouse_event, ns_string, rect, send, send1, send2,
+        string, yes,
+    };
 
     /// Soft assertions: every result is printed and the check runs to the end.
     #[derive(Default)]
@@ -560,6 +647,41 @@ mod checks {
             name: "cursor_shape",
             origin: "test_platform_modern_features::test_cross_platform_cursor_shapes",
             run: cursor_shape,
+        },
+        CheckDef {
+            name: "window_view_methods",
+            origin: "new: QNSView overrides the input methods, takes first responder and tracks the pointer",
+            run: window_view_methods,
+        },
+        CheckDef {
+            name: "window_native_mouse_events",
+            origin: "test_cocoa_window_input::mouse_press_and_release_report_top_left_logical_positions_and_every_button, ::control_click_is_a_right_click_and_its_release_matches",
+            run: window_native_mouse_events,
+        },
+        CheckDef {
+            name: "window_native_key_events",
+            origin: "test_cocoa_window_input::key_down_goes_through_the_input_method_unless_it_is_a_shortcut",
+            run: window_native_key_events,
+        },
+        CheckDef {
+            name: "window_flags_native",
+            origin: "test_cocoa_window_methods::window_flags_change_style_level_tool_behaviour_and_click_through",
+            run: window_flags_native,
+        },
+        CheckDef {
+            name: "window_transient_parent_native",
+            origin: "test_cocoa_window_methods::transient_parent_attaches_the_window_as_a_child_window",
+            run: window_transient_parent_native,
+        },
+        CheckDef {
+            name: "window_mask_native",
+            origin: "test_cocoa_window_methods::mask_clips_the_content_layer_to_the_region_and_makes_the_window_see_through",
+            run: window_mask_native,
+        },
+        CheckDef {
+            name: "window_backdrop_suspend_native",
+            origin: "test_cocoa_window_methods::suspending_acrylic_makes_the_effect_view_inactive_and_resuming_makes_it_active_again",
+            run: window_backdrop_suspend_native,
         },
         CheckDef {
             name: "integration_factory",
@@ -987,6 +1109,7 @@ mod checks {
                 y: 120.0,
                 delta_x: 0.0,
                 delta_y: -15.0,
+                modifiers: 0,
             },
             CocoaNativeEvent::WindowResized {
                 width: 800.0,
@@ -1752,5 +1875,287 @@ mod checks {
             scheme != ColorScheme::Unknown,
             "theme().color_scheme() is known",
         );
+    }
+
+    /// A window whose events are recorded, for the checks that feed `NSEvent`s to its view.
+    fn recorded_window(
+        flags: WindowFlags,
+    ) -> (CocoaNativeWindow, Arc<Mutex<Vec<WindowSystemEvent>>>) {
+        let mut win = window("input", Rect::new(100, 100, 600, 400), flags);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |event| {
+            sink.lock().unwrap().push(event)
+        })));
+        (win, log)
+    }
+
+    fn summarize(event: &WindowSystemEvent) -> String {
+        match event {
+            WindowSystemEvent::MousePress {
+                pos,
+                global_pos,
+                button,
+                modifiers,
+                ..
+            } => format!(
+                "press {button:?} pos({},{}) global({},{}) control={}",
+                pos.x, pos.y, global_pos.x, global_pos.y, modifiers.control
+            ),
+            WindowSystemEvent::MouseRelease { button, .. } => format!("release {button:?}"),
+            WindowSystemEvent::MouseMove { pos, buttons, .. } => format!(
+                "move pos({},{}) left={}",
+                pos.x,
+                pos.y,
+                buttons.contains(MouseButtons::LEFT)
+            ),
+            WindowSystemEvent::KeyPress {
+                key,
+                modifiers,
+                is_repeat,
+            } => format!(
+                "key press {key:#x} control={} repeat={is_repeat}",
+                modifiers.control
+            ),
+            WindowSystemEvent::KeyRelease { key, modifiers } => {
+                format!("key release {key:#x} control={}", modifiers.control)
+            }
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// `QNSView`'s own implementations of the input methods (not NSResponder's), the keyboard
+    /// focus the content view takes, and the tracking area that makes the pointer reach it.
+    fn window_view_methods(t: &mut Recorder) {
+        let win = window(
+            "view",
+            Rect::new(100, 100, 600, 400),
+            WindowFlags::FRAMELESS,
+        );
+        let (view, w) = (win.ns_view(), win.ns_window());
+        for selector in [
+            "mouseDown:",
+            "mouseUp:",
+            "mouseDragged:",
+            "mouseMoved:",
+            "mouseEntered:",
+            "mouseExited:",
+            "rightMouseDown:",
+            "rightMouseUp:",
+            "rightMouseDragged:",
+            "otherMouseDown:",
+            "otherMouseUp:",
+            "otherMouseDragged:",
+            "scrollWheel:",
+            "keyDown:",
+            "keyUp:",
+            "flagsChanged:",
+            "cursorUpdate:",
+            "resetCursorRects",
+            "updateTrackingAreas",
+            "insertText:replacementRange:",
+            "setMarkedText:selectedRange:replacementRange:",
+            "unmarkText",
+            "hasMarkedText",
+            "markedRange",
+            "firstRectForCharacterRange:actualRange:",
+        ] {
+            let sel = Sel::register(selector);
+            let own: usize = send1(view, "methodForSelector:", sel);
+            let inherited: usize = send1(class("NSView"), "instanceMethodForSelector:", sel);
+            t.expect(own != inherited, &format!("QNSView implements {selector}"));
+        }
+        t.expect(yes(view, "acceptsFirstResponder"), "[view acceptsFirstResponder]");
+        t.eq(
+            "[window firstResponder] is the content view",
+            send::<Id>(w, "firstResponder"),
+            view,
+        );
+        // Qt: QNSWindow can become key even without a title bar; a tooltip cannot.
+        t.expect(
+            yes(w, "canBecomeKeyWindow"),
+            "[window canBecomeKeyWindow] of a frameless window",
+        );
+        let tip = window("tip", Rect::new(100, 100, 50, 20), WindowFlags::TOOLTIP);
+        t.expect(
+            !yes(tip.ns_window(), "canBecomeKeyWindow"),
+            "[window canBecomeKeyWindow] of a tooltip",
+        );
+        // Qt: entered/exited, moved and cursor updates, while the application is active, over
+        // the visible rect (NSTrackingMouseEnteredAndExited | MouseMoved | CursorUpdate |
+        // ActiveInActiveApp | InVisibleRect).
+        let areas: Vec<Id> = array(send(view, "trackingAreas"))
+            .into_iter()
+            .filter(|&area| send::<Id>(area, "owner") == view)
+            .collect();
+        t.eq("tracking areas owned by the view", areas.len(), 1);
+        if let Some(&area) = areas.first() {
+            let options: usize = send(area, "options");
+            t.eq(
+                "[trackingArea options] contains Qt's",
+                options & 0x247,
+                0x247,
+            );
+        }
+    }
+
+    /// Real `NSEvent`s through the real view methods: position flipped to the top-left origin,
+    /// the screen position in Qt's desktop coordinates, buttons and modifiers.
+    fn window_native_mouse_events(t: &mut Recorder) {
+        let (win, log) = recorded_window(WindowFlags::FRAMELESS);
+        let view = win.ns_view();
+        let frame = rect(win.ns_window(), "frame");
+        // (50, 80) from the top-left corner is (50, 400 - 80) from the window's bottom left.
+        let global_x = (frame.origin.x + 50.0).floor() as i32;
+        let global_y = (primary_screen_height() - (frame.origin.y + 320.0)).floor() as i32;
+        let deliver = |selector: &str, kind: usize, flags: usize| {
+            send1::<Id, ()>(view, selector, mouse_event(kind, 50.0, 320.0, flags));
+        };
+        const COMMAND: usize = 1 << 20;
+        deliver("mouseDown:", 1, 0);
+        deliver("mouseDragged:", 6, 0);
+        deliver("mouseUp:", 2, 0);
+        deliver("rightMouseDown:", 3, 0);
+        deliver("rightMouseUp:", 4, 0);
+        deliver("mouseDown:", 1, COMMAND);
+        deliver("mouseUp:", 2, 0);
+        deliver("mouseMoved:", 5, 0);
+        let seen: Vec<String> = log.lock().unwrap().iter().map(summarize).collect();
+        let at = format!("pos(50,80) global({global_x},{global_y})");
+        t.eq(
+            "events from the view's mouse methods",
+            seen,
+            vec![
+                format!("press Left {at} control=false"),
+                "move pos(50,80) left=true".to_string(),
+                "release Left".to_string(),
+                format!("press Right {at} control=false"),
+                "release Right".to_string(),
+                // Command is Qt's Control modifier.
+                format!("press Left {at} control=true"),
+                "release Left".to_string(),
+                "move pos(50,80) left=false".to_string(),
+            ],
+        );
+    }
+
+    /// Real key `NSEvent`s through `keyDown:`: a shortcut skips the input method, the other
+    /// keys go through the real `interpretKeyEvents:` and `NSTextInputClient` methods, which
+    /// drop plain ASCII text (the key press carries it).
+    fn window_native_key_events(t: &mut Recorder) {
+        let (win, log) = recorded_window(WindowFlags::FRAMELESS);
+        let view = win.ns_view();
+        const COMMAND: usize = 1 << 20;
+        send1::<Id, ()>(view, "keyDown:", key_event(10, COMMAND, "c", 8));
+        send1::<Id, ()>(view, "keyUp:", key_event(11, COMMAND, "c", 8));
+        send1::<Id, ()>(view, "keyDown:", key_event(10, 0, "\r", 0x24));
+        send1::<Id, ()>(view, "keyDown:", key_event(10, 0, "a", 0));
+        let seen: Vec<String> = log.lock().unwrap().iter().map(summarize).collect();
+        t.eq(
+            "events from the view's key methods",
+            seen,
+            vec![
+                "key press 0x43 control=true repeat=false".to_string(),
+                "key release 0x43 control=true".to_string(),
+                "key press 0x1000004 control=false repeat=false".to_string(),
+                "key press 0x41 control=false repeat=false".to_string(),
+            ],
+        );
+    }
+
+    fn window_flags_native(t: &mut Recorder) {
+        let mut win = window("flags", Rect::new(100, 100, 300, 200), WindowFlags::NORMAL);
+        let w = win.ns_window();
+        let titled = || send::<usize>(w, "styleMask") & 0xF == 0xF;
+        t.expect(titled(), "a normal window has the title bar controls");
+        win.set_window_flag(WindowFlags::FRAMELESS, true);
+        t.eq("[window styleMask] frameless", send::<usize>(w, "styleMask"), 0);
+        win.set_window_flag(WindowFlags::FRAMELESS, false);
+        t.expect(titled(), "the title bar controls come back");
+        win.set_window_flag(WindowFlags::TOOL, true);
+        t.eq("[window level] of a tool window", send::<isize>(w, "level"), 3);
+        t.expect(yes(w, "hidesOnDeactivate"), "[window hidesOnDeactivate] for Tool");
+        win.set_window_flag(WindowFlags::STAYS_ON_TOP, true);
+        t.eq("[window level] stays on top", send::<isize>(w, "level"), 8);
+        win.set_window_flag(WindowFlags::STAYS_ON_TOP, false);
+        win.set_window_flag(WindowFlags::TOOL, false);
+        t.eq("[window level] back to normal", send::<isize>(w, "level"), 0);
+        t.expect(!yes(w, "hidesOnDeactivate"), "[window hidesOnDeactivate] off again");
+        win.set_window_flag(WindowFlags::CLICK_THROUGH, true);
+        t.expect(yes(w, "ignoresMouseEvents"), "[window ignoresMouseEvents]");
+        t.eq(
+            "flags()",
+            win.flags(),
+            WindowFlags::CLICK_THROUGH,
+        );
+    }
+
+    fn window_transient_parent_native(t: &mut Recorder) {
+        let parent = window("parent", Rect::new(100, 100, 300, 200), WindowFlags::NORMAL);
+        let mut child = window("child", Rect::new(150, 150, 200, 100), WindowFlags::NORMAL);
+        let (p, c) = (parent.ns_window(), child.ns_window());
+        child.set_transient_parent(Some(parent.native_handle()));
+        t.eq("[child parentWindow]", send::<Id>(c, "parentWindow"), p);
+        t.expect(
+            array(send(p, "childWindows")).contains(&c),
+            "[parent childWindows] contains the child",
+        );
+        t.eq(
+            "transient_parent()",
+            child.transient_parent(),
+            Some(parent.native_handle()),
+        );
+        child.set_transient_parent(None);
+        t.expect(
+            send::<Id>(c, "parentWindow").is_nil(),
+            "[child parentWindow] is nil after detaching",
+        );
+        child.set_transient_parent(Some(parent.native_handle()));
+        drop(child);
+        t.eq(
+            "[parent childWindows] after the child is dropped",
+            array(send(p, "childWindows")).len(),
+            0,
+        );
+    }
+
+    fn window_mask_native(t: &mut Recorder) {
+        let mut win = window("mask", Rect::new(100, 100, 300, 200), WindowFlags::FRAMELESS);
+        let w = win.ns_window();
+        let layer: Id = send(win.ns_view(), "layer");
+        let was_opaque = yes(w, "isOpaque");
+        t.expect(send::<Id>(layer, "mask").is_nil(), "no layer mask before");
+        win.set_mask(&Region::from_rect(Rect::new(10, 10, 100, 100)));
+        t.expect(
+            is_kind_of(send(layer, "mask"), "CAShapeLayer"),
+            "[layer mask] is a CAShapeLayer",
+        );
+        t.expect(!yes(w, "isOpaque"), "the masked window is see-through");
+        win.set_mask(&Region::from_rects(&[]));
+        t.expect(send::<Id>(layer, "mask").is_nil(), "[layer mask] is nil again");
+        t.eq("[window isOpaque] restored", yes(w, "isOpaque"), was_opaque);
+    }
+
+    fn window_backdrop_suspend_native(t: &mut Recorder) {
+        let mut win = window(
+            "CocoaHUD",
+            Rect::new(50, 50, 600, 400),
+            WindowFlags::FRAMELESS,
+        );
+        t.expect(win.set_backdrop(BackdropType::Acrylic, true), "Acrylic applied");
+        let views = effect_views(win.ns_window());
+        t.eq("effect views", views.len(), 1);
+        let Some(&view) = views.first() else {
+            return;
+        };
+        t.expect(win.suspend_backdrop(), "suspend_backdrop() changes the backdrop");
+        t.eq("[effectView state] while suspended (Inactive)", send::<isize>(view, "state"), 2);
+        t.eq(
+            "effect views while suspended",
+            effect_views(win.ns_window()).len(),
+            1,
+        );
+        t.expect(win.resume_backdrop(), "resume_backdrop() changes the backdrop");
+        t.eq("[effectView state] after resuming (Active)", send::<isize>(view, "state"), 1);
     }
 }

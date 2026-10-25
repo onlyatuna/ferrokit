@@ -175,6 +175,46 @@ impl CocoaLayerSurface {
 
         Ok(())
     }
+
+    /// Copies the `rects` of `pixmap` (physical pixels) into the frame and shows it, committing
+    /// once. A pixmap of another size replaces the whole frame, resizing it; `rects` that miss the
+    /// frame show nothing new. The pixmap is only read, so no copy of it is needed.
+    pub fn present_region(&mut self, pixmap: &Pixmap, rects: &[Rect]) -> Result<(), &'static str> {
+        let (width, height) = (pixmap.physical_width(), pixmap.physical_height());
+        let src = pixmap.data();
+        if width != self.width || height != self.height {
+            self.resize(width, height)?;
+            let len = src.len().min(self.pixel_buffer.len());
+            self.pixel_buffer[..len].copy_from_slice(&src[..len]);
+            return self.commit_to_layer();
+        }
+        let frame = Rect::new(0, 0, width as i32, height as i32);
+        let stride = width as usize * 4;
+        let mut copied = false;
+        for rect in rects {
+            let clipped = frame.intersected(rect);
+            if clipped.is_empty() {
+                continue;
+            }
+            copied = true;
+            let column = clipped.x as usize * 4;
+            let row_bytes = clipped.width as usize * 4;
+            for y in clipped.y..clipped.y + clipped.height {
+                let offset = y as usize * stride + column;
+                if let (Some(dst), Some(row)) = (
+                    self.pixel_buffer.get_mut(offset..offset + row_bytes),
+                    src.get(offset..offset + row_bytes),
+                ) {
+                    dst.copy_from_slice(row);
+                }
+            }
+        }
+        if copied {
+            self.commit_to_layer()
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl PlatformSurface for CocoaLayerSurface {

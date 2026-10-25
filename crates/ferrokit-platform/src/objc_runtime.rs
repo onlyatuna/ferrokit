@@ -5,6 +5,8 @@ use std::ffi::c_void;
 use std::ffi::{c_char, CString};
 use std::sync::{LazyLock, Mutex};
 
+pub mod appkit;
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(pub *mut c_void);
@@ -211,6 +213,7 @@ pub fn qnsview_class() -> Class {
             is_flipped as *const c_void,
             native_bindings::method_getTypeEncoding(inherited),
         );
+        appkit::install_view_methods(class);
         native_bindings::objc_registerClassPair(class);
         class as usize
     });
