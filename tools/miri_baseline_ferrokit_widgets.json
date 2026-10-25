@@ -1055,6 +1055,12 @@
     "test_window_mask_and_transient::setting_an_equal_mask_again_does_nothing::TB": "pass",
     "test_window_mask_and_transient::the_transient_parent_can_be_changed_and_removed::TB": "pass",
     "test_window_mask_and_transient::the_window_region_follows_a_ratio_change::TB": "pass",
-    "test_window_mask_and_transient::the_window_region_is_scaled_to_native_pixels::TB": "pass"
+    "test_window_mask_and_transient::the_window_region_is_scaled_to_native_pixels::TB": "pass",
+    "test_window_mask_and_transient::a_scanline_mask_paints_the_child_once_and_keeps_the_parent_beneath::SB": "pass",
+    "test_window_mask_and_transient::a_window_mask_that_grows_repaints_the_area_it_uncovers::SB": "pass",
+    "test_window_mask_and_transient::the_native_region_has_no_gaps_at_a_fractional_ratio::SB": "pass",
+    "test_window_mask_and_transient::a_scanline_mask_paints_the_child_once_and_keeps_the_parent_beneath::TB": "pass",
+    "test_window_mask_and_transient::a_window_mask_that_grows_repaints_the_area_it_uncovers::TB": "pass",
+    "test_window_mask_and_transient::the_native_region_has_no_gaps_at_a_fractional_ratio::TB": "pass"
   }
 }
