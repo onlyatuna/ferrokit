@@ -647,6 +647,17 @@ pub trait Widget: QObject + 'static {
 
     fn resize_event(&self, _new_size: Size, _old_size: Size) {}
 
+    /// `QWidget::showEvent`: the widget was shown (`Show`, sent for `set_widget_visible(true)`,
+    /// for a window shown with its children, and for the children of a window or widget that is
+    /// shown). Runs with the widget borrowed mutably; `QObject::event` of a widget that handles
+    /// events itself calls it for `EventKind::Show`.
+    fn show_event(&mut self) {}
+
+    /// `QWidget::hideEvent`: the widget was hidden (`Hide`), by itself or because its parent or
+    /// window was hidden. Runs with the widget borrowed mutably; `QObject::event` of a widget
+    /// that handles events itself calls it for `EventKind::Hide`.
+    fn hide_event(&mut self) {}
+
     /// A child of this widget changed size: the hook of `QObject::eventFilter` on the child's
     /// `Resize`, which `QScrollArea` uses to follow its content widget. Runs with this widget
     /// shared-borrowed; it is skipped while this widget is mutably borrowed.
@@ -876,7 +887,9 @@ pub trait Widget: QObject + 'static {
         self.widget_base().under_mouse.get()
     }
 
-    /// `QWidget::raise`: puts the widget on top of its siblings.
+    /// `QWidget::raise`: puts the widget on top of its siblings. On a window (a widget that is a
+    /// window's root) it puts the window above the other top-level windows in the window system's
+    /// stacking order, without activating it ([`activate_window`](Self::activate_window)).
     fn raise(&self) {
         restack(self, true);
     }
@@ -884,6 +897,18 @@ pub trait Widget: QObject + 'static {
     /// `QWidget::lower`: puts the widget below its siblings.
     fn lower(&self) {
         restack(self, false);
+    }
+
+    /// `QWidget::activateWindow`: asks the window system to make the window this widget is in the
+    /// active one. Nothing happens while the window is hidden or for a widget in no window. The
+    /// window system decides: on Windows the foreground lock lets only the foreground process take
+    /// the foreground, so for a background process this can do no more than flash the window's
+    /// taskbar button, as Qt documents. The window is active when `WindowActivate` arrives, which
+    /// may be after this call returns. A minimized window is not restored.
+    fn activate_window(&self) {
+        if let Some(id) = crate::window::window_id_of(self) {
+            crate::window::request_window_activation(id);
+        }
     }
 
     /// `QWidget::ensurePolished`: sends `Polish` once, then polishes the children, then tells the
@@ -1266,9 +1291,16 @@ fn tree_origin<W: Widget + ?Sized>(w: &W) -> (Point, Point) {
 
 /// `QWidget::raise` / `lower` (qwidget.cpp:12036-12066): moves the widget to the end (or start) of
 /// its parent's child list, repaints it and sends `ZOrderChange`. A widget without a parent is a
-/// window; its stacking belongs to the window system and nothing changes here.
+/// window root: raising it raises the native window, and nothing else changes here.
 fn restack<W: Widget + ?Sized>(w: &W, to_top: bool) {
     let Some(parent) = w.parent_widget().and_then(|p| p.upgrade()) else {
+        // A window root has no siblings: raising it orders its window among the top-level windows
+        // (`QWidget::raise` -> `QPlatformWindow::raise`). Lowering a window is not offered.
+        if to_top {
+            if let Some(window) = crate::window::window_id_if_root(w) {
+                crate::window::raise_window(window);
+            }
+        }
         return;
     };
     let id = w.id();
@@ -2056,11 +2088,16 @@ pub type PaintHandler = Box<dyn FnMut(&mut Painter) + 'static>;
 
 pub type ResizeHandler = Box<dyn FnMut(Size, Size) + 'static>;
 
+/// A callback for `Show` / `Hide` of an [`EmptyWidget`].
+pub type VisibilityHandler = Box<dyn FnMut() + 'static>;
+
 pub struct EmptyWidget {
     pub base: WidgetBase,
     pub background_color: Option<ferrokit_gui::tiny_skia::Color>,
     pub paint_handler: Option<PaintHandler>,
     pub resize_handler: RefCell<Option<ResizeHandler>>,
+    pub show_handler: RefCell<Option<VisibilityHandler>>,
+    pub hide_handler: RefCell<Option<VisibilityHandler>>,
 }
 
 pub type CustomWidget = EmptyWidget;
@@ -2072,6 +2109,8 @@ impl EmptyWidget {
             background_color: None,
             paint_handler: None,
             resize_handler: RefCell::new(None),
+            show_handler: RefCell::new(None),
+            hide_handler: RefCell::new(None),
         }
     }
 
@@ -2081,6 +2120,8 @@ impl EmptyWidget {
             background_color: None,
             paint_handler: None,
             resize_handler: RefCell::new(None),
+            show_handler: RefCell::new(None),
+            hide_handler: RefCell::new(None),
         }
     }
 
@@ -2135,6 +2176,23 @@ impl EmptyWidget {
 
     pub fn set_resize_handler<F: FnMut(Size, Size) + 'static>(&self, handler: F) {
         *self.resize_handler.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Runs `handler` for every `Show` this widget receives (what overriding
+    /// `QWidget::showEvent` does). It runs with the widget borrowed mutably, so it must not use
+    /// this widget; it may use others. It must not hide a widget whose own show or hide handler
+    /// is running (two handlers hiding each other would borrow a widget twice and panic).
+    pub fn set_show_handler<F: FnMut() + 'static>(&self, handler: F) {
+        *self.show_handler.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Runs `handler` for every `Hide` this widget receives (what overriding
+    /// `QWidget::hideEvent` does), whether the widget was hidden itself or with its parent or
+    /// window. It runs with the widget borrowed mutably, so it must not use this widget; it may
+    /// use others. It must not hide a widget whose own show or hide handler is running (two
+    /// handlers hiding each other would borrow a widget twice and panic).
+    pub fn set_hide_handler<F: FnMut() + 'static>(&self, handler: F) {
+        *self.hide_handler.borrow_mut() = Some(Box::new(handler));
     }
 }
 
@@ -2227,6 +2285,14 @@ impl QObject for EmptyWidget {
             }
             EventKind::KeyRelease { key, modifiers } => {
                 self.key_release_event(*key, *modifiers);
+                true
+            }
+            EventKind::Show => {
+                self.show_event();
+                true
+            }
+            EventKind::Hide => {
+                self.hide_event();
                 true
             }
             _ => false,
@@ -2468,6 +2534,22 @@ impl Widget for EmptyWidget {
             handler(painter);
         }
     }
+    fn show_event(&mut self) {
+        if let Ok(mut h) = self.show_handler.try_borrow_mut() {
+            if let Some(cb) = h.as_mut() {
+                cb();
+            }
+        }
+    }
+
+    fn hide_event(&mut self) {
+        if let Ok(mut h) = self.hide_handler.try_borrow_mut() {
+            if let Some(cb) = h.as_mut() {
+                cb();
+            }
+        }
+    }
+
     fn resize_event(&self, new_size: Size, old_size: Size) {
         if let Ok(mut h) = self.resize_handler.try_borrow_mut() {
             if let Some(cb) = h.as_mut() {
