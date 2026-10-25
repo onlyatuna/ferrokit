@@ -91,7 +91,8 @@
     "test_window_backdrop_suspend",
     "test_window_mask_and_transient",
     "test_input_cursor",
-    "test_show_hide_hooks"
+    "test_show_hide_hooks",
+    "test_window_activate_in_show_handler"
   ],
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -1176,6 +1177,8 @@
     "test_show_hide_hooks::an_empty_widgets_hide_and_show_handlers_run_when_it_is_hidden_and_shown::SB": "pass",
     "test_show_hide_hooks::an_empty_widgets_hide_and_show_handlers_run_when_it_is_hidden_and_shown::TB": "pass",
     "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::SB": "pass",
-    "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::TB": "pass"
+    "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::TB": "pass",
+    "test_window_activate_in_show_handler::activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_shown::SB": "pass",
+    "test_window_activate_in_show_handler::activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_shown::TB": "pass"
   }
 }
