@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::focus::{find_widget_by_id, FocusManager};
 use crate::popup::PopupManager;
-use crate::widget::WidgetRef;
+use crate::widget::{Widget, WidgetRef};
 use ferrokit_core::event::FocusReason;
 use ferrokit_core::event::{Event, EventKind, EventPointPos, MouseButtons};
 use ferrokit_core::event_loop::notify_borrowed_with;
@@ -710,16 +710,24 @@ fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
 /// `QApplication::notify` for one widget: application filters, the `WA_UnderMouse` toggle of
 /// `Enter` / `Leave` (qapplication.cpp:3246-3254, after the application filters and before the
 /// object filters), the widget's own filters, then `event()`. A widget whose handler is running
-/// cannot be reached and does not see the event.
+/// cannot take `event()`: it still sees the filters (and the `WA_UnderMouse` toggle, which is
+/// applied first on this path), but the event is not delivered to it.
 pub(crate) fn notify_widget(widget: &WidgetRef, event: &mut Event) -> bool {
-    let Ok(mut w) = widget.try_borrow_mut() else {
-        return false;
-    };
-    notify_borrowed_with(&mut **w, event, |w, ev| match ev.kind {
+    let toggle = |w: &dyn Widget, ev: &Event| match ev.kind {
         EventKind::Enter { .. } => w.widget_base().under_mouse.set(true),
         EventKind::Leave => w.widget_base().under_mouse.set(false),
         _ => {}
-    })
+    };
+    if let Ok(mut w) = widget.try_borrow_mut() {
+        return notify_borrowed_with(&mut **w, event, |w, ev| toggle(&*w, ev));
+    }
+    match widget.try_borrow() {
+        Ok(w) => {
+            toggle(&**w, event);
+            ferrokit_core::event_loop::filters_consume(w.object_data(), event)
+        }
+        Err(_) => false,
+    }
 }
 
 /// The path to the widget holding `QWidget::grabMouse`, when it is part of `root`'s tree: it gets

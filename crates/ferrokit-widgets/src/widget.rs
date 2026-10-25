@@ -987,15 +987,6 @@ pub fn mouse_grabber_id() -> Option<ObjectId> {
     MOUSE_GRABBER.with(|g| g.get())
 }
 
-/// Ends the grab when its widget is gone.
-pub(crate) fn clear_mouse_grab_if(id: ObjectId) {
-    MOUSE_GRABBER.with(|g| {
-        if g.get() == Some(id) {
-            g.set(None);
-        }
-    });
-}
-
 /// The offset of `w`'s origin in its tree root's coordinates, and the client origin of the root's
 /// native window in desktop coordinates (zero when the root is not a native window's root).
 fn tree_origin<W: Widget + ?Sized>(w: &W) -> (Point, Point) {
@@ -1661,6 +1652,18 @@ impl WidgetBase {
             }
         });
         self.removal_incomplete.set(incomplete);
+    }
+}
+
+impl Drop for WidgetBase {
+    /// A destroyed widget ends its mouse grab (`QWidget::~QWidget` -> `releaseMouse`).
+    fn drop(&mut self) {
+        let id = self.object_data.id();
+        let _ = MOUSE_GRABBER.try_with(|g| {
+            if g.get() == Some(id) {
+                g.set(None);
+            }
+        });
     }
 }
 

@@ -524,3 +524,53 @@ fn motion_preference_scales_animation_duration() {
     set_system_motion_preference(MotionPreference::NoPreference);
     assert_eq!(GuiApplication::animation_duration_factor(), 1.0);
 }
+
+#[test]
+fn layout_access_while_the_layout_is_in_use_gives_none_instead_of_panicking() {
+    let root = plain(Rect::new(0, 0, 200, 200));
+    root.borrow_mut().set_layout(Box::new(BoxLayout::vertical()));
+    let frame = widget_ref(ferrokit_widgets::frame::Frame::new());
+    frame.borrow_mut().set_layout(Box::new(BoxLayout::vertical()));
+
+    for w in [&root, &frame] {
+        let inner = w.borrow().with_box_layout(|_outer| {
+            // Re-entered from inside the first closure: the layout is mutably borrowed.
+            (
+                w.borrow().with_box_layout(|l| l.count()),
+                w.borrow().layout_ref_mut().is_none(),
+            )
+        });
+        assert_eq!(inner, Some((None, true)));
+        // Released again afterwards.
+        assert_eq!(w.borrow().with_box_layout(|l| l.count()), Some(0));
+    }
+}
+
+#[test]
+fn dropping_the_grabber_ends_the_grab() {
+    let w = plain(Rect::new(0, 0, 10, 10));
+    let id = w.borrow().id();
+    w.borrow().grab_mouse();
+    assert_eq!(ferrokit_widgets::widget::mouse_grabber_id(), Some(id));
+    drop(w);
+    assert_eq!(ferrokit_widgets::widget::mouse_grabber_id(), None);
+}
+
+#[test]
+fn a_widget_that_is_borrowed_still_runs_its_filters_for_input() {
+    let root = plain(Rect::new(0, 0, 200, 200));
+    let child = plain(Rect::new(0, 0, 100, 100));
+    attach(&root, &child);
+    let log: Log = Arc::default();
+    let spy = Spy2::new(&log);
+    spy.install(&child, "child");
+
+    // A shared borrow is live (e.g. the widget is painting): `event()` cannot run, the filters do.
+    let _held = child.borrow();
+    let mut d = EventTreeDispatcher::new();
+    d.dispatch_event(
+        &root,
+        &mut Event::new_spontaneous(EventKind::MouseButtonPress { x: 5, y: 5, button: 1 }),
+    );
+    assert_eq!(take(&log), ["child:Press"]);
+}
