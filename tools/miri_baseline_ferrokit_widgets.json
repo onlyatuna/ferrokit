@@ -1102,6 +1102,22 @@
     "test_input_cursor::the_window_cursor_shows_where_no_widget_has_one::SB": "pass",
     "test_input_cursor::the_window_cursor_shows_where_no_widget_has_one::TB": "pass",
     "test_input_cursor::without_platform_override_support_the_shape_goes_to_every_window::SB": "pass",
-    "test_input_cursor::without_platform_override_support_the_shape_goes_to_every_window::TB": "pass"
+    "test_input_cursor::without_platform_override_support_the_shape_goes_to_every_window::TB": "pass",
+    "test_input_cursor::a_capture_notification_while_the_window_still_grabs_changes_nothing::SB": "pass",
+    "test_input_cursor::a_capture_notification_while_the_window_still_grabs_changes_nothing::TB": "pass",
+    "test_input_cursor::a_move_resyncs_the_pressed_buttons_and_keeps_the_x_buttons::SB": "pass",
+    "test_input_cursor::a_move_resyncs_the_pressed_buttons_and_keeps_the_x_buttons::TB": "pass",
+    "test_input_cursor::a_native_override_is_applied_only_to_the_window_under_the_pointer::SB": "pass",
+    "test_input_cursor::a_native_override_is_applied_only_to_the_window_under_the_pointer::TB": "pass",
+    "test_input_cursor::hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override::SB": "pass",
+    "test_input_cursor::hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override::TB": "pass",
+    "test_input_cursor::hiding_the_window_releases_the_grab::SB": "pass",
+    "test_input_cursor::hiding_the_window_releases_the_grab::TB": "pass",
+    "test_input_cursor::losing_the_native_capture_ends_the_widget_grab::SB": "pass",
+    "test_input_cursor::losing_the_native_capture_ends_the_widget_grab::TB": "pass",
+    "test_input_cursor::releasing_the_grab_does_not_reenter_through_the_capture_notification::SB": "pass",
+    "test_input_cursor::releasing_the_grab_does_not_reenter_through_the_capture_notification::TB": "pass",
+    "test_input_cursor::resetting_the_application_clears_the_native_override_too::SB": "pass",
+    "test_input_cursor::resetting_the_application_clears_the_native_override_too::TB": "pass"
   }
 }
