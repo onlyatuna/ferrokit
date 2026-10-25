@@ -1,31 +1,43 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
+use ferrokit_gui::geometry::primitives::{Point, Rect};
+use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Pixmap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use crate::backdrop::BackdropState;
+use crate::cursor::{CocoaCursor, CursorShape};
+use crate::objc_runtime::appkit;
 use crate::objc_runtime::{
-    CGFloat, CGRect, CGSize, Class, Id, ObjcMsg, Sel, NS_BACKING_STORE_BUFFERED,
-    NS_FLOATING_WINDOW_LEVEL, NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL,
-    NS_SCREEN_SAVER_WINDOW_LEVEL, NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
-    NS_WINDOW_STYLE_MASK_MINIATURIZABLE, NS_WINDOW_STYLE_MASK_RESIZABLE,
-    NS_WINDOW_STYLE_MASK_TITLED,
+    CGFloat, CGRect, CGSize, Class, Id, NSInteger, NSUInteger, ObjcMsg, Sel,
+    NS_BACKING_STORE_BUFFERED, NS_FLOATING_WINDOW_LEVEL, NS_MODAL_PANEL_WINDOW_LEVEL,
+    NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL, NS_WINDOW_STYLE_MASK_BORDERLESS,
+    NS_WINDOW_STYLE_MASK_CLOSABLE, NS_WINDOW_STYLE_MASK_MINIATURIZABLE,
+    NS_WINDOW_STYLE_MASK_RESIZABLE, NS_WINDOW_STYLE_MASK_TITLED,
 };
 use crate::platform_window::PlatformWindow;
 use crate::surface::{CocoaLayerSurface, PlatformSurface};
 use crate::window::WindowFlags;
-use crate::window_system_interface::{
-    KeyboardModifiers, MouseButton, PressedButtons, WheelDelta, WindowSystemEvent,
-    WindowSystemEventHandler,
-};
+use crate::window_cocoa_input as input;
+use crate::window_system_interface::WindowSystemEventHandler;
 
-/// An input or window event for `CocoaNativeWindow::dispatch_cocoa_event`, in view coordinates.
+/// `NSWindowAbove`: the child window is ordered above its parent.
+const NS_WINDOW_ABOVE: NSInteger = 1;
+/// `NSVisualEffectStateActive` / `NSVisualEffectStateInactive`: an inactive effect view draws
+/// its material as a flat fill instead of blurring what is behind the window.
+const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
+const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
+
+/// An input or window event for `CocoaNativeWindow::dispatch_cocoa_event`, in view coordinates:
+/// logical pixels with the origin at the top left (the content view is flipped), as Qt reports
+/// them. `modifiers` are `Qt::KeyboardModifiers` bits and `key` is a `Qt::Key`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CocoaNativeEvent {
     MouseDown {
         x: f64,
         y: f64,
+        /// `-[NSEvent buttonNumber]`: 0 left, 1 right, 2 middle, 3 and up extra buttons.
         button: u16,
         modifiers: u32,
     },
@@ -40,20 +52,37 @@ pub enum CocoaNativeEvent {
         y: f64,
         modifiers: u32,
     },
+    /// The pointer entered the window; reported to the handler as a move to the entry position.
+    MouseEntered {
+        x: f64,
+        y: f64,
+        modifiers: u32,
+    },
+    /// The pointer left the window.
+    MouseExited,
+    /// `delta_x` and `delta_y` are Qt angle deltas (1/8 degree, 120 per wheel notch).
     ScrollWheel {
         x: f64,
         y: f64,
         delta_x: f64,
         delta_y: f64,
+        modifiers: u32,
     },
     KeyDown {
-        key_code: u16,
+        key: u32,
         modifiers: u32,
         is_repeat: bool,
     },
     KeyUp {
-        key_code: u16,
+        key: u32,
         modifiers: u32,
+    },
+    /// Text from the input method: `commit` is final, `preedit` is the composition in progress
+    /// with the caret at `cursor` (UTF-16 units).
+    TextInput {
+        commit: String,
+        preedit: String,
+        cursor: i32,
     },
     WindowResized {
         width: f64,
@@ -90,17 +119,20 @@ pub struct CocoaNativeWindow {
     stays_on_top: bool,
     click_through: bool,
     visible: AtomicBool,
-    /// Buttons pressed and not yet released, reported on every `MouseMove`.
-    pressed: PressedButtons,
     surface: CocoaLayerSurface,
     pending_events: Mutex<Vec<CocoaNativeEvent>>,
-    event_handler: Option<Box<dyn WindowSystemEventHandler>>,
     opacity: f32,
     size_limits: crate::size_limits::SizeLimits,
     vibrancy_view: Option<Id>,
     vibrancy_material: Option<CocoaVibrancyMaterial>,
     /// The `NSVisualEffectView` added by `set_backdrop`, removed by `set_backdrop(None)`.
     backdrop_view: Option<Id>,
+    /// The requested backdrop and whether its blur is suspended (`suspend_backdrop`).
+    backdrop_state: BackdropState,
+    /// Where the next `present_region` moves the window to (`set_target_pos`).
+    target_pos: Option<Point>,
+    /// `set_mask` made the window non-opaque (it was opaque), so removing the mask restores it.
+    mask_made_transparent: bool,
 }
 
 // Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
@@ -117,6 +149,17 @@ impl CocoaNativeWindow {
     pub fn new(title: &str, rect: Rect, flags: WindowFlags) -> Result<Self, &'static str> {
         ThreadContext::assert_main_thread("CocoaNativeWindow::new");
 
+        #[cfg(target_os = "macos")]
+        let window_class = if flags.contains(WindowFlags::TOOLTIP) {
+            // A tooltip never takes the keyboard focus: a plain borderless NSWindow refuses to
+            // become key, which is what `Qt::ToolTip` wants.
+            Class::get("NSWindow").ok_or("Cannot find NSWindow class")?
+        } else {
+            // Windows that can take focus need `QNSWindow`: AppKit refuses key status to a
+            // plain NSWindow without a title bar.
+            appkit::qnswindow_class()
+        };
+        #[cfg(not(target_os = "macos"))]
         let window_class = Class::get("NSWindow").ok_or("Cannot find NSWindow class")?;
         // Qt's content view is a QNSView, whose -isFlipped returns YES (qnsview_drawing.mm:67-70).
         #[cfg(target_os = "macos")]
@@ -124,19 +167,7 @@ impl CocoaNativeWindow {
         #[cfg(not(target_os = "macos"))]
         let view_class = Class::get("QNSView").ok_or("Cannot find class QNSView")?;
 
-        let mut style_mask =
-            if flags.contains(WindowFlags::FRAMELESS) || flags.contains(WindowFlags::TOOLTIP) {
-                NS_WINDOW_STYLE_MASK_BORDERLESS
-            } else {
-                NS_WINDOW_STYLE_MASK_TITLED
-                    | NS_WINDOW_STYLE_MASK_CLOSABLE
-                    | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
-                    | NS_WINDOW_STYLE_MASK_RESIZABLE
-            };
-
-        if flags.contains(WindowFlags::CUSTOM_FRAMELESS) {
-            style_mask |= NS_WINDOW_STYLE_MASK_RESIZABLE;
-        }
+        let style_mask = cocoa_style_mask(flags);
 
         let ns_window_alloc =
             unsafe { ObjcMsg::send_class_0(window_class, Sel::register("alloc")) };
@@ -169,6 +200,15 @@ impl CocoaNativeWindow {
         };
 
         unsafe { ObjcMsg::send_id(ns_window, Sel::register("setContentView:"), ns_view) };
+        // Key events go to the first responder; the content view is the one that handles them.
+        unsafe {
+            ObjcMsg::send_id_logged(ns_window, Sel::register("makeFirstResponder:"), ns_view)
+        };
+        // `mouseMoved:` is delivered to the view's tracking area, but a window that does not
+        // accept moved events also drops them for any grab-style handler.
+        unsafe {
+            ObjcMsg::send_bool_logged(ns_window, Sel::register("setAcceptsMouseMovedEvents:"), true)
+        };
         // Qt: QNSView makes itself layer-backed (qnsview_drawing.mm:57) and the backing store
         // flushes into the view's layer (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
         // qcocoabackingstore.mm:392), not into the view.
@@ -190,6 +230,13 @@ impl CocoaNativeWindow {
             unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true) };
         }
 
+        // Qt: `hidesOnDeactivate` for `Qt::Tool` (qcocoawindow.mm `setWindowFlags`).
+        if flags.contains(WindowFlags::TOOL) {
+            unsafe {
+                ObjcMsg::send_bool_logged(ns_window, Sel::register("setHidesOnDeactivate:"), true)
+            };
+        }
+
         let surface = match CocoaLayerSurface::new(
             layer.as_ptr() as usize,
             surface_dim(rect.width),
@@ -204,6 +251,10 @@ impl CocoaNativeWindow {
             }
         };
 
+        // From here AppKit may call the view's methods, which find their window by this slot.
+        input::register_view(ns_view, ns_window);
+        input::update_tracking_area(ns_view);
+
         Ok(Self {
             ns_window,
             ns_view,
@@ -213,15 +264,16 @@ impl CocoaNativeWindow {
             stays_on_top,
             click_through,
             visible: AtomicBool::new(false),
-            pressed: PressedButtons::default(),
             surface,
             pending_events: Mutex::new(Vec::new()),
-            event_handler: None,
             opacity: 1.0,
             size_limits: crate::size_limits::SizeLimits::default(),
             vibrancy_view: None,
             vibrancy_material: None,
             backdrop_view: None,
+            backdrop_state: BackdropState::new(),
+            target_pos: None,
+            mask_made_transparent: false,
         })
     }
 
@@ -307,118 +359,22 @@ impl CocoaNativeWindow {
         self.flags
     }
 
+    /// Delivers `event` to the window's event handler, as AppKit's native input does. False when
+    /// no handler is installed. Positions are view coordinates; a global position is the
+    /// window's `geometry()` origin plus the local one.
     pub fn dispatch_cocoa_event(&mut self, event: CocoaNativeEvent) -> bool {
-        let Some(handler) = self.event_handler.as_mut() else {
+        if !input::has_handler(self.ns_view) {
             return false;
-        };
-
-        let origin_x = self.geometry.x;
-        let origin_y = self.geometry.y;
-
-        match event {
-            CocoaNativeEvent::MouseDown {
-                x,
-                y,
-                button,
-                modifiers,
-            } => {
-                let local_pos = Point::new(x as i32, y as i32);
-                let global_pos = Point::new(origin_x + local_pos.x, origin_y + local_pos.y);
-                let btn = match button {
-                    0 => MouseButton::Left,
-                    1 => MouseButton::Right,
-                    2 => MouseButton::Middle,
-                    _ => MouseButton::Left,
-                };
-                self.pressed.press(btn);
-                handler.handle_window_event(WindowSystemEvent::MousePress {
-                    pos: local_pos,
-                    global_pos,
-                    button: btn,
-                    modifiers: KeyboardModifiers::from_bits(modifiers),
-                    // `CocoaNativeEvent::MouseDown` carries no time; the press is stamped on arrival.
-                    timestamp: crate::window_system_interface::event_time_ms(),
-                });
-            }
-            CocoaNativeEvent::MouseUp {
-                x,
-                y,
-                button,
-                modifiers,
-            } => {
-                let local_pos = Point::new(x as i32, y as i32);
-                let global_pos = Point::new(origin_x + local_pos.x, origin_y + local_pos.y);
-                let btn = match button {
-                    0 => MouseButton::Left,
-                    1 => MouseButton::Right,
-                    2 => MouseButton::Middle,
-                    _ => MouseButton::Left,
-                };
-                self.pressed.release(btn);
-                handler.handle_window_event(WindowSystemEvent::MouseRelease {
-                    pos: local_pos,
-                    global_pos,
-                    button: btn,
-                    modifiers: KeyboardModifiers::from_bits(modifiers),
-                });
-            }
-            CocoaNativeEvent::MouseMoved { x, y, modifiers: _ } => {
-                let local_pos = Point::new(x as i32, y as i32);
-                let global_pos = Point::new(origin_x + local_pos.x, origin_y + local_pos.y);
-                handler.handle_window_event(WindowSystemEvent::MouseMove {
-                    pos: local_pos,
-                    global_pos,
-                    buttons: self.pressed.buttons(),
-                });
-            }
-            CocoaNativeEvent::ScrollWheel {
-                x,
-                y,
-                delta_x,
-                delta_y,
-            } => {
-                let local_pos = Point::new(x as i32, y as i32);
-                let global_pos = Point::new(origin_x + local_pos.x, origin_y + local_pos.y);
-                handler.handle_window_event(WindowSystemEvent::Wheel {
-                    pos: local_pos,
-                    global_pos,
-                    delta: WheelDelta::new(delta_x as i32, delta_y as i32),
-                    modifiers: KeyboardModifiers::default(),
-                });
-            }
-            CocoaNativeEvent::KeyDown {
-                key_code,
-                modifiers,
-                is_repeat,
-            } => {
-                handler.handle_window_event(WindowSystemEvent::KeyPress {
-                    key: key_code as u32,
-                    modifiers: KeyboardModifiers::from_bits(modifiers),
-                    is_repeat,
-                });
-            }
-            CocoaNativeEvent::KeyUp {
-                key_code,
-                modifiers,
-            } => {
-                handler.handle_window_event(WindowSystemEvent::KeyRelease {
-                    key: key_code as u32,
-                    modifiers: KeyboardModifiers::from_bits(modifiers),
-                });
-            }
-            CocoaNativeEvent::WindowResized { width, height } => {
-                self.geometry.width = width as i32;
-                self.geometry.height = height as i32;
-                let _ = self.surface.resize(surface_dim(width as i32), surface_dim(height as i32));
-                handler.handle_window_event(WindowSystemEvent::Resize {
-                    size: Size::new(width as i32, height as i32),
-                });
-            }
-            CocoaNativeEvent::WindowCloseRequested => {
-                handler.handle_window_event(WindowSystemEvent::CloseRequest);
-            }
         }
-        true
+        if let CocoaNativeEvent::WindowResized { width, height } = &event {
+            self.geometry.width = *width as i32;
+            self.geometry.height = *height as i32;
+            let _ = self
+                .surface
+                .resize(surface_dim(*width as i32), surface_dim(*height as i32));
+        }
+        let origin = Point::new(self.geometry.x, self.geometry.y);
+        input::dispatch(self.ns_view, event, origin)
     }
 
     pub fn queue_cocoa_event(&self, event: CocoaNativeEvent) {
@@ -433,6 +389,127 @@ impl CocoaNativeWindow {
     #[inline]
     pub fn is_flipped(&self) -> bool {
         unsafe { ObjcMsg::send_bool_return(self.ns_view, Sel::register("isFlipped")) }
+    }
+
+    /// The backing surface the window presents into.
+    #[inline]
+    pub fn surface(&self) -> &CocoaLayerSurface {
+        &self.surface
+    }
+
+    /// `NSVisualEffectView` state of the applied backdrop: inactive draws the material as a flat
+    /// fill of the same colour, which is what a suspended blur is replaced with. False when no
+    /// effect view is applied.
+    fn set_backdrop_effect_active(&mut self, active: bool) -> bool {
+        let Some(view) = self.backdrop_view else {
+            return false;
+        };
+        let state = if active {
+            NS_VISUAL_EFFECT_STATE_ACTIVE
+        } else {
+            NS_VISUAL_EFFECT_STATE_INACTIVE
+        };
+        unsafe { ObjcMsg::send_int_logged(view, Sel::register("setState:"), state) };
+        true
+    }
+
+    /// Clips the content layer to `region` (client-area points, origin top left) with a
+    /// `CAShapeLayer` mask. A masked-out area is only see-through, and lets clicks through, when
+    /// the window itself is not opaque, so an opaque window is made transparent while it has a
+    /// mask. An empty region removes the mask.
+    fn apply_mask(&mut self, region: &Region) {
+        let window = self.ns_window;
+        let layer = unsafe { ObjcMsg::send_0(self.ns_view, Sel::register("layer")) };
+        if layer.is_nil() {
+            return;
+        }
+        if region.is_empty() {
+            unsafe { ObjcMsg::send_id_logged(layer, Sel::register("setMask:"), Id::NIL) };
+            self.restore_opaque_after_mask();
+            unsafe { ObjcMsg::send_0_logged(window, Sel::register("invalidateShadow")) };
+            return;
+        }
+        let rects: Vec<CGRect> = region
+            .rects()
+            .iter()
+            .map(|r| CGRect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64))
+            .collect();
+        // SAFETY: `layer` is the live backing layer of the content view; the shape layer is
+        // created (+1) here, and the layer's `setMask:` retains it, so the +1 is released.
+        unsafe {
+            let bounds = ObjcMsg::send_rect_return(layer, Sel::register("bounds"));
+            let flipped = ObjcMsg::send_bool_prop(layer, Sel::register("isGeometryFlipped"));
+            let shape = appkit::make_region_mask_layer(&rects, bounds, flipped);
+            if shape.is_nil() {
+                return;
+            }
+            ObjcMsg::send_id_logged(layer, Sel::register("setMask:"), shape);
+            appkit::release(shape);
+        }
+        if !self.mask_made_transparent
+            && self.vibrancy_material.is_none()
+            && self.backdrop_view.is_none()
+            && unsafe { ObjcMsg::send_bool_prop(window, Sel::register("isOpaque")) }
+        {
+            let clear = unsafe {
+                ObjcMsg::send_class_0(
+                    Class::get("NSColor").unwrap_or(Class::NIL),
+                    Sel::register("clearColor"),
+                )
+            };
+            unsafe {
+                ObjcMsg::send_bool_logged(window, Sel::register("setOpaque:"), false);
+                ObjcMsg::send_id_logged(window, Sel::register("setBackgroundColor:"), clear);
+            }
+            self.mask_made_transparent = true;
+        }
+        unsafe { ObjcMsg::send_0_logged(window, Sel::register("invalidateShadow")) };
+    }
+
+    /// Undoes what `apply_mask` did to the window's opacity, unless vibrancy or a backdrop
+    /// needs the window transparent.
+    fn restore_opaque_after_mask(&mut self) {
+        if !std::mem::take(&mut self.mask_made_transparent) {
+            return;
+        }
+        if self.vibrancy_material.is_some() || self.backdrop_view.is_some() {
+            return;
+        }
+        let window = self.ns_window;
+        let color = unsafe {
+            ObjcMsg::send_class_0(
+                Class::get("NSColor").unwrap_or(Class::NIL),
+                Sel::register("windowBackgroundColor"),
+            )
+        };
+        unsafe {
+            ObjcMsg::send_bool_logged(window, Sel::register("setOpaque:"), true);
+            ObjcMsg::send_id_logged(window, Sel::register("setBackgroundColor:"), color);
+        }
+    }
+
+    /// `present_region`'s move: the window takes the position `set_target_pos` gave and the
+    /// logical size of the pixmap it is about to show, in one frame change before the contents
+    /// are replaced (a layered window such as a popup menu moves with its picture).
+    fn move_to_target(&mut self, pos: Point, pixmap: &Pixmap) {
+        let target = Rect::new(
+            pos.x,
+            pos.y,
+            pixmap.logical_width().round() as i32,
+            pixmap.logical_height().round() as i32,
+        );
+        if target == self.geometry {
+            return;
+        }
+        self.geometry = target;
+        unsafe {
+            ObjcMsg::send_rect_display(
+                self.ns_window,
+                Sel::register("setFrame:display:"),
+                native_rect(target),
+                false,
+            )
+        };
     }
 }
 
@@ -501,6 +578,160 @@ impl PlatformWindow for CocoaNativeWindow {
                 enabled,
             )
         };
+    }
+
+    fn flags(&self) -> WindowFlags {
+        self.flags
+    }
+
+    /// `QCocoaWindow::setWindowFlags` (qcocoawindow.mm): the style mask follows the frame
+    /// flags, the level the stacking flags, `hidesOnDeactivate` follows `Qt::Tool`.
+    /// `LAYERED` has no AppKit counterpart and is only remembered.
+    fn set_window_flag(&mut self, flag: WindowFlags, on: bool) {
+        let old = self.flags;
+        self.flags.set(flag, on);
+        let changed = old ^ self.flags;
+        if changed.is_empty() {
+            return;
+        }
+        if changed.intersects(
+            WindowFlags::FRAMELESS | WindowFlags::TOOLTIP | WindowFlags::CUSTOM_FRAMELESS,
+        ) {
+            unsafe {
+                ObjcMsg::send_uint_logged(
+                    self.ns_window,
+                    Sel::register("setStyleMask:"),
+                    cocoa_style_mask(self.flags),
+                )
+            };
+        }
+        if changed.intersects(WindowFlags::STAYS_ON_TOP | WindowFlags::TOOL | WindowFlags::TOOLTIP)
+        {
+            self.stays_on_top = self
+                .flags
+                .intersects(WindowFlags::STAYS_ON_TOP | WindowFlags::TOOLTIP);
+            unsafe {
+                ObjcMsg::send_int_logged(
+                    self.ns_window,
+                    Sel::register("setLevel:"),
+                    cocoa_window_level(self.flags),
+                )
+            };
+        }
+        if changed.contains(WindowFlags::TOOL) {
+            unsafe {
+                ObjcMsg::send_bool_logged(
+                    self.ns_window,
+                    Sel::register("setHidesOnDeactivate:"),
+                    self.flags.contains(WindowFlags::TOOL),
+                )
+            };
+        }
+        if changed.contains(WindowFlags::CLICK_THROUGH) {
+            self.click_through = self.flags.contains(WindowFlags::CLICK_THROUGH);
+            unsafe {
+                ObjcMsg::send_bool_logged(
+                    self.ns_window,
+                    Sel::register("setIgnoresMouseEvents:"),
+                    self.click_through,
+                )
+            };
+        }
+    }
+
+    /// `QCocoaCursor::changeCursor` (qcocoacursor.mm): the window cursor is kept by the content
+    /// view, which shows it through a cursor rect and `cursorUpdate:` while the pointer is over
+    /// the window; AppKit shows it from the next pointer movement.
+    fn set_cursor(&mut self, shape: CursorShape) {
+        let selector = CocoaCursor::ns_cursor_selector(shape);
+        // SAFETY: the standard cursors are shared, immortal AppKit objects.
+        let cursor = unsafe { appkit::standard_cursor(selector) };
+        input::replace_cursor(self.ns_view, cursor);
+    }
+
+    /// `QWindow::unsetCursor`: no cursor rect, so AppKit shows the arrow (or what the view
+    /// under the pointer asks for).
+    fn unset_cursor(&mut self) {
+        input::replace_cursor(self.ns_view, Id::NIL);
+    }
+
+    /// AppKit has no call that routes the whole application's mouse to one window, and
+    /// `QCocoaWindow` implements none either (`QPlatformWindow::setMouseGrabEnabled` returns
+    /// false there). What a window gets natively is the implicit grab of a pressed button: the
+    /// view receives the drag and the release wherever the pointer goes. An explicit grab
+    /// therefore holds for a visible window, and is reported by `has_mouse_grab`, but does not
+    /// capture a pointer that is over other windows or applications.
+    fn set_mouse_grab_enabled(&mut self, grab: bool) -> bool {
+        if grab && !self.is_visible() {
+            return false;
+        }
+        input::with_slot(self.ns_view, |slot| slot.mouse_grab = grab).is_some() && grab
+    }
+
+    fn has_mouse_grab(&self) -> bool {
+        input::with_slot(self.ns_view, |slot| {
+            slot.mouse_grab || !slot.pressed.buttons().is_empty()
+        })
+        .unwrap_or(false)
+    }
+
+    fn set_target_pos(&mut self, pos: Option<Point>) {
+        self.target_pos = pos;
+    }
+
+    fn set_mask(&mut self, region: &Region) {
+        self.apply_mask(region);
+    }
+
+    /// `-[NSWindow addChildWindow:ordered:]`: the window follows its parent when it moves,
+    /// stays above it, and is hidden, miniaturized and ordered out with it (what Qt does for a
+    /// popup or tool window with a transient parent). `None` detaches it. The parent is the
+    /// `native_handle` of another `CocoaNativeWindow`, which must outlive the attachment or
+    /// detach it first, like an owner `HWND`; a window is never its own parent.
+    fn set_transient_parent(&mut self, parent: Option<isize>) {
+        let me = self.ns_window;
+        let wanted = parent
+            .filter(|&handle| handle != 0 && handle != me.0 as isize)
+            .map(|handle| Id(handle as *mut std::ffi::c_void))
+            .unwrap_or(Id::NIL);
+        // SAFETY: `me` is alive; `parentWindow` is AppKit's own link, so the current parent
+        // is a live window or nil. `wanted` is the caller's live window, per the contract above.
+        unsafe {
+            let current = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
+            if current == wanted {
+                return;
+            }
+            if !current.is_nil() {
+                ObjcMsg::send_id_logged(current, Sel::register("removeChildWindow:"), me);
+            }
+            if !wanted.is_nil() {
+                ObjcMsg::send_id_int_logged(
+                    wanted,
+                    Sel::register("addChildWindow:ordered:"),
+                    me,
+                    NS_WINDOW_ABOVE,
+                );
+            }
+        }
+    }
+
+    fn transient_parent(&self) -> Option<isize> {
+        // SAFETY: `ns_window` is alive for the lifetime of `self`.
+        let parent =
+            unsafe { ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow")) };
+        (!parent.is_nil()).then_some(parent.0 as isize)
+    }
+
+    /// Where the input method shows its candidate window (view coordinates), and a note to the
+    /// input context that the caret moved.
+    fn set_ime_focus(&mut self, pos: Point) {
+        input::with_slot(self.ns_view, |slot| slot.ime_pos = Some(pos));
+        // SAFETY: `ns_view` is alive; `inputContext` is nil unless the view conforms to
+        // NSTextInputClient, and the context belongs to the view.
+        unsafe {
+            let context = ObjcMsg::send_id_prop(self.ns_view, Sel::register("inputContext"));
+            ObjcMsg::send_0_logged(context, Sel::register("invalidateCharacterCoordinates"));
+        }
     }
 
     fn start_system_drag(&self) {
@@ -602,8 +833,31 @@ impl PlatformWindow for CocoaNativeWindow {
         self.surface.present(pixmap, opacity)
     }
 
+    fn present_dirty(
+        &mut self,
+        pixmap: &mut Pixmap,
+        opacity: f32,
+        dirty: Rect,
+    ) -> Result<(), &'static str> {
+        // The surface copies `dirty` into a buffer of its own size: a pixmap of another size
+        // needs the whole frame (which also resizes the surface).
+        if pixmap.physical_width() != self.surface.width()
+            || pixmap.physical_height() != self.surface.height()
+        {
+            return self.surface.present(pixmap, opacity);
+        }
+        self.surface.present_dirty(pixmap, opacity, dirty)
+    }
+
+    fn present_region(&mut self, pixmap: &Pixmap, dirty: &Region) -> Result<(), &'static str> {
+        if let Some(pos) = self.target_pos.take() {
+            self.move_to_target(pos, pixmap);
+        }
+        self.surface.present_region(pixmap, dirty.rects())
+    }
+
     fn set_event_handler(&mut self, handler: Box<dyn WindowSystemEventHandler>) {
-        self.event_handler = Some(handler);
+        input::set_handler(self.ns_view, handler);
     }
 
     fn native_handle(&self) -> isize {
@@ -617,13 +871,34 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
-        crate::backdrop::set_cocoa_window_backdrop(
+        self.backdrop_state.request(backdrop, dark_mode);
+        // The requested material is applied even while suspended: a suspension only turns the
+        // effect view's state inactive (below), it never removes the view.
+        let applied = crate::backdrop::set_cocoa_window_backdrop(
             self.ns_window,
             self.ns_view,
             backdrop,
             dark_mode,
             &mut self.backdrop_view,
-        )
+        );
+        if self.backdrop_state.is_suspended() {
+            self.set_backdrop_effect_active(false);
+        }
+        applied
+    }
+
+    /// Suspends an Acrylic blur by making the effect view inactive, which AppKit draws as a flat
+    /// fill of the same material (no blur of what is behind the window) without removing the
+    /// view, so there is no flash while the window is dragged or resized. Returns whether the
+    /// applied backdrop changed.
+    fn suspend_backdrop(&mut self) -> bool {
+        let changed = self.backdrop_state.suspend();
+        changed && self.set_backdrop_effect_active(false)
+    }
+
+    fn resume_backdrop(&mut self) -> bool {
+        let changed = self.backdrop_state.resume();
+        changed && self.set_backdrop_effect_active(true)
     }
 
     fn poll_events(&mut self) -> usize {
@@ -639,6 +914,22 @@ impl PlatformWindow for CocoaNativeWindow {
 impl Drop for CocoaNativeWindow {
     /// Qt's `~QCocoaWindow` takes the window off screen and releases its views and the window.
     fn drop(&mut self) {
+        // A child window is attached to its parent, which retains it and may still be alive.
+        // SAFETY: `ns_window` is alive until the releases below; `parentWindow` is AppKit's own
+        // link, cleared when the parent goes away first.
+        unsafe {
+            let parent = ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow"));
+            if !parent.is_nil() {
+                ObjcMsg::send_id_logged(
+                    parent,
+                    Sel::register("removeChildWindow:"),
+                    self.ns_window,
+                );
+            }
+        }
+        // From here AppKit callbacks must not find the window: the slot goes first, and takes
+        // its tracking area and cursor with it while the view is still alive.
+        input::teardown_view(self.ns_view);
         // `release` below is the only release; stop `close` from releasing the window too.
         unsafe {
             ObjcMsg::send_bool(self.ns_window, Sel::register("setReleasedWhenClosed:"), false)
@@ -670,6 +961,25 @@ pub fn cocoa_window_level(flags: WindowFlags) -> isize {
     } else {
         NS_NORMAL_WINDOW_LEVEL
     }
+}
+
+/// `QCocoaWindow::windowStyleMask` (qcocoawindow.mm): a frameless window or a tooltip is
+/// borderless, any other window has the title bar, close, miniaturize and resize controls; a
+/// custom frame draws its own but still resizes.
+pub fn cocoa_style_mask(flags: WindowFlags) -> NSUInteger {
+    let mut style_mask =
+        if flags.contains(WindowFlags::FRAMELESS) || flags.contains(WindowFlags::TOOLTIP) {
+            NS_WINDOW_STYLE_MASK_BORDERLESS
+        } else {
+            NS_WINDOW_STYLE_MASK_TITLED
+                | NS_WINDOW_STYLE_MASK_CLOSABLE
+                | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+                | NS_WINDOW_STYLE_MASK_RESIZABLE
+        };
+    if flags.contains(WindowFlags::CUSTOM_FRAMELESS) {
+        style_mask |= NS_WINDOW_STYLE_MASK_RESIZABLE;
+    }
+    style_mask
 }
 
 #[inline]
