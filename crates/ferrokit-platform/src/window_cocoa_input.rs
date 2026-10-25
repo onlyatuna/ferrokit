@@ -244,6 +244,8 @@ pub(crate) struct ViewSlot {
     marked_text: Option<String>,
     /// Cleared by the input-method methods when they consumed the key press being interpreted.
     send_key_event: bool,
+    /// Key codes whose press the input method consumed and whose release is still to come.
+    suppressed_keys: Vec<u16>,
     /// Where the input method puts its candidate window, in view coordinates.
     pub(crate) ime_pos: Option<Point>,
     /// The window cursor (a retained `NSCursor`), nil for the default one.
@@ -270,6 +272,7 @@ pub(crate) fn register_view(view: Id, window: Id) {
         send_up_as_right: false,
         marked_text: None,
         send_key_event: true,
+        suppressed_keys: Vec::new(),
         ime_pos: None,
         cursor: Id::NIL,
         mouse_grab: false,
@@ -655,11 +658,18 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
         }
         NsEventKind::KeyDown => handle_key_down(view, event, flags, modifiers),
         NsEventKind::KeyUp => {
-            if has_marked_text(view) {
-                // The input method owns the keys while it composes.
+            let (key, key_code) = key_of_event(event, flags);
+            // The press was consumed by the input method (composition, committed text): there
+            // is no press at the window to release.
+            let suppressed = with_slot(view, |slot| {
+                let before = slot.suppressed_keys.len();
+                slot.suppressed_keys.retain(|&code| code != key_code);
+                slot.suppressed_keys.len() != before
+            })
+            .unwrap_or(false);
+            if suppressed {
                 return true;
             }
-            let (key, _) = key_of_event(event, flags);
             dispatch(
                 view,
                 CocoaNativeEvent::KeyUp { key, modifiers },
@@ -730,7 +740,7 @@ fn key_of_event(event: Id, flags: usize) -> (u32, u16) {
 /// press reaches the window unless the input method consumed it. Command and Control chords are
 /// shortcuts, not text, and skip the input method.
 fn handle_key_down(view: Id, event: Id, flags: usize, modifiers: u32) -> bool {
-    let (key, _) = key_of_event(event, flags);
+    let (key, key_code) = key_of_event(event, flags);
     // SAFETY: `isARepeat` is defined for keyDown NSEvents (it raises for flagsChanged).
     let is_repeat = unsafe { ObjcMsg::send_bool_prop(event, sel("isARepeat")) };
     let was_composing = has_marked_text(view);
@@ -747,8 +757,17 @@ fn handle_key_down(view: Id, event: Id, flags: usize, modifiers: u32) -> bool {
     }
     let send = with_slot(view, |slot| slot.send_key_event).unwrap_or(false);
     if was_composing || !send {
+        // The input method consumed the press: its release must not reach the window alone.
+        with_slot(view, |slot| {
+            if !slot.suppressed_keys.contains(&key_code) {
+                slot.suppressed_keys.push(key_code);
+            }
+        });
         return true;
     }
+    with_slot(view, |slot| {
+        slot.suppressed_keys.retain(|&code| code != key_code)
+    });
     dispatch(
         view,
         CocoaNativeEvent::KeyDown {
@@ -881,9 +900,15 @@ pub fn text_input_marked_range(view: Id) -> NSRange {
     .unwrap_or(NSRange::NOT_FOUND)
 }
 
-/// `-firstRectForCharacterRange:actualRange:`: where the input method shows its candidate
-/// window, in screen coordinates (bottom-left origin): at the point `set_ime_focus` gave, or the
-/// view's top-left corner.
+/// Height of the text line the input method's candidate window avoids, in logical pixels:
+/// `set_ime_focus` gives the caret position but no caret height.
+pub const IME_LINE_HEIGHT: i32 = 20;
+
+/// `-firstRectForCharacterRange:actualRange:`: the caret line, in screen coordinates (bottom-left
+/// origin), where the input method shows its candidate window. `set_ime_focus` gives the caret's
+/// top-left position (the view's top-left corner until then); the rectangle is one point wide
+/// and `IME_LINE_HEIGHT` high from there downward, so its origin, which AppKit puts the window
+/// below, is at the line's bottom edge and the candidates do not cover the typed text.
 pub fn text_input_first_rect(view: Id) -> CGRect {
     let Some((window, pos)) = with_slot(view, |slot| {
         (slot.ns_window, slot.ime_pos.unwrap_or(Point::new(0, 0)))
@@ -891,16 +916,16 @@ pub fn text_input_first_rect(view: Id) -> CGRect {
         return CGRect::ZERO;
     };
     // SAFETY: `view` is the live receiver of the call and `window` its window.
-    let screen = unsafe {
+    let bottom = unsafe {
         let in_window = ObjcMsg::send_convert_point(
             view,
             sel("convertPoint:toView:"),
-            CGPoint::new(pos.x as CGFloat, pos.y as CGFloat),
+            CGPoint::new(pos.x as CGFloat, (pos.y + IME_LINE_HEIGHT) as CGFloat),
             Id::NIL,
         );
         ObjcMsg::send_point_arg_return(window, sel("convertPointToScreen:"), in_window)
     };
-    CGRect::new(screen.x, screen.y, 1.0, 1.0)
+    CGRect::new(bottom.x, bottom.y, 1.0, IME_LINE_HEIGHT as CGFloat)
 }
 
 // ---------------------------------------------------------------------------

@@ -922,12 +922,26 @@ mod native {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
     }
 
+    /// An event method: the window's handler gets the event; when there is none (no handler,
+    /// the window is torn down, an event with nothing to report) AppKit's own handling of it
+    /// runs, through NSView, so the responder chain still sees it.
     macro_rules! ns_event_imp {
         ($name:ident, $kind:expr) => {
-            extern "C" fn $name(this: *mut c_void, _cmd: *const c_void, event: *mut c_void) {
-                guarded((), || {
-                    input::handle_ns_event(Id(this), $kind, Id(event));
-                });
+            extern "C" fn $name(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
+                let handled = guarded(true, || input::handle_ns_event(Id(this), $kind, Id(event)));
+                if !handled {
+                    // SAFETY: every method installed with this macro takes the event and returns
+                    // nothing; the superclass is NSView.
+                    unsafe {
+                        let sup = ObjcSuper {
+                            receiver: this,
+                            super_class: objc_get_class("NSView").0,
+                        };
+                        let send: extern "C" fn(*const ObjcSuper, *const c_void, *mut c_void) =
+                            super_send_fn();
+                        send(&sup, cmd, event);
+                    }
+                }
             }
         };
     }

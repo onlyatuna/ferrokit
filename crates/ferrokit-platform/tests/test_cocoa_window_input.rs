@@ -17,7 +17,7 @@ use ferrokit_platform::window_cocoa_input::{
     cursor_update, handle_ns_event, qt_key_for_event, qt_modifiers_from_ns_flags,
     reset_cursor_rects, text_input_first_rect, text_input_has_marked_text, text_input_insert,
     text_input_insert_str, text_input_marked_range, text_input_set_marked_str, text_input_unmark,
-    update_tracking_area, NsEventKind,
+    update_tracking_area, NsEventKind, IME_LINE_HEIGHT,
 };
 use ferrokit_platform::{
     CGPoint, ClosureWindowEventHandler, CocoaNativeWindow, CursorShape, Id, KeyboardModifiers,
@@ -634,18 +634,80 @@ fn composition_is_marked_text_that_unmark_or_insert_commits() {
 }
 
 #[test]
-fn candidate_window_is_placed_at_the_ime_focus_in_screen_coordinates() {
+fn candidate_window_sits_at_the_bottom_edge_of_the_caret_line() {
     let (mut win, _log) = window();
     let view = win.ns_view();
-    // Without a focus point: the view's top-left corner, (0, 400) from the window's bottom
-    // left, on a window whose frame starts at (100, 580) from the screen's bottom left.
+    let line = IME_LINE_HEIGHT as f64;
+    // The caret's top-left (0, 0) is (0, 400) from the window's bottom left; the line's bottom
+    // edge is `IME_LINE_HEIGHT` lower, on a window whose frame starts at (100, 580) from the
+    // screen's bottom left. AppKit puts the candidates below the rect's origin.
     let rect = text_input_first_rect(view);
-    assert_eq!((rect.origin.x, rect.origin.y), (100.0, 980.0));
+    assert_eq!((rect.origin.x, rect.origin.y), (100.0, 980.0 - line));
+    assert_eq!((rect.size.width, rect.size.height), (1.0, line));
 
     win.set_ime_focus(Point::new(30, 40));
     let rect = text_input_first_rect(view);
-    assert_eq!((rect.origin.x, rect.origin.y), (130.0, 940.0));
-    assert_eq!((rect.size.width, rect.size.height), (1.0, 1.0));
+    assert_eq!((rect.origin.x, rect.origin.y), (130.0, 940.0 - line));
+    assert_eq!((rect.size.width, rect.size.height), (1.0, line));
+    // The typed line (from the caret's top, y = 940) is inside the rect, not below it.
+    assert_eq!(rect.origin.y + rect.size.height, 940.0);
+}
+
+#[test]
+fn a_key_release_follows_its_press_into_the_input_method() {
+    let (win, log) = window();
+    let view = win.ns_view();
+    let down = |code, text: &str| {
+        handle_ns_event(view, NsEventKind::KeyDown, key_event(code, text, 0, false))
+    };
+    let up = |code, text: &str| {
+        handle_ns_event(view, NsEventKind::KeyUp, key_event(code, text, 0, false))
+    };
+
+    // A press the input method consumed (composition) and its release: neither is seen.
+    text_input_set_marked_str(
+        view,
+        "に",
+        NSRange {
+            location: 1,
+            length: 0,
+        },
+    );
+    take(&log);
+    down(0x00, "a");
+    // The composition ends first (committed text), the release comes after.
+    text_input_insert_str(view, "に");
+    take(&log);
+    up(0x00, "a");
+    assert!(take(&log).is_empty(), "no KeyRelease without a KeyPress");
+
+    // The suppression was one release; the next press and release are delivered.
+    down(0x00, "a");
+    up(0x00, "a");
+    let events = take(&log);
+    assert!(
+        matches!(events[0], WindowSystemEvent::KeyPress { .. }),
+        "{events:?}"
+    );
+    assert!(
+        matches!(events[1], WindowSystemEvent::KeyRelease { .. }),
+        "{events:?}"
+    );
+    assert_eq!(events.len(), 2);
+
+    // Another key pressed before the composition and released during it is still released.
+    down(0x0B, "b");
+    text_input_set_marked_str(
+        view,
+        "x",
+        NSRange {
+            location: 1,
+            length: 0,
+        },
+    );
+    take(&log);
+    up(0x0B, "b");
+    assert!(matches!(only(&log), WindowSystemEvent::KeyRelease { .. }));
 }
 
 #[test]
