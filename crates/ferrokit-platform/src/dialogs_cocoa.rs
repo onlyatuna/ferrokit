@@ -49,8 +49,9 @@ pub trait DialogRuntime {
     fn pool_push(&self) -> Id;
     /// Drains and releases a pool made by [`pool_push`](DialogRuntime::pool_push).
     fn pool_pop(&self, pool: Id);
-    /// `[NSApplication sharedApplication]`: connects the process to the window server.
-    fn shared_application(&self);
+    /// `[NSApplication sharedApplication]`: connects the process to the window server and
+    /// returns the application object (owned by AppKit).
+    fn shared_application(&self) -> Id;
     /// `[Class sel]` returning an autoreleased object (`openPanel`, `savePanel`, `array`).
     fn class_msg(&self, class: &str, sel: &str) -> Id;
     /// `[Class sel:arg]` returning an autoreleased object (`fileURLWithPath:`).
@@ -145,6 +146,23 @@ fn split_initial_path(initial_path: &str) -> (Option<PathBuf>, Option<String>) {
     (dir, name)
 }
 
+/// Releases an object the caller owns (+1) on every exit path, including unwinding.
+struct Owned<'a, R: DialogRuntime> {
+    runtime: &'a R,
+    object: Id,
+}
+
+impl<R: DialogRuntime> Drop for Owned<'_, R> {
+    fn drop(&mut self) {
+        self.runtime.release(self.object);
+    }
+}
+
+/// `NSApplicationActivationPolicyRegular`.
+pub const NS_APPLICATION_ACTIVATION_POLICY_REGULAR: NSInteger = 0;
+/// `NSApplicationActivationPolicyProhibited`: the policy of a bare (unbundled) process.
+pub const NS_APPLICATION_ACTIVATION_POLICY_PROHIBITED: NSInteger = 2;
+
 /// Which panel [`CocoaDialogs::run_panel`] shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PanelKind {
@@ -154,6 +172,9 @@ enum PanelKind {
 }
 
 /// Qt-style static dialogs on AppKit, generic over how Objective-C is reached.
+///
+/// Every [`PlatformDialogs`] method must be called on the main thread (AppKit constraint) and
+/// panics before sending any message otherwise. Each call activates the application first.
 #[derive(Debug, Default)]
 pub struct CocoaDialogs<R> {
     runtime: R,
@@ -171,6 +192,24 @@ impl<R> CocoaDialogs<R> {
 }
 
 impl<R: DialogRuntime> CocoaDialogs<R> {
+    /// Makes the application able to show a key window and brings it forward, so a dialog
+    /// opened from a bare process (or behind other apps) can take focus. A process that already
+    /// has a policy of its own (a bundled app: regular or accessory) keeps it; only a
+    /// prohibited one becomes regular.
+    fn prepare_application(&self) {
+        let rt = &self.runtime;
+        let app = rt.shared_application();
+        if rt.msg_int_return(app, "activationPolicy") == NS_APPLICATION_ACTIVATION_POLICY_PROHIBITED
+        {
+            rt.msg_int(
+                app,
+                "setActivationPolicy:",
+                NS_APPLICATION_ACTIVATION_POLICY_REGULAR,
+            );
+        }
+        rt.msg_bool(app, "activateIgnoringOtherApps:", true);
+    }
+
     fn nsstring(&self, text: &str) -> Id {
         self.runtime.ns_string(text)
     }
@@ -197,7 +236,7 @@ impl<R: DialogRuntime> CocoaDialogs<R> {
         let rt = &self.runtime;
         rt.require_main_thread("CocoaDialogs panel");
         let _pool = Pool::new(rt);
-        rt.shared_application();
+        self.prepare_application();
 
         let panel = match kind {
             PanelKind::SaveFile => rt.class_msg("NSSavePanel", "savePanel"),
@@ -292,7 +331,7 @@ impl<R: DialogRuntime + Send + Sync> PlatformDialogs for CocoaDialogs<R> {
         let rt = &self.runtime;
         rt.require_main_thread("CocoaDialogs::message_box");
         let _pool = Pool::new(rt);
-        rt.shared_application();
+        self.prepare_application();
 
         let table = Self::alert_buttons(buttons);
         // The result when the alert is dismissed without a button (stopped or aborted).
@@ -301,9 +340,21 @@ impl<R: DialogRuntime + Send + Sync> PlatformDialogs for CocoaDialogs<R> {
         if alert.is_nil() {
             return dismissed;
         }
+        // Declared after the pool, so it is released before the pool is popped.
+        let alert = Owned {
+            runtime: rt,
+            object: alert,
+        };
+        let alert = alert.object;
         rt.msg_int(alert, "setAlertStyle:", Self::alert_style(icon));
-        rt.msg_id(alert, "setMessageText:", self.nsstring(title));
-        rt.msg_id(alert, "setInformativeText:", self.nsstring(message));
+        // AppKit shows an empty headline as a generic "Alert"; with no title the body becomes
+        // the headline instead.
+        if !title.is_empty() {
+            rt.msg_id(alert, "setMessageText:", self.nsstring(title));
+            rt.msg_id(alert, "setInformativeText:", self.nsstring(message));
+        } else if !message.is_empty() {
+            rt.msg_id(alert, "setMessageText:", self.nsstring(message));
+        }
         for (title, result) in table {
             let button = rt.msg_id(alert, "addButtonWithTitle:", self.nsstring(title));
             if *result == MessageBoxResult::No {
@@ -312,7 +363,6 @@ impl<R: DialogRuntime + Send + Sync> PlatformDialogs for CocoaDialogs<R> {
             }
         }
         let response = rt.msg_int_return(alert, "runModal");
-        rt.release(alert);
 
         usize::try_from(response - NS_ALERT_FIRST_BUTTON_RETURN)
             .ok()
@@ -418,14 +468,14 @@ mod native {
             unsafe { ObjcMsg::send_0(pool, Sel::register("drain")) };
         }
 
-        fn shared_application(&self) {
+        fn shared_application(&self) -> Id {
             // SAFETY: `+[NSApplication sharedApplication]` returns an object owned by AppKit.
             unsafe {
                 ObjcMsg::send_class_0(
                     objc_get_class("NSApplication"),
                     Sel::register("sharedApplication"),
                 )
-            };
+            }
         }
 
         fn class_msg(&self, class: &str, sel: &str) -> Id {

@@ -28,6 +28,7 @@ struct State {
     allocated: Vec<usize>,
     released: Vec<usize>,
     not_main: bool,
+    policy: NSInteger,
 }
 
 #[derive(Default)]
@@ -91,8 +92,11 @@ impl DialogRuntime for Fake {
             s.log.push("pool pop".into());
         });
     }
-    fn shared_application(&self) {
-        self.with(|s| s.log.push("+[NSApplication sharedApplication]".into()));
+    fn shared_application(&self) -> Id {
+        self.with(|s| {
+            s.log.push("+[NSApplication sharedApplication]".into());
+            id(s.make("NSApp"))
+        })
     }
     fn class_msg(&self, class: &str, sel: &str) -> Id {
         self.with(|s| {
@@ -180,6 +184,9 @@ impl DialogRuntime for Fake {
         let response = self.with(|s| {
             let name = s.name(recv);
             s.log.push(format!("[{name} {sel}]"));
+            if sel == "activationPolicy" {
+                return Some(s.policy);
+            }
             s.responses.pop_front()
         });
         response.expect("a scripted modal response")
@@ -256,6 +263,8 @@ fn open_file_message_sequence_and_result() {
         vec![
             "pool push".to_string(),
             "+[NSApplication sharedApplication]".into(),
+            "[NSApp activationPolicy]".into(),
+            "[NSApp activateIgnoringOtherApps: true]".into(),
             "+[NSOpenPanel openPanel]".into(),
             "[NSOpenPanel setMessage: \"Pick\"]".into(),
             "[NSOpenPanel setCanChooseFiles: true]".into(),
@@ -381,6 +390,8 @@ fn message_box_sequence() {
         vec![
             "pool push".to_string(),
             "+[NSApplication sharedApplication]".into(),
+            "[NSApp activationPolicy]".into(),
+            "[NSApp activateIgnoringOtherApps: true]".into(),
             "[[NSAlert alloc] init]".into(),
             "[NSAlert setAlertStyle: 2]".into(),
             "[NSAlert setMessageText: \"Quit?\"]".into(),
@@ -458,4 +469,94 @@ fn filter_patterns_become_extensions() {
     assert_eq!(f(&["img*"]), None);
     assert_eq!(f(&[]), None);
     assert_eq!(allowed_extensions(None), None);
+}
+
+fn activation_log(policy: NSInteger, run: impl FnOnce(&CocoaDialogs<Fake>)) -> Vec<String> {
+    let d = dialogs();
+    rt(&d).with(|s| s.policy = policy);
+    rt(&d).respond(1000, &[]);
+    run(&d);
+    rt(&d)
+        .log()
+        .into_iter()
+        .filter(|l| l.starts_with("[NSApp"))
+        .collect()
+}
+
+#[test]
+fn prohibited_process_becomes_regular_and_activates_before_the_dialog() {
+    for run in [
+        (|d: &CocoaDialogs<Fake>| {
+            d.message_box("t", "m", DialogIcon::Info, MessageBoxButtons::Ok);
+        }) as fn(&CocoaDialogs<Fake>),
+        |d| {
+            d.select_folder("t", "");
+        },
+    ] {
+        let d = dialogs();
+        rt(&d).with(|s| s.policy = 2);
+        rt(&d).respond(1000, &[]);
+        run(&d);
+        let log = rt(&d).log();
+        let pos = |needle: &str| {
+            log.iter()
+                .position(|l| l == needle)
+                .unwrap_or_else(|| panic!("{needle} missing in {log:?}"))
+        };
+        assert!(pos("[NSApp activationPolicy]") < pos("[NSApp setActivationPolicy: 0]"));
+        assert!(
+            pos("[NSApp setActivationPolicy: 0]") < pos("[NSApp activateIgnoringOtherApps: true]")
+        );
+        assert!(
+            pos("[NSApp activateIgnoringOtherApps: true]")
+                < log.iter().position(|l| l.ends_with("runModal]")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn bundled_app_policy_is_left_alone() {
+    for policy in [0, 1] {
+        let log = activation_log(policy, |d| {
+            d.message_box("t", "m", DialogIcon::Info, MessageBoxButtons::Ok);
+        });
+        assert_eq!(
+            log,
+            vec![
+                "[NSApp activationPolicy]".to_string(),
+                "[NSApp activateIgnoringOtherApps: true]".into()
+            ],
+            "policy {policy}"
+        );
+    }
+}
+
+#[test]
+fn empty_title_uses_the_message_as_headline() {
+    let d = dialogs();
+    rt(&d).respond(1000, &[]);
+    d.message_box("", "Body only", DialogIcon::Info, MessageBoxButtons::Ok);
+    let log = rt(&d).log();
+    assert!(log.contains(&"[NSAlert setMessageText: \"Body only\"]".to_string()));
+    assert!(!log.iter().any(|l| l.contains("setInformativeText:")));
+    assert!(!log.iter().any(|l| l.contains("setMessageText: \"\"")));
+
+    let d = dialogs();
+    rt(&d).respond(1000, &[]);
+    d.message_box("", "", DialogIcon::Info, MessageBoxButtons::Ok);
+    assert!(!rt(&d).log().iter().any(|l| l.contains("Text:")));
+}
+
+#[test]
+fn alert_is_released_before_the_pool_pops_when_run_modal_panics() {
+    // No scripted response: the fake panics inside `runModal`.
+    let d = dialogs();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        d.message_box("t", "m", DialogIcon::Info, MessageBoxButtons::Ok)
+    }));
+    assert!(result.is_err());
+    let log = rt(&d).log();
+    let n = log.len();
+    assert_eq!(&log[n - 2..], ["release", "pool pop"]);
+    assert_balanced(rt(&d));
 }

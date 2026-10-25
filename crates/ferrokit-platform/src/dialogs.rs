@@ -31,6 +31,9 @@ pub struct FileFilter {
 }
 
 /// Synchronous native dialog operations provided by the platform backend.
+///
+/// On macOS every method must be called on the main thread (AppKit constraint) and panics
+/// otherwise, before any dialog is created. Other platforms accept calls from any thread.
 pub trait PlatformDialogs: Send + Sync {
     fn message_box(
         &self,
