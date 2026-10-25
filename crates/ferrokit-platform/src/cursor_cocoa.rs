@@ -40,12 +40,15 @@ mod native {
     use std::ffi::c_void;
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CGEventCreate(source: *const c_void) -> *mut c_void;
         fn CGEventGetLocation(event: *const c_void) -> CGPoint;
         fn CGWarpMouseCursorPosition(new_cursor_position: CGPoint) -> i32;
         fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
         fn CFRelease(object: *const c_void);
     }
 

@@ -158,7 +158,7 @@ fn rejected_write_reports_an_error() {
 #[test]
 fn foreign_and_unknown_types_are_handled_on_read() {
     let (cb, pb) = clipboard();
-    pb.foreign_write("public.url", b"http://x");
+    pb.foreign_write("com.example.opaque", b"http://x");
     assert_eq!(cb.mime_data().unwrap(), MimeData::new());
     pb.foreign_write("public.utf8-plain-text", b"outside");
     assert_eq!(cb.text().unwrap(), "outside");
@@ -186,6 +186,50 @@ fn data_changed_follows_the_change_count() {
     cb.clear().unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 3);
     assert_eq!(cb.change_count(), 3);
+}
+
+#[test]
+fn url_and_legacy_and_utf16_types_are_read() {
+    let (cb, pb) = clipboard();
+    pb.foreign_write("public.file-url", b"file:///tmp/a.txt");
+    assert_eq!(
+        cb.mime_data().unwrap().data("text/uri-list"),
+        Some(&b"file:///tmp/a.txt"[..])
+    );
+    pb.foreign_write("public.url", b"https://example.com/");
+    assert!(cb.mime_data().unwrap().has_format("text/uri-list"));
+
+    pb.foreign_write("NSStringPboardType", "legacy \u{e9}".as_bytes());
+    assert_eq!(cb.text().unwrap(), "legacy \u{e9}");
+    pb.foreign_write("NSStringPboardType", &[0xE9, 0xFF]);
+    assert_eq!(
+        cb.mime_data().unwrap(),
+        MimeData::new(),
+        "non-UTF-8 legacy data is skipped"
+    );
+
+    let utf16: Vec<u8> = "h\u{e9}\u{1f680}"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    pb.foreign_write("public.utf16-plain-text", &utf16);
+    assert_eq!(cb.text().unwrap(), "h\u{e9}\u{1f680}");
+    let mut bom = vec![0xFE, 0xFF];
+    bom.extend("hi".encode_utf16().flat_map(u16::to_be_bytes));
+    pb.foreign_write("public.utf16-plain-text", &bom);
+    assert_eq!(cb.text().unwrap(), "hi");
+}
+
+#[test]
+fn utf8_text_wins_over_fallback_types() {
+    let (cb, pb) = clipboard();
+    {
+        let mut s = pb.state.lock().unwrap();
+        s.items.push(("NSStringPboardType".into(), b"old".to_vec()));
+        s.items
+            .push(("public.utf8-plain-text".into(), b"new".to_vec()));
+    }
+    assert_eq!(cb.text().unwrap(), "new");
 }
 
 struct FakeMouse {

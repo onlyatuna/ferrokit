@@ -286,6 +286,15 @@ pub fn qcocoa_application_delegate() -> Id {
             unsafe { ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1) };
         }
     }
+    // `-applicationDidBecomeActive:`: report a pasteboard change made while the application was in
+    // the background (`dataChanged`); AppKit has no change notification.
+    extern "C" fn did_become_active(
+        _this: *mut c_void,
+        _cmd: *const c_void,
+        _notification: *mut c_void,
+    ) {
+        crate::clipboard_cocoa::CocoaClipboard::new().poll_changes();
+    }
     static DELEGATE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
         let mut class = objc_get_class("QCocoaApplicationDelegate");
         if class.is_nil() {
@@ -299,6 +308,12 @@ pub fn qcocoa_application_delegate() -> Id {
                 raw,
                 Sel::register("applicationDidFinishLaunching:").0,
                 did_finish_launching as *const c_void,
+                c"v@:@".as_ptr(),
+            );
+            native_bindings::class_addMethod(
+                raw,
+                Sel::register("applicationDidBecomeActive:").0,
+                did_become_active as *const c_void,
                 c"v@:@".as_ptr(),
             );
             native_bindings::objc_registerClassPair(raw);

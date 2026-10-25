@@ -44,6 +44,46 @@ const SYSTEM_TYPES: [(&str, &str); 5] = [
     ("image/jpeg", "public.jpeg"),
 ];
 
+/// Pasteboard types read as `text/uri-list`, best first (`NSPasteboardTypeFileURL`,
+/// `NSPasteboardTypeURL`); the data is the URL as UTF-8 text.
+const URL_TYPES: [&str; 2] = ["public.file-url", "public.url"];
+
+/// Legacy `NSStringPboardType` ('NSStringPboardType', historically 'NXStringPboardType').
+const LEGACY_STRING_TYPES: [&str; 2] = ["NSStringPboardType", "NXStringPboardType"];
+
+/// UTF-16 text (`public.utf16-plain-text`; native byte order on macOS, i.e. little endian unless
+/// a byte order mark says otherwise) and legacy string types, as UTF-8 text. Legacy data that is
+/// not valid UTF-8 (a system script encoding) is skipped.
+fn fallback_text(backend: &dyn PasteboardBackend) -> Option<String> {
+    if let Some(bytes) = backend.data_for_type("public.utf16-plain-text") {
+        let big_endian = bytes.starts_with(&[0xFE, 0xFF]);
+        let body = if big_endian || bytes.starts_with(&[0xFF, 0xFE]) {
+            &bytes[2..]
+        } else {
+            &bytes[..]
+        };
+        let units: Vec<u16> = body
+            .chunks(2)
+            .filter(|pair| pair.len() == 2)
+            .map(|pair| {
+                let pair = [pair[0], pair[1]];
+                if big_endian {
+                    u16::from_be_bytes(pair)
+                } else {
+                    u16::from_le_bytes(pair)
+                }
+            })
+            .collect();
+        if let Ok(text) = String::from_utf16(&units) {
+            return Some(text);
+        }
+    }
+    LEGACY_STRING_TYPES
+        .iter()
+        .find_map(|ty| backend.data_for_type(ty))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
 /// The pasteboard type a MIME type is stored under.
 pub fn pasteboard_type_for_mime(mime: &str) -> String {
     SYSTEM_TYPES
@@ -98,9 +138,19 @@ const _: fn() = || {
 };
 
 /// `QCocoaClipboard`: the general pasteboard as a [`PlatformClipboard`].
+///
+/// AppKit has no pasteboard change notification, so outside changes are detected by comparing
+/// `changeCount` in [`poll_changes`](Self::poll_changes) only.
 #[derive(Clone)]
 pub struct CocoaClipboard {
     state: Arc<ChangeState>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for CocoaClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CocoaClipboard {
@@ -108,7 +158,7 @@ impl CocoaClipboard {
     #[cfg(target_os = "macos")]
     pub fn new() -> Self {
         static SHARED: LazyLock<Arc<ChangeState>> =
-            LazyLock::new(|| ChangeState::new(Arc::new(native::NsPasteboard::new())));
+            LazyLock::new(|| ChangeState::new(Arc::new(native::NsPasteboard::default())));
         Self {
             state: Arc::clone(&SHARED),
         }
@@ -121,8 +171,11 @@ impl CocoaClipboard {
         }
     }
 
-    /// `QClipboard::dataChanged`. Emitted by [`poll_changes`](Self::poll_changes) and after every
-    /// write made through this clipboard.
+    /// `QClipboard::dataChanged`. Emitted after every write or clear made through this clipboard
+    /// and, for changes made by other applications, only when
+    /// [`poll_changes`](Self::poll_changes) runs: on macOS the application delegate calls it from
+    /// `applicationDidBecomeActive:` (as Qt does), so a copy made in another application is
+    /// reported when the user switches back, not while this application stays in the background.
     pub fn data_changed(&self) -> &Signal<()> {
         &self.state.data_changed
     }
@@ -132,10 +185,9 @@ impl CocoaClipboard {
         self.state.backend.change_count()
     }
 
-    /// Emits [`data_changed`](Self::data_changed) when another application (or this one) changed
-    /// the pasteboard since the last check; returns whether it did. AppKit has no change
-    /// notification, so the owner of the event loop calls this (Qt checks on application
-    /// activation).
+    /// Emits [`data_changed`](Self::data_changed) when the pasteboard changed since the last
+    /// check; returns whether it did. Called by the application delegate when the application
+    /// becomes active; call it from a timer to report outside changes sooner.
     pub fn poll_changes(&self) -> bool {
         self.state.poll()
     }
@@ -171,6 +223,18 @@ impl PlatformClipboard for CocoaClipboard {
             }
             if let Some(bytes) = backend.data_for_type(&ty) {
                 mime_data.set_data(mime, bytes);
+            }
+        }
+        // Types other applications put on the pasteboard that have a MIME counterpart but are
+        // not stored by `set_mime_data`: used only when no better type supplied the MIME type.
+        if !mime_data.has_format("text/plain") {
+            if let Some(text) = fallback_text(backend.as_ref()) {
+                mime_data.set_text(&text);
+            }
+        }
+        if !mime_data.has_format("text/uri-list") {
+            if let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty)) {
+                mime_data.set_data("text/uri-list", url);
             }
         }
         Ok(mime_data)
@@ -254,17 +318,12 @@ mod native {
     ///
     /// `NSPasteboard` is not documented as thread safe and the trait is `Send + Sync`, so every
     /// operation takes `lock`.
+    #[derive(Default)]
     pub struct NsPasteboard {
         lock: Mutex<()>,
     }
 
     impl NsPasteboard {
-        pub fn new() -> Self {
-            Self {
-                lock: Mutex::new(()),
-            }
-        }
-
         /// The general pasteboard singleton (autoreleased, so only valid inside the caller's
         /// [`Pool`]).
         fn general() -> Id {
