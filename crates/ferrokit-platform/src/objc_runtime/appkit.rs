@@ -949,6 +949,12 @@ mod native {
     ns_event_imp!(mouse_down, NsEventKind::MouseDown);
     ns_event_imp!(mouse_up, NsEventKind::MouseUp);
     ns_event_imp!(mouse_dragged, NsEventKind::MouseDragged);
+    ns_event_imp!(right_mouse_down, NsEventKind::RightMouseDown);
+    ns_event_imp!(right_mouse_up, NsEventKind::RightMouseUp);
+    ns_event_imp!(right_mouse_dragged, NsEventKind::RightMouseDragged);
+    ns_event_imp!(other_mouse_down, NsEventKind::OtherMouseDown);
+    ns_event_imp!(other_mouse_up, NsEventKind::OtherMouseUp);
+    ns_event_imp!(other_mouse_dragged, NsEventKind::OtherMouseDragged);
     ns_event_imp!(mouse_moved, NsEventKind::MouseMoved);
     ns_event_imp!(mouse_entered, NsEventKind::MouseEntered);
     ns_event_imp!(mouse_exited, NsEventKind::MouseExited);
@@ -1117,12 +1123,12 @@ mod native {
             ("mouseDown:", mouse_down as *const c_void),
             ("mouseUp:", mouse_up as *const c_void),
             ("mouseDragged:", mouse_dragged as *const c_void),
-            ("rightMouseDown:", mouse_down as *const c_void),
-            ("rightMouseUp:", mouse_up as *const c_void),
-            ("rightMouseDragged:", mouse_dragged as *const c_void),
-            ("otherMouseDown:", mouse_down as *const c_void),
-            ("otherMouseUp:", mouse_up as *const c_void),
-            ("otherMouseDragged:", mouse_dragged as *const c_void),
+            ("rightMouseDown:", right_mouse_down as *const c_void),
+            ("rightMouseUp:", right_mouse_up as *const c_void),
+            ("rightMouseDragged:", right_mouse_dragged as *const c_void),
+            ("otherMouseDown:", other_mouse_down as *const c_void),
+            ("otherMouseUp:", other_mouse_up as *const c_void),
+            ("otherMouseDragged:", other_mouse_dragged as *const c_void),
             ("mouseMoved:", mouse_moved as *const c_void),
             ("mouseEntered:", mouse_entered as *const c_void),
             ("mouseExited:", mouse_exited as *const c_void),

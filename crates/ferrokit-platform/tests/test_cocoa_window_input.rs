@@ -105,19 +105,18 @@ fn mods(shift: bool, control: bool, alt: bool, meta: bool) -> KeyboardModifiers 
 fn mouse_press_and_release_report_top_left_logical_positions_and_every_button() {
     let (win, log) = window();
     let view = win.ns_view();
+    // The method names the left and right buttons (`buttonNumber` is not consulted, so it is 0
+    // here, as it can be on a synthetic event); `buttonNumber` names the other buttons.
+    use NsEventKind::*;
     let buttons = [
-        (0, MouseButton::Left),
-        (1, MouseButton::Right),
-        (2, MouseButton::Middle),
-        (3, MouseButton::Other(3)),
-        (4, MouseButton::Other(4)),
+        (MouseDown, MouseUp, 0, MouseButton::Left),
+        (RightMouseDown, RightMouseUp, 0, MouseButton::Right),
+        (OtherMouseDown, OtherMouseUp, 2, MouseButton::Middle),
+        (OtherMouseDown, OtherMouseUp, 3, MouseButton::Other(3)),
+        (OtherMouseDown, OtherMouseUp, 4, MouseButton::Other(4)),
     ];
-    for (number, expected) in buttons {
-        assert!(handle_ns_event(
-            view,
-            NsEventKind::MouseDown,
-            at_50_80(number, 0)
-        ));
+    for (down, up, number, expected) in buttons {
+        assert!(handle_ns_event(view, down, at_50_80(number, 0)));
         let press = only(&log);
         assert_eq!(press_button(&press), expected);
         let WindowSystemEvent::MousePress {
@@ -141,11 +140,7 @@ fn mouse_press_and_release_report_top_left_logical_positions_and_every_button() 
         );
         assert_eq!(modifiers, KeyboardModifiers::default());
 
-        assert!(handle_ns_event(
-            view,
-            NsEventKind::MouseUp,
-            at_50_80(number, 0)
-        ));
+        assert!(handle_ns_event(view, up, at_50_80(number, 0)));
         assert_eq!(
             only(&log),
             WindowSystemEvent::MouseRelease {
@@ -259,9 +254,9 @@ fn moves_report_the_buttons_held_and_enter_and_exit_become_move_and_leave() {
     );
 
     handle_ns_event(view, NsEventKind::MouseDown, at_50_80(0, 0));
-    handle_ns_event(view, NsEventKind::MouseDown, at_50_80(1, 0));
+    handle_ns_event(view, NsEventKind::RightMouseDown, at_50_80(1, 0));
     take(&log);
-    handle_ns_event(view, NsEventKind::MouseDragged, at_50_80(0, 0));
+    handle_ns_event(view, NsEventKind::RightMouseDragged, at_50_80(1, 0));
     let held = buttons_of(&only(&log));
     assert!(held.contains(MouseButtons::LEFT) && held.contains(MouseButtons::RIGHT));
 

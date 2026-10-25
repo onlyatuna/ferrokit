@@ -53,6 +53,12 @@ pub enum NsEventKind {
     MouseDown,
     MouseUp,
     MouseDragged,
+    RightMouseDown,
+    RightMouseUp,
+    RightMouseDragged,
+    OtherMouseDown,
+    OtherMouseUp,
+    OtherMouseDragged,
     MouseMoved,
     MouseEntered,
     MouseExited,
@@ -582,12 +588,26 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
     let flags = unsafe { ObjcMsg::send_nsuinteger_return(event, sel("modifierFlags")) };
     let modifiers = qt_modifiers_from_ns_flags(flags);
     match kind {
-        NsEventKind::MouseDown | NsEventKind::MouseUp => {
+        NsEventKind::MouseDown
+        | NsEventKind::MouseUp
+        | NsEventKind::RightMouseDown
+        | NsEventKind::RightMouseUp
+        | NsEventKind::OtherMouseDown
+        | NsEventKind::OtherMouseUp => {
             let Some((local, origin)) = locate(view, event) else {
                 return false;
             };
-            let mut button = button_number(event);
-            let pressed = kind == NsEventKind::MouseDown;
+            // The method the event came through names the button; `buttonNumber` is only
+            // consulted for the extra buttons (it is not reliable for every kind of event).
+            let mut button = match kind {
+                NsEventKind::MouseDown | NsEventKind::MouseUp => 0,
+                NsEventKind::RightMouseDown | NsEventKind::RightMouseUp => 1,
+                _ => button_number(event),
+            };
+            let pressed = matches!(
+                kind,
+                NsEventKind::MouseDown | NsEventKind::RightMouseDown | NsEventKind::OtherMouseDown
+            );
             // Control-click is a right click on macOS; its release must match (Qt mouseDown:).
             let control = flags & NS_EVENT_MODIFIER_FLAG_CONTROL != 0;
             let ctrl_as_right = with_slot(view, |slot| {
@@ -619,7 +639,11 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
             };
             dispatch(view, native, origin)
         }
-        NsEventKind::MouseDragged | NsEventKind::MouseMoved | NsEventKind::MouseEntered => {
+        NsEventKind::MouseDragged
+        | NsEventKind::RightMouseDragged
+        | NsEventKind::OtherMouseDragged
+        | NsEventKind::MouseMoved
+        | NsEventKind::MouseEntered => {
             let Some((local, origin)) = locate(view, event) else {
                 return false;
             };
