@@ -77,6 +77,7 @@ assert_thread_affine!(
     crate::menu::DBusMenu,
     crate::tray::CocoaStatusItem,
     crate::tray::DbusStatusNotifierItem,
+    crate::hotkey::CocoaHotkeyManager,
 );
 
 #[test]
