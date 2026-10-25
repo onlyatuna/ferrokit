@@ -23,6 +23,8 @@ type TopLevelCloser = Rc<dyn Fn() -> bool>;
 thread_local! {
     static TOP_LEVEL_WINDOWS: RefCell<Vec<(ObjectId, TopLevelCloser)>> = const { RefCell::new(Vec::new()) };
     static VISIBLE_WINDOWS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    /// `(window, its transient parent)` (`QWindow::transientParent`).
+    static TRANSIENT_PARENTS: RefCell<Vec<(ObjectId, ObjectId)>> = const { RefCell::new(Vec::new()) };
     static ACTIVE_WINDOW_ID: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
     static FOCUS_ENTRIES: RefCell<Vec<FocusEntry>> = const { RefCell::new(Vec::new()) };
     static FOCUS_SEQ: Cell<u64> = const { Cell::new(0) };
@@ -262,6 +264,8 @@ impl Application {
             .flatten();
         drop(removed);
         let _ = VISIBLE_WINDOWS.try_with(|vis| vis.borrow_mut().retain(|&id| id != window_id));
+        let _ = TRANSIENT_PARENTS
+            .try_with(|links| links.borrow_mut().retain(|&(w, p)| w != window_id && p != window_id));
         let _ = ACTIVE_WINDOW_ID.try_with(|act| {
             let mut curr = act.borrow_mut();
             if *curr == Some(window_id) {
@@ -281,6 +285,54 @@ impl Application {
         });
     }
 
+    /// `QWindow::setTransientParent`: `parent` becomes the transient parent of `window`, `None`
+    /// removes it. A parent that has `window` among its own transient parents would make a cycle
+    /// and is refused, and `false` is returned.
+    pub(crate) fn set_transient_parent(window_id: ObjectId, parent: Option<ObjectId>) -> bool {
+        let mut ancestor = parent;
+        while let Some(id) = ancestor {
+            if id == window_id {
+                return false;
+            }
+            ancestor = Self::transient_parent_of(id);
+        }
+        let _ = TRANSIENT_PARENTS.try_with(|links| {
+            let mut links = links.borrow_mut();
+            links.retain(|&(w, _)| w != window_id);
+            if let Some(parent) = parent {
+                links.push((window_id, parent));
+            }
+        });
+        true
+    }
+
+    /// `QWindow::transientParent` of a top-level window.
+    pub(crate) fn transient_parent_of(window_id: ObjectId) -> Option<ObjectId> {
+        TRANSIENT_PARENTS
+            .try_with(|links| {
+                links
+                    .borrow()
+                    .iter()
+                    .find(|&&(w, _)| w == window_id)
+                    .map(|&(_, p)| p)
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// Whether a primary window is shown: one that takes part in `lastWindowClosed`, which a
+    /// window with a transient parent does not (`QGuiApplicationPrivate::lastWindowClosed`,
+    /// `QWindowPrivate::participatesInLastWindowClosed`).
+    fn any_primary_window_visible() -> bool {
+        VISIBLE_WINDOWS
+            .try_with(|vis| {
+                vis.borrow()
+                    .iter()
+                    .any(|&id| Self::transient_parent_of(id).is_none())
+            })
+            .unwrap_or(false)
+    }
+
     /// Whether a top-level window is shown. An unregistered window is not.
     pub(crate) fn is_window_visible(window_id: ObjectId) -> bool {
         VISIBLE_WINDOWS
@@ -293,7 +345,7 @@ impl Application {
     /// If `quitOnLastWindowClosed` is set, the application quits. `quit` does nothing outside `exec`,
     /// as `canQuitAutomatically` requires (qcoreapplication.cpp:2074-2089).
     pub(crate) fn maybe_last_window_closed() {
-        if !Self::any_window_visible() {
+        if !Self::any_primary_window_visible() {
             GuiApplication::emit_last_window_closed();
             if GuiApplication::quit_on_last_window_closed() {
                 Self::quit();

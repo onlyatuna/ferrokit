@@ -48,6 +48,8 @@ pub mod window_cocoa;
 pub mod window_system_interface;
 pub mod window_wayland;
 pub mod window_x11;
+#[cfg(windows)]
+mod window_region;
 #[cfg(test)]
 mod thread_affinity;
 pub use single_instance::*;
