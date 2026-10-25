@@ -666,8 +666,29 @@ pub trait Widget: QObject + 'static {
         AccessibleRole::Custom
     }
 
+    /// `QWidget::accessibleName`, falling back to the object name.
     fn accessible_name(&self) -> String {
-        QObject::object_name(self).unwrap_or_default().to_owned()
+        let explicit = self.widget_base().accessible_name.borrow();
+        if explicit.is_empty() {
+            QObject::object_name(self).unwrap_or_default().to_owned()
+        } else {
+            explicit.clone()
+        }
+    }
+
+    /// `QWidget::setAccessibleName`.
+    fn set_accessible_name(&self, name: &str) {
+        *self.widget_base().accessible_name.borrow_mut() = name.to_owned();
+    }
+
+    /// `QWidget::accessibleDescription`.
+    fn accessible_description(&self) -> String {
+        self.widget_base().accessible_description.borrow().clone()
+    }
+
+    /// `QWidget::setAccessibleDescription`.
+    fn set_accessible_description(&self, description: &str) {
+        *self.widget_base().accessible_description.borrow_mut() = description.to_owned();
     }
 
     fn accessible_value(&self) -> Option<String> {
@@ -802,6 +823,286 @@ pub trait Widget: QObject + 'static {
             self.widget_base().set_mask(&Region::new());
         }
     }
+
+    /// `QWidget::underMouse`: the cursor is over this widget or a child of it (`WA_UnderMouse`).
+    fn under_mouse(&self) -> bool {
+        self.widget_base().under_mouse.get()
+    }
+
+    /// `QWidget::raise`: puts the widget on top of its siblings.
+    fn raise(&self) {
+        restack(self, true);
+    }
+
+    /// `QWidget::lower`: puts the widget below its siblings.
+    fn lower(&self) {
+        restack(self, false);
+    }
+
+    /// `QWidget::ensurePolished`: sends `Polish` once, then polishes the children, then tells the
+    /// parent with `ChildPolished` (qwidget.cpp:10209-10235). A child that is borrowed right now
+    /// is skipped; it polishes itself when asked again.
+    fn ensure_polished(&self) {
+        let base = self.widget_base();
+        if base.polished.replace(true) {
+            return;
+        }
+        filters_consume(self.object_data(), &mut Event::new(EventKind::Polish));
+        for child in self.children() {
+            if let Ok(c) = child.try_borrow() {
+                c.ensure_polished();
+            }
+        }
+        if let Some(parent) = self.parent_widget().and_then(|p| p.upgrade()) {
+            let mut ev = Event::new(EventKind::ChildPolished { child_id: self.id() });
+            if let Ok(mut p) = parent.try_borrow_mut() {
+                notify_borrowed(&mut **p, &mut ev);
+            } else if let Ok(p) = parent.try_borrow() {
+                // The parent is polishing its children right now: its filters still see it.
+                filters_consume(p.object_data(), &mut ev);
+            }
+        }
+    }
+
+    /// `QWidget::isAncestorOf`: `child` is a descendant of this widget (not the widget itself).
+    fn is_ancestor_of(&self, child: &dyn Widget) -> bool {
+        let me = self.id();
+        let mut parent = child.parent_widget().and_then(|p| p.upgrade());
+        while let Some(p) = parent {
+            let Ok(w) = p.try_borrow() else {
+                // A widget borrowed on the stack is the one running this call: this widget.
+                return true;
+            };
+            if w.id() == me {
+                return true;
+            }
+            parent = w.parent_widget().and_then(|p| p.upgrade());
+        }
+        false
+    }
+
+    /// `QWidget::mapToParent`.
+    fn map_to_parent(&self, pos: Point) -> Point {
+        let g = self.geometry();
+        Point::new(pos.x + g.x, pos.y + g.y)
+    }
+
+    /// `QWidget::mapFromParent`.
+    fn map_from_parent(&self, pos: Point) -> Point {
+        let g = self.geometry();
+        Point::new(pos.x - g.x, pos.y - g.y)
+    }
+
+    /// `QWidget::mapToGlobal`: through every ancestor, then the client origin of the native
+    /// window. A widget not in a shown window maps relative to its tree root.
+    fn map_to_global(&self, pos: Point) -> Point {
+        let (origin, offset) = tree_origin(self);
+        Point::new(pos.x + offset.x + origin.x, pos.y + offset.y + origin.y)
+    }
+
+    /// `QWidget::mapFromGlobal`.
+    fn map_from_global(&self, pos: Point) -> Point {
+        let (origin, offset) = tree_origin(self);
+        Point::new(pos.x - offset.x - origin.x, pos.y - offset.y - origin.y)
+    }
+
+    /// `QWidget::grabMouse`: the widget gets every mouse event of its window until
+    /// `release_mouse`, wherever the cursor is.
+    fn grab_mouse(&self) {
+        MOUSE_GRABBER.with(|g| g.set(Some(self.id())));
+    }
+
+    /// `QWidget::releaseMouse`: a no-op when this widget does not hold the grab.
+    fn release_mouse(&self) {
+        let me = self.id();
+        MOUSE_GRABBER.with(|g| {
+            if g.get() == Some(me) {
+                g.set(None);
+            }
+        });
+    }
+
+    /// `QWidget::mouseGrabber() == this`.
+    fn is_mouse_grabber(&self) -> bool {
+        MOUSE_GRABBER.with(|g| g.get()) == Some(self.id())
+    }
+}
+
+/// The `pos`, `size` and `geometry` properties `QPropertyAnimation` drives (`QWidget::pos`,
+/// `size`, `geometry`), as a `QObject::property` would read them.
+pub fn widget_property<W: Widget + ?Sized>(w: &W, name: &str) -> Option<ferrokit_core::variant::Variant> {
+    use ferrokit_core::variant::Variant;
+    let g = w.geometry();
+    match name {
+        "pos" => Some(Variant::Point(g.x, g.y)),
+        "size" => Some(Variant::Size(g.width, g.height)),
+        "geometry" => Some(Variant::Rect(g.x, g.y, g.width, g.height)),
+        _ => None,
+    }
+}
+
+/// Writes `pos` (`QWidget::move`), `size` (`resize`) or `geometry` (`setGeometry`). Returns
+/// false for any other name or a value of the wrong type, so the caller falls through to the
+/// default `QObject::setProperty`.
+pub fn set_widget_property<W: Widget + ?Sized>(
+    w: &W,
+    name: &str,
+    value: &ferrokit_core::variant::Variant,
+) -> bool {
+    use ferrokit_core::variant::Variant;
+    let g = w.geometry();
+    let round = |v: f32| v.round() as i32;
+    let rect = match (name, value) {
+        ("pos", Variant::Point(x, y)) => Rect::new(*x, *y, g.width, g.height),
+        ("pos", Variant::PointF(x, y)) => Rect::new(round(*x), round(*y), g.width, g.height),
+        ("size", Variant::Size(width, height)) => Rect::new(g.x, g.y, *width, *height),
+        ("size", Variant::SizeF(width, height)) => {
+            Rect::new(g.x, g.y, round(*width), round(*height))
+        }
+        ("geometry", Variant::Rect(x, y, width, height)) => Rect::new(*x, *y, *width, *height),
+        ("geometry", Variant::RectF(x, y, width, height)) => {
+            Rect::new(round(*x), round(*y), round(*width), round(*height))
+        }
+        _ => return false,
+    };
+    w.set_geometry(rect);
+    true
+}
+
+/// Put inside `impl QObject for T` of a widget `T`: serves the `pos`, `size` and `geometry`
+/// properties so that a `PropertyAnimation` can target the widget.
+macro_rules! widget_object_properties {
+    () => {
+        fn property(&self, name: &str) -> Option<ferrokit_core::variant::Variant> {
+            crate::widget::widget_property(self, name)
+                .or_else(|| ferrokit_core::object::default_property(self, name))
+        }
+
+        fn set_property(&mut self, name: &str, value: ferrokit_core::variant::Variant) -> bool {
+            crate::widget::set_widget_property(&*self, name, &value)
+                || ferrokit_core::object::default_set_property(self, name, value)
+        }
+    };
+}
+pub(crate) use widget_object_properties;
+
+impl dyn Widget {
+    /// Runs `f` on the installed layout when it is a `L` (`QWidget::layout()` plus a downcast).
+    /// Takes `&self`, so it works on a widget that is only shared; `None` when there is no layout,
+    /// it is another type, or it is already being mutated (a layout handler running).
+    pub fn with_layout_as<L: Layout, R>(&self, f: impl FnOnce(&mut L) -> R) -> Option<R> {
+        let mut layout = self.layout_ref_mut()?;
+        layout.as_any_mut().downcast_mut::<L>().map(f)
+    }
+
+    /// `with_layout_as` for a `QBoxLayout` (`insertWidget`, `setDirection`, `takeAt`, ...).
+    pub fn with_box_layout<R>(&self, f: impl FnOnce(&mut crate::layout::BoxLayout) -> R) -> Option<R> {
+        self.with_layout_as(f)
+    }
+}
+
+thread_local! {
+    /// `QWidgetPrivate::mouseGrabber`: the widget that called `grab_mouse`.
+    static MOUSE_GRABBER: Cell<Option<ObjectId>> = const { Cell::new(None) };
+}
+
+/// The widget holding the mouse grab (`QWidget::mouseGrabber`), if any.
+pub fn mouse_grabber_id() -> Option<ObjectId> {
+    MOUSE_GRABBER.with(|g| g.get())
+}
+
+/// The offset of `w`'s origin in its tree root's coordinates, and the client origin of the root's
+/// native window in desktop coordinates (zero when the root is not a native window's root).
+fn tree_origin<W: Widget + ?Sized>(w: &W) -> (Point, Point) {
+    let mut offset = Point::new(0, 0);
+    let mut cur = w.parent_widget().and_then(|p| p.upgrade());
+    let mut g = w.geometry();
+    let mut window_id = w.window_id();
+    // Walk up: add the geometry origin of every widget that has a parent.
+    let mut has_parent = cur.is_some();
+    while has_parent {
+        offset = Point::new(offset.x + g.x, offset.y + g.y);
+        let Some(p) = cur.take() else { break };
+        let Ok(pw) = p.try_borrow() else { break };
+        g = pw.geometry();
+        window_id = pw.window_id().or(window_id);
+        cur = pw.parent_widget().and_then(|x| x.upgrade());
+        has_parent = cur.is_some();
+    }
+    let origin = window_id
+        .and_then(crate::window::window_client_origin)
+        .unwrap_or(Point::new(0, 0));
+    (origin, offset)
+}
+
+/// `QWidget::raise` / `lower` (qwidget.cpp:12036-12066): moves the widget to the end (or start) of
+/// its parent's child list, repaints it and sends `ZOrderChange`. A widget without a parent is a
+/// window; its stacking belongs to the window system and nothing changes here.
+fn restack<W: Widget + ?Sized>(w: &W, to_top: bool) {
+    let Some(parent) = w.parent_widget().and_then(|p| p.upgrade()) else {
+        return;
+    };
+    let id = w.id();
+    let done = restack_in(&parent, id, Some(w.widget_base()), to_top);
+    if !done {
+        // Another sibling is borrowed too, so the widget cannot be told from it; retry when no
+        // handler is running.
+        let weak = Rc::downgrade(&parent);
+        crate::command::WidgetCommandQueue::post_task(move || {
+            if let Some(parent) = weak.upgrade() {
+                restack_in(&parent, id, None, to_top);
+            }
+        });
+    }
+}
+
+/// Moves child `id` of `parent`. `me` is the caller's base when it is borrowed right now, so the
+/// one entry that cannot be borrowed is known to be that widget. Returns false when the entry could
+/// not be identified.
+fn restack_in(parent: &WidgetRef, id: ObjectId, me: Option<&WidgetBase>, to_top: bool) -> bool {
+    let Ok(p) = parent.try_borrow() else {
+        return false;
+    };
+    let order = p.children();
+    let mut unborrowable = Vec::new();
+    let mut at = None;
+    for (i, c) in order.iter().enumerate() {
+        match c.try_borrow() {
+            Ok(cw) => {
+                if cw.id() == id {
+                    at = Some(i);
+                    break;
+                }
+            }
+            Err(_) => unborrowable.push(i),
+        }
+    }
+    let at = match (at, me, unborrowable.as_slice()) {
+        (Some(i), _, _) => i,
+        (None, Some(_), [only]) => *only,
+        _ => return false,
+    };
+    if order.len() < 2 {
+        return true;
+    }
+    let target = if to_top { order.len() - 1 } else { 0 };
+    if at == target {
+        return true;
+    }
+    // The full order (layout children included) becomes the explicit child list, so the new
+    // position holds whatever the layout does.
+    let mut order = order;
+    let moved = order.remove(at);
+    order.insert(target, moved.clone());
+    *p.widget_base().children.borrow_mut() = order;
+    p.widget_base().update();
+    drop(p);
+    if let Ok(mut m) = moved.try_borrow_mut() {
+        notify_borrowed(&mut **m, &mut Event::new(EventKind::ZOrderChange));
+    } else if let Ok(m) = moved.try_borrow() {
+        filters_consume(m.object_data(), &mut Event::new(EventKind::ZOrderChange));
+    }
+    true
 }
 
 pub struct WidgetBase {
@@ -861,6 +1162,13 @@ pub struct WidgetBase {
     /// The last `remove_child` met a child that is borrowed, so it could not tell whether that
     /// child was the one to remove. The caller that has the parent handle retries later.
     pub(crate) removal_incomplete: Cell<bool>,
+    /// `WA_UnderMouse`: toggled by `Enter` / `Leave` delivery (qapplication.cpp:3246-3254).
+    pub(crate) under_mouse: Cell<bool>,
+    /// `QWidgetPrivate::polished`: `ensure_polished` already ran.
+    pub(crate) polished: Cell<bool>,
+    /// `QWidget::accessibleName` / `accessibleDescription`.
+    pub(crate) accessible_name: RefCell<String>,
+    pub(crate) accessible_description: RefCell<String>,
 }
 
 impl WidgetBase {
@@ -900,6 +1208,10 @@ impl WidgetBase {
             explicit_max: Cell::new((false, false)),
             layout_epoch: Cell::new(0),
             removal_incomplete: Cell::new(false),
+            under_mouse: Cell::new(false),
+            polished: Cell::new(false),
+            accessible_name: RefCell::new(String::new()),
+            accessible_description: RefCell::new(String::new()),
         }
     }
     /// Unique object identifier.
@@ -1156,6 +1468,7 @@ impl WidgetBase {
     pub fn test_attribute(&self, attr: WidgetAttribute) -> bool {
         match attr {
             WidgetAttribute::Disabled => !self.enabled.get(),
+            WidgetAttribute::UnderMouse => self.under_mouse.get(),
             WidgetAttribute::MouseTracking => self.mouse_tracking.get(),
             WidgetAttribute::TransparentForMouseEvents => self.transparent_for_mouse_events.get(),
             WidgetAttribute::NoMousePropagation => self.no_mouse_propagation.get(),
@@ -1175,6 +1488,9 @@ impl WidgetBase {
                 // The focus move and the children's `EnabledChange` are sent now, as `set_widget_enabled`
                 // does; this widget's own event needs its `WidgetRef`, which only that function has.
                 send_enabled_notices(notices);
+            }
+            WidgetAttribute::UnderMouse => {
+                self.under_mouse.set(on);
             }
             WidgetAttribute::MouseTracking => {
                 self.mouse_tracking.set(on);
@@ -1481,6 +1797,18 @@ impl WidgetBase {
     }
 }
 
+impl Drop for WidgetBase {
+    /// A destroyed widget ends its mouse grab (`QWidget::~QWidget` -> `releaseMouse`).
+    fn drop(&mut self) {
+        let id = self.object_data.id();
+        let _ = MOUSE_GRABBER.try_with(|g| {
+            if g.get() == Some(id) {
+                g.set(None);
+            }
+        });
+    }
+}
+
 impl Default for WidgetBase {
     fn default() -> Self {
         Self::new()
@@ -1540,6 +1868,34 @@ impl EmptyWidget {
         self
     }
 
+    /// The style sheet rule of this widget as a plain `QWidget`, in the `:hover` state or not.
+    fn resolved_style(&self, hover: bool) -> crate::style::stylesheet::ResolvedStyle {
+        let mut buf = [""; 4];
+        let props = self.base.properties.borrow();
+        let ctx = crate::style::stylesheet::WidgetStyleContext {
+            type_name: "QWidget",
+            object_name: self.base.object_data.object_name().unwrap_or(""),
+            pseudo_states: self.base.style_pseudo_states(hover, false, &mut buf),
+            sub_control: None,
+            attributes: props.as_slice(),
+        };
+        self.base.resolve_style(&ctx)
+    }
+
+    /// `Enter` / `Leave` repaint the widget when a `:hover` rule changes how it looks
+    /// (`QWidget::event` HoverEnter/HoverLeave -> `update`, with `WA_Hover` set by the style).
+    fn repaint_on_hover_change(&self) {
+        let (on, off) = (self.resolved_style(true), self.resolved_style(false));
+        if on.background_color != off.background_color
+            || on.border_color != off.border_color
+            || on.border_width != off.border_width
+            || on.border_style != off.border_style
+            || on.border_radius != off.border_radius
+        {
+            self.base.update();
+        }
+    }
+
     pub fn set_resize_handler<F: FnMut(Size, Size) + 'static>(&self, handler: F) {
         *self.resize_handler.borrow_mut() = Some(Box::new(handler));
     }
@@ -1552,6 +1908,8 @@ impl Default for EmptyWidget {
 }
 
 impl QObject for EmptyWidget {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
@@ -1834,13 +2192,39 @@ impl Widget for EmptyWidget {
         self.base.has_focus.set(focus);
     }
 
+    fn enter_event(&mut self, _pos: Point) {
+        self.repaint_on_hover_change();
+    }
+
+    fn leave_event(&mut self) {
+        self.repaint_on_hover_change();
+    }
+
     fn paint_event(&mut self, painter: &mut Painter) {
-        if let Some(color) = self.background_color {
+        // A style sheet rule on a plain `QWidget` paints its background and border
+        // (`WA_StyledBackground`, qstylesheetstyle.cpp `drawPrimitive(PE_Widget)`).
+        let style = self.resolved_style(self.base.under_mouse.get());
+        let border = style
+            .border_width
+            .filter(|bw| *bw > 0.0 && style.border_style.as_deref() != Some("none"))
+            .map(|width| ferrokit_gui::paint::qss_box::QssBorder {
+                width,
+                color: style.border_color.unwrap_or(ferrokit_gui::tiny_skia::Color::TRANSPARENT),
+            });
+        let g = self.base.geometry.get();
+        let rect_f = RectF::new(0.0, 0.0, g.width as f32, g.height as f32);
+        if style.background_color.is_some() || border.is_some() {
+            ferrokit_gui::paint::qss_box::draw_qss_box(
+                painter,
+                rect_f,
+                style.background_color.or(self.background_color),
+                border,
+                style.border_radius.unwrap_or(0.0),
+            );
+        } else if let Some(color) = self.background_color {
             let brush = ferrokit_gui::paint::Brush::Color(color);
             painter.set_brush(brush);
             painter.set_pen(None);
-            let g = self.base.geometry.get();
-            let rect_f = RectF::new(0.0, 0.0, g.width as f32, g.height as f32);
             painter.draw_rect(rect_f);
         }
         if let Some(handler) = &mut self.paint_handler {

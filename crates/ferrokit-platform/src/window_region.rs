@@ -14,7 +14,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Graphics::Gdi::{GetRegionData, GetWindowRgn};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    SetWindowLongPtrW, GWLP_HWNDPARENT, GWL_STYLE, GW_OWNER, WS_CHILD,
+    SetWindowLongPtrW, SetWindowPos, GWLP_HWNDPARENT, GWL_STYLE, GW_OWNER, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CHILD,
 };
 
 /// `RGNDATAHEADER` is 32 bytes (`dwSize`, `iType`, `nCount`, `nRgnSize`, `rcBound`).
@@ -116,6 +117,18 @@ pub(crate) fn set_window_mask(hwnd: HWND, region: &Region) -> bool {
         if region.is_empty() {
             return SetWindowRgn(hwnd, ptr::null_mut(), 1) != 0;
         }
+        // The client origin depends on the frame the window procedure last computed
+        // (`WM_NCCALCSIZE`); a window that never had it computed still has the default frame,
+        // which `SetWindowRgn` then replaces. Settle it first so the offset is the final one.
+        SetWindowPos(
+            hwnd,
+            ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
         let rgn = region_to_hrgn(region);
         if rgn.is_null() {
             return false;

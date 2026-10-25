@@ -1425,6 +1425,44 @@ impl Drop for Window {
 }
 
 impl QObject for Window {
+    /// `windowOpacity`, `pos`, `size` and `geometry` of the top-level window, the properties
+    /// `QPropertyAnimation` drives on it.
+    fn property(&self, name: &str) -> Option<ferrokit_core::variant::Variant> {
+        use ferrokit_core::variant::Variant;
+        let g = self.geometry();
+        match name {
+            "windowOpacity" => Some(Variant::F64(self.opacity() as f64)),
+            "pos" => Some(Variant::Point(g.x, g.y)),
+            "size" => Some(Variant::Size(g.width, g.height)),
+            "geometry" => Some(Variant::Rect(g.x, g.y, g.width, g.height)),
+            _ => ferrokit_core::object::default_property(self, name),
+        }
+    }
+
+    fn set_property(&mut self, name: &str, value: ferrokit_core::variant::Variant) -> bool {
+        use ferrokit_core::variant::Variant;
+        let g = self.geometry();
+        let round = |v: f32| v.round() as i32;
+        match (name, &value) {
+            // `QWidget::setWindowOpacity` bounds the level to 0..=1 (qwidget.cpp:12480).
+            ("windowOpacity", Variant::F64(v)) => self.set_opacity(v.clamp(0.0, 1.0) as f32),
+            ("pos", Variant::Point(x, y)) => self.set_geometry(Rect::new(*x, *y, g.width, g.height)),
+            ("pos", Variant::PointF(x, y)) => {
+                self.set_geometry(Rect::new(round(*x), round(*y), g.width, g.height))
+            }
+            ("size", Variant::Size(w, h)) => self.set_geometry(Rect::new(g.x, g.y, *w, *h)),
+            ("size", Variant::SizeF(w, h)) => {
+                self.set_geometry(Rect::new(g.x, g.y, round(*w), round(*h)))
+            }
+            ("geometry", Variant::Rect(x, y, w, h)) => self.set_geometry(Rect::new(*x, *y, *w, *h)),
+            ("geometry", Variant::RectF(x, y, w, h)) => {
+                self.set_geometry(Rect::new(round(*x), round(*y), round(*w), round(*h)))
+            }
+            _ => return ferrokit_core::object::default_set_property(self, name, value),
+        }
+        true
+    }
+
     fn object_data(&self) -> &ObjectData {
         &self.object_data
     }
@@ -1719,6 +1757,16 @@ fn render_widget_unmasked(widget_ref: &WidgetRef, painter: &mut Painter, dirty_i
     widget_ref.borrow_mut().paint_over_children(painter);
 
     painter.restore();
+}
+
+/// The client origin of window `window_id` in desktop coordinates (`QWindow::geometry().topLeft()`),
+/// for `QWidget::mapToGlobal`.
+pub(crate) fn window_client_origin(window_id: ObjectId) -> Option<Point> {
+    let state = RENDER_STATES
+        .try_with(|m| m.borrow().get(&window_id).cloned())
+        .ok()
+        .flatten()?;
+    Some(state.geometry.get().top_left())
 }
 
 /// The root widget of every live window on this thread: where `QApplication::allWidgets` starts

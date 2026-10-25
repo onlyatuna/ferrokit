@@ -314,6 +314,8 @@ impl Label {
 }
 
 impl QObject for Label {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }

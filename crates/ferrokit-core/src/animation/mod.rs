@@ -312,6 +312,18 @@ impl PropertyAnimation {
         &self.animation
     }
 
+    /// Advances the timeline and writes the value into `target` with `QObject::set_property`,
+    /// for a target that is not in the object registry (a `Window`, or a widget the caller
+    /// holds). Writes only while the animation runs, like `QPropertyAnimation::updateCurrentValue`.
+    pub fn step_target(&mut self, delta_ms: u64, target: &mut dyn QObject) -> bool {
+        if self.animation.state() != AnimationState::Running {
+            return false;
+        }
+        let active = self.animation.step(delta_ms);
+        target.set_property(&self.property_name, self.animation.current_value());
+        active
+    }
+
     /// Advances the timeline and updates the target object's dynamic property.
     pub fn step(&mut self, delta_ms: u64) -> bool {
         let active = self.animation.step(delta_ms);

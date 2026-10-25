@@ -27,6 +27,10 @@ pub struct Button {
     font: Font,
     state: ButtonState,
     pub clicked: Signal<()>,
+    /// `QAbstractButton::pressed`: the button went down (mouse press or `click()`).
+    pub pressed: Signal<()>,
+    /// `QAbstractButton::released`: the button went up (mouse release or `click()`).
+    pub released: Signal<()>,
     normal_bg: Color,
     hover_bg: Color,
     press_bg: Color,
@@ -60,12 +64,16 @@ impl Button {
         };
         base.set_geometry(Rect::new(0, 0, text_w.max(min_w), text_h.max(min_h)));
         let clicked = Signal::with_owner(&base.object_data);
+        let pressed = Signal::with_owner(&base.object_data);
+        let released = Signal::with_owner(&base.object_data);
         Self {
             base,
             text: text_str,
             font,
             state: ButtonState::Normal,
             clicked,
+            pressed,
+            released,
             normal_bg: Color::from_rgba8(240, 240, 240, 255),
             hover_bg: Color::from_rgba8(225, 235, 245, 255),
             press_bg: Color::from_rgba8(200, 220, 240, 255),
@@ -195,6 +203,45 @@ impl Button {
         self.style.as_ref()
     }
 
+    /// `QAbstractButton::isDown`.
+    pub fn is_down(&self) -> bool {
+        self.state == ButtonState::Pressed
+    }
+
+    /// `QAbstractButton::setDown`: shows the button pressed or not and repaints. Unlike a mouse
+    /// press it sends no `pressed` / `released` signal.
+    pub fn set_down(&mut self, down: bool) {
+        if self.is_down() == down {
+            return;
+        }
+        self.state = if down {
+            ButtonState::Pressed
+        } else if self.base.under_mouse.get() && self.base.is_enabled() {
+            ButtonState::Hovered
+        } else {
+            ButtonState::Normal
+        };
+        self.update();
+    }
+
+    /// `QAbstractButton::click`: a disabled button does nothing; otherwise the button goes down
+    /// (`pressed`), up (`released`) and `clicked` follows, as for a mouse click.
+    pub fn click(&mut self) {
+        if !self.base.is_enabled() {
+            return;
+        }
+        self.state = ButtonState::Pressed;
+        self.pressed.emit(&());
+        self.state = if self.base.under_mouse.get() {
+            ButtonState::Hovered
+        } else {
+            ButtonState::Normal
+        };
+        self.update();
+        self.released.emit(&());
+        self.activate();
+    }
+
     fn activate(&self) {
         if let Some(action) = &self.action {
             if !action.borrow().is_enabled() {
@@ -207,6 +254,8 @@ impl Button {
 }
 
 impl QObject for Button {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
@@ -438,6 +487,7 @@ impl Widget for Button {
         if self.base.is_enabled() && button == 1 {
             self.state = ButtonState::Pressed;
             self.update();
+            self.pressed.emit(&());
         }
     }
 
@@ -446,13 +496,18 @@ impl Widget for Button {
             let g = self.base.geometry();
             let in_bounds =
                 Rect::new(0, 0, g.width, g.height).contains(pos);
-            if in_bounds {
-                self.state = ButtonState::Hovered;
-                self.activate();
+            self.state = if in_bounds {
+                ButtonState::Hovered
             } else {
-                self.state = ButtonState::Normal;
-            }
+                ButtonState::Normal
+            };
             self.update();
+            // `QAbstractButton::mouseReleaseEvent`: `released` for every release of the pressed
+            // button, `clicked` only when it ended inside.
+            self.released.emit(&());
+            if in_bounds {
+                self.activate();
+            }
         }
     }
     fn focus_policy(&self) -> crate::focus::FocusPolicy {
@@ -474,8 +529,14 @@ impl Widget for Button {
         AccessibleRole::Button
     }
 
+    /// `QAccessibleButton::text(Name)`: the accessible name when set, else the button text.
     fn accessible_name(&self) -> String {
-        self.text.clone()
+        let explicit = self.base.accessible_name.borrow();
+        if explicit.is_empty() {
+            self.text.clone()
+        } else {
+            explicit.clone()
+        }
     }
 
     fn accessible_actions(&self) -> Vec<AccessibleAction> {

@@ -174,6 +174,8 @@ impl ScrollBar {
 }
 
 impl QObject for ScrollBar {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
@@ -704,6 +706,8 @@ impl Default for ScrollArea {
 }
 
 impl QObject for ScrollArea {
+    crate::widget::widget_object_properties!();
+
     fn object_data(&self) -> &ObjectData {
         &self.base.object_data
     }
