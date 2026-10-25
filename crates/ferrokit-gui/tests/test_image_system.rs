@@ -462,3 +462,91 @@ fn test_ico_rejects_malformed_data() {
     assert!(ImageReader::read_from_memory(&build_ico(&[(0, 0, dib)])).is_err());
     assert!(QPixmap::load_from_data(b"not an image").is_none());
 }
+
+/// A DIB frame header with explicit width and raw height field (no pixel data).
+fn dib_header_sized(width: i32, height_field: i32, bpp: u16) -> Vec<u8> {
+    let mut h = dib_header(bpp, 0);
+    h[4..8].copy_from_slice(&width.to_le_bytes());
+    h[8..12].copy_from_slice(&height_field.to_le_bytes());
+    h
+}
+
+#[test]
+fn test_ico_rejects_oversize_dib() {
+    // 257x257 is past the ICO format limit; the data is complete, so only the cap rejects it.
+    let (w, h) = (257usize, 257usize);
+    let mut dib = dib_header_sized(w as i32, (2 * h) as i32, 24);
+    dib.extend_from_slice(&vec![0u8; (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h]);
+    assert!(ImageReader::read_from_memory(&build_ico(&[(0, 0, dib.clone())])).is_err());
+    assert!(ImageReader::read_ico_frames(&build_ico(&[(0, 0, dib)])).is_err());
+
+    // 256 is the largest accepted extent, in either direction.
+    for (w, h) in [(256usize, 2usize), (2, 256)] {
+        let mut dib = dib_header_sized(w as i32, (2 * h) as i32, 24);
+        dib.extend_from_slice(&vec![0u8; (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h]);
+        let img = ImageReader::read_from_memory(&build_ico(&[(0, 0, dib)])).unwrap();
+        assert_eq!((img.width(), img.height()), (w as u32, h as u32));
+    }
+}
+
+#[test]
+fn test_ico_rejects_oversize_png_header() {
+    let mut big = Image::new(4, 4, ImageFormat::Rgba8888);
+    big.fill(Color::WHITE);
+    let mut png = ImageWriter::write_to_memory(&big, ImageFileFormat::Png).unwrap();
+    // Rewrite the IHDR width to 100000 (the CRC is not checked before the size cap).
+    png[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+    assert!(ImageReader::read_ico_frames(&build_ico(&[(0, 0, png.clone())])).is_err());
+    assert!(ImageReader::read_from_memory(&png).is_err());
+}
+
+#[test]
+fn test_ico_directory_bomb_hits_pixel_budget() {
+    // One 256x256 frame referenced by many directory entries: each decodes to 64K pixels,
+    // so the total budget must stop the read long before all entries are decoded.
+    let (w, h) = (256usize, 256usize);
+    let mut dib = dib_header_sized(w as i32, (2 * h) as i32, 24);
+    dib.extend_from_slice(&vec![0u8; w * 3 * h + w.div_ceil(32) * 4 * h]);
+    let count = 200usize;
+    let offset = 6 + count * 16;
+    let mut ico = vec![0, 0, 1, 0];
+    ico.extend_from_slice(&(count as u16).to_le_bytes());
+    for _ in 0..count {
+        ico.extend_from_slice(&[0, 0, 0, 0, 1, 0, 24, 0]);
+        ico.extend_from_slice(&(dib.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&(offset as u32).to_le_bytes());
+    }
+    ico.extend_from_slice(&dib);
+    assert!(ImageReader::read_ico_frames(&ico).is_err());
+    assert!(QIcon::from_ico_data(&ico).is_err());
+}
+
+#[test]
+fn test_ico_32bpp_without_mask_and_undoubled_height() {
+    // 32-bpp, doubled height field but no AND mask: alpha is taken from the pixels.
+    let mut dib = dib_header(32, 0);
+    dib.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // bottom row: alpha 0
+    dib.extend_from_slice(&[0, 0, 255, 128, 0, 0, 255, 255]); // top row
+    let img = ImageReader::read_from_memory(&build_ico(&[(2, 2, dib)])).unwrap();
+    assert_eq!((img.width(), img.height()), (2, 2));
+    assert_eq!(px(&img, 0, 0), [255, 0, 0, 128]);
+    assert_eq!(px(&img, 1, 0), [255, 0, 0, 255]);
+    assert_eq!(px(&img, 0, 1)[3], 0);
+
+    // Fully zero alpha and no mask: opaque.
+    let mut dib = dib_header(32, 0);
+    dib.extend_from_slice(&[0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0]);
+    let img = ImageReader::read_from_memory(&build_ico(&[(2, 2, dib)])).unwrap();
+    assert_eq!(px(&img, 0, 0), [255, 0, 0, 255]);
+
+    // Undoubled height field (2 rows) with XOR-only 24-bpp data of exactly that size.
+    let mut dib = dib_header_sized(2, 2, 24);
+    dib.extend_from_slice(&[255, 0, 0, 255, 255, 255, 0, 0]); // bottom: blue, white
+    dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]); // top: red, green
+    let img = ImageReader::read_from_memory(&build_ico(&[(2, 2, dib)])).unwrap();
+    assert_eq!((img.width(), img.height()), (2, 2));
+    assert_eq!(px(&img, 0, 0), [255, 0, 0, 255]);
+    assert_eq!(px(&img, 1, 0), [0, 255, 0, 255]);
+    assert_eq!(px(&img, 0, 1), [0, 0, 255, 255]);
+    assert_eq!(px(&img, 1, 1), [255, 255, 255, 255]);
+}
