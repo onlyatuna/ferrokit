@@ -505,6 +505,14 @@ pub mod cocoa_cursor {
             self.current_shape = shape;
             Self::set_shape(shape);
         }
+
+        fn pos(&self) -> Option<ferrokit_gui::geometry::primitives::Point> {
+            crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
+        }
+
+        fn set_pos(&mut self, pos: ferrokit_gui::geometry::primitives::Point) {
+            crate::cursor_cocoa::set_cursor_pos(&crate::cursor_cocoa::NativeCursorServices, pos);
+        }
     }
 }
 
