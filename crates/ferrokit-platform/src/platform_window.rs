@@ -122,6 +122,33 @@ pub trait PlatformWindow: 'static {
     fn set_backdrop(&mut self, _backdrop: crate::backdrop::BackdropType, _dark_mode: bool) -> bool {
         false
     }
+    /// Replaces an applied Acrylic blur with the flat tint of the same colour (used while the
+    /// window is dragged or resized). Returns whether the applied backdrop changed.
+    fn suspend_backdrop(&mut self) -> bool {
+        false
+    }
+    /// Restores a backdrop suspended by `suspend_backdrop`. Returns whether the applied
+    /// backdrop changed.
+    fn resume_backdrop(&mut self) -> bool {
+        false
+    }
+    /// `QPlatformWindow::setMask` (`qplatformwindow.cpp`): clips the window to `region`, in
+    /// native pixels of the window's client area (`QWindow::setMask` hands it the region scaled
+    /// by `QHighDpi::toNativeLocalRegion`). An empty region removes the mask. Only Windows
+    /// (`SetWindowRgn`, `QWindowsWindow::setMask`) applies it; a backend without window regions
+    /// ignores it, as `QPlatformWindow::setMask` does by default.
+    fn set_mask(&mut self, _region: &ferrokit_gui::geometry::Region) {}
+    /// `QWindow::setTransientParent` as the window system sees it: the native handle
+    /// (`native_handle`) of the window that owns this top-level window, or `None` to remove the
+    /// owner. On Windows this is the owner (`GWLP_HWNDPARENT`, `QWindowsWindow::updateTransientParent`,
+    /// `qwindowswindow.cpp:1939-1966`): the system hides, minimizes and shows the owned window with
+    /// its owner and keeps it above it, and gives it no taskbar button. Backends without such a
+    /// relationship only remember it.
+    fn set_transient_parent(&mut self, _parent: Option<isize>) {}
+    /// The owner handed to `set_transient_parent`, if it is still in place.
+    fn transient_parent(&self) -> Option<isize> {
+        None
+    }
     fn set_ime_focus(&mut self, _pos: ferrokit_gui::geometry::primitives::Point) {}
     fn enable_drop_target(&mut self, _enabled: bool) -> bool {
         false
@@ -167,6 +194,8 @@ pub struct GenericWindow {
     size_limits: crate::size_limits::SizeLimits,
     owner_thread: std::thread::ThreadId,
     state_flags: std::cell::Cell<crate::window::PlatformWindowStateFlags>,
+    mask: ferrokit_gui::geometry::Region,
+    transient_parent: Option<isize>,
 }
 impl GenericWindow {
     pub fn new(_title: &str, rect: Rect, flags: WindowFlags) -> Self {
@@ -185,6 +214,8 @@ impl GenericWindow {
             size_limits: crate::size_limits::SizeLimits::default(),
             owner_thread: std::thread::current().id(),
             state_flags: std::cell::Cell::new(crate::window::PlatformWindowStateFlags::NONE),
+            mask: ferrokit_gui::geometry::Region::new(),
+            transient_parent: None,
         }
     }
 
@@ -194,6 +225,11 @@ impl GenericWindow {
 
     pub fn queue_event(&self, event: crate::window_system_interface::WindowSystemEvent) {
         self.pending_events.lock().unwrap().push(event);
+    }
+
+    /// The mask `set_mask` stored (this backend has no window system to apply it to).
+    pub fn mask(&self) -> &ferrokit_gui::geometry::Region {
+        &self.mask
     }
 }
 
@@ -257,6 +293,18 @@ impl PlatformWindow for GenericWindow {
 
     fn opacity(&self) -> f32 {
         self.opacity
+    }
+
+    fn set_mask(&mut self, region: &ferrokit_gui::geometry::Region) {
+        self.mask = region.clone();
+    }
+
+    fn set_transient_parent(&mut self, parent: Option<isize>) {
+        self.transient_parent = parent;
+    }
+
+    fn transient_parent(&self) -> Option<isize> {
+        self.transient_parent
     }
 
     fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {

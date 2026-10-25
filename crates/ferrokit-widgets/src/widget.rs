@@ -10,6 +10,7 @@ use ferrokit_core::event_loop::{filters_consume, notify_borrowed, post_event_to_
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
 use ferrokit_platform::cursor::CursorShape;
+use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Painter;
 use std::cell::{Cell, RefCell, RefMut};
 use std::rc::{Rc, Weak};
@@ -386,6 +387,7 @@ pub enum WidgetAttribute {
     LayoutOnEntireRect = 48,
     TransparentForMouseEvents = 51,
     PaintUnclipped = 52,
+    MouseNoMask = 71,
     NoMousePropagation = 73,
     Hover = 74,
     QuitOnClose = 76,
@@ -845,6 +847,28 @@ pub trait Widget: QObject + 'static {
         }
         crate::window::refresh_cursor_of(self);
         filters_consume(self.object_data(), &mut Event::new(EventKind::CursorChange));
+    }
+
+    /// `QWidget::mask`: the region set by [`Widget::set_mask`], in widget coordinates; empty when
+    /// the widget has no mask (`qwidget.cpp:10246`).
+    fn mask(&self) -> Region {
+        self.widget_base().mask()
+    }
+
+    /// `QWidget::setMask(const QRegion &)` (`qwidget.cpp:13027-13077`): only the parts of the widget
+    /// inside `region` are visible, receive mouse events and are painted. An empty region
+    /// removes the mask. On a window's root widget the mask is a real window region
+    /// (`QWindow::setMask`, `QWindowsWindow::setMask`: `SetWindowRgn` on Windows), and the content
+    /// outside it is not painted. `region` is in device-independent pixels.
+    fn set_mask(&self, region: &Region) {
+        self.widget_base().set_mask(region);
+    }
+
+    /// `QWidget::clearMask` (`qwidget.cpp:13123-13129`).
+    fn clear_mask(&self) {
+        if self.widget_base().has_mask() {
+            self.widget_base().set_mask(&Region::new());
+        }
     }
 
     /// `QWidget::underMouse`: the cursor is over this widget or a child of it (`WA_UnderMouse`).
@@ -1344,6 +1368,14 @@ pub struct WidgetBase {
     pub transparent_for_mouse_events: Cell<bool>,
     /// `WA_NoMousePropagation` (`QWidget::testAttribute(Qt::WA_NoMousePropagation)`).
     pub no_mouse_propagation: Cell<bool>,
+    /// `QWidgetPrivate::extra->mask`; empty is no mask (`extra->hasMask = !mask.isEmpty()`).
+    mask: RefCell<Region>,
+    /// The window region of this widget as a window's root is not what the platform window holds
+    /// yet (the platform window was borrowed when the mask was set, or the root replaced the
+    /// previous one); the next render applies it.
+    mask_stale: Cell<bool>,
+    /// `WA_MouseNoMask`: mouse events are delivered over the whole widget, masked or not.
+    mouse_no_mask: Cell<bool>,
     /// `QWidget::minimumSize` / `maximumSize` (`setMinimumSize`, `setMaximumSize`, and the owner's
     /// layout through its size constraint).
     pub min_size: Cell<Size>,
@@ -1402,6 +1434,9 @@ impl WidgetBase {
             mouse_tracking: Cell::new(false),
             transparent_for_mouse_events: Cell::new(false),
             no_mouse_propagation: Cell::new(false),
+            mask: RefCell::new(Region::new()),
+            mask_stale: Cell::new(false),
+            mouse_no_mask: Cell::new(false),
             min_size: Cell::new(Size::new(0, 0)),
             max_size: Cell::new(Size::new(WIDGET_SIZE_MAX, WIDGET_SIZE_MAX)),
             explicit_min: Cell::new((false, false)),
@@ -1563,6 +1598,109 @@ impl WidgetBase {
         self.no_mouse_propagation.get()
     }
 
+    /// `QWidget::mask`.
+    pub fn mask(&self) -> Region {
+        self.mask.borrow().clone()
+    }
+
+    /// `QWidgetPrivate::extra->hasMask`.
+    pub fn has_mask(&self) -> bool {
+        !self.mask.borrow().is_empty()
+    }
+
+    /// The mask half of `QWidgetPrivate::pointInsideRectAndMask` (`qwidget_p.h:895`): `pos`, in
+    /// widget coordinates, is inside the mask, or the widget has none or `WA_MouseNoMask` is set.
+    pub fn mask_accepts(&self, pos: Point) -> bool {
+        self.mouse_no_mask.get() || {
+            let mask = self.mask.borrow();
+            mask.is_empty() || mask.contains_point(pos)
+        }
+    }
+
+    /// `QWidgetPrivate::pointInsideRectAndMask`: `pos`, in widget coordinates, is inside the
+    /// widget's rect and, unless `WA_MouseNoMask` is set, inside its mask. Mouse hit testing
+    /// goes through it (`QWidget::childAt`).
+    pub fn point_inside_rect_and_mask(&self, pos: Point) -> bool {
+        let g = self.geometry.get();
+        Rect::new(0, 0, g.width, g.height).contains(pos) && self.mask_accepts(pos)
+    }
+
+    /// Whether this widget is a window's root: it has no parent and belongs to a window.
+    fn window_root_id(&self) -> Option<ObjectId> {
+        if self.parent.borrow().is_some() {
+            return None;
+        }
+        self.window_id.get()
+    }
+
+    /// `QWidget::setMask(const QRegion &)` (`qwidget.cpp:13027-13077`).
+    pub fn set_mask(&self, region: &Region) {
+        let old = {
+            let mut mask = self.mask.borrow_mut();
+            if *mask == *region {
+                return;
+            }
+            std::mem::replace(&mut *mask, region.clone())
+        };
+        let window_root = self.window_root_id();
+        if let Some(window_id) = window_root {
+            // `setMask_sys`: the window handle gets the mask. When the platform window is busy
+            // (a native call that led here is still running) the next render hands it over.
+            self.mask_stale.set(true);
+            if crate::window::apply_window_mask(window_id, region) {
+                self.mask_stale.set(false);
+            } else {
+                self.update();
+            }
+        }
+        if !self.is_visible_in_tree() {
+            return;
+        }
+        let g = self.geometry.get();
+        let rect = Rect::new(0, 0, g.width, g.height);
+        if region.is_empty() {
+            // The mask was cleared: the newly exposed area is repainted.
+            for r in Region::from_rect(rect).subtracted(&old).rects() {
+                self.update_rect(*r);
+            }
+            return;
+        }
+        if window_root.is_none() {
+            // The area the mask now leaves out is repainted on the parent.
+            let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
+            if let Some(parent) = parent {
+                if let Ok(parent) = parent.try_borrow() {
+                    let uncovered = Region::from_rect(rect).subtracted(region);
+                    for r in uncovered.rects() {
+                        parent
+                            .widget_base()
+                            .update_rect(Rect::new(g.x + r.x, g.y + r.y, r.width, r.height));
+                    }
+                }
+            }
+        }
+        // The newly covered area of this widget is repainted: a window's render cleared
+        // everything outside the old mask.
+        // Only an existing mask has left something outside to repaint.
+        if !old.is_empty() {
+            for r in region.subtracted(&old).rects() {
+                self.update_rect(*r);
+            }
+        }
+    }
+
+    /// Whether a window root's mask still has to reach the platform window, which clears the
+    /// mark (`do_render_and_present`).
+    pub(crate) fn take_mask_stale(&self) -> bool {
+        self.mask_stale.replace(false)
+    }
+
+    /// A window's root widget that replaced another one: the platform window holds the previous
+    /// root's mask until the next render.
+    pub(crate) fn mark_mask_stale(&self) {
+        self.mask_stale.set(true);
+    }
+
     /// `QWidget::testAttribute`.
     pub fn test_attribute(&self, attr: WidgetAttribute) -> bool {
         match attr {
@@ -1571,6 +1709,7 @@ impl WidgetBase {
             WidgetAttribute::MouseTracking => self.mouse_tracking.get(),
             WidgetAttribute::TransparentForMouseEvents => self.transparent_for_mouse_events.get(),
             WidgetAttribute::NoMousePropagation => self.no_mouse_propagation.get(),
+            WidgetAttribute::MouseNoMask => self.mouse_no_mask.get(),
             WidgetAttribute::AlwaysShowToolTips => self.always_show_tool_tips.get(),
             WidgetAttribute::SetCursor => self.cursor_attr.get(),
             _ => false,
@@ -1599,6 +1738,9 @@ impl WidgetBase {
             }
             WidgetAttribute::NoMousePropagation => {
                 self.no_mouse_propagation.set(on);
+            }
+            WidgetAttribute::MouseNoMask => {
+                self.mouse_no_mask.set(on);
             }
             WidgetAttribute::AlwaysShowToolTips => {
                 self.always_show_tool_tips.set(on);
