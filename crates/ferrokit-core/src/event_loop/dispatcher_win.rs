@@ -399,6 +399,7 @@ impl Win32EventDispatcher {
         loop {
             let mut processed_ui_message = false;
             let mut awoken = false;
+            let mut timer_dispatched = false;
 
             unsafe {
                 let mut msg: MSG = std::mem::zeroed();
@@ -431,6 +432,7 @@ impl Win32EventDispatcher {
                     if msg.hwnd == self.internal_hwnd {
                         if msg.message == WM_TIMER {
                             DispatchMessageW(&msg);
+                            timer_dispatched = true;
                         } else {
                             DefWindowProcW(msg.hwnd, msg.message, msg.wParam, msg.lParam);
                         }
@@ -450,18 +452,26 @@ impl Win32EventDispatcher {
                 return DispatchResult::Normal;
             }
 
+            // The tick was queued for `send_timer_events`, which the caller runs next; waiting
+            // here would hold the timer back until the next wake.
+            if timer_dispatched {
+                return DispatchResult::Timeout;
+            }
+
             if !can_wait {
                 return DispatchResult::Timeout;
             }
 
+            // A timer that is due is delivered by a `WM_TIMER` that `SetTimer` posts a little after
+            // the deadline (its clock ticks about every 15 ms). Returning at once for a deadline
+            // that has passed made the caller loop with a zero timeout and spin on the processor
+            // until the message came; the wait is never shorter than 1 ms and never rounds down.
             let timeout_ms = match deadline {
                 Some(dl) => {
-                    let now = std::time::Instant::now();
-                    if now >= dl {
-                        return DispatchResult::Timeout;
-                    }
-                    let remaining = dl - now;
-                    remaining.as_millis().min(u32::MAX as u128) as u32
+                    let remaining = dl.saturating_duration_since(std::time::Instant::now());
+                    let ms = remaining.as_millis()
+                        + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                    ms.clamp(1, u32::MAX as u128 - 1) as u32
                 }
                 None => INFINITE,
             };
