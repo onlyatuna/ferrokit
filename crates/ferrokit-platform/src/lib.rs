@@ -13,6 +13,7 @@ pub(crate) fn current_uid() -> u32 {
 }
 
 pub mod dialogs;
+pub mod dialogs_cocoa;
 pub use dialogs::{
     platform_dialogs, DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs,
     SystemDialogs,
