@@ -85,6 +85,7 @@
     "test_precise_timer_lifecycle": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_settimer_cross_thread": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_thread_lifecycle": "UB reported inside dependency parking_lot_core (futex syscall varargs under Miri), tracked in issue #32; not baselined",
+    "test_timer_no_busy_wait": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_timer_pinned_start": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_timer_restart": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_loop_timer_fixes": "Miri timeout: no result after >45 min under Stacked Borrows (real-time timer waits); run killed, not baselined",
