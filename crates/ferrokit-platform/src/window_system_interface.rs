@@ -152,6 +152,9 @@ pub enum WindowSystemEvent {
         modifiers: KeyboardModifiers,
     },
     MouseLeave,
+    /// The window lost the mouse capture it held (`WM_CAPTURECHANGED` with another owner): an
+    /// explicit `QWidget::grabMouse` of the window has no native grab behind it any more.
+    MouseGrabLost,
     KeyPress {
         key: u32,
         modifiers: KeyboardModifiers,

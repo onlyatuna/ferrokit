@@ -29,6 +29,8 @@ thread_local! {
     static FOCUS_QUEUE: RefCell<Vec<Option<(Option<ObjectId>, Option<ObjectId>)>>> = const { RefCell::new(Vec::new()) };
     static FOCUS_CHANGED: RefCell<Option<FocusChangedSignal>> = const { RefCell::new(None) };
     static QUITTING: Cell<bool> = const { Cell::new(false) };
+    /// The platform showed the active override cursor itself (`QPlatformCursor::OverrideCursor`).
+    static OVERRIDE_NATIVE: Cell<bool> = const { Cell::new(false) };
     static OVERRIDE_CURSORS: RefCell<Vec<ferrokit_platform::cursor::CursorShape>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -544,14 +546,20 @@ impl Application {
 
     fn apply_override_cursor(shape: Option<ferrokit_platform::cursor::CursorShape>) {
         let mut cursor = ferrokit_platform::platform().cursor();
-        match shape {
+        let native = match shape {
             Some(shape) => {
-                cursor.set_override_cursor(shape);
+                let native = cursor.set_override_cursor(shape);
+                OVERRIDE_NATIVE.with(|n| n.set(native));
+                native
             }
-            None => cursor.clear_override_cursor(),
-        }
-        // Each window shows the override, or its own cursor once the override is gone.
-        crate::window::refresh_all_cursors();
+            None => {
+                cursor.clear_override_cursor();
+                OVERRIDE_NATIVE.with(|n| n.replace(false))
+            }
+        };
+        // Each window shows the override, or its own cursor once the override is gone. With a
+        // backend that has no override cursors every window gets it.
+        crate::window::refresh_all_cursors(native);
     }
 
     pub fn wheel_scroll_lines() -> i32 {
@@ -598,7 +606,14 @@ impl Application {
         *GLOBAL_START_DRAG_DISTANCE.write().unwrap() = 10;
         *GLOBAL_START_DRAG_TIME_MS.write().unwrap() = 500;
         *GLOBAL_STYLESHEET.write().unwrap() = None;
-        OVERRIDE_CURSORS.with(|s| s.borrow_mut().clear());
+        // The native override (`QWindowsCursor::m_overrideCursor` / `m_overriddenCursor`) lives
+        // in the platform, so clearing the stack alone would leave it behind.
+        let had_override = OVERRIDE_CURSORS.with(|s| !std::mem::take(&mut *s.borrow_mut()).is_empty());
+        if had_override {
+            ferrokit_platform::platform().cursor().clear_override_cursor();
+        }
+        OVERRIDE_NATIVE.with(|n| n.set(false));
+        crate::widget::forget_mouse_grab();
     }
 }
 

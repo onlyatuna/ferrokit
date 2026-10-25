@@ -125,6 +125,7 @@ impl WindowCore {
             crate::application::Application::set_window_visible(self.id, false);
             self.send_to_window(&mut Event::new(EventKind::Hide));
             hide_children(&self.root());
+            crate::widget::grab_lost_in_window(self.id);
         }
     }
 
@@ -333,13 +334,18 @@ fn retry_cursor_refresh(window_id: ObjectId, force: bool) {
     });
 }
 
-/// Re-applies the cursor of every window (`applyWindowCursor`, qguiapplication.cpp:4415-4427): the
-/// application override cursor changed.
-pub(crate) fn refresh_all_cursors() {
+/// Re-applies the cursor of the windows after the application override cursor changed
+/// (`applyWindowCursor`, qguiapplication.cpp:4415-4427). A backend with override cursors
+/// (`native_override`) has one global cursor, which only the window under the pointer may set;
+/// any other applies it to every window, as Qt does for plugins without them.
+pub(crate) fn refresh_all_cursors(native_override: bool) {
     let states: Vec<_> = RENDER_STATES
         .try_with(|m| m.borrow().values().cloned().collect())
         .unwrap_or_default();
     for state in states {
+        if native_override && state.cursor_target.borrow().upgrade().is_none() {
+            continue;
+        }
         if !state.refresh_cursor(true) {
             retry_cursor_refresh(state.window_id, true);
         }
@@ -377,20 +383,6 @@ pub(crate) fn native_mouse_grab_in_window(window_id: ObjectId, grab: bool) -> bo
         return false;
     };
     platform_window.set_mouse_grab_enabled(grab)
-}
-
-/// Releases the grab of the widget `id` (the previous grabber when another widget grabs), found in
-/// the window trees. A grabber that cannot be found or read just loses the grab flag.
-pub(crate) fn release_grab_of(id: ObjectId) {
-    let widget = window_roots()
-        .into_iter()
-        .find_map(|root| crate::focus::find_widget_by_id(&root, id));
-    let borrowed = widget.as_ref().and_then(|w| w.try_borrow().ok());
-    if let Some(w) = borrowed {
-        crate::widget::release_mouse_for(&**w);
-    } else {
-        crate::widget::clear_mouse_grab_if(id);
-    }
 }
 
 /// Clears a flag on every exit path, including unwinding.
@@ -2019,6 +2011,9 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     move_cancels_press(global_pos);
                 }
                 ferrokit_platform::window::set_last_cursor_position(global_pos);
+                // `mouse_buttons` follows what the window system reports for the move
+                // (qguiapplication.cpp:2455), including the X buttons, so a missed release heals.
+                ferrokit_platform::window::set_app_mouse_buttons(buttons);
                 self.dispatcher
                     .dispatch_mouse_move(&root, pos, global_pos, buttons);
                 self.render
@@ -2028,6 +2023,18 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 }
                 if self.render.has_pending_invalidation() {
                     self.render.request_render();
+                }
+            }
+            WindowSystemEvent::MouseGrabLost => {
+                // Only a window that really lost the capture ends the widget-level grab: a
+                // release followed at once by a new grab leaves the capture with this window.
+                let still_grabbing = self
+                    .platform_window
+                    .upgrade()
+                    .and_then(|pw| pw.try_borrow().ok().map(|pw| pw.has_mouse_grab()))
+                    .unwrap_or(false);
+                if !still_grabbing {
+                    crate::widget::grab_lost_in_window(self.core.id);
                 }
             }
             WindowSystemEvent::MouseLeave => {

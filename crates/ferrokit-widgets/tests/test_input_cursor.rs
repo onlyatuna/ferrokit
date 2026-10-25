@@ -32,6 +32,8 @@ thread_local! {
     static OVERRIDE_SUPPORT: Cell<bool> = const { Cell::new(true) };
     /// The native pointer position the platform cursor reports.
     static NATIVE_POS: Cell<Option<Point>> = const { Cell::new(None) };
+    /// Whether the (one) fake window holds the native mouse grab.
+    static NATIVE_GRAB: Cell<bool> = const { Cell::new(false) };
 }
 
 fn log(entry: String) {
@@ -45,7 +47,6 @@ fn take() -> Vec<String> {
 
 struct FakeWindow {
     geometry: Rect,
-    grabbed: bool,
 }
 
 impl PlatformWindow for FakeWindow {
@@ -94,11 +95,11 @@ impl PlatformWindow for FakeWindow {
     }
     fn set_mouse_grab_enabled(&mut self, grab: bool) -> bool {
         log(format!("window grab {grab}"));
-        self.grabbed = grab;
+        NATIVE_GRAB.with(|g| g.set(grab));
         grab
     }
     fn has_mouse_grab(&self) -> bool {
-        self.grabbed
+        NATIVE_GRAB.with(|g| g.get())
     }
 }
 
@@ -139,10 +140,7 @@ impl PlatformIntegration for FakePlatform {
         rect: Rect,
         _flags: WindowFlags,
     ) -> Result<Box<dyn PlatformWindow>, &'static str> {
-        Ok(Box::new(FakeWindow {
-            geometry: rect,
-            grabbed: false,
-        }))
+        Ok(Box::new(FakeWindow { geometry: rect }))
     }
     fn create_tray_icon(
         &self,
@@ -189,6 +187,7 @@ fn install() -> MutexGuard<'static, ()> {
     }));
     OVERRIDE_SUPPORT.with(|s| s.set(true));
     NATIVE_POS.with(|p| p.set(None));
+    NATIVE_GRAB.with(|g| g.set(false));
     while Application::override_cursor().is_some() {
         Application::restore_override_cursor();
     }
@@ -406,8 +405,9 @@ fn the_override_cursor_is_a_stack() {
     assert!(entries.contains(&"platform override Wait".to_string()), "{entries:?}");
     assert!(entries.contains(&"platform override Busy".to_string()), "{entries:?}");
     assert!(entries.contains(&"platform override Forbidden".to_string()), "{entries:?}");
-    assert_eq!(entries.last().unwrap(), "window cursor unset");
-    assert!(entries.contains(&"platform override cleared".to_string()));
+    // The platform cursor is global: no window is under the pointer, so none is told.
+    assert_eq!(entries.last().unwrap(), "platform override cleared");
+    assert!(!entries.iter().any(|e| e.starts_with("window cursor")), "{entries:?}");
     drop(f);
 }
 
@@ -598,4 +598,136 @@ fn a_mutably_borrowed_ancestor_can_still_be_mapped_into() {
     let _handler_scope = mid.borrow_mut();
     assert_eq!(leaf.borrow().map_to(&mid, Point::new(1, 2)), Point::new(6, 9));
     assert_eq!(leaf.borrow().map_from(&mid, Point::new(6, 9)), Point::new(1, 2));
+}
+
+#[test]
+fn hiding_the_grabber_or_its_ancestor_releases_the_grab_and_pops_the_override() {
+    use ferrokit_widgets::set_widget_visible;
+    let _g = install();
+    let f = fixture();
+    let inner = child(&f.a, Rect::new(5, 5, 20, 20));
+    let mut f = f;
+    f.win.show();
+
+    f.a.borrow().grab_mouse_with_cursor(CursorShape::SizeAll);
+    take();
+    set_widget_visible(&f.a, false);
+    assert!(ferrokit_widgets::widget::mouse_grabber_id().is_none());
+    assert_eq!(Application::override_cursor(), None);
+    assert!(take().contains(&"window grab false".to_string()));
+    set_widget_visible(&f.a, true);
+
+    // A grabber below the hidden widget loses it too; a sibling's hide does not.
+    inner.borrow().grab_mouse();
+    set_widget_visible(&f.b, false);
+    assert!(inner.borrow().is_mouse_grabber());
+    set_widget_visible(&f.a, false);
+    assert!(!inner.borrow().is_mouse_grabber());
+}
+
+#[test]
+fn hiding_the_window_releases_the_grab() {
+    let _g = install();
+    let mut f = fixture();
+    f.win.show();
+    f.a.borrow().grab_mouse_with_cursor(CursorShape::Cross);
+    take();
+    f.win.hide();
+    assert!(ferrokit_widgets::widget::mouse_grabber_id().is_none());
+    assert_eq!(Application::override_cursor(), None);
+}
+
+#[test]
+fn losing_the_native_capture_ends_the_widget_grab() {
+    let _g = install();
+    let f = fixture();
+    f.a.borrow().grab_mouse_with_cursor(CursorShape::Wait);
+    take();
+    // Alt-Tab: the window no longer holds the capture, then the notification arrives.
+    NATIVE_GRAB.with(|g| g.set(false));
+    send(f.index, WindowSystemEvent::MouseGrabLost);
+    assert!(ferrokit_widgets::widget::mouse_grabber_id().is_none());
+    assert!(!f.a.borrow().is_mouse_grabber());
+    assert_eq!(Application::override_cursor(), None);
+}
+
+#[test]
+fn a_capture_notification_while_the_window_still_grabs_changes_nothing() {
+    let _g = install();
+    let f = fixture();
+    f.a.borrow().grab_mouse();
+    // The old grab was released and a new one taken before the notification arrived.
+    send(f.index, WindowSystemEvent::MouseGrabLost);
+    assert!(f.a.borrow().is_mouse_grabber());
+    f.a.borrow().release_mouse();
+}
+
+#[test]
+fn releasing_the_grab_does_not_reenter_through_the_capture_notification() {
+    let _g = install();
+    let f = fixture();
+    f.a.borrow().grab_mouse();
+    take();
+    f.a.borrow().release_mouse();
+    // The notification the native release causes finds no grab left.
+    send(f.index, WindowSystemEvent::MouseGrabLost);
+    assert_eq!(take(), ["window grab false"]);
+}
+
+#[test]
+fn a_move_resyncs_the_pressed_buttons_and_keeps_the_x_buttons() {
+    let _g = install();
+    let f = fixture();
+    press(f.index, 10, 10, MouseButton::Left);
+    assert_eq!(Application::mouse_buttons(), MouseButtons::LEFT);
+    // The release went missing: the move says no button is down.
+    move_to(f.index, 11, 11);
+    assert_eq!(Application::mouse_buttons(), MouseButtons::NO_BUTTON);
+
+    let held = MouseButtons::LEFT
+        .union(MouseButtons::BACK)
+        .union(MouseButtons::FORWARD);
+    send(
+        f.index,
+        WindowSystemEvent::MouseMove {
+            pos: Point::new(12, 12),
+            global_pos: Point::new(22, 32),
+            buttons: held,
+        },
+    );
+    assert_eq!(Application::mouse_buttons(), held);
+}
+
+#[test]
+fn resetting_the_application_clears_the_native_override_too() {
+    let _g = install();
+    Application::set_override_cursor(CursorShape::Wait);
+    take();
+    Application::reset_for_test();
+    assert_eq!(Application::override_cursor(), None);
+    assert!(take().contains(&"platform override cleared".to_string()));
+}
+
+#[test]
+fn a_native_override_is_applied_only_to_the_window_under_the_pointer() {
+    let _g = install();
+    let f = fixture();
+    let _other = fixture();
+    move_to(f.index, 10, 10);
+    take();
+
+    Application::set_override_cursor(CursorShape::Wait);
+    let entries = take();
+    assert_eq!(
+        entries.iter().filter(|e| *e == "window cursor Wait").count(),
+        1,
+        "{entries:?}"
+    );
+    Application::restore_override_cursor();
+    let entries = take();
+    assert_eq!(
+        entries.iter().filter(|e| e.starts_with("window cursor")).count(),
+        1,
+        "{entries:?}"
+    );
 }

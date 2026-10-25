@@ -140,6 +140,7 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
         }
         hide_children(widget);
         move_focus_off_hidden(widget);
+        release_grab_in_subtree(widget);
     }
 }
 
@@ -1085,15 +1086,6 @@ pub fn mouse_grabber_id() -> Option<ObjectId> {
     MOUSE_GRABBER.with(|g| g.get())
 }
 
-/// Ends the grab when its widget is gone.
-pub(crate) fn clear_mouse_grab_if(id: ObjectId) {
-    MOUSE_GRABBER.with(|g| {
-        if g.get() == Some(id) {
-            g.set(None);
-        }
-    });
-}
-
 thread_local! {
     /// `mouseGrabWithCursor` (qwidget.cpp:12641): the grab was made with `grab_mouse_with_cursor`,
     /// so releasing it restores the override cursor.
@@ -1117,11 +1109,7 @@ pub fn mouse_grabber() -> Option<WidgetRef> {
 /// grab with.
 fn grab_mouse_for<W: Widget + ?Sized>(w: &W, cursor: Option<CursorShape>) {
     if let Some(previous) = mouse_grabber_id() {
-        if previous == w.id() {
-            release_mouse_for(w);
-        } else {
-            crate::window::release_grab_of(previous);
-        }
+        release_grab_of_id(previous);
     }
     MOUSE_GRAB_WITH_CURSOR.with(|c| c.set(false));
     if crate::window::is_in_window(w) {
@@ -1138,21 +1126,67 @@ fn grab_mouse_for<W: Widget + ?Sized>(w: &W, cursor: Option<CursorShape>) {
 /// `releaseMouseGrabOfWidget` (qwidget.cpp:12672-12686) for the widget that holds the grab; any
 /// other widget does nothing.
 pub(crate) fn release_mouse_for<W: Widget + ?Sized>(w: &W) {
-    if mouse_grabber_id() != Some(w.id()) {
-        return;
-    }
-    if crate::window::is_in_window(w) {
-        if MOUSE_GRAB_WITH_CURSOR.with(|c| c.replace(false)) {
-            crate::application::Application::restore_override_cursor();
-        }
-        crate::window::native_mouse_grab(w, false);
-        MOUSE_GRAB_WINDOW.with(|c| c.set(None));
-    }
-    MOUSE_GRABBER.with(|g| g.set(None));
+    release_grab_of_id(w.id());
 }
 
-/// The grabber was destroyed (`QWidget::destroy`, qwidget.cpp:12470-12471 calls `releaseMouse`): its
-/// window lets go and an override cursor of the grab ends.
+/// `releaseMouseGrabOfWidget` for the widget `id`, which needs no borrow: only the grabber's id and
+/// the window it grabbed with are kept. The grabber is cleared first, so the `WM_CAPTURECHANGED`
+/// the native release causes finds no grab left to reconcile. Ends the override cursor of
+/// `grab_mouse_with_cursor`.
+pub(crate) fn release_grab_of_id(id: ObjectId) {
+    let held = MOUSE_GRABBER
+        .try_with(|g| {
+            let held = g.get() == Some(id);
+            if held {
+                g.set(None);
+            }
+            held
+        })
+        .unwrap_or(false);
+    if held {
+        release_grab_of_dropped_widget();
+    }
+}
+
+/// `QWidget::hide` of `widget` (qwidget.cpp:8198-8260 hides the native window of the grab): a mouse
+/// grab held by `widget` or by a widget below it ends, because a hidden widget receives no mouse
+/// events and Windows drops the capture of a hidden window.
+pub(crate) fn release_grab_in_subtree(widget: &WidgetRef) {
+    let Some(id) = mouse_grabber_id() else { return };
+    if subtree_contains(widget, id) {
+        release_grab_of_id(id);
+    }
+}
+
+/// Whether `widget` or a widget below it has `id`; a widget that is borrowed mutably right now is
+/// skipped (it is the one running this call, and `widget` itself was readable).
+fn subtree_contains(widget: &WidgetRef, id: ObjectId) -> bool {
+    let Ok(w) = widget.try_borrow() else {
+        return false;
+    };
+    w.id() == id || w.children().iter().any(|c| subtree_contains(c, id))
+}
+
+/// The window `window_id` lost its native mouse grab (`WM_CAPTURECHANGED`, alt-tab, a popup): a
+/// widget that grabbed through that window no longer has one, so the widget-level grab ends too.
+pub(crate) fn grab_lost_in_window(window_id: ObjectId) {
+    let ours = MOUSE_GRAB_WINDOW.try_with(|c| c.get()).ok().flatten() == Some(window_id);
+    if !ours {
+        return;
+    }
+    if let Some(id) = mouse_grabber_id() {
+        release_grab_of_id(id);
+    }
+}
+
+/// Drops the grab state without telling any window (test resets).
+pub(crate) fn forget_mouse_grab() {
+    MOUSE_GRABBER.with(|g| g.set(None));
+    MOUSE_GRAB_WITH_CURSOR.with(|c| c.set(false));
+    MOUSE_GRAB_WINDOW.with(|c| c.set(None));
+}
+
+/// The grabber is gone or lets go: its window lets go and an override cursor of the grab ends.
 fn release_grab_of_dropped_widget() {
     if MOUSE_GRAB_WITH_CURSOR
         .try_with(|c| c.replace(false))
@@ -1866,18 +1900,7 @@ impl Drop for WidgetBase {
     /// A destroyed widget ends its mouse grab (`QWidget::~QWidget` -> `releaseMouse`).
     fn drop(&mut self) {
         let id = self.object_data.id();
-        let held = MOUSE_GRABBER
-            .try_with(|g| {
-                let held = g.get() == Some(id);
-                if held {
-                    g.set(None);
-                }
-                held
-            })
-            .unwrap_or(false);
-        if held {
-            release_grab_of_dropped_widget();
-        }
+        release_grab_of_id(id);
     }
 }
 

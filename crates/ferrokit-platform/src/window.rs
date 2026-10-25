@@ -580,8 +580,9 @@ fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
                 ReleaseCapture();
             }
         }
+        // `SetCapture` can be refused (another thread holds the mouse button down, say).
+        grab && GetCapture() == hwnd
     }
-    grab
 }
 
 /// `QWindowsPointerHandler::queryMouseButtons`: the physical buttons, as logical buttons.
@@ -1643,6 +1644,15 @@ unsafe fn native_window_proc_inner(
             if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
                 let _ = APP_MOUSE_BUTTONS
                     .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            }
+            if new_owner != hwnd {
+                // Alt-Tab, a popup or the system move loop took the capture: the widget layer
+                // reconciles an explicit `grabMouse` that no longer has a native grab behind it.
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::MouseGrabLost,
+                );
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
