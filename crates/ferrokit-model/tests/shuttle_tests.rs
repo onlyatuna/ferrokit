@@ -174,3 +174,107 @@ fn test_shuttle_negative_mutant_skip_revalidation_fails() {
         reg.assert_invariants();
     }, 100);
 }
+
+// ---- Thread-owned slot protocol (`src/local_slots.rs`) ----
+// Shuttle model tests of the thread-owned slot protocol (see `src/local_slots.rs` for the scope
+// of the model): randomized, reproducible schedules of the same scenarios Loom explores.
+//
+
+use ferrokit_model::local_slots::{scenarios, LocalMutants};
+
+const ITERATIONS: usize = 500;
+
+#[test]
+fn test_shuttle_foreign_drop_then_owner_drain() {
+    shuttle::check_random(
+        || scenarios::foreign_drop_then_owner_drain(LocalMutants::default()),
+        ITERATIONS,
+    );
+}
+
+#[test]
+fn test_shuttle_foreign_drop_races_owner_exit() {
+    shuttle::check_random(
+        || scenarios::foreign_drop_after_owner_exit(LocalMutants::default()),
+        ITERATIONS,
+    );
+}
+
+#[test]
+fn test_shuttle_nested_retire_reenters_the_table() {
+    shuttle::check_random(
+        || scenarios::nested_retire(LocalMutants::default()),
+        ITERATIONS,
+    );
+}
+
+#[test]
+fn test_shuttle_call_releases_capture() {
+    shuttle::check_random(
+        || scenarios::call_releases_capture(LocalMutants::default()),
+        ITERATIONS,
+    );
+}
+
+#[test]
+fn test_shuttle_two_owners_exit_then_foreign_use() {
+    shuttle::check_random(
+        || scenarios::two_owners_exit_then_foreign_use(LocalMutants::default()),
+        ITERATIONS,
+    );
+}
+
+#[test]
+fn test_shuttle_owner_compare_is_only_a_diagnostic() {
+    shuttle::check_random(
+        || {
+            scenarios::foreign_drop_then_owner_drain(LocalMutants {
+                skip_owner_check: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
+
+#[test]
+#[should_panic(expected = "re-entered")]
+fn test_shuttle_negative_mutant_borrow_held_during_retire_fails() {
+    shuttle::check_random(
+        || {
+            scenarios::nested_retire(LocalMutants {
+                hold_borrow_on_retire: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
+
+#[test]
+#[should_panic(expected = "installed twice")]
+fn test_shuttle_negative_mutant_reused_keys_fail() {
+    shuttle::check_random(
+        || {
+            scenarios::nested_retire(LocalMutants {
+                reuse_keys: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
+
+#[test]
+#[should_panic(expected = "ended owner")]
+fn test_shuttle_negative_mutant_error_on_ended_post_fails() {
+    shuttle::check_random(
+        || {
+            scenarios::foreign_drop_after_owner_exit(LocalMutants {
+                error_on_ended_post: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
