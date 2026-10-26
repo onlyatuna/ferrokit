@@ -673,3 +673,87 @@ fn qt_elements_with_close(path: &PainterPath) -> Vec<(u8, f64, f64)> {
     }
     out
 }
+
+#[test]
+fn arcs_ignore_angles_qt_overflows_on() {
+    // Qt keeps the start quadrant in an `int`: beyond ~1.9e11 degrees it is undefined behaviour.
+    // ferrokit ignores start angles beyond 1e9 degrees, 1e9 itself being drawn (the oracle has it).
+    let rect = RectF::new(0.0, 0.0, 10.0, 10.0);
+    for angle in [
+        1.0e9 * 1.01,
+        -2.0e9,
+        1.0e12,
+        f32::MAX,
+        f32::MIN,
+        f32::INFINITY,
+        f32::NAN,
+    ] {
+        let mut path = PainterPath::new();
+        path.arc_move_to(rect, angle);
+        path.arc_to(rect, angle, 90.0);
+        path.arc_to(rect, angle, f32::MAX);
+        assert!(path.elements().is_empty(), "{angle}");
+    }
+    let mut path = PainterPath::new();
+    path.arc_to(rect, 1.0e9, 90.0);
+    assert!(!path.elements().is_empty());
+    // A sweep of any size is a full turn at most.
+    let mut path = PainterPath::new();
+    path.arc_to(rect, 0.0, f32::MAX);
+    assert_eq!(
+        path.elements().len(),
+        1 + 1 + 4,
+        "move, line to the start, four quadrants"
+    );
+}
+
+#[test]
+fn create_stroke_does_not_hang_or_panic_on_hostile_settings() {
+    let mut curve = PainterPath::new();
+    curve.move_to(0.0, 0.0);
+    curve.cubic_to(100.0, 0.0, 0.0, 0.01, 100.0, 50.0);
+    curve.line_to(-30.0, 40.0);
+    let mut line = PainterPath::new();
+    line.move_to(0.0, 0.0);
+    line.line_to(200.0, 0.0);
+    // Under Miri a few of each (the whole product is 1 500 strokes).
+    let few = if cfg!(miri) { 2 } else { usize::MAX };
+    for width in [f64::NAN, f64::INFINITY, 0.0, 1e-300, 1e300]
+        .into_iter()
+        .take(few)
+    {
+        for threshold in [f64::NAN, 0.0, -1.0, 1e-300, f64::INFINITY]
+            .into_iter()
+            .take(few)
+        {
+            for dashes in [
+                vec![],
+                vec![0.0, 0.0, 1.0],
+                vec![f64::NAN],
+                vec![1e-300, 1e-300],
+                vec![1e300, 1e300],
+                vec![1.0, 2.0, 1e-9],
+            ]
+            .into_iter()
+            .take(few.saturating_add(2))
+            {
+                for offset in [0.0, f64::NAN, f64::INFINITY, -1e300, 5.5]
+                    .into_iter()
+                    .take(few)
+                {
+                    let mut s = PainterPathStroker::new();
+                    s.set_width(width);
+                    s.set_curve_threshold(threshold);
+                    s.set_dash_pattern(&dashes);
+                    s.set_dash_offset(offset);
+                    s.set_cap_style(PenCapStyle::Round);
+                    s.set_join_style(PenJoinStyle::Round);
+                    for path in [&curve, &line] {
+                        let stroke = s.create_stroke(path);
+                        assert!(stroke.elements().len() <= PainterPathStroker::MAX_ELEMENTS);
+                    }
+                }
+            }
+        }
+    }
+}

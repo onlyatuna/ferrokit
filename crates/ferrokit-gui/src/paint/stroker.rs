@@ -106,11 +106,28 @@ fn element(kind: PathElementType, x: f64, y: f64) -> PathElementPoint {
     PathElementPoint { kind, x, y }
 }
 
+/// The most elements (`QPainterPath::Element`s, a cubic being three) a stroke is made of; see
+/// [`PainterPathStroker::create_stroke`].
+pub(crate) const MAX_STROKE_ELEMENTS: usize = 1 << 20;
+
+/// The threshold `set_curve_threshold` uses instead of one that is not positive.
+const MIN_CURVE_THRESHOLD: f64 = 0.00025;
+
 /// The output path of the strokers, with the `QPainterPath::moveTo` / `lineTo` / `cubicTo`
-/// behaviour Qt's stroke hooks (`qt_path_stroke_move_to`, ...) get.
-#[derive(Default)]
+/// behaviour Qt's stroke hooks (`qt_path_stroke_move_to`, ...) get. Past `max_elements` nothing
+/// more is added.
 struct OutPath {
     elements: Vec<PathElementPoint>,
+    max_elements: usize,
+}
+
+impl Default for OutPath {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            max_elements: MAX_STROKE_ELEMENTS,
+        }
+    }
 }
 
 impl OutPath {
@@ -121,6 +138,11 @@ impl OutPath {
         }
     }
 
+    /// Whether the limit is reached: the stroke is cut short here.
+    fn full(&self) -> bool {
+        self.elements.len() + 3 > self.max_elements
+    }
+
     fn last(&self) -> P {
         let e = self.elements[self.elements.len() - 1];
         P::new(e.x, e.y)
@@ -128,6 +150,9 @@ impl OutPath {
 
     /// `QPainterPath::moveTo`: a move after a move replaces it.
     fn move_to(&mut self, x: f64, y: f64) {
+        if self.full() {
+            return;
+        }
         self.ensure_data();
         let n = self.elements.len();
         if self.elements[n - 1].kind == PathElementType::MoveTo {
@@ -140,6 +165,9 @@ impl OutPath {
 
     /// `QPainterPath::lineTo`: a line to the current point is dropped.
     fn line_to(&mut self, x: f64, y: f64) {
+        if self.full() {
+            return;
+        }
         self.ensure_data();
         if point_eq(P::new(x, y), self.last()) {
             return;
@@ -149,6 +177,9 @@ impl OutPath {
 
     /// `QPainterPath::cubicTo`: a curve that is a single point is dropped.
     fn cubic_to(&mut self, c1: P, c2: P, e: P) {
+        if self.full() {
+            return;
+        }
         self.ensure_data();
         let last = self.last();
         if point_eq(last, c1) && point_eq(c1, c2) && point_eq(c2, e) {
@@ -264,7 +295,7 @@ impl Stroker {
         }
         self.begin();
         let mut i = 0;
-        while i < path.len() {
+        while i < path.len() && !self.out.full() {
             let e = path[i];
             match e.kind {
                 PathElementType::MoveTo => self.move_to(e.x, e.y),
@@ -312,6 +343,9 @@ impl Stroker {
 
     /// `QStroker::processCurrentSubpath`.
     fn process_current_subpath(&mut self) {
+        if self.out.full() {
+            return;
+        }
         let elements = std::mem::take(&mut self.elements);
         let fw = elements.clone();
         let bw = backward(&elements);
@@ -348,7 +382,7 @@ impl Stroker {
         let mut first = true;
         let offset = self.stroke_width / 2.0;
 
-        while pos < it.len() {
+        while pos < it.len() && !self.out.full() {
             let e = it[pos];
             pos += 1;
 
@@ -652,7 +686,7 @@ impl<'a> DashStroker<'a> {
         self.stroker.begin();
         self.elements.clear();
         let mut i = 0;
-        while i < path.len() {
+        while i < path.len() && !self.stroker.out.full() {
             let e = path[i];
             match e.kind {
                 PathElementType::MoveTo => self.move_to(e.x, e.y),
@@ -721,27 +755,56 @@ impl<'a> DashStroker<'a> {
             return;
         }
 
-        let inv_sum_length = 1.0 / sum_length;
-
         let dash_count = dash_count_all & !1usize; // Round down to even number
+
+        // The dashes the loops below cycle through: `dash_count`, but a pattern of a single entry
+        // has `dash_count == 0` and cycles through that one. Qt measures the cycle by the sum of
+        // all entries, which is longer when the count is odd.
+        let cycle_count = dash_count.max(1);
+        let cycle_length: f64 = dashes[..cycle_count].iter().sum();
+        // Qt hangs/UB here; ferrokit draws nothing. A cycle of zero length (`[0, 0, 1]`: the used
+        // dashes are all zero and only the ignored odd entry is not) makes Qt's offset loop below
+        // spin for ever; a sum beyond `f64` (width times entries overflows) makes its dash loop
+        // spin on NaN positions.
+        if fuzzy_is_null(cycle_length) || !sum_length.is_finite() {
+            return;
+        }
+        let inv_sum_length = 1.0 / cycle_length;
 
         let mut idash = 0usize; // Index to current dash
         let mut pos = 0.0f64; // The position on the curve, 0 <= pos <= path.length
         let mut elen; // element length
         let mut doffset = self.dash_offset * stroke_width;
+        // Qt hangs/UB here (`fmod(inf, x)` is NaN and the dash loop never ends on it); ferrokit
+        // starts at the beginning of the pattern.
+        if !doffset.is_finite() {
+            doffset = 0.0;
+        }
 
         // make sure doffset is in range [0..sumLength)
         doffset %= sum_length;
         if doffset < 0.0 {
             doffset += sum_length;
         }
+        // Qt walks the dashes off `doffset` one by one, which for an odd count whose last entry
+        // is long takes sum / cycle turns of the pattern; that is the remainder of the cycle.
+        if cycle_length < sum_length {
+            doffset %= cycle_length;
+        }
 
-        while doffset >= dashes[idash] {
+        // At most two turns: after the remainder above, rounding can leave one more.
+        for _ in 0..2 * cycle_count + 2 {
+            if doffset < dashes[idash] {
+                break;
+            }
             doffset -= dashes[idash];
             idash += 1;
             if idash >= dash_count {
                 idash = 0;
             }
+        }
+        if doffset >= dashes[idash] {
+            doffset = 0.0;
         }
 
         let mut estart = 0.0f64; // The elements starting position
@@ -758,6 +821,9 @@ impl<'a> DashStroker<'a> {
         let mut move_to_pos = prev;
         let mut has_move_to = false;
         for e in it {
+            if self.stroker.out.full() {
+                return;
+            }
             if !(e.x.is_finite() && e.y.is_finite()) {
                 continue;
             }
@@ -774,7 +840,7 @@ impl<'a> DashStroker<'a> {
             let mut max_dashes = dash_count as i32;
             if skip_dashing {
                 // Cut away full dash sequences.
-                elen -= (elen * inv_sum_length).floor() * sum_length;
+                elen -= (elen * inv_sum_length).floor() * cycle_length;
                 // Update dash offset.
                 while !done {
                     // parentheses to avoid float rounding issues: qreal(4) + 0.1 - 0.1 - 4 < 0
@@ -808,6 +874,9 @@ impl<'a> DashStroker<'a> {
 
             // Dash away...
             while !done {
+                if self.stroker.out.full() {
+                    return;
+                }
                 let p2;
 
                 let has_offset = doffset > 0.0;
@@ -912,8 +981,15 @@ impl PainterPathStroker {
 
     /// `QPainterPathStroker::setWidth`: a width of 0 or less is 1. As in Qt this also resets the
     /// curve threshold to `clamp(1 / width, 0.00025, 0.25)`.
+    ///
+    /// Qt hangs/UB here; ferrokit also takes a NaN or infinite width as 1 (Qt computes offsets
+    /// from it that are NaN).
     pub fn set_width(&mut self, width: f64) {
-        let width = if width <= 0.0 { 1.0 } else { width };
+        let width = if width <= 0.0 || !width.is_finite() {
+            1.0
+        } else {
+            width
+        };
         self.width = width;
         self.curve_threshold = (1.0 / width).clamp(0.00025, 0.25);
     }
@@ -954,8 +1030,17 @@ impl PainterPathStroker {
     }
 
     /// `QPainterPathStroker::setCurveThreshold`: the flatness at which offset curves are accepted.
+    ///
+    /// Qt hangs/UB here; ferrokit takes a threshold that is 0, negative or NaN as 0.00025, the
+    /// smallest `setWidth` ever chooses. `QBezier::shifted` relaxes a threshold it cannot meet by
+    /// a factor of 1.5 until it exceeds 2, which a threshold of 0 or NaN never does, so Qt's
+    /// `createStroke` of any curve does not return.
     pub fn set_curve_threshold(&mut self, threshold: f64) {
-        self.curve_threshold = threshold;
+        self.curve_threshold = if threshold > 0.0 {
+            threshold
+        } else {
+            MIN_CURVE_THRESHOLD
+        };
     }
 
     /// `QPainterPathStroker::curveThreshold`.
@@ -1003,6 +1088,28 @@ impl PainterPathStroker {
     /// `QPainterPathStroker::createStroke`: the outline of the stroke of `path` as a path to be
     /// filled with the winding rule (the result's fill rule is [`FillRule::Winding`]). An empty
     /// `path` is returned as it is.
+    ///
+    /// Qt hangs/UB here; ferrokit guards against input that makes Qt's strokers loop for ever or
+    /// allocate without bound, and does not panic on any input:
+    ///
+    /// * A dash pattern with a NaN or infinite entry is ignored (the stroke is solid), and a
+    ///   NaN or infinite dash offset is 0. Qt's dash loop never ends on NaN positions.
+    /// * A dash pattern whose cycle has no length draws nothing: that is Qt's rule for a pattern
+    ///   that sums to 0, extended to `[0, 0, 1]`, whose used entries are `0, 0` (a trailing odd
+    ///   entry is not part of the cycle) and which makes Qt's offset loop spin. A pattern whose
+    ///   length overflows `f64` when scaled by the width draws nothing as well.
+    /// * The cycle of a dash pattern is the entries Qt actually cycles through: the even prefix,
+    ///   or the single entry of a pattern with one. Qt measures its 10 000-turn limit (past which
+    ///   a line is drawn solid) and the solid shortcut's cut-off by the sum of all entries, which
+    ///   is longer for an odd count; there Qt's shortcut shifts the pattern and ferrokit's does
+    ///   not. Qt's offset walk (one subtraction per dash) takes `sum / cycle` turns of the
+    ///   pattern, up to 5e17 for `[1e-8, 1e-8, 1e10]`; ferrokit reduces it by the cycle.
+    /// * A stroke has at most [`MAX_ELEMENTS`](Self::MAX_ELEMENTS) elements (a cubic is three):
+    ///   what the stroker has produced by then is returned and the rest of the path is not
+    ///   stroked, so a dashed stroke of a long path cannot allocate hundreds of megabytes.
+    /// * The width ([`set_width`](Self::set_width)) and the curve threshold
+    ///   ([`set_curve_threshold`](Self::set_curve_threshold)) cannot be set to values that
+    ///   make Qt's offset-curve search endless.
     pub fn create_stroke(&self, path: &PainterPath) -> PainterPath {
         let input = path.qt_elements();
         // `QPainterPath::isEmpty`: no elements, or just the initial move.
@@ -1020,19 +1127,37 @@ impl PainterPathStroker {
         stroke
     }
 
+    /// The most elements of a [`create_stroke`](Self::create_stroke) result (a cubic is three).
+    pub const MAX_ELEMENTS: usize = MAX_STROKE_ELEMENTS;
+
     /// The elements `createStroke` produces for the elements of a non-empty path, in `f64`.
     pub(crate) fn stroke_elements(&self, input: &[PathElementPoint]) -> Vec<PathElementPoint> {
+        self.stroke_elements_limited(input, MAX_STROKE_ELEMENTS)
+    }
+
+    /// [`stroke_elements`](Self::stroke_elements) with at most `max_elements` elements.
+    pub(crate) fn stroke_elements_limited(
+        &self,
+        input: &[PathElementPoint],
+        max_elements: usize,
+    ) -> Vec<PathElementPoint> {
         let mut stroker = Stroker::new();
+        stroker.out.max_elements = max_elements;
         stroker.stroke_width = self.width;
         stroker.curve_threshold = self.curve_threshold;
         stroker.cap = cap_mode(self.cap);
         stroker.join = join_mode(self.join);
         stroker.miter_limit = self.miter_limit;
 
-        if self.dash_pattern.is_empty() {
+        if self.dash_pattern.is_empty() || !self.dash_pattern.iter().all(|d| d.is_finite()) {
             stroker.stroke_path(input);
         } else {
-            DashStroker::new(&mut stroker, &self.dash_pattern, self.dash_offset).stroke_path(input);
+            let offset = if self.dash_offset.is_finite() {
+                self.dash_offset
+            } else {
+                0.0
+            };
+            DashStroker::new(&mut stroker, &self.dash_pattern, offset).stroke_path(input);
         }
         stroker.out.elements
     }
@@ -1162,5 +1287,139 @@ mod tests {
             cases += 1;
         }
         assert!(cases * STRIDE > 390, "{cases} stroke cases");
+    }
+
+    fn line(x: f64, y: f64) -> Vec<PathElementPoint> {
+        vec![
+            element(PathElementType::MoveTo, 0.0, 0.0),
+            element(PathElementType::LineTo, x, y),
+        ]
+    }
+
+    /// Qt hangs/UB: more elements than the limit are never made.
+    #[test]
+    fn the_element_limit_cuts_a_stroke_short() {
+        // Dashes: 1e4 turns of the pattern per line, so a few lines make many elements.
+        let mut dashed = PainterPathStroker::new();
+        dashed.set_dash_pattern(&[1.0, 1.0]);
+        let mut path = vec![element(PathElementType::MoveTo, 0.0, 0.0)];
+        for i in 1..if cfg!(miri) { 4 } else { 40 } {
+            path.push(element(
+                PathElementType::LineTo,
+                f64::from(i) * 1000.0,
+                f64::from(i % 2) * 7.0,
+            ));
+        }
+        let all = dashed.stroke_elements_limited(&path, usize::MAX);
+        assert!(all.len() > 300, "{}", all.len());
+        for limit in [3, 10, 100, 777] {
+            let cut = dashed.stroke_elements_limited(&path, limit);
+            assert!(
+                !cut.is_empty() && cut.len() <= limit,
+                "{limit}: {}",
+                cut.len()
+            );
+            // What is produced is the start of the unlimited stroke.
+            assert_eq!(cut[0], all[0]);
+        }
+        // The same without dashes: many segments of a subpath.
+        let solid = PainterPathStroker::new();
+        let mut zigzag = vec![element(PathElementType::MoveTo, 0.0, 0.0)];
+        for i in 1..if cfg!(miri) { 200 } else { 2000 } {
+            zigzag.push(element(
+                PathElementType::LineTo,
+                f64::from(i),
+                f64::from(i % 2) * 5.0,
+            ));
+        }
+        let all = solid.stroke_elements_limited(&zigzag, usize::MAX);
+        assert!(all.len() > 600);
+        let cut = solid.stroke_elements_limited(&zigzag, 500);
+        assert!(!cut.is_empty() && cut.len() <= 500, "{}", cut.len());
+        assert_eq!(PainterPathStroker::MAX_ELEMENTS, 1 << 20);
+    }
+
+    /// Qt hangs/UB: dash patterns and offsets that make its loops spin.
+    #[test]
+    fn degenerate_dash_patterns_and_offsets_terminate() {
+        let path = line(40.0, 0.0);
+        let solid = PainterPathStroker::new().stroke_elements(&path);
+        let strokes = |pattern: &[f64], offset: f64, width: f64| {
+            let mut s = PainterPathStroker::new();
+            s.set_width(width);
+            s.set_dash_pattern(pattern);
+            s.set_dash_offset(offset);
+            s.stroke_elements(&path)
+        };
+        // A cycle of no length (`[0, 0, 1]`, `[0, 0]`, `[0]`): nothing is drawn.
+        for pattern in [
+            &[0.0, 0.0, 1.0][..],
+            &[0.0, 0.0],
+            &[0.0],
+            &[0.0, 0.0, 0.0, 0.0, 7.0],
+        ] {
+            assert!(strokes(pattern, 0.0, 1.0).is_empty(), "{pattern:?}");
+        }
+        // NaN and infinite entries: the pattern is ignored.
+        for pattern in [
+            &[f64::NAN, 1.0][..],
+            &[1.0, f64::INFINITY],
+            &[1.0, 1.0, f64::NEG_INFINITY],
+        ] {
+            assert_eq!(strokes(pattern, 0.0, 1.0), solid, "{pattern:?}");
+        }
+        // NaN and infinite offsets are 0, a huge finite one is reduced like any other.
+        let plain = strokes(&[2.0, 1.0], 0.0, 1.0);
+        for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(strokes(&[2.0, 1.0], offset, 1.0), plain, "{offset}");
+        }
+        assert!(!strokes(&[2.0, 1.0], 1e300, 1.0).is_empty());
+        assert!(!strokes(&[2.0, 1.0], -1e300, 1.0).is_empty());
+        // Width times entries beyond `f64`: nothing is drawn; so is an offset that overflows to
+        // infinity, which starts at the beginning of the pattern.
+        assert!(strokes(&[1e308, 1e308], 0.0, 10.0).is_empty());
+        assert_eq!(
+            strokes(&[2.0, 1.0], 1e308, 10.0),
+            strokes(&[2.0, 1.0], 0.0, 10.0)
+        );
+        // An odd pattern whose last entry is huge: the offset is reduced by the cycle, not walked
+        // off one dash at a time (Qt turns the pattern sum / cycle = 5e17 times), and the line is
+        // drawn solid after 10 000 cycles.
+        let odd = strokes(&[1e-8, 1e-8, 1e10], 3.0e-9, 1.0);
+        assert!(!odd.is_empty() && odd.len() < 100, "{}", odd.len());
+        // The cycle of an odd pattern is its even prefix.
+        assert_eq!(strokes(&[2.0, 1.0, 1e9], 0.0, 1.0), plain);
+    }
+
+    /// Qt hangs/UB: thresholds and widths that stop `QBezier::shifted`.
+    #[test]
+    fn unusable_curve_thresholds_and_widths_are_replaced() {
+        let mut s = PainterPathStroker::new();
+        for threshold in [0.0, -0.5, f64::NAN, f64::NEG_INFINITY] {
+            s.set_curve_threshold(threshold);
+            assert_eq!(s.curve_threshold(), 0.00025, "{threshold}");
+        }
+        s.set_curve_threshold(0.5);
+        assert_eq!(s.curve_threshold(), 0.5);
+        s.set_curve_threshold(f64::INFINITY);
+        assert_eq!(s.curve_threshold(), f64::INFINITY);
+        for width in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -3.0, 0.0] {
+            s.set_width(width);
+            assert_eq!((s.width(), s.curve_threshold()), (1.0, 0.25), "{width}");
+        }
+
+        let mut curve = PainterPath::new();
+        curve.move_to(0.0, 0.0);
+        curve.cubic_to(30.0, 0.0, 0.0, 20.0, 40.0, 25.0);
+        let mut zero = PainterPathStroker::new();
+        zero.set_width(3.0);
+        zero.set_curve_threshold(0.0);
+        let mut small = PainterPathStroker::new();
+        small.set_width(3.0);
+        small.set_curve_threshold(0.00025);
+        assert_eq!(
+            zero.create_stroke(&curve).elements(),
+            small.create_stroke(&curve).elements()
+        );
     }
 }

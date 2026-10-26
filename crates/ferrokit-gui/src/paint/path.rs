@@ -5,7 +5,7 @@
 //! polygon primitives, and configurable winding/even-odd fill rules.
 
 use super::qpath_geom::{
-    curves_for_arc, find_ellipse_coords, fuzzy_compare, is_valid_coord, point_eq,
+    curves_for_arc, find_ellipse_coords, fuzzy_compare, is_valid_angle, is_valid_coord, point_eq,
     rect_has_valid_coords, Rc, P,
 };
 use crate::geometry::primitives::{PointF, RectF};
@@ -343,7 +343,8 @@ impl PainterPath {
     /// `angle` degrees (counter-clockwise from 3 o'clock, negative is clockwise).
     ///
     /// Like Qt, a call that follows a bare move replaces that move, and an invalid (NaN,
-    /// infinite) argument or a null rectangle (zero width and height) is ignored.
+    /// infinite) argument or a null rectangle (zero width and height) is ignored. Qt hangs/UB
+    /// here; ferrokit also ignores an `angle` beyond 1e9 degrees (see [`arc_to`](Self::arc_to)).
     ///
     /// Mirrors `QPainterPath::arcMoveTo` with `qt_find_ellipse_coords` (qtbase v6.11.2,
     /// `qpainterpath.cpp`). The point is computed in `f64` as Qt does and stored as `f32`.
@@ -354,7 +355,7 @@ impl PainterPath {
             f64::from(rect.width),
             f64::from(rect.height),
         );
-        if !rect_has_valid_coords(&r) || !is_valid_coord(f64::from(angle)) {
+        if !rect_has_valid_coords(&r) || !is_valid_angle(f64::from(angle)) {
             return;
         }
         if r.is_null() {
@@ -377,6 +378,10 @@ impl PainterPath {
     /// Invalid arguments and a null rectangle are ignored. A path without elements starts at
     /// `(0, 0)` like Qt's.
     ///
+    /// Qt hangs/UB here; ferrokit ignores the call when `|start_angle|` exceeds 1e9 degrees:
+    /// Qt's `qt_curves_for_arc` keeps the number of the start quadrant in an `int`, which a
+    /// larger angle overflows.
+    ///
     /// Mirrors `QPainterPath::arcTo`, `qt_curves_for_arc` and `qt_t_for_arc_angle` (qtbase
     /// v6.11.2, `qpainterpath.cpp`, `qstroker.cpp`). Qt computes in `double`; so does this, and
     /// only the resulting points are narrowed to the `f32` this path stores.
@@ -389,7 +394,7 @@ impl PainterPath {
         );
         let (start_angle, sweep_length) = (f64::from(start_angle), f64::from(sweep_length));
         if !rect_has_valid_coords(&r)
-            || !is_valid_coord(start_angle)
+            || !is_valid_angle(start_angle)
             || !is_valid_coord(sweep_length)
         {
             return;

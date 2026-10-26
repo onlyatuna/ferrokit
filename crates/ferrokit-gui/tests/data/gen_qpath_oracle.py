@@ -341,6 +341,47 @@ def main():
     out(hud_case(100.0, 73.3, 41.7, 0.07))
     out(hud_case(100.0, 99.9, 0.1, 0.07))
 
+    # ---- branches of QStroker / QDashStroker / QBezier the cases above rarely take ----
+    rng2 = random.Random(20261026)
+    # angles far from the origin (ferrokit rejects |angle| > 1e9, Qt's int overflows beyond ~1e11)
+    for start in (5e8, -5e8, 9e8, 1e9, -1e9, 123456789.0):
+        for sweep in (90.0, -90.0, 400.0, 0.5, -270.0):
+            out(arc_case(rng2.choice([0, 1, 2]), (4.5, 4.5, 72.0, 72.0), start, sweep))
+    # QBezier::shifted's Circle result: a small cubic that reverses (addCircle makes a semicircle)
+    tiny = [("M", 0.0, 0.0), ("C", -0.5, 0.0, 0.0, 0.5, f32(0.05), 0.0)]
+    out(stroke_case(20.0, 1, 1, 2.0, 0.0, 0.0, [], tiny))
+    out(stroke_case(20.0, 0, 2, 2.0, 0.0, 0.0, [], tiny))
+    made = 0
+    while made < 14:
+        p = [f32(rng2.uniform(-0.45, 0.45)) for _ in range(8)]
+        ux, uy, vx, vy = p[0] - p[2], p[1] - p[3], p[4] - p[6], p[5] - p[7]
+        dot = ux * vx + uy * vy
+        l = ux * ux + uy * uy * vx * vx + vy * vy
+        if dot < 0 and dot * dot < 0.8 * l:
+            ops = [("M", p[0], p[1]), ("C", p[2], p[3], p[4], p[5], p[6], p[7])]
+            out(stroke_case(rng2.choice([20.0, 30.0, 64.0]), rng2.randrange(3), rng2.randrange(4),
+                            2.0, 0.0, 0.0, [], ops))
+            made += 1
+    # a thinner threshold than any width gives: QBezier::shifted relaxes it 1.5x per retry
+    for thresh in (1e-9, 1e-30):
+        for _ in range(5):
+            case = stroke_case(f32(rng2.choice([1.0, 6.0, 40.0])), rng2.randrange(3),
+                               rng2.randrange(4), 2.0, 0.0, thresh, [], rnd_ops(rng2))
+            if case:
+                out(case)
+    # QDashStroker's solid shortcut: a line longer than 10 000 turns of the pattern
+    long_line = [("M", 0.0, 0.0), ("L", 30000.0, 0.0)]
+    bend = long_line + [("L", 30000.0, 5.0), ("L", 29990.0, 5.0)]
+    closed = [("M", 0.0, 0.0), ("L", 30000.0, 0.0), ("L", 30000.0, 4.0), ("Z",)]
+    for width, dashes, ops in ((1.0, [1.0, 1.0], long_line), (2.0, [1.0, 2.0], [("M", 0.0, 0.0), ("L", 70000.0, 0.0)]),
+                               (1.0, [1.0, 1.0], bend), (0.5, [2.0, 2.0], closed),
+                               (1.0, [0.5, 0.5, 2.0, 1.0], [("M", 0.0, 0.0), ("L", 50000.0, 0.0)])):
+        for doff in (0.0, 0.3, -1.5, 7.25):
+            case = stroke_case(width, rng2.randrange(3), rng2.randrange(4), 2.0, doff, 0.0,
+                               dashes, ops)
+            assert case, (width, dashes)
+            out(case)
+
 
 if __name__ == "__main__":
     main()

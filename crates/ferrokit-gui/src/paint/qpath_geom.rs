@@ -122,6 +122,19 @@ pub(crate) fn is_valid_coord(c: f64) -> bool {
     c.is_finite() && c.abs() < 1e128
 }
 
+/// The largest start angle, in degrees, that arcs are built for.
+///
+/// Qt hangs/UB here; ferrokit rejects such angles. `qt_curves_for_arc` keeps the quadrant of the
+/// start angle in an `int`, so an angle beyond about 1.9e11 degrees overflows it (undefined
+/// behaviour in C++). ferrokit treats an angle whose magnitude exceeds this limit like a
+/// non-finite one and ignores the call. At 1e9 degrees an `f64` still resolves 1e-7 degrees.
+pub(crate) const MAX_ARC_ANGLE: f64 = 1e9;
+
+/// Whether `a` is a start angle arcs are built for: finite and at most [`MAX_ARC_ANGLE`].
+pub(crate) fn is_valid_angle(a: f64) -> bool {
+    a.abs() <= MAX_ARC_ANGLE
+}
+
 /// `hasValidCoords(QRectF)` of `qpainterpath.cpp`.
 pub(crate) fn rect_has_valid_coords(r: &Rc) -> bool {
     is_valid_coord(r.x) && is_valid_coord(r.y) && is_valid_coord(r.w) && is_valid_coord(r.h)
@@ -464,6 +477,13 @@ impl Bezier {
             && fuzzy_compare(self.y[0], self.y[3]);
         if degenerate {
             return 0;
+        }
+
+        // Qt hangs/UB here; ferrokit raises a threshold that is not a usable positive float.
+        // Below, a threshold of 0 (or NaN, or one that is 0 as a `float`) is multiplied by 1.5
+        // until it exceeds 2, which it never does. 1e-30 needs about 200 turns to get there.
+        if !(threshold >= 1e-30) {
+            threshold = 0.00025;
         }
 
         let max_segments = max_segments - 1;
@@ -813,6 +833,8 @@ pub(crate) fn curves_for_arc(rect: &Rc, start_angle: f64, sweep_length: f64) -> 
         || rect.h.is_nan()
         || start_angle.is_nan()
         || sweep_length.is_nan()
+        // Qt hangs/UB here (`int` overflow of the segment numbers); ferrokit rejects the angle.
+        || !is_valid_angle(start_angle)
     {
         return (P::default(), curves);
     }
@@ -1073,5 +1095,86 @@ mod tests {
         let (kind, _) =
             Line::from_xy(0.0, 0.0, 1.0, 0.0).intersects(&Line::from_xy(0.0, 1.0, 1.0, 1.0));
         assert_eq!(kind, Intersection::No);
+    }
+
+    fn s_curve() -> Bezier {
+        Bezier::from_points(
+            P::new(0.0, 0.0),
+            P::new(10.0, 0.0),
+            P::new(20.0, 10.0),
+            P::new(30.0, 10.0),
+        )
+    }
+
+    /// `QBezier::shifted`'s `give_up` label: when the output has no room for the pieces the
+    /// curve needs, the threshold is relaxed 1.5x per retry until it exceeds 2 and the curve is
+    /// shifted as one piece. Reaching this with the 16 segments `QStroker` allows takes a
+    /// curve Qt would also not stroke well, so the room is made small instead.
+    #[test]
+    fn shifted_gives_up_and_shifts_the_curve_in_one_piece() {
+        let mut out = [Bezier::default(); 16];
+        let n = s_curve().shifted(&mut out, 2, 5.0, 0.25);
+        assert_eq!(n, 1);
+        // First tangent (10, 0): unit normal (0, -1); last tangent (10, 0) too.
+        let (a, b) = (out[0].pt(0), out[0].pt(3));
+        assert!(
+            (a.x - 0.0).abs() < 1e-12 && (a.y + 5.0).abs() < 1e-12,
+            "{a:?}"
+        );
+        assert!(
+            (b.x - 30.0).abs() < 1e-12 && (b.y - 5.0).abs() < 1e-12,
+            "{b:?}"
+        );
+        // The control points are those of the control polygon offset at its corners.
+        let c1 = out[0].pt(1);
+        let k = 5.0 / (1.0 + std::f64::consts::FRAC_1_SQRT_2) * std::f64::consts::FRAC_1_SQRT_2;
+        assert!(
+            (c1.x - (10.0 + k)).abs() < 1e-9 && (c1.y + 5.0).abs() < 1e-9,
+            "{c1:?}"
+        );
+    }
+
+    /// Qt hangs/UB: a threshold of 0, NaN or negative is never relaxed past 2. ferrokit raises
+    /// it to 0.00025, which is what a normal stroke of a one-pixel-wide curve gets.
+    #[test]
+    fn shifted_with_an_unusable_threshold_terminates_like_a_small_one() {
+        let mut reference = [Bezier::default(); 16];
+        let n = s_curve().shifted(&mut reference, 16, 5.0, 0.00025);
+        assert!(n > 1);
+        for threshold in [0.0f32, -1.0, f32::NAN, f32::NEG_INFINITY, 1e-45, 1e-39] {
+            let mut out = [Bezier::default(); 16];
+            assert_eq!(
+                s_curve().shifted(&mut out, 16, 5.0, threshold),
+                n,
+                "{threshold}"
+            );
+            for (a, b) in out[..n].iter().zip(&reference) {
+                assert_eq!((a.x, a.y), (b.x, b.y), "{threshold}");
+            }
+        }
+        // A positive threshold is Qt's: the relaxation of 1e-30 ends within 170 retries.
+        let mut out = [Bezier::default(); 16];
+        assert!(s_curve().shifted(&mut out, 16, 5.0, 1e-30) >= 1);
+    }
+
+    /// Qt hangs/UB: angles whose quadrant overflows an `int`; ferrokit ignores them.
+    #[test]
+    fn arcs_reject_angles_beyond_the_limit() {
+        let rect = Rc::new(0.0, 0.0, 10.0, 10.0);
+        for angle in [
+            1e9 + 1.0,
+            -1e9 - 1.0,
+            1e12,
+            -1e30,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NAN,
+        ] {
+            let (p, curves) = curves_for_arc(&rect, angle, 90.0);
+            assert_eq!((p, curves.len()), (P::default(), 0), "{angle}");
+        }
+        let (_, curves) = curves_for_arc(&rect, 1e9, 90.0);
+        assert!(!curves.is_empty() && curves.len() % 3 == 0);
+        assert!(is_valid_angle(-1e9) && !is_valid_angle(1e9 * 1.000001));
     }
 }
