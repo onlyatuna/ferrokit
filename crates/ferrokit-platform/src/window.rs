@@ -1150,10 +1150,9 @@ unsafe fn native_window_proc_inner(
         }
         WM_ERASEBKGND => 1,
         WM_CLOSE => {
+            // Widgets see exactly one Close: the window handler turns this request into
+            // `close(true)`, so nothing is posted to the bound receiver on top of it.
             dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::CloseRequest);
-            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                handle.post_event(receiver, Event::new_spontaneous(EventKind::Close));
-            }
             0
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_ENTERSIZEMOVE => {
