@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+mod color_scheme;
+pub use color_scheme::{
+    handle_theme_changed, set_color_scheme_source, ColorScheme, ColorSchemeSource,
+};
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
@@ -76,6 +81,11 @@ pub fn set_system_motion_preference(pref: MotionPreference) {
 }
 
 /// Global system style hints matching `QStyleHints`.
+///
+/// Besides the plain fields, the colour scheme is live: [`StyleHints::color_scheme`],
+/// [`StyleHints::set_color_scheme`] and [`StyleHints::color_scheme_changed`] (see [`ColorScheme`])
+/// follow the platform theme, which `ferrokit-platform` installs the first time `platform()` is
+/// called (the widgets `Application::new` does). Every `StyleHints` value shares them.
 #[derive(Debug, Clone)]
 pub struct StyleHints {
     pub cursor_flash_time_ms: u32,
@@ -162,6 +172,9 @@ impl GuiApplication {
                 *hints_guard = Some(StyleHints::default());
             }
         }
+
+        // `QStyleHints` takes the platform theme's colour scheme once the application exists.
+        color_scheme::update_from_source();
 
         let last_window_closed = Signal::new();
         *LAST_WINDOW_CLOSED_SIGNAL.write().unwrap() = Some(last_window_closed.clone());
@@ -387,6 +400,7 @@ impl GuiApplication {
         *GLOBAL_ROUNDING_POLICY.write().unwrap() = HighDpiScaleFactorRoundingPolicy::PassThrough;
         *LAST_WINDOW_CLOSED_SIGNAL.write().unwrap() = None;
         *FOCUS_WINDOW_CHANGED_SIGNAL.write().unwrap() = None;
+        color_scheme::reset_for_test();
     }
 
     /// Emits `lastWindowClosed` if registered (`qguiapplication.cpp:3939`).
@@ -436,14 +450,26 @@ impl QObject for GuiApplication {
         &GUI_APP_META_OBJECT
     }
 }
+/// Tests that construct a `GuiApplication` name their thread the main thread, which a test running
+/// at the same time on another thread would take over; they hold this lock for their duration.
+#[cfg(test)]
+pub(crate) static APPLICATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
+    fn application_lock() -> std::sync::MutexGuard<'static, ()> {
+        APPLICATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn application_state_slot_can_read_state_reentrantly() {
+        let _lock = application_lock();
         let app = GuiApplication::new(Vec::new());
         let observed = Arc::new(AtomicBool::new(false));
         let observed_in_slot = Arc::clone(&observed);
@@ -461,6 +487,7 @@ mod hardening_tests {
 
     #[test]
     fn last_window_closed_slot_can_reregister_signal() {
+        let _lock = application_lock();
         let app = GuiApplication::new(Vec::new());
         let ran = Arc::new(AtomicBool::new(false));
         let ran_in_slot = Arc::clone(&ran);
@@ -475,6 +502,7 @@ mod hardening_tests {
 
     #[test]
     fn focus_window_changed_slot_can_reregister_signal() {
+        let _lock = application_lock();
         let app = GuiApplication::new(Vec::new());
         let ran = Arc::new(AtomicBool::new(false));
         let ran_in_slot = Arc::clone(&ran);

@@ -1255,6 +1255,94 @@ impl ObjcMsg {
         }
     }
 
+    /// `-[receiver addObserver:observer forKeyPath:key_path options:options context:NULL]`
+    /// (key-value observing). With `observer` an [`ActionTarget`], a change of the observed key
+    /// path runs its callback.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]. `key_path` is an `NSString` and `observer` implements
+    /// `-observeValueForKeyPath:ofObject:change:context:`; the observer must outlive its
+    /// registration, which this crate never removes (the observers it creates live for the
+    /// process).
+    pub unsafe fn send_add_key_path_observer(
+        receiver: Id,
+        observer: Id,
+        key_path: Id,
+        options: NSUInteger,
+    ) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (observer, key_path, options);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *mut c_void,
+                NSUInteger,
+                *mut c_void,
+            ) = msg_send_fn();
+            msg_send(
+                receiver.0,
+                Sel::register("addObserver:forKeyPath:options:context:").0,
+                observer.0,
+                key_path.0,
+                options,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    /// `-[center addObserver:observer selector:selector name:name object:object]`
+    /// (`NSNotificationCenter`). `object` may be nil to receive the notification from any sender.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]. `center` is a notification center, `name` an `NSString`, and `observer`
+    /// responds to `selector` taking the notification; the observer must outlive its registration.
+    pub unsafe fn send_add_notification_observer(
+        center: Id,
+        observer: Id,
+        selector: Sel,
+        name: Id,
+        object: Id,
+    ) {
+        if center.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (observer, selector, name, object);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *mut c_void,
+            ) = msg_send_fn();
+            msg_send(
+                center.0,
+                Sel::register("addObserver:selector:name:object:").0,
+                observer.0,
+                selector.0,
+                name.0,
+                object.0,
+            );
+        }
+    }
+
     /// `-[receiver sel]` returning a `CGRect` (`frame`, `visibleFrame`).
     ///
     /// # Safety
@@ -1496,6 +1584,18 @@ fn action_target_class() -> Class {
         // A panic must not unwind into AppKit.
         let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
     }
+    /// `-observeValueForKeyPath:ofObject:change:context:`: a key-value observation runs the same
+    /// callback as an action.
+    extern "C" fn observe_value(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        _key_path: *mut c_void,
+        _object: *mut c_void,
+        _change: *mut c_void,
+        _context: *mut c_void,
+    ) {
+        let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
+    }
     static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
         let existing = objc_get_class("FerrokitActionTarget");
         if !existing.is_nil() {
@@ -1514,6 +1614,12 @@ fn action_target_class() -> Class {
             Sel::register(ACTION_TARGET_SELECTOR).0,
             perform_action as *const c_void,
             c"v@:@".as_ptr(),
+        );
+        native_bindings::class_addMethod(
+            class,
+            Sel::register("observeValueForKeyPath:ofObject:change:context:").0,
+            observe_value as *const c_void,
+            c"v@:@@@^v".as_ptr(),
         );
         native_bindings::objc_registerClassPair(class);
         class as usize

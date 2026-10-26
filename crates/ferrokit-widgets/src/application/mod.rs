@@ -535,6 +535,13 @@ impl Application {
         GuiApplication::set_font(font);
     }
 
+    /// `QGuiApplication::styleHints` (`QApplication` inherits it). `color_scheme()`,
+    /// `set_color_scheme()` and `color_scheme_changed()` of the returned value are the
+    /// application's `QStyleHints` colour scheme.
+    pub fn style_hints() -> ferrokit_gui::application::StyleHints {
+        GuiApplication::style_hints()
+    }
+
     // --- Interactive Settings ---
 
     pub fn double_click_interval() -> u32 {
