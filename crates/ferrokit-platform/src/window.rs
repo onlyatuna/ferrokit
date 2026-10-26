@@ -1180,6 +1180,7 @@ unsafe fn native_window_proc_inner(
         WM_DESTROY => {
             set_interactive_resize_flag(hwnd, false);
             unregister_window_event_binding(hwnd);
+            crate::dark_mode::window_destroyed(hwnd);
             0
         }
         WM_SIZE => {
@@ -2029,6 +2030,17 @@ impl NativeWindow {
             return Err("CreateWindowExW failed");
         }
 
+        // A frameless window has no frame of its own to darken (`Qt::FramelessWindowHint`).
+        crate::dark_mode::window_created(
+            hwnd,
+            flags.intersects(
+                WindowFlags::FRAMELESS
+                    | WindowFlags::CUSTOM_FRAMELESS
+                    | WindowFlags::LAYERED
+                    | WindowFlags::TOOLTIP,
+            ),
+        );
+
         crate::ime::set_window_ime_enabled(hwnd, false);
 
         if flags.contains(WindowFlags::CUSTOM_FRAMELESS) && !flags.contains(WindowFlags::LAYERED) {
@@ -2785,6 +2797,8 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
         self.backdrop_state.request(backdrop, dark_mode);
+        // The frame attribute is set from `dark_mode` below; the colour scheme leaves it alone.
+        crate::dark_mode::set_frame_by_application(self.hwnd);
         self.apply_backdrop_state()
     }
 

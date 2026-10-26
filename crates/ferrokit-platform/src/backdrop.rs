@@ -113,8 +113,8 @@ pub fn set_window_backdrop(
     dark_mode: bool,
 ) -> bool {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmEnableBlurBehindWindow, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE,
-        DWMWA_USE_IMMERSIVE_DARK_MODE, DWM_BB_ENABLE, DWM_BLURBEHIND,
+        DwmEnableBlurBehindWindow, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE, DWM_BB_ENABLE,
+        DWM_BLURBEHIND,
     };
     // unused import removed
 
@@ -123,14 +123,8 @@ pub fn set_window_backdrop(
     }
 
     unsafe {
-        // First, configure dark mode preference if requested
-        let dark: i32 = if dark_mode { 1 } else { 0 };
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-            &dark as *const _ as *const _,
-            std::mem::size_of::<i32>() as u32,
-        );
+        // First, configure dark mode preference (attribute 20, or 19 before 20H1, as Qt does)
+        crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
 
         match backdrop {
             BackdropType::None => {
