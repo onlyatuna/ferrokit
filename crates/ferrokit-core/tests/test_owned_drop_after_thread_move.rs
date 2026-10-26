@@ -38,6 +38,12 @@ use ferrokit_core::object::{
 };
 use ferrokit_core::timer::{start_object_timer, with_thread_timer_context, TimerType};
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds an `Arc` flag and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WAIT: Duration = Duration::from_secs(10);
 
 struct Probe {
@@ -49,7 +55,7 @@ struct Probe {
 impl Probe {
     fn new(dropped: &Arc<AtomicBool>) -> Self {
         Probe {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             hits: 0,
             dropped: Arc::clone(dropped),
         }

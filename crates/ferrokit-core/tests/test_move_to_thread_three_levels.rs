@@ -11,6 +11,12 @@ use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData,
     ObjectId, OwnedObject, QObject, ThreadId, with_object,
 };
+
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `SimpleObject` holds nothing but its `ObjectData`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
 #[derive(Debug)]
 struct SimpleObject {
     data: ObjectData,
@@ -19,7 +25,7 @@ struct SimpleObject {
 impl SimpleObject {
     fn new() -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
         }
     }
 }

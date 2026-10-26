@@ -16,11 +16,37 @@ pub enum SocketEvent {
 /// `unregisterSocketNotifier`).
 pub(crate) type EnableHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Why [`EventDispatcher::register_socket_notifier`](crate::event_loop::EventDispatcher::register_socket_notifier)
+/// refused a notifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketNotifierError {
+    /// The dispatcher never polls descriptors, so the notifier would never be activated by its
+    /// descriptor: only the Linux event dispatcher does (with `epoll`). `dispatcher` is the
+    /// dispatcher's [`class_name`](crate::event_loop::EventDispatcher::class_name).
+    Unsupported { dispatcher: &'static str },
+}
+
+impl std::fmt::Display for SocketNotifierError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported { dispatcher } => write!(
+                f,
+                "socket notifiers are not supported: the event dispatcher `{dispatcher}` does \
+                 not poll descriptors"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SocketNotifierError {}
+
 /// Watches a descriptor for readiness (`QSocketNotifier`).
 ///
 /// Platform support: only the Linux event dispatcher polls the descriptor (with `epoll`) and
-/// emits `activated` when it is ready. On Windows, macOS and other Unix systems registration is a
-/// no-op, so the notifier is never activated by the descriptor itself.
+/// emits `activated` when it is ready. On Windows, macOS and other Unix systems
+/// [`EventDispatcher::register_socket_notifier`](crate::event_loop::EventDispatcher::register_socket_notifier)
+/// fails with [`SocketNotifierError::Unsupported`] instead of registering a notifier that would
+/// never be activated by the descriptor itself.
 pub struct SocketNotifier {
     descriptor: SocketDescriptor,
     event_type: SocketEvent,

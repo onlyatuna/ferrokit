@@ -4,7 +4,7 @@
 //! The handle is `!Send` and shares `Rc` state with the object the registry calls. Moving that
 //! object to another thread would run its callbacks there while the handle keeps using the state
 //! here, so `move_to_thread_by_id` refuses the object and every ancestor of it
-//! (`QObject::can_move_to_thread`). A refusal sends no event, changes no affinity and re-arms
+//! (`ObjectData::can_move_to_thread`). A refusal sends no event, changes no affinity and re-arms
 //! nothing on the target thread.
 
 use std::cell::{Cell, RefCell};
@@ -37,10 +37,9 @@ fn another_thread() -> ThreadId {
     std::thread::spawn(ThreadId::current).join().unwrap()
 }
 
-/// Counts the `ThreadChange` events it receives and answers the move policy as told.
+/// Counts the `ThreadChange` events it receives. Whether it may change thread is set by `probe_data`.
 struct Probe {
     data: ObjectData,
-    movable: bool,
     thread_changes: u32,
 }
 
@@ -54,9 +53,6 @@ impl QObject for Probe {
     fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn can_move_to_thread(&self) -> bool {
-        self.movable
-    }
     fn event(&mut self, event: &mut Event) -> bool {
         if matches!(event.kind, EventKind::ThreadChange) {
             self.thread_changes += 1;
@@ -65,12 +61,22 @@ impl QObject for Probe {
     }
 }
 
+/// The `ObjectData` of a `Probe` that may change thread (`movable`) or stays where it is made.
+fn probe_data(movable: bool) -> ObjectData {
+    let data = ObjectData::new(ObjectId::next());
+    if movable {
+        // SAFETY: `Probe` holds plain counters; nothing of it is shared with another thread.
+        unsafe { data.with_thread_moves_allowed() }
+    } else {
+        data
+    }
+}
+
 fn probe(movable: bool) -> OwnedObject<Probe> {
     // SAFETY: the owner stays on this thread and the tests use it only between callbacks.
     unsafe {
         register_owned_qobject(Probe {
-            data: ObjectData::new(ObjectId::next()),
-            movable,
+            data: probe_data(movable),
             thread_changes: 0,
         })
     }
@@ -86,8 +92,7 @@ struct RawRoot(NonNull<Probe>);
 impl RawRoot {
     fn new(movable: bool) -> Self {
         let ptr = Box::into_raw(Box::new(Probe {
-            data: ObjectData::new(ObjectId::next()),
-            movable,
+            data: probe_data(movable),
             thread_changes: 0,
         }));
         // SAFETY: the allocation is owned by this `RawRoot` until `drop`, never moves, and is
@@ -582,10 +587,6 @@ struct BorrowedMid {
 }
 
 impl QObject for BorrowedMid {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -739,16 +740,14 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     let root = RawRoot::new(true);
     let root_id = root.id();
     let child = Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     });
     let child_id = child.data.id();
     // SAFETY: `root` owns `child` at a stable heap address on this thread.
     unsafe { add_owned_child(root_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
     let grand = Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     });
     let grand_id = grand.data.id();
@@ -781,12 +780,11 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     });
     assert_eq!(child_thread, target);
     assert_eq!(grand_thread, target);
-    // An unregistered owned descendant that answers `false` to `can_move_to_thread` still refuses.
+    // An unregistered owned descendant that did not opt in still refuses.
     let root_pinned = RawRoot::new(true);
     let root_pinned_id = root_pinned.id();
     let pinned_child = Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: false,
+        data: probe_data(false),
         thread_changes: 0,
     });
     let pinned_child_id = pinned_child.data.id();
@@ -815,8 +813,7 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
     let root_with_timer = RawRoot::new(true);
     let root_with_timer_id = root_with_timer.id();
     let mid_child = Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     });
     let mid_child_id = mid_child.data.id();
@@ -853,10 +850,6 @@ struct OnChildRemoved {
 }
 
 impl QObject for OnChildRemoved {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -895,8 +888,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     assert!(with_object(mid_id, |_| ()).is_none());
 
     let mut holder_raw = Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     };
     set_parent(&mut holder_raw.data, Some(mid_id)).unwrap();
@@ -1008,8 +1000,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         })
     };
     let mut dying_mid = ManuallyDrop::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     });
     let dying_mid_ptr: *mut Probe = (&raw mut dying_mid).cast::<Probe>();
@@ -1033,7 +1024,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     set_parent_by_id(dying_mid_id, Some(OwnedObject::object_id(&notifier))).unwrap();
     set_parent_by_id(timer_under_dying_id, Some(dying_mid_id)).unwrap();
     assert_eq!(
-        with_object(dying_mid_id, |obj| obj.can_move_to_thread()),
+        with_object(dying_mid_id, |obj| obj.object_data().can_move_to_thread()),
         Some(true)
     );
     // SAFETY: `dying_mid_ptr` is the registered pointer, no callback on `dying_mid` is running,
@@ -1058,8 +1049,7 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     let mid_ok_id = mid_ok.id();
     root_ok.with_data(|d| reparent(&mut mid_ok, None, Some(d)));
     let mut leaf_ok_raw = Probe {
-        data: ObjectData::new(ObjectId::next()),
-        movable: true,
+        data: probe_data(true),
         thread_changes: 0,
     };
     set_parent(&mut leaf_ok_raw.data, Some(mid_ok_id)).unwrap();

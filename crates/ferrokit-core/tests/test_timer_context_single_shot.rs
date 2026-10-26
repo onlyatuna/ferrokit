@@ -16,6 +16,12 @@ use ferrokit_core::object::{
 };
 use ferrokit_core::timer::Timer;
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Ctx` holds `Arc` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WAIT: Duration = Duration::from_secs(10);
 /// Clock measurement tolerance, not a latency allowance.
 const TOLERANCE: Duration = Duration::from_millis(1);
@@ -41,7 +47,7 @@ fn new_ctx() -> OwnedObject<Ctx> {
     // SAFETY: the owner is dropped by one thread at a time and no object callback runs here.
     unsafe {
         register_owned_qobject(Ctx {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
         })
     }
 }

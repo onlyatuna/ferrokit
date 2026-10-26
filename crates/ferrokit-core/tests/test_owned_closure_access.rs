@@ -9,6 +9,12 @@ use ferrokit_core::object::{
     ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Counter` holds plain fields only.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 struct Counter {
     data: ObjectData,
     hits: u32,
@@ -17,7 +23,7 @@ struct Counter {
 impl Counter {
     fn new() -> Self {
         Counter {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             hits: 0,
         }
     }

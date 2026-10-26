@@ -41,10 +41,6 @@ struct Mid {
 }
 
 impl QObject for Mid {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -75,10 +71,6 @@ impl Drop for Leaf {
 }
 
 impl QObject for Leaf {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }
@@ -155,10 +147,6 @@ struct SearchingParent {
 }
 
 impl QObject for SearchingParent {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }

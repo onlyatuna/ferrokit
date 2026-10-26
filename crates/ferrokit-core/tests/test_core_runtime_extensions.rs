@@ -17,6 +17,12 @@ use ferrokit_core::settings::Settings;
 use ferrokit_core::signal::Signal;
 use ferrokit_core::variant::Variant;
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `DynamicMockObject` keeps its state in `Arc<Mutex<_>>` handles, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 // -----------------------------------------------------------------------------
 // Test Object for Dynamic Properties and Events
 // -----------------------------------------------------------------------------
@@ -30,7 +36,7 @@ struct DynamicMockObject {
 impl DynamicMockObject {
     fn new(id: ObjectId, last_prop: Arc<Mutex<Option<String>>>, count: Arc<Mutex<u32>>) -> Self {
         Self {
-            data: ObjectData::new(id),
+            data: movable_data(id),
             last_changed_property: last_prop,
             change_count: count,
         }

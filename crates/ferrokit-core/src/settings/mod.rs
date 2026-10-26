@@ -422,10 +422,35 @@ fn read_ini_file(path: &Path, entries: &mut HashMap<String, Variant>) -> std::io
     Ok(())
 }
 
+/// Writes the diagnostic for a `sync` that failed while its [`Settings`] was dropped. `Drop`
+/// cannot return the error, so the unsaved changes would otherwise be lost silently.
+fn report_failed_sync_on_drop(
+    out: &mut impl Write,
+    path: Option<&Path>,
+    error: &std::io::Error,
+) {
+    let path = path.map_or_else(String::new, |p| format!(" `{}`", p.display()));
+    // A closed stderr must not turn a failed save into a panic inside `drop`.
+    let _ = writeln!(
+        out,
+        "ferrokit: Settings{path} was dropped with unsaved changes and could not write them: \
+         {error}; call `sync` before dropping to handle this error"
+    );
+}
+
 impl Drop for Settings {
+    /// Writes unsaved changes like [`Settings::sync`]. A failure cannot be returned from here,
+    /// so it is reported once on stderr and the changes are lost; call `sync` explicitly to
+    /// handle the error.
     fn drop(&mut self) {
         if self.dirty {
-            let _ = self.sync();
+            if let Err(error) = self.sync() {
+                report_failed_sync_on_drop(
+                    &mut std::io::stderr(),
+                    self.file_path.as_deref(),
+                    &error,
+                );
+            }
         }
     }
 }
@@ -663,4 +688,26 @@ fn default_config_directory() -> PathBuf {
     }
 
     std::env::temp_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The diagnostic names the file and the error, and says how to handle it.
+    #[test]
+    fn test_failed_sync_on_drop_is_reported_with_the_path_and_the_error() {
+        let error = std::io::Error::new(std::io::ErrorKind::InvalidData, "could not be loaded");
+        let mut out = Vec::new();
+
+        report_failed_sync_on_drop(&mut out, Some(Path::new("a/b.ini")), &error);
+
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("ferrokit: Settings `"), "{text}");
+        assert!(text.contains("b.ini"), "{text}");
+        assert!(text.contains("could not be loaded"), "{text}");
+        assert!(text.contains("call `sync`"), "{text}");
+        assert!(text.ends_with('\n'), "one line: {text}");
+        assert_eq!(text.lines().count(), 1, "{text}");
+    }
 }
