@@ -800,8 +800,13 @@ pub mod unix_theme {
         #[cfg(not(all(target_os = "linux", not(miri))))]
         fn listen_to_portal(&self) {}
 
-        /// Waits (once, at most 300 ms) for the portal's answer to the start-up query.
+        /// Waits (once, at most 300 ms) for the portal's answer to the start-up query. Not on the
+        /// listener thread itself, which would wait for its own answer.
         fn wait_for_initial_answer(&self) {
+            #[cfg(all(target_os = "linux", not(miri)))]
+            if crate::theme_portal::on_listener_thread() {
+                return;
+            }
             let pending = self
                 .initial_answer
                 .lock()

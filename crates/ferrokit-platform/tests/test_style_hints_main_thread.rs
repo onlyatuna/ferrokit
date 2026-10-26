@@ -16,7 +16,9 @@ use ferrokit_platform::{install_style_hints_theme, GenericTheme, PlatformTheme};
 
 #[test]
 fn a_change_noticed_on_another_thread_is_emitted_on_the_main_thread() {
-    let _app = GuiApplication::new(Vec::new());
+    // A `CoreApplication`: a `GuiApplication` runs the Cocoa event dispatcher on macOS, which
+    // cannot pump events on a test thread (it is not the process's main thread).
+    let _app = CoreApplication::new(Vec::new());
     let main = std::thread::current().id();
 
     let theme = Arc::new(GenericTheme::new(ColorScheme::Light));

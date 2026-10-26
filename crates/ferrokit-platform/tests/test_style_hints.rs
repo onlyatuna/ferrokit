@@ -5,7 +5,9 @@
 //! `colorSchemeChanged` (qstylehints.cpp:158-178, 722-741).
 //!
 //! Every test makes its own application object (the thread it runs on is the main thread) and
-//! delivers the queued theme notifications with `process_events`. The thread hop is in
+//! delivers the queued theme notifications with `process_events`. It is a `CoreApplication`: a
+//! `GuiApplication` runs the Cocoa event dispatcher on macOS, which cannot pump events on a test
+//! thread (it is not the process's main thread). The thread hop is in
 //! `test_style_hints_main_thread`.
 
 use std::sync::{Arc, Mutex};
@@ -23,7 +25,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
     _guard: std::sync::MutexGuard<'static, ()>,
-    _app: GuiApplication,
+    _app: CoreApplication,
 }
 
 fn start() -> Fixture {
@@ -31,7 +33,7 @@ fn start() -> Fixture {
     GuiApplication::reset_for_test();
     Fixture {
         _guard: guard,
-        _app: GuiApplication::new(Vec::new()),
+        _app: CoreApplication::new(Vec::new()),
     }
 }
 
@@ -233,7 +235,6 @@ fn set_platform_integration_installs_that_integrations_theme() {
     }
 
     let _f = start();
-    let previous = ferrokit_platform::platform();
     let theme = Arc::new(ferrokit_platform::GenericTheme::new(ColorScheme::Dark));
     set_platform_integration(Arc::new(Mocked {
         inner: GenericPlatformIntegration::default(),
@@ -252,5 +253,4 @@ fn set_platform_integration_installs_that_integrations_theme() {
         GuiApplication::style_hints().color_scheme(),
         ColorScheme::Light
     );
-    set_platform_integration(previous);
 }

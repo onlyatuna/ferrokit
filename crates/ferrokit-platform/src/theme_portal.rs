@@ -147,6 +147,18 @@ impl PortalSession {
     }
 }
 
+#[cfg(all(target_os = "linux", not(miri)))]
+thread_local! {
+    static ON_LISTENER_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the caller is a listener thread of [`spawn_listener`] (a slot of `on_event` may read the
+/// theme from there).
+#[cfg(all(target_os = "linux", not(miri)))]
+pub(crate) fn on_listener_thread() -> bool {
+    ON_LISTENER_THREAD.with(|flag| flag.get())
+}
+
 /// Runs a thread that connects to the session bus, subscribes, and feeds the portal's
 /// colour-scheme events to `on_event` until `alive` returns `false` or the bus goes away. Nothing
 /// blocks the caller (not even connecting): the returned receiver gets one message when the answer
@@ -166,6 +178,7 @@ pub(crate) fn spawn_listener(
     std::thread::Builder::new()
         .name("ferrokit-portal-theme".to_string())
         .spawn(move || {
+            ON_LISTENER_THREAD.with(|flag| flag.set(true));
             let Ok(conn) = DbusConnection::connect_session_bus() else {
                 return;
             };

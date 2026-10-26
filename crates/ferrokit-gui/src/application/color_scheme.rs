@@ -275,13 +275,16 @@ mod tests {
     }
 
     /// Takes the test lock, makes this thread the main thread and starts from `theme`.
-    fn start(theme: &Arc<MockTheme>) -> (MutexGuard<'static, ()>, GuiApplication) {
+    /// A `CoreApplication` rather than a `GuiApplication`: the latter runs the Cocoa event
+    /// dispatcher on macOS, which cannot pump events off the process's main thread, and these
+    /// tests pump the queued theme notifications from a test thread.
+    fn start(theme: &Arc<MockTheme>) -> (MutexGuard<'static, ()>, CoreApplication) {
         // The tests share one application-wide scheme, one source and one main thread.
         let guard = crate::application::APPLICATION_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         GuiApplication::reset_for_test();
-        let app = GuiApplication::new(Vec::new());
+        let app = CoreApplication::new(Vec::new());
         set_color_scheme_source(Arc::clone(theme) as Arc<dyn ColorSchemeSource>);
         (guard, app)
     }
