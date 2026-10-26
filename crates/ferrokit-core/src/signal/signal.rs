@@ -858,7 +858,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Shared body of the receiver-bound connections. `unique` = `Some(slot_key)` rejects an
     /// existing connection with the same receiver and slot key (checked under the same lock).
-    fn connect_object_impl<F>(
+    pub(super) fn connect_object_impl<F>(
         &self,
         receiver_id: ObjectId,
         receiver_thread: ThreadId,

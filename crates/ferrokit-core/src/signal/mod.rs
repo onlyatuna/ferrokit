@@ -8,8 +8,12 @@
 //! and runs only when the signal is emitted from that thread. An emission from another thread
 //! skips it, where Qt would run it in the emitting thread. The `connect_local` documentation lists
 //! this and the other differences from Qt (when the closure is dropped, thread exit).
+//! [`Signal::connect_local_to`] and its variants connect against a context object (Qt's
+//! `connect(sender, signal, context, functor, type)`) and also work across threads when
+//! `T: Clone + Send`.
 #[allow(clippy::module_inception)]
 pub mod signal;
-mod local;
+pub(crate) mod local;
 pub use crate::object::SignalBlocker;
+pub use local::LocalConnectError;
 pub use signal::*;
