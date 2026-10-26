@@ -47,8 +47,10 @@
 //!   for `Auto`, `Queued` and `BlockingQueued` it must also be registered with the object
 //!   registry, because a call posted to an unregistered receiver is dropped on delivery. A
 //!   `Direct` connection still skips an emission from another thread, as above. Destroying the
-//!   context disconnects the slot and drops a call that was posted but not delivered; the closure
-//!   is dropped on the context's thread.
+//!   context disconnects the slot and drops a call that was posted but not delivered, and the
+//!   closure is dropped on the context's thread. That holds for an unregistered context too (a
+//!   `Direct` connection accepts one): its destruction cuts its connections, it just has no
+//!   queued calls to drop.
 //! * **`BlockingQueued` on the context's own thread runs the slot in place.** Qt prints "Dead
 //!   lock detected" and then waits for itself forever. ferrokit runs the slot at once, as
 //!   [`Signal::connect_blocking_queued`] does.
@@ -277,6 +279,7 @@ impl<T: 'static> Signal<T> {
 /// Why a context-bound local connection was refused. Nothing was connected, and the closure was
 /// not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LocalConnectError {
     /// The context object belongs to another thread than the caller. A local slot runs on the
     /// thread that connected it, so that thread has to be the context's thread.
@@ -340,7 +343,12 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// * `Direct`: runs in the emitting thread, so an emission from another thread **skips the
     ///   slot** (Qt would run it there); see [`Signal::connect_local`].
     ///
-    /// A queued call sees `sender()` of the emitter, and holds a clone of the payload.
+    /// A queued call sees `sender()` of the emitter. `Auto` (when the emitter is on another
+    /// thread) and `Queued` clone the payload once per queued slot per emission.
+    ///
+    /// Every method of this impl needs `T: Clone + Send`, even for `Direct`. A `Direct`-only
+    /// user whose payload is `!Send` or not `Clone` should use [`Signal::connect_local`], which
+    /// has no such bound (and no context).
     ///
     /// # Errors
     /// [`LocalConnectError`]; the context must be on this thread, not movable, and (unless

@@ -10,13 +10,17 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_owned_qobject, MoveByIdError, ObjectData, ObjectDataMut,
-    ObjectId, OwnedObject, QObject, ThreadId,
+    register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::signal::{sender, ConnectionType, LocalConnectError, Signal, SlotId, SlotKey};
+
+/// Only a failing test waits this long: every wait below ends as soon as its event happens.
+const WATCHDOG: Duration = Duration::from_secs(10);
 
 /// An object that only receives.
 struct Receiver {
@@ -489,19 +493,102 @@ fn queued_kinds_need_a_registered_context_and_direct_does_not() {
 }
 
 #[test]
-fn a_context_with_a_local_slot_cannot_be_moved_to_another_thread() {
+fn a_blocked_blocking_queued_emitter_is_released_when_the_context_is_destroyed() {
+    let event_loop = EventLoop::new();
+    let queue = Arc::clone(&event_loop.sender().queue);
+    assert_eq!(queue.lock().unwrap().len(), 0);
     let context = Receiver::registered();
-    let id = OwnedObject::object_id(&context);
     let signal: Signal<i32> = Signal::new();
+    let ran = Arc::new(AtomicUsize::new(0));
+    let in_slot = Arc::clone(&ran);
+    let guard = Rc::new(());
+    let held = Rc::clone(&guard);
     context
-        .with(|c| signal.connect_local_to(c, ConnectionType::Auto, |_| {}))
+        .with(|c| {
+            signal.connect_local_blocking_queued(c, move |_| {
+                let _ = &held;
+                in_slot.fetch_add(1, Ordering::SeqCst);
+            })
+        })
         .unwrap()
         .unwrap();
 
-    assert_eq!(
-        move_to_thread_by_id(id, other_thread_id(), ThreadId::current()),
-        Err(MoveByIdError::NotMovable)
+    let remote = signal.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        remote.emit(&1);
+        done_tx.send(()).unwrap();
+    });
+
+    // The call is in this thread's queue once the worker has posted it; from then on the worker
+    // is blocked, because this thread does not run its loop.
+    let deadline = Instant::now() + WATCHDOG;
+    while queue.lock().unwrap().len() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the worker never posted its call"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        done_rx.try_recv().is_err(),
+        "the emitter returned before anything ran its call"
     );
+
+    drop(context); // purges the posted call without running it
+    done_rx
+        .recv_timeout(WATCHDOG)
+        .expect("the emitter is still blocked after its context was destroyed");
+    worker.join().unwrap();
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "the slot never ran");
+
+    event_loop.process_events(false); // runs the closure's retire job, if it was posted
+    assert_eq!(Rc::strong_count(&guard), 1, "the closure was retired");
+}
+
+#[test]
+fn auto_from_another_thread_waits_for_an_owner_that_has_no_loop_yet() {
+    let context = Receiver::registered(); // this thread has no event loop yet
+    let signal: Signal<i32> = Signal::new();
+    let total = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&total);
+    context
+        .with(|c| {
+            signal.connect_local_to(c, ConnectionType::Auto, move |v| sink.set(sink.get() + *v))
+        })
+        .unwrap()
+        .unwrap();
+
+    let remote = signal.clone();
+    thread::spawn(move || remote.emit(&3)).join().unwrap();
+    assert_eq!(total.get(), 0);
+
+    let event_loop = EventLoop::new(); // the held call is handed to the loop that registers
+    assert!(event_loop.process_events(false));
+    assert_eq!(total.get(), 3);
+}
+
+#[test]
+fn a_direct_local_slot_of_an_unregistered_context_is_cut_when_the_context_is_destroyed() {
+    let context = Receiver {
+        data: ObjectData::with_auto_id(), // never registered
+    };
+    let signal: Signal<i32> = Signal::new();
+    let total = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&total);
+    signal
+        .connect_local_to(&context, ConnectionType::Direct, move |v| {
+            sink.set(sink.get() + *v)
+        })
+        .unwrap();
+    signal.emit(&1);
+    assert_eq!(total.get(), 1);
+
+    drop(context);
+    signal.emit(&1);
+    assert_eq!(total.get(), 1, "the destroyed context's connection is gone");
+    assert_eq!(signal.subscriber_count(), 0);
+    assert_eq!(Rc::strong_count(&total), 1);
 }
 
 #[test]
