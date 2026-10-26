@@ -47,6 +47,10 @@ pub mod single_instance;
 pub mod size_limits;
 pub mod surface;
 pub mod theme;
+// The portal protocol runs on any `DbusConnection`; only Linux uses it outside tests (and not
+// under Miri, which cannot open a bus socket).
+#[cfg(any(all(target_os = "linux", not(miri)), test))]
+mod theme_portal;
 pub mod tray;
 pub mod tray_icon;
 pub mod window;
@@ -122,7 +126,10 @@ pub use surface::{CocoaLayerSurface, WaylandShmSurface, X11ShmSurface};
 
 #[cfg(windows)]
 pub use theme::Win32Theme;
-pub use theme::{CocoaTheme, ColorScheme, GenericTheme, NativeStyle, PlatformTheme, UnixTheme};
+pub use theme::{
+    install_style_hints_theme, CocoaTheme, ColorScheme, GenericTheme, NativeStyle, PlatformTheme,
+    UnixTheme,
+};
 #[cfg(windows)]
 pub use tray::Win32TrayIcon;
 pub use tray::{

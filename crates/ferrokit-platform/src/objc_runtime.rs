@@ -1259,6 +1259,144 @@ impl ObjcMsg {
         }
     }
 
+    /// `-[receiver addObserver:observer forKeyPath:key_path options:options context:NULL]`
+    /// (key-value observing). With `observer` an [`ActionTarget`], a change of the observed key
+    /// path runs its callback.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]. `key_path` is an `NSString` and `observer` implements
+    /// `-observeValueForKeyPath:ofObject:change:context:`; the observer must outlive its
+    /// registration (remove it with
+    /// [`send_remove_key_path_observer`](Self::send_remove_key_path_observer) first).
+    pub unsafe fn send_add_key_path_observer(
+        receiver: Id,
+        observer: Id,
+        key_path: Id,
+        options: NSUInteger,
+    ) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (observer, key_path, options);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *mut c_void,
+                NSUInteger,
+                *mut c_void,
+            ) = msg_send_fn();
+            msg_send(
+                receiver.0,
+                Sel::register("addObserver:forKeyPath:options:context:").0,
+                observer.0,
+                key_path.0,
+                options,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    /// `-[center addObserver:observer selector:selector name:name object:object]`
+    /// (`NSNotificationCenter`). `object` may be nil to receive the notification from any sender.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]. `center` is a notification center, `name` an `NSString`, and `observer`
+    /// responds to `selector` taking the notification; the observer must outlive its registration.
+    pub unsafe fn send_add_notification_observer(
+        center: Id,
+        observer: Id,
+        selector: Sel,
+        name: Id,
+        object: Id,
+    ) {
+        if center.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (observer, selector, name, object);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *mut c_void,
+            ) = msg_send_fn();
+            msg_send(
+                center.0,
+                Sel::register("addObserver:selector:name:object:").0,
+                observer.0,
+                selector.0,
+                name.0,
+                object.0,
+            );
+        }
+    }
+
+    /// `-[receiver removeObserver:observer forKeyPath:key_path]`, the undo of
+    /// [`send_add_key_path_observer`](Self::send_add_key_path_observer).
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]. `observer` is registered for `key_path` on `receiver`.
+    pub unsafe fn send_remove_key_path_observer(receiver: Id, observer: Id, key_path: Id) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (observer, key_path);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void, *mut c_void) =
+                msg_send_fn();
+            msg_send(
+                receiver.0,
+                Sel::register("removeObserver:forKeyPath:").0,
+                observer.0,
+                key_path.0,
+            );
+        }
+    }
+
+    /// `-[center removeObserver:observer]`: removes every registration of `observer` with an
+    /// `NSNotificationCenter`.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_remove_notification_observer(center: Id, observer: Id) {
+        if center.is_nil() {
+            return;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = observer;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
+            msg_send(center.0, Sel::register("removeObserver:").0, observer.0);
+        }
+    }
+
     /// `-[receiver sel]` returning a `CGRect` (`frame`, `visibleFrame`).
     ///
     /// # Safety
@@ -1491,6 +1629,12 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+/// Callbacks of [`ActionTarget::new_shared`], by target object address. Unlike
+/// `ACTION_CALLBACKS` they are found from whichever thread AppKit calls the target on.
+static SHARED_ACTION_CALLBACKS: Mutex<
+    Option<HashMap<usize, std::sync::Arc<dyn Fn() + Send + Sync>>>,
+> = Mutex::new(None);
+
 /// The class behind [`ActionTarget`]: an `NSObject` subclass named `FerrokitActionTarget` whose
 /// `-ferrokitPerformAction:` runs the target's callback. Registered once, on first use; nil if
 /// the runtime refuses the class.
@@ -1498,6 +1642,18 @@ thread_local! {
 fn action_target_class() -> Class {
     extern "C" fn perform_action(this: *mut c_void, _cmd: *const c_void, _sender: *mut c_void) {
         // A panic must not unwind into AppKit.
+        let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
+    }
+    /// `-observeValueForKeyPath:ofObject:change:context:`: a key-value observation runs the same
+    /// callback as an action.
+    extern "C" fn observe_value(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        _key_path: *mut c_void,
+        _object: *mut c_void,
+        _change: *mut c_void,
+        _context: *mut c_void,
+    ) {
         let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
     }
     static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
@@ -1519,6 +1675,12 @@ fn action_target_class() -> Class {
             perform_action as *const c_void,
             c"v@:@".as_ptr(),
         );
+        native_bindings::class_addMethod(
+            class,
+            Sel::register("observeValueForKeyPath:ofObject:change:context:").0,
+            observe_value as *const c_void,
+            c"v@:@@@^v".as_ptr(),
+        );
         native_bindings::objc_registerClassPair(class);
         class as usize
     });
@@ -1534,8 +1696,8 @@ pub struct ActionTarget {
 }
 
 impl ActionTarget {
-    /// Creates the target object. Errors when the runtime cannot provide the class.
-    pub fn new(callback: impl Fn() + 'static) -> Result<Self, &'static str> {
+    /// Allocates the Objective-C object (+1).
+    fn alloc() -> Result<Id, &'static str> {
         #[cfg(target_os = "macos")]
         let id = {
             let class = action_target_class();
@@ -1556,11 +1718,34 @@ impl ActionTarget {
         if id.is_nil() {
             return Err("Cannot allocate the action target");
         }
+        Ok(id)
+    }
+
+    /// Creates the target object. Errors when the runtime cannot provide the class.
+    ///
+    /// The callback is kept in a thread-local of the *creating* thread, and AppKit delivers on
+    /// the main thread, so this must be called on the main thread (as it is for controls and menu
+    /// items, which AppKit only allows there anyway). Use [`new_shared`](Self::new_shared) for a
+    /// target that may be created elsewhere.
+    pub fn new(callback: impl Fn() + 'static) -> Result<Self, &'static str> {
+        let id = Self::alloc()?;
         ACTION_CALLBACKS.with(|callbacks| {
             callbacks
                 .borrow_mut()
                 .insert(id.0 as usize, std::rc::Rc::new(callback));
         });
+        Ok(Self { id })
+    }
+
+    /// Like [`new`](Self::new), but the callback is found whichever thread AppKit calls the
+    /// target on, so the creating thread does not matter. The callback must be `Send + Sync`.
+    pub fn new_shared(callback: impl Fn() + Send + Sync + 'static) -> Result<Self, &'static str> {
+        let id = Self::alloc()?;
+        SHARED_ACTION_CALLBACKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(HashMap::new)
+            .insert(id.0 as usize, std::sync::Arc::new(callback));
         Ok(Self { id })
     }
 
@@ -1581,7 +1766,16 @@ impl ActionTarget {
     pub fn perform(target: Id) -> bool {
         let callback = ACTION_CALLBACKS
             .with(|callbacks| callbacks.borrow().get(&(target.0 as usize)).cloned());
-        match callback {
+        if let Some(callback) = callback {
+            callback();
+            return true;
+        }
+        let shared = SHARED_ACTION_CALLBACKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|callbacks| callbacks.get(&(target.0 as usize)).cloned());
+        match shared {
             Some(callback) => {
                 callback();
                 true
@@ -1596,6 +1790,13 @@ impl Drop for ActionTarget {
         ACTION_CALLBACKS.with(|callbacks| {
             callbacks.borrow_mut().remove(&(self.id.0 as usize));
         });
+        if let Some(callbacks) = SHARED_ACTION_CALLBACKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            callbacks.remove(&(self.id.0 as usize));
+        }
         #[cfg(target_os = "macos")]
         // SAFETY: balances the +1 from `alloc`/`init` in `new`.
         unsafe {
