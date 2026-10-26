@@ -92,7 +92,8 @@
     "test_window_mask_and_transient",
     "test_input_cursor",
     "test_show_hide_hooks",
-    "test_window_activate_in_show_handler"
+    "test_window_activate_in_show_handler",
+    "test_key_sequence_hotkey"
   ],
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -1187,6 +1188,20 @@
     "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::SB": "pass",
     "test_show_hide_hooks::hiding_a_parent_sends_hide_to_it_and_to_the_children_that_were_shown::TB": "pass",
     "test_window_activate_in_show_handler::activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_shown::SB": "pass",
-    "test_window_activate_in_show_handler::activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_shown::TB": "pass"
+    "test_window_activate_in_show_handler::activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_shown::TB": "pass",
+    "test_key_sequence_hotkey::every_modifier_combination_round_trips::SB": "pass",
+    "test_key_sequence_hotkey::every_modifier_combination_round_trips::TB": "pass",
+    "test_key_sequence_hotkey::every_virtual_key_that_converts_converts_back::SB": "pass",
+    "test_key_sequence_hotkey::every_virtual_key_that_converts_converts_back::TB": "pass",
+    "test_key_sequence_hotkey::text_that_cannot_be_a_hotkey_gives_none::SB": "pass",
+    "test_key_sequence_hotkey::text_that_cannot_be_a_hotkey_gives_none::TB": "pass",
+    "test_key_sequence_hotkey::the_hud_combinations_map_to_modifiers_and_virtual_keys::SB": "pass",
+    "test_key_sequence_hotkey::the_hud_combinations_map_to_modifiers_and_virtual_keys::TB": "pass",
+    "test_key_sequence_hotkey::the_keypad_modifier_selects_the_keypad_virtual_key::SB": "pass",
+    "test_key_sequence_hotkey::the_keypad_modifier_selects_the_keypad_virtual_key::TB": "pass",
+    "test_key_sequence_hotkey::the_text_of_a_hotkey_is_the_qt_portable_text::SB": "pass",
+    "test_key_sequence_hotkey::the_text_of_a_hotkey_is_the_qt_portable_text::TB": "pass",
+    "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::SB": "pass",
+    "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::TB": "pass"
   }
 }

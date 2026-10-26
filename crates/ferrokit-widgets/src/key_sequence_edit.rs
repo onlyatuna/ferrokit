@@ -13,6 +13,7 @@ use ferrokit_gui::geometry::primitives::{Point, PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
 use ferrokit_gui::paint::{Brush, Painter, Pen, RenderHint};
 use ferrokit_gui::text::{Font, FontMetrics};
+use ferrokit_platform::hotkey::HotkeyModifiers;
 
 use crate::focus::FocusPolicy;
 use crate::layout::Layout;
@@ -288,6 +289,147 @@ impl KeyCombination {
         }
         parts.push(key_name(self.key));
         parts.join("+")
+    }
+}
+
+/// Win32 virtual-key code of a `Qt::Key` (`keypad`: the key is on the numeric keypad,
+/// `Qt::KeypadModifier`), or `None` for keys with no virtual key a global hotkey can use: the
+/// modifier keys themselves, `Key_unknown`, and keys outside the Windows keyboard (media keys
+/// without a `VK_*` code, `Key_Select` ...). This is the inverse of [`normalize_key`].
+fn key_to_virtual_key(key: u32, keypad: bool) -> Option<u32> {
+    const KEYPAD_PUNCTUATION: &[(char, u32)] = &[
+        ('*', 0x6A),
+        ('+', 0x6B),
+        (',', 0x6C),
+        ('-', 0x6D),
+        ('.', 0x6E),
+        ('/', 0x6F),
+    ];
+    const OEM_PUNCTUATION: &[(char, u32)] = &[
+        (';', 0xBA),
+        ('=', 0xBB),
+        (',', 0xBC),
+        ('-', 0xBD),
+        ('.', 0xBE),
+        ('/', 0xBF),
+        ('`', 0xC0),
+        ('[', 0xDB),
+        ('\\', 0xDC),
+        (']', 0xDD),
+        ('\'', 0xDE),
+    ];
+    if key < qt_key::ESCAPE {
+        let c = char::from_u32(key)?;
+        return match c {
+            ' ' => Some(0x20),
+            '0'..='9' if keypad => Some(0x60 + (c as u32 - '0' as u32)),
+            '0'..='9' | 'A'..='Z' => Some(c as u32),
+            _ => {
+                let table = if keypad {
+                    KEYPAD_PUNCTUATION
+                } else {
+                    OEM_PUNCTUATION
+                };
+                table.iter().find(|(ch, _)| *ch == c).map(|(_, vk)| *vk)
+            }
+        };
+    }
+    if (qt_key::F1..=qt_key::F1 + 23).contains(&key) {
+        return Some(0x70 + (key - qt_key::F1));
+    }
+    Some(match key {
+        qt_key::BACKSPACE => 0x08,
+        qt_key::TAB => 0x09,
+        qt_key::CLEAR => 0x0C,
+        qt_key::RETURN | qt_key::ENTER => 0x0D,
+        qt_key::PAUSE => 0x13,
+        qt_key::CAPS_LOCK => 0x14,
+        qt_key::ESCAPE => 0x1B,
+        qt_key::PAGE_UP => 0x21,
+        qt_key::PAGE_DOWN => 0x22,
+        qt_key::END => 0x23,
+        qt_key::HOME => 0x24,
+        qt_key::LEFT => 0x25,
+        qt_key::UP => 0x26,
+        qt_key::RIGHT => 0x27,
+        qt_key::DOWN => 0x28,
+        qt_key::PRINT => 0x2C,
+        qt_key::INSERT => 0x2D,
+        qt_key::DELETE => 0x2E,
+        qt_key::HELP => 0x2F,
+        qt_key::MENU => 0x5D,
+        qt_key::NUM_LOCK => 0x90,
+        qt_key::SCROLL_LOCK => 0x91,
+        qt_key::BACK => 0xA6,
+        qt_key::FORWARD => 0xA7,
+        qt_key::REFRESH => 0xA8,
+        qt_key::STOP => 0xA9,
+        qt_key::SEARCH => 0xAA,
+        qt_key::FAVORITES => 0xAB,
+        qt_key::HOME_PAGE => 0xAC,
+        qt_key::VOLUME_MUTE => 0xAD,
+        qt_key::VOLUME_DOWN => 0xAE,
+        qt_key::VOLUME_UP => 0xAF,
+        qt_key::MEDIA_NEXT => 0xB0,
+        qt_key::MEDIA_PREVIOUS => 0xB1,
+        qt_key::MEDIA_STOP => 0xB2,
+        qt_key::MEDIA_TOGGLE_PLAY_PAUSE => 0xB3,
+        qt_key::LAUNCH_MAIL => 0xB4,
+        qt_key::LAUNCH_MEDIA => 0xB5,
+        qt_key::LAUNCH0 => 0xB6,
+        qt_key::LAUNCH1 => 0xB7,
+        _ => return None,
+    })
+}
+
+impl KeyCombination {
+    /// The modifier set and Win32 virtual-key code to hand to a global hotkey registration
+    /// (`GlobalHotkeyManager::register`, `PlatformHotkeyManager::register_hotkey`), or `None` if
+    /// this combination cannot be one: no key, a modifier key on its own, or a key with no
+    /// virtual-key code (see [`qt_key`]). `Qt::MetaModifier` is the Windows key; `Qt::KeypadModifier`
+    /// selects the numeric-keypad virtual key instead of being a modifier. The result never
+    /// contains `HotkeyModifiers::NO_REPEAT`; add it for one event per press.
+    pub fn to_hotkey(self) -> Option<(HotkeyModifiers, u32)> {
+        let vk = key_to_virtual_key(self.key, self.modifiers & key_modifier::KEYPAD != 0)?;
+        let mut modifiers = HotkeyModifiers::empty();
+        for (mask, flag) in [
+            (key_modifier::SHIFT, HotkeyModifiers::SHIFT),
+            (key_modifier::CTRL, HotkeyModifiers::CONTROL),
+            (key_modifier::ALT, HotkeyModifiers::ALT),
+            (key_modifier::META, HotkeyModifiers::WIN),
+        ] {
+            if self.modifiers & mask != 0 {
+                modifiers |= flag;
+            }
+        }
+        Some((modifiers, vk))
+    }
+
+    /// The combination a global hotkey of `modifiers` + virtual key `vk` stands for (the inverse
+    /// of [`to_hotkey`](Self::to_hotkey); `HotkeyModifiers::NO_REPEAT` is not a modifier and is
+    /// ignored). `None` for a virtual key that is not one of the keys `to_hotkey` produces.
+    pub fn from_hotkey(modifiers: HotkeyModifiers, vk: u32) -> Option<Self> {
+        // Virtual keys that `normalize_key` reads as the ASCII punctuation sharing their value.
+        let (key, keypad) = match vk {
+            0x2C => (qt_key::PRINT, false),
+            0x2F => (qt_key::HELP, false),
+            _ => normalize_key(vk, 0),
+        };
+        if key_to_virtual_key(key, keypad) != Some(vk) {
+            return None;
+        }
+        let mut mask = if keypad { key_modifier::KEYPAD } else { 0 };
+        for (flag, qt_mask) in [
+            (HotkeyModifiers::SHIFT, key_modifier::SHIFT),
+            (HotkeyModifiers::CONTROL, key_modifier::CTRL),
+            (HotkeyModifiers::ALT, key_modifier::ALT),
+            (HotkeyModifiers::WIN, key_modifier::META),
+        ] {
+            if modifiers.contains(flag) {
+                mask |= qt_mask;
+            }
+        }
+        Some(Self::new(key, mask))
     }
 }
 
@@ -607,6 +749,21 @@ impl KeySequence {
         } else {
             SequenceMatch::PartialMatch
         }
+    }
+
+    /// The modifier set and virtual-key code of a one-chord sequence such as `"Alt+C"`, for a
+    /// global hotkey; `None` for an empty or multi-chord sequence, or if the chord cannot be a
+    /// hotkey (see [`KeyCombination::to_hotkey`]).
+    pub fn to_hotkey(&self) -> Option<(HotkeyModifiers, u32)> {
+        match self.keys.as_slice() {
+            [only] => only.to_hotkey(),
+            _ => None,
+        }
+    }
+
+    /// The one-chord sequence of a global hotkey (see [`KeyCombination::from_hotkey`]).
+    pub fn from_hotkey(modifiers: HotkeyModifiers, vk: u32) -> Option<Self> {
+        KeyCombination::from_hotkey(modifiers, vk).map(|key| Self { keys: vec![key] })
     }
 }
 
@@ -1116,7 +1273,11 @@ impl Widget for KeySequenceEdit {
             let r = self.clear_button_rect();
             let cx = r.x as f32 + r.width as f32 / 2.0;
             let cy = r.y as f32 + r.height as f32 / 2.0;
-            painter.set_pen(Pen::new(self.palette.color(group, ColorRole::Dark), 1.5).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
+            painter.set_pen(
+                Pen::new(self.palette.color(group, ColorRole::Dark), 1.5)
+                    .with_cap(ferrokit_gui::tiny_skia::LineCap::Round)
+                    .with_join(ferrokit_gui::tiny_skia::LineJoin::Round),
+            );
             painter.draw_line(
                 PointF::new(cx - 4.0, cy - 4.0),
                 PointF::new(cx + 4.0, cy + 4.0),

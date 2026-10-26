@@ -29,6 +29,8 @@ pub mod cursor_bitmap;
 pub mod drag_drop;
 pub mod high_dpi;
 pub use high_dpi::*;
+pub mod global_hotkey;
+pub use global_hotkey::GlobalHotkeyManager;
 pub mod hotkey;
 pub mod ime;
 pub mod integration;
@@ -74,8 +76,8 @@ pub use cursor::{CocoaCursor, CursorShape, GenericCursor, PlatformCursor, UnixCu
 #[cfg(windows)]
 pub use hotkey::Win32HotkeyManager;
 pub use hotkey::{
-    CocoaHotkeyManager, GenericHotkeyManager, HotkeyModifiers, PlatformHotkeyManager,
-    UnixHotkeyManager,
+    CocoaHotkeyManager, GenericHotkeyManager, HotkeyError, HotkeyModifiers,
+    PlatformHotkeyManager, UnixHotkeyManager,
 };
 #[cfg(windows)]
 pub use integration::Win32PlatformIntegration;
