@@ -238,7 +238,7 @@ fn test_shuttle_owner_compare_is_only_a_diagnostic() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "re-entered")]
 fn test_shuttle_negative_mutant_borrow_held_during_retire_fails() {
     shuttle::check_random(
         || {
@@ -252,7 +252,7 @@ fn test_shuttle_negative_mutant_borrow_held_during_retire_fails() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "installed twice")]
 fn test_shuttle_negative_mutant_reused_keys_fail() {
     shuttle::check_random(
         || {
@@ -266,7 +266,7 @@ fn test_shuttle_negative_mutant_reused_keys_fail() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "ended owner")]
 fn test_shuttle_negative_mutant_error_on_ended_post_fails() {
     shuttle::check_random(
         || {

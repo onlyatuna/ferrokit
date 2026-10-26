@@ -221,7 +221,7 @@ fn test_loom_owner_compare_is_only_a_diagnostic() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "re-entered")]
 fn test_loom_negative_mutant_borrow_held_during_retire_fails() {
     bounded(|| {
         scenarios::nested_retire(LocalMutants {
@@ -232,7 +232,7 @@ fn test_loom_negative_mutant_borrow_held_during_retire_fails() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "installed twice")]
 fn test_loom_negative_mutant_reused_keys_fail() {
     bounded(|| {
         scenarios::nested_retire(LocalMutants {
@@ -243,7 +243,7 @@ fn test_loom_negative_mutant_reused_keys_fail() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "ended owner")]
 fn test_loom_negative_mutant_error_on_ended_post_fails() {
     bounded(|| {
         scenarios::foreign_drop_after_owner_exit(LocalMutants {
