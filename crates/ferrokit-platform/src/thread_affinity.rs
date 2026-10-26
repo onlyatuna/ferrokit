@@ -87,6 +87,9 @@ fn plain_data_back_ends_stay_thread_safe() {
     assert_send_sync::<crate::surface::WaylandShmSurface>();
     assert_send_sync::<crate::tray::DbusConnection>();
     assert_send_sync::<crate::hotkey::UnixHotkeyManager>();
+    // Requests go through a queue to the manager's own worker thread, so it can be shared.
+    assert_send_sync::<crate::global_hotkey::GlobalHotkeyManager>();
+    assert_send_sync::<crate::hotkey::HotkeyError>();
 }
 
 // No raw handles of their own: a menu entry is a label, flags and a signal; the layer surface is a
