@@ -5,7 +5,7 @@ use ferrokit_gui::paint::brush::{Brush, LinearGradient, RadialGradient};
 use ferrokit_gui::paint::composition::CompositionMode;
 use ferrokit_gui::paint::painter::Painter;
 use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
-use ferrokit_gui::paint::path::PainterPath;
+use ferrokit_gui::paint::path::{FillRule, PainterPath};
 use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::text::document::TextDocument;
 use ferrokit_gui::text::font::Font;
@@ -238,4 +238,120 @@ fn test_text_document_layout_and_html_rendering() {
     let mut pixmap = Pixmap::new(200, 100).unwrap();
     let mut painter = Painter::begin(&mut pixmap);
     painter.draw_text_document(PointF::new(10.0, 10.0), &doc);
+}
+
+#[test]
+fn painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole() {
+    assert_eq!(FillRule::default(), FillRule::OddEven);
+    let mut star = PainterPath::new();
+    assert_eq!(star.fill_rule(), FillRule::OddEven);
+    assert_eq!(
+        PainterPath::with_start_point(PointF::new(1.0, 2.0)).fill_rule(),
+        FillRule::OddEven
+    );
+    for k in 0..5 {
+        let a = std::f32::consts::TAU * (k * 2) as f32 / 5.0;
+        let pt = PointF::new(20.0 + 17.0 * a.sin(), 20.0 - 17.0 * a.cos());
+        if k == 0 {
+            star.move_to(pt.x, pt.y);
+        } else {
+            star.line_to(pt.x, pt.y);
+        }
+    }
+    star.close_subpath();
+
+    let mut odd_even_pm = Pixmap::new(40, 40).unwrap();
+    {
+        let mut p = Painter::begin(&mut odd_even_pm);
+        p.set_pen(None);
+        p.set_brush(Brush::Color(Color::WHITE));
+        p.fill_painter_path(&star);
+    }
+    assert_eq!(
+        odd_even_pm.pixel(20, 20).unwrap().alpha(),
+        0,
+        "default OddEven leaves a hole at the pentagram's self-intersecting centre"
+    );
+
+    star.set_fill_rule(FillRule::Winding);
+    let mut winding_pm = Pixmap::new(40, 40).unwrap();
+    {
+        let mut p = Painter::begin(&mut winding_pm);
+        p.set_pen(None);
+        p.set_brush(Brush::Color(Color::WHITE));
+        p.fill_painter_path(&star);
+    }
+    assert_eq!(
+        winding_pm.pixel(20, 20).unwrap().alpha(),
+        255,
+        "explicit Winding fills the pentagram's centre"
+    );
+}
+
+#[test]
+fn hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25() {
+    // Build a 6x6 texture where texel (tx, ty) encodes tx in its red channel, matching the
+    // 6x6 tile size of `Brush::Hatched`.
+    let mut tile = Pixmap::new(6, 6).unwrap();
+    for ty in 0..6u32 {
+        for tx in 0..6u32 {
+            let idx = ((ty * 6 + tx) * 4) as usize;
+            tile.data_mut()[idx..idx + 4].copy_from_slice(&[tx as u8, ty as u8, 0, 255]);
+        }
+    }
+    let tex_brush = Brush::texture(Arc::new(tile));
+
+    // Expected texel x-indices measured from Qt 6.11.2 `QRasterPaintEngine` (`QImage` with
+    // `setDevicePixelRatio(1.25)` and `p.translate(gx, 0)`):
+    let expected_at_1_25: &[(f32, [u8; 15])] = &[
+        (0.0, [0, 1, 1, 2, 3, 4, 5, 5, 0, 1, 2, 3, 3, 4, 5]),
+        (1.0, [5, 0, 0, 1, 2, 3, 4, 4, 5, 0, 1, 2, 2, 3, 4]),
+        (2.0, [4, 5, 5, 0, 1, 2, 3, 3, 4, 5, 0, 1, 1, 2, 3]),
+        (3.0, [3, 4, 4, 5, 0, 1, 2, 2, 3, 4, 5, 0, 0, 1, 2]),
+        (6.0, [0, 1, 1, 2, 3, 4, 5, 5, 0, 1, 2, 3, 3, 4, 5]),
+    ];
+    for &(gx, ref expected) in expected_at_1_25 {
+        let mut pm = Pixmap::with_dpr(20, 2, 1.25).unwrap();
+        {
+            let mut p = Painter::begin(&mut pm);
+            p.translate(gx, 0.0);
+            p.set_pen(None);
+            p.set_brush(tex_brush.clone());
+            p.draw_rect(RectF::new(-10.0, 0.0, 30.0, 2.0));
+        }
+        let got: Vec<u8> = (0..15).map(|dx| pm.pixel(dx, 0).unwrap().red()).collect();
+        assert_eq!(got, expected, "texel phase at DPR 1.25 gx={gx}");
+    }
+
+    // `Brush::Hatched` uses the same 6x6 nearest-neighbour repeat phase at DPR 1.25:
+    // translating by 6 logical pixels (7.5 physical pixels, one full 6-texel period) repeats the
+    // exact stripe phase at device pixel 0, and `set_brush_origin` shifts the phase identically
+    // to `translate`.
+    let render_hatch_row = |gx: f32, origin_x: f32| -> Vec<u8> {
+        let mut pm = Pixmap::with_dpr(16, 2, 1.25).unwrap();
+        {
+            let mut p = Painter::begin(&mut pm);
+            p.translate(gx, 0.0);
+            p.set_brush_origin(PointF::new(origin_x, 0.0));
+            p.set_pen(None);
+            p.set_brush(Brush::hatched(Color::WHITE));
+            p.draw_rect(RectF::new(-10.0, 0.0, 30.0, 2.0));
+        }
+        (0..16).map(|dx| pm.pixel(dx, 0).unwrap().alpha()).collect()
+    };
+    let row_0 = render_hatch_row(0.0, 0.0);
+    let row_6 = render_hatch_row(6.0, 0.0);
+    assert_eq!(
+        row_0, row_6,
+        "6-px tile repeats after 6 logical pixels (7.5 device pixels)"
+    );
+    assert_eq!(
+        render_hatch_row(1.0, 2.0),
+        render_hatch_row(3.0, 0.0),
+        "brush_origin shifts pattern phase identically to user-space translation"
+    );
+    // At DPR 1.25, physical pixels 1 and 2 both sample tile column 1 (alpha <= 2), while
+    // physical pixels 6 and 7 both sample tile column 5 (alpha == 255).
+    assert_eq!(row_0[6], 255);
+    assert_eq!(row_0[7], 255);
 }

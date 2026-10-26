@@ -150,6 +150,8 @@ pub struct ClipQuad {
 pub struct PainterState {
     pub pen: Option<Pen>,
     pub brush: Brush,
+    /// `QPainter::brushOrigin` in logical user coordinates (default `(0, 0)`).
+    pub brush_origin: PointF,
     pub transform: Transform,
     pub opacity: f32,
     pub render_hints: RenderHints,
@@ -166,6 +168,7 @@ impl Default for PainterState {
         Self {
             pen: Some(Pen::new(Color::BLACK, 1.0)),
             brush: Brush::NoBrush,
+            brush_origin: PointF::new(0.0, 0.0),
             transform: Transform::identity(),
             opacity: 1.0,
             render_hints: RenderHints::default(),
@@ -206,6 +209,68 @@ fn zero_mask_region(mask: &mut Mask, bounds: PixelBounds) {
         let row = (y * w) as usize;
         data[row + x0 as usize..row + x1 as usize].fill(0);
     }
+}
+
+/// `qRound` (`qnumeric.h`): rounds half away from zero.
+fn qt_round(v: f64) -> i32 {
+    if v >= 0.0 {
+        (v + 0.5).floor() as i32
+    } else {
+        (v - 0.5).ceil() as i32
+    }
+}
+
+/// Pattern-space transform that makes `tiny-skia`'s nearest-neighbour `Repeat` pipeline step
+/// through a `tile_w x tile_h` texture at the exact texels `QRasterPaintEngine` (`QSpanData::
+/// setupMatrix` + `adjustSpanMethods` + `qBlendTexture`, `qpaintengine_raster.cpp` /
+/// `qdrawhelper.cpp`) samples under `painter_transform` and `brush_origin`.
+///
+/// Under pure translation (`TxTranslate`), Qt rounds the device-space translation with `qRound`.
+/// Under axis-aligned scaling (`TxScale`, such as `devicePixelRatio != 1.0`), Qt wraps the
+/// inverse translation modulo the tile size (`fmod`) before truncating to 16.16 fixed point and
+/// steps `fx = (fdx >> 1) + int(fmod(inv_dx, tile_w) * 65536) - 1 + x * fdx`.
+fn qt_nearest_pattern_transform(
+    painter_transform: Transform,
+    brush_origin: PointF,
+    base_pattern_transform: Transform,
+    tile_w: u32,
+    tile_h: u32,
+) -> Transform {
+    let origin_ts = if brush_origin.x != 0.0 || brush_origin.y != 0.0 {
+        base_pattern_transform.post_translate(brush_origin.x, brush_origin.y)
+    } else {
+        base_pattern_transform
+    };
+    let combined = origin_ts.post_concat(painter_transform);
+    if combined.kx != 0.0 || combined.ky != 0.0 || combined.sx <= 0.0 || combined.sy <= 0.0 {
+        return origin_ts;
+    }
+    let Some(painter_inv) = painter_transform.invert() else {
+        return origin_ts;
+    };
+    let axis = |scale: f32, trans: f32, tile: u32| -> (f32, f32) {
+        let s = f64::from(scale);
+        let t = f64::from(trans);
+        if (s - 1.0).abs() <= 1e-6 {
+            let want_ts_tx = f64::from(-qt_round(t));
+            (1.0, -want_ts_tx as f32)
+        } else {
+            let inv_s = 1.0 / s;
+            let fdx = (inv_s * 65536.0) as i32;
+            if fdx <= 0 {
+                return (scale, trans);
+            }
+            let inv_dx = (-t * inv_s) % f64::from(tile);
+            let m_dx = (inv_dx * 65536.0) as i32;
+            let fx0 = (fdx >> 1) + m_dx - 1;
+            let want_ts_sx = f64::from(fdx) / 65536.0;
+            let want_ts_tx = (f64::from(fx0) - 0.5 * f64::from(fdx)) / 65536.0;
+            ((1.0 / want_ts_sx) as f32, (-want_ts_tx / want_ts_sx) as f32)
+        }
+    };
+    let (c_sx, c_tx) = axis(combined.sx, combined.tx, tile_w);
+    let (c_sy, c_ty) = axis(combined.sy, combined.ty, tile_h);
+    Transform::from_row(c_sx, 0.0, 0.0, c_sy, c_tx, c_ty).post_concat(painter_inv)
 }
 
 /// 2D vector painter (`QPainter` equivalent).
@@ -381,6 +446,16 @@ impl<'a> Painter<'a> {
         self.state.brush = brush;
     }
 
+
+    /// Sets the brush origin in logical user coordinates (`QPainter::setBrushOrigin`).
+    pub fn set_brush_origin(&mut self, origin: PointF) {
+        self.state.brush_origin = origin;
+    }
+
+    /// Returns the current brush origin (`QPainter::brushOrigin`).
+    pub fn brush_origin(&self) -> PointF {
+        self.state.brush_origin
+    }
     // Sets opacity (0.0 to 1.0).
     pub fn set_opacity(&mut self, opacity: f32) {
         self.state.opacity = opacity.clamp(0.0, 1.0);
@@ -655,13 +730,29 @@ impl<'a> Painter<'a> {
                             tile.stroke_path(&line, &ink, &stroke, Transform::identity(), None);
                         }
                     }
+                    let pattern_ts = if filter == FilterQuality::Nearest {
+                        qt_nearest_pattern_transform(
+                            transform,
+                            self.state.brush_origin,
+                            Transform::identity(),
+                            TILE_SIZE,
+                            TILE_SIZE,
+                        )
+                    } else if self.state.brush_origin.x != 0.0 || self.state.brush_origin.y != 0.0 {
+                        Transform::from_translate(
+                            self.state.brush_origin.x,
+                            self.state.brush_origin.y,
+                        )
+                    } else {
+                        Transform::identity()
+                    };
                     let paint = Paint {
                         shader: Pattern::new(
                             tile.as_ref(),
                             SpreadMode::Repeat,
                             filter,
                             opacity,
-                            Transform::identity(),
+                            pattern_ts,
                         ),
                         blend_mode,
                         anti_alias,
@@ -699,13 +790,29 @@ impl<'a> Painter<'a> {
                 }
             }
             Brush::Texture(pattern) => {
+                let pm = pattern.pixmap.as_tiny_skia();
+                let pattern_ts = if filter == FilterQuality::Nearest {
+                    qt_nearest_pattern_transform(
+                        transform,
+                        self.state.brush_origin,
+                        pattern.transform,
+                        pm.width(),
+                        pm.height(),
+                    )
+                } else if self.state.brush_origin.x != 0.0 || self.state.brush_origin.y != 0.0 {
+                    pattern
+                        .transform
+                        .post_translate(self.state.brush_origin.x, self.state.brush_origin.y)
+                } else {
+                    pattern.transform
+                };
                 let paint = Paint {
                     shader: Pattern::new(
-                        pattern.pixmap.as_tiny_skia().as_ref(),
+                        pm.as_ref(),
                         SpreadMode::Repeat,
                         filter,
                         opacity,
-                        pattern.transform,
+                        pattern_ts,
                     ),
                     blend_mode,
                     anti_alias,

@@ -14,11 +14,11 @@ use tiny_skia::{FillRule as SkiaFillRule, Path, PathBuilder};
 /// Fill rule specifying how the interior of a path is determined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FillRule {
-    /// Non-zero winding rule (Qt::WindingFill).
+    /// Odd-even filling rule (`Qt::OddEvenFill`, Qt's default for `QPainterPath`).
     #[default]
-    Winding,
-    /// Odd-even filling rule (Qt::OddEvenFill).
     OddEven,
+    /// Non-zero winding rule (`Qt::WindingFill`).
+    Winding,
 }
 
 impl From<FillRule> for SkiaFillRule {
@@ -75,13 +75,14 @@ pub struct PainterPath {
 }
 
 impl PainterPath {
-    /// Creates a new empty painter path.
+    /// Creates a new empty painter path (`QPainterPath::QPainterPath()`, default fill rule
+    /// [`FillRule::OddEven`]).
     pub fn new() -> Self {
         Self {
             elements: Vec::new(),
             current_pos: PointF::new(0.0, 0.0),
             start_pos: PointF::new(0.0, 0.0),
-            fill_rule: FillRule::Winding,
+            fill_rule: FillRule::OddEven,
         }
     }
 
