@@ -26,7 +26,8 @@
     "test_solid_fill_blend",
     "test_text_system",
     "test_font_memory_face_cache",
-    "test_gui_p2_hardening"
+    "test_gui_p2_hardening",
+    "test_font_features"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -226,6 +227,14 @@
     "test_font_fallback_metrics_parity::test_memory_font_retains_fallback_chain::TB": "unsupported",
     "test_font_fallback_metrics_parity::test_metrics_and_painter_shaping_exact_parity::SB": "unsupported",
     "test_font_fallback_metrics_parity::test_metrics_and_painter_shaping_exact_parity::TB": "unsupported",
+    "test_font_features::description_resolves_features_as_a_whole::SB": "pass",
+    "test_font_features::description_resolves_features_as_a_whole::TB": "pass",
+    "test_font_features::features_follow_qfont::SB": "pass",
+    "test_font_features::features_follow_qfont::TB": "pass",
+    "test_font_features::features_take_part_in_font_equality_and_cloning::SB": "pass",
+    "test_font_features::features_take_part_in_font_equality_and_cloning::TB": "pass",
+    "test_font_features::tag_matches_qfont_tag::SB": "pass",
+    "test_font_features::tag_matches_qfont_tag::TB": "pass",
     "test_font_file_mapping::an_empty_file_loads_as_empty_data_and_a_missing_one_is_an_error::SB": "unsupported",
     "test_font_file_mapping::an_empty_file_loads_as_empty_data_and_a_missing_one_is_an_error::TB": "unsupported",
     "test_font_file_mapping::mapped_data_equals_the_file_and_is_shared_by_clones::SB": "unsupported",

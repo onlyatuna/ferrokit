@@ -239,12 +239,26 @@ impl Menu {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `QSystemTrayIcon::ActivationReason`, with Qt's values (qsystemtrayicon.h).
+///
+/// Which reasons arrive depends on the platform engine, as in Qt:
+/// - Windows (`QWindowsSystemTrayIcon::winEvent`): `Trigger` on a left click (`NIN_SELECT`),
+///   `DoubleClick`, `Context` (`WM_CONTEXTMENU`) and `MiddleClick`; never `Unknown`.
+/// - macOS (`QCocoaSystemTrayIcon::emitActivated`): a status item click is classified by
+///   `[NSApp currentEvent]`: click count 2 is `DoubleClick`, otherwise the middle button gives
+///   `MiddleClick`, the right button `Context` and anything else `Trigger`; `Unknown` is only
+///   the initial value Qt assigns before classifying. Not run on macOS.
+/// - Linux (`QStatusNotifierItemAdaptor`): the StatusNotifierItem methods `Activate`,
+///   `ContextMenu` and `SecondaryActivate` give `Trigger`, `Context` and `MiddleClick`; there is
+///   no `DoubleClick`. Not run on Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
 pub enum TrayActivation {
-    Trigger,
-    DoubleClick,
-    Context,
-    MiddleClick,
+    Unknown = 0,
+    Context = 1,
+    DoubleClick = 2,
+    Trigger = 3,
+    MiddleClick = 4,
 }
 
 #[cfg(windows)]
@@ -906,12 +920,41 @@ impl TrayIcon {
         let title_str = tooltip.into();
         let mut inner = crate::integration::platform().create_tray_icon(&title_str, pixmap)?;
         let _ = inner.show();
-        Ok(Box::new(Self {
+        Ok(Self::with_backend(inner))
+    }
+
+    /// Wraps `inner`, forwarding the activations it reports to [`TrayIcon::on_activated`]
+    /// (`QSystemTrayIcon::activated`).
+    pub fn with_backend(mut inner: Box<dyn crate::platform_tray::PlatformTrayIcon>) -> Box<Self> {
+        let on_activated = Signal::new();
+        let emitter = on_activated.clone();
+        inner.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
+        Box::new(Self {
             inner,
             on_menu_action: Signal::new(),
-            on_activated: Signal::new(),
+            on_activated,
             on_context_menu_requested: Signal::new(),
-        }))
+        })
+    }
+
+    /// Dispatches what the desktop sent to the icon since the last call, which may emit
+    /// [`TrayIcon::on_activated`]. Only the Linux StatusNotifierItem back end needs this (its
+    /// calls arrive on the session bus socket); on macOS AppKit calls back by itself.
+    pub fn process_events(&mut self) {
+        self.inner.process_events();
+    }
+
+    /// Watches the descriptor that signals pending activations (Linux: the session bus
+    /// socket); connect the notifier's `activated` signal to [`TrayIcon::process_events`].
+    /// `Ok(None)` when the back end has none.
+    pub fn bind_event_dispatcher(
+        &mut self,
+        dispatcher: &mut dyn ferrokit_core::event_loop::EventDispatcher,
+    ) -> Result<
+        Option<std::sync::Arc<ferrokit_core::event_loop::SocketNotifier>>,
+        ferrokit_core::event_loop::SocketNotifierError,
+    > {
+        self.inner.bind_event_dispatcher(dispatcher)
     }
 
     pub fn hwnd(&self) -> isize {

@@ -698,6 +698,8 @@ impl ObjcMsg {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.menu;
                 }
+            } else if sel_name == "currentEvent" {
+                return runtime.current_event();
             } else if sel_name == "release" {
                 runtime.release(receiver);
                 return Id::NIL;
@@ -754,6 +756,8 @@ impl ObjcMsg {
                 runtime.allocate_object("NSStatusBar")
             } else if sel_name == "sharedApplication" {
                 runtime.allocate_object("NSApplication")
+            } else if sel_name == "defaultCenter" {
+                runtime.allocate_object("NSNotificationCenter")
             } else if sel_name == "mainScreen" {
                 runtime.allocate_object("NSScreen")
             } else if sel_name == "screens" {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use super::dbus_connection::{DbusConnection, DbusMessage};
+use super::dbus_connection::{DbusConnection, DbusMessage, DBUS_MESSAGE_TYPE_METHOD_CALL};
 use crate::menu::PlatformMenu;
 use crate::platform_tray::PlatformTrayIcon;
+use crate::tray_icon::TrayActivation;
 use ferrokit_core::event_loop::{EventDispatcher, SocketNotifier, SocketNotifierError};
 use ferrokit_gui::paint::Pixmap;
 use std::sync::Mutex;
@@ -51,6 +52,7 @@ pub struct DbusStatusNotifierItem {
     is_registered: bool,
     connection: Mutex<Option<DbusConnection>>,
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
+    activation_handler: Option<Box<dyn Fn(TrayActivation)>>,
 }
 
 impl DbusStatusNotifierItem {
@@ -67,6 +69,7 @@ impl DbusStatusNotifierItem {
             is_registered: false,
             connection: Mutex::new(None),
             last_message: None,
+            activation_handler: None,
         }
     }
 
@@ -128,9 +131,61 @@ impl DbusStatusNotifierItem {
         }
     }
 
-    pub fn activate(&mut self, _x: i32, _y: i32) {}
+    /// What the host's `Activate(x, y)` call does: reports [`TrayActivation::Trigger`], as
+    /// `QStatusNotifierItemAdaptor::Activate` does (the position is only logged by Qt).
+    pub fn activate(&mut self, _x: i32, _y: i32) {
+        self.emit_activated(TrayActivation::Trigger);
+    }
 
-    pub fn context_menu(&mut self, _x: i32, _y: i32) {}
+    /// What the host's `ContextMenu(x, y)` call does: [`TrayActivation::Context`]
+    /// (`QStatusNotifierItemAdaptor::ContextMenu`).
+    pub fn context_menu(&mut self, _x: i32, _y: i32) {
+        self.emit_activated(TrayActivation::Context);
+    }
+
+    /// What the host's `SecondaryActivate(x, y)` call does: [`TrayActivation::MiddleClick`]
+    /// (`QStatusNotifierItemAdaptor::SecondaryActivate`).
+    pub fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        self.emit_activated(TrayActivation::MiddleClick);
+    }
+
+    fn emit_activated(&self, reason: TrayActivation) {
+        if let Some(handler) = &self.activation_handler {
+            handler(reason);
+        }
+    }
+
+    /// Dispatches one message received from the bus: a method call on the
+    /// `org.kde.StatusNotifierItem` interface of `/StatusNotifierItem` runs the matching
+    /// method and is answered with an empty reply (unless the caller set
+    /// `NO_REPLY_EXPECTED`). `Scroll` and `ProvideXdgActivationToken` are accepted and ignored
+    /// (Qt: "unsupported" / only stores the token in the environment). Everything else is left
+    /// alone. Returns whether the message was one of these calls.
+    pub fn handle_message(&mut self, msg: &DbusMessage) -> bool {
+        if msg.msg_type != DBUS_MESSAGE_TYPE_METHOD_CALL
+            || msg.path.as_deref() != Some("/StatusNotifierItem")
+            || msg.interface.as_deref() != Some("org.kde.StatusNotifierItem")
+        {
+            return false;
+        }
+        match msg.member.as_deref() {
+            Some("Activate") => self.activate(0, 0),
+            Some("ContextMenu") => self.context_menu(0, 0),
+            Some("SecondaryActivate") => self.secondary_activate(0, 0),
+            Some("Scroll") | Some("ProvideXdgActivationToken") => {}
+            _ => return false,
+        }
+        const NO_REPLY_EXPECTED: u8 = 0x1;
+        if msg.flags & NO_REPLY_EXPECTED == 0 {
+            if let Some(conn) = self.connection.lock().unwrap().as_mut() {
+                let serial = conn.next_serial();
+                let reply =
+                    DbusMessage::method_return(msg.serial, msg.sender.as_deref().unwrap_or(""), serial);
+                let _ = conn.send_message(reply);
+            }
+        }
+        true
+    }
 
     pub fn last_message(&self) -> Option<(&str, &str, crate::platform_tray::TrayMessageIcon, u32)> {
         self.last_message
@@ -202,6 +257,51 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
 
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>) {
         self.menu = Some(menu);
+    }
+
+    /// Mirrors `QStatusNotifierItemAdaptor` (qstatusnotifieritemadaptor.cpp): see
+    /// [`DbusStatusNotifierItem::handle_message`] for the method-to-reason mapping. The reasons
+    /// arrive when [`PlatformTrayIcon::process_events`] runs, which something must drive from
+    /// the bus socket's readability ([`DbusStatusNotifierItem::bind_event_dispatcher`]).
+    ///
+    /// **Not run on Linux.** It is type-checked for `x86_64-unknown-linux-gnu` and tested
+    /// against the in-memory bus; no real StatusNotifierHost has called the item. The item
+    /// answers `Activate`, `ContextMenu` and `SecondaryActivate` only: nothing in this crate
+    /// answers the host's `org.freedesktop.DBus.Properties` reads, so a host that needs them
+    /// to show the icon is a separate, existing gap.
+    fn set_activation_handler(&mut self, handler: Box<dyn Fn(TrayActivation)>) {
+        self.activation_handler = Some(handler);
+    }
+
+    /// Reads the messages that arrived on the bus socket and runs [`handle_message`]
+    /// on each. A closed or broken connection is dropped here: the icon then stays silent
+    /// until `show` connects again.
+    ///
+    /// [`handle_message`]: DbusStatusNotifierItem::handle_message
+    fn process_events(&mut self) {
+        let incoming = {
+            let mut guard = self.connection.lock().unwrap();
+            let Some(conn) = guard.as_mut() else {
+                return;
+            };
+            match conn.read_incoming() {
+                Ok(messages) => messages,
+                Err(_) => {
+                    *guard = None;
+                    return;
+                }
+            }
+        };
+        for message in &incoming {
+            self.handle_message(message);
+        }
+    }
+
+    fn bind_event_dispatcher(
+        &mut self,
+        dispatcher: &mut dyn EventDispatcher,
+    ) -> Result<Option<std::sync::Arc<SocketNotifier>>, SocketNotifierError> {
+        DbusStatusNotifierItem::bind_event_dispatcher(self, dispatcher)
     }
 
     /// Sends the registration to the StatusNotifierWatcher on the session bus. Without a

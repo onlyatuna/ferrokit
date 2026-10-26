@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::menu::PlatformMenu;
+use crate::tray_icon::TrayActivation;
 use ferrokit_gui::image::Icon;
 use ferrokit_gui::paint::Pixmap;
 
@@ -19,6 +20,35 @@ pub trait PlatformTrayIcon {
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
     fn show(&mut self) -> Result<(), &'static str>;
     fn hide(&mut self) -> Result<(), &'static str>;
+
+    /// Installs the receiver of `QPlatformSystemTrayIcon::activated(ActivationReason)`: the
+    /// back end calls `handler` with the reason each time the user activates the icon. The
+    /// default drops the handler, for back ends that never report activations (the headless
+    /// [`GenericTrayIcon`]); the Windows icon reports through `TrayIcon::on_activated` instead.
+    fn set_activation_handler(&mut self, handler: Box<dyn Fn(TrayActivation)>) {
+        let _ = handler;
+    }
+
+    /// Reads and dispatches whatever the desktop sent to the icon since the last call, which
+    /// may invoke the activation handler. The D-Bus back end receives `Activate`,
+    /// `ContextMenu` and `SecondaryActivate` method calls on the session bus socket and needs
+    /// this to be driven (see `DbusStatusNotifierItem::bind_event_dispatcher`); back ends that
+    /// are called back by the OS (AppKit) have nothing to do.
+    fn process_events(&mut self) {}
+
+    /// Watches the descriptor whose readability means [`PlatformTrayIcon::process_events`] has
+    /// something to do; `Ok(None)` when the back end has no descriptor to watch. Connect the
+    /// returned notifier's `activated` signal to `process_events`.
+    fn bind_event_dispatcher(
+        &mut self,
+        dispatcher: &mut dyn ferrokit_core::event_loop::EventDispatcher,
+    ) -> Result<
+        Option<std::sync::Arc<ferrokit_core::event_loop::SocketNotifier>>,
+        ferrokit_core::event_loop::SocketNotifierError,
+    > {
+        let _ = dispatcher;
+        Ok(None)
+    }
 
     /// Displays a balloon or toast message aligned with `QPlatformSystemTrayIcon::showMessage`.
     /// `duration_ms` defaults to 10,000 ms if 0.
