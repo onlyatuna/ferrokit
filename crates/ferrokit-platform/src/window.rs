@@ -751,6 +751,54 @@ fn run_handler(hwnd: isize, event: WindowSystemEvent) {
     }
 }
 
+/// Delivers `event` to `hwnd`'s handler synchronously on the window's thread and returns whether
+/// the handler accepted it. Returns `false` if the window is not on the calling thread, has no
+/// handler, or its handler is already running on the stack.
+pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -> bool {
+    use std::collections::hash_map::Entry;
+    if !is_window_thread(hwnd) {
+        post_window_system_event(hwnd, event);
+        return false;
+    }
+    let key = hwnd as isize;
+    let entered = ACTIVE_DISPATCH
+        .try_with(|active| match active.borrow_mut().entry(key) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(v) => {
+                v.insert(std::collections::VecDeque::new());
+                true
+            }
+        })
+        .unwrap_or(false);
+    if !entered {
+        return false;
+    }
+    let _active = ActiveDispatch(key);
+    let taken = WINDOW_EVENT_HANDLERS
+        .try_with(|map| map.borrow_mut().remove(&key))
+        .ok()
+        .flatten();
+    let accepted = if let Some(handler) = taken {
+        let mut running = RunningHandler {
+            hwnd: key,
+            handler: Some(handler),
+        };
+        running
+            .handler
+            .as_mut()
+            .is_some_and(|h| h.handle_window_event_accepted(event))
+    } else {
+        false
+    };
+    while let Some(ev) = ACTIVE_DISPATCH
+        .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
+        .unwrap_or(None)
+    {
+        run_handler(key, ev);
+    }
+    accepted
+}
+
 pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent) {
     use std::collections::hash_map::Entry;
     let key = hwnd as isize;
@@ -2831,33 +2879,29 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                 return true;
             }
             let hwnd_isize = self.hwnd as isize;
-            let callback = move |ev: crate::drag_drop::DropEvent| {
+            let callback = move |ev: crate::drag_drop::DropEvent| -> bool {
                 let hwnd = hwnd_isize as HWND;
                 match ev {
                     crate::drag_drop::DropEvent::Enter {
                         pos,
                         formats,
                         effect,
-                    } => {
-                        dispatch_window_system_event(
-                            Delivery::Default,
-                            hwnd,
-                            WindowSystemEvent::DragEnter {
-                                pos,
-                                formats,
-                                drop_action: effect,
-                            },
-                        );
-                    }
+                    } => send_window_system_event_accepted(
+                        hwnd,
+                        WindowSystemEvent::DragEnter {
+                            pos,
+                            formats,
+                            drop_action: effect,
+                        },
+                    ),
                     crate::drag_drop::DropEvent::Over { pos, effect } => {
-                        dispatch_window_system_event(
-                            Delivery::Default,
+                        send_window_system_event_accepted(
                             hwnd,
                             WindowSystemEvent::DragMove {
                                 pos,
                                 drop_action: effect,
                             },
-                        );
+                        )
                     }
                     crate::drag_drop::DropEvent::Leave => {
                         dispatch_window_system_event(
@@ -2865,24 +2909,22 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                             hwnd,
                             WindowSystemEvent::DragLeave,
                         );
+                        true
                     }
                     crate::drag_drop::DropEvent::Drop {
                         pos,
                         formats,
                         data,
                         effect,
-                    } => {
-                        dispatch_window_system_event(
-                            Delivery::Default,
-                            hwnd,
-                            WindowSystemEvent::Drop {
-                                pos,
-                                formats,
-                                data,
-                                drop_action: effect,
-                            },
-                        );
-                    }
+                    } => send_window_system_event_accepted(
+                        hwnd,
+                        WindowSystemEvent::Drop {
+                            pos,
+                            formats,
+                            data,
+                            drop_action: effect,
+                        },
+                    ),
                 }
             };
             if let Ok(target) =

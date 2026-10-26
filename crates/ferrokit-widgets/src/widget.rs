@@ -820,6 +820,16 @@ pub trait Widget: QObject + 'static {
         self.widget_base().set_attribute(attr, on);
     }
 
+    /// `QWidget::acceptDrops` (`testAttribute(Qt::WA_AcceptDrops)`).
+    fn accept_drops(&self) -> bool {
+        self.widget_base().accept_drops()
+    }
+
+    /// `QWidget::setAcceptDrops` (`setAttribute(Qt::WA_AcceptDrops, on)`).
+    fn set_accept_drops(&self, on: bool) {
+        self.widget_base().set_accept_drops(on);
+    }
+
     /// `QWidget::cursor` (qwidget.cpp:4972-4982): the widget's own cursor, else its parent's, else
     /// the arrow for a window. A parent that is mutably borrowed right now reads as the arrow.
     fn cursor(&self) -> CursorShape {
@@ -1436,6 +1446,8 @@ pub struct WidgetBase {
     /// clears it, except on a window, which keeps it and then shows the arrow
     /// (qwidget.cpp:5011-5013).
     pub(crate) cursor_attr: Cell<bool>,
+    /// `Qt::WA_AcceptDrops` (`QWidget::acceptDrops` / `setAcceptDrops`).
+    pub(crate) accept_drops: Cell<bool>,
 }
 
 impl WidgetBase {
@@ -1481,6 +1493,7 @@ impl WidgetBase {
             accessible_description: RefCell::new(String::new()),
             cursor: Cell::new(None),
             cursor_attr: Cell::new(false),
+            accept_drops: Cell::new(false),
         }
     }
     /// Unique object identifier.
@@ -1630,6 +1643,16 @@ impl WidgetBase {
         self.no_mouse_propagation.get()
     }
 
+    /// `QWidget::acceptDrops` (`WA_AcceptDrops`).
+    pub fn accept_drops(&self) -> bool {
+        self.accept_drops.get()
+    }
+
+    /// `QWidget::setAcceptDrops` (`WA_AcceptDrops`).
+    pub fn set_accept_drops(&self, on: bool) {
+        self.accept_drops.set(on);
+    }
+
     /// `QWidget::mask`.
     pub fn mask(&self) -> Region {
         self.mask.borrow().clone()
@@ -1744,6 +1767,7 @@ impl WidgetBase {
             WidgetAttribute::MouseNoMask => self.mouse_no_mask.get(),
             WidgetAttribute::AlwaysShowToolTips => self.always_show_tool_tips.get(),
             WidgetAttribute::SetCursor => self.cursor_attr.get(),
+            WidgetAttribute::AcceptDrops => self.accept_drops.get(),
             _ => false,
         }
     }
@@ -1779,6 +1803,9 @@ impl WidgetBase {
             }
             WidgetAttribute::SetCursor => {
                 self.cursor_attr.set(on);
+            }
+            WidgetAttribute::AcceptDrops => {
+                self.accept_drops.set(on);
             }
             _ => {}
         }

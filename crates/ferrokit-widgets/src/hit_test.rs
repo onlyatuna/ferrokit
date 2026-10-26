@@ -18,6 +18,10 @@ pub struct EventTreeDispatcher {
     /// One bit per button held down (`1 << (button - 1)`); the grab ends with the last button.
     held_buttons: u32,
     last_dpr: f32,
+    /// `QWidgetWindow::m_dragTarget`: the widget that accepted the current drag (`DragEnter` /
+    /// `DragMove`), and the formats offered when the drag entered.
+    drag_target: Option<(ObjectId, WidgetRef)>,
+    drag_formats: Vec<String>,
 }
 
 impl Default for EventTreeDispatcher {
@@ -35,6 +39,8 @@ impl EventTreeDispatcher {
             press_grab: None,
             held_buttons: 0,
             last_dpr: 1.0,
+            drag_target: None,
+            drag_formats: Vec::new(),
         }
     }
 
@@ -429,6 +435,49 @@ impl EventTreeDispatcher {
                 }
                 notify_widget(root, event)
             }
+            EventKind::DragEnter {
+                pos_x,
+                pos_y,
+                formats,
+                drop_action,
+            } => {
+                let win_pos = Point::new(*pos_x, *pos_y);
+                let formats = formats.clone();
+                let action = *drop_action;
+                self.drag_formats = formats.clone();
+                self.deliver_drag(root, win_pos, action, true)
+            }
+            EventKind::DragMove {
+                pos_x,
+                pos_y,
+                drop_action,
+            } => {
+                let win_pos = Point::new(*pos_x, *pos_y);
+                let action = *drop_action;
+                self.deliver_drag(root, win_pos, action, false)
+            }
+            EventKind::DragLeave => {
+                self.drag_formats.clear();
+                if let Some((_id, prev)) = self.drag_target.take() {
+                    let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+                    let _ = notify_widget(&prev, &mut leave);
+                }
+                true
+            }
+            EventKind::Drop {
+                pos_x,
+                pos_y,
+                formats,
+                data,
+                drop_action,
+            } => {
+                let win_pos = Point::new(*pos_x, *pos_y);
+                let formats = formats.clone();
+                let data = data.clone();
+                let action = *drop_action;
+                self.drag_formats.clear();
+                self.deliver_drop(root, win_pos, formats, data, action)
+            }
             EventKind::DpiChanged { dpi_x, .. } => {
                 let new_dpr = ferrokit_gui::round_scale_factor(*dpi_x as f64 / 96.0) as f32;
                 let old_dpr = self.last_dpr;
@@ -489,6 +538,122 @@ impl EventTreeDispatcher {
             let _ = notify_widget(&new_chain[i], &mut ev);
         }
         self.last_hovered = Some((target_id, target.clone()));
+    }
+
+    /// `QWidgetWindow::handleDragEnterEvent` / `handleDragMoveEvent`: walks from the innermost hit
+    /// widget up to the root, visiting enabled widgets that accept drops (`WA_AcceptDrops`, or any
+    /// enabled widget when no widget in the path has `WA_AcceptDrops` set so existing direct
+    /// `DragEnter` / `DragMove` handlers keep working). When the accepting widget changes, the
+    /// previous target receives `DragLeave` and the new candidate receives `DragEnter` before
+    /// `DragMove`.
+    fn deliver_drag(
+        &mut self,
+        root: &WidgetRef,
+        win_pos: Point,
+        drop_action: u32,
+        is_enter: bool,
+    ) -> bool {
+        let path = hit_path(root, win_pos);
+        let any_explicit = has_any_accept_drops(root);
+        let prev_id = self.drag_target.as_ref().map(|(id, _)| *id);
+        for step in path.iter().rev() {
+            if !step.enabled {
+                continue;
+            }
+            if any_explicit && !step.widget.borrow().widget_base().accept_drops() {
+                continue;
+            }
+            let cand_id = step.widget.borrow().id();
+            if is_enter || prev_id != Some(cand_id) {
+                let mut enter = Event::new_spontaneous(EventKind::DragEnter {
+                    pos_x: step.pos.x,
+                    pos_y: step.pos.y,
+                    formats: self.drag_formats.clone(),
+                    drop_action,
+                });
+                if !(notify_widget(&step.widget, &mut enter) && enter.is_accepted()) {
+                    continue;
+                }
+                if prev_id != Some(cand_id) {
+                    if let Some((_old_id, old_w)) = self.drag_target.take() {
+                        let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+                        let _ = notify_widget(&old_w, &mut leave);
+                    }
+                }
+                self.drag_target = Some((cand_id, step.widget.clone()));
+                if is_enter {
+                    return true;
+                }
+            }
+            let mut mv = Event::new_spontaneous(EventKind::DragMove {
+                pos_x: step.pos.x,
+                pos_y: step.pos.y,
+                drop_action,
+            });
+            if notify_widget(&step.widget, &mut mv) && mv.is_accepted() {
+                self.drag_target = Some((cand_id, step.widget.clone()));
+                return true;
+            }
+            // The current drag target rejected `DragMove`: send it `DragLeave` and continue up.
+            if self.drag_target.as_ref().map(|(id, _)| *id) == Some(cand_id) {
+                if let Some((_old_id, old_w)) = self.drag_target.take() {
+                    let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+                    let _ = notify_widget(&old_w, &mut leave);
+                }
+            }
+        }
+        if let Some((_old_id, old_w)) = self.drag_target.take() {
+            let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+            let _ = notify_widget(&old_w, &mut leave);
+        }
+        false
+    }
+
+    /// `QWidgetWindow::handleDropEvent`: delivers `Drop` to the current drag target if one was
+    /// tracked, else walks the hit path like `deliver_drag`.
+    fn deliver_drop(
+        &mut self,
+        root: &WidgetRef,
+        win_pos: Point,
+        formats: Vec<String>,
+        data: Vec<(String, Vec<u8>)>,
+        drop_action: u32,
+    ) -> bool {
+        let path = hit_path(root, win_pos);
+        if let Some((target_id, target)) = self.drag_target.take() {
+            if let Some(step) = path.iter().find(|s| s.widget.borrow().id() == target_id) {
+                if step.enabled {
+                    let mut drop_ev = Event::new_spontaneous(EventKind::Drop {
+                        pos_x: step.pos.x,
+                        pos_y: step.pos.y,
+                        formats,
+                        data,
+                        drop_action,
+                    });
+                    return notify_widget(&target, &mut drop_ev) && drop_ev.is_accepted();
+                }
+            }
+        }
+        let any_explicit = has_any_accept_drops(root);
+        for step in path.iter().rev() {
+            if !step.enabled {
+                continue;
+            }
+            if any_explicit && !step.widget.borrow().widget_base().accept_drops() {
+                continue;
+            }
+            let mut drop_ev = Event::new_spontaneous(EventKind::Drop {
+                pos_x: step.pos.x,
+                pos_y: step.pos.y,
+                formats: formats.clone(),
+                data: data.clone(),
+                drop_action,
+            });
+            if notify_widget(&step.widget, &mut drop_ev) && drop_ev.is_accepted() {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -749,6 +914,16 @@ fn grab_path(root: &WidgetRef, win_pos: Point) -> Option<Vec<HitStep>> {
     let id = crate::widget::mouse_grabber_id()?;
     let grabber = find_widget_by_id(root, id)?;
     Some(path_to(&grabber, win_pos))
+}
+
+fn has_any_accept_drops(widget: &WidgetRef) -> bool {
+    let (accepts, children) = {
+        let Ok(w) = widget.try_borrow() else {
+            return false;
+        };
+        (w.widget_base().accept_drops(), w.children())
+    };
+    accepts || children.iter().any(has_any_accept_drops)
 }
 
 pub fn dispatch_event_to_tree(root: &WidgetRef, event: &mut Event) -> bool {

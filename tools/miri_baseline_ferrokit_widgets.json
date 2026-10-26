@@ -1202,6 +1202,8 @@
     "test_key_sequence_hotkey::the_text_of_a_hotkey_is_the_qt_portable_text::SB": "pass",
     "test_key_sequence_hotkey::the_text_of_a_hotkey_is_the_qt_portable_text::TB": "pass",
     "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::SB": "pass",
-    "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::TB": "pass"
+    "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::TB": "pass",
+    "test_widget_attributes_api::drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_target_transitions::SB": "pass",
+    "test_widget_attributes_api::drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_target_transitions::TB": "pass"
   }
 }

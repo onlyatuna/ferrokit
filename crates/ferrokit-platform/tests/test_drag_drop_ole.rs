@@ -31,8 +31,10 @@ fn target_with(
     events: &Arc<Mutex<Vec<DropEvent>>>,
 ) -> (*mut OleDropTarget, &'static IDropTargetVtbl) {
     let sink = Arc::clone(events);
-    let t = OleDropTarget::new(hwnd, move |ev| sink.lock().push(ev));
-    // SAFETY: `new` returns a live object whose first field is the vtable pointer.
+    let t = OleDropTarget::new(hwnd, move |ev| {
+        sink.lock().push(ev);
+        true
+    });
     let vtbl = unsafe { &*(*t).vtbl };
     (t, vtbl)
 }
@@ -224,14 +226,17 @@ fn a_drop_of_files_is_a_uri_list_and_modifier_keys_choose_the_effect() {
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
-        // Shift asks for a move, but the target never returns MOVE: it is copy.
+        // Shift asks for a move: an accepting target returns DROPEFFECT_MOVE (2).
         assert_eq!((vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
-        assert_eq!(effect, 1);
-        // The source only offers move: nothing is proposed, so the source never deletes.
+        assert_eq!(effect, 2);
+        // The source only offers move: move is proposed when accepted.
         effect = 2;
         assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
-        assert_eq!(effect, 0);
+        assert_eq!(effect, 2);
+        // Ctrl+Shift asks for a link (4).
         effect = 7;
+        assert_eq!((vtbl.drag_over)(this, 0x0c, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 4);
         assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
         (vtbl.release)(this);
     }
@@ -290,4 +295,25 @@ fn drag_positions_are_logical_client_coordinates() {
     };
     let expect = Point::new((40.0 / dpr).round() as i32, (60.0 / dpr).round() as i32);
     assert_eq!(*pos, expect, "screen point (origin + 40,60) is client (40,60) / dpr {dpr}");
+}
+
+#[test]
+fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shift_move() {
+    let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| false);
+    let vtbl = unsafe { &*(*t).vtbl };
+    let mut obj = data_object(Some("refused"), None);
+    unsafe {
+        let this = t as *mut c_void;
+        let o = &mut obj as *mut MockData as *mut c_void;
+        let mut effect = 7u32;
+        assert_eq!((vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 0, "refused DragEnter reports DROPEFFECT_NONE");
+        effect = 7;
+        assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 0, "refused DragOver reports DROPEFFECT_NONE");
+        effect = 7;
+        assert_eq!((vtbl.drop)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 0, "refused Drop reports DROPEFFECT_NONE so the source never deletes");
+        (vtbl.release)(this);
+    }
 }
