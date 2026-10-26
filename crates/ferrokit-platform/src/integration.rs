@@ -251,6 +251,14 @@ pub mod unix {
         }
     }
 
+    /// Tells the user, once per process, that windows are offscreen and so never shown.
+    fn warn_offscreen_fallback(reason: &str) {
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("ferrokit: windows are offscreen and will not be shown: {reason}");
+        }
+    }
+
     /// Opens a window for the detected `kind`. Detection and the native connect are separate
     /// steps, so the socket can vanish in between; a failed native connect then falls back to the
     /// offscreen window like an unreachable display does.
@@ -267,10 +275,12 @@ pub mod unix {
         ) -> Result<Box<dyn PlatformWindow>, &'static str>,
     ) -> Result<Box<dyn PlatformWindow>, &'static str> {
         if kind == DisplayServerKind::Generic {
+            warn_offscreen_fallback("no reachable Wayland or X11 display");
             return Ok(Box::new(GenericWindow::new(title, rect, flags)));
         }
         match open_native(kind, title, rect, flags) {
             Err(e) if e == X11_CONNECT_FAILED || e == WAYLAND_CONNECT_FAILED => {
+                warn_offscreen_fallback(e);
                 Ok(Box::new(GenericWindow::new(title, rect, flags)))
             }
             other => other,
