@@ -22,8 +22,8 @@
 //!   it. The first skipped emission of each connection prints a diagnostic to stderr; later ones
 //!   are silent. The emitter gets no error: [`Signal::emit`] returns `()`. Emit signals with local
 //!   slots from the thread that connected them, or hop to that thread first. A single-shot local
-//!   slot is consumed by such an emission without having run (the signal removes a single-shot
-//!   connection before it calls it).
+//!   slot is not consumed by such an emission: the connection stays and the slot runs, once, on
+//!   the first emission from the connecting thread.
 //! * **The closure is dropped on the connecting thread, not on the thread that disconnects.**
 //!   After `disconnect`, `disconnect_all`, a [`ScopedConnection`] drop, or the drop of the last
 //!   clone of the signal on another thread, the slot never runs again at once, but its captures
@@ -100,15 +100,20 @@ impl LocalHandle {
         })
     }
 
+    /// Prints the foreign-emission diagnostic, the first time only.
+    fn warn_foreign_emission(&self) {
+        if !self.warned.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "ferrokit: a signal with a local slot (connect_local) was emitted from a \
+                 thread other than the one that connected it; the slot is skipped"
+            );
+        }
+    }
+
     /// Calls the slot if this is the connecting thread. Returns whether it ran.
     fn call<T: 'static>(&self, value: &T) -> bool {
         if ThreadId::current() != self.owner {
-            if !self.warned.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "ferrokit: a signal with a local slot (connect_local) was emitted from a \
-                     thread other than the one that connected it; the slot is skipped"
-                );
-            }
+            self.warn_foreign_emission();
             return false;
         }
         // I1, I2: the `Rc` is cloned out, so the borrow ends before the slot runs and the slot
@@ -234,16 +239,23 @@ impl<T: 'static> Signal<T> {
     /// [`Signal::connect_local`] that runs at most once: the connection is removed before the
     /// slot is called (Qt `SingleShotConnection`), so a re-entrant emit does not call it again.
     ///
-    /// An emission from another thread removes the connection **without running the slot**, since
-    /// the signal consumes a single-shot connection before it calls it; see
-    /// [`Signal::connect_local`].
+    /// An emission from another thread skips the connection and **does not consume it** (the
+    /// signal leaves a thread-bound single-shot connection alone, with the diagnostic described
+    /// at [`Signal::connect_local`]); the slot runs, exactly once, on the first emission from the
+    /// connecting thread, and not again.
     pub fn connect_local_single_shot<F>(&self, slot: F) -> ConnectionId
     where
         F: Fn(&T) + 'static,
     {
         let handle = LocalHandle::install::<T>(slot);
-        self.connect_single_shot(move |value| {
-            handle.call(value);
-        })
+        let owner = handle.owner;
+        let skipped = Arc::clone(&handle);
+        self.connect_single_shot_bound(
+            owner,
+            move || skipped.warn_foreign_emission(),
+            move |value| {
+                handle.call(value);
+            },
+        )
     }
 }

@@ -106,16 +106,89 @@ fn an_emission_from_another_thread_skips_the_slot_and_leaves_its_captures_alone(
 }
 
 #[test]
-fn a_foreign_emission_consumes_a_single_shot_local_slot_without_running_it() {
+fn a_foreign_emission_neither_runs_nor_consumes_a_single_shot_local_slot() {
     let signal: Signal<i32> = Signal::new();
     let runs = Rc::new(Cell::new(0));
     let sink = Rc::clone(&runs);
     signal.connect_local_single_shot(move |_| sink.set(sink.get() + 1));
 
     let remote = signal.clone();
-    std::thread::spawn(move || remote.emit(&1)).join().unwrap();
+    std::thread::spawn(move || {
+        remote.emit(&1);
+        remote.emit(&1);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(runs.get(), 0, "the slot must not run off its thread");
+    assert_eq!(
+        signal.subscriber_count(),
+        1,
+        "the foreign emissions must not consume it"
+    );
+
     signal.emit(&1);
-    assert_eq!(runs.get(), 0);
+    assert_eq!(
+        runs.get(),
+        1,
+        "the connecting thread's first emission runs it"
+    );
+    assert_eq!(signal.subscriber_count(), 0);
+
+    signal.emit(&1);
+    assert_eq!(runs.get(), 1, "and only once");
+    assert_eq!(Rc::strong_count(&runs), 1);
+}
+
+#[test]
+fn a_capture_that_connects_and_disconnects_local_slots_while_it_is_retired_does_not_double_borrow()
+{
+    // The retire job of a slot removed from another thread runs on this thread's loop turn and
+    // drops the closure; the capture's `Drop` uses the slot table (connect and disconnect). The
+    // table must not be borrowed while the closure is dropped.
+    struct Reentrant {
+        signal: Signal<i32>,
+        victim: ConnectionId,
+        log: Rc<RefCell<Vec<&'static str>>>,
+    }
+    impl Drop for Reentrant {
+        fn drop(&mut self) {
+            let log = Rc::clone(&self.log);
+            self.signal
+                .connect_local(move |_| log.borrow_mut().push("added in drop"));
+            assert!(self.signal.disconnect(self.victim));
+        }
+    }
+
+    let event_loop = EventLoop::new();
+    let signal: Signal<i32> = Signal::new();
+    let log = Rc::new(RefCell::new(Vec::new()));
+
+    let victim_log = Rc::clone(&log);
+    let victim = signal.connect_local(move |_| victim_log.borrow_mut().push("victim"));
+    let guard = Reentrant {
+        signal: signal.clone(),
+        victim,
+        log: Rc::clone(&log),
+    };
+    let retired = signal.connect_local(move |_| {
+        let _ = &guard;
+    });
+
+    let remote = signal.clone();
+    assert!(std::thread::spawn(move || remote.disconnect(retired))
+        .join()
+        .unwrap());
+    assert!(event_loop.process_events(false), "the retire job runs here");
+
+    signal.emit(&1);
+    assert_eq!(
+        *log.borrow(),
+        vec!["added in drop"],
+        "the victim is gone, the new slot works"
+    );
+    assert_eq!(signal.subscriber_count(), 1);
+    signal.disconnect_all();
+    assert_eq!(Rc::strong_count(&log), 1);
 }
 
 #[test]
