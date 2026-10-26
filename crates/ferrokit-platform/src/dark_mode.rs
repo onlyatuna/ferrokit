@@ -111,9 +111,11 @@ pub fn set_dark_mode_handling(handling: DarkModeHandling) {
 }
 
 /// Whether a window's frame should be dark under `scheme`: `Some(dark)` to set it, `None` to
-/// leave the frame alone because the application set it itself (`set_window_backdrop`).
-/// `shouldApplyDarkFrame` (qwindowswindow.cpp:863-878) without the palette test: ferrokit has no
-/// palette change notification to re-run it on, so the frame follows the scheme.
+/// leave the frame alone: the window is frameless (`shouldApplyDarkFrame`, qwindowswindow.cpp:
+/// 863-878, skips those, so nothing at all is written for them, neither a light nor a dark
+/// frame) or the application set the frame itself (`set_window_backdrop`). Otherwise the frame
+/// follows the scheme (the palette test of `shouldApplyDarkFrame` is left out: ferrokit has no
+/// palette change notification to re-run it on).
 #[cfg(any(windows, test))]
 fn frame_should_be_dark(
     handling: DarkModeHandling,
@@ -121,14 +123,10 @@ fn frame_should_be_dark(
     frameless: bool,
     set_by_application: bool,
 ) -> Option<bool> {
-    if set_by_application {
+    if frameless || set_by_application {
         return None;
     }
-    Some(
-        scheme == ColorScheme::Dark
-            && !frameless
-            && handling.contains(DarkModeHandling::WINDOW_FRAMES),
-    )
+    Some(scheme == ColorScheme::Dark && handling.contains(DarkModeHandling::WINDOW_FRAMES))
 }
 
 /// First build with the undocumented dark mode exports (Windows 10 1809).
@@ -238,13 +236,15 @@ struct WindowRegistry {
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowEntry {
-    /// Windows that draw no frame the scheme could darken. This is wider than Qt's
-    /// `Qt::FramelessWindowHint` test: ferrokit's `CUSTOM_FRAMELESS`, `LAYERED` and `TOOLTIP`
-    /// windows count too, because their caption is drawn by the application or absent.
+    /// Windows that draw no frame the scheme could darken. The scheme never writes anything for
+    /// them (neither the app-level window mode nor the frame attribute): `shouldApplyDarkFrame`
+    /// skips `Qt::FramelessWindowHint` windows. This is wider than Qt's test: ferrokit's
+    /// `CUSTOM_FRAMELESS`, `LAYERED` and `TOOLTIP` windows count too, because their caption is
+    /// drawn by the application or absent.
     frameless: bool,
-    /// `set_window_backdrop` wrote the frame attribute from its own `dark_mode`, which wins over
-    /// the scheme until a `BackdropType::None` hands the frame back.
-    set_by_application: bool,
+    /// `set_window_backdrop` wrote the frame attribute from its own `dark_mode` (this value),
+    /// which wins over the scheme until a `BackdropType::None` hands the frame back.
+    app_dark: Option<bool>,
     /// The attribute last written successfully, `None` when unknown (then it is written again).
     applied_dark: Option<bool>,
 }
@@ -257,7 +257,7 @@ impl WindowRegistry {
             hwnd,
             WindowEntry {
                 frameless,
-                set_by_application: false,
+                app_dark: None,
                 applied_dark: Some(false),
             },
         );
@@ -267,11 +267,12 @@ impl WindowRegistry {
         self.windows.remove(&hwnd);
     }
 
+    /// The application writes `dark` as the frame of `hwnd`; the scheme leaves it from now on.
     /// Whether `hwnd` is tracked.
-    fn mark_set_by_application(&mut self, hwnd: isize) -> bool {
+    fn mark_set_by_application(&mut self, hwnd: isize, dark: bool) -> bool {
         match self.windows.get_mut(&hwnd) {
             Some(entry) => {
-                entry.set_by_application = true;
+                entry.app_dark = Some(dark);
                 entry.applied_dark = None;
                 true
             }
@@ -279,15 +280,17 @@ impl WindowRegistry {
         }
     }
 
-    /// Gives the frame back to the scheme. Whether `hwnd` is tracked.
+    /// Gives the frame back to the scheme. Whether the scheme now owns the frame: `false` for an
+    /// untracked window and for a frameless one, which the scheme never writes (the caller keeps
+    /// writing its own value there).
     fn release_to_scheme(&mut self, hwnd: isize) -> bool {
         match self.windows.get_mut(&hwnd) {
-            Some(entry) => {
-                entry.set_by_application = false;
+            Some(entry) if !entry.frameless => {
+                entry.app_dark = None;
                 entry.applied_dark = None;
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -325,19 +328,40 @@ fn apply_frames(
         .snapshot();
     for (hwnd, entry) in snapshot {
         let Some(dark) =
-            frame_should_be_dark(handling, scheme, entry.frameless, entry.set_by_application)
+            frame_should_be_dark(handling, scheme, entry.frameless, entry.app_dark.is_some())
         else {
             continue;
         };
         if entry.applied_dark == Some(dark) {
             continue;
         }
-        if set_frame(hwnd, dark) {
+        if !set_frame(hwnd, dark) {
+            continue;
+        }
+        // `set_window_backdrop` may have taken the frame over (marked it, then written its own
+        // value) between the snapshot and the write above, and the write above may have landed
+        // after the application's. No lock can be held across a write, so the application's value
+        // is written again until the value last written is the one the application wants: the
+        // application only ever writes `app_dark`, so whichever write comes last, it wins.
+        let mut last = dark;
+        loop {
             let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
-            // The window may have been destroyed, or reconfigured, meanwhile.
-            if let Some(r) = guard.as_mut() {
-                if r.entry(hwnd) == Some(entry) {
-                    r.record_applied(hwnd, dark);
+            let Some(r) = guard.as_mut() else { break };
+            let Some(now) = r.entry(hwnd) else { break }; // destroyed meanwhile
+            match now.app_dark {
+                Some(want) if want == last => break,
+                Some(want) => {
+                    drop(guard);
+                    set_frame(hwnd, want);
+                    last = want;
+                }
+                None => {
+                    // Still the window of the snapshot: remember what was written. A window that
+                    // was handed back to the scheme meanwhile has its own pass coming.
+                    if now == entry {
+                        r.record_applied(hwnd, dark);
+                    }
+                    break;
                 }
             }
         }
@@ -600,20 +624,24 @@ mod win {
         with_registry(|r| r.remove(hwnd as isize));
     }
 
-    /// `set_window_backdrop` chose the frame attribute from its own `dark_mode`; the scheme
-    /// leaves it until [`release_frame_to_scheme`]. Whether the window is tracked.
-    pub(crate) fn set_frame_by_application(hwnd: HWND) -> bool {
-        with_registry(|r| r.mark_set_by_application(hwnd as isize))
+    /// `set_window_backdrop` writes `dark` as the frame attribute of `hwnd`; the scheme leaves
+    /// the frame alone until [`release_frame_to_scheme`], and corrects a write of its own that
+    /// raced with this one (see `apply_frames`). Call it *before* writing. Whether the window is
+    /// tracked.
+    pub(crate) fn set_frame_by_application(hwnd: HWND, dark: bool) -> bool {
+        with_registry(|r| r.mark_set_by_application(hwnd as isize, dark))
     }
 
-    /// Hands the frame back to the scheme and applies it now. Whether the window is tracked;
-    /// for an untracked one nothing happens.
+    /// Hands the frame back to the scheme and applies it now. Returns whether the scheme now
+    /// owns the frame. `false` means the caller keeps writing the frame itself: the window is
+    /// untracked, or frameless (the scheme never writes those, as Qt's `shouldApplyDarkFrame`
+    /// skips frameless windows).
     pub(crate) fn release_frame_to_scheme(hwnd: HWND) -> bool {
-        let tracked = with_registry(|r| r.release_to_scheme(hwnd as isize));
-        if tracked {
+        let owned = with_registry(|r| r.release_to_scheme(hwnd as isize));
+        if owned {
             apply_scheme();
         }
-        tracked
+        owned
     }
 
     #[cfg(test)]
@@ -803,18 +831,18 @@ mod win {
                 registered(hwnd),
                 Some(WindowEntry {
                     frameless: false,
-                    set_by_application: false,
+                    app_dark: None,
                     applied_dark: Some(false),
                 })
             );
-            assert!(set_frame_by_application(hwnd));
-            assert!(registered(hwnd).unwrap().set_by_application);
+            assert!(set_frame_by_application(hwnd, true));
+            assert_eq!(registered(hwnd).unwrap().app_dark, Some(true));
             assert!(release_frame_to_scheme(hwnd));
-            assert!(!registered(hwnd).unwrap().set_by_application);
+            assert_eq!(registered(hwnd).unwrap().app_dark, None);
             window_destroyed(hwnd);
             assert_eq!(registered(hwnd), None);
             // Untracked windows are not ours to touch.
-            assert!(!set_frame_by_application(hwnd));
+            assert!(!set_frame_by_application(hwnd, true));
             assert!(!release_frame_to_scheme(hwnd));
         }
     }
@@ -903,8 +931,11 @@ mod tests {
         assert_eq!(f(all, ColorScheme::Dark, false, false), Some(true));
         assert_eq!(f(all, ColorScheme::Light, false, false), Some(false));
         assert_eq!(f(all, ColorScheme::Unknown, false, false), Some(false));
-        // `Qt::FramelessWindowHint`.
-        assert_eq!(f(all, ColorScheme::Dark, true, false), Some(false));
+        // `Qt::FramelessWindowHint` (and ferrokit's wider notion): nothing is written at all,
+        // for any scheme.
+        assert_eq!(f(all, ColorScheme::Dark, true, false), None);
+        assert_eq!(f(all, ColorScheme::Light, true, false), None);
+        assert_eq!(f(all, ColorScheme::Unknown, true, false), None);
         // `darkmode=0` and `darkmode=1` differ in the style only; frames need `WINDOW_FRAMES`.
         let empty = DarkModeHandling::empty();
         assert_eq!(f(empty, ColorScheme::Dark, false, false), Some(false));
@@ -930,23 +961,26 @@ mod tests {
         let mut r = WindowRegistry::default();
         r.insert(1, false);
         r.insert(2, true);
-        assert!(r.mark_set_by_application(1));
-        assert!(!r.mark_set_by_application(99)); // unknown window: ignored
-        assert!(r.entry(1).unwrap().set_by_application);
-        assert!(!r.entry(2).unwrap().set_by_application);
+        assert!(r.mark_set_by_application(1, true));
+        assert!(!r.mark_set_by_application(99, true)); // unknown window: ignored
+        assert_eq!(r.entry(1).unwrap().app_dark, Some(true));
+        assert_eq!(r.entry(2).unwrap().app_dark, None);
         assert!(r.entry(2).unwrap().frameless);
         assert_eq!(r.snapshot().len(), 2);
         // `BackdropType::None` gives the frame back and forgets what was written.
         assert!(r.release_to_scheme(1));
         assert_eq!(r.entry(1).unwrap().applied_dark, None);
-        assert!(!r.entry(1).unwrap().set_by_application);
+        assert_eq!(r.entry(1).unwrap().app_dark, None);
         assert!(!r.release_to_scheme(99));
+        // A frameless window is not taken over by the scheme.
+        assert!(!r.release_to_scheme(2));
+        assert_eq!(r.entry(2).unwrap().applied_dark, Some(false));
         r.remove(1);
         assert_eq!(r.entry(1), None);
         // A new window with a reused handle starts clean and light.
         r.insert(1, false);
         let e = r.entry(1).unwrap();
-        assert!(!e.set_by_application);
+        assert_eq!(e.app_dark, None);
         assert_eq!(e.applied_dark, Some(false));
     }
 
@@ -1010,7 +1044,7 @@ mod tests {
             .unwrap()
             .as_mut()
             .unwrap()
-            .mark_set_by_application(1);
+            .mark_set_by_application(1, false);
         let writes = Cell::new(0);
         let run = |scheme| {
             apply_frames(&reg, all, scheme, |_, _| {
@@ -1042,6 +1076,122 @@ mod tests {
             },
         );
         assert_eq!(reg.lock().unwrap().as_ref().unwrap().entry(1), None);
+    }
+
+    /// A scheme write that lands while the application takes the frame over: the application's
+    /// value is written again, so it is the last one whichever side wrote last.
+    #[test]
+    fn an_application_owned_frame_wins_over_a_pass_in_flight() {
+        let reg = registry(&[(1, false)]);
+        let writes = RefCell::new(Vec::new());
+        apply_frames(
+            &reg,
+            DarkModeHandling::default(),
+            ColorScheme::Dark,
+            |h, d| {
+                writes.borrow_mut().push((h, d));
+                if writes.borrow().len() == 1 {
+                    // `set_window_backdrop` on another thread: marked, written, all between the
+                    // snapshot and the end of this write. It wants a light frame.
+                    reg.lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .mark_set_by_application(h, false);
+                }
+                true
+            },
+        );
+        assert_eq!(*writes.borrow(), [(1, true), (1, false)]);
+        let e = entry(&reg, 1);
+        assert_eq!(e.app_dark, Some(false));
+        assert_eq!(
+            e.applied_dark, None,
+            "an owned frame is not the scheme's record"
+        );
+    }
+
+    #[test]
+    fn the_application_changing_its_mind_during_the_correction_still_wins() {
+        let reg = registry(&[(1, false)]);
+        let writes = RefCell::new(Vec::new());
+        apply_frames(
+            &reg,
+            DarkModeHandling::default(),
+            ColorScheme::Dark,
+            |h, d| {
+                writes.borrow_mut().push((h, d));
+                let n = writes.borrow().len();
+                // Scheme write (1): the application takes over with light. Correction (2): it
+                // changes to dark meanwhile. Correction (3) is then the same as its value.
+                if n <= 2 {
+                    reg.lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .mark_set_by_application(h, n == 2);
+                }
+                true
+            },
+        );
+        assert_eq!(*writes.borrow(), [(1, true), (1, false), (1, true)]);
+        assert_eq!(entry(&reg, 1).app_dark, Some(true));
+    }
+
+    #[test]
+    fn a_frame_handed_back_during_a_write_is_left_to_the_pass_that_follows() {
+        let reg = registry(&[(1, false)]);
+        apply_frames(
+            &reg,
+            DarkModeHandling::default(),
+            ColorScheme::Dark,
+            |h, _| {
+                let mut guard = reg.lock().unwrap();
+                let r = guard.as_mut().unwrap();
+                r.mark_set_by_application(h, false);
+                r.release_to_scheme(h);
+                true
+            },
+        );
+        let e = entry(&reg, 1);
+        assert_eq!(e.app_dark, None);
+        assert_eq!(e.applied_dark, None, "unknown: the next pass writes it");
+    }
+
+    #[test]
+    fn the_scheme_never_writes_a_frameless_window() {
+        // A HUD-like window: frameless, so no attribute is written at all, neither 0 nor 1, and
+        // not for any scheme, handling or release.
+        let reg = registry(&[(1, true)]);
+        let writes = Cell::new(0);
+        for handling in [
+            DarkModeHandling::default(),
+            DarkModeHandling::empty(),
+            DarkModeHandling::WINDOW_FRAMES,
+        ] {
+            for scheme in [ColorScheme::Dark, ColorScheme::Light, ColorScheme::Unknown] {
+                apply_frames(&reg, handling, scheme, |_, _| {
+                    writes.set(writes.get() + 1);
+                    true
+                });
+            }
+        }
+        {
+            let mut guard = reg.lock().unwrap();
+            let r = guard.as_mut().unwrap();
+            // `BackdropType::None`: the scheme does not take a frameless window over, so the
+            // caller keeps writing its own value ...
+            assert!(!r.release_to_scheme(1));
+            // ... and one that was marked stays untouched by the scheme as well.
+            r.mark_set_by_application(1, true);
+        }
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            apply_frames(&reg, DarkModeHandling::default(), scheme, |_, _| {
+                writes.set(writes.get() + 1);
+                true
+            });
+        }
+        assert_eq!(writes.get(), 0);
     }
 
     #[test]

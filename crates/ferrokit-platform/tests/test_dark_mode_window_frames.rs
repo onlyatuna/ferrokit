@@ -83,6 +83,31 @@ fn window_frames_follow_the_requested_colour_scheme() {
     assert!(!frame_is_dark(&direct));
     theme.request_color_scheme(ColorScheme::Dark);
 
+    // HUD-like windows count as frameless: the scheme writes nothing for them, and
+    // `BackdropType::None` keeps writing the caller's own `dark_mode` (neither the scheme nor a
+    // light default replaces it).
+    let hud = new_window(
+        "hud",
+        WindowFlags::FRAMELESS
+            | WindowFlags::CUSTOM_FRAMELESS
+            | WindowFlags::LAYERED
+            | WindowFlags::TOOL,
+    );
+    theme.request_color_scheme(ColorScheme::Light);
+    set_window_backdrop(hud.hwnd(), BackdropType::None, true);
+    assert!(frame_is_dark(&hud), "None writes the caller's dark flag");
+    theme.request_color_scheme(ColorScheme::Dark);
+    theme.request_color_scheme(ColorScheme::Light);
+    assert!(
+        frame_is_dark(&hud),
+        "the scheme does not write a frameless window"
+    );
+    set_window_backdrop(hud.hwnd(), BackdropType::None, false);
+    assert!(!frame_is_dark(&hud));
+    theme.request_color_scheme(ColorScheme::Dark);
+    assert!(!frame_is_dark(&hud), "not even a dark scheme");
+    theme.request_color_scheme(ColorScheme::Light);
+
     // A closed window is no longer tracked and does not disturb the others.
     drop(framed);
     theme.request_color_scheme(ColorScheme::Light);

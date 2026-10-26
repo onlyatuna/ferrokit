@@ -111,8 +111,10 @@ impl BackdropState {
 /// `dark_mode`, and the colour scheme then leaves that window's frame alone (the application
 /// chose the tint, and the frame goes with it). [`BackdropType::None`] gives the frame back to
 /// the colour scheme (`dark_mode` is then the tint of nothing and is ignored) and applies the
-/// scheme at once. A window this crate did not create is not tracked by the scheme, so there
-/// `None` writes `dark_mode` as the other backdrops do.
+/// scheme at once. The scheme never writes the frame of a frameless window (Qt's
+/// `shouldApplyDarkFrame` skips them; ferrokit counts `FRAMELESS`, `CUSTOM_FRAMELESS`,
+/// `LAYERED` and `TOOLTIP` windows as frameless), and it knows nothing of a window this crate
+/// did not create: for those, `None` writes `dark_mode` like every other backdrop.
 #[cfg(windows)]
 pub fn set_window_backdrop(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -130,13 +132,13 @@ pub fn set_window_backdrop(
     }
 
     unsafe {
-        // First, configure dark mode preference (attribute 20, or 19 before 20H1, as Qt does)
         if backdrop == BackdropType::None {
             if !crate::dark_mode::release_frame_to_scheme(hwnd) {
                 crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
             }
         } else {
-            crate::dark_mode::set_frame_by_application(hwnd);
+            // Marked first, so the scheme's own writes stop and its in-flight one is corrected.
+            crate::dark_mode::set_frame_by_application(hwnd, dark_mode);
             crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
         }
 
