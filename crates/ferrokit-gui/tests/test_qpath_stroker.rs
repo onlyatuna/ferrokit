@@ -757,3 +757,24 @@ fn create_stroke_does_not_hang_or_panic_on_hostile_settings() {
         }
     }
 }
+
+#[test]
+fn create_stroke_checked_reports_truncation_and_survives_lost_precision() {
+    let mut line = PainterPath::new();
+    line.move_to(0.0, 0.0);
+    line.line_to(100.0, 0.0);
+    let mut stroker = PainterPathStroker::new();
+    let (stroke, truncated) = stroker.create_stroke_checked(&line);
+    assert!(!truncated);
+    assert_eq!(stroke.elements(), stroker.create_stroke(&line).elements());
+    assert!(!stroker.create_stroke_checked(&PainterPath::new()).1);
+
+    // Dashes below the spacing of `f64`s: Qt's dash loop never ends, ferrokit's draws solid.
+    let mut far = PainterPath::new();
+    far.move_to(0.0, 0.0);
+    far.line_to(1.0e17, 0.0);
+    far.line_to(1.0e17, 5000.0);
+    stroker.set_dash_pattern(&[1.0, 1.0]);
+    let (stroke, truncated) = stroker.create_stroke_checked(&far);
+    assert!(!truncated && stroke.elements().len() > 2);
+}

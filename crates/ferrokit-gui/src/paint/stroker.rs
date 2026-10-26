@@ -119,6 +119,8 @@ const MIN_CURVE_THRESHOLD: f64 = 0.00025;
 struct OutPath {
     elements: Vec<PathElementPoint>,
     max_elements: usize,
+    /// Set when `full` was found true: something was left out.
+    truncated: bool,
 }
 
 impl Default for OutPath {
@@ -126,6 +128,7 @@ impl Default for OutPath {
         Self {
             elements: Vec::new(),
             max_elements: MAX_STROKE_ELEMENTS,
+            truncated: false,
         }
     }
 }
@@ -138,9 +141,11 @@ impl OutPath {
         }
     }
 
-    /// Whether the limit is reached: the stroke is cut short here.
-    fn full(&self) -> bool {
-        self.elements.len() + 3 > self.max_elements
+    /// Whether the limit is reached: the stroke is cut short here, which is remembered.
+    fn full(&mut self) -> bool {
+        let full = self.elements.len() + 3 > self.max_elements;
+        self.truncated |= full;
+        full
     }
 
     fn last(&self) -> P {
@@ -644,6 +649,9 @@ struct DashStroker<'a> {
 /// `QDashStroker::repetitionLimit`.
 const REPETITION_LIMIT: f64 = 10000.0;
 
+/// The most dashes started on one line: 10 000 turns of at most 32 dashes, and some slack.
+const MAX_TURNS_PER_LINE: u32 = 10_000 * 32 + 1000;
+
 impl<'a> DashStroker<'a> {
     fn new(stroker: &'a mut Stroker, dash_pattern: &'a [f64], dash_offset: f64) -> Self {
         Self {
@@ -873,10 +881,13 @@ impl<'a> DashStroker<'a> {
             }
 
             // Dash away...
+            let mut stalled = 0u32;
+            let mut turns = 0u32;
             while !done {
                 if self.stroker.out.full() {
                     return;
                 }
+                let before = pos;
                 let p2;
 
                 let has_offset = doffset > 0.0;
@@ -918,6 +929,28 @@ impl<'a> DashStroker<'a> {
                     move_to_pos = line_to_pos;
                 } else {
                     move_to_pos = p2;
+                }
+
+                // Qt hangs here; ferrokit draws the rest of the line solid. Far from the origin
+                // a dash is shorter than the spacing of `f64`s at `pos` (`1e17 + 1 == 1e17`), so
+                // `pos` stops advancing and Qt turns the pattern over and over without emitting
+                // anything. With every dash longer than 0, `pos` advances in each of
+                // `dash_count` turns, so more turns than that without advancing (or more turns
+                // than any line has, after the 10 000 turn limit) are such a stall. Dashes this
+                // small are not visible, which is why the line is drawn solid, as Qt's own
+                // shortcut for too many dashes does.
+                turns += 1;
+                stalled = if pos > before { 0 } else { stalled + 1 };
+                if !done && (stalled > 2 * 32 + 2 || turns > MAX_TURNS_PER_LINE) {
+                    if !has_move_to {
+                        self.stroker.move_to(move_to_pos.x, move_to_pos.y);
+                        has_move_to = true;
+                    }
+                    self.stroker.line_to(e.x, e.y);
+                    move_to_pos = P::new(e.x, e.y);
+                    pos = estop;
+                    doffset = 0.0;
+                    done = true;
                 }
             }
 
@@ -1106,25 +1139,44 @@ impl PainterPathStroker {
     ///   pattern, up to 5e17 for `[1e-8, 1e-8, 1e10]`; ferrokit reduces it by the cycle.
     /// * A stroke has at most [`MAX_ELEMENTS`](Self::MAX_ELEMENTS) elements (a cubic is three):
     ///   what the stroker has produced by then is returned and the rest of the path is not
-    ///   stroked, so a dashed stroke of a long path cannot allocate hundreds of megabytes.
+    ///   stroked, so a dashed stroke of a long path cannot allocate hundreds of megabytes. This
+    ///   is silent; [`create_stroke_checked`](Self::create_stroke_checked) reports it.
+    /// * Far from the origin the dashes of a long path can be shorter than the gap between two
+    ///   neighbouring `f64`s at the position along the path (`1e17 + 1 == 1e17`), so the
+    ///   position stops advancing and Qt's dash loop turns the pattern for ever without
+    ///   emitting anything. ferrokit notices that the position does not advance and draws the
+    ///   rest of that line solid, as Qt's own shortcut for more than 10 000 turns does.
     /// * The width ([`set_width`](Self::set_width)) and the curve threshold
     ///   ([`set_curve_threshold`](Self::set_curve_threshold)) cannot be set to values that
     ///   make Qt's offset-curve search endless.
+    ///
+    /// The cut at [`MAX_ELEMENTS`](Self::MAX_ELEMENTS) is silent here, as Qt has no such limit;
+    /// [`create_stroke_checked`](Self::create_stroke_checked) tells whether it happened.
     pub fn create_stroke(&self, path: &PainterPath) -> PainterPath {
+        self.create_stroke_checked(path).0
+    }
+
+    /// [`create_stroke`](Self::create_stroke), also telling whether the stroke was cut short at
+    /// [`MAX_ELEMENTS`](Self::MAX_ELEMENTS) elements (`true`). Like the stroke, the answer is
+    /// only about this call; the stroker keeps no state. It can be `true` for a stroke that
+    /// needed just the elements it has, when the limit was reached with input left that turned
+    /// out to add nothing.
+    pub fn create_stroke_checked(&self, path: &PainterPath) -> (PainterPath, bool) {
         let input = path.qt_elements();
         // `QPainterPath::isEmpty`: no elements, or just the initial move.
         if input.is_empty() || (input.len() == 1 && input[0].kind == PathElementType::MoveTo) {
             // Qt returns its copy of the path, which has no zero-length lines and no `Close`.
             let mut same = PainterPath::from_qt_elements(&input);
             same.set_fill_rule(path.fill_rule());
-            return same;
+            return (same, false);
         }
-        let mut stroke = PainterPath::from_qt_elements(&self.stroke_elements(&input));
+        let (elements, truncated) = self.stroke_elements_limited(&input, MAX_STROKE_ELEMENTS);
+        let mut stroke = PainterPath::from_qt_elements(&elements);
         // `QPainterPath::setFillRule` creates the path data, which starts with a move to (0, 0):
         // a stroke with no outline is that single move, which `QPainterPath::isEmpty` counts empty.
         stroke.ensure_qt_data();
         stroke.set_fill_rule(FillRule::Winding);
-        stroke
+        (stroke, truncated)
     }
 
     /// The most elements of a [`create_stroke`](Self::create_stroke) result (a cubic is three).
@@ -1132,7 +1184,7 @@ impl PainterPathStroker {
 
     /// The elements `createStroke` produces for the elements of a non-empty path, in `f64`.
     pub(crate) fn stroke_elements(&self, input: &[PathElementPoint]) -> Vec<PathElementPoint> {
-        self.stroke_elements_limited(input, MAX_STROKE_ELEMENTS)
+        self.stroke_elements_limited(input, MAX_STROKE_ELEMENTS).0
     }
 
     /// [`stroke_elements`](Self::stroke_elements) with at most `max_elements` elements.
@@ -1140,7 +1192,7 @@ impl PainterPathStroker {
         &self,
         input: &[PathElementPoint],
         max_elements: usize,
-    ) -> Vec<PathElementPoint> {
+    ) -> (Vec<PathElementPoint>, bool) {
         let mut stroker = Stroker::new();
         stroker.out.max_elements = max_elements;
         stroker.stroke_width = self.width;
@@ -1159,7 +1211,7 @@ impl PainterPathStroker {
             };
             DashStroker::new(&mut stroker, &self.dash_pattern, offset).stroke_path(input);
         }
-        stroker.out.elements
+        (stroker.out.elements, stroker.out.truncated)
     }
 }
 
@@ -1310,10 +1362,10 @@ mod tests {
                 f64::from(i % 2) * 7.0,
             ));
         }
-        let all = dashed.stroke_elements_limited(&path, usize::MAX);
+        let all = dashed.stroke_elements_limited(&path, usize::MAX).0;
         assert!(all.len() > 300, "{}", all.len());
         for limit in [3, 10, 100, 777] {
-            let cut = dashed.stroke_elements_limited(&path, limit);
+            let cut = dashed.stroke_elements_limited(&path, limit).0;
             assert!(
                 !cut.is_empty() && cut.len() <= limit,
                 "{limit}: {}",
@@ -1332,9 +1384,9 @@ mod tests {
                 f64::from(i % 2) * 5.0,
             ));
         }
-        let all = solid.stroke_elements_limited(&zigzag, usize::MAX);
+        let all = solid.stroke_elements_limited(&zigzag, usize::MAX).0;
         assert!(all.len() > 600);
-        let cut = solid.stroke_elements_limited(&zigzag, 500);
+        let cut = solid.stroke_elements_limited(&zigzag, 500).0;
         assert!(!cut.is_empty() && cut.len() <= 500, "{}", cut.len());
         assert_eq!(PainterPathStroker::MAX_ELEMENTS, 1 << 20);
     }
@@ -1421,5 +1473,57 @@ mod tests {
             zero.create_stroke(&curve).elements(),
             small.create_stroke(&curve).elements()
         );
+    }
+
+    /// Qt hangs here: the position along the path stops advancing (dashes below the spacing of
+    /// `f64`s at it), so the dash loop never ends and emits nothing.
+    #[test]
+    fn dashes_below_the_float_spacing_are_drawn_solid() {
+        let line = |points: &[(f64, f64)]| -> Vec<PathElementPoint> {
+            let mut v = vec![element(PathElementType::MoveTo, points[0].0, points[0].1)];
+            for p in &points[1..] {
+                v.push(element(PathElementType::LineTo, p.0, p.1));
+            }
+            v
+        };
+        let stroke = |width: f64, path: &[PathElementPoint]| {
+            let mut s = PainterPathStroker::new();
+            s.set_width(width);
+            s.set_dash_pattern(&[1.0, 1.0]);
+            s.stroke_elements_limited(path, MAX_STROKE_ELEMENTS)
+        };
+        // `1e17 + 1 == 1e17`: the second line is 5000 long, 2500 turns of the pattern.
+        let (elements, truncated) = stroke(1.0, &line(&[(0.0, 0.0), (1e17, 0.0), (1e17, 5000.0)]));
+        assert!(!truncated);
+        assert!(
+            elements.iter().any(|e| (e.y - 5000.0).abs() < 1.0),
+            "{elements:?}"
+        );
+        // The same with small numbers: dashes of 1e-11 where `f64`s are 1.2e-10 apart.
+        let (elements, _) = stroke(1e-11, &line(&[(0.0, 0.0), (1e6, 0.0), (1e6, 1e-7)]));
+        assert!(
+            elements.iter().any(|e| (e.x - 1e6).abs() < 1e-9),
+            "{elements:?}"
+        );
+        // Lines a few dashes long at such a position are still dashed (nothing stalls).
+        let (dashed, _) = stroke(1.0, &line(&[(0.0, 0.0), (1e5, 0.0), (1e5, 6.0)]));
+        assert!(dashed.len() > 20, "{}", dashed.len());
+    }
+
+    #[test]
+    fn truncation_is_reported() {
+        let mut dashed = PainterPathStroker::new();
+        dashed.set_dash_pattern(&[1.0, 1.0]);
+        let path = line(if cfg!(miri) { 400.0 } else { 5000.0 }, 0.0);
+        let (all, truncated) = dashed.stroke_elements_limited(&path, usize::MAX);
+        assert!(all.len() > 200 && !truncated);
+        let (cut, truncated) = dashed.stroke_elements_limited(&path, 100);
+        assert!(cut.len() <= 100 && truncated);
+        // Room for the elements needed (and one more cubic, which `full` keeps free) is not a
+        // truncation.
+        let (_, truncated) = dashed.stroke_elements_limited(&path, all.len() + 3);
+        assert!(!truncated);
+        let (_, truncated) = dashed.stroke_elements_limited(&path, all.len() - 1);
+        assert!(truncated);
     }
 }
