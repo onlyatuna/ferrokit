@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use crate::text::font::{Font, SharedFontData};
+use crate::text::font::{Font, FontTag, SharedFontData};
 use crate::text::glyph_face::{GlyphFace, GlyphMetrics, SharedGlyphFace};
 use rustybuzz::ttf_parser::kern as ttf_kern;
-use std::str::FromStr;
 use std::sync::Arc;
 
 /// A single positioned glyph (`QGlyphRun` item equivalent).
@@ -268,6 +267,45 @@ fn hb_scale_font_units(units: i64, mult: i64) -> i64 {
     (units * mult + 32768) >> 16
 }
 
+/// A HarfBuzz feature switching `tag` to `value` over the whole run (`HB_FEATURE_GLOBAL_START`
+/// to `HB_FEATURE_GLOBAL_END`, as `QTextEngine::shapeTextWithHarfbuzzNG` builds them).
+fn feature(tag: FontTag, value: u32) -> rustybuzz::Feature {
+    rustybuzz::Feature::new(rustybuzz::ttf_parser::Tag::from_bytes(&tag.to_bytes()), value, ..)
+}
+
+/// The features `QFont::setFeature` set, in tag order.
+fn user_features(font: &Font) -> Vec<rustybuzz::Feature> {
+    font.features().iter().map(|(&tag, &value)| feature(tag, value)).collect()
+}
+
+/// The features Qt hands HarfBuzz for `font` (`QTextEngine::shapeTextWithHarfbuzzNG`): the
+/// explicit ones, then `kern` and, with letter spacing, the cosmetic ligatures, each only when
+/// the font has not set it itself (`QFlatMap::insert` keeps the first value, so
+/// `setFeature` takes precedence over what Qt would pick).
+///
+/// `kern` goes out as 0 when `legacy_kern` says the pairs of the font's `kern` table are applied
+/// by hand afterwards (see `legacy_kern_table`); a font that set `kern` to 0 itself keeps both
+/// off.
+fn shaping_features(font: &Font, legacy_kern: bool) -> Vec<rustybuzz::Feature> {
+    let mut features = user_features(font);
+    if !font.is_feature_set(FontTag::KERN) {
+        features.push(feature(FontTag::KERN, u32::from(!legacy_kern)));
+    } else if legacy_kern && font.kerning_enabled() {
+        // The explicit non-zero `kern` would make HarfBuzz apply the table too.
+        features.retain(|f| f.tag != rustybuzz::ttf_parser::Tag::from_bytes(b"kern"));
+        features.push(feature(FontTag::KERN, 0));
+    }
+    // Qt passes `letterSpacing != 0` to disable ligatures.
+    if font.letter_spacing != 0.0 {
+        for tag in [FontTag::LIGA, FontTag::CLIG] {
+            if !font.is_feature_set(tag) {
+                features.push(feature(tag, 0));
+            }
+        }
+    }
+    features
+}
+
 /// The plain horizontal subtables of the font's `kern` table when HarfBuzz applies them itself:
 /// no `kerx`, and no GPOS `kern` feature (`apply_kern` in HarfBuzz's shape plan). `None` when the
 /// font kerns through GPOS, or its `kern` table needs state machines or cross-stream kerning, which
@@ -390,14 +428,9 @@ impl GlyphLayout {
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
 
-        let mut features = Vec::new();
-        if font.tabular_numbers {
-            if let Ok(f) = rustybuzz::Feature::from_str("tnum") {
-                features.push(f);
-            }
-        }
-        if let Ok(f) = rustybuzz::Feature::from_str("kern") {
-            features.push(f);
+        let mut features = user_features(font);
+        if !font.is_feature_set(FontTag::KERN) {
+            features.push(feature(FontTag::KERN, 1));
         }
 
         let glyph_buffer = rustybuzz::shape(rb_face, &features, buffer);
@@ -556,26 +589,11 @@ impl GlyphLayout {
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(run.text);
 
-                let mut features = Vec::new();
-                if font.tabular_numbers {
-                    if let Ok(f) = rustybuzz::Feature::from_str("tnum") {
-                        features.push(f);
-                    }
-                }
                 // HarfBuzz applies a `kern` table itself when the font has no GPOS kerning; the pairs
                 // are then applied below, scaled as HarfBuzz scales them (see `legacy_kern_table`).
                 let legacy_kern = legacy_kern_table(rb_face);
-                if let Ok(f) = rustybuzz::Feature::from_str(if legacy_kern.is_some() { "kern=0" } else { "kern" }) {
-                    features.push(f);
-                }
-                // Qt passes `letterSpacing != 0` to disable ligatures (`shapeTextWithHarfbuzzNG`).
-                if font.letter_spacing != 0.0 {
-                    for tag in ["liga=0", "clig=0"] {
-                        if let Ok(f) = rustybuzz::Feature::from_str(tag) {
-                            features.push(f);
-                        }
-                    }
-                }
+                let features = shaping_features(font, legacy_kern.is_some());
+                let legacy_kern = legacy_kern.filter(|_| font.kerning_enabled());
 
                 let glyph_buffer = rustybuzz::shape(rb_face, &features, buffer);
                 let upem = rb_face.units_per_em() as f32;
@@ -616,7 +634,7 @@ impl GlyphLayout {
                 }
             } else {
                 // Fallback path (per-glyph face metrics) for runs without raw binary font data:
-                let tnum_width = if font.tabular_numbers {
+                let tnum_width = if font.feature_value(FontTag::TNUM) != 0 {
                     Some(
                         engine
                             .face
@@ -692,7 +710,7 @@ mod tests {
     fn test_glyph_layout_rustybuzz_tnum() {
         let (data, font_face) = get_test_font();
         let font_tnum = Font::new("Arial", 16.0)
-            .with_tabular_numbers(true)
+            .with_feature(FontTag::TNUM, 1)
             .with_font_data(data);
 
         // Single glyphs: Arial kerns the pair `11` (HarfBuzz applies it whatever `tnum` says), so a

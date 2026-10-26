@@ -1795,7 +1795,7 @@ mod tests {
 
             let font = Font::new("Arial", 18.0)
                 .with_weight(crate::text::font::FontWeight::Bold)
-                .with_tabular_numbers(true);
+                .with_feature(crate::text::font::FontTag::TNUM, 1);
             painter.set_pen(Pen::from_rgba8(255, 255, 255, 255, 1.0));
             painter.draw_text(PointF::new(105.0, 155.0), "75%", &font);
         }

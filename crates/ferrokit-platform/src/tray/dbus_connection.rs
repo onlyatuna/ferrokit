@@ -45,6 +45,8 @@ pub struct DbusMessage {
     pub member: Option<String>,
     pub destination: Option<String>,
     pub sender: Option<String>,
+    /// `ERROR_NAME` header field of an `ERROR` message.
+    pub error_name: Option<String>,
     pub reply_serial: Option<u32>,
     pub signature: String,
     /// Body bytes exactly as on the wire (aligned relative to the body start).
@@ -55,7 +57,7 @@ pub struct DbusMessage {
 }
 
 /// Bounds-checked reader over a D-Bus byte stream; alignment is relative to `data[0]`.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
     big_endian: bool,
@@ -82,11 +84,11 @@ impl<'a> Reader<'a> {
         Ok(slice)
     }
 
-    fn u8(&mut self) -> Result<u8, &'static str> {
+    pub(crate) fn u8(&mut self) -> Result<u8, &'static str> {
         Ok(self.take(1)?[0])
     }
 
-    fn u32(&mut self) -> Result<u32, &'static str> {
+    pub(crate) fn u32(&mut self) -> Result<u32, &'static str> {
         self.align(4)?;
         let bytes: [u8; 4] = self.take(4)?.try_into().unwrap();
         Ok(if self.big_endian {
@@ -97,7 +99,7 @@ impl<'a> Reader<'a> {
     }
 
     /// A `string` or `object path`: aligned u32 length, UTF-8 bytes, NUL.
-    fn string(&mut self) -> Result<String, &'static str> {
+    pub(crate) fn string(&mut self) -> Result<String, &'static str> {
         let len = self.u32()? as usize;
         let bytes = self.take(len)?;
         if self.u8()? != 0 {
@@ -107,7 +109,7 @@ impl<'a> Reader<'a> {
     }
 
     /// A `signature`: u8 length, bytes, NUL.
-    fn signature(&mut self) -> Result<String, &'static str> {
+    pub(crate) fn signature(&mut self) -> Result<String, &'static str> {
         let len = self.u8()? as usize;
         let bytes = self.take(len)?;
         if self.u8()? != 0 {
@@ -138,6 +140,7 @@ impl DbusMessage {
             member: Some(member.to_string()),
             destination: Some(destination.to_string()),
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: Vec::new(),
@@ -155,6 +158,7 @@ impl DbusMessage {
             member: Some(member.to_string()),
             destination: None,
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: Vec::new(),
@@ -172,11 +176,28 @@ impl DbusMessage {
             member: None,
             destination: Some(destination.to_string()),
             sender: None,
+            error_name: None,
             reply_serial: Some(reply_serial),
             signature: String::new(),
             body: Vec::new(),
             big_endian: false,
         }
+    }
+
+    /// An `ERROR` reply to the call with serial `reply_serial`, named `error_name` (for example
+    /// `org.freedesktop.DBus.Error.UnknownMethod`) with `description` as its message.
+    pub fn error(
+        reply_serial: u32,
+        destination: &str,
+        serial: u32,
+        error_name: &str,
+        description: &str,
+    ) -> Self {
+        let mut msg = Self::method_return(reply_serial, destination, serial);
+        msg.msg_type = DBUS_MESSAGE_TYPE_ERROR;
+        msg.error_name = Some(error_name.to_string());
+        msg.append_string(description);
+        msg
     }
 
     fn pad_body(&mut self, to: usize) {
@@ -207,6 +228,15 @@ impl DbusMessage {
         self.body.extend_from_slice(&val.to_le_bytes());
     }
 
+    /// A `v` holding a `u`: the variant's signature (`u8` length, `"u"`, NUL), then the value
+    /// aligned to 4.
+    pub fn append_variant_u32(&mut self, val: u32) {
+        self.signature.push('v');
+        self.body.extend_from_slice(&[1, b'u', 0]);
+        self.pad_body(4);
+        self.body.extend_from_slice(&val.to_le_bytes());
+    }
+
     /// An empty `as` (array of strings).
     pub fn append_empty_string_array(&mut self) {
         self.signature.push_str("as");
@@ -221,6 +251,17 @@ impl DbusMessage {
         self.pad_body(4);
         self.body.extend_from_slice(&0u32.to_le_bytes());
         self.pad_body(8);
+    }
+
+    /// A reader over the body, positioned at its start. The body's alignment is relative to its
+    /// first byte, as the reader expects.
+    #[cfg(any(all(target_os = "linux", not(miri)), test))]
+    pub(crate) fn body_reader(&self) -> Reader<'_> {
+        Reader {
+            data: &self.body,
+            pos: 0,
+            big_endian: self.big_endian,
+        }
     }
 
     /// The first body argument when it is a string or object path.
@@ -286,6 +327,9 @@ impl DbusMessage {
         }
         if let Some(sender) = &self.sender {
             append_field_str(&mut fields_buf, DBUS_HEADER_FIELD_SENDER, "s", sender);
+        }
+        if let Some(name) = &self.error_name {
+            append_field_str(&mut fields_buf, DBUS_HEADER_FIELD_ERROR_NAME, "s", name);
         }
         if let Some(reply_serial) = self.reply_serial {
             while !fields_buf.len().is_multiple_of(8) {
@@ -398,6 +442,7 @@ impl DbusMessage {
             member: None,
             destination: None,
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: data[body_start..].to_vec(),
@@ -422,7 +467,8 @@ impl DbusMessage {
                         DBUS_HEADER_FIELD_MEMBER => msg.member = Some(value),
                         DBUS_HEADER_FIELD_DESTINATION => msg.destination = Some(value),
                         DBUS_HEADER_FIELD_SENDER => msg.sender = Some(value),
-                        // ERROR_NAME has no field on the message; unknown codes are skipped.
+                        DBUS_HEADER_FIELD_ERROR_NAME => msg.error_name = Some(value),
+                        // Unknown codes are skipped.
                         _ => {}
                     }
                 }

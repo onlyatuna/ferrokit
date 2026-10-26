@@ -625,12 +625,23 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
 
     let mut writer = PLATFORM_INTEGRATION.write().unwrap();
     // A racing caller (or `set_platform_integration`) may have installed one meanwhile.
-    Arc::clone(writer.get_or_insert(default_integration))
+    let installed_here = writer.is_none();
+    let integration = Arc::clone(writer.get_or_insert(default_integration));
+    drop(writer);
+    if installed_here {
+        // `QGuiApplicationPrivate` hands the platform theme to `QStyleHints` once the platform
+        // plugin is up (qguiapplication.cpp:1617).
+        crate::theme::install_style_hints_theme(integration.theme());
+    }
+    integration
 }
 
 pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
-    let mut writer = PLATFORM_INTEGRATION.write().unwrap();
-    *writer = Some(integration);
+    {
+        let mut writer = PLATFORM_INTEGRATION.write().unwrap();
+        *writer = Some(Arc::clone(&integration));
+    }
+    crate::theme::install_style_hints_theme(integration.theme());
 }
 
 #[cfg(all(test, target_os = "linux"))]
