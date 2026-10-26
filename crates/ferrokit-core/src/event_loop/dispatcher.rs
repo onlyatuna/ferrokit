@@ -57,13 +57,21 @@ pub trait EventDispatcher {
     /// Starts polling the notifier's descriptor so it fires `activated` when the descriptor is
     /// ready (`QAbstractEventDispatcher::registerSocketNotifier`).
     ///
-    /// Real descriptor polling exists on Linux only (an `epoll` set in the Unix dispatcher). On
-    /// every other platform, including macOS and the other Unix systems, the default
-    /// implementation is a no-op: the notifier is never activated by the descriptor, so
-    /// `activated` fires only when the code emits it itself.
-    fn register_socket_notifier(&self, _notifier: &Arc<crate::event_loop::SocketNotifier>) {}
-    /// Stops polling the notifier's descriptor; a no-op wherever
-    /// [`register_socket_notifier`](Self::register_socket_notifier) is.
+    /// Real descriptor polling exists on Linux only (an `epoll` set in the Unix dispatcher). A
+    /// dispatcher that cannot poll descriptors, which is every other platform (Windows, macOS and
+    /// the other Unix systems) and the default implementation, registers nothing and fails with
+    /// [`SocketNotifierError::Unsupported`](crate::event_loop::SocketNotifierError::Unsupported),
+    /// so a caller does not wait for an activation that never comes.
+    fn register_socket_notifier(
+        &self,
+        _notifier: &Arc<crate::event_loop::SocketNotifier>,
+    ) -> Result<(), crate::event_loop::SocketNotifierError> {
+        Err(crate::event_loop::SocketNotifierError::Unsupported {
+            dispatcher: self.class_name(),
+        })
+    }
+    /// Stops polling the notifier's descriptor; a no-op for a notifier that
+    /// [`register_socket_notifier`](Self::register_socket_notifier) did not register.
     fn unregister_socket_notifier(&self, _notifier: &Arc<crate::event_loop::SocketNotifier>) {}
     /// The concrete dispatcher's type name, like Qt's
     /// the class name of the thread's `QAbstractEventDispatcher` instance.
@@ -282,8 +290,11 @@ impl EventDispatcher for DarwinEventDispatcher {
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
         self.inner().send_timer_events(registry);
     }
-    fn register_socket_notifier(&self, notifier: &Arc<crate::event_loop::SocketNotifier>) {
-        self.inner().register_socket_notifier(notifier);
+    fn register_socket_notifier(
+        &self,
+        notifier: &Arc<crate::event_loop::SocketNotifier>,
+    ) -> Result<(), crate::event_loop::SocketNotifierError> {
+        self.inner().register_socket_notifier(notifier)
     }
     fn unregister_socket_notifier(&self, notifier: &Arc<crate::event_loop::SocketNotifier>) {
         self.inner().unregister_socket_notifier(notifier);
@@ -345,5 +356,36 @@ mod darwin_tests {
     fn a_gui_loop_uses_the_cocoa_dispatcher() {
         let el = EventLoop::with_dispatcher_kind(DispatcherKind::Gui);
         assert!(matches!(el.dispatcher(), DarwinEventDispatcher::Cocoa(_)));
+    }
+}
+
+#[cfg(test)]
+mod socket_notifier_tests {
+    use super::{EventDispatcher, GenericEventDispatcher};
+    use crate::event_loop::{SocketEvent, SocketNotifier, SocketNotifierError};
+    use std::sync::Arc;
+
+    /// A dispatcher that does not poll descriptors refuses a notifier, and unregistering the
+    /// refused one is harmless.
+    #[test]
+    fn test_a_dispatcher_without_descriptor_polling_refuses_a_socket_notifier() {
+        let dispatcher = GenericEventDispatcher::new();
+        let notifier = Arc::new(SocketNotifier::new(7, SocketEvent::Read));
+
+        assert_eq!(
+            dispatcher.register_socket_notifier(&notifier),
+            Err(SocketNotifierError::Unsupported {
+                dispatcher: dispatcher.class_name()
+            })
+        );
+        dispatcher.unregister_socket_notifier(&notifier);
+    }
+
+    #[test]
+    fn test_the_unsupported_error_names_the_dispatcher() {
+        let error = SocketNotifierError::Unsupported {
+            dispatcher: "SomeDispatcher",
+        };
+        assert!(error.to_string().contains("SomeDispatcher"));
     }
 }

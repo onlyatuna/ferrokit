@@ -2,7 +2,7 @@
 use super::dbus_connection::{DbusConnection, DbusMessage};
 use crate::menu::PlatformMenu;
 use crate::platform_tray::PlatformTrayIcon;
-use ferrokit_core::event_loop::{EventDispatcher, SocketNotifier};
+use ferrokit_core::event_loop::{EventDispatcher, SocketNotifier, SocketNotifierError};
 use ferrokit_gui::paint::Pixmap;
 use std::sync::Mutex;
 
@@ -111,18 +111,21 @@ impl DbusStatusNotifierItem {
         *self.connection.lock().unwrap() = Some(connection);
     }
 
-    /// Watches the bus socket; `None` when there is no bus connection or it has no descriptor.
+    /// Watches the bus socket; `Ok(None)` when there is no bus connection or it has no
+    /// descriptor, and [`SocketNotifierError::Unsupported`] when the dispatcher does not poll
+    /// descriptors (see [`DbusConnection::bind_event_dispatcher`]).
     pub fn bind_event_dispatcher(
         &mut self,
         dispatcher: &mut dyn EventDispatcher,
-    ) -> Option<std::sync::Arc<SocketNotifier>> {
+    ) -> Result<Option<std::sync::Arc<SocketNotifier>>, SocketNotifierError> {
         let mut conn_guard = self.connection.lock().unwrap();
         if conn_guard.is_none() {
             *conn_guard = DbusConnection::connect_session_bus().ok();
         }
-        conn_guard
-            .as_ref()
-            .and_then(|c| c.bind_event_dispatcher(dispatcher))
+        match conn_guard.as_ref() {
+            Some(connection) => connection.bind_event_dispatcher(dispatcher),
+            None => Ok(None),
+        }
     }
 
     pub fn activate(&mut self, _x: i32, _y: i32) {}

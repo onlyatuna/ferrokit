@@ -773,6 +773,24 @@ mod tests {
         assert_send_sync::<Win32EventDispatcherHandle>();
     }
 
+    /// The Win32 dispatcher never polls descriptors, so a socket notifier is refused instead of
+    /// being accepted and never activated.
+    #[test]
+    fn test_socket_notifier_registration_is_refused() {
+        let dispatcher = Win32EventDispatcher::new();
+        let notifier = std::sync::Arc::new(crate::event_loop::SocketNotifier::new(
+            7,
+            crate::event_loop::SocketEvent::Read,
+        ));
+
+        assert_eq!(
+            dispatcher.register_socket_notifier(&notifier),
+            Err(crate::event_loop::SocketNotifierError::Unsupported {
+                dispatcher: dispatcher.class_name()
+            })
+        );
+    }
+
     #[test]
     fn test_handle_does_not_post_after_dispatcher_dropped() {
         let dispatcher = Win32EventDispatcher::new();

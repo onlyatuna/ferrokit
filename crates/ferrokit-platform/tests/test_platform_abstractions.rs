@@ -973,7 +973,10 @@ fn test_linux_dbus_connects_over_path_and_abstract_unix_sockets() {
     assert_eq!(conn.unique_name(), ":1.99");
     assert!(conn.socket_fd() >= 0);
     let mut dispatcher = UnixEventDispatcher::new();
-    assert!(conn.bind_event_dispatcher(&mut dispatcher).is_some());
+    assert!(conn
+        .bind_event_dispatcher(&mut dispatcher)
+        .unwrap()
+        .is_some());
     drop(conn);
     server.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1047,7 +1050,10 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
 
     // The scripted transport has no OS descriptor, so there is nothing to register.
     let mut dispatcher = UnixEventDispatcher::new();
-    assert!(tray.bind_event_dispatcher(&mut dispatcher).is_none());
+    assert!(tray
+        .bind_event_dispatcher(&mut dispatcher)
+        .unwrap()
+        .is_none());
 
     assert!(tray.hide().is_ok());
     assert_eq!(tray.status(), "Passive");
