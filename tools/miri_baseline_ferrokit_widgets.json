@@ -238,6 +238,8 @@
     "lib::tooltip::tests::an_event_filter_sees_the_tool_tip_event::SB": "pass",
     "lib::tooltip::tests::a_mutably_borrowed_widget_does_not_panic_the_tool_tip_walk::TB": "pass",
     "lib::tooltip::tests::an_event_filter_sees_the_tool_tip_event::TB": "pass",
+    "lib::tooltip::tests::set_palette_and_font_survive_a_busy_tip_slot::SB": "pass",
+    "lib::tooltip::tests::set_palette_and_font_survive_a_busy_tip_slot::TB": "pass",
     "test_accessibility::accessible_invoke_activates_button_once_and_respects_enabled_state::SB": "unsupported",
     "test_accessibility::accessible_invoke_activates_button_once_and_respects_enabled_state::TB": "unsupported",
     "test_accessibility::accessible_tree_preserves_hierarchy_and_rejects_cycles::SB": "pass",

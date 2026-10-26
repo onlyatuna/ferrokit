@@ -457,8 +457,10 @@ impl ToolTip {
     pub fn set_palette(palette: Palette) {
         CONTROLLER.with(|c| {
             *c.custom_palette.borrow_mut() = Some(palette.clone());
-            if let Some(tip) = c.tip.borrow().as_ref() {
-                if let Some(lbl) = tip.label.borrow_mut().as_any_mut().downcast_mut::<Label>() {
+            let Ok(slot) = c.tip.try_borrow() else { return };
+            if let Some(tip) = slot.as_ref() {
+                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
+                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                     lbl.set_background_color(Some(
                         palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
                     ));
@@ -482,8 +484,10 @@ impl ToolTip {
     pub fn set_font(font: Font) {
         CONTROLLER.with(|c| {
             *c.custom_font.borrow_mut() = Some(font.clone());
-            if let Some(tip) = c.tip.borrow().as_ref() {
-                if let Some(lbl) = tip.label.borrow_mut().as_any_mut().downcast_mut::<Label>() {
+            let Ok(slot) = c.tip.try_borrow() else { return };
+            if let Some(tip) = slot.as_ref() {
+                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
+                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                     lbl.set_font(font);
                 }
             }
@@ -532,9 +536,12 @@ impl ToolTip {
         rect: Option<Rect>,
         msec_display_time: i32,
     ) {
-        CONTROLLER.with(|c| {
-            let mut slot = c.tip.borrow_mut();
-            if slot.is_none() {
+        // The controller's slot is never borrowed across a call that can re-enter (window
+        // creation, `set_geometry`, `show`): the tip is taken out, worked on, and put back.
+        let taken = CONTROLLER.with(|c| c.tip.borrow_mut().take());
+        let mut tip = match taken {
+            Some(tip) => tip,
+            None => {
                 let mut label = new_tip_label(text);
                 label.set_text(text);
                 let label: WidgetRef = std::rc::Rc::new(RefCell::new(Box::new(label)));
@@ -544,53 +551,63 @@ impl ToolTip {
                     return;
                 };
                 window.set_root_widget(label.clone());
-                let window = Box::new(window);
-                *slot = Some(Tip {
-                    window,
+                Tip {
+                    window: Box::new(window),
                     label,
                     widget,
                     rect,
                     text: String::new(),
-                });
-            }
-            let tip = slot.as_mut().expect("created above");
-            tip.text = text.to_string();
-            tip.widget = widget;
-            tip.rect = rect;
-            let (screen, screen_dpr) = tip_screen(pos);
-            let size = {
-                let mut label = tip.label.borrow_mut();
-                let label = label
-                    .as_any_mut()
-                    .downcast_mut::<Label>()
-                    .expect("the tip's root widget is a Label");
-                // `QTipLabel::updateSize` (qtooltip.cpp:152): rich text word-wraps.
-                let rich = might_be_rich_text(text);
-                label.set_rich(rich);
-                label.set_word_wrap(rich);
-                label.set_text(text);
-                let mut size = label.size_hint();
-                // qtooltip.cpp:155-157: a plain tip wider than the screen wraps to it.
-                if !label.word_wrap() && size.width > screen.width {
-                    label.set_word_wrap(true);
-                    size = label.size_hint();
                 }
-                size
-            };
-            // `QTipLabel::updateSize` adds one pixel of width (qtooltip.cpp:159).
-            let size = Size::new(size.width + 1, size.height);
-            let primary_dpr = ferrokit_platform::integration::platform()
-                .primary_screen()
-                .device_pixel_ratio() as f64;
-            let cursor = cursor_size(screen_dpr, primary_dpr);
-            let origin = place_tip(pos, size, cursor, screen);
-            tip.window
-                .set_geometry(Rect::new(origin.x, origin.y, size.width, size.height));
+            }
+        };
+        tip.text = text.to_string();
+        tip.widget = widget;
+        tip.rect = rect;
+        let (screen, screen_dpr) = tip_screen(pos);
+        let size = {
+            let mut label = tip.label.borrow_mut();
+            let label = label
+                .as_any_mut()
+                .downcast_mut::<Label>()
+                .expect("the tip's root widget is a Label");
+            // `QTipLabel::updateSize` (qtooltip.cpp:152): rich text word-wraps.
+            let rich = might_be_rich_text(text);
+            label.set_rich(rich);
+            label.set_word_wrap(rich);
+            label.set_text(text);
+            let mut size = label.size_hint();
+            // qtooltip.cpp:155-157: a plain tip wider than the screen wraps to it.
+            if !label.word_wrap() && size.width > screen.width {
+                label.set_word_wrap(true);
+                size = label.size_hint();
+            }
+            size
+        };
+        // `QTipLabel::updateSize` adds one pixel of width (qtooltip.cpp:159).
+        let size = Size::new(size.width + 1, size.height);
+        let primary_dpr = ferrokit_platform::integration::platform()
+            .primary_screen()
+            .device_pixel_ratio() as f64;
+        let cursor = cursor_size(screen_dpr, primary_dpr);
+        let origin = place_tip(pos, size, cursor, screen);
+        tip.window
+            .set_geometry(Rect::new(origin.x, origin.y, size.width, size.height));
+        CONTROLLER.with(|c| {
             // `restartExpireTimer`: a new expiry cancels a pending hide.
             start_timer(&c.expire, expire_time_ms(text, msec_display_time));
             stop_timer(&c.hide);
-            if !tip.window.is_visible() {
-                tip.window.show();
+        });
+        if !tip.window.is_visible() {
+            tip.window.show();
+        }
+        CONTROLLER.with(|c| {
+            let mut slot = c.tip.borrow_mut();
+            if slot.is_some() {
+                // A re-entrant call installed a newer tip while this one was showing; the
+                // newer one wins and this window must not stay up on its own.
+                tip.window.hide();
+            } else {
+                *slot = Some(tip);
             }
         });
     }
@@ -651,6 +668,18 @@ mod tests {
         let accepted = send_tool_tip(&widget, Point::new(1, 1), Point::new(1, 1));
         assert!(accepted, "the consuming filter accepted the event");
         assert_eq!(*seen.lock().unwrap(), vec![id]);
+    }
+
+    #[test]
+    fn set_palette_and_font_survive_a_busy_tip_slot() {
+        let held = CONTROLLER.with(|c| c.tip.borrow_mut().take());
+        CONTROLLER.with(|c| {
+            let _busy = c.tip.borrow_mut();
+            ToolTip::set_palette(ToolTip::palette());
+            ToolTip::set_font(ToolTip::font());
+            assert!(!tip_is_visible(c));
+        });
+        CONTROLLER.with(|c| *c.tip.borrow_mut() = held);
     }
 
     #[test]
