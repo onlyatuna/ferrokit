@@ -464,3 +464,125 @@ fn a_panicking_local_slot_is_contained_like_any_other_and_the_slot_stays_usable(
     signal.emit(&2);
     assert_eq!(*log.borrow(), vec![1, 10, 2, 20]);
 }
+
+#[test]
+fn a_panicking_capture_drop_on_disconnect_or_single_shot_is_contained() {
+    struct Bomb(bool);
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            if self.0 {
+                panic!("capture drop panic");
+            }
+        }
+    }
+
+    let signal: Signal<i32> = Signal::new();
+    let bomb = Bomb(true);
+    let _not_send = Rc::new(());
+    let id = signal.connect_local(move |_| {
+        let _ = (&bomb, &_not_send);
+    });
+    assert!(signal.disconnect(id));
+    assert_eq!(signal.subscriber_count(), 0);
+
+    // In emit, a single-shot slot's last subscriber clone drops after the slot returns: its
+    // panicking capture destructor must not keep the next subscriber from running.
+    let bomb2 = Bomb(true);
+    let _not_send2 = Rc::new(());
+    let ran = Rc::new(Cell::new(0));
+    let r = Rc::clone(&ran);
+    signal.connect_local_single_shot(move |_| {
+        let _ = (&bomb2, &_not_send2);
+    });
+    signal.connect_local(move |v| r.set(r.get() + *v));
+    signal.emit(&7);
+    assert_eq!(ran.get(), 7);
+}
+
+#[test]
+fn an_owner_without_a_loop_drains_foreign_retires_on_its_next_local_slot_access_and_posts_one_wake()
+{
+    std::thread::spawn(|| {
+        let signal: Signal<i32> = Signal::new();
+        let marker = Rc::new(());
+        let mut ids = Vec::new();
+        for _ in 0..8 {
+            let m = Rc::clone(&marker);
+            ids.push(signal.connect_local(move |_| {
+                let _ = &m;
+            }));
+        }
+        assert_eq!(Rc::strong_count(&marker), 9);
+
+        let remote = signal.clone();
+        std::thread::spawn(move || {
+            for id in ids {
+                assert!(remote.disconnect(id));
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            Rc::strong_count(&marker),
+            9,
+            "closures are still held until the owner runs a loop or touches its table"
+        );
+
+        // Connecting one more local slot on this no-loop thread drains all 8 pending retires.
+        let tail = signal.connect_local(|_| {});
+        assert_eq!(
+            Rc::strong_count(&marker),
+            1,
+            "all 8 closures were freed without running an event loop"
+        );
+        signal.disconnect(tail);
+
+        // If an event loop later starts on this thread, the 8 foreign disconnects coalesced into
+        // a single posted wake event.
+        let el = EventLoop::new();
+        assert_eq!(el.queue().lock().unwrap().len(), 1);
+        el.process_events(false);
+        assert_eq!(el.queue().lock().unwrap().len(), 0);
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn a_capture_whose_drop_reconnects_or_disconnects_at_thread_exit_does_not_panic() {
+    struct ExitReconnector {
+        signal: Signal<i32>,
+        peer: ConnectionId,
+        dropped_on: Arc<Mutex<Option<ThreadId>>>,
+        _not_send: Rc<()>,
+    }
+    impl Drop for ExitReconnector {
+        fn drop(&mut self) {
+            let _ = self.signal.disconnect(self.peer);
+            let _ = self.signal.connect_local(|_| {});
+            *self.dropped_on.lock().unwrap() = Some(ThreadId::current());
+        }
+    }
+
+    let dropped_on = Arc::new(Mutex::new(None));
+    let slot_record = Arc::clone(&dropped_on);
+    let owner = std::thread::spawn(move || {
+        let signal: Signal<i32> = Signal::new();
+        let peer = signal.connect_local(|_| {});
+        let probe = ExitReconnector {
+            signal: signal.clone(),
+            peer,
+            dropped_on: slot_record,
+            _not_send: Rc::new(()),
+        };
+        // Intentionally never disconnected: `probe` drops when the thread-local table is
+        // destroyed at thread exit.
+        signal.connect_local(move |_| {
+            let _ = &probe;
+        });
+        ThreadId::current()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(*dropped_on.lock().unwrap(), Some(owner));
+}

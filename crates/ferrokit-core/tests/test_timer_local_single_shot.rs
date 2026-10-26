@@ -200,3 +200,58 @@ fn a_panic_in_the_closure_is_contained_and_later_closures_still_run() {
     });
     assert_eq!((zero, armed), (1, 1));
 }
+
+#[test]
+fn a_queued_zero_ms_event_dropped_on_another_thread_still_drops_the_closure_on_the_owner() {
+    let dropped_on = Arc::new(Mutex::new(None));
+    let probe_slot = Arc::clone(&dropped_on);
+    let owner = on_fresh_thread(move || {
+        let el = EventLoop::new();
+        let probe = DropProbe {
+            dropped_on: probe_slot,
+            _not_send: Rc::new(()),
+        };
+        Timer::single_shot_local(0, move || drop(probe));
+        let queue = Arc::clone(el.queue());
+        std::thread::spawn(move || {
+            let events = std::mem::take(&mut *queue.lock().unwrap());
+            assert!(!events.is_empty());
+            drop(events);
+        })
+        .join()
+        .unwrap();
+        assert!(el.process_events(false));
+        std::thread::current().id()
+    });
+    assert_eq!(*dropped_on.lock().unwrap(), Some(owner));
+}
+
+#[test]
+fn a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic() {
+    struct ExitArmer {
+        dropped_on: Arc<Mutex<Option<ThreadId>>>,
+        _not_send: Rc<()>,
+    }
+    impl Drop for ExitArmer {
+        fn drop(&mut self) {
+            Timer::single_shot(10, || {});
+            Timer::single_shot_local(10, || {});
+            *self.dropped_on.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(std::thread::current().id());
+        }
+    }
+
+    let dropped_on = Arc::new(Mutex::new(None));
+    let probe_slot = Arc::clone(&dropped_on);
+    let owner = on_fresh_thread(move || {
+        let el = EventLoop::new();
+        let armer = ExitArmer {
+            dropped_on: probe_slot,
+            _not_send: Rc::new(()),
+        };
+        Timer::single_shot_local(3_600_000, move || drop(armer));
+        drop(el);
+        std::thread::current().id()
+    });
+    assert_eq!(*dropped_on.lock().unwrap(), Some(owner));
+}

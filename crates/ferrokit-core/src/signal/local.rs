@@ -27,10 +27,10 @@
 //! * **The closure is dropped on the connecting thread, not on the thread that disconnects.**
 //!   After `disconnect`, `disconnect_all`, a [`ScopedConnection`] drop, or the drop of the last
 //!   clone of the signal on another thread, the slot never runs again at once, but its captures
-//!   are dropped when the connecting thread next runs its event loop (the drop is posted there as
-//!   a queued call), not inside the call that disconnected. Qt destroys the slot object in the
-//!   disconnecting thread. The thread must run an event loop for that to happen; one that never
-//!   does keeps the closure until it ends.
+//!   are dropped when the connecting thread next runs its event loop (one wake call is posted
+//!   there to drain a batch of retired keys) or when it next connects, calls or retires a local
+//!   slot, not inside the call that disconnected. Qt destroys the slot object in the
+//!   disconnecting thread. A thread that never does either keeps the closure until it ends.
 //! * **Thread exit.** When the connecting thread ends, its table is destroyed with the thread's
 //!   other thread-locals, and the closures still in it are dropped then, on that thread, in a
 //!   thread-local destructor. A capture whose destructor uses another thread-local (a widget
@@ -67,23 +67,52 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::event::{Event, EventKind};
 use crate::event_loop::post_event_to_thread;
 use crate::object::qobject::registration_thread_of;
 use crate::object::{ObjectId, QObject, ThreadId};
+use crate::poison::lock_unpoisoned;
 
 use super::signal::{ConnectionId, ConnectionType, ScopedConnection, Signal, SlotKey};
 
-thread_local! {
-    /// The slots connected on this thread with `connect_local*`, by key (I4).
-    static LOCAL_SLOTS: RefCell<HashMap<u64, Rc<dyn Any>>> = RefCell::new(HashMap::new());
+/// Retires posted from other threads wait here, by owner thread, so an owner that never runs an
+/// event loop accumulates at most one posted wake event and its retired closures are freed the
+/// next time it touches its table (or when the thread ends).
+struct PendingRetires {
+    keys: Vec<u64>,
+    wake_posted: bool,
 }
 
+static PENDING_RETIRES: Mutex<Option<HashMap<ThreadId, PendingRetires>>> = Mutex::new(None);
+
+/// The current thread's id, without creating the thread-end sentinel when the thread's locals
+/// are already being destroyed (`LocalHandle::drop` may run inside a thread-local destructor).
+fn raw_current_thread() -> ThreadId {
+    ThreadId(std::thread::current().id())
+}
+
+/// Drops the table of an exiting thread and clears any retire keys still buffered for it.
+struct LocalSlotTable(RefCell<HashMap<u64, Rc<dyn Any>>>);
+
+impl Drop for LocalSlotTable {
+    fn drop(&mut self) {
+        let owner = raw_current_thread();
+        if let Some(map) = lock_unpoisoned(&PENDING_RETIRES).as_mut() {
+            map.remove(&owner);
+        }
+    }
+}
+
+thread_local! {
+    /// The slots connected on this thread with `connect_local*`, by key (I4).
+    static LOCAL_SLOTS: LocalSlotTable = LocalSlotTable(RefCell::new(HashMap::new()));
+}
 static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
 
 /// A slot of payload type `T`, as stored in the table.
@@ -107,22 +136,26 @@ pub(crate) struct LocalHandle {
 impl LocalHandle {
     /// Stores `slot` in this thread's table and returns its handle.
     fn install<T: 'static>(slot: impl Fn(&T) + 'static) -> Arc<Self> {
+        let owner = ThreadId::current();
+        drain_pending_retires_for(owner);
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
         let entry: Rc<dyn Any> = Rc::new(LocalFn::<T>(Box::new(slot)));
         // If the table is already destroyed (a thread-local destructor connects a slot), the entry
         // is dropped here, on the connecting thread, and the slot never runs.
-        let _ = LOCAL_SLOTS.try_with(|table| table.borrow_mut().insert(key, entry));
+        let _ = LOCAL_SLOTS.try_with(|table| table.0.borrow_mut().insert(key, entry));
         Arc::new(Self {
-            owner: ThreadId::current(),
+            owner,
             key,
             warned: AtomicBool::new(false),
         })
     }
 
-    /// Prints the foreign-emission diagnostic, the first time only.
+    /// Prints the foreign-emission diagnostic, the first time only. Write errors on stderr are
+    /// ignored so a broken pipe never panics.
     fn warn_foreign_emission(&self) {
         if !self.warned.swap(true, Ordering::Relaxed) {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "ferrokit: a signal with a local slot (connect_local) was emitted from a \
                  thread other than the one that connected it; the slot is skipped"
             );
@@ -131,15 +164,16 @@ impl LocalHandle {
 
     /// Calls the slot if this is the connecting thread. Returns whether it ran.
     fn call<T: 'static>(&self, value: &T) -> bool {
-        if ThreadId::current() != self.owner {
+        if raw_current_thread() != self.owner {
             self.warn_foreign_emission();
             return false;
         }
+        drain_pending_retires_for(self.owner);
         // I1, I2: the `Rc` is cloned out, so the borrow ends before the slot runs and the slot
         // may connect, disconnect or emit. The clone also keeps a slot that disconnects itself
         // alive until it returns.
         let entry = LOCAL_SLOTS
-            .try_with(|table| table.borrow().get(&self.key).cloned())
+            .try_with(|table| table.0.borrow().get(&self.key).cloned())
             .ok()
             .flatten();
         match entry
@@ -157,11 +191,13 @@ impl LocalHandle {
     /// Stores a one-shot `FnOnce` in this thread's table (the same table, the same keys, the same
     /// retirement as a slot) and returns its handle. Used by `Timer::single_shot_local`.
     pub(crate) fn install_once(f: impl FnOnce() + 'static) -> Self {
+        let owner = ThreadId::current();
+        drain_pending_retires_for(owner);
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
         let entry: Rc<dyn Any> = Rc::new(LocalOnce(RefCell::new(Some(Box::new(f)))));
-        let _ = LOCAL_SLOTS.try_with(|table| table.borrow_mut().insert(key, entry));
+        let _ = LOCAL_SLOTS.try_with(|table| table.0.borrow_mut().insert(key, entry));
         Self {
-            owner: ThreadId::current(),
+            owner,
             key,
             warned: AtomicBool::new(false),
         }
@@ -170,12 +206,13 @@ impl LocalHandle {
     /// Runs the one-shot closure if this is the owning thread and it is still stored; the entry is
     /// removed first, so it runs at most once. Returns whether it ran.
     pub(crate) fn run_once(&self) -> bool {
-        if ThreadId::current() != self.owner {
+        if raw_current_thread() != self.owner {
             return false;
         }
+        drain_pending_retires_for(self.owner);
         // I1, I2: removed under a short borrow; the closure runs, and is dropped, outside it.
         let entry = LOCAL_SLOTS
-            .try_with(|table| table.borrow_mut().remove(&self.key))
+            .try_with(|table| table.0.borrow_mut().remove(&self.key))
             .ok()
             .flatten();
         let Some(entry) = entry else { return false };
@@ -195,27 +232,95 @@ impl LocalHandle {
 /// Removes `key` from this thread's table and drops its closure outside the borrow (I2).
 fn retire_here(key: u64) {
     let removed = LOCAL_SLOTS
-        .try_with(|table| table.borrow_mut().remove(&key))
+        .try_with(|table| table.0.borrow_mut().remove(&key))
         .ok()
         .flatten();
     drop(removed);
 }
 
+/// Drains the keys that other threads retired for `owner` and drops their closures outside the
+/// table borrow (I2). If the table is currently borrowed (a slot is not borrowing it by I2, so
+/// only a re-entrant destructor inside `Drop for LocalSlotTable` can find that), the keys are put
+/// back for the next turn.
+fn drain_pending_retires_for(owner: ThreadId) {
+    let keys = {
+        let mut guard = lock_unpoisoned(&PENDING_RETIRES);
+        let Some(entry) = guard.as_mut().and_then(|map| map.get_mut(&owner)) else {
+            return;
+        };
+        entry.wake_posted = false;
+        std::mem::take(&mut entry.keys)
+    };
+    if keys.is_empty() {
+        return;
+    }
+    let mut removed = Vec::with_capacity(keys.len());
+    let borrowed = LOCAL_SLOTS.try_with(|table| match table.0.try_borrow_mut() {
+        Ok(mut map) => {
+            for key in &keys {
+                if let Some(entry) = map.remove(key) {
+                    removed.push(entry);
+                }
+            }
+            false
+        }
+        Err(_) => true,
+    });
+    if matches!(borrowed, Ok(true)) {
+        let mut guard = lock_unpoisoned(&PENDING_RETIRES);
+        let entry = guard
+            .get_or_insert_with(HashMap::new)
+            .entry(owner)
+            .or_insert_with(|| PendingRetires {
+                keys: Vec::new(),
+                wake_posted: false,
+            });
+        let existing: HashSet<u64> = entry.keys.iter().copied().collect();
+        for key in keys {
+            if !existing.contains(&key) {
+                entry.keys.push(key);
+            }
+        }
+        return;
+    }
+    for entry in removed {
+        // A capture whose `Drop` panics must not strand the remaining closures in `removed`.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(entry)));
+    }
+}
+
 impl Drop for LocalHandle {
     fn drop(&mut self) {
-        if ThreadId::current() == self.owner {
+        let owner = self.owner;
+        if raw_current_thread() == owner {
             retire_here(self.key);
+            drain_pending_retires_for(owner);
         } else {
-            let key = self.key;
-            // `ObjectId(0)` is the fire-and-forget receiver: no object, always delivered. An ended
-            // owner thread drops the post, and its table was destroyed with it.
-            post_event_to_thread(
-                self.owner,
-                ObjectId(0),
-                Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
-                    retire_here(key)
-                }))),
-            );
+            let post_wake = {
+                let mut guard = lock_unpoisoned(&PENDING_RETIRES);
+                let entry = guard
+                    .get_or_insert_with(HashMap::new)
+                    .entry(owner)
+                    .or_insert_with(|| PendingRetires {
+                        keys: Vec::new(),
+                        wake_posted: false,
+                    });
+                entry.keys.push(self.key);
+                !std::mem::replace(&mut entry.wake_posted, true)
+            };
+            if post_wake {
+                // `ObjectId(0)` is the fire-and-forget receiver: no object, always delivered. At
+                // most one wake event is in flight per owner thread until `drain_pending_retires_for`
+                // runs, so an owner that never starts an event loop does not grow its pending
+                // event queue on repeated connect/disconnect from other threads.
+                post_event_to_thread(
+                    owner,
+                    ObjectId(0),
+                    Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                        drain_pending_retires_for(owner);
+                    }))),
+                );
+            }
         }
     }
 }

@@ -288,3 +288,45 @@ fn mutant_a_post_to_an_ended_owner_treated_as_an_error_is_caught() {
     drop(h);
     w.verify();
 }
+
+#[test]
+fn reverse_teardown_order_still_satisfies_invariants() {
+    scenarios::foreign_drop_after_owner_exit(LocalMutants {
+        close_queue_after_slots: true,
+        ..LocalMutants::default()
+    });
+}
+
+#[test]
+#[should_panic(expected = "was not retired by drain_retired")]
+fn mutant_dropped_retire_posts_are_caught_before_thread_exit() {
+    scenarios::foreign_drop_then_owner_drain(LocalMutants {
+        drop_retire_posts: true,
+        ..LocalMutants::default()
+    });
+}
+
+#[test]
+#[should_panic(expected = "dropped on thread")]
+fn mutant_foreign_inline_drop_is_caught_by_e2() {
+    scenarios::foreign_drop_then_owner_drain(LocalMutants {
+        foreign_drop_inline: true,
+        ..LocalMutants::default()
+    });
+}
+
+#[test]
+#[should_panic(expected = "called on thread")]
+fn mutant_foreign_inline_call_is_caught_by_e3() {
+    let w = World::new(LocalMutants {
+        foreign_call_inline: true,
+        ..LocalMutants::default()
+    });
+    let w2 = Arc::clone(&w);
+    let h = thread::spawn(move || install(&w2, SlotSpec::default()))
+        .join()
+        .unwrap();
+    let _ = h.call();
+    drop(h);
+    w.verify();
+}

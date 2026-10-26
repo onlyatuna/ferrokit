@@ -99,6 +99,16 @@ pub struct LocalMutants {
     /// because a foreign thread looks the key up in its own, empty, table (the owner compare is
     /// only a diagnostic).
     pub skip_owner_check: bool,
+    /// `drain_retired` discards the posted keys without retiring them (breaks progress / E1 when
+    /// checked before thread exit).
+    pub drop_retire_posts: bool,
+    /// `Handle::drop` on a foreign thread retires in place instead of posting (breaks E2).
+    pub foreign_drop_inline: bool,
+    /// `Handle::call` on a foreign thread runs the slot directly (breaks E3).
+    pub foreign_call_inline: bool,
+    /// `Table::drop` drops the closures before closing the queue (reverse teardown order). Not a
+    /// breakage: invariants must still hold.
+    pub close_queue_after_slots: bool,
 }
 
 /// Counters of what happened, for tests.
@@ -267,16 +277,8 @@ impl World {
             "a key was installed twice: {:?}",
             audit.installed
         );
-
-        for &(key, _) in &audit.installed {
-            // E1
-            let n = audit.drops.iter().filter(|d| d.0 == key).count();
-            assert_eq!(
-                n, 1,
-                "closure {key} was dropped {n} times, expected exactly once"
-            );
-        }
-        // E2
+        // E2 (checked before E1 so a foreign inline drop reports its thread violation first, even
+        // when thread-exit teardown later drops the closure a second time).
         for &(key, owner, here) in &audit.drops {
             if let Some(here) = here {
                 assert_eq!(
@@ -284,6 +286,14 @@ impl World {
                     "closure {key} of thread {owner} dropped on thread {here}"
                 );
             }
+        }
+        for &(key, _) in &audit.installed {
+            // E1
+            let n = audit.drops.iter().filter(|d| d.0 == key).count();
+            assert_eq!(
+                n, 1,
+                "closure {key} was dropped {n} times, expected exactly once"
+            );
         }
         // E3
         for &(key, owner, caller) in &audit.calls {
@@ -355,11 +365,14 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
-        // Thread exit: the queue goes first, then the closures are dropped, then the exit is
-        // announced.
         if let Some((tid, world)) = self.home.take() {
-            world.close_queue(tid);
-            drop(std::mem::take(&mut self.slots));
+            if world.mutants.close_queue_after_slots {
+                drop(std::mem::take(&mut self.slots));
+                world.close_queue(tid);
+            } else {
+                world.close_queue(tid);
+                drop(std::mem::take(&mut self.slots));
+            }
             world.finish_exit(tid);
         }
     }
@@ -392,20 +405,23 @@ pub fn install(world: &Arc<World>, spec: SlotSpec) -> Arc<Handle> {
         release_on_call: spec.release_on_call,
         runs: Cell::new(0),
     });
-    let displaced = TABLE.with(|table| {
-        let mut table = table.borrow_mut();
-        match &table.home {
-            Some((_, home)) => assert!(
-                Arc::ptr_eq(home, world),
-                "model limitation: one world per thread"
-            ),
-            None => {
-                world.queues.lock().unwrap().insert(owner, Vec::new());
-                table.home = Some((owner, Arc::clone(world)));
+    let displaced = TABLE
+        .try_with(|table| {
+            let mut table = table.borrow_mut();
+            match &table.home {
+                Some((_, home)) => assert!(
+                    Arc::ptr_eq(home, world),
+                    "model limitation: one world per thread"
+                ),
+                None => {
+                    world.queues.lock().unwrap().insert(owner, Vec::new());
+                    table.home = Some((owner, Arc::clone(world)));
+                }
             }
-        }
-        table.slots.insert(key, slot)
-    });
+            table.slots.insert(key, slot)
+        })
+        .ok()
+        .flatten();
     if displaced.is_some() {
         world
             .audit()
@@ -433,11 +449,14 @@ impl Handle {
     /// it ran.
     pub fn call(&self) -> bool {
         let here = TID.with(|t| *t);
+        if here != self.owner && self.world.mutants.foreign_call_inline {
+            self.world.audit().calls.push((self.key, self.owner, here));
+            return true;
+        }
         if here != self.owner && !self.world.mutants.skip_owner_check {
             self.world.audit().foreign_skips += 1;
             return false;
         }
-        // I1, I2: clone the `Rc` out, so the borrow ends before the closure runs.
         let entry = TABLE
             .try_with(|table| table.borrow().slots.get(&self.key).cloned())
             .ok()
@@ -488,6 +507,12 @@ impl Drop for Handle {
         // posting is the normal path.
         match TID.try_with(|t| *t) {
             Ok(here) if here == self.owner => retire_here(&self.world, self.key),
+            Ok(here) if self.world.mutants.foreign_drop_inline => {
+                self.world
+                    .audit()
+                    .drops
+                    .push((self.key, self.owner, Some(here)));
+            }
             _ => self.world.post_retire(self.owner, self.key),
         }
     }
@@ -503,8 +528,10 @@ pub fn drain_retired(world: &World) -> usize {
         let mut queues = world.queues.lock().unwrap();
         queues.get_mut(&me).map(std::mem::take).unwrap_or_default()
     };
-    for key in &keys {
-        retire_here(world, *key);
+    if !world.mutants.drop_retire_posts {
+        for key in &keys {
+            retire_here(world, *key);
+        }
     }
     keys.len()
 }
@@ -527,19 +554,21 @@ pub mod scenarios {
         let w = Arc::clone(&world);
         let owner = sys::thread::spawn(move || {
             let h = install(&w, plain());
-            let hf = Arc::clone(&h);
-            let foreign = sys::thread::spawn(move || {
-                assert!(!hf.call(), "a slot must not run off its owner");
-                drop(hf);
-            });
             assert!(h.call());
+            let foreign = sys::thread::spawn(move || {
+                let _ = TID.with(|t| *t);
+                assert!(!h.call(), "a slot must not run off its owner");
+                drop(h);
+            });
+            foreign.join().unwrap();
             drain_retired(&w);
-            drop(h);
-            drain_retired(&w);
-            foreign
+            if w.stats().drops != 1 {
+                w.audit()
+                    .violations
+                    .push("closure was not retired by drain_retired before thread exit");
+            }
         });
-        let foreign = owner.join().unwrap();
-        foreign.join().unwrap();
+        owner.join().unwrap();
         world.wait_exited(1);
         world.verify();
     }
