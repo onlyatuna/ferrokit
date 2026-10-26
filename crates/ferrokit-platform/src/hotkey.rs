@@ -23,11 +23,70 @@ pub trait PlatformHotkeyManager {
     fn unregister_hotkey(&mut self, id: u32) -> Result<(), &'static str>;
 }
 
+/// Why a global hotkey could not be registered or unregistered.
+///
+/// [`os_code`](Self::os_code) carries the operating system's error code (on Windows the
+/// `GetLastError` value read right after `RegisterHotKey`/`UnregisterHotKey` failed), so a caller
+/// can tell "another program already owns this combination" from other refusals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HotkeyError {
+    /// This platform has no global-hotkey back end behind the type that reported it.
+    Unsupported,
+    /// The manager already holds a hotkey with this id (nothing was asked of the OS).
+    IdInUse(u32),
+    /// The manager holds no hotkey with this id (nothing was asked of the OS).
+    NotRegistered(u32),
+    /// The OS refused the call; `code` is its error code.
+    Os {
+        /// Windows `GetLastError()` value.
+        code: u32,
+    },
+    /// The manager's worker thread is no longer running, so it can take no more requests.
+    Stopped,
+    /// The worker thread could not be started (the `std::io::Error` text).
+    Thread(String),
+}
+
+impl HotkeyError {
+    /// Windows `ERROR_HOTKEY_ALREADY_REGISTERED`: the combination belongs to another program (or
+    /// another registration of this process).
+    pub const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
+
+    /// The OS error code, if the OS refused the call.
+    pub fn os_code(&self) -> Option<u32> {
+        match self {
+            Self::Os { code } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// Whether the OS reported the combination as already registered
+    /// ([`ERROR_HOTKEY_ALREADY_REGISTERED`](Self::ERROR_HOTKEY_ALREADY_REGISTERED)).
+    pub fn is_already_registered(&self) -> bool {
+        self.os_code() == Some(Self::ERROR_HOTKEY_ALREADY_REGISTERED)
+    }
+}
+
+impl std::fmt::Display for HotkeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("global hotkeys are not supported on this platform"),
+            Self::IdInUse(id) => write!(f, "hotkey id {id} is already registered"),
+            Self::NotRegistered(id) => write!(f, "hotkey id {id} is not registered"),
+            Self::Os { code } => write!(f, "the system refused the hotkey request (error {code})"),
+            Self::Stopped => f.write_str("the hotkey worker thread has stopped"),
+            Self::Thread(e) => write!(f, "could not start the hotkey worker thread: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for HotkeyError {}
+
 #[cfg(windows)]
 pub mod win32_hotkey {
     use super::*;
     use std::collections::HashSet;
-    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Foundation::{GetLastError, HWND};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
     };
@@ -53,6 +112,47 @@ pub mod win32_hotkey {
         }
     }
 
+    impl Win32HotkeyManager {
+        /// Registers `id` for the thread that owns `hwnd`, reporting a refusal with the OS
+        /// error code ([`PlatformHotkeyManager::register_hotkey`] with a typed error).
+        pub fn try_register_hotkey(
+            &mut self,
+            id: u32,
+            modifiers: HotkeyModifiers,
+            vk: u32,
+        ) -> Result<(), HotkeyError> {
+            if self.registered_ids.contains(&id) {
+                return Err(HotkeyError::IdInUse(id));
+            }
+            let win_mod: HOT_KEY_MODIFIERS = modifiers.bits();
+            let success = unsafe { RegisterHotKey(self.hwnd, id as i32, win_mod, vk) };
+            if success != 0 {
+                self.registered_ids.insert(id);
+                Ok(())
+            } else {
+                // Read before anything else can overwrite it.
+                Err(HotkeyError::Os {
+                    code: unsafe { GetLastError() },
+                })
+            }
+        }
+
+        /// Unregisters `id`; the id is forgotten even when the OS call fails.
+        pub fn try_unregister_hotkey(&mut self, id: u32) -> Result<(), HotkeyError> {
+            if !self.registered_ids.remove(&id) {
+                return Err(HotkeyError::NotRegistered(id));
+            }
+            let success = unsafe { UnregisterHotKey(self.hwnd, id as i32) };
+            if success != 0 {
+                Ok(())
+            } else {
+                Err(HotkeyError::Os {
+                    code: unsafe { GetLastError() },
+                })
+            }
+        }
+    }
+
     impl PlatformHotkeyManager for Win32HotkeyManager {
         fn register_hotkey(
             &mut self,
@@ -60,24 +160,18 @@ pub mod win32_hotkey {
             modifiers: HotkeyModifiers,
             vk: u32,
         ) -> Result<(), &'static str> {
-            let win_mod: HOT_KEY_MODIFIERS = modifiers.bits();
-            let success = unsafe { RegisterHotKey(self.hwnd, id as i32, win_mod, vk) };
-            if success != 0 {
-                self.registered_ids.insert(id);
-                Ok(())
-            } else {
-                Err("RegisterHotKey failed")
-            }
+            self.try_register_hotkey(id, modifiers, vk)
+                .map_err(|e| match e {
+                    HotkeyError::IdInUse(_) => "hotkey id already registered",
+                    _ => "RegisterHotKey failed",
+                })
         }
 
         fn unregister_hotkey(&mut self, id: u32) -> Result<(), &'static str> {
-            let success = unsafe { UnregisterHotKey(self.hwnd, id as i32) };
-            self.registered_ids.remove(&id);
-            if success != 0 {
-                Ok(())
-            } else {
-                Err("UnregisterHotKey failed")
-            }
+            self.try_unregister_hotkey(id).map_err(|e| match e {
+                HotkeyError::NotRegistered(_) => "hotkey id not registered",
+                _ => "UnregisterHotKey failed",
+            })
         }
     }
 
