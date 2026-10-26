@@ -10,6 +10,6 @@
 //! this and the other differences from Qt (when the closure is dropped, thread exit).
 #[allow(clippy::module_inception)]
 pub mod signal;
-mod local;
+pub(crate) mod local;
 pub use crate::object::SignalBlocker;
 pub use signal::*;

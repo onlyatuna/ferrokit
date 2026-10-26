@@ -1240,6 +1240,29 @@ impl Timer {
             PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().push((receiver, interval_ms)));
         }
     }
+
+    /// `QTimer::singleShot(msec, functor)` for a functor that is not `Send`: `callback` may
+    /// capture an `Rc`, a `RefCell` or a widget tree. It runs once, on the calling thread, from
+    /// that thread's event loop, after `interval_ms` (0: at the next loop turn, queued).
+    ///
+    /// [`Timer::single_shot`] asks for `Send` because its timer entry is shared state. Here the
+    /// closure stays in a table of the calling thread (the one `Signal::connect_local` uses) and
+    /// the timer or posted event carries only a key, so no `unsafe` is involved.
+    ///
+    /// Differences from Qt:
+    /// * A timer armed on a thread that has no event loop yet is kept and armed when the loop
+    ///   starts, as for [`Timer::single_shot`].
+    /// * If the loop or the thread ends before the timer fires, the closure never runs. It is
+    ///   dropped on the calling thread: at once when the posted event or timer is discarded
+    ///   there, otherwise in the thread-local destructor at thread exit. A capture whose
+    ///   destructor uses another thread-local may find it already destroyed at thread exit.
+    /// * A panic in `callback` is contained like the panic of any timer callback.
+    pub fn single_shot_local(interval_ms: u64, callback: impl FnOnce() + 'static) {
+        let handle = crate::signal::local::LocalHandle::install_once(callback);
+        Self::single_shot(interval_ms, move || {
+            handle.run_once();
+        });
+    }
 }
 
 /// Marks timer `id` as in delivery and schedules its next deadline, under a short registry lock.
