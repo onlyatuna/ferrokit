@@ -11,8 +11,10 @@ pub mod painter;
 pub mod palette;
 pub mod path;
 pub mod pixmap;
+mod qpath_geom;
 pub mod qss_box;
 mod solid_fill;
+pub mod stroker;
 mod text_blend;
 
 pub use backing_store::BackingStore;
@@ -23,3 +25,4 @@ pub use painter::{Painter, PainterState, Pen, RenderHint, RenderHints};
 pub use palette::*;
 pub use path::*;
 pub use pixmap::Pixmap;
+pub use stroker::{PainterPathStroker, PenCapStyle, PenJoinStyle, PenStyle};

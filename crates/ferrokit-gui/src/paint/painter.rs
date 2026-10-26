@@ -9,7 +9,8 @@ use crate::geometry::transform::Transform2D;
 pub use crate::paint::brush::Brush;
 pub use crate::paint::composition::CompositionMode;
 use crate::paint::paint_device::PaintDevice;
-use crate::paint::path::PainterPath;
+use crate::geometry::QPolygonF;
+use crate::paint::path::{FillRule, PainterPath};
 use crate::paint::pixmap::Pixmap;
 use crate::text::document::TextDocument;
 use crate::text::font::Font;
@@ -944,6 +945,48 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// `QPainter::drawPolygon(const QPolygonF &, Qt::FillRule)`: fills the polygon with the
+    /// brush by `fill_rule` and outlines it, closed, with the pen. Fewer than two points draw
+    /// nothing.
+    pub fn draw_polygon(&mut self, polygon: &QPolygonF, fill_rule: FillRule) {
+        self.draw_polygon_points(polygon.points(), fill_rule);
+    }
+
+    /// `QPainter::drawPolygon(const QPointF *, int, Qt::FillRule)`; see
+    /// [`draw_polygon`](Self::draw_polygon).
+    ///
+    /// Qt's raster engine (`QRasterPaintEngine::drawPolygon`, qtbase v6.11.2) hands a polygon
+    /// that is an axis-aligned rectangle (`QVectorPath::isRect`: four points, or five with the
+    /// last repeating the first, running right, down, left from the top-left corner) to
+    /// `drawRects`, and so does this. That shortcut is a property of Qt's raster paint engine
+    /// (the OpenGL and other engines fill the polygon). Rendering is the one raster of this
+    /// crate on every OS (tiny-skia); it was run on Windows only, and type-checked for macOS and
+    /// Linux.
+    pub fn draw_polygon_points(&mut self, points: &[PointF], fill_rule: FillRule) {
+        if points.len() < 2 {
+            return;
+        }
+        if is_rect_polygon(points) {
+            self.draw_rect(RectF::new(
+                points[0].x,
+                points[0].y,
+                points[2].x - points[0].x,
+                points[2].y - points[0].y,
+            ));
+            return;
+        }
+        let mut pb = PathBuilder::new();
+        pb.move_to(points[0].x, points[0].y);
+        for p in &points[1..] {
+            pb.line_to(p.x, p.y);
+        }
+        pb.close();
+        if let Some(path) = pb.finish() {
+            self.fill_path_with_rule(&path, fill_rule.into());
+            self.stroke_path(&path);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Returns a mutable reference to the active state.
     // -------------------------------------------------------------------------
@@ -1312,6 +1355,18 @@ impl<'a> Painter<'a> {
     pub fn draw_text_document(&mut self, pos: PointF, doc: &TextDocument) {
         doc.draw(self, pos);
     }
+}
+
+/// `QVectorPath::isRect` for a polygon's points (qtbase v6.11.2, `qvectorpath_p.h`).
+fn is_rect_polygon(pts: &[PointF]) -> bool {
+    let n = pts.len();
+    (n == 5 && pts[0] == pts[4] || n == 4)
+        && pts[0].x == pts[3].x
+        && pts[1].x == pts[2].x
+        && pts[0].y == pts[1].y
+        && pts[2].y == pts[3].y
+        && pts[0].x < pts[2].x
+        && pts[0].y < pts[2].y
 }
 
 pub fn create_arc_path(rect: RectF, start_deg: f32, span_deg: f32) -> Option<Path> {
