@@ -12,7 +12,13 @@
 //! thread yourself (for example with `run_on_main_thread`) when it touches GUI state. The handler
 //! may call [`register`](GlobalHotkeyManager::register) and
 //! [`unregister`](GlobalHotkeyManager::unregister) on the manager (they then run in place, on the
-//! worker thread). A press that was already queued when its hotkey was unregistered is dropped.
+//! worker thread). A press the system queued for a hotkey just before it was unregistered is
+//! dropped if the id is still unregistered when the worker reaches it; if the id was registered
+//! again (or replaced) by then, the stale press is delivered for the new registration.
+//!
+//! Registering or unregistering from another thread waits for the worker thread, which is busy
+//! while the handler runs: do not call them while holding something the handler waits for, or
+//! the two deadlock.
 //!
 //! Only Windows has a back end here; elsewhere [`GlobalHotkeyManager::new`] fails with
 //! [`HotkeyError::Unsupported`] (macOS: use [`CocoaHotkeyManager`](crate::hotkey::CocoaHotkeyManager),
@@ -63,8 +69,12 @@ impl GlobalHotkeyManager {
         self.imp.register(id, modifiers, vk, false)
     }
 
-    /// Gives `id` a new combination (registers it if it was free). If the system refuses the new
-    /// combination the old one is registered again, so the call never leaves `id` worse off.
+    /// Gives `id` a new combination (registers it if it was free). The old combination is released
+    /// first (an id cannot be held twice), so if the system then refuses the new one, the old one
+    /// is registered again. That second registration can itself fail (another program may have
+    /// taken the combination in between): the error returned is then still the new
+    /// combination's, and `id` is left unregistered, as [`is_registered`](Self::is_registered)
+    /// shows.
     pub fn replace(&self, id: u32, modifiers: HotkeyModifiers, vk: u32) -> Result<(), HotkeyError> {
         self.imp.register(id, modifiers, vk, true)
     }
@@ -202,6 +212,7 @@ mod imp {
         } else {
             // Read before anything else can overwrite it.
             Err(HotkeyError::Os {
+                // SAFETY: plain FFI call, made right after the failing call on the same thread.
                 code: unsafe { GetLastError() },
             })
         }
@@ -213,6 +224,7 @@ mod imp {
             Ok(())
         } else {
             Err(HotkeyError::Os {
+                // SAFETY: plain FFI call, made right after the failing call on the same thread.
                 code: unsafe { GetLastError() },
             })
         }
@@ -287,13 +299,14 @@ mod imp {
 
     impl Drop for ExitGuard<'_> {
         fn drop(&mut self) {
+            // The table first: a caller told `Stopped` below then also sees no registered hotkeys.
+            let ids: Vec<u32> = lock(&self.0.hotkeys).drain().map(|(id, _)| id).collect();
             {
                 let mut queue = lock(&self.0.queue);
                 queue.closed = true;
                 // Dropping the requests drops their reply senders: waiting callers get `Stopped`.
                 queue.requests.clear();
             }
-            let ids: Vec<u32> = lock(&self.0.hotkeys).drain().map(|(id, _)| id).collect();
             for id in ids {
                 let _ = os_unregister(id);
             }
@@ -307,7 +320,9 @@ mod imp {
         // SAFETY: PM_NOREMOVE only makes the system create this thread's message queue, so that
         // `PostThreadMessageW` to the id published below cannot fail for want of a queue.
         unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
-        if ready.send(unsafe { GetCurrentThreadId() }).is_err() {
+        // SAFETY: plain FFI call with no arguments.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        if ready.send(thread_id).is_err() {
             return;
         }
         loop {
@@ -366,26 +381,24 @@ mod imp {
             let (reply, answer) = mpsc::channel();
             let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             {
+                // Queued and woken under one lock: the worker takes this lock (setting `closed`)
+                // before it can finish, so while `closed` is unset `thread_id` still names our
+                // worker and cannot have been reused by an unrelated thread, and the worker
+                // cannot take the request before it is woken.
                 let mut queue = lock(&self.shared.queue);
                 if queue.closed {
                     return Err(HotkeyError::Stopped);
                 }
                 queue.requests.push_back(Request { seq, op, reply });
-            }
-            // SAFETY: plain FFI call to a thread whose queue exists (created before start-up ended).
-            if unsafe { PostThreadMessageW(self.thread_id, WM_WAKE, 0, 0) } == 0 {
-                let code = unsafe { GetLastError() };
-                let mut queue = lock(&self.shared.queue);
-                if let Some(pos) = queue.requests.iter().position(|r| r.seq == seq) {
-                    // Never picked up, so it must not run later: withdraw it.
-                    queue.requests.remove(pos);
-                    return Err(if queue.closed {
-                        HotkeyError::Stopped
-                    } else {
-                        HotkeyError::Os { code }
-                    });
+                // SAFETY: plain FFI call to our live worker thread, whose queue exists (created
+                // before start-up ended).
+                if unsafe { PostThreadMessageW(self.thread_id, WM_WAKE, 0, 0) } == 0 {
+                    // SAFETY: plain FFI call; read before anything else can overwrite it.
+                    let code = unsafe { GetLastError() };
+                    // Nobody will wake the worker for this request, and it must not run later.
+                    queue.requests.pop_back();
+                    return Err(HotkeyError::Os { code });
                 }
-                // The worker already took it; its answer is on the way.
             }
             answer.recv().unwrap_or(Err(HotkeyError::Stopped))
         }
@@ -435,12 +448,19 @@ mod imp {
             let Some(worker) = self.worker.take() else {
                 return;
             };
-            // WM_QUIT ends the worker's loop; it releases the hotkeys on its way out. Posting only
-            // fails if the thread is already gone (or, transiently, if its queue is full).
-            // SAFETY: plain FFI call.
-            while unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) } == 0
-                && !worker.is_finished()
-            {
+            // WM_QUIT ends the worker's loop; it releases the hotkeys on its way out. Posting
+            // happens under the queue lock: the worker takes that lock (setting `closed`) before
+            // it can finish, so while `closed` is unset the thread id still names our worker and
+            // cannot have been reused by an unrelated thread. Once `closed` is set the worker is
+            // already leaving and needs no message. A post fails only transiently (full queue).
+            loop {
+                let queue = lock(&self.shared.queue);
+                // SAFETY: plain FFI call, to our own live worker thread (see above).
+                if queue.closed || unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) } != 0
+                {
+                    break;
+                }
+                drop(queue);
                 thread::yield_now();
             }
             // The handler may be what drops the last reference: a thread cannot join itself, and
@@ -500,14 +520,16 @@ mod imp {
             let (tx, rx) = mpsc::channel();
             let tx = Mutex::new(tx);
             m.set_handler(move |id| tx.lock().unwrap().send(id).unwrap());
+            m.register(7, MODS, VK_F13 + 6).unwrap();
             press(&m.imp, 99);
             press(&m.imp, 2);
             // Presses are handled in order, so seeing 2 first means 99 was skipped.
             assert_eq!(rx.recv_timeout(PRESS_TIMEOUT).unwrap(), 2);
             m.unregister(2).unwrap();
             press(&m.imp, 2);
-            // Requests are answered in order too: once this returns the press above was handled.
-            m.register(2, MODS, VK_F13 + 1).unwrap();
+            press(&m.imp, 7);
+            // Seeing 7 next means the press of the unregistered 2 before it was skipped.
+            assert_eq!(rx.recv_timeout(PRESS_TIMEOUT).unwrap(), 7);
             assert_eq!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
         }
 
@@ -561,8 +583,19 @@ mod imp {
             m.register(5, MODS, VK_F13 + 4).unwrap();
             m.set_handler(|_| panic!("handler panic (expected by this test)"));
             press(&m.imp, 5);
-            // Queued behind the press, so the worker is dead before it could answer.
-            assert_eq!(m.register(6, MODS, VK_F13 + 5), Err(HotkeyError::Stopped));
+            // The system does not order a hotkey message against posted requests, so a request may
+            // still be answered before the worker reaches the press: ask until it is dead.
+            let deadline = std::time::Instant::now() + PRESS_TIMEOUT;
+            loop {
+                match m.register(6, MODS, VK_F13 + 5) {
+                    Err(HotkeyError::Stopped) => break,
+                    // The worker may die between the two calls; the loop then ends on `Stopped`.
+                    Ok(()) => drop(m.unregister(6)),
+                    Err(e) => panic!("{e:?}"),
+                }
+                assert!(std::time::Instant::now() < deadline, "worker still running");
+                thread::yield_now();
+            }
             assert_eq!(m.unregister(5), Err(HotkeyError::Stopped));
             assert!(m.registered_ids().is_empty());
         }
