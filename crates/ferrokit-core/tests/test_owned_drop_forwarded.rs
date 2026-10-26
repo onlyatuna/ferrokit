@@ -15,6 +15,12 @@ use ferrokit_core::object::{
     ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds an `Arc` and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WAIT: Duration = Duration::from_secs(10);
 
 struct Probe {
@@ -39,7 +45,7 @@ impl QObject for Probe {
 
 fn probe(dropped_on: &Arc<Mutex<Option<std::thread::ThreadId>>>) -> Probe {
     Probe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         dropped_on: Arc::clone(dropped_on),
     }
 }

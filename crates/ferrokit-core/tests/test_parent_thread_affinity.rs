@@ -20,6 +20,12 @@ use ferrokit_core::object::{
     QObject, ReparentError, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Node` holds nothing but its `ObjectData`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 struct Node {
     data: ObjectData,
     seen: Vec<String>,
@@ -28,7 +34,7 @@ struct Node {
 impl Node {
     fn new() -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             seen: Vec::new(),
         }
     }

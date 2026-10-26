@@ -35,10 +35,6 @@ impl Drop for EncapsulatedNode {
 }
 
 impl QObject for EncapsulatedNode {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }

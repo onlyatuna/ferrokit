@@ -930,7 +930,7 @@ fn inspect_owned_tree(
             // SAFETY: the registry has no live entry for it, so no callback of it can start, and
             // `is_borrowed` above found no running one.
             let owned = unsafe { owned.as_ref_unchecked() };
-            if !owned.can_move_to_thread() {
+            if !owned.object_data().can_move_to_thread() {
                 return Err(MoveError::NotMovable);
             }
             inspect_owned_tree(owned.object_data(), scan)?;
@@ -946,7 +946,7 @@ fn inspect_owned_tree(
 }
 
 /// Drains `queue`, requiring every live registered descendant to be unborrowed on the current
-/// thread and to answer `true` to `QObject::can_move_to_thread`. An id that has no live record in
+/// thread and to be opted in (`ObjectData::can_move_to_thread`). An id that has no live record in
 /// the registry (such as an unregistered non-owned child, or a record whose liveness is already
 /// false) is kept in `all_ids` and its registered children are still queued for inspection.
 fn collect_queued_descendants(scan: &mut SubtreeScan) -> Result<(), super::thread::MoveError> {
@@ -971,7 +971,7 @@ fn collect_queued_descendants(scan: &mut SubtreeScan) -> Result<(), super::threa
                 return Err(MoveError::WrongThread);
             }
             with_object(child_id, |obj| {
-                if !obj.can_move_to_thread() {
+                if !obj.object_data().can_move_to_thread() {
                     return Err(MoveError::NotMovable);
                 }
                 inspect_owned_tree(obj.object_data(), scan)
@@ -992,7 +992,7 @@ fn collect_queued_descendants(scan: &mut SubtreeScan) -> Result<(), super::threa
 ///
 /// Returns `Ok(None)` when `id` is already on `target_thread`. Refuses with
 /// `MoveByIdError::NotMovable` when `id` or any descendant answers `false` to
-/// `QObject::can_move_to_thread`. This stage sends nothing and changes nothing, so every refusal
+/// `ObjectData::can_move_to_thread`. This stage sends nothing and changes nothing, so every refusal
 /// happens before the first `ThreadChange`.
 pub(crate) fn prepare_move_to_thread(
     id: ObjectId,
@@ -1035,7 +1035,7 @@ pub(crate) fn prepare_move_to_thread(
         if data.thread_id() == target_thread {
             return Ok(None);
         }
-        if !obj.can_move_to_thread() {
+        if !data.can_move_to_thread() {
             return Err(MoveByIdError::NotMovable);
         }
         let mut scan = SubtreeScan::default();
@@ -1090,6 +1090,9 @@ pub(crate) fn prepare_move_to_thread_from_data(
     }
     if object_data.thread_id() == target_thread {
         return Ok(None);
+    }
+    if !object_data.can_move_to_thread() {
+        return Err(MoveError::NotMovable);
     }
 
     let mut scan = SubtreeScan::default();
@@ -1658,6 +1661,11 @@ pub struct ObjectData {
     /// borrow *into* the owned object) must not detach it; [`reparent_owned_object`] moves its owner.
     pub(crate) owned_by_parent: bool,
 
+    /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
+    /// object's thread. `false` unless the creator opted in with
+    /// [`ObjectData::with_thread_moves_allowed`].
+    movable_across_threads: bool,
+
     /// The parent's id and liveness token, captured when a registered parent was set. It lets
     /// [`ObjectData::parent`] see the parent die when the parent's drop cannot write to this
     /// object: a running callback borrows it, it was never registered, or it is registered on
@@ -1723,8 +1731,40 @@ impl ObjectData {
             owned_by_parent: false,
             parent_liveness: None,
             borrow_state,
+            movable_across_threads: false,
         }
     }
+
+    /// Opts this object in to [`move_to_thread_by_id`](crate::object::move_to_thread_by_id)
+    /// (`QObject::moveToThread`). Without it the object keeps the thread it was registered on:
+    /// a move of it, or of an ancestor, is refused with
+    /// [`MoveByIdError::NotMovable`](crate::object::MoveByIdError::NotMovable) before an event is
+    /// sent or any state changes. [`Timer`](crate::timer::Timer) objects never opt in, because
+    /// their `!Send` handle shares state with them that only the creating thread may use.
+    ///
+    /// # Safety
+    ///
+    /// `move_to_thread_by_id` is a safe function, and after a move the registry runs the
+    /// object's `&mut` callbacks, and its owner drops it, on the target thread. The caller
+    /// promises that the whole object is safe to use and drop on another thread, as a `Send`
+    /// type is: no `Rc`, no `Cell` or `RefCell` shared with a handle that stays behind, no raw
+    /// pointer or `!Send` closure that is still reached from the creating thread, and no
+    /// thread-local state. The promise holds for the object's lifetime, because a move may
+    /// happen at any time while it is registered.
+    #[must_use]
+    pub unsafe fn with_thread_moves_allowed(mut self) -> Self {
+        self.movable_across_threads = true;
+        self
+    }
+
+    /// Whether this object may change thread: it was opted in with
+    /// [`ObjectData::with_thread_moves_allowed`]. A move takes the whole subtree, so a
+    /// descendant that answers `false` refuses the move of every ancestor.
+    #[inline]
+    pub fn can_move_to_thread(&self) -> bool {
+        self.movable_across_threads
+    }
+
     /// Creates a new ObjectData with a unique auto-generated ObjectId.
     #[allow(clippy::new_without_default)]
     pub fn with_auto_id() -> Self {
@@ -1832,6 +1872,7 @@ impl ObjectData {
             owned_by_parent: false,
             parent_liveness: None,
             borrow_state,
+            movable_across_threads: false,
         }
     }
 
@@ -3798,33 +3839,6 @@ pub trait QObject: std::any::Any {
         self.object_data().thread()
     }
 
-    /// Whether [`move_to_thread_by_id`](crate::object::move_to_thread_by_id) may change this
-    /// object's thread (`QObject::moveToThread`). The default is `true`, which is a **promise**
-    /// by the implementer that the object is safe to use and drop on another thread, as a `Send`
-    /// type is: every registration function is `unsafe` because the registrant promises that (see
-    /// "Thread rules" in [`crate::object`]).
-    ///
-    /// An implementer whose type holds an `Rc`, a `RefCell` or `Cell` shared with a handle that
-    /// stays behind, a raw pointer, a non-`Send` closure or thread-local state **must** override
-    /// this and return `false`. Keeping the default for such a type makes the registration
-    /// contract false: a safe call of `move_to_thread_by_id` would then run its callbacks and
-    /// drop it on another thread, which is undefined behavior.
-    ///
-    /// Return `false` when state of the object is also reached through handles that never leave
-    /// the creating thread, such as an `Rc` shared with a `!Send` owner. After a move the
-    /// registry would run the object's callbacks on the target thread while the owner keeps using
-    /// that state on the old one. The move is refused with
-    /// [`MoveByIdError::NotMovable`](crate::object::MoveByIdError::NotMovable) before an event is
-    /// sent or any state changes. A move takes the whole subtree, so the same answer from a
-    /// descendant refuses the move of every ancestor.
-    ///
-    /// Called on the registration thread while the registry holds the object's borrow: it must not
-    /// call back into the registry for this object, and its answer must not change while the
-    /// object is registered.
-    fn can_move_to_thread(&self) -> bool {
-        true
-    }
-
     /// Blocks or unblocks signals emitted by this object (`QObject::blockSignals`).
     /// Returns previous blocked state.
     fn block_signals(&mut self, block: bool) -> bool {
@@ -5159,7 +5173,9 @@ mod tests {
     fn test_swap_with_an_object_registered_on_another_thread_is_refused() {
         let _serial = serial();
         let mut a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
-        let mut b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: `Plain` holds nothing but its `ObjectData`, so `b` may change thread.
+        let b_data = unsafe { ObjectData::new(ObjectId::next()).with_thread_moves_allowed() };
+        let mut b = unsafe { register_owned_qobject(Plain(b_data)) };
         let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
         let child = Box::new(Plain(ObjectData::new(ObjectId::next())));
         let child_id_attached = child.0.id();
@@ -5227,10 +5243,6 @@ mod tests {
     }
 
     impl QObject for Handler {
-        // Holds `!Send` state shared with the registering thread, so the object must stay there.
-        fn can_move_to_thread(&self) -> bool {
-            false
-        }
         fn object_data(&self) -> &ObjectData {
             &self.data
         }

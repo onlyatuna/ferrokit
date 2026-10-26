@@ -14,6 +14,12 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: The mock widgets hold `Arc` handles, a `Signal` and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 // --- Test Structures ---
 
 struct MockContainer {
@@ -25,7 +31,7 @@ struct MockContainer {
 
 impl MockContainer {
     fn new(name: &str) -> Self {
-        let mut data = ObjectData::new(ObjectId::next());
+        let mut data = movable_data(ObjectId::next());
         data.set_object_name(name);
         Self {
             data,
@@ -77,7 +83,7 @@ struct MockButton {
 impl MockButton {
     fn new(name: &str, text: &str) -> Self {
         let id = ObjectId::next();
-        let mut data = ObjectData::new(id);
+        let mut data = movable_data(id);
         data.set_object_name(name);
         let clicked = Signal::with_owner(&data);
         Self {
@@ -110,7 +116,7 @@ struct MockLabel {
 
 impl MockLabel {
     fn new(name: &str, text: &str) -> Self {
-        let mut data = ObjectData::new(ObjectId::next());
+        let mut data = movable_data(ObjectId::next());
         data.set_object_name(name);
         Self {
             data,

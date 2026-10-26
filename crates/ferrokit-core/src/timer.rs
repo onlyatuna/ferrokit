@@ -1025,6 +1025,11 @@ impl Timer {
     /// Creates a timer and registers its object (`new QTimer`). Nothing is scheduled until
     /// [`Timer::start`].
     pub fn new() -> Self {
+        // A `Timer` stays on the thread that made it, so its object never opts in to
+        // `ObjectData::with_thread_moves_allowed`: the owner handle is `!Send` and shares the
+        // `Rc`-held `TimerControl` with the object. After a move the registry would run
+        // `timer_event` on the target thread while the handle reads and writes that state on this
+        // one, and the handle would drop the object from the wrong thread.
         let data = ObjectData::new(ObjectId::next());
         let object_id = data.id();
         let timeout = Signal::with_owner(&data);
@@ -1386,15 +1391,6 @@ impl QObject for TimerCore {
     fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
         crate::object::ObjectDataMut::new(&mut self.data)
     }
-
-    /// A `Timer` stays on the thread that made it. Its owner handle is `!Send` and shares the
-    /// `Rc`-held `TimerControl` with this object: after a move the registry would run
-    /// `timer_event` on the target thread while the handle reads and writes that state on this
-    /// one, and the handle would drop the object from the wrong thread.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
-
     /// Handles timer events for this object (`QObject::timerEvent`).
     ///
     /// A slot may drop the owning [`Timer`] while this runs. The control and the signal are

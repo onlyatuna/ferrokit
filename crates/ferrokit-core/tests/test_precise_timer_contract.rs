@@ -26,6 +26,12 @@ use ferrokit_core::object::{
 use ferrokit_core::timer::precise::native_handle;
 use ferrokit_core::timer::{kill_object_timer, start_object_timer, Timer, TimerType};
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds `Arc` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WATCHDOG: Duration = Duration::from_secs(10);
 /// Clock measurement tolerance, not a latency allowance.
 const TOLERANCE: Duration = Duration::from_millis(1);
@@ -83,7 +89,7 @@ fn register_probe(
     let ticks: Ticks = Arc::new(Mutex::new(Vec::new()));
     let block_end = Arc::new(Mutex::new(None));
     let probe: &'static mut Probe = Box::leak(Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         ticks: Arc::clone(&ticks),
         block_at,
         block_for,

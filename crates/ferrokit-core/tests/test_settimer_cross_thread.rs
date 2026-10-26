@@ -29,6 +29,12 @@ use ferrokit_core::timer::precise::native_handle;
 use ferrokit_core::timer::{kill_object_timer, start_object_timer, TimerId, TimerType};
 use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, WM_TIMER};
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds `Arc` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 /// Above the 20 ms bound up to which `Coarse` timers use a multimedia timer, so `SetTimer` drives
 /// the timer.
 const INTERVAL: u64 = 30;
@@ -128,7 +134,7 @@ impl QObject for Probe {
 fn register_probe() -> (ObjectId, Arc<Mutex<Vec<ThreadId>>>) {
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let probe: &'static mut Probe = Box::leak(Box::new(Probe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         ticks: Arc::clone(&ticks),
     }));
     let id = probe.data.id();

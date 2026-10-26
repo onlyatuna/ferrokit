@@ -16,6 +16,12 @@ use ferrokit_core::object::{
 };
 use ferrokit_core::timer::TimerId;
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Node` keeps its state in `Arc<Mutex<_>>` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 struct Node {
     data: ObjectData,
     log: Arc<Mutex<Vec<String>>>,
@@ -26,7 +32,7 @@ struct Node {
 impl Node {
     fn new(tag: &'static str, log: &Arc<Mutex<Vec<String>>>) -> Box<Self> {
         Box::new(Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             log: Arc::clone(log),
             tag,
             panic_on_child_removed: false,

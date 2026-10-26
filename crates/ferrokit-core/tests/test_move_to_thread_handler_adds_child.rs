@@ -17,6 +17,12 @@ use ferrokit_core::object::{
     unregister_qobject, MoveByIdError, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Root` and `Leaf` hold plain fields, a `Cell<Option<ObjectId>>` and an `Arc`, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 struct Root {
     data: ObjectData,
     late: Cell<Option<ObjectId>>,
@@ -66,12 +72,12 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
 
     let thread_changes = Arc::new(AtomicUsize::new(0));
     let mut late = Leaf {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         thread_changes: Arc::clone(&thread_changes),
     };
     let late_id = late.data.id();
     let root = Root {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         late: Cell::new(Some(late_id)),
     };
     let root_id = root.data.id();
@@ -119,9 +125,6 @@ impl QObject for Pinned {
     fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
         ObjectDataMut::new(&mut self.data)
     }
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
 }
 
 /// A handler attaches a child that cannot move. Moving the parent anyway would leave that child
@@ -136,7 +139,7 @@ fn an_unmovable_child_attached_by_a_handler_stops_the_move() {
     };
     let late_id = late.data.id();
     let root = Root {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         late: Cell::new(Some(late_id)),
     };
     let root_id = root.data.id();

@@ -368,6 +368,8 @@
     "lib::object::thread::tests::test_event_sender_send_and_wakeup::TB": "pass",
     "lib::object::thread::tests::test_move_to_thread_has_parent_error::SB": "pass",
     "lib::object::thread::tests::test_move_to_thread_has_parent_error::TB": "pass",
+    "lib::object::thread::tests::test_move_to_thread_refuses_object_that_did_not_opt_in::SB": "pass",
+    "lib::object::thread::tests::test_move_to_thread_refuses_object_that_did_not_opt_in::TB": "pass",
     "lib::object::thread::tests::test_move_to_thread_success::SB": "pass",
     "lib::object::thread::tests::test_move_to_thread_success::TB": "pass",
     "lib::object::thread::tests::test_move_to_thread_wrong_thread_error::SB": "pass",
