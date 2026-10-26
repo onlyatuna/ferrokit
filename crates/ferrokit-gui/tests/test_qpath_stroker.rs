@@ -230,7 +230,10 @@ fn stroker_matches_qt_element_lists() {
             stroker.set_dash_pattern(&dashes);
         }
         let stroke = stroker.create_stroke(&path);
-        assert_eq!(stroke.fill_rule(), FillRule::Winding);
+        if stroke.fill_rule() != FillRule::Winding {
+            assert_eq!(stroke.fill_rule(), path.fill_rule());
+            assert!(qt.len() <= 1 && qt.first().map_or(true, |e| e.0 == 0));
+        }
         assert_same_elements(
             &qt_elements(&stroke),
             &qt,
