@@ -13,7 +13,7 @@
 //! `T: Clone + Send`.
 #[allow(clippy::module_inception)]
 pub mod signal;
-mod local;
+pub(crate) mod local;
 pub use crate::object::SignalBlocker;
 pub use local::LocalConnectError;
 pub use signal::*;

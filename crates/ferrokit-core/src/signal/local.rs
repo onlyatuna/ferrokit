@@ -89,6 +89,9 @@ static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
 /// A slot of payload type `T`, as stored in the table.
 struct LocalFn<T>(Box<dyn Fn(&T)>);
 
+/// A one-shot closure, as stored in the table by [`LocalHandle::install_once`].
+struct LocalOnce(RefCell<Option<Box<dyn FnOnce()>>>);
+
 /// Names a slot in the table of the thread that connected it. It holds no closure, so it is
 /// `Send + Sync` without `unsafe`: the signal's subscriber captures an `Arc` of it.
 ///
@@ -145,6 +148,43 @@ impl LocalHandle {
         {
             Some(slot) => {
                 (slot.0)(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Stores a one-shot `FnOnce` in this thread's table (the same table, the same keys, the same
+    /// retirement as a slot) and returns its handle. Used by `Timer::single_shot_local`.
+    pub(crate) fn install_once(f: impl FnOnce() + 'static) -> Self {
+        let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
+        let entry: Rc<dyn Any> = Rc::new(LocalOnce(RefCell::new(Some(Box::new(f)))));
+        let _ = LOCAL_SLOTS.try_with(|table| table.borrow_mut().insert(key, entry));
+        Self {
+            owner: ThreadId::current(),
+            key,
+            warned: AtomicBool::new(false),
+        }
+    }
+
+    /// Runs the one-shot closure if this is the owning thread and it is still stored; the entry is
+    /// removed first, so it runs at most once. Returns whether it ran.
+    pub(crate) fn run_once(&self) -> bool {
+        if ThreadId::current() != self.owner {
+            return false;
+        }
+        // I1, I2: removed under a short borrow; the closure runs, and is dropped, outside it.
+        let entry = LOCAL_SLOTS
+            .try_with(|table| table.borrow_mut().remove(&self.key))
+            .ok()
+            .flatten();
+        let Some(entry) = entry else { return false };
+        let f = entry
+            .downcast_ref::<LocalOnce>()
+            .and_then(|once| once.0.borrow_mut().take());
+        match f {
+            Some(f) => {
+                f();
                 true
             }
             None => false,
