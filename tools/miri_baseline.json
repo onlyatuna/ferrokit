@@ -384,6 +384,8 @@
     "lib::object::thread::tests::test_thread_context_lifecycle::TB": "pass",
     "lib::object::thread::tests::test_thread_id_current::SB": "pass",
     "lib::object::thread::tests::test_thread_id_current::TB": "pass",
+    "lib::settings::tests::test_failed_sync_on_drop_is_reported_with_the_path_and_the_error::SB": "pass",
+    "lib::settings::tests::test_failed_sync_on_drop_is_reported_with_the_path_and_the_error::TB": "pass",
     "lib::signal::signal::tests::test_basic_emission::SB": "pass",
     "lib::signal::signal::tests::test_basic_emission::TB": "pass",
     "lib::signal::signal::tests::test_bulk_disconnect_retires_registry_entries::SB": "pass",
