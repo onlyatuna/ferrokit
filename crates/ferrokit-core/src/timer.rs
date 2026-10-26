@@ -335,7 +335,7 @@ pub fn register_thread_timer_context(
     registry: Arc<Mutex<TimerRegistry>>,
     #[cfg(windows)] internal_hwnd: HWND,
 ) {
-    THREAD_TIMER_CONTEXT.with(|ctx| {
+    let _ = THREAD_TIMER_CONTEXT.try_with(|ctx| {
         *ctx.borrow_mut() = Some(ThreadTimerContext {
             registry,
             #[cfg(windows)]
@@ -343,7 +343,9 @@ pub fn register_thread_timer_context(
         });
     });
     // Arm single-shot timers requested before this thread had a loop; they must not be dropped.
-    let pending = PENDING_SINGLE_SHOTS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    let pending = PENDING_SINGLE_SHOTS
+        .try_with(|p| std::mem::take(&mut *p.borrow_mut()))
+        .unwrap_or_default();
     with_thread_timer_context(|ctx| {
         for (receiver, interval_ms) in pending {
             arm_single_shot(ctx, receiver, interval_ms);
@@ -709,10 +711,12 @@ pub fn start_object_timer(receiver: ObjectId, interval_ms: u64, timer_type: Time
 pub(crate) fn register_single_shot_callback(
     receiver: ObjectId,
     callback: impl FnOnce() + Send + 'static,
-) {
-    SINGLE_SHOT_CALLBACKS.with(|callbacks| {
-        callbacks.borrow_mut().insert(receiver, Box::new(callback));
-    });
+) -> bool {
+    SINGLE_SHOT_CALLBACKS
+        .try_with(|callbacks| {
+            callbacks.borrow_mut().insert(receiver, Box::new(callback));
+        })
+        .is_ok()
 }
 
 type SingleShotFn = Box<dyn FnOnce() + Send + 'static>;
@@ -725,11 +729,14 @@ fn take_context_single_shots(contexts: &[ObjectId]) -> Vec<(ObjectId, u64, Singl
         .unwrap_or_default();
     let mut shots = Vec::with_capacity(taken.len());
     for (receiver, context) in taken {
-        let pending = PENDING_SINGLE_SHOTS.with(|p| {
-            let mut p = p.borrow_mut();
-            let at = p.iter().position(|(r, _)| *r == receiver)?;
-            Some(p.remove(at).1)
-        });
+        let pending = PENDING_SINGLE_SHOTS
+            .try_with(|p| {
+                let mut p = p.borrow_mut();
+                let at = p.iter().position(|(r, _)| *r == receiver)?;
+                Some(p.remove(at).1)
+            })
+            .ok()
+            .flatten();
         let armed = with_thread_timer_context(|ctx| {
             let reg = lock_unpoisoned(&ctx.registry);
             reg.ids_for_receiver(receiver)
@@ -739,7 +746,10 @@ fn take_context_single_shots(contexts: &[ObjectId]) -> Vec<(ObjectId, u64, Singl
         })
         .flatten();
         stop_timers_for_object(receiver);
-        let callback = SINGLE_SHOT_CALLBACKS.with(|c| c.borrow_mut().remove(&receiver));
+        let callback = SINGLE_SHOT_CALLBACKS
+            .try_with(|c| c.borrow_mut().remove(&receiver))
+            .ok()
+            .flatten();
         if let Some(callback) = callback {
             shots.push((context, pending.or(armed).unwrap_or(0), callback));
         }
@@ -797,8 +807,11 @@ impl ContextShots {
 }
 
 pub(crate) fn dispatch_single_shot_callback(receiver: ObjectId) -> bool {
-    SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().remove(receiver));
-    let callback = SINGLE_SHOT_CALLBACKS.with(|callbacks| callbacks.borrow_mut().remove(&receiver));
+    let _ = SINGLE_SHOT_CONTEXTS.try_with(|c| c.borrow_mut().remove(receiver));
+    let callback = SINGLE_SHOT_CALLBACKS
+        .try_with(|callbacks| callbacks.borrow_mut().remove(&receiver))
+        .ok()
+        .flatten();
     if let Some(callback) = callback {
         callback();
         true
@@ -1211,10 +1224,12 @@ impl Timer {
         callback: impl FnOnce() + Send + 'static,
     ) {
         let receiver = ObjectId::next();
-        register_single_shot_callback(receiver, callback);
-        SINGLE_SHOT_CONTEXTS.with(|c| c.borrow_mut().insert(receiver, context));
+        if !register_single_shot_callback(receiver, callback) {
+            return;
+        }
+        let _ = SINGLE_SHOT_CONTEXTS.try_with(|c| c.borrow_mut().insert(receiver, context));
         if with_thread_timer_context(|ctx| arm_single_shot(ctx, receiver, interval_ms)).is_none() {
-            PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().push((receiver, interval_ms)));
+            let _ = PENDING_SINGLE_SHOTS.try_with(|p| p.borrow_mut().push((receiver, interval_ms)));
         }
     }
 
@@ -1233,11 +1248,13 @@ impl Timer {
         }
 
         let receiver = ObjectId::next();
-        register_single_shot_callback(receiver, callback);
+        if !register_single_shot_callback(receiver, callback) {
+            return;
+        }
         // Keep the arm when this thread has no timer context yet; `register_thread_timer_context`
         // arms it once the thread's event loop exists, instead of silently dropping it.
         if with_thread_timer_context(|ctx| arm_single_shot(ctx, receiver, interval_ms)).is_none() {
-            PENDING_SINGLE_SHOTS.with(|p| p.borrow_mut().push((receiver, interval_ms)));
+            let _ = PENDING_SINGLE_SHOTS.try_with(|p| p.borrow_mut().push((receiver, interval_ms)));
         }
     }
 
@@ -1311,9 +1328,9 @@ pub(crate) fn send_tick(receiver: ObjectId, raw_id: u64) {
     use crate::event_loop::{deliver_timer_event, TimerDelivery};
     let run_callback = match deliver_timer_event(receiver, raw_id) {
         TimerDelivery::NotDeliverable => true,
-        TimerDelivery::Filtered => {
-            SINGLE_SHOT_CALLBACKS.with(|callbacks| callbacks.borrow().contains_key(&receiver))
-        }
+        TimerDelivery::Filtered => SINGLE_SHOT_CALLBACKS
+            .try_with(|callbacks| callbacks.borrow().contains_key(&receiver))
+            .unwrap_or(false),
         TimerDelivery::Delivered => false,
     };
     if run_callback {

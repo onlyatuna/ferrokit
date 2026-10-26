@@ -252,3 +252,35 @@ fn test_loom_negative_mutant_error_on_ended_post_fails() {
         })
     });
 }
+
+#[test]
+fn test_loom_reverse_teardown_order() {
+    bounded(|| {
+        scenarios::foreign_drop_after_owner_exit(LocalMutants {
+            close_queue_after_slots: true,
+            ..LocalMutants::default()
+        })
+    });
+}
+
+#[test]
+#[should_panic(expected = "was not retired by drain_retired")]
+fn test_loom_negative_mutant_dropped_retire_posts_fail() {
+    bounded(|| {
+        scenarios::foreign_drop_then_owner_drain(LocalMutants {
+            drop_retire_posts: true,
+            ..LocalMutants::default()
+        })
+    });
+}
+
+#[test]
+#[should_panic(expected = "dropped on thread")]
+fn test_loom_negative_mutant_foreign_inline_drop_fails() {
+    bounded(|| {
+        scenarios::foreign_drop_then_owner_drain(LocalMutants {
+            foreign_drop_inline: true,
+            ..LocalMutants::default()
+        })
+    });
+}

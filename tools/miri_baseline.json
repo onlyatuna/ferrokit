@@ -1462,6 +1462,20 @@
     "lib::thread::pool::tests::reserved_worker_ids_are_never_reused::SB": "pass",
     "lib::thread::pool::tests::reserved_worker_ids_are_never_reused::TB": "pass",
     "lib::thread::sync::tests::wait_timeout_ignores_a_spurious_wake::SB": "pass",
-    "lib::thread::sync::tests::wait_timeout_ignores_a_spurious_wake::TB": "pass"
+    "lib::thread::sync::tests::wait_timeout_ignores_a_spurious_wake::TB": "pass",
+    "test_signal_local_slots::a_panicking_capture_drop_on_disconnect_or_single_shot_is_contained::SB": "pass",
+    "test_signal_local_slots::a_panicking_capture_drop_on_disconnect_or_single_shot_is_contained::TB": "pass",
+    "test_signal_local_slots::an_owner_without_a_loop_drains_foreign_retires_on_its_next_local_slot_access_and_posts_one_wake::SB": "pass",
+    "test_signal_local_slots::an_owner_without_a_loop_drains_foreign_retires_on_its_next_local_slot_access_and_posts_one_wake::TB": "pass",
+    "test_signal_local_slots::a_capture_whose_drop_reconnects_or_disconnects_at_thread_exit_does_not_panic::SB": "pass",
+    "test_signal_local_slots::a_capture_whose_drop_reconnects_or_disconnects_at_thread_exit_does_not_panic::TB": "pass",
+    "test_signal_local_context::a_queued_call_held_for_an_owner_that_never_starts_a_loop_is_dropped_when_the_owner_ends::SB": "pass",
+    "test_signal_local_context::a_queued_call_held_for_an_owner_that_never_starts_a_loop_is_dropped_when_the_owner_ends::TB": "pass",
+    "test_signal_local_context::a_queued_event_dropped_on_a_foreign_thread_retires_the_closure_on_the_owner_thread::SB": "pass",
+    "test_signal_local_context::a_queued_event_dropped_on_a_foreign_thread_retires_the_closure_on_the_owner_thread::TB": "pass",
+    "test_timer_local_single_shot::a_queued_zero_ms_event_dropped_on_another_thread_still_drops_the_closure_on_the_owner::SB": "pass",
+    "test_timer_local_single_shot::a_queued_zero_ms_event_dropped_on_another_thread_still_drops_the_closure_on_the_owner::TB": "pass",
+    "test_timer_local_single_shot::a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic::SB": "pass",
+    "test_timer_local_single_shot::a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic::TB": "pass"
   }
 }

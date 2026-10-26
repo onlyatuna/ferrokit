@@ -705,3 +705,100 @@ fn a_local_slot_connected_to_a_context_is_dropped_on_its_thread_when_another_thr
     assert!(event_loop.process_events(false));
     assert_eq!(Rc::strong_count(&total), 1);
 }
+
+#[test]
+fn a_queued_call_held_for_an_owner_that_never_starts_a_loop_is_dropped_when_the_owner_ends() {
+    let payload_dropped = Arc::new(AtomicUsize::new(0));
+    let slot_dropped_on = Arc::new(Mutex::new(None));
+
+    #[derive(Clone)]
+    struct Tracked(Arc<AtomicUsize>);
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct LocalProbe {
+        dropped_on: Arc<Mutex<Option<ThreadId>>>,
+        _not_send: Rc<()>,
+    }
+    impl Drop for LocalProbe {
+        fn drop(&mut self) {
+            *self.dropped_on.lock().unwrap() = Some(ThreadId::current());
+        }
+    }
+
+    let pd = Arc::clone(&payload_dropped);
+    let sd = Arc::clone(&slot_dropped_on);
+    let owner = thread::spawn(move || {
+        let context = Receiver::registered();
+        let signal: Signal<Tracked> = Signal::new();
+        let probe = LocalProbe {
+            dropped_on: sd,
+            _not_send: Rc::new(()),
+        };
+        context
+            .with(|c| {
+                signal.connect_local_to(c, ConnectionType::Auto, move |_| {
+                    let _ = &probe;
+                })
+            })
+            .unwrap()
+            .unwrap();
+
+        let remote = signal.clone();
+        thread::spawn(move || {
+            remote.emit(&Tracked(pd));
+        })
+        .join()
+        .unwrap();
+        // Never creates an EventLoop; the held call and the closure are cleaned up as the thread
+        // ends. `context` is forgotten so its destruction does not purge the held call before
+        // thread-end teardown runs.
+        std::mem::forget(context);
+        std::mem::forget(signal);
+        ThreadId::current()
+    })
+    .join()
+    .unwrap();
+
+    assert!(
+        payload_dropped.load(Ordering::SeqCst) >= 2,
+        "both the emitted value and its queued clone were dropped when the owner ended"
+    );
+    assert_eq!(*slot_dropped_on.lock().unwrap(), Some(owner));
+}
+
+#[test]
+fn a_queued_event_dropped_on_a_foreign_thread_retires_the_closure_on_the_owner_thread() {
+    let event_loop = EventLoop::new();
+    let context = Receiver::registered();
+    let signal: Signal<i32> = Signal::new();
+    let guard = Rc::new(());
+    let held = Rc::clone(&guard);
+    let id = context
+        .with(|c| {
+            signal.connect_local_to(c, ConnectionType::Queued, move |_| {
+                let _ = &held;
+            })
+        })
+        .unwrap()
+        .unwrap();
+    signal.emit(&1); // queues a call holding an Arc<LocalHandle>
+    assert!(signal.disconnect(id));
+    drop(signal);
+
+    // Pull the queued event out and drop it on another thread, so that the last `Arc<LocalHandle>`
+    // is dropped off the owner thread via the queued event itself.
+    let queue = Arc::clone(event_loop.queue());
+    thread::spawn(move || {
+        let events = std::mem::take(&mut *queue.lock().unwrap());
+        assert!(!events.is_empty());
+        drop(events);
+    })
+    .join()
+    .unwrap();
+
+    assert!(event_loop.process_events(false));
+    assert_eq!(Rc::strong_count(&guard), 1);
+}

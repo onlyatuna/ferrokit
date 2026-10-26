@@ -228,17 +228,23 @@ pub fn unregister_connection(id: ConnectionId) {
     write_unpoisoned(&GLOBAL_CONNECTIONS).remove(&id);
 }
 
-/// Drops subscribers removed from a signal (after its lock is released: a captured value's
-/// destructor may use the signal) and retires their `GLOBAL_CONNECTIONS` entries.
+/// Retires the `GLOBAL_CONNECTIONS` entries of subscribers removed from a signal and then drops
+/// the subscribers (after the signal's lock is released: a captured value's destructor may use
+/// the signal). Retiring the registry entries first keeps `GLOBAL_CONNECTIONS` clean even when a
+/// captured value's `Drop` panics, and each subscriber is dropped inside `catch_unwind` so one
+/// panicking destructor does not skip the rest.
 fn retire_registry_entries<T>(removed: Vec<Subscriber<T>>) {
-    let ids: Vec<ConnectionId> = removed.iter().map(|sub| sub.id).collect();
-    drop(removed);
-    if ids.is_empty() {
+    if removed.is_empty() {
         return;
     }
-    let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
-    for id in ids {
-        conns.remove(&id);
+    {
+        let mut conns = write_unpoisoned(&GLOBAL_CONNECTIONS);
+        for sub in &removed {
+            conns.remove(&sub.id);
+        }
+    }
+    for sub in removed {
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(sub)));
     }
 }
 
@@ -552,15 +558,11 @@ impl<T> Signal<T> {
 
     /// Disconnects a connection by its ID.
     pub fn disconnect(&self, id: ConnectionId) -> bool {
-        // The removed subscribers are dropped after the lock is released: a captured value's
-        // destructor may use this signal.
+        // The registry entry is retired before the removed subscriber is dropped, and the drop
+        // is contained: a captured value's destructor may use this signal or panic.
         let removed = self.inner.lock().remove_where(|sub| sub.id == id);
         let found = !removed.is_empty();
-        drop(removed);
-        // Only the owner of a connection may retire its registry entry.
-        if found {
-            unregister_connection(id);
-        }
+        retire_registry_entries(removed);
         found
     }
 
@@ -652,7 +654,7 @@ impl<T> Signal<T> {
             // below must not happen for an emission that cannot run it.
             if let Some(bound) = &sub.thread_bound {
                 if bound.owner != current_thread {
-                    (bound.on_skip)();
+                    let _ = catch_unwind(AssertUnwindSafe(|| (bound.on_skip)()));
                     continue;
                 }
             }
@@ -694,6 +696,9 @@ impl<T> Signal<T> {
                     }
                 },
             }));
+            // A single-shot slot removed above holds its last reference in `sub`; contain a
+            // panicking capture destructor so the remaining subscribers still run.
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(sub)));
         }
     }
 }
@@ -744,7 +749,9 @@ impl<T: 'static> Signal<T> {
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
                 let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
-                drop(removed);
+                for sub in removed {
+                    let _ = catch_unwind(AssertUnwindSafe(move || drop(sub)));
+                }
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
@@ -928,7 +935,9 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let disconnect_fn = Arc::new(move || {
             if let Some(inner_arc) = inner_weak.upgrade() {
                 let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
-                drop(removed);
+                for sub in removed {
+                    let _ = catch_unwind(AssertUnwindSafe(move || drop(sub)));
+                }
             }
         });
         register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
