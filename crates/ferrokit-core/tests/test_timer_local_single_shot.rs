@@ -102,6 +102,11 @@ fn a_timer_armed_before_the_thread_has_a_loop_fires_once_the_loop_exists() {
         let c = Rc::clone(&count);
         // No `EventLoop` on this thread yet.
         Timer::single_shot_local(20, move || c.set(c.get() + 1));
+        assert_eq!(
+            count.get(),
+            0,
+            "the closure must not run before a loop exists"
+        );
         let el = EventLoop::new();
         pump_until(&el, Duration::from_secs(5), || count.get() > 0);
         count.get()
@@ -115,6 +120,11 @@ fn a_zero_ms_call_before_the_thread_has_a_loop_runs_once_the_loop_exists() {
         let count = Rc::new(Cell::new(0u32));
         let c = Rc::clone(&count);
         Timer::single_shot_local(0, move || c.set(c.get() + 1));
+        assert_eq!(
+            count.get(),
+            0,
+            "the closure must not run before a loop exists"
+        );
         let el = EventLoop::new();
         pump_until(&el, Duration::from_secs(5), || count.get() > 0);
         count.get()

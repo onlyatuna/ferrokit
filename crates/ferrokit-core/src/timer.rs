@@ -1252,10 +1252,11 @@ impl Timer {
     /// Differences from Qt:
     /// * A timer armed on a thread that has no event loop yet is kept and armed when the loop
     ///   starts, as for [`Timer::single_shot`].
-    /// * If the loop or the thread ends before the timer fires, the closure never runs. It is
-    ///   dropped on the calling thread: at once when the posted event or timer is discarded
-    ///   there, otherwise in the thread-local destructor at thread exit. A capture whose
-    ///   destructor uses another thread-local may find it already destroyed at thread exit.
+    /// * If the loop or the thread ends before the closure runs, it never runs. It is dropped on
+    ///   the calling thread when its posted event is discarded (0 ms). Dropping the
+    ///   `EventLoop` does not drop the closure of an armed timer (interval > 0): it stays in the
+    ///   thread's table until the thread-local destructor at thread exit. A capture whose
+    ///   destructor uses another thread-local may find it already destroyed then.
     /// * A panic in `callback` is contained like the panic of any timer callback.
     pub fn single_shot_local(interval_ms: u64, callback: impl FnOnce() + 'static) {
         let handle = crate::signal::local::LocalHandle::install_once(callback);
