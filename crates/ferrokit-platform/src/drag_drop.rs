@@ -128,7 +128,7 @@ pub mod win32_ole {
     use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows_sys::Win32::System::Ole::{
         RegisterDragDrop, RevokeDragDrop, CF_HDROP, CF_UNICODETEXT, DROPEFFECT_COPY,
-        DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE,
+        DROPEFFECT_LINK, DROPEFFECT_NONE,
     };
 
     pub type HRESULT = i32;
@@ -375,19 +375,20 @@ pub mod win32_ole {
         data
     }
 
-    /// The effect a drag proposes: the modifier keys choose (Ctrl+Shift link, Ctrl copy, Shift
-    /// move), otherwise copy; limited to what the source `allowed`.
+    /// The effect a drag proposes: Ctrl+Shift chooses link, otherwise copy; limited to what the
+    /// source `allowed`. Never move: the target does not yet learn whether the widget accepted
+    /// the drop, and reporting MOVE makes the source delete data nobody took. Shift is therefore
+    /// treated as copy until widget acceptance is wired back to the OLE target.
     pub fn proposed_effect(key_state: u32, allowed: u32) -> u32 {
         let wanted = match (key_state & MK_CONTROL != 0, key_state & MK_SHIFT != 0) {
             (true, true) => DROPEFFECT_LINK,
             (true, false) => DROPEFFECT_COPY,
-            (false, true) => DROPEFFECT_MOVE,
-            (false, false) => DROPEFFECT_COPY,
+            (false, _) => DROPEFFECT_COPY,
         };
         if allowed & wanted != 0 {
             return wanted;
         }
-        [DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_LINK]
+        [DROPEFFECT_COPY, DROPEFFECT_LINK]
             .into_iter()
             .find(|e| allowed & e != 0)
             .unwrap_or(DROPEFFECT_NONE)
