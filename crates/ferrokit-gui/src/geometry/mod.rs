@@ -4,6 +4,7 @@ pub mod math3d;
 pub mod polygon;
 pub mod primitives;
 pub mod region;
+pub mod region_shapes;
 pub mod transform;
 
 pub use line::*;
@@ -11,6 +12,7 @@ pub use math3d::*;
 pub use polygon::*;
 pub use primitives::*;
 pub use region::*;
+pub use region_shapes::RegionType;
 pub use transform::*;
 
 // --- Qt Canonical Aliases ---
