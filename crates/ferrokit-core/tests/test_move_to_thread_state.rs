@@ -28,6 +28,12 @@ use ferrokit_core::object::{
 use ferrokit_core::signal::Signal;
 use ferrokit_core::timer::{start_object_timer, TimerType};
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: The probes hold `Arc` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 /// Upper bound for each cross-thread wait. A regression fails here instead of hanging.
 const WATCHDOG: Duration = Duration::from_secs(10);
 
@@ -101,7 +107,7 @@ struct Plain {
 impl Plain {
     fn new() -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
         }
     }
 }
@@ -211,7 +217,7 @@ fn timers_of_moved_object_keep_firing_on_the_target_thread() {
     let source = ThreadId::current();
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let mut probe = TickProbe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         ticks: Arc::clone(&ticks),
     };
     let probe_id = probe.data.id();
@@ -250,7 +256,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
     let grand_seen = Arc::new(Mutex::new(None));
 
     let mut root = AffinityProbe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         seen: Arc::clone(&root_seen),
     };
     let root_id = root.data.id();
@@ -258,7 +264,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let child = Box::new(AffinityProbe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         seen: Arc::clone(&child_seen),
     });
     let child_id = child.data.id();
@@ -266,7 +272,7 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
     let _ = unsafe { add_owned_child(root_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
     let grand = Box::new(AffinityProbe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         seen: Arc::clone(&grand_seen),
     });
     let grand_id = grand.data.id();
@@ -302,7 +308,7 @@ fn zero_interval_timer_of_moved_object_ticks_at_most_once_per_turn() {
     let source = ThreadId::current();
     let ticks = Arc::new(Mutex::new(Vec::new()));
     let mut probe = TickProbe {
-        data: ObjectData::new(ObjectId::next()),
+        data: movable_data(ObjectId::next()),
         ticks: Arc::clone(&ticks),
     };
     let probe_id = probe.data.id();

@@ -6,7 +6,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ferrokit_core::event_loop::{EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier};
+use ferrokit_core::event_loop::{
+    EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier, SocketNotifierError,
+};
 use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 use ferrokit_gui::paint::Pixmap;
 
@@ -318,14 +320,20 @@ impl WaylandNativeWindow {
         self.connection_fd
     }
 
-    /// Watches the compositor socket; an offscreen surface has none, so nothing is registered.
-    pub fn bind_event_dispatcher(&mut self, dispatcher: &mut dyn EventDispatcher) {
+    /// Watches the compositor socket; an offscreen surface has none, so nothing is registered. A
+    /// dispatcher that does not poll descriptors (every one but the Linux one) refuses with
+    /// [`SocketNotifierError::Unsupported`], because compositor events would never be read.
+    pub fn bind_event_dispatcher(
+        &mut self,
+        dispatcher: &mut dyn EventDispatcher,
+    ) -> Result<(), SocketNotifierError> {
         if self.connection_fd < 0 {
-            return;
+            return Ok(());
         }
         let notifier = Arc::new(SocketNotifier::new(self.connection_fd, SocketEvent::Read));
-        dispatcher.register_socket_notifier(&notifier);
+        dispatcher.register_socket_notifier(&notifier)?;
         self.socket_notifier = Some(notifier);
+        Ok(())
     }
 
     pub fn queue_wayland_event(&self, event: WaylandEvent) {

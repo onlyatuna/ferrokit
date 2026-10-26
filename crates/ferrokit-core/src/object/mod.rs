@@ -113,7 +113,7 @@
 //!    connected to the object is emitted, is still live when the callback writes through the
 //!    registry's pointer. Read the state through [`with_object`], or keep it outside the object
 //!    (an `Rc<Cell<_>>` shared with an owner that stays on the registration thread, or an
-//!    atomic; see the thread rules for what such an object must answer to `can_move_to_thread`).
+//!    atomic; such an object keeps the default of staying on its thread, see the thread rules).
 //! 3. **Touching the object while one of its callbacks runs.** Not even a read is allowed,
 //!    including a read of its id. `OwnedObject` has no `Deref`: `with` and `with_mut` take the
 //!    callback-borrow flag, so while a callback of the object runs they return `None` and call
@@ -155,20 +155,23 @@
 //! `Timer` handle dropped by its own slot): that unregisters the object at once and frees its
 //! memory only after the running callback returns.
 //!
-//! An object that answers `false` to [`QObject::can_move_to_thread`] keeps its registration
-//! thread: a move of it, or of an ancestor, is refused with [`MoveByIdError::NotMovable`] before
-//! an event is sent or anything changes. The object of a `Timer` does, because its `!Send` handle
-//! shares state with it that only the creating thread may use.
+//! An object stays on the thread it was registered on unless its [`ObjectData`] opted in with
+//! the `unsafe` [`ObjectData::with_thread_moves_allowed`]. A move of an object that did not, or
+//! of an ancestor of one, is refused with [`MoveByIdError::NotMovable`] before an event is sent
+//! or anything changes. So a safe call of [`move_to_thread_by_id`] never moves an object whose
+//! creator did not promise that it may leave the thread. A [`Timer`](crate::timer::Timer) never
+//! opts in: its `!Send` handle shares state with the object that only the creating thread may
+//! use.
+//!
+//! **What the opt-in promises.** [`move_to_thread_by_id`] is a safe function, and after a move the
+//! registry runs the object's `&mut` callbacks, and its owner drops it, on the target thread. The
+//! creator who opts in promises that the object is safe to use and drop on another thread, as a
+//! `Send` type is: no `Rc`, no `Cell` or `RefCell` shared with a handle that stays behind, no
+//! thread-local state. An object that holds an `Rc` it shares with its owner must not opt in.
 //!
 //! **Contract of every registration function.** Registering an object is `unsafe` because the
-//! registry runs `&mut` callbacks of it, and drops it (through its owner), on whichever thread it
-//! is registered on, and [`move_to_thread_by_id`] is a safe function that changes that thread.
-//! The registrant therefore promises one of two things: the object answers `false` to
-//! [`QObject::can_move_to_thread`] (so it never leaves the thread it was registered on), or it
-//! is safe to use and drop on another thread, as a `Send` type is (no `Rc`, no `Cell` or `RefCell`
-//! shared with a handle that stays behind, no thread-local state). An object that holds an `Rc`
-//! it shares with its owner must answer `false`. [`QObject::can_move_to_thread`] answers `true`
-//! by default, which makes the second promise.
+//! registry runs `&mut` callbacks of it on its registration thread and the owner must not touch
+//! it while one runs. The thread-move promise is not part of it: it belongs to the opt-in above.
 //!
 //! # Synchronization and locking contract
 //!

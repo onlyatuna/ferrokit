@@ -16,6 +16,12 @@ use ferrokit_core::object::{
     unregister_qobject, with_object, MoveByIdError, ObjectData, ObjectId, QObject, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds nothing but its `ObjectData`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 struct Probe {
     data: ObjectData,
     thread_changes: u32,
@@ -24,7 +30,7 @@ struct Probe {
 impl Probe {
     fn new() -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             thread_changes: 0,
         }
     }
@@ -125,10 +131,6 @@ struct BusyProbe {
 }
 
 impl QObject for BusyProbe {
-    // Holds `!Send` state shared with the registering thread, so the object must stay there.
-    fn can_move_to_thread(&self) -> bool {
-        false
-    }
     fn object_data(&self) -> &ObjectData {
         &self.data
     }

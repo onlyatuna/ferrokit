@@ -70,7 +70,9 @@ fn readable_descriptor_wakes_a_blocked_dispatcher() {
     let pipe = Pipe::new();
     let dispatcher = UnixEventDispatcher::new();
     let (notifier, count) = counting_notifier(pipe.read, SocketEvent::Read);
-    dispatcher.register_socket_notifier(&notifier);
+    dispatcher
+        .register_socket_notifier(&notifier)
+        .expect("Linux polls descriptors");
 
     let stop = Arc::new(AtomicBool::new(false));
     let writer_stop = Arc::clone(&stop);
@@ -99,7 +101,9 @@ fn a_non_waiting_pass_reports_ready_descriptors() {
     let pipe = Pipe::new();
     let dispatcher = UnixEventDispatcher::new();
     let (notifier, count) = counting_notifier(pipe.read, SocketEvent::Read);
-    dispatcher.register_socket_notifier(&notifier);
+    dispatcher
+        .register_socket_notifier(&notifier)
+        .expect("Linux polls descriptors");
     pipe.put();
 
     assert_eq!(dispatcher.process_events(false, None), DispatchResult::Normal);
@@ -114,7 +118,9 @@ fn a_disabled_notifier_leaves_the_poll_set() {
     let pipe = Pipe::new();
     let dispatcher = UnixEventDispatcher::new();
     let (notifier, count) = counting_notifier(pipe.read, SocketEvent::Read);
-    dispatcher.register_socket_notifier(&notifier);
+    dispatcher
+        .register_socket_notifier(&notifier)
+        .expect("Linux polls descriptors");
     pipe.put();
     notifier.set_enabled(false);
 
@@ -142,8 +148,12 @@ fn read_and_exception_notifiers_of_one_descriptor_are_independent() {
     let dispatcher = UnixEventDispatcher::new();
     let (read, read_count) = counting_notifier(pipe.read, SocketEvent::Read);
     let (exception, _) = counting_notifier(pipe.read, SocketEvent::Exception);
-    dispatcher.register_socket_notifier(&read);
-    dispatcher.register_socket_notifier(&exception);
+    dispatcher
+        .register_socket_notifier(&read)
+        .expect("Linux polls descriptors");
+    dispatcher
+        .register_socket_notifier(&exception)
+        .expect("Linux polls descriptors");
     dispatcher.unregister_socket_notifier(&exception);
 
     pipe.put();

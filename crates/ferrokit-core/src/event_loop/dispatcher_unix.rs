@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use crate::event::{NativeEventFilter, NativeEventFilterChain, NativeMessage};
 use crate::event_loop::dispatcher::{DispatchResult, EventDispatcher, EventDispatcherHandle};
-use crate::event_loop::socket_notifier::{SocketDescriptor, SocketEvent, SocketNotifier};
+use crate::event_loop::socket_notifier::{
+    SocketDescriptor, SocketEvent, SocketNotifier, SocketNotifierError,
+};
 use crate::timer::{TimerEntry, TimerId, TimerRegistry};
 
 pub const EPOLLIN: u32 = 0x001;
@@ -331,6 +333,16 @@ impl EpollReactor {
         self.sync_fd(key.0);
     }
 
+    /// Whether this reactor polls real descriptors: only the Linux one does, and only when its
+    /// `epoll` set could be created. Elsewhere only events simulated with
+    /// [`trigger_socket_event`](Self::trigger_socket_event) reach a registered notifier.
+    pub fn polls_descriptors(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        return self.poller.is_some();
+        #[cfg(not(target_os = "linux"))]
+        false
+    }
+
     pub fn trigger_socket_event(&self, fd: SocketDescriptor, event: SocketEvent) {
         self.pending_socket_events.lock().unwrap().push((fd, event));
         self.notify_sleeper();
@@ -619,7 +631,15 @@ impl EventDispatcher for UnixEventDispatcher {
         self.reactor.unregister_timer(entry.id);
     }
 
-    fn register_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
+    fn register_socket_notifier(
+        &self,
+        notifier: &Arc<SocketNotifier>,
+    ) -> Result<(), SocketNotifierError> {
+        if !self.reactor.polls_descriptors() {
+            return Err(SocketNotifierError::Unsupported {
+                dispatcher: self.class_name(),
+            });
+        }
         self.reactor.register_socket_notifier(notifier);
         // A notifier that is disabled later must leave the poll set at once, or a readable
         // descriptor would end every wait immediately.
@@ -630,6 +650,7 @@ impl EventDispatcher for UnixEventDispatcher {
                 reactor.notifier_enabled_changed(fd);
             }
         })));
+        Ok(())
     }
 
     fn unregister_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
@@ -719,7 +740,9 @@ mod tests {
             *sink.lock().unwrap() = Some(sock);
         });
 
-        dispatcher.register_socket_notifier(&notifier);
+        // The reactor takes the simulated descriptor on every platform; the dispatcher refuses a
+        // notifier where it does not poll descriptors.
+        dispatcher.reactor.register_socket_notifier(&notifier);
 
         // Simulate incoming socket data (EPOLLIN)
         dispatcher
@@ -756,13 +779,41 @@ mod tests {
         let sink = Arc::clone(&hits);
         live.activated().connect(move |_| *sink.lock().unwrap() += 1);
 
-        dispatcher.register_socket_notifier(&stale);
-        dispatcher.register_socket_notifier(&live);
+        dispatcher.reactor.register_socket_notifier(&stale);
+        dispatcher.reactor.register_socket_notifier(&live);
         dispatcher.unregister_socket_notifier(&stale);
 
         dispatcher.reactor.trigger_socket_event(fd, SocketEvent::Read);
         dispatcher.process_events(false, None);
         assert_eq!(*hits.lock().unwrap(), 1, "the live notifier was removed");
         dispatcher.unregister_socket_notifier(&live);
+    }
+
+    /// The dispatcher registers a notifier only where it polls descriptors, and fails loudly with
+    /// `Unsupported` everywhere else (Windows, macOS, a Linux without `epoll`), instead of
+    /// holding a notifier that its descriptor would never activate.
+    #[test]
+    fn test_registering_a_socket_notifier_fails_where_descriptors_are_not_polled() {
+        let dispatcher = UnixEventDispatcher::new();
+        let notifier = Arc::new(SocketNotifier::new(44, SocketEvent::Read));
+
+        let registered = dispatcher.register_socket_notifier(&notifier);
+
+        assert_eq!(registered.is_ok(), dispatcher.reactor.polls_descriptors());
+        if let Err(error) = registered {
+            assert_eq!(
+                error,
+                SocketNotifierError::Unsupported {
+                    dispatcher: dispatcher.class_name()
+                }
+            );
+            assert!(
+                dispatcher.reactor.socket_notifiers.lock().unwrap().is_empty(),
+                "a refused notifier is not kept"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(registered.is_err());
+        dispatcher.unregister_socket_notifier(&notifier);
     }
 }

@@ -4,7 +4,9 @@
 //!
 //! The protocol is implemented over [`DbusTransport`], so everything except opening the Unix
 //! socket (Linux only) runs and is tested on every platform.
-use ferrokit_core::event_loop::{EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier};
+use ferrokit_core::event_loop::{
+    EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier, SocketNotifierError,
+};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -932,18 +934,20 @@ impl DbusConnection {
     }
 
     /// Watches the bus socket for readability. A transport without a descriptor (`-1`) has
-    /// nothing to watch, so nothing is registered and `None` is returned.
+    /// nothing to watch, so nothing is registered and `Ok(None)` is returned. A dispatcher that
+    /// does not poll descriptors (every one but the Linux one) refuses with
+    /// [`SocketNotifierError::Unsupported`], because the bus socket would never be read.
     pub fn bind_event_dispatcher(
         &self,
         dispatcher: &mut dyn EventDispatcher,
-    ) -> Option<Arc<SocketNotifier>> {
+    ) -> Result<Option<Arc<SocketNotifier>>, SocketNotifierError> {
         let fd = self.transport.socket_fd();
         if self.closed || fd < 0 {
-            return None;
+            return Ok(None);
         }
         let notifier = Arc::new(SocketNotifier::new(fd, SocketEvent::Read));
-        dispatcher.register_socket_notifier(&notifier);
-        Some(notifier)
+        dispatcher.register_socket_notifier(&notifier)?;
+        Ok(Some(notifier))
     }
 }
 
@@ -1512,15 +1516,29 @@ mod tests {
         use ferrokit_core::event_loop::UnixEventDispatcher;
         let (conn, bus) = connect(":1.2");
         let mut dispatcher = UnixEventDispatcher::new();
-        assert!(conn.bind_event_dispatcher(&mut dispatcher).is_none());
+        assert!(conn
+            .bind_event_dispatcher(&mut dispatcher)
+            .unwrap()
+            .is_none());
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
             let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
             bus.set_socket_fd(stream.as_raw_fd());
-            assert!(conn.bind_event_dispatcher(&mut dispatcher).is_some());
+            assert!(conn
+                .bind_event_dispatcher(&mut dispatcher)
+                .unwrap()
+                .is_some());
         }
+        // Where the dispatcher does not poll descriptors, the bus socket would never be read:
+        // registering fails instead of leaving a notifier that never fires.
         #[cfg(not(target_os = "linux"))]
-        let _ = bus;
+        {
+            bus.set_socket_fd(7);
+            assert!(matches!(
+                conn.bind_event_dispatcher(&mut dispatcher),
+                Err(SocketNotifierError::Unsupported { .. })
+            ));
+        }
     }
 }

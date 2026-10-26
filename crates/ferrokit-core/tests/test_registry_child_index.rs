@@ -22,6 +22,12 @@ use ferrokit_core::object::{
     QObject, ThreadId,
 };
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Node` holds nothing but its `ObjectData`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WAIT: Duration = Duration::from_secs(10);
 
 /// The registry is process-wide and the check is exact only while nothing else changes a link.
@@ -33,7 +39,7 @@ struct Node {
 
 impl Node {
     fn with_id(id: ObjectId) -> Self {
-        Self { data: ObjectData::new(id) }
+        Self { data: movable_data(id) }
     }
 
     fn new() -> Self {

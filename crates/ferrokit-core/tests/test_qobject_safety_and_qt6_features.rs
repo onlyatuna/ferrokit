@@ -14,6 +14,12 @@ use ferrokit_core::property::Property;
 use ferrokit_core::signal::Signal;
 use ferrokit_core::timer::TimerType;
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `TestWidget` holds `Arc` handles and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 // -----------------------------------------------------------------------------
 // Test Object Helpers
 // -----------------------------------------------------------------------------
@@ -30,7 +36,7 @@ struct TestWidget {
 impl TestWidget {
     pub fn new(name: &str) -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             name: name.to_string(),
             received_timer: None,
             handled_events: 0,

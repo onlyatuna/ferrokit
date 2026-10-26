@@ -20,6 +20,12 @@ use ferrokit_core::object::{
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 
+/// An `ObjectData` that lets `move_to_thread_by_id` move its object.
+fn movable_data(id: ObjectId) -> ObjectData {
+    // SAFETY: `Probe` holds an `Arc` log and plain fields, which are `Send`.
+    unsafe { ObjectData::new(id).with_thread_moves_allowed() }
+}
+
 const WAIT: Duration = Duration::from_secs(10);
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -41,7 +47,7 @@ struct Probe {
 impl Probe {
     fn new(name: &'static str, log: &Log) -> Self {
         Self {
-            data: ObjectData::new(ObjectId::next()),
+            data: movable_data(ObjectId::next()),
             name,
             log: Arc::clone(log),
         }

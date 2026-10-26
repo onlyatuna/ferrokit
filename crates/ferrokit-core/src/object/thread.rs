@@ -261,7 +261,8 @@ pub enum MoveError {
     WrongThread,
     /// The object or a descendant is currently borrowed by a running callback.
     Busy,
-    /// A descendant answers `false` to [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread).
+    /// The object or a descendant did not opt in with
+    /// [`ObjectData::with_thread_moves_allowed`](crate::object::ObjectData::with_thread_moves_allowed).
     NotMovable,
 }
 
@@ -289,8 +290,8 @@ pub enum MoveByIdError {
     WrongThread,
     UnknownObject,
     Busy,
-    /// The object or a descendant answers `false` to
-    /// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread). Nothing was
+    /// The object or a descendant did not opt in with
+    /// [`ObjectData::with_thread_moves_allowed`](crate::object::ObjectData::with_thread_moves_allowed). Nothing was
     /// changed; `ThreadChange` was sent only if a descendant was attached by a `ThreadChange`
     /// handler during the move.
     NotMovable,
@@ -339,11 +340,12 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 ///
 /// Cascading actions, in Qt order (`qobject.cpp:1782-1792`):
 /// 1. Validates that `id` is registered and alive, has no parent, belongs to
-///    `current_caller_thread`, has no active callback borrow in its subtree, and that no object of
-///    the subtree answers `false` to
-///    [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread) (a
-///    [`Timer`](crate::timer::Timer) is such an object); a failure returns the error with nothing
-///    sent or changed. The inspection borrows are released before step 2.
+///    `current_caller_thread`, has no active callback borrow in its subtree, and that every object
+///    of the subtree opted in with
+///    [`ObjectData::with_thread_moves_allowed`](crate::object::ObjectData::with_thread_moves_allowed)
+///    (an `unsafe` call; a [`Timer`](crate::timer::Timer) never does, and a safe call can't move
+///    an object that did not); a failure returns the error with nothing sent or changed. The
+///    inspection borrows are released before step 2.
 /// 2. Dispatches `EventKind::ThreadChange` to the root and all descendants before any change, then
 ///    collects the subtree again: a child a handler attached moves too, one it destroyed is left out.
 ///    If a handler made the subtree busy or unmovable, the move fails with that error and changes
@@ -459,11 +461,10 @@ pub fn move_to_thread_by_id(
 /// [`move_to_thread_by_id`] instead.
 ///
 /// Refuses with [`MoveError::Busy`] when the root or any descendant is currently borrowed by a
-/// running callback, and with [`MoveError::NotMovable`] when a descendant answers `false` to
-/// [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread), before anything is
-/// sent or changed. The root is not asked [`QObject::can_move_to_thread`](crate::object::QObject::can_move_to_thread):
-/// only its `ObjectData` is available here, and reaching the object through the registry would
-/// overlap that `&mut`. [`move_to_thread_by_id`] asks the root too.
+/// running callback, and with [`MoveError::NotMovable`] when the root or a descendant did not opt
+/// in with
+/// [`ObjectData::with_thread_moves_allowed`](crate::object::ObjectData::with_thread_moves_allowed),
+/// before anything is sent or changed.
 #[deprecated(
     note = "holding `&mut ObjectData` across `ThreadChange` delivery and recursive child updates \
             overlaps the registry's callback borrow; use `move_to_thread_by_id`"
@@ -617,7 +618,9 @@ mod tests {
 
         let obj = unsafe {
             crate::object::register_owned_qobject(UnitProbe {
-                data: ObjectData::with_thread(ObjectId::next(), thread_a),
+                // `UnitProbe` holds nothing but its `ObjectData`, so it may change thread.
+                data: ObjectData::with_thread(ObjectId::next(), thread_a)
+                    .with_thread_moves_allowed(),
             })
         };
         let id = crate::object::OwnedObject::object_id(&obj);
@@ -633,6 +636,23 @@ mod tests {
             Some(thread_b)
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn test_move_to_thread_refuses_object_that_did_not_opt_in() {
+        let thread_a = ThreadId::current();
+        let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
+
+        let obj = unsafe {
+            crate::object::register_owned_qobject(UnitProbe {
+                data: ObjectData::with_thread(ObjectId::next(), thread_a),
+            })
+        };
+        let id = crate::object::OwnedObject::object_id(&obj);
+
+        let res = move_to_thread_by_id(id, thread_b, thread_a);
+        assert_eq!(res, Err(MoveByIdError::NotMovable));
+        assert_eq!(obj.with(|o| o.data.thread_id()).unwrap(), thread_a);
     }
 
     #[test]
