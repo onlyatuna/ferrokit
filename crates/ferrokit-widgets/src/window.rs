@@ -2335,6 +2335,90 @@ impl WindowEventHandler {
             }
         }
     }
+
+    fn handle_drag_enter(&mut self, pos: Point, formats: Vec<String>, drop_action: u32) -> bool {
+        let root = self.core.root();
+        let mut ev = Event::new_spontaneous(EventKind::DragEnter {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            formats: formats.clone(),
+            drop_action,
+        });
+        if self.dispatcher.dispatch_event(&root, &mut ev) {
+            return true;
+        }
+        let mut win_ev = Event::new_spontaneous(EventKind::DragEnter {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            formats,
+            drop_action,
+        });
+        match self.core.event_cb.borrow().as_ref() {
+            Some(cb) => {
+                cb(&mut win_ev);
+                win_ev.is_accepted()
+            }
+            None => false,
+        }
+    }
+
+    fn handle_drag_move(&mut self, pos: Point, drop_action: u32) -> bool {
+        let root = self.core.root();
+        let mut ev = Event::new_spontaneous(EventKind::DragMove {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            drop_action,
+        });
+        if self.dispatcher.dispatch_event(&root, &mut ev) {
+            return true;
+        }
+        let mut win_ev = Event::new_spontaneous(EventKind::DragMove {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            drop_action,
+        });
+        match self.core.event_cb.borrow().as_ref() {
+            Some(cb) => {
+                cb(&mut win_ev);
+                win_ev.is_accepted()
+            }
+            None => false,
+        }
+    }
+
+    fn handle_drop(
+        &mut self,
+        pos: Point,
+        formats: Vec<String>,
+        data: Vec<(String, Vec<u8>)>,
+        drop_action: u32,
+    ) -> bool {
+        let root = self.core.root();
+        let mut ev = Event::new_spontaneous(EventKind::Drop {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            formats: formats.clone(),
+            data: data.clone(),
+            drop_action,
+        });
+        if self.dispatcher.dispatch_event(&root, &mut ev) {
+            return true;
+        }
+        let mut win_ev = Event::new_spontaneous(EventKind::Drop {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            formats,
+            data,
+            drop_action,
+        });
+        match self.core.event_cb.borrow().as_ref() {
+            Some(cb) => {
+                cb(&mut win_ev);
+                win_ev.is_accepted()
+            }
+            None => false,
+        }
+    }
 }
 
 struct WindowEventHandler {
@@ -2689,21 +2773,10 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 formats,
                 drop_action,
             } => {
-                let mut ev = Event::new_spontaneous(EventKind::DragEnter {
-                    pos_x: pos.x,
-                    pos_y: pos.y,
-                    formats,
-                    drop_action,
-                });
-                self.dispatcher.dispatch_event(&root, &mut ev);
+                let _ = self.handle_drag_enter(pos, formats, drop_action);
             }
             WindowSystemEvent::DragMove { pos, drop_action } => {
-                let mut ev = Event::new_spontaneous(EventKind::DragMove {
-                    pos_x: pos.x,
-                    pos_y: pos.y,
-                    drop_action,
-                });
-                self.dispatcher.dispatch_event(&root, &mut ev);
+                let _ = self.handle_drag_move(pos, drop_action);
             }
             WindowSystemEvent::DragLeave => {
                 let mut ev = Event::new_spontaneous(EventKind::DragLeave);
@@ -2715,14 +2788,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 data,
                 drop_action,
             } => {
-                let mut ev = Event::new_spontaneous(EventKind::Drop {
-                    pos_x: pos.x,
-                    pos_y: pos.y,
-                    formats,
-                    data,
-                    drop_action,
-                });
-                self.dispatcher.dispatch_event(&root, &mut ev);
+                let _ = self.handle_drop(pos, formats, data, drop_action);
             }
             WindowSystemEvent::Minimize { minimized } => {
                 // Qt acts only when the minimized bit flips (`QWidget::event` WindowStateChange,
@@ -2743,6 +2809,29 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> bool {
+        match event {
+            WindowSystemEvent::DragEnter {
+                pos,
+                formats,
+                drop_action,
+            } => self.handle_drag_enter(pos, formats, drop_action),
+            WindowSystemEvent::DragMove { pos, drop_action } => {
+                self.handle_drag_move(pos, drop_action)
+            }
+            WindowSystemEvent::Drop {
+                pos,
+                formats,
+                data,
+                drop_action,
+            } => self.handle_drop(pos, formats, data, drop_action),
+            other => {
+                self.handle_window_event(other);
+                false
+            }
         }
     }
 }
