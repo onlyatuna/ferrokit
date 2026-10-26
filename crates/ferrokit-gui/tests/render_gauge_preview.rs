@@ -2,7 +2,7 @@
 use ferrokit_gui::geometry::primitives::{Point, PointF, Rect, RectF};
 use ferrokit_gui::paint::painter::{Brush, Painter, Pen};
 use ferrokit_gui::paint::pixmap::Pixmap;
-use ferrokit_gui::text::font::{Font, FontWeight};
+use ferrokit_gui::text::font::{Font, FontTag, FontWeight};
 use ferrokit_gui::text::font_metrics::FontMetrics;
 use std::path::Path;
 
@@ -36,7 +36,7 @@ fn test_layer1_rect_operations() {
 
 #[test]
 fn test_layer2_font_metrics_and_tabular_numbers() {
-    let font = Font::new("Segoe UI", 14.0).with_tabular_numbers(true);
+    let font = Font::new("Segoe UI", 14.0).with_feature(FontTag::TNUM, 1);
     let metrics = FontMetrics::from_font(&font);
 
     // 1. Verify tabular numbers (tnum): "11:11:11" and "88:88:88" advance must match
@@ -113,7 +113,7 @@ fn test_layer3_render_gauge_preview_to_png() {
         // 4. Center text
         let font = Font::new("Arial", 20.0)
             .with_weight(FontWeight::Bold)
-            .with_tabular_numbers(true);
+            .with_feature(FontTag::TNUM, 1);
         painter.set_pen(Pen::from_rgba8(240, 240, 245, 255, 1.0));
         painter.draw_text(PointF::new(115.0, 155.0), "75%", &font);
     }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -140,6 +141,77 @@ pub enum FontStyle {
     Oblique,
 }
 
+/// A four-character OpenType feature tag (`QFont::Tag`), held as the big-endian `u32` of its
+/// bytes, so `FontTag::new(b"tnum").value()` is Qt's `QFont::Tag("tnum").value()`. The default
+/// tag has value 0, which is invalid. Tags compare and order by value, as `QMap` keys do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FontTag(u32);
+
+impl FontTag {
+    /// `tnum`: tabular (fixed-width) figures.
+    pub const TNUM: FontTag = FontTag::new(b"tnum");
+    /// `kern`: pair kerning.
+    pub const KERN: FontTag = FontTag::new(b"kern");
+    /// `liga`: standard ligatures.
+    pub const LIGA: FontTag = FontTag::new(b"liga");
+    /// `clig`: contextual ligatures.
+    pub const CLIG: FontTag = FontTag::new(b"clig");
+
+    /// The tag of four bytes (`QFont::Tag(const char (&)[5])`). All zero is invalid.
+    pub const fn new(bytes: &[u8; 4]) -> Self {
+        Self(u32::from_be_bytes(*bytes))
+    }
+
+    /// A tag from its numeric value; `None` for 0 (`QFont::Tag::fromValue`).
+    pub const fn from_value(value: u32) -> Option<Self> {
+        if value == 0 {
+            None
+        } else {
+            Some(Self(value))
+        }
+    }
+
+    /// A tag from a string of exactly four UTF-16 units, each converted like
+    /// `QChar::toLatin1` (anything above U+00FF becomes NUL); `None` when the length is
+    /// wrong or the result is invalid (`QFont::Tag::fromString`, which also warns).
+    pub fn from_string(text: &str) -> Option<Self> {
+        let mut units = text.encode_utf16();
+        let mut bytes = [0u8; 4];
+        for byte in &mut bytes {
+            let unit = units.next()?;
+            *byte = u8::try_from(unit).unwrap_or(0);
+        }
+        if units.next().is_some() {
+            return None;
+        }
+        Self::from_value(u32::from_be_bytes(bytes))
+    }
+
+    /// The numeric value (`QFont::Tag::value`).
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+
+    /// Whether the value is non-zero (`QFont::Tag::isValid`).
+    pub const fn is_valid(self) -> bool {
+        self.0 != 0
+    }
+
+    /// The four bytes of the tag (`QFont::Tag::toString`).
+    pub const fn to_bytes(self) -> [u8; 4] {
+        self.0.to_be_bytes()
+    }
+}
+
+impl std::fmt::Display for FontTag {
+    /// The bytes as Latin-1 characters, like `toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        self.to_bytes().iter().try_for_each(|&b| f.write_char(char::from(b)))
+    }
+}
+
 /// Font attribute descriptor matching Qt `QFont`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Font {
@@ -151,8 +223,8 @@ pub struct Font {
     pub weight: FontWeight,
     /// Font style.
     pub style: FontStyle,
-    /// Enables OpenType 'tnum' (tabular numbers) feature.
-    pub tabular_numbers: bool,
+    /// OpenType features set explicitly, by tag (`QFont::setFeature`).
+    features: BTreeMap<FontTag, u32>,
     /// Extra advance in logical pixels added after every glyph cluster
     /// (`QFont::setLetterSpacing(AbsoluteSpacing, …)`, which QSS `letter-spacing` maps to).
     pub letter_spacing: f32,
@@ -168,7 +240,7 @@ impl Font {
             size,
             weight: FontWeight::Normal,
             style: FontStyle::Normal,
-            tabular_numbers: false,
+            features: BTreeMap::new(),
             letter_spacing: 0.0,
             font_data: None,
         }
@@ -225,10 +297,61 @@ impl Font {
         self
     }
 
-    /// Sets whether tabular numbers ('tnum') are enabled.
-    pub fn with_tabular_numbers(mut self, enabled: bool) -> Self {
-        self.tabular_numbers = enabled;
+    /// Applies `value` to the OpenType feature `tag` when shaping (`QFont::setFeature`). A
+    /// zero value disables the feature, a non-zero one enables it; some features read it as an
+    /// index (`salt`). A feature set to 0 still counts as set, and overrides what Qt would
+    /// enable on its own (`kern` follows kerning, ligatures follow letter spacing). An invalid
+    /// tag is ignored, as in Qt.
+    ///
+    /// Whether a feature has any effect depends on the font: a font without `tnum` lays
+    /// digits out as usual.
+    pub fn set_feature(&mut self, tag: FontTag, value: u32) {
+        if tag.is_valid() {
+            self.features.insert(tag, value);
+        }
+    }
+
+    /// Builder form of [`set_feature`](Self::set_feature).
+    pub fn with_feature(mut self, tag: FontTag, value: u32) -> Self {
+        self.set_feature(tag, value);
         self
+    }
+
+    /// Removes `tag` from the explicitly set features, reverting to the default behaviour
+    /// (`QFont::unsetFeature`).
+    pub fn unset_feature(&mut self, tag: FontTag) {
+        self.features.remove(&tag);
+    }
+
+    /// The value set for `tag`, 0 when it has not been set (`QFont::featureValue`).
+    pub fn feature_value(&self, tag: FontTag) -> u32 {
+        self.features.get(&tag).copied().unwrap_or(0)
+    }
+
+    /// Whether a value was set for `tag`, even 0 (`QFont::isFeatureSet`).
+    pub fn is_feature_set(&self, tag: FontTag) -> bool {
+        self.features.contains_key(&tag)
+    }
+
+    /// The tags of every feature that is set, ordered by tag value (`QFont::featureTags`).
+    pub fn feature_tags(&self) -> Vec<FontTag> {
+        self.features.keys().copied().collect()
+    }
+
+    /// The feature map, ordered by tag value.
+    pub fn features(&self) -> &BTreeMap<FontTag, u32> {
+        &self.features
+    }
+
+    /// Removes every explicitly set feature (`QFont::clearFeatures`).
+    pub fn clear_features(&mut self) {
+        self.features.clear();
+    }
+
+    /// Whether pair kerning is on: Qt's default, unless `kern` was set to 0
+    /// (`QTextEngine::shapeTextWithHarfbuzzNG` lets an explicit `kern` win over `kerning()`).
+    pub(crate) fn kerning_enabled(&self) -> bool {
+        self.features.get(&FontTag::KERN).is_none_or(|&value| value != 0)
     }
 
     /// Sets the absolute letter spacing in logical pixels.
@@ -260,7 +383,7 @@ pub struct FontDescription {
     pub size: Option<f32>,
     pub weight: Option<FontWeight>,
     pub style: Option<FontStyle>,
-    pub tabular_numbers: Option<bool>,
+    pub features: Option<BTreeMap<FontTag, u32>>,
 }
 
 impl FontDescription {
@@ -293,9 +416,10 @@ impl FontDescription {
         self
     }
 
-    /// Sets whether tabular numbers are enabled.
-    pub fn with_tabular_numbers(mut self, enabled: bool) -> Self {
-        self.tabular_numbers = Some(enabled);
+    /// Sets the OpenType feature map. Like `QFont::FeaturesResolved`, features resolve as a
+    /// whole: a description that sets any replaces the parent's map, an empty map included.
+    pub fn with_features(mut self, features: BTreeMap<FontTag, u32>) -> Self {
+        self.features = Some(features);
         self
     }
 
@@ -306,7 +430,10 @@ impl FontDescription {
             size: self.size.unwrap_or(parent.size),
             weight: self.weight.unwrap_or(parent.weight),
             style: self.style.unwrap_or(parent.style),
-            tabular_numbers: self.tabular_numbers.unwrap_or(parent.tabular_numbers),
+            features: self
+                .features
+                .clone()
+                .unwrap_or_else(|| parent.features.clone()),
             letter_spacing: parent.letter_spacing,
             font_data: parent.font_data.clone(),
         }
@@ -320,7 +447,7 @@ impl From<&Font> for FontDescription {
             size: Some(font.size),
             weight: Some(font.weight),
             style: Some(font.style),
-            tabular_numbers: Some(font.tabular_numbers),
+            features: Some(font.features.clone()),
         }
     }
 }
@@ -333,14 +460,13 @@ mod tests {
     fn test_font_creation_and_builder() {
         let font = Font::new("Consolas", 14.0)
             .with_weight(FontWeight::Bold)
-            .with_style(FontStyle::Italic)
-            .with_tabular_numbers(true);
+            .with_style(FontStyle::Italic);
 
         assert_eq!(font.family, "Consolas");
         assert_eq!(font.size, 14.0);
         assert_eq!(font.weight, FontWeight::Bold);
         assert_eq!(font.style, FontStyle::Italic);
-        assert!(font.tabular_numbers);
+        assert!(font.feature_tags().is_empty());
         assert!(font.font_data.is_none());
     }
 
@@ -356,10 +482,10 @@ mod tests {
 
     #[test]
     fn test_font_description_cascading_merge() {
-        let parent = Font::new("Segoe UI", 12.0)
+        let mut parent = Font::new("Segoe UI", 12.0)
             .with_weight(FontWeight::Normal)
-            .with_style(FontStyle::Normal)
-            .with_tabular_numbers(false);
+            .with_style(FontStyle::Normal);
+        parent.set_feature(FontTag::new(b"liga"), 0);
 
         // 1. None inherits parent
         let desc_empty = FontDescription::new();
@@ -376,21 +502,37 @@ mod tests {
         assert_eq!(merged_partial.size, 18.0);
         assert_eq!(merged_partial.weight, FontWeight::Bold);
         assert_eq!(merged_partial.style, FontStyle::Normal);
-        assert!(!merged_partial.tabular_numbers);
+        assert_eq!(merged_partial.feature_tags(), [FontTag::new(b"liga")]);
 
-        // 3. Full override
+        // 3. Full override. Features resolve as a whole (`QFont::FeaturesResolved`): the
+        // description's map replaces the parent's instead of merging with it.
+        let mut features = BTreeMap::new();
+        features.insert(FontTag::TNUM, 1);
         let desc_full = FontDescription::new()
             .with_family("Consolas")
             .with_size(24.0)
             .with_weight(FontWeight::Black)
             .with_style(FontStyle::Italic)
-            .with_tabular_numbers(true);
+            .with_features(features);
         let merged_full = desc_full.merge_with_parent(&parent);
 
         assert_eq!(merged_full.family, "Consolas");
         assert_eq!(merged_full.size, 24.0);
         assert_eq!(merged_full.weight, FontWeight::Black);
         assert_eq!(merged_full.style, FontStyle::Italic);
-        assert!(merged_full.tabular_numbers);
+        assert_eq!(merged_full.feature_tags(), [FontTag::TNUM]);
+        assert!(!merged_full.is_feature_set(FontTag::new(b"liga")));
+
+        // 4. An explicitly empty map clears the parent's features.
+        let cleared = FontDescription::new()
+            .with_features(BTreeMap::new())
+            .merge_with_parent(&parent);
+        assert!(cleared.feature_tags().is_empty());
+
+        // A description taken from a font reproduces its features.
+        assert_eq!(
+            FontDescription::from(&merged_full).merge_with_parent(&parent),
+            merged_full
+        );
     }
 }
