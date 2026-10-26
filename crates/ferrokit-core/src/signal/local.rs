@@ -39,6 +39,19 @@
 //!   their signals, before the thread ends if their captures need that.
 //! * `T: 'static`: the closure is stored type-erased. A payload that borrows (see
 //!   `Signal::connect` with a `'a` payload) stays on [`Signal::connect`].
+//! * **Context-bound connects** ([`Signal::connect_local_to`] and the variants that take a
+//!   context object) put the slot on Qt's `connect(sender, signal, context, functor, type)`
+//!   footing: the context is the receiver, and its thread decides `AutoConnection`
+//!   (queued when the emitter is elsewhere, which needs `T: Clone + Send`). The context must live
+//!   on the calling thread and must not be movable (a local slot cannot follow `moveToThread`);
+//!   for `Auto`, `Queued` and `BlockingQueued` it must also be registered with the object
+//!   registry, because a call posted to an unregistered receiver is dropped on delivery. A
+//!   `Direct` connection still skips an emission from another thread, as above. Destroying the
+//!   context disconnects the slot and drops a call that was posted but not delivered; the closure
+//!   is dropped on the context's thread.
+//! * **`BlockingQueued` on the context's own thread runs the slot in place.** Qt prints "Dead
+//!   lock detected" and then waits for itself forever. ferrokit runs the slot at once, as
+//!   [`Signal::connect_blocking_queued`] does.
 //!
 //! # Invariants of this module
 //!
@@ -59,9 +72,10 @@ use std::sync::Arc;
 
 use crate::event::{Event, EventKind};
 use crate::event_loop::post_event_to_thread;
-use crate::object::{ObjectId, ThreadId};
+use crate::object::qobject::registration_thread_of;
+use crate::object::{ObjectId, QObject, ThreadId};
 
-use super::signal::{ConnectionId, ConnectionType, ScopedConnection, Signal};
+use super::signal::{ConnectionId, ConnectionType, ScopedConnection, Signal, SlotKey};
 
 thread_local! {
     /// The slots connected on this thread with `connect_local*`, by key (I4).
@@ -257,5 +271,185 @@ impl<T: 'static> Signal<T> {
                 handle.call(value);
             },
         )
+    }
+}
+
+/// Why a context-bound local connection was refused. Nothing was connected, and the closure was
+/// not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalConnectError {
+    /// The context object belongs to another thread than the caller. A local slot runs on the
+    /// thread that connected it, so that thread has to be the context's thread.
+    WrongThread,
+    /// The context opted in to `move_to_thread_by_id`
+    /// ([`ObjectData::can_move_to_thread`](crate::object::ObjectData::can_move_to_thread)); it
+    /// could leave the thread the slot is bound to.
+    ContextMovable,
+    /// An `Auto`, `Queued` or `BlockingQueued` connection needs a context that is registered on
+    /// the calling thread; a call posted to any other receiver would be dropped on delivery.
+    ContextNotRegistered,
+}
+
+impl std::fmt::Display for LocalConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongThread => write!(f, "the context object belongs to another thread"),
+            Self::ContextMovable => write!(f, "the context object may be moved to another thread"),
+            Self::ContextNotRegistered => {
+                write!(
+                    f,
+                    "the context object is not registered on the calling thread"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for LocalConnectError {}
+
+/// The checks every context-bound local connect makes before it stores a closure. Returns the
+/// context's id and thread (the calling thread).
+fn check_context<R: QObject + ?Sized>(
+    context: &R,
+    conn_type: ConnectionType,
+) -> Result<(ObjectId, ThreadId), LocalConnectError> {
+    let data = context.object_data();
+    let current = ThreadId::current();
+    if data.thread_id() != current {
+        return Err(LocalConnectError::WrongThread);
+    }
+    if data.can_move_to_thread() {
+        return Err(LocalConnectError::ContextMovable);
+    }
+    let id = data.id();
+    if conn_type != ConnectionType::Direct && registration_thread_of(id) != Some(current) {
+        return Err(LocalConnectError::ContextNotRegistered);
+    }
+    Ok((id, current))
+}
+
+impl<T: Clone + Send + 'static> Signal<T> {
+    /// Qt `connect(sender, signal, context, functor, type)` for a closure that is not `Send`.
+    /// `context` is the receiver: it names the thread that decides `Auto`, and the connection is
+    /// cut when it is destroyed. The slot always runs on the calling thread, which has to be the
+    /// context's thread.
+    ///
+    /// * `Auto`: direct when the emitting thread is the context's thread, else queued there.
+    /// * `Queued`: always posted to the context's thread, also when the emitter is that thread.
+    /// * `BlockingQueued`: as [`Signal::connect_local_blocking_queued`].
+    /// * `Direct`: runs in the emitting thread, so an emission from another thread **skips the
+    ///   slot** (Qt would run it there); see [`Signal::connect_local`].
+    ///
+    /// A queued call sees `sender()` of the emitter, and holds a clone of the payload.
+    ///
+    /// # Errors
+    /// [`LocalConnectError`]; the context must be on this thread, not movable, and (unless
+    /// `Direct`) registered.
+    pub fn connect_local_to<R, F>(
+        &self,
+        context: &R,
+        conn_type: ConnectionType,
+        slot: F,
+    ) -> Result<ConnectionId, LocalConnectError>
+    where
+        R: QObject + ?Sized,
+        F: Fn(&T) + 'static,
+    {
+        if conn_type == ConnectionType::BlockingQueued {
+            return self.connect_local_blocking_queued(context, slot);
+        }
+        let (id, thread) = check_context(context, conn_type)?;
+        let handle = LocalHandle::install::<T>(slot);
+        Ok(self
+            .connect_object_impl(id, thread, conn_type, None, false, move |value| {
+                handle.call(value);
+            })
+            .expect("a non-unique connection is always established"))
+    }
+
+    /// [`Signal::connect_local_to`] with `BlockingQueuedConnection`: an emission from another
+    /// thread posts the call to the context's thread and **waits until the slot has run** (or
+    /// the call was dropped unrun: context destroyed, loop ended). The context's thread must run
+    /// its event loop, or the emitter waits for as long as it does not.
+    ///
+    /// **Deviation from Qt:** an emission on the context's own thread runs the slot in place;
+    /// Qt warns "Dead lock detected" and then blocks forever
+    /// (`qobject.cpp`, `BlockingQueuedConnection` in `doActivate`).
+    ///
+    /// # Errors
+    /// As [`Signal::connect_local_to`].
+    pub fn connect_local_blocking_queued<R, F>(
+        &self,
+        context: &R,
+        slot: F,
+    ) -> Result<ConnectionId, LocalConnectError>
+    where
+        R: QObject + ?Sized,
+        F: Fn(&T) + 'static,
+    {
+        let (id, thread) = check_context(context, ConnectionType::BlockingQueued)?;
+        let handle = LocalHandle::install::<T>(slot);
+        Ok(self.connect_blocking_queued(id, thread, move |value| {
+            handle.call(value);
+        }))
+    }
+
+    /// Qt `UniqueConnection` for a local slot: when `context` already has a connection with this
+    /// `key` on this signal, nothing is connected, the closure is dropped at once and `Ok(None)`
+    /// is returned. The key stands in for Qt's member-function pointer, as for
+    /// [`Signal::connect_unique_with_key`]. The type is `Auto`.
+    ///
+    /// # Errors
+    /// As [`Signal::connect_local_to`] for `Auto`.
+    pub fn connect_local_unique<R, K, F>(
+        &self,
+        context: &R,
+        key: K,
+        slot: F,
+    ) -> Result<Option<ConnectionId>, LocalConnectError>
+    where
+        R: QObject + ?Sized,
+        K: Into<SlotKey>,
+        F: Fn(&T) + 'static,
+    {
+        let (id, thread) = check_context(context, ConnectionType::Auto)?;
+        let handle = LocalHandle::install::<T>(slot);
+        // On a duplicate the closure (and so the handle) is dropped after the signal's lock was
+        // released, so its destructor may use this signal.
+        Ok(self.connect_object_impl(
+            id,
+            thread,
+            ConnectionType::Auto,
+            Some(key.into()),
+            false,
+            move |value| {
+                handle.call(value);
+            },
+        ))
+    }
+
+    /// [`Signal::connect_local_to`] that runs at most once (Qt `SingleShotConnection`): the
+    /// connection is removed before the call, as the signal does for every single-shot. The
+    /// type is `Auto`, so an emission from another thread is queued to the context's thread and
+    /// consumes the connection at that moment; the slot then runs there, once.
+    ///
+    /// # Errors
+    /// As [`Signal::connect_local_to`] for `Auto`.
+    pub fn connect_local_single_shot_to<R, F>(
+        &self,
+        context: &R,
+        slot: F,
+    ) -> Result<ConnectionId, LocalConnectError>
+    where
+        R: QObject + ?Sized,
+        F: Fn(&T) + 'static,
+    {
+        let (id, thread) = check_context(context, ConnectionType::Auto)?;
+        let handle = LocalHandle::install::<T>(slot);
+        Ok(self
+            .connect_object_impl(id, thread, ConnectionType::Auto, None, true, move |value| {
+                handle.call(value);
+            })
+            .expect("a single-shot connection is never rejected as duplicate"))
     }
 }
