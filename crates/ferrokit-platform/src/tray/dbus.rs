@@ -201,9 +201,15 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.menu = Some(menu);
     }
 
-    /// Registers with the StatusNotifierWatcher on the session bus. Without a reachable bus the
-    /// icon cannot appear, as with `QSystemTrayIcon::show` when no tray exists: this is not an
-    /// error, but `is_registered()` stays false.
+    /// Sends the registration to the StatusNotifierWatcher on the session bus. Without a
+    /// reachable bus the icon cannot appear, as with `QSystemTrayIcon::show` when no tray
+    /// exists: this is not an error, but `is_registered()` stays false.
+    ///
+    /// With a bus, `RequestName` and `RegisterStatusNotifierItem` are only queued: the replies
+    /// (and the `NameOwnerChanged` broadcasts) arrive through `DbusConnection::read_incoming`,
+    /// which nothing drives outside tests yet, so the registration can never be confirmed.
+    /// `show` therefore returns `Err` and `is_registered()` stays false, rather than claiming
+    /// a registration it cannot see.
     fn show(&mut self) -> Result<(), &'static str> {
         self.status = "Active".to_string();
 
@@ -212,12 +218,13 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
             *guard = DbusConnection::connect_session_bus().ok();
         }
 
+        self.is_registered = false;
         let Some(conn) = guard.as_mut() else {
-            self.is_registered = false;
             return Ok(());
         };
         let service_name = format!("org.kde.StatusNotifierItem-{}-1", self.id);
-        self.is_registered = conn.request_name(&service_name).is_ok()
+        let requested = conn.request_name(&service_name);
+        let queued = requested.is_ok()
             && conn
                 .register_status_notifier_item("/StatusNotifierItem")
                 .is_ok();
@@ -235,7 +242,11 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
 
         // Subscribe to NameOwnerChanged signals to detect panel restarts
         let _ = conn.add_match("type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.kde.StatusNotifierWatcher'");
-        Ok(())
+        if queued {
+            Err("The StatusNotifierWatcher registration was sent but its reply is never read, so it is unconfirmed")
+        } else {
+            Err("The StatusNotifierWatcher registration could not be sent")
+        }
     }
 
     fn hide(&mut self) -> Result<(), &'static str> {
