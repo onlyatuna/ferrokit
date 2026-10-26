@@ -224,13 +224,13 @@ fn a_drop_of_files_is_a_uri_list_and_modifier_keys_choose_the_effect() {
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
-        // Shift = move.
+        // Shift asks for a move, but the target never returns MOVE: it is copy.
         assert_eq!((vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
-        assert_eq!(effect, 2);
-        // The source only offers copy: shift cannot make it a move.
-        effect = 1;
-        assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
         assert_eq!(effect, 1);
+        // The source only offers move: nothing is proposed, so the source never deletes.
+        effect = 2;
+        assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 0);
         effect = 7;
         assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
         (vtbl.release)(this);

@@ -213,7 +213,11 @@ fn test_platform_integration_factory() {
     let mut tray = p
         .create_tray_icon("Factory Tray", &pixmap)
         .expect("factory tray icon creation failed");
-    assert!(tray.show().is_ok());
+    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
+    assert_eq!(
+        tray.show().is_ok(),
+        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
+    );
     assert!(tray.set_tooltip("Updated Factory Tray").is_ok());
     assert!(tray.hide().is_ok());
 }
@@ -357,7 +361,9 @@ fn test_cross_platform_tray_icon_implementations() {
 
     assert!(dbus_tray.set_icon(&pixmap).is_ok());
     assert!(dbus_tray.set_tooltip("CPU 45% | RAM 62%").is_ok());
-    assert!(dbus_tray.show().is_ok());
+    // With a session bus the registration reply is never read, so show() reports Err.
+    let shown = dbus_tray.show();
+    assert_eq!(shown.is_ok(), ferrokit_platform::DbusConnection::connect_session_bus().is_err());
     assert!(dbus_tray.hide().is_ok());
 
     // Verify D-Bus a(iiay) format conversion: width 24, height 24, channel order ARGB [180, 0, 200, 255]
@@ -653,7 +659,11 @@ fn test_unix_platform_integration_dbus_tray_and_window() {
     let mut tray = unix_integration
         .create_tray_icon("Linux Tray Icon", &pixmap)
         .expect("failed to create Linux D-Bus tray icon");
-    assert!(tray.show().is_ok());
+    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
+    assert_eq!(
+        tray.show().is_ok(),
+        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
+    );
     assert!(tray.hide().is_ok());
 
     let primary = unix_integration.primary_screen();
@@ -1022,9 +1032,10 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
     assert!(tray.set_icon(&pixmap).is_ok());
     assert!(tray.set_tooltip("Running Smoothly").is_ok());
 
-    // show() registers with the StatusNotifierWatcher
-    assert!(tray.show().is_ok());
-    assert!(tray.is_registered());
+    // show() sends the registration, but its reply is never read: it reports that instead of
+    // claiming a registration.
+    assert!(tray.show().is_err());
+    assert!(!tray.is_registered());
     assert!(tray.is_connected());
     assert_eq!(tray.status(), "Active");
     let members: Vec<_> = bus

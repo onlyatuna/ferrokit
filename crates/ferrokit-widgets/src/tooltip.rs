@@ -150,6 +150,19 @@ struct Controller {
     hide: Timer,
     custom_font: RefCell<Option<Font>>,
     custom_palette: RefCell<Option<Palette>>,
+    /// Nesting depth of `ToolTip::place`, which takes the tip out of `tip` while it works.
+    placing: Cell<u32>,
+    /// A hide that arrived while the tip was taken out; `place` applies it when it puts the tip back.
+    pending_hide: Cell<PendingHide>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingHide {
+    None,
+    /// `hide_tip`: hide after [`HIDE_DELAY_MS`].
+    Delayed,
+    /// `hide_tip_immediately`.
+    Now,
 }
 
 fn single_shot_timer(on_timeout: fn()) -> Timer {
@@ -187,6 +200,8 @@ impl Controller {
             hide: single_shot_timer(hide_tip_immediately),
             custom_font: RefCell::new(None),
             custom_palette: RefCell::new(None),
+            placing: Cell::new(0),
+            pending_hide: Cell::new(PendingHide::None),
         }
     }
 }
@@ -352,6 +367,12 @@ fn default_tool_tip_event(widget: &WidgetRef, global_pos: Point, event: &mut Eve
 
 fn hide_tip() {
     CONTROLLER.with(|c| {
+        if tip_is_taken_out(c) {
+            if c.pending_hide.get() == PendingHide::None {
+                c.pending_hide.set(PendingHide::Delayed);
+            }
+            return;
+        }
         if tip_is_visible(c) && !timer_active(&c.hide) {
             start_timer(&c.hide, HIDE_DELAY_MS);
         }
@@ -363,6 +384,10 @@ fn hide_tip_immediately() {
     CONTROLLER.with(|c| {
         stop_timer(&c.hide);
         stop_timer(&c.expire);
+        if tip_is_taken_out(c) {
+            c.pending_hide.set(PendingHide::Now);
+            return;
+        }
         if let Ok(mut tip) = c.tip.try_borrow_mut() {
             if let Some(tip) = tip.as_mut() {
                 if tip.window.is_visible() {
@@ -373,6 +398,11 @@ fn hide_tip_immediately() {
             }
         }
     });
+}
+
+/// Whether `ToolTip::place` is working on the tip, so the slot is empty but a tip is on its way.
+fn tip_is_taken_out(c: &Controller) -> bool {
+    c.placing.get() > 0 && c.tip.try_borrow().map(|t| t.is_none()).unwrap_or(false)
 }
 
 fn tip_is_visible(c: &Controller) -> bool {
@@ -396,6 +426,51 @@ fn new_tip_label(text: &str) -> Label {
     // `QTipLabel` margin: `1 + PM_ToolTipLabelFrameWidth` (qtooltip.cpp:107). Windows gives 2.
     label.set_margin(2);
     label
+}
+
+/// The second half of `ToolTip::place`: puts the tip back into the controller after it was shown
+/// outside the slot borrow, and applies what happened while it was out (a newer tip, a hide,
+/// a palette or font change).
+fn finish_place(c: &Controller, mut tip: Tip, text: &str, msec_display_time: i32) {
+    c.placing.set(c.placing.get() - 1);
+    let pending = c.pending_hide.replace(PendingHide::None);
+    let mut slot = c.tip.borrow_mut();
+    if slot.is_some() {
+        // A re-entrant call installed a newer tip while this one was showing; the
+        // newer one wins and this window must not stay up on its own.
+        tip.window.hide();
+        return;
+    }
+    // `set_palette` / `set_font` skip a tip that is taken out: catch up here.
+    if let Ok(mut label) = tip.label.try_borrow_mut() {
+        if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
+            if let Some(palette) = c.custom_palette.borrow().as_ref() {
+                lbl.set_background_color(Some(
+                    palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
+                ));
+                lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
+            }
+            if let Some(font) = c.custom_font.borrow().as_ref() {
+                lbl.set_font(font.clone());
+            }
+        }
+    }
+    if pending == PendingHide::Now {
+        // A hide that came in while the tip was showing wins over this show.
+        stop_timer(&c.hide);
+        stop_timer(&c.expire);
+        tip.window.hide();
+        tip.text.clear();
+        tip.widget = None;
+    } else {
+        // `restartExpireTimer`: a new expiry cancels a pending hide.
+        start_timer(&c.expire, expire_time_ms(text, msec_display_time));
+        stop_timer(&c.hide);
+        if pending == PendingHide::Delayed {
+            start_timer(&c.hide, HIDE_DELAY_MS);
+        }
+    }
+    *slot = Some(tip);
 }
 
 /// `QToolTip`.
@@ -457,8 +532,10 @@ impl ToolTip {
     pub fn set_palette(palette: Palette) {
         CONTROLLER.with(|c| {
             *c.custom_palette.borrow_mut() = Some(palette.clone());
-            if let Some(tip) = c.tip.borrow().as_ref() {
-                if let Some(lbl) = tip.label.borrow_mut().as_any_mut().downcast_mut::<Label>() {
+            let Ok(slot) = c.tip.try_borrow() else { return };
+            if let Some(tip) = slot.as_ref() {
+                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
+                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                     lbl.set_background_color(Some(
                         palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
                     ));
@@ -482,8 +559,10 @@ impl ToolTip {
     pub fn set_font(font: Font) {
         CONTROLLER.with(|c| {
             *c.custom_font.borrow_mut() = Some(font.clone());
-            if let Some(tip) = c.tip.borrow().as_ref() {
-                if let Some(lbl) = tip.label.borrow_mut().as_any_mut().downcast_mut::<Label>() {
+            let Ok(slot) = c.tip.try_borrow() else { return };
+            if let Some(tip) = slot.as_ref() {
+                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
+                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                     lbl.set_font(font);
                 }
             }
@@ -532,67 +611,71 @@ impl ToolTip {
         rect: Option<Rect>,
         msec_display_time: i32,
     ) {
-        CONTROLLER.with(|c| {
-            let mut slot = c.tip.borrow_mut();
-            if slot.is_none() {
+        // The controller's slot is never borrowed across a call that can re-enter (window
+        // creation, `set_geometry`, `show`): the tip is taken out, worked on, and put back.
+        let taken = CONTROLLER.with(|c| {
+            c.placing.set(c.placing.get() + 1);
+            c.pending_hide.set(PendingHide::None);
+            c.tip.borrow_mut().take()
+        });
+        let mut tip = match taken {
+            Some(tip) => tip,
+            None => {
                 let mut label = new_tip_label(text);
                 label.set_text(text);
                 let label: WidgetRef = std::rc::Rc::new(RefCell::new(Box::new(label)));
                 let Ok(mut window) =
                     Window::new("tooltip", Rect::new(0, 0, 1, 1), WindowFlags::TOOLTIP)
                 else {
+                    CONTROLLER.with(|c| c.placing.set(c.placing.get() - 1));
                     return;
                 };
                 window.set_root_widget(label.clone());
-                let window = Box::new(window);
-                *slot = Some(Tip {
-                    window,
+                Tip {
+                    window: Box::new(window),
                     label,
                     widget,
                     rect,
                     text: String::new(),
-                });
-            }
-            let tip = slot.as_mut().expect("created above");
-            tip.text = text.to_string();
-            tip.widget = widget;
-            tip.rect = rect;
-            let (screen, screen_dpr) = tip_screen(pos);
-            let size = {
-                let mut label = tip.label.borrow_mut();
-                let label = label
-                    .as_any_mut()
-                    .downcast_mut::<Label>()
-                    .expect("the tip's root widget is a Label");
-                // `QTipLabel::updateSize` (qtooltip.cpp:152): rich text word-wraps.
-                let rich = might_be_rich_text(text);
-                label.set_rich(rich);
-                label.set_word_wrap(rich);
-                label.set_text(text);
-                let mut size = label.size_hint();
-                // qtooltip.cpp:155-157: a plain tip wider than the screen wraps to it.
-                if !label.word_wrap() && size.width > screen.width {
-                    label.set_word_wrap(true);
-                    size = label.size_hint();
                 }
-                size
-            };
-            // `QTipLabel::updateSize` adds one pixel of width (qtooltip.cpp:159).
-            let size = Size::new(size.width + 1, size.height);
-            let primary_dpr = ferrokit_platform::integration::platform()
-                .primary_screen()
-                .device_pixel_ratio() as f64;
-            let cursor = cursor_size(screen_dpr, primary_dpr);
-            let origin = place_tip(pos, size, cursor, screen);
-            tip.window
-                .set_geometry(Rect::new(origin.x, origin.y, size.width, size.height));
-            // `restartExpireTimer`: a new expiry cancels a pending hide.
-            start_timer(&c.expire, expire_time_ms(text, msec_display_time));
-            stop_timer(&c.hide);
-            if !tip.window.is_visible() {
-                tip.window.show();
             }
-        });
+        };
+        tip.text = text.to_string();
+        tip.widget = widget;
+        tip.rect = rect;
+        let (screen, screen_dpr) = tip_screen(pos);
+        let size = {
+            let mut label = tip.label.borrow_mut();
+            let label = label
+                .as_any_mut()
+                .downcast_mut::<Label>()
+                .expect("the tip's root widget is a Label");
+            // `QTipLabel::updateSize` (qtooltip.cpp:152): rich text word-wraps.
+            let rich = might_be_rich_text(text);
+            label.set_rich(rich);
+            label.set_word_wrap(rich);
+            label.set_text(text);
+            let mut size = label.size_hint();
+            // qtooltip.cpp:155-157: a plain tip wider than the screen wraps to it.
+            if !label.word_wrap() && size.width > screen.width {
+                label.set_word_wrap(true);
+                size = label.size_hint();
+            }
+            size
+        };
+        // `QTipLabel::updateSize` adds one pixel of width (qtooltip.cpp:159).
+        let size = Size::new(size.width + 1, size.height);
+        let primary_dpr = ferrokit_platform::integration::platform()
+            .primary_screen()
+            .device_pixel_ratio() as f64;
+        let cursor = cursor_size(screen_dpr, primary_dpr);
+        let origin = place_tip(pos, size, cursor, screen);
+        tip.window
+            .set_geometry(Rect::new(origin.x, origin.y, size.width, size.height));
+        if !tip.window.is_visible() {
+            tip.window.show();
+        }
+        CONTROLLER.with(|c| finish_place(c, tip, text, msec_display_time));
     }
 }
 
@@ -651,6 +734,87 @@ mod tests {
         let accepted = send_tool_tip(&widget, Point::new(1, 1), Point::new(1, 1));
         assert!(accepted, "the consuming filter accepted the event");
         assert_eq!(*seen.lock().unwrap(), vec![id]);
+    }
+
+    #[test]
+    fn set_palette_and_font_survive_a_busy_tip_slot() {
+        let held = CONTROLLER.with(|c| c.tip.borrow_mut().take());
+        CONTROLLER.with(|c| {
+            let _busy = c.tip.borrow_mut();
+            ToolTip::set_palette(ToolTip::palette());
+            ToolTip::set_font(ToolTip::font());
+            assert!(!tip_is_visible(c));
+        });
+        CONTROLLER.with(|c| *c.tip.borrow_mut() = held);
+    }
+
+    /// Takes the tip out of the controller as `place` does while it shows the window.
+    fn take_tip_out() -> Tip {
+        CONTROLLER.with(|c| {
+            c.placing.set(c.placing.get() + 1);
+            c.pending_hide.set(PendingHide::None);
+            c.tip.borrow_mut().take().expect("a tip exists")
+        })
+    }
+
+    #[test]
+    fn a_hide_that_re_enters_while_the_tip_is_shown_is_not_lost() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        assert!(ToolTip::is_visible());
+        hide_tip_immediately();
+        // The tip is hidden but kept; show it again the way `place` does.
+        let mut tip = take_tip_out();
+        tip.window.show();
+        hide_tip_immediately(); // arrives while the tip is out of the slot
+        CONTROLLER.with(|c| finish_place(c, tip, "again", -1));
+        assert!(!ToolTip::is_visible(), "the re-entrant hide wins over the show");
+        assert_eq!(ToolTip::text(), "");
+        CONTROLLER.with(|c| {
+            assert!(!timer_active(&c.expire));
+            assert_eq!(c.pending_hide.get(), PendingHide::None);
+            assert_eq!(c.placing.get(), 0);
+        });
+    }
+
+    #[test]
+    fn a_re_entrant_show_text_leaves_exactly_one_visible_tip() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        hide_tip_immediately();
+        let mut outer = take_tip_out();
+        outer.window.show();
+        ToolTip::show_text(Point::new(20, 20), "nested", None, -1); // re-entrant
+        assert_eq!(ToolTip::text(), "nested");
+        CONTROLLER.with(|c| finish_place(c, outer, "outer", -1));
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "nested", "the newer tip stays");
+        hide_tip_immediately();
+        assert!(!ToolTip::is_visible());
+    }
+
+    #[test]
+    fn a_palette_set_while_the_tip_is_out_is_applied_when_it_returns() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        hide_tip_immediately();
+        let tip = take_tip_out();
+        let mut palette = ToolTip::palette();
+        palette.set_color(
+            ColorGroup::Inactive,
+            ColorRole::ToolTipText,
+            ferrokit_gui::tiny_skia::Color::from_rgba8(1, 2, 3, 255),
+        );
+        ToolTip::set_palette(palette.clone());
+        CONTROLLER.with(|c| finish_place(c, tip, "x", -1));
+        let applied = CONTROLLER.with(|c| {
+            let slot = c.tip.borrow();
+            let mut label = slot.as_ref().unwrap().label.borrow_mut();
+            let lbl = label.as_any_mut().downcast_mut::<Label>().unwrap();
+            lbl.color()
+        });
+        assert_eq!(
+            applied,
+            palette.color(ColorGroup::Inactive, ColorRole::ToolTipText)
+        );
+        hide_tip_immediately();
     }
 
     #[test]
