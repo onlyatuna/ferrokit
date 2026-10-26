@@ -147,33 +147,31 @@ impl PortalSession {
     }
 }
 
-/// Connects to the session bus, subscribes, and runs a thread that feeds the portal's
-/// colour-scheme events to `on_event` until `alive` returns `false` or the bus goes away. Waits
-/// up to `initial_wait` for the answer to the start-up `Read`, so that the first colour scheme
-/// read after start-up is the portal's, not the fallback: when this returns, `on_event` has seen
-/// that answer unless there is no session bus, the portal did not answer in time, or the thread
-/// could not start. An answer arriving later still reaches `on_event`.
+/// Runs a thread that connects to the session bus, subscribes, and feeds the portal's
+/// colour-scheme events to `on_event` until `alive` returns `false` or the bus goes away. Nothing
+/// blocks the caller (not even connecting): the returned receiver gets one message when the answer
+/// to the start-up `Read` has been handed to `on_event`, and disconnects without one if there is no
+/// session bus or the bus goes away first. A caller that wants the first scheme to be the portal's
+/// can wait on it; one that does not never blocks. `None` when the thread could not be started.
 ///
 /// `on_event` runs on the listener thread.
 #[cfg(all(target_os = "linux", not(miri)))]
 pub(crate) fn spawn_listener(
-    initial_wait: std::time::Duration,
     alive: impl Fn() -> bool + Send + 'static,
     on_event: impl Fn(PortalEvent) + Send + 'static,
-) {
-    use std::sync::mpsc;
+) -> Option<std::sync::mpsc::Receiver<()>> {
     use std::time::Duration;
 
-    let Ok(conn) = DbusConnection::connect_session_bus() else {
-        return;
-    };
-    let Ok(mut session) = PortalSession::start(conn) else {
-        return;
-    };
-    let (initial_tx, initial_rx) = mpsc::channel::<()>();
-    let spawned = std::thread::Builder::new()
+    let (initial_tx, initial_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
         .name("ferrokit-portal-theme".to_string())
         .spawn(move || {
+            let Ok(conn) = DbusConnection::connect_session_bus() else {
+                return;
+            };
+            let Ok(mut session) = PortalSession::start(conn) else {
+                return;
+            };
             while alive() {
                 let Ok(events) = session.poll() else {
                     break;
@@ -188,10 +186,9 @@ pub(crate) fn spawn_listener(
                 // Wake at least once a second to notice that the theme is gone.
                 wait_readable(session.socket_fd(), Duration::from_secs(1));
             }
-        });
-    if spawned.is_ok() {
-        let _ = initial_rx.recv_timeout(initial_wait);
-    }
+        })
+        .ok()?;
+    Some(initial_rx)
 }
 
 /// `poll(2)` on one descriptor for readability; `true` when it is readable (or in error or hang

@@ -27,6 +27,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{ObjectId, ThreadContext, ThreadId};
@@ -188,14 +189,17 @@ impl super::StyleHints {
     /// request goes to the platform theme, so whether it takes effect is platform dependent;
     /// [`color_scheme`](Self::color_scheme) afterwards is the effective scheme (the system's own
     /// when the platform ignores the request), and `color_scheme_changed` fires only if that
-    /// differs from before. Without an installed platform theme this warns and does nothing,
-    /// like Qt without an application object.
+    /// differs from before. Like Qt (qstylehints.cpp:172-175) it warns and does nothing when there is
+    /// no application object; with an application but no platform theme installed yet it does
+    /// nothing, as Qt does without a platform theme.
     ///
     /// Call it on the main thread; from another thread the request is forwarded there.
     pub fn set_color_scheme(&self, scheme: ColorScheme) {
-        let source = state().source.clone();
-        let Some(source) = source else {
+        if !CoreApplication::instance_exists() {
             eprintln!("Must construct a QGuiApplication before accessing a platform theme hint.");
+            return;
+        }
+        let Some(source) = state().source.clone() else {
             return;
         };
         // In place on the main thread: the scheme in effect is readable as soon as this returns,
@@ -228,7 +232,6 @@ impl super::StyleHints {
 mod tests {
     use super::*;
     use crate::application::GuiApplication;
-    use ferrokit_core::application::CoreApplication;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A platform theme that can override, like the Windows and GNOME ones.
@@ -397,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_platform_theme_a_request_is_refused() {
+    fn without_a_platform_theme_a_request_does_nothing() {
         let theme = MockTheme::new(ColorScheme::Light, true);
         let (_guard, _app) = start(&theme);
         state().source = None;
@@ -406,6 +409,18 @@ mod tests {
         hints.set_color_scheme(ColorScheme::Dark);
         assert_eq!(hints.color_scheme(), ColorScheme::Light);
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_an_application_a_request_is_refused() {
+        let theme = MockTheme::new(ColorScheme::Light, true);
+        let (_guard, app) = start(&theme);
+        drop(app);
+        assert!(!CoreApplication::instance_exists());
+        let hints = GuiApplication::style_hints();
+        hints.set_color_scheme(ColorScheme::Dark);
+        assert_eq!(hints.color_scheme(), ColorScheme::Light);
+        assert_eq!(theme.color_scheme(), ColorScheme::Light);
     }
 
     #[test]

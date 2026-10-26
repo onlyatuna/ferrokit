@@ -404,17 +404,66 @@ pub mod cocoa_theme {
     /// `NSApp`, observed so that a change of the system appearance (or of `NSApp.appearance`)
     /// reaches `theme_changed`.
     ///
+    /// AppKit rules apply as in Qt: the appearance is read, and the observers are registered, on
+    /// the main thread. A theme constructed elsewhere registers them from the application's main
+    /// thread when it gets to run an event (and without an application, not at all: it then
+    /// updates only through [`refresh`](PlatformTheme::refresh), and says so on stderr). The
+    /// observers are removed when the theme is dropped.
+    ///
+    /// Like the rest of this crate's AppKit code (`query_color_scheme`) the theme uses
+    /// `+[NSApplication sharedApplication]`, which creates `NSApp` if it does not exist yet; Qt
+    /// reads the `NSApp` its integration has already made. Only a program that wants a custom
+    /// `NSApplication` subclass has to create it before the first `platform()` call.
+    ///
     /// **Not run on macOS by the author** (written on Windows): the observer registration and the
     /// appearance override are type-checked for `aarch64-apple-darwin` only.
     pub struct CocoaTheme {
         core: Arc<SchemeCore>,
+        /// The registered observers; shared with a deferred registration (see above).
+        #[allow(dead_code)] // held for its `Drop`, which removes the observers
+        observer: Arc<Mutex<Option<AppearanceObserver>>>,
     }
+
+    /// The KVO and notification observers of one theme (`m_appearanceObserver` and
+    /// `m_systemColorObserver` of `QCocoaTheme`). Removed on drop.
+    #[cfg(target_os = "macos")]
+    struct AppearanceObserver {
+        target: crate::objc_runtime::ActionTarget,
+        nsapp: crate::objc_runtime::Id,
+        center: crate::objc_runtime::Id,
+        /// `@"effectiveAppearance"`, +1.
+        key_path: crate::objc_runtime::Id,
+    }
+
+    // SAFETY: the `Id`s are only messaged to remove the observers, which AppKit allows from any
+    // thread for key-value and notification observers; `NSApp`, the notification center and the
+    // key path outlive the observer (the first two are process-lifetime singletons).
+    #[cfg(target_os = "macos")]
+    unsafe impl Send for AppearanceObserver {}
+
+    #[cfg(target_os = "macos")]
+    impl Drop for AppearanceObserver {
+        fn drop(&mut self) {
+            use crate::objc_runtime::{ObjcMsg, Sel};
+            // SAFETY: undoes the registrations made in `register`, with the same objects.
+            unsafe {
+                ObjcMsg::send_remove_key_path_observer(self.nsapp, self.target.id(), self.key_path);
+                ObjcMsg::send_remove_notification_observer(self.center, self.target.id());
+                ObjcMsg::send_0(self.key_path, Sel::register("release"));
+            }
+        }
+    }
+
+    /// Nothing is observed without AppKit.
+    #[cfg(not(target_os = "macos"))]
+    struct AppearanceObserver;
 
     impl Default for CocoaTheme {
         fn default() -> Self {
             let core = Arc::new(SchemeCore::new(Self::query_color_scheme()));
-            Self::observe_appearance(&core);
-            Self { core }
+            let observer = Arc::new(Mutex::new(None));
+            Self::observe_appearance(&core, &observer);
+            Self { core, observer }
         }
     }
 
@@ -424,27 +473,67 @@ pub mod cocoa_theme {
         }
 
         /// `QCocoaTheme::QCocoaTheme` (qcocoatheme.mm:217-230): key-value observation of
-        /// `NSApp.effectiveAppearance` (`m_appearanceObserver`) and of
-        /// `NSSystemColorsDidChangeNotification` (`m_systemColorObserver`); either re-reads the
-        /// appearance (`handleSystemThemeChange` -> `updateColorScheme`, qcocoatheme.mm:245-262).
-        /// Both are delivered on the main thread, which is where the appearance may be read.
-        ///
-        /// The observer object is never removed: the theme lives as long as the process.
+        /// `NSApp.effectiveAppearance` and of `NSSystemColorsDidChangeNotification`; either
+        /// re-reads the appearance (`handleSystemThemeChange` -> `updateColorScheme`,
+        /// qcocoatheme.mm:245-262). On the main thread this registers at once; elsewhere the
+        /// registration is posted to the application's main thread.
         #[cfg(target_os = "macos")]
-        fn observe_appearance(core: &Arc<SchemeCore>) {
-            use crate::objc_runtime::{nsstring_from_str, ActionTarget, Class, ObjcMsg, Sel};
-            let on_change = Arc::clone(core);
-            let Ok(target) = ActionTarget::new(move || {
-                on_change.set_system(Self::query_color_scheme());
-            }) else {
+        fn observe_appearance(
+            core: &Arc<SchemeCore>,
+            slot: &Arc<Mutex<Option<AppearanceObserver>>>,
+        ) {
+            extern "C" {
+                fn pthread_main_np() -> i32;
+            }
+            // SAFETY: `pthread_main_np` takes no arguments and only reads the calling thread.
+            if unsafe { pthread_main_np() } != 0 {
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Self::register(core);
                 return;
-            };
+            }
+            use ferrokit_core::event::{Event, EventKind};
+            use ferrokit_core::object::{ObjectId, ThreadContext, ThreadId};
+            match ThreadContext::main_thread_id() {
+                Some(main) if main != ThreadId::current() => {
+                    let core = Arc::clone(core);
+                    let slot = Arc::clone(slot);
+                    ferrokit_core::event_loop::post_event_to_thread(
+                        main,
+                        ObjectId(0),
+                        Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                            // The theme is gone: nothing will ever drop what this would register.
+                            if Arc::strong_count(&slot) > 1 {
+                                *slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Self::register(&core);
+                            }
+                        }))),
+                    );
+                }
+                _ => eprintln!(
+                    "ferrokit: the macOS theme was created off the main thread with no \
+                     application to run on; it will not follow appearance changes"
+                ),
+            }
+        }
+
+        /// Registers the observers; the main thread only.
+        #[cfg(target_os = "macos")]
+        fn register(core: &Arc<SchemeCore>) -> Option<AppearanceObserver> {
+            use crate::objc_runtime::{nsstring_from_str, ActionTarget, Class, Id, ObjcMsg, Sel};
+            // Weak: the observers must not keep the theme's state alive.
+            let weak = Arc::downgrade(core);
+            let target = ActionTarget::new_shared(move || {
+                if let Some(core) = weak.upgrade() {
+                    core.set_system(Self::query_color_scheme());
+                }
+            })
+            .ok()?;
             let key_path = nsstring_from_str("effectiveAppearance");
             let notification = nsstring_from_str("NSSystemColorsDidChangeNotification");
             // SAFETY: `NSApp` and the default notification center are live objects; `target`
             // implements both `-observeValueForKeyPath:ofObject:change:context:` and
-            // `-ferrokitPerformAction:`; the strings are released after the calls (both
-            // registries copy or retain them); the target is leaked on purpose below.
+            // `-ferrokitPerformAction:`; the registries do not retain the observer, which
+            // `AppearanceObserver::drop` unregisters before the target is released; the
+            // notification name is released here (the center copies it), the key path in `drop`.
             unsafe {
                 let nsapp = ObjcMsg::send_class_0(
                     Class::get("NSApplication").unwrap_or(Class::NIL),
@@ -460,19 +549,25 @@ pub mod cocoa_theme {
                     target.id(),
                     ActionTarget::action(),
                     notification,
-                    crate::objc_runtime::Id::NIL,
+                    Id::NIL,
                 );
-                ObjcMsg::send_0(key_path, Sel::register("release"));
                 ObjcMsg::send_0(notification, Sel::register("release"));
+                Some(AppearanceObserver {
+                    target,
+                    nsapp,
+                    center,
+                    key_path,
+                })
             }
-            // The registrations hold the target without retaining it, and its callback lives in
-            // a thread-local keyed by the object: keep both for the life of the process.
-            std::mem::forget(target);
         }
 
-        /// The mock runtime posts no notifications, so there is nothing to observe.
+        /// Without AppKit (the mock runtime) there is nothing to observe.
         #[cfg(not(target_os = "macos"))]
-        fn observe_appearance(_core: &Arc<SchemeCore>) {}
+        fn observe_appearance(
+            _core: &Arc<SchemeCore>,
+            _slot: &Arc<Mutex<Option<AppearanceObserver>>>,
+        ) {
+        }
 
         /// `QCocoaTheme::updateColorScheme` (qcocoatheme.mm:505-511): Dark only when the
         /// effective appearance's best match among Aqua and DarkAqua is DarkAqua; Light otherwise.
@@ -621,11 +716,21 @@ pub mod unix_theme {
     /// The colour scheme on Linux and the other Unixes.
     ///
     /// Follows the XDG desktop portal's `org.freedesktop.appearance` `color-scheme` over D-Bus
-    /// (GNOME, KDE and others), including its `SettingChanged` signal, from a listener thread.
-    /// Without a portal (or when it has no preference) the GTK theme decides: `GTK_THEME`, then
-    /// `gtk-application-prefer-dark-theme` / `gtk-theme-name` of `gtk-3.0/settings.ini`, read at
-    /// construction and by [`refresh`](PlatformTheme::refresh); the fallback is not watched.
-    /// With neither the scheme is [`ColorScheme::Unknown`], as in Qt.
+    /// (GNOME, KDE and others), including its `SettingChanged` signal, from a listener thread:
+    /// `QGnomePortalInterface` / `QDBusListener` (qgnomeportalinterface.cpp, qdbuslistener.cpp).
+    /// When the portal has no preference (or there is none) the fallback decides: the theme name
+    /// of `GTK_THEME` (Qt's `QGnomeThemePrivate::colorScheme` tests the GTK theme name for
+    /// "light" / "dark"); with neither the scheme is [`ColorScheme::Unknown`], as in Qt.
+    ///
+    /// **Extension, not in Qt:** the fallback also reads `gtk-3.0/settings.ini`
+    /// (`gtk-application-prefer-dark-theme`, which wins when set, and `gtk-theme-name`). It is
+    /// read at construction and by [`refresh`](PlatformTheme::refresh), not watched.
+    ///
+    /// Construction does not wait for the portal. The first [`color_scheme`](PlatformTheme::color_scheme)
+    /// read waits up to 300 ms for the portal's answer to the start-up query (nothing when there is
+    /// no session bus or the portal answers at once), so the first scheme read is the portal's in
+    /// the usual case. An answer that comes later is applied then; it changes the effective scheme,
+    /// and so emits `theme_changed`, only if it differs from what was read before.
     ///
     /// `theme_changed` is emitted on the listener thread; `StyleHints::color_scheme_changed`
     /// moves it to the main thread.
@@ -635,6 +740,9 @@ pub mod unix_theme {
     /// `x86_64-unknown-linux-gnu` only.
     pub struct UnixTheme {
         inner: Arc<UnixInner>,
+        /// Signalled by the listener when the start-up query has been answered; taken (and
+        /// waited on, once) by the first scheme read.
+        initial_answer: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     }
 
     impl Default for UnixTheme {
@@ -657,19 +765,17 @@ pub mod unix_theme {
                     core: SchemeCore::new(Self::query_color_scheme()),
                     portal: AtomicU8::new(ColorScheme::Unknown as u8),
                 }),
+                initial_answer: Mutex::new(None),
             }
         }
 
-        /// Connects to the portal (if there is a session bus) and waits briefly for its answer,
-        /// so the first scheme read is the portal's. A portal that stays silent costs this wait
-        /// once, at start-up; its answer is then applied when it comes.
+        /// Connects to the portal (if there is a session bus) and starts following it.
         #[cfg(all(target_os = "linux", not(miri)))]
         fn listen_to_portal(&self) {
             use crate::theme_portal::{spawn_listener, PortalEvent};
             let for_alive = Arc::downgrade(&self.inner);
             let for_events = Arc::downgrade(&self.inner);
-            spawn_listener(
-                std::time::Duration::from_millis(300),
+            let initial = spawn_listener(
                 move || for_alive.strong_count() > 0,
                 move |event| {
                     let Some(inner) = for_events.upgrade() else {
@@ -684,13 +790,30 @@ pub mod unix_theme {
                     inner.recompute();
                 },
             );
+            *self
+                .initial_answer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = initial;
         }
 
         /// Miri cannot open a bus socket, and other systems have no portal.
         #[cfg(not(all(target_os = "linux", not(miri))))]
         fn listen_to_portal(&self) {}
 
-        /// The scheme the GTK theme settings say, when no portal answers: `GTK_THEME`, then
+        /// Waits (once, at most 300 ms) for the portal's answer to the start-up query.
+        fn wait_for_initial_answer(&self) {
+            let pending = self
+                .initial_answer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(answered) = pending {
+                let _ = answered.recv_timeout(std::time::Duration::from_millis(300));
+            }
+        }
+
+        /// The fallback scheme, when no portal answers: the theme name in `GTK_THEME`
+        /// (`QGnomeThemePrivate::colorScheme`'s name test), then, as an extension not in Qt,
         /// `gtk-3.0/settings.ini`. [`ColorScheme::Unknown`] when neither says.
         pub fn query_color_scheme() -> ColorScheme {
             if let Ok(name) = std::env::var("GTK_THEME") {
@@ -747,8 +870,9 @@ pub mod unix_theme {
         Some(config.join("gtk-3.0").join("settings.ini"))
     }
 
-    /// What a `gtk-3.0/settings.ini` says: `gtk-application-prefer-dark-theme=true` (or `1`) is
-    /// Dark; else the theme name decides ([`scheme_from_theme_name`]).
+    /// What a `gtk-3.0/settings.ini` says (an extension, Qt does not read it):
+    /// `gtk-application-prefer-dark-theme=true` (or `1`) is Dark; else the theme name decides
+    /// ([`scheme_from_theme_name`]).
     pub(super) fn scheme_from_settings_ini(text: &str) -> ColorScheme {
         let mut theme_name = ColorScheme::Unknown;
         for line in text.lines() {
@@ -771,6 +895,7 @@ pub mod unix_theme {
 
     impl PlatformTheme for UnixTheme {
         fn color_scheme(&self) -> ColorScheme {
+            self.wait_for_initial_answer();
             self.inner.core.effective()
         }
 
