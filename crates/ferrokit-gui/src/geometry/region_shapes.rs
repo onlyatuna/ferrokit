@@ -11,7 +11,7 @@
 //!   `toSubpathPolygons().at(0).toPolygon()`, then `PolygonRegion(.., EvenOddRule)`
 //!   (`qregion.cpp`, `qpainterpath.cpp`).
 //! - The path pieces they depend on, in `f64` like Qt's `qreal`: `qt_curves_for_arc`,
-//!   `qt_find_ellipse_coords`, `qt_t_for_arc_angle` (`qstroker.cpp`, `qpainterpath.cpp`),
+//!   `qt_find_ellipse_coords` (`qstroker.cpp`, `qpainterpath.cpp`),
 //!   `QBezier::addToPolygon` with the default 0.5 threshold and `QBezier::split` (`qbezier.cpp`),
 //!   `QPainterPath::toSubpathPolygons` / `toFillPolygon` / `addRoundedRect` / `closeSubpath`, and
 //!   `QPolygonF::toPolygon` (`qRound`).
@@ -20,6 +20,20 @@
 //! result does not depend on the platform engine (unlike, say, the region a window system builds
 //! from it). Verified on Windows against PySide 6.11.2 output; the code is platform independent and
 //! has no OS-specific branches.
+//!
+//! Rect decomposition: the scan converter's output is passed through [`Region::from_rects`], which
+//! produces the canonical banding (maximal vertical merging, ordered by y then x). Qt's own
+//! `PtsToRegion` merges identical consecutive rows the same way, and for every oracle case in
+//! `tests/test_qregion_shapes.rs` the rect list equals the one Qt reports from `QRegion::rects()`.
+//! That equality is observed, not guaranteed: Qt's merge only joins directly adjacent identical
+//! rows of one polygon, so a shape where it leaves a mergeable split would differ in banding (never
+//! in covered pixels).
+//!
+//! Floating point: the curve flattening uses only `+ - * /`, `floor` and `copysign`, which are
+//! exactly rounded or exact in IEEE 754, so results are bit-identical across platforms. The
+//! `sin`/`cos` based `qt_t_for_arc_angle` (libm, may differ by an ulp between platforms) is never
+//! reached because only quadrant-aligned arc angles are implemented, where Qt returns before it
+//! evaluates them; it is therefore not ported.
 //!
 //! Only the arcs these constructors need are implemented: `qt_curves_for_arc` for a quadrant-aligned
 //! start angle with a `-90` degree sweep (what `addRoundedRect` calls) and the full `-360` ellipse.
@@ -111,13 +125,10 @@ impl Region {
 
 // --- QPolygonF::toPolygon ---------------------------------------------------------------------
 
-/// `qRound(double)` (`qglobal.h`): round half away from the lower value.
+/// `qRound(double)` (`qnumeric.h`, Qt 6.11): add 0.5 with the sign of `d` (round half away from
+/// zero), then truncate toward zero (the checked FP-to-int conversion).
 fn q_round(d: f64) -> i32 {
-    if d >= 0.0 {
-        (d + 0.5) as i32
-    } else {
-        ((d - f64::from((d - 1.0) as i32) + 0.5) as i32).wrapping_add((d - 1.0) as i32)
-    }
+    (d + 0.5f64.copysign(d)) as i32
 }
 
 /// `QPolygonF::toPolygon`.
@@ -133,11 +144,6 @@ fn round_polygon(pts: &[(f64, f64)]) -> Vec<Point> {
 const KAPPA: f64 = 0.552_284_749_8;
 
 type Pt = (f64, f64);
-
-/// `qFuzzyIsNull(double)`.
-fn fuzzy_is_null(d: f64) -> bool {
-    d.abs() <= 0.000_000_000_001
-}
 
 /// `qFuzzyCompare(double, double)`.
 fn fuzzy_compare(a: f64, b: f64) -> bool {
@@ -244,40 +250,20 @@ impl Bezier {
     }
 }
 
-/// `qt_t_for_arc_angle` (`qstroker.cpp`).
-fn t_for_arc_angle(angle: f64) -> f64 {
-    if fuzzy_is_null(angle) {
-        return 0.0;
-    }
-    if fuzzy_compare(angle, 90.0) {
-        return 1.0;
-    }
-    let radians = angle.to_radians();
-    let cos_angle = radians.cos();
-    let sin_angle = radians.sin();
-    let k = KAPPA;
-
-    let mut tc = angle / 90.0;
-    for _ in 0..2 {
-        tc -= ((((2.0 - 3.0 * k) * tc + 3.0 * (k - 1.0)) * tc) * tc + 1.0 - cos_angle)
-            / (((6.0 - 9.0 * k) * tc + 6.0 * (k - 1.0)) * tc);
-    }
-    let mut ts = tc;
-    for _ in 0..2 {
-        ts -= ((((3.0 * k - 2.0) * ts - 6.0 * k + 3.0) * ts + 3.0 * k) * ts - sin_angle)
-            / (((9.0 * k - 6.0) * ts + 12.0 * k - 6.0) * ts + 3.0 * k);
-    }
-    0.5 * (tc + ts)
-}
-
-/// `qt_find_ellipse_coords` for one angle (`qpainterpath.cpp`).
+/// `qt_find_ellipse_coords` for one quadrant-aligned angle (`qpainterpath.cpp`).
+///
+/// Qt maps the fractional quadrant position through `qt_t_for_arc_angle`, which returns 0 for a zero
+/// angle before it evaluates any `sin`/`cos`. Only aligned angles are supported here, so the
+/// result never depends on the platform libm.
 fn find_ellipse_coords(x: f64, y: f64, w: f64, h: f64, angle: f64) -> Pt {
     let (w2, h2) = (w / 2.0, h / 2.0);
     let theta = angle - 360.0 * (angle / 360.0).floor();
-    let mut t = theta / 90.0;
-    let quadrant = t as i32;
-    t -= f64::from(quadrant);
-    t = t_for_arc_angle(90.0 * t);
+    debug_assert!(
+        theta % 90.0 == 0.0,
+        "only quadrant-aligned angles are supported"
+    );
+    let quadrant = (theta / 90.0) as i32;
+    let mut t = 0.0;
     if quadrant & 1 != 0 {
         t = 1.0 - t;
     }
