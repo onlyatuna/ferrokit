@@ -512,6 +512,9 @@ fn a_blocked_blocking_queued_emitter_is_released_when_the_context_is_destroyed()
         })
         .unwrap()
         .unwrap();
+    // What is queued before the emitter runs: only a call posted after this point is the one
+    // under test.
+    let queued_before = queue.lock().unwrap().len();
 
     let remote = signal.clone();
     let (done_tx, done_rx) = mpsc::channel();
@@ -520,19 +523,27 @@ fn a_blocked_blocking_queued_emitter_is_released_when_the_context_is_destroyed()
         done_tx.send(()).unwrap();
     });
 
-    // The call is in this thread's queue once the worker has posted it; from then on the worker
-    // is blocked, because this thread does not run its loop.
+    // The emitter's call is in this thread's queue once the queue is longer than it was after
+    // the connect; the worker cannot return before this thread runs or drops that call, because
+    // this thread does not run its loop. A worker whose emit never reached the subscriber would
+    // leave the queue as it is, and the watchdog fails the test.
     let deadline = Instant::now() + WATCHDOG;
-    while queue.lock().unwrap().len() == 0 {
+    while queue.lock().unwrap().len() <= queued_before {
         assert!(
             Instant::now() < deadline,
-            "the worker never posted its call"
+            "the worker never posted its blocking call"
         );
         thread::yield_now();
     }
+    assert_eq!(queue.lock().unwrap().len(), queued_before + 1);
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the call is queued and has not run"
+    );
     assert!(
         done_rx.try_recv().is_err(),
-        "the emitter returned before anything ran its call"
+        "the emitter returned while its call was still queued and unrun"
     );
 
     drop(context); // purges the posted call without running it
