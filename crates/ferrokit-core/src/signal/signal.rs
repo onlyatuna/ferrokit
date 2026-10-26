@@ -304,6 +304,18 @@ struct Subscriber<T> {
     /// Qt `UniqueConnection` key: explicit [`SlotKey`] identity; `None` for other connections.
     slot_key: Option<SlotKey>,
     single_shot: bool,
+    /// Set for a slot that may run on one thread only (`connect_local_single_shot`): an emission
+    /// from any other thread skips the subscriber before a single-shot removal, so the
+    /// connection survives until its own thread emits.
+    thread_bound: Option<ThreadBound>,
+}
+
+/// The thread a [`Subscriber`] is bound to, and what to do when another thread emits.
+#[derive(Clone)]
+struct ThreadBound {
+    owner: ThreadId,
+    /// Called on each skipped emission (it prints its diagnostic once).
+    on_skip: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl<T> Clone for Subscriber<T> {
@@ -317,6 +329,7 @@ impl<T> Clone for Subscriber<T> {
             connected: Arc::clone(&self.connected),
             slot_key: self.slot_key,
             single_shot: self.single_shot,
+            thread_bound: self.thread_bound.clone(),
         }
     }
 }
@@ -473,6 +486,7 @@ impl<T> Signal<T> {
             connected: Arc::new(AtomicBool::new(true)),
             slot_key: None,
             single_shot: false,
+            thread_bound: None,
             dispatcher: SlotDispatcher::Direct(Arc::new(slot)),
         });
 
@@ -497,6 +511,40 @@ impl<T> Signal<T> {
             dispatcher: SlotDispatcher::Direct(Arc::new(slot)),
             slot_key: None,
             single_shot: true,
+            thread_bound: None,
+        });
+
+        id
+    }
+
+    /// [`Signal::connect_single_shot`] for a slot that may run on thread `owner` only. An
+    /// emission from another thread calls `on_skip` and leaves the connection in place; the
+    /// slot runs, once, on the first emission from `owner`.
+    pub(super) fn connect_single_shot_bound<F>(
+        &self,
+        owner: ThreadId,
+        on_skip: impl Fn() + Send + Sync + 'static,
+        slot: F,
+    ) -> ConnectionId
+    where
+        F: Fn(&T) + Send + Sync + 'static,
+    {
+        let mut inner = self.inner.lock();
+        let id = ConnectionId::next();
+
+        inner.subscribers.push(Subscriber {
+            id,
+            receiver_id: None,
+            receiver_thread: None,
+            conn_type: ConnectionType::Direct,
+            connected: Arc::new(AtomicBool::new(true)),
+            dispatcher: SlotDispatcher::Direct(Arc::new(slot)),
+            slot_key: None,
+            single_shot: true,
+            thread_bound: Some(ThreadBound {
+                owner,
+                on_skip: Arc::new(on_skip),
+            }),
         });
 
         id
@@ -600,6 +648,14 @@ impl<T> Signal<T> {
             if !sub.connected.load(Ordering::Acquire) {
                 continue;
             }
+            // A slot bound to another thread is skipped, not consumed: the single-shot removal
+            // below must not happen for an emission that cannot run it.
+            if let Some(bound) = &sub.thread_bound {
+                if bound.owner != current_thread {
+                    (bound.on_skip)();
+                    continue;
+                }
+            }
             // Qt `doActivate` removes a single-shot connection before invoking it; a re-entrant
             // emit then cannot reach the slot again. `disconnect` also retires the registry entry.
             if sub.single_shot && !self.disconnect(sub.id) {
@@ -649,13 +705,19 @@ impl<T: 'static> Signal<T> {
         F: Fn(&T) + Send + Sync + 'static,
     {
         let id = self.connect(slot);
+        ScopedConnection::new(id, self.scoped_disconnector())
+    }
+
+    /// The disconnect step of a [`ScopedConnection`] of this signal. It holds the signal weakly,
+    /// so a scoped connection does not keep its signal alive.
+    pub(super) fn scoped_disconnector(&self) -> impl FnOnce(ConnectionId) + Send + 'static {
         let signal_weak = Arc::downgrade(&self.inner);
-        ScopedConnection::new(id, move |conn_id| {
+        move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
                 let removed = inner_arc.lock().remove_where(|sub| sub.id == conn_id);
                 retire_registry_entries(removed);
             }
-        })
+        }
     }
     /// Connects directly to a receiver object with automatic disconnect on receiver drop,
     /// without requiring `T` to be `Send`, `Sync`, or `Clone`.
@@ -674,6 +736,7 @@ impl<T: 'static> Signal<T> {
             connected: Arc::new(AtomicBool::new(true)),
             slot_key: None,
             single_shot: false,
+            thread_bound: None,
             dispatcher: SlotDispatcher::Direct(Arc::new(slot)),
         });
 
@@ -858,6 +921,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             dispatcher,
             slot_key: unique,
             single_shot,
+            thread_bound: None,
         });
 
         let inner_weak = Arc::downgrade(&self.inner);
@@ -976,6 +1040,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             connected: Arc::new(AtomicBool::new(true)),
             slot_key: None,
             single_shot: false,
+            thread_bound: None,
             dispatcher,
         });
 
