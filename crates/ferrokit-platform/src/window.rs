@@ -1180,6 +1180,7 @@ unsafe fn native_window_proc_inner(
         WM_DESTROY => {
             set_interactive_resize_flag(hwnd, false);
             unregister_window_event_binding(hwnd);
+            crate::dark_mode::window_destroyed(hwnd);
             0
         }
         WM_SIZE => {
@@ -2028,6 +2029,17 @@ impl NativeWindow {
         if hwnd.is_null() {
             return Err("CreateWindowExW failed");
         }
+
+        // A frameless window has no frame of its own to darken (`Qt::FramelessWindowHint`).
+        crate::dark_mode::window_created(
+            hwnd,
+            flags.intersects(
+                WindowFlags::FRAMELESS
+                    | WindowFlags::CUSTOM_FRAMELESS
+                    | WindowFlags::LAYERED
+                    | WindowFlags::TOOLTIP,
+            ),
+        );
 
         crate::ime::set_window_ime_enabled(hwnd, false);
 

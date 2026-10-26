@@ -133,7 +133,7 @@ pub mod win32_theme {
     impl Default for Win32Theme {
         fn default() -> Self {
             let theme = Self {
-                core: SchemeCore::new(Self::query_color_scheme()),
+                core: SchemeCore::new(Self::system_color_scheme()),
             };
             // Qt reads the font smoothing state once, when the first painter starts
             // (`QRasterPaintEngine::clearTypeFontsEnabled`, a function-local static).
@@ -145,7 +145,7 @@ pub mod win32_theme {
 
     impl Win32Theme {
         /// Windows build number (`CurrentBuildNumber`).
-        fn build_number() -> Option<u32> {
+        pub(crate) fn build_number() -> Option<u32> {
             use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, REG_SZ};
             let subkey: Vec<u16> = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
                 .encode_utf16()
@@ -187,6 +187,18 @@ pub mod win32_theme {
 
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// What the system contributes to the effective scheme: the registry value, but
+        /// `Light` when the style part of dark mode is switched off
+        /// (`QWindowsTheme::effectiveColorScheme`, qwindowstheme.cpp:655-667;
+        /// `-platform windows:darkmode=0|1`, see [`crate::dark_mode`]).
+        fn system_color_scheme() -> ColorScheme {
+            let style = crate::dark_mode::DarkModeHandling::STYLE;
+            if !crate::dark_mode::dark_mode_handling().contains(style) {
+                return ColorScheme::Light;
+            }
+            Self::query_color_scheme()
         }
 
         pub fn query_color_scheme() -> ColorScheme {
@@ -344,7 +356,7 @@ pub mod win32_theme {
         /// scheme moved.
         fn refresh(&self) {
             ferrokit_gui::application::set_system_motion_preference(self.motion_preference());
-            self.core.set_system(Self::query_color_scheme());
+            self.core.set_system(Self::system_color_scheme());
         }
 
         /// `QWindowsTheme::requestColorScheme` (qwindowstheme.cpp:669-673): the request replaces
@@ -945,16 +957,26 @@ pub fn install_style_hints_theme(theme: Arc<dyn PlatformTheme>) {
     }
 
     static BRIDGE: Mutex<Option<(Arc<dyn PlatformTheme>, ConnectionId)>> = Mutex::new(None);
+    // Before the connection below, so a notification never reads the previous theme.
+    #[cfg(windows)]
+    crate::dark_mode::set_theme(Arc::clone(&theme));
     {
         let mut bridge = BRIDGE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((previous, connection)) = bridge.take() {
             previous.theme_changed().disconnect(connection);
         }
-        let connection = theme
-            .theme_changed()
-            .connect(|_| ferrokit_gui::application::handle_theme_changed());
+        let connection = theme.theme_changed().connect(|_| {
+            // Qt moves the window frames before it signals the change
+            // (`QWindowsTheme::handleThemeChange`, qwindowstheme.cpp:690-705). The pass reads the
+            // scheme itself, so a late delivery of an older notification cannot apply a stale one.
+            crate::dark_mode::scheme_changed();
+            ferrokit_gui::application::handle_theme_changed();
+        });
         *bridge = Some((Arc::clone(&theme), connection));
     }
+    // The native menus need their app mode before the first one opens, and a window created
+    // afterwards takes its frame from the scheme of this theme.
+    crate::dark_mode::scheme_changed();
     // Outside the lock: this reads the scheme and may run `color_scheme_changed` slots.
     ferrokit_gui::application::set_color_scheme_source(Arc::new(ThemeSource(theme)));
 }
