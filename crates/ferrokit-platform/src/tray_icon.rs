@@ -927,8 +927,7 @@ impl TrayIcon {
     /// (`QSystemTrayIcon::activated`).
     pub fn with_backend(mut inner: Box<dyn crate::platform_tray::PlatformTrayIcon>) -> Box<Self> {
         let on_activated = Signal::new();
-        let emitter = on_activated.clone();
-        inner.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
+        crate::platform_tray::forward_activations(inner.as_mut(), &on_activated);
         Box::new(Self {
             inner,
             on_menu_action: Signal::new(),

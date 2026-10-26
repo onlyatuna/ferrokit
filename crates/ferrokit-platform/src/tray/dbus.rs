@@ -53,6 +53,8 @@ pub struct DbusStatusNotifierItem {
     connection: Mutex<Option<DbusConnection>>,
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
     activation_handler: Option<Box<dyn Fn(TrayActivation)>>,
+    /// The notifier `bind_event_dispatcher` registered for the bus socket.
+    notifier: Option<std::sync::Arc<SocketNotifier>>,
 }
 
 impl DbusStatusNotifierItem {
@@ -70,6 +72,7 @@ impl DbusStatusNotifierItem {
             connection: Mutex::new(None),
             last_message: None,
             activation_handler: None,
+            notifier: None,
         }
     }
 
@@ -109,14 +112,19 @@ impl DbusStatusNotifierItem {
         self.connection.lock().unwrap().is_some()
     }
 
-    /// Uses `connection` instead of connecting to the session bus on first use.
+    /// Uses `connection` instead of connecting to the session bus on first use. A notifier
+    /// bound to the previous connection is disabled first, since its descriptor goes away.
     pub fn set_connection(&mut self, connection: DbusConnection) {
+        if let Some(notifier) = self.notifier.take() {
+            notifier.set_enabled(false);
+        }
         *self.connection.lock().unwrap() = Some(connection);
     }
 
     /// Watches the bus socket; `Ok(None)` when there is no bus connection or it has no
     /// descriptor, and [`SocketNotifierError::Unsupported`] when the dispatcher does not poll
-    /// descriptors (see [`DbusConnection::bind_event_dispatcher`]).
+    /// descriptors (see [`DbusConnection::bind_event_dispatcher`]). The item keeps the notifier
+    /// so that it can disable it when the connection fails.
     pub fn bind_event_dispatcher(
         &mut self,
         dispatcher: &mut dyn EventDispatcher,
@@ -125,10 +133,20 @@ impl DbusStatusNotifierItem {
         if conn_guard.is_none() {
             *conn_guard = DbusConnection::connect_session_bus().ok();
         }
-        match conn_guard.as_ref() {
-            Some(connection) => connection.bind_event_dispatcher(dispatcher),
-            None => Ok(None),
-        }
+        let notifier = match conn_guard.as_ref() {
+            Some(connection) => connection.bind_event_dispatcher(dispatcher)?,
+            None => None,
+        };
+        drop(conn_guard);
+        self.notifier = notifier.clone();
+        Ok(notifier)
+    }
+
+    /// Stands in for what [`bind_event_dispatcher`](Self::bind_event_dispatcher) stores, for tests
+    /// of how the item treats the notifier when the connection fails.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_socket_notifier(&mut self, notifier: std::sync::Arc<SocketNotifier>) {
+        self.notifier = Some(notifier);
     }
 
     /// What the host's `Activate(x, y)` call does: reports [`TrayActivation::Trigger`], as
@@ -155,32 +173,63 @@ impl DbusStatusNotifierItem {
         }
     }
 
-    /// Dispatches one message received from the bus: a method call on the
-    /// `org.kde.StatusNotifierItem` interface of `/StatusNotifierItem` runs the matching
-    /// method and is answered with an empty reply (unless the caller set
-    /// `NO_REPLY_EXPECTED`). `Scroll` and `ProvideXdgActivationToken` are accepted and ignored
-    /// (Qt: "unsupported" / only stores the token in the environment). Everything else is left
-    /// alone. Returns whether the message was one of these calls.
+    /// Dispatches one message received from the bus. A method call to `/StatusNotifierItem` is
+    /// dispatched by member name when its interface is `org.kde.StatusNotifierItem` or absent
+    /// (QtDBus does the same): `Activate`, `ContextMenu` and `SecondaryActivate` report their
+    /// reason, `Scroll` and `ProvideXdgActivationToken` are accepted and ignored (Qt:
+    /// "unsupported" / only stores the token in the environment), and the caller gets an empty
+    /// reply. Any other call to the item (another member, or another interface such as
+    /// `org.freedesktop.DBus.Properties`, which this crate does not implement) gets an
+    /// `org.freedesktop.DBus.Error.UnknownMethod` error, so the host does not wait for its
+    /// timeout. Replies are skipped when the caller set `NO_REPLY_EXPECTED`. Messages for any
+    /// other object are left alone. Returns whether the message was a call to the item.
     pub fn handle_message(&mut self, msg: &DbusMessage) -> bool {
         if msg.msg_type != DBUS_MESSAGE_TYPE_METHOD_CALL
             || msg.path.as_deref() != Some("/StatusNotifierItem")
-            || msg.interface.as_deref() != Some("org.kde.StatusNotifierItem")
         {
             return false;
         }
-        match msg.member.as_deref() {
-            Some("Activate") => self.activate(0, 0),
-            Some("ContextMenu") => self.context_menu(0, 0),
-            Some("SecondaryActivate") => self.secondary_activate(0, 0),
-            Some("Scroll") | Some("ProvideXdgActivationToken") => {}
-            _ => return false,
-        }
+        let interface_matches = msg
+            .interface
+            .as_deref()
+            .is_none_or(|interface| interface == "org.kde.StatusNotifierItem");
+        let known = interface_matches
+            && match msg.member.as_deref() {
+                Some("Activate") => {
+                    self.activate(0, 0);
+                    true
+                }
+                Some("ContextMenu") => {
+                    self.context_menu(0, 0);
+                    true
+                }
+                Some("SecondaryActivate") => {
+                    self.secondary_activate(0, 0);
+                    true
+                }
+                Some("Scroll") | Some("ProvideXdgActivationToken") => true,
+                _ => false,
+            };
         const NO_REPLY_EXPECTED: u8 = 0x1;
         if msg.flags & NO_REPLY_EXPECTED == 0 {
             if let Some(conn) = self.connection.lock().unwrap().as_mut() {
                 let serial = conn.next_serial();
-                let reply =
-                    DbusMessage::method_return(msg.serial, msg.sender.as_deref().unwrap_or(""), serial);
+                let destination = msg.sender.as_deref().unwrap_or("");
+                let reply = if known {
+                    DbusMessage::method_return(msg.serial, destination, serial)
+                } else {
+                    DbusMessage::error(
+                        msg.serial,
+                        destination,
+                        serial,
+                        "org.freedesktop.DBus.Error.UnknownMethod",
+                        &format!(
+                            "No such method {}.{}",
+                            msg.interface.as_deref().unwrap_or("(any)"),
+                            msg.member.as_deref().unwrap_or("")
+                        ),
+                    )
+                };
                 let _ = conn.send_message(reply);
             }
         }
@@ -274,8 +323,11 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
     }
 
     /// Reads the messages that arrived on the bus socket and runs [`handle_message`]
-    /// on each. A closed or broken connection is dropped here: the icon then stays silent
-    /// until `show` connects again.
+    /// on each. When the connection has failed (the peer closed it, or the stream is
+    /// corrupt), the item is no longer registered and the notifier from `bind_event_dispatcher`
+    /// is disabled, so the dispatcher stops polling the descriptor. The closed connection is
+    /// kept rather than dropped: its descriptor must stay valid for as long as the notifier is
+    /// registered, and the item stays silent until it is rebuilt.
     ///
     /// [`handle_message`]: DbusStatusNotifierItem::handle_message
     fn process_events(&mut self) {
@@ -287,7 +339,11 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
             match conn.read_incoming() {
                 Ok(messages) => messages,
                 Err(_) => {
-                    *guard = None;
+                    drop(guard);
+                    self.is_registered = false;
+                    if let Some(notifier) = &self.notifier {
+                        notifier.set_enabled(false);
+                    }
                     return;
                 }
             }

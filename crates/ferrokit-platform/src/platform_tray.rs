@@ -14,6 +14,16 @@ pub enum TrayMessageIcon {
     Critical = 3,
 }
 
+/// Makes `tray` emit every activation it reports on `signal` (`QSystemTrayIcon::activated`).
+/// The non-Windows `TrayIcon` wires its `on_activated` signal this way.
+pub fn forward_activations(
+    tray: &mut dyn PlatformTrayIcon,
+    signal: &ferrokit_core::signal::Signal<TrayActivation>,
+) {
+    let emitter = signal.clone();
+    tray.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
+}
+
 pub trait PlatformTrayIcon {
     fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;

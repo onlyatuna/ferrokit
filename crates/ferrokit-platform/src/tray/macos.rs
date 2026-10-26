@@ -2,6 +2,7 @@
 use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::paint::Pixmap;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,13 +22,19 @@ pub struct CocoaStatusItem {
     is_template: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
-    on_click: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// What the button's single target runs on a click; see `ensure_button_target`.
+    handlers: Rc<RefCell<ButtonHandlers>>,
     /// The object the button sends clicks to (`NSControl.target` is weak, so it lives here).
     click_target: Option<ActionTarget>,
-    activation_handler: Option<Rc<dyn Fn(TrayActivation)>>,
     /// The observer of the menu's `NSMenuDidBeginTrackingNotification` (weak in AppKit, so it
     /// lives here).
     menu_observer: Option<ActionTarget>,
+}
+
+#[derive(Default)]
+struct ButtonHandlers {
+    on_click: Option<Arc<dyn Fn() + Send + Sync>>,
+    activation: Option<Rc<dyn Fn(TrayActivation)>>,
 }
 
 // Deliberately neither `Send` nor `Sync`: wraps an `NSStatusItem` (`Id`), which AppKit only allows
@@ -63,9 +70,8 @@ impl CocoaStatusItem {
             is_template: true,
             menu: None,
             last_message: None,
-            on_click: None,
+            handlers: Rc::default(),
             click_target: None,
-            activation_handler: None,
             menu_observer: None,
         }
     }
@@ -94,35 +100,60 @@ impl CocoaStatusItem {
         }
     }
 
-    /// Sets a callback invoked when the status bar item is clicked.
+    /// Sets a callback invoked when the status bar item is clicked. It shares the button's
+    /// target with the activation handler ([`PlatformTrayIcon::set_activation_handler`]): both
+    /// run for each click, and setting either leaves the other in place.
     pub fn set_on_click<F>(&mut self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
     {
-        let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(callback);
-        self.on_click = Some(Arc::clone(&callback));
-        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
-        if button.is_nil() {
-            return;
-        }
-        let Ok(target) = ActionTarget::new(move || callback()) else {
-            return;
-        };
-        // [button setTarget:target] & [button setAction:@selector(ferrokitPerformAction:)]: the
-        // target runs the callback when AppKit delivers the click.
-        unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), target.id()) };
-        unsafe {
-            ObjcMsg::send_action(button, Sel::register("setAction:"), ActionTarget::action())
-        };
-        // A previous target is released only now that the button points at the new one.
-        self.click_target = Some(target);
+        self.handlers.borrow_mut().on_click = Some(Arc::new(callback));
+        self.ensure_button_target();
     }
 
     /// Triggers the click action handler.
     pub fn trigger_click(&self) {
-        if let Some(cb) = &self.on_click {
+        let on_click = self.handlers.borrow().on_click.clone();
+        if let Some(cb) = on_click {
             cb();
         }
+    }
+
+    /// Points the button at one target that runs both the click callback and the activation
+    /// handler as they are set at the time of the click. Returns whether the button has such a
+    /// target (false: no button, or the target class could not be created).
+    fn ensure_button_target(&mut self) -> bool {
+        if self.click_target.is_some() {
+            return true;
+        }
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+        if button.is_nil() {
+            return false;
+        }
+        let handlers = Rc::clone(&self.handlers);
+        let Ok(target) = ActionTarget::new(move || {
+            // Copied out so a callback may set handlers without a borrow outstanding.
+            let (on_click, activation) = {
+                let h = handlers.borrow();
+                (h.on_click.clone(), h.activation.clone())
+            };
+            if let Some(cb) = on_click {
+                cb();
+            }
+            if let Some(handler) = activation {
+                handler(activation_reason_for_event(current_event()));
+            }
+        }) else {
+            return false;
+        };
+        // [button setTarget:target] & [button setAction:@selector(ferrokitPerformAction:)]: the
+        // target runs the callbacks when AppKit delivers the click.
+        unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), target.id()) };
+        unsafe {
+            ObjcMsg::send_action(button, Sel::register("setAction:"), ActionTarget::action())
+        };
+        self.click_target = Some(target);
+        true
     }
 
     /// Whether the status item's menu is being observed for `NSMenuDidBeginTrackingNotification`
@@ -137,14 +168,20 @@ impl CocoaStatusItem {
     /// and an activation handler are both set.
     fn observe_menu_tracking(&mut self) {
         self.remove_menu_observer();
-        let (Some(handler), Some(menu)) = (&self.activation_handler, &self.menu) else {
+        if self.handlers.borrow().activation.is_none() {
+            return;
+        }
+        let Some(menu) = &self.menu else {
             return;
         };
         let menu_id = Id(menu.native_handle() as *mut std::ffi::c_void);
-        let handler = Rc::clone(handler);
-        let Ok(target) =
-            ActionTarget::new(move || handler(activation_reason_for_event(current_event())))
-        else {
+        let handlers = Rc::clone(&self.handlers);
+        let Ok(target) = ActionTarget::new(move || {
+            let activation = handlers.borrow().activation.clone();
+            if let Some(handler) = activation {
+                handler(activation_reason_for_event(current_event()));
+            }
+        }) else {
             return;
         };
         let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
@@ -172,10 +209,11 @@ impl CocoaStatusItem {
         // SAFETY: `[center removeObserver:target]` before the target is released by drop.
         unsafe {
             let center = ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter"));
-            ObjcMsg::send_id(center, Sel::register("removeObserver:"), target.id());
+            ObjcMsg::send_id_logged(center, Sel::register("removeObserver:"), target.id());
         }
         drop(target);
     }
+
     pub fn tooltip(&self) -> &str {
         &self.tooltip
     }
@@ -274,34 +312,20 @@ impl PlatformTrayIcon for CocoaStatusItem {
     /// **Not run on macOS.** It is type-checked for `aarch64-apple-darwin` and tested against
     /// the mock Objective-C runtime; no real status bar item has been clicked.
     fn set_activation_handler(&mut self, handler: Box<dyn Fn(TrayActivation)>) {
-        let handler: Rc<dyn Fn(TrayActivation)> = Rc::from(handler);
-        self.activation_handler = Some(Rc::clone(&handler));
-        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
-        if !button.is_nil() {
-            let click_handler = Rc::clone(&handler);
-            if let Ok(target) =
-                ActionTarget::new(move || click_handler(activation_reason_for_event(current_event())))
-            {
-                // button.target = delegate; button.action = @selector(statusItemClicked);
-                // [button sendActionOn:LeftMouseDown | RightMouseDown | OtherMouseDown]
-                unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), target.id()) };
-                unsafe {
-                    ObjcMsg::send_action(
-                        button,
-                        Sel::register("setAction:"),
-                        ActionTarget::action(),
-                    )
-                };
-                unsafe {
-                    ObjcMsg::send_int(
-                        button,
-                        Sel::register("sendActionOn:"),
-                        NS_EVENT_MASK_ACTIVATION,
-                    )
-                };
-                self.click_target = Some(target);
-            }
+        // The handler is only kept once the button has a target to deliver clicks to.
+        if !self.ensure_button_target() {
+            return;
         }
+        self.handlers.borrow_mut().activation = Some(Rc::from(handler));
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+        // [button sendActionOn:LeftMouseDown | RightMouseDown | OtherMouseDown]
+        unsafe {
+            ObjcMsg::send_int_logged(
+                button,
+                Sel::register("sendActionOn:"),
+                NS_EVENT_MASK_ACTIVATION,
+            )
+        };
         self.observe_menu_tracking();
     }
 
@@ -381,6 +405,10 @@ const NS_EVENT_RIGHT_MOUSE_DOWN: isize = 3;
 const NS_EVENT_RIGHT_MOUSE_UP: isize = 4;
 const NS_EVENT_OTHER_MOUSE_DOWN: isize = 25;
 const NS_EVENT_OTHER_MOUSE_UP: isize = 26;
+const NS_EVENT_MOUSE_MOVED: isize = 5;
+const NS_EVENT_LEFT_MOUSE_DRAGGED: isize = 6;
+const NS_EVENT_RIGHT_MOUSE_DRAGGED: isize = 7;
+const NS_EVENT_OTHER_MOUSE_DRAGGED: isize = 27;
 
 /// `NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown`, the
 /// events Qt asks the status item button to send its action on
@@ -394,20 +422,28 @@ const NS_MENU_DID_BEGIN_TRACKING: &str = "NSMenuDidBeginTrackingNotification";
 
 /// `QCocoaSystemTrayIcon::emitActivated`'s classification of the event that activated the
 /// status item: click count 2 is a double click, otherwise `cocoaButton2QtButton(event)`
-/// decides: a right mouse event or button number 1 is `Qt::RightButton`, button number 2 is
-/// `Qt::MiddleButton`, everything else `Trigger`.
-pub fn activation_reason(event_type: isize, click_count: isize, button_number: isize) -> TrayActivation {
+/// decides. It gives no button for a mouse-move class event (moved, dragged), `Qt::RightButton`
+/// for a right mouse down or up whatever the button number, and else the button number: 1 is
+/// `Qt::RightButton`, 2 `Qt::MiddleButton`, anything else is neither. Middle is
+/// `MiddleClick`, right `Context`, everything else `Trigger`.
+pub fn activation_reason(
+    event_type: isize,
+    click_count: isize,
+    button_number: isize,
+) -> TrayActivation {
     if click_count == 2 {
-        TrayActivation::DoubleClick
-    } else if button_number == 2 {
-        TrayActivation::MiddleClick
-    } else if event_type == NS_EVENT_RIGHT_MOUSE_DOWN
-        || event_type == NS_EVENT_RIGHT_MOUSE_UP
-        || button_number == 1
-    {
-        TrayActivation::Context
-    } else {
-        TrayActivation::Trigger
+        return TrayActivation::DoubleClick;
+    }
+    if is_mouse_move_event(event_type) {
+        return TrayActivation::Trigger;
+    }
+    if event_type == NS_EVENT_RIGHT_MOUSE_DOWN || event_type == NS_EVENT_RIGHT_MOUSE_UP {
+        return TrayActivation::Context;
+    }
+    match button_number {
+        2 => TrayActivation::MiddleClick,
+        1 => TrayActivation::Context,
+        _ => TrayActivation::Trigger,
     }
 }
 
@@ -422,7 +458,17 @@ pub fn activation_reason_for_event(event: Id) -> TrayActivation {
     // SAFETY: `event` is a live NSEvent; `type` is defined for every NSEvent, and
     // `clickCount`/`buttonNumber` only for the mouse types checked before reading them.
     let event_type = unsafe { ObjcMsg::send_isize_return(event, Sel::register("type")) };
-    let is_mouse = matches!(
+    if !is_mouse_event(event_type) {
+        return TrayActivation::Unknown;
+    }
+    let click_count = unsafe { ObjcMsg::send_isize_return(event, Sel::register("clickCount")) };
+    let button_number = unsafe { ObjcMsg::send_isize_return(event, Sel::register("buttonNumber")) };
+    activation_reason(event_type, click_count, button_number)
+}
+
+/// The mouse event types `cocoaEvent2QtMouseEvent` knows: down, up, moved and dragged.
+fn is_mouse_event(event_type: isize) -> bool {
+    matches!(
         event_type,
         NS_EVENT_LEFT_MOUSE_DOWN
             | NS_EVENT_LEFT_MOUSE_UP
@@ -430,13 +476,18 @@ pub fn activation_reason_for_event(event: Id) -> TrayActivation {
             | NS_EVENT_RIGHT_MOUSE_UP
             | NS_EVENT_OTHER_MOUSE_DOWN
             | NS_EVENT_OTHER_MOUSE_UP
-    );
-    if !is_mouse {
-        return TrayActivation::Unknown;
-    }
-    let click_count = unsafe { ObjcMsg::send_isize_return(event, Sel::register("clickCount")) };
-    let button_number = unsafe { ObjcMsg::send_isize_return(event, Sel::register("buttonNumber")) };
-    activation_reason(event_type, click_count, button_number)
+    ) || is_mouse_move_event(event_type)
+}
+
+/// `QEvent::MouseMove` in `cocoaEvent2QtMouseEvent`: moved and the three dragged types.
+fn is_mouse_move_event(event_type: isize) -> bool {
+    matches!(
+        event_type,
+        NS_EVENT_MOUSE_MOVED
+            | NS_EVENT_LEFT_MOUSE_DRAGGED
+            | NS_EVENT_RIGHT_MOUSE_DRAGGED
+            | NS_EVENT_OTHER_MOUSE_DRAGGED
+    )
 }
 
 /// `[NSApp currentEvent]`.
@@ -469,6 +520,12 @@ mod tests {
         // Extra buttons (3 and up) are plain triggers, as `cocoaButton2QtButton` maps them to
         // buttons Qt does not single out.
         assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 1, 3), Trigger);
+        // A right mouse event is Right whatever the button number says.
+        assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_DOWN, 1, 2), Context);
+        assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_UP, 1, 2), Context);
+        // Mouse-move class events have no button.
+        assert_eq!(activation_reason(NS_EVENT_MOUSE_MOVED, 1, 2), Trigger);
+        assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DRAGGED, 1, 1), Trigger);
     }
 
     #[test]
@@ -510,6 +567,16 @@ mod tests {
             assert_eq!(activation_reason_for_event(Id::NIL), Trigger);
             // NSEventTypeKeyDown (10) has no click count or button number.
             assert_eq!(activation_reason_for_event(event(10, 0, 0)), Unknown);
+        }
+
+        #[test]
+        fn moves_and_drags_are_triggers_unless_double_clicked() {
+            // cocoaButton2QtButton: a mouse-move class event has no button.
+            for kind in [5, 6, 7, 27] {
+                assert_eq!(activation_reason_for_event(event(kind, 1, 2)), Trigger);
+                assert_eq!(activation_reason_for_event(event(kind, 1, 1)), Trigger);
+                assert_eq!(activation_reason_for_event(event(kind, 2, 0)), DoubleClick);
+            }
         }
     }
 }

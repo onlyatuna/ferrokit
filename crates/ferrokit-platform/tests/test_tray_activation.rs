@@ -134,7 +134,25 @@ fn activation_reasons_carry_qts_values() {
     assert_eq!(TrayActivation::MiddleClick as i32, 4);
 }
 
-/// The non-Windows `TrayIcon` forwards the back end's activations to `on_activated`.
+/// `forward_activations` is what the non-Windows `TrayIcon` uses to feed `on_activated`; it is
+/// platform neutral, so it runs here too. (`TrayIcon::with_backend` itself is not compiled on
+/// Windows, where `TrayIcon` is the Win32 one.)
+#[test]
+fn backend_activations_are_forwarded_to_a_signal() {
+    use ferrokit_core::signal::Signal;
+    use ferrokit_platform::platform_tray::forward_activations;
+
+    let (mut item, bus, _seen) = item_with_bus();
+    let signal = Signal::new();
+    let reasons = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&reasons);
+    signal.connect(move |reason: &TrayActivation| sink.lock().unwrap().push(*reason));
+    forward_activations(&mut item, &signal);
+    bus.push_to_client(&host_call("SecondaryActivate", 40).to_bytes());
+    item.process_events();
+    assert_eq!(*reasons.lock().unwrap(), [TrayActivation::MiddleClick]);
+}
+
 #[cfg(not(windows))]
 #[test]
 fn tray_icon_forwards_backend_activations_to_its_signal() {
@@ -151,6 +169,94 @@ fn tray_icon_forwards_backend_activations_to_its_signal() {
     assert_eq!(*reasons.lock().unwrap(), [TrayActivation::MiddleClick]);
 }
 
+#[test]
+fn unknown_calls_to_the_item_get_an_unknown_method_error() {
+    use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_ERROR;
+
+    let (mut item, bus, seen) = item_with_bus();
+    let mut other_interface = host_call("GetAll", 50);
+    other_interface.interface = Some("org.freedesktop.DBus.Properties".to_string());
+    bus.push_to_client(&host_call("NoSuchMethod", 51).to_bytes());
+    bus.push_to_client(&other_interface.to_bytes());
+    item.process_events();
+    assert!(seen.borrow().is_empty());
+    let errors: Vec<_> = bus
+        .received()
+        .into_iter()
+        .filter(|m| m.msg_type == DBUS_MESSAGE_TYPE_ERROR)
+        .collect();
+    assert_eq!(
+        errors.iter().map(|m| m.reply_serial).collect::<Vec<_>>(),
+        [Some(51), Some(50)]
+    );
+    for error in &errors {
+        assert_eq!(
+            error.error_name.as_deref(),
+            Some("org.freedesktop.DBus.Error.UnknownMethod")
+        );
+        assert_eq!(error.destination.as_deref(), Some(":1.99"));
+    }
+}
+
+#[test]
+fn calls_without_an_interface_dispatch_by_member_name() {
+    let (mut item, bus, seen) = item_with_bus();
+    let mut call = host_call("Activate", 60);
+    call.interface = None;
+    bus.push_to_client(&call.to_bytes());
+    let mut unknown = host_call("Bogus", 61);
+    unknown.interface = None;
+    bus.push_to_client(&unknown.to_bytes());
+    item.process_events();
+    assert_eq!(*seen.borrow(), [TrayActivation::Trigger]);
+    let kinds: Vec<_> = bus
+        .received()
+        .into_iter()
+        .filter(|m| m.reply_serial.is_some())
+        .map(|m| (m.reply_serial.unwrap(), m.msg_type))
+        .collect();
+    use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_ERROR;
+    assert_eq!(
+        kinds,
+        [
+            (60, DBUS_MESSAGE_TYPE_METHOD_RETURN),
+            (61, DBUS_MESSAGE_TYPE_ERROR)
+        ]
+    );
+}
+
+#[test]
+fn a_failed_connection_disables_the_notifier_and_keeps_the_descriptor_owner() {
+    use ferrokit_core::event_loop::SocketEvent;
+
+    let (mut item, bus, seen) = item_with_bus();
+    let notifier = std::sync::Arc::new(ferrokit_core::event_loop::SocketNotifier::new(
+        7,
+        SocketEvent::Read,
+    ));
+    // Stand-in for what `bind_event_dispatcher` stores: the item must switch it off when the
+    // connection fails, before anything could poll a closed descriptor.
+    item.set_socket_notifier(std::sync::Arc::clone(&notifier));
+    bus.close_after_queued();
+    bus.push_to_client(&host_call("Activate", 70).to_bytes());
+    item.process_events();
+    // The call that arrived before the close is still delivered.
+    assert_eq!(*seen.borrow(), [TrayActivation::Trigger]);
+    // Drain until the connection reports the failure.
+    for _ in 0..3 {
+        item.process_events();
+    }
+    assert!(
+        !notifier.is_enabled(),
+        "the notifier is disabled once the bus is gone"
+    );
+    assert!(!item.is_registered());
+    assert!(
+        item.is_connected(),
+        "the closed connection is kept, so its descriptor outlives the notifier"
+    );
+}
+
 #[cfg(not(target_os = "macos"))]
 mod cocoa {
     use super::*;
@@ -158,6 +264,9 @@ mod cocoa {
     use ferrokit_platform::menu::CocoaMenu;
     use ferrokit_platform::objc_runtime::appkit::MockValue;
     use ferrokit_platform::{ActionTarget, CocoaStatusItem, Id, MockObjcRuntime};
+
+    /// `NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown`.
+    const ACTIVATION_MASK: i64 = (1 << 1) | (1 << 3) | (1 << 25);
 
     fn mouse_event(kind: i64, clicks: i64, button: i64) -> Id {
         MockObjcRuntime::instance().object_with(
@@ -175,6 +284,20 @@ mod cocoa {
         let sink = Rc::clone(&seen);
         item.set_activation_handler(Box::new(move |reason| sink.borrow_mut().push(reason)));
         seen
+    }
+
+    fn button_of(item: &CocoaStatusItem) -> Id {
+        MockObjcRuntime::instance()
+            .get_object_data(item.native_status_item())
+            .expect("status item")
+            .button
+    }
+
+    fn menu_of(item: &CocoaStatusItem) -> Id {
+        MockObjcRuntime::instance()
+            .get_object_data(item.native_status_item())
+            .expect("status item")
+            .menu
     }
 
     /// The observers added for `menu`: the target ids of each `addObserver:...:object:menu`.
@@ -197,6 +320,19 @@ mod cocoa {
             .collect()
     }
 
+    /// The targets passed to `removeObserver:`.
+    fn removed_observers() -> Vec<Id> {
+        MockObjcRuntime::instance()
+            .calls()
+            .into_iter()
+            .filter(|call| call.selector == "removeObserver:")
+            .filter_map(|call| match call.args[0] {
+                MockValue::Id(target) => Some(target),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// One test: `[NSApp currentEvent]` is process-wide state in the mock.
     #[test]
     fn button_click_and_menu_tracking_report_the_current_events_reason() {
@@ -205,16 +341,21 @@ mod cocoa {
 
         let mut item = CocoaStatusItem::new(1);
         let seen = handler(&mut item);
-        let button = runtime
-            .get_object_data(item.native_status_item())
-            .expect("status item")
-            .button;
+        let button = button_of(&item);
         let data = runtime.get_object_data(button).expect("button");
         assert!(
             !data.target.is_nil(),
             "the button sends its action to the delegate"
         );
         assert_eq!(data.action, ActionTarget::action());
+        // [button sendActionOn:LeftMouseDown | RightMouseDown | OtherMouseDown]
+        let masks: Vec<_> = runtime
+            .calls_for(button)
+            .into_iter()
+            .filter(|call| call.selector == "sendActionOn:")
+            .map(|call| call.args[0].clone())
+            .collect();
+        assert_eq!(masks, [MockValue::Int(ACTIVATION_MASK)]);
 
         let click = |event: Id| {
             runtime.set_current_event(event);
@@ -222,6 +363,7 @@ mod cocoa {
         };
         click(mouse_event(1, 1, 0)); // left mouse down
         click(mouse_event(3, 1, 1)); // right mouse down
+        click(mouse_event(3, 1, 2)); // right mouse down with button number 2: still Right
         click(mouse_event(25, 1, 2)); // other mouse down, button 2
         click(mouse_event(1, 2, 0)); // second click of a double click
         runtime.set_current_event(Id::NIL);
@@ -231,6 +373,7 @@ mod cocoa {
             [
                 TrayActivation::Trigger,
                 TrayActivation::Context,
+                TrayActivation::Context,
                 TrayActivation::MiddleClick,
                 TrayActivation::DoubleClick,
                 TrayActivation::Trigger,
@@ -239,12 +382,8 @@ mod cocoa {
 
         // A status item with a menu opens it instead of sending the button action; the
         // menu's tracking notification reports the activation.
-        let menu = Box::new(CocoaMenu::new());
-        item.set_menu(menu);
-        let menu_id = runtime
-            .get_object_data(item.native_status_item())
-            .expect("status item")
-            .menu;
+        item.set_menu(Box::new(CocoaMenu::new()));
+        let menu_id = menu_of(&item);
         let observers = menu_observers(menu_id);
         assert_eq!(
             observers.len(),
@@ -259,24 +398,112 @@ mod cocoa {
         runtime.set_current_event(Id::NIL);
         assert_eq!(*seen.borrow(), [TrayActivation::Trigger]);
 
+        // Replacing the menu removes the old observer first and observes the new menu.
+        item.set_menu(Box::new(CocoaMenu::new()));
+        assert_eq!(
+            removed_observers().iter().filter(|&&t| t == live).count(),
+            1
+        );
+        assert!(!ActionTarget::perform(live), "the old observer is released");
+        let new_menu = menu_of(&item);
+        assert_ne!(new_menu, menu_id);
+        let new_observers = menu_observers(new_menu);
+        assert_eq!(new_observers.len(), 1);
+        let live2 = new_observers[0];
+        assert!(item.is_observing_menu_tracking());
+
         drop(item);
         assert!(
-            !ActionTarget::perform(live),
-            "dropping the status item releases its observer"
+            removed_observers().contains(&live2),
+            "dropping the status item removes its observer from the notification centre"
         );
+        assert!(!ActionTarget::perform(live2));
+    }
+
+    #[test]
+    fn handler_set_after_the_menu_observes_it() {
+        ThreadContext::init_current(true, None);
+        let runtime = MockObjcRuntime::instance();
+        let mut item = CocoaStatusItem::new(3);
+        item.set_menu(Box::new(CocoaMenu::new()));
+        let menu_id = menu_of(&item);
+        assert!(menu_observers(menu_id).is_empty(), "no handler yet");
+        let seen = handler(&mut item);
+        let observers = menu_observers(menu_id);
+        assert_eq!(observers.len(), 1);
+        assert!(item.is_observing_menu_tracking());
+        runtime.set_current_event(mouse_event(3, 1, 1));
+        assert!(ActionTarget::perform(observers[0]));
+        runtime.set_current_event(Id::NIL);
+        assert_eq!(*seen.borrow(), [TrayActivation::Context]);
+        // Setting the handler again keeps a single live observer.
+        let _second = handler(&mut item);
+        assert_eq!(
+            removed_observers()
+                .iter()
+                .filter(|&&t| t == observers[0])
+                .count(),
+            1
+        );
+        assert_eq!(menu_observers(menu_id).len(), 2);
     }
 
     #[test]
     fn menu_without_a_handler_is_not_observed() {
         ThreadContext::init_current(true, None);
-        let runtime = MockObjcRuntime::instance();
         let mut item = CocoaStatusItem::new(2);
         item.set_menu(Box::new(CocoaMenu::new()));
-        let menu_id = runtime
-            .get_object_data(item.native_status_item())
-            .expect("status item")
-            .menu;
+        let menu_id = menu_of(&item);
         assert!(menu_observers(menu_id).is_empty());
         assert!(!item.is_observing_menu_tracking());
+    }
+
+    /// `set_on_click` and the activation handler share the button's target: neither replaces
+    /// the other, in either order.
+    #[test]
+    fn click_callback_and_activation_handler_coexist() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        ThreadContext::init_current(true, None);
+        let runtime = MockObjcRuntime::instance();
+        for handler_first in [true, false] {
+            let mut item = CocoaStatusItem::new(4);
+            let clicks = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&clicks);
+            let on_click = move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            };
+            let seen: Seen = Rc::default();
+            let sink = Rc::clone(&seen);
+            let activation: Box<dyn Fn(TrayActivation)> =
+                Box::new(move |reason| sink.borrow_mut().push(reason));
+            if handler_first {
+                item.set_activation_handler(activation);
+                item.set_on_click(on_click);
+            } else {
+                item.set_on_click(on_click);
+                item.set_activation_handler(activation);
+            }
+            let target = runtime
+                .get_object_data(button_of(&item))
+                .expect("button")
+                .target;
+            runtime.set_current_event(mouse_event(1, 1, 0));
+            assert!(ActionTarget::perform(target));
+            runtime.set_current_event(Id::NIL);
+            assert_eq!(
+                clicks.load(Ordering::SeqCst),
+                1,
+                "handler_first={handler_first}"
+            );
+            assert_eq!(
+                *seen.borrow(),
+                [TrayActivation::Trigger],
+                "handler_first={handler_first}"
+            );
+            item.trigger_click();
+            assert_eq!(clicks.load(Ordering::SeqCst), 2);
+        }
     }
 }

@@ -45,6 +45,8 @@ pub struct DbusMessage {
     pub member: Option<String>,
     pub destination: Option<String>,
     pub sender: Option<String>,
+    /// `ERROR_NAME` header field of an `ERROR` message.
+    pub error_name: Option<String>,
     pub reply_serial: Option<u32>,
     pub signature: String,
     /// Body bytes exactly as on the wire (aligned relative to the body start).
@@ -138,6 +140,7 @@ impl DbusMessage {
             member: Some(member.to_string()),
             destination: Some(destination.to_string()),
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: Vec::new(),
@@ -155,6 +158,7 @@ impl DbusMessage {
             member: Some(member.to_string()),
             destination: None,
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: Vec::new(),
@@ -172,11 +176,28 @@ impl DbusMessage {
             member: None,
             destination: Some(destination.to_string()),
             sender: None,
+            error_name: None,
             reply_serial: Some(reply_serial),
             signature: String::new(),
             body: Vec::new(),
             big_endian: false,
         }
+    }
+
+    /// An `ERROR` reply to the call with serial `reply_serial`, named `error_name` (for example
+    /// `org.freedesktop.DBus.Error.UnknownMethod`) with `description` as its message.
+    pub fn error(
+        reply_serial: u32,
+        destination: &str,
+        serial: u32,
+        error_name: &str,
+        description: &str,
+    ) -> Self {
+        let mut msg = Self::method_return(reply_serial, destination, serial);
+        msg.msg_type = DBUS_MESSAGE_TYPE_ERROR;
+        msg.error_name = Some(error_name.to_string());
+        msg.append_string(description);
+        msg
     }
 
     fn pad_body(&mut self, to: usize) {
@@ -286,6 +307,9 @@ impl DbusMessage {
         }
         if let Some(sender) = &self.sender {
             append_field_str(&mut fields_buf, DBUS_HEADER_FIELD_SENDER, "s", sender);
+        }
+        if let Some(name) = &self.error_name {
+            append_field_str(&mut fields_buf, DBUS_HEADER_FIELD_ERROR_NAME, "s", name);
         }
         if let Some(reply_serial) = self.reply_serial {
             while !fields_buf.len().is_multiple_of(8) {
@@ -398,6 +422,7 @@ impl DbusMessage {
             member: None,
             destination: None,
             sender: None,
+            error_name: None,
             reply_serial: None,
             signature: String::new(),
             body: data[body_start..].to_vec(),
@@ -422,7 +447,8 @@ impl DbusMessage {
                         DBUS_HEADER_FIELD_MEMBER => msg.member = Some(value),
                         DBUS_HEADER_FIELD_DESTINATION => msg.destination = Some(value),
                         DBUS_HEADER_FIELD_SENDER => msg.sender = Some(value),
-                        // ERROR_NAME has no field on the message; unknown codes are skipped.
+                        DBUS_HEADER_FIELD_ERROR_NAME => msg.error_name = Some(value),
+                        // Unknown codes are skipped.
                         _ => {}
                     }
                 }
