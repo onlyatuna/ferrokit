@@ -71,6 +71,8 @@ struct MockAppKitState {
     calls: Vec<MockCall>,
     /// Shared `NSCursor` instances by class-method name, like AppKit's immortal singletons.
     cursors: HashMap<String, usize>,
+    /// `[NSApp currentEvent]`, as an object handle (0: nil).
+    current_event: usize,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -104,6 +106,16 @@ impl MockObjcRuntime {
         mock_state()
             .properties
             .remove(&(receiver.0 as usize, selector.to_string()));
+    }
+
+    /// What `[NSApp currentEvent]` returns: the event being dispatched, nil outside of one.
+    pub fn set_current_event(&self, event: Id) {
+        mock_state().current_event = event.0 as usize;
+    }
+
+    /// The event `set_current_event` stored, nil if none.
+    pub fn current_event(&self) -> Id {
+        Id(mock_state().current_event as *mut c_void)
     }
 
     /// A new mock object of `class_name` whose properties are `properties`.
@@ -574,6 +586,59 @@ impl ObjcMsg {
                     MockValue::Id(receiver),
                 );
             }
+            receiver
+        }
+    }
+
+    /// `-[receiver addObserver:id selector:SEL name:NSString object:id]`
+    /// (`-[NSNotificationCenter addObserver:selector:name:object:]`), logged. `name` is a
+    /// temporary `NSString` the notification centre copies.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_add_observer_logged(
+        receiver: Id,
+        sel: Sel,
+        observer: Id,
+        action: Sel,
+        name: &str,
+        object: Id,
+    ) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let name_obj = nsstring_from_str(name);
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                *mut c_void,
+            ) -> *mut c_void = msg_send_fn();
+            let result = Id(msg_send(
+                receiver.0, sel.0, observer.0, action.0, name_obj.0, object.0,
+            ));
+            // The centre copies the name; balance the +1 from `nsstring_from_str`.
+            ObjcMsg::send_0(name_obj, Sel::register("release"));
+            result
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(
+                receiver,
+                sel,
+                vec![
+                    MockValue::Id(observer),
+                    MockValue::Str(mock_selector_name(action)),
+                    MockValue::Str(name.to_string()),
+                    MockValue::Id(object),
+                ],
+            );
             receiver
         }
     }

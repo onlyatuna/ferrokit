@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::geometry::primitives::RectF;
-use crate::text::font::{Font, FontStyle, FontWeight};
+use crate::text::font::{Font, FontStyle, FontTag, FontWeight};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -12,7 +12,8 @@ struct AdvanceKey {
     size_bits: u32,
     weight: FontWeight,
     style: FontStyle,
-    tabular_numbers: bool,
+    /// `(tag value, feature value)` of every feature set, in tag order.
+    features: Vec<(u32, u32)>,
     letter_spacing_bits: u32,
 }
 
@@ -199,7 +200,7 @@ impl FontMetrics {
         let mut total_width = 0.0;
 
         for ch in text.chars() {
-            let w = if font.tabular_numbers && ch.is_ascii_digit() {
+            let w = if font.feature_value(FontTag::TNUM) != 0 && ch.is_ascii_digit() {
                 self.average_char_width * 1.05
             } else {
                 match ch {
@@ -236,7 +237,7 @@ impl FontMetrics {
             size_bits: font.size.to_bits(),
             weight: font.weight,
             style: font.style,
-            tabular_numbers: font.tabular_numbers,
+            features: font.features().iter().map(|(tag, value)| (tag.value(), *value)).collect(),
             letter_spacing_bits: font.letter_spacing.to_bits(),
         };
         let hit = ADVANCE_CACHE.with(|c| {
@@ -361,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_tabular_numbers_stability() {
-        let font_tnum = Font::new("Consolas", 12.0).with_tabular_numbers(true);
+        let font_tnum = Font::new("Consolas", 12.0).with_feature(FontTag::TNUM, 1);
         let metrics = FontMetrics::from_font(&font_tnum);
 
         let w1 = metrics.horizontal_advance("1111", &font_tnum);
