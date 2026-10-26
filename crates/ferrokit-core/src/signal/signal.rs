@@ -649,13 +649,19 @@ impl<T: 'static> Signal<T> {
         F: Fn(&T) + Send + Sync + 'static,
     {
         let id = self.connect(slot);
+        ScopedConnection::new(id, self.scoped_disconnector())
+    }
+
+    /// The disconnect step of a [`ScopedConnection`] of this signal. It holds the signal weakly,
+    /// so a scoped connection does not keep its signal alive.
+    pub(super) fn scoped_disconnector(&self) -> impl FnOnce(ConnectionId) + Send + 'static {
         let signal_weak = Arc::downgrade(&self.inner);
-        ScopedConnection::new(id, move |conn_id| {
+        move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
                 let removed = inner_arc.lock().remove_where(|sub| sub.id == conn_id);
                 retire_registry_entries(removed);
             }
-        })
+        }
     }
     /// Connects directly to a receiver object with automatic disconnect on receiver drop,
     /// without requiring `T` to be `Send`, `Sync`, or `Clone`.
