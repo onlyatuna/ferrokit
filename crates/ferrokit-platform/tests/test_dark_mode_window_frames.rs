@@ -8,7 +8,7 @@
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_platform::backdrop::BackdropType;
+use ferrokit_platform::backdrop::{set_window_backdrop, BackdropType};
 use ferrokit_platform::window::{NativeWindow, WindowFlags};
 use ferrokit_platform::{platform, ColorScheme, PlatformWindow};
 use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
@@ -55,13 +55,33 @@ fn window_frames_follow_the_requested_colour_scheme() {
     let light = new_window("light frame", WindowFlags::NORMAL);
     assert!(!frame_is_dark(&light), "created under Light");
 
-    // `set_backdrop` sets the attribute from its own flag, which the scheme then leaves alone.
+    // A backdrop sets the attribute from its own flag, which the scheme then leaves alone.
+    // `PlatformWindow::set_backdrop` and the public `set_window_backdrop` both do this.
     let mut owned = new_window("backdrop owns the frame", WindowFlags::NORMAL);
-    owned.set_backdrop(BackdropType::None, false);
+    owned.set_backdrop(BackdropType::FlatTint, false);
+    let direct = new_window("direct backdrop owns the frame", WindowFlags::NORMAL);
+    set_window_backdrop(direct.hwnd(), BackdropType::FlatTint, false);
     theme.request_color_scheme(ColorScheme::Dark);
     assert!(frame_is_dark(&framed));
     assert!(frame_is_dark(&light), "Light -> Dark");
     assert!(!frame_is_dark(&owned), "the application's own value stays");
+    assert!(
+        !frame_is_dark(&direct),
+        "set_window_backdrop marks the window too"
+    );
+
+    // `BackdropType::None` gives the frame back to the scheme, at once, and ignores `dark_mode`.
+    owned.set_backdrop(BackdropType::None, false);
+    assert!(frame_is_dark(&owned), "None: the Dark scheme applies again");
+    set_window_backdrop(direct.hwnd(), BackdropType::None, false);
+    assert!(frame_is_dark(&direct), "None through the public function");
+    theme.request_color_scheme(ColorScheme::Light);
+    assert!(
+        !frame_is_dark(&owned),
+        "and it follows the scheme afterwards"
+    );
+    assert!(!frame_is_dark(&direct));
+    theme.request_color_scheme(ColorScheme::Dark);
 
     // A closed window is no longer tracked and does not disturb the others.
     drop(framed);

@@ -106,6 +106,13 @@ impl BackdropState {
 }
 
 /// Applies the specified backdrop material effect to the window.
+///
+/// The window's dark frame attribute: every backdrop but [`BackdropType::None`] writes it from
+/// `dark_mode`, and the colour scheme then leaves that window's frame alone (the application
+/// chose the tint, and the frame goes with it). [`BackdropType::None`] gives the frame back to
+/// the colour scheme (`dark_mode` is then the tint of nothing and is ignored) and applies the
+/// scheme at once. A window this crate did not create is not tracked by the scheme, so there
+/// `None` writes `dark_mode` as the other backdrops do.
 #[cfg(windows)]
 pub fn set_window_backdrop(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -124,7 +131,14 @@ pub fn set_window_backdrop(
 
     unsafe {
         // First, configure dark mode preference (attribute 20, or 19 before 20H1, as Qt does)
-        crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
+        if backdrop == BackdropType::None {
+            if !crate::dark_mode::release_frame_to_scheme(hwnd) {
+                crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
+            }
+        } else {
+            crate::dark_mode::set_frame_by_application(hwnd);
+            crate::dark_mode::set_dark_border_to_window(hwnd, dark_mode);
+        }
 
         match backdrop {
             BackdropType::None => {

@@ -957,22 +957,26 @@ pub fn install_style_hints_theme(theme: Arc<dyn PlatformTheme>) {
     }
 
     static BRIDGE: Mutex<Option<(Arc<dyn PlatformTheme>, ConnectionId)>> = Mutex::new(None);
+    // Before the connection below, so a notification never reads the previous theme.
+    #[cfg(windows)]
+    crate::dark_mode::set_theme(Arc::clone(&theme));
     {
         let mut bridge = BRIDGE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((previous, connection)) = bridge.take() {
             previous.theme_changed().disconnect(connection);
         }
-        let connection = theme.theme_changed().connect(|scheme| {
+        let connection = theme.theme_changed().connect(|_| {
             // Qt moves the window frames before it signals the change
-            // (`QWindowsTheme::handleThemeChange`, qwindowstheme.cpp:690-705).
-            crate::dark_mode::scheme_changed(*scheme);
+            // (`QWindowsTheme::handleThemeChange`, qwindowstheme.cpp:690-705). The pass reads the
+            // scheme itself, so a late delivery of an older notification cannot apply a stale one.
+            crate::dark_mode::scheme_changed();
             ferrokit_gui::application::handle_theme_changed();
         });
         *bridge = Some((Arc::clone(&theme), connection));
     }
-    // The scheme the theme has now: the native menus need their app mode before the first one
-    // opens, and a window created afterwards takes its frame from it.
-    crate::dark_mode::scheme_changed(theme.color_scheme());
+    // The native menus need their app mode before the first one opens, and a window created
+    // afterwards takes its frame from the scheme of this theme.
+    crate::dark_mode::scheme_changed();
     // Outside the lock: this reads the scheme and may run `color_scheme_changed` slots.
     ferrokit_gui::application::set_color_scheme_source(Arc::new(ThemeSource(theme)));
 }

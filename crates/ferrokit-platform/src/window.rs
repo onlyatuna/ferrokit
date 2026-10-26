@@ -2797,8 +2797,6 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
         self.backdrop_state.request(backdrop, dark_mode);
-        // The frame attribute is set from `dark_mode` below; the colour scheme leaves it alone.
-        crate::dark_mode::set_frame_by_application(self.hwnd);
         self.apply_backdrop_state()
     }
 

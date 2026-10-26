@@ -54,6 +54,7 @@
 //! own; neither Qt (`QCocoaMenu`) nor `cocoa_menu.rs` does. Linux: no native chrome to theme (the
 //! portal scheme only feeds [`crate::theme::UnixTheme`]); these functions do nothing there.
 
+#[cfg(any(windows, test))]
 use crate::theme::ColorScheme;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -104,14 +105,13 @@ pub fn set_dark_mode_handling(handling: DarkModeHandling) {
     HANDLING.store(handling.bits(), Ordering::Relaxed);
     #[cfg(windows)]
     {
-        let theme = crate::integration::platform().theme();
-        theme.refresh();
-        scheme_changed(theme.color_scheme());
+        crate::integration::platform().theme().refresh();
+        scheme_changed();
     }
 }
 
 /// Whether a window's frame should be dark under `scheme`: `Some(dark)` to set it, `None` to
-/// leave the frame alone because the application set it itself (`set_backdrop`).
+/// leave the frame alone because the application set it itself (`set_window_backdrop`).
 /// `shouldApplyDarkFrame` (qwindowswindow.cpp:863-878) without the palette test: ferrokit has no
 /// palette change notification to re-run it on, so the frame follows the scheme.
 #[cfg(any(windows, test))]
@@ -178,6 +178,56 @@ fn plan_app_mode(build: Option<u32>, scheme: ColorScheme) -> AppModePlan {
     }
 }
 
+/// Runs a "pass" so that the last request wins and no pass ever runs inside another one.
+///
+/// A pass reads the *current* scheme and the current windows, so a request that arrives while a
+/// pass runs (another thread, or the same thread re-entered from a message that a uxtheme call
+/// sent to one of our windows) only marks the running pass dirty and returns; the running pass
+/// then repeats, reading the state again. A stale scheme can therefore never be the last one
+/// applied, and no lock is held while a pass runs.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct Coalescer {
+    /// `(running, dirty)`.
+    state: std::sync::Mutex<(bool, bool)>,
+}
+
+#[cfg(any(windows, test))]
+impl Coalescer {
+    /// Runs `pass` now, or arranges for the pass that is running to run once more.
+    fn request(&self, mut pass: impl FnMut()) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.0 {
+                state.1 = true;
+                return;
+            }
+            *state = (true, false);
+        }
+        // A panicking pass must not leave the coalescer "running" for good.
+        struct Reset<'a>(&'a Coalescer);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+                *state = (false, false);
+            }
+        }
+        let reset = Reset(self);
+        loop {
+            pass();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.1 {
+                state.1 = false;
+                continue;
+            }
+            state.0 = false;
+            drop(state);
+            std::mem::forget(reset);
+            return;
+        }
+    }
+}
+
 /// The top-level windows that exist, with what decides their frame.
 #[cfg(any(windows, test))]
 #[derive(Default)]
@@ -188,19 +238,27 @@ struct WindowRegistry {
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WindowEntry {
+    /// Windows that draw no frame the scheme could darken. This is wider than Qt's
+    /// `Qt::FramelessWindowHint` test: ferrokit's `CUSTOM_FRAMELESS`, `LAYERED` and `TOOLTIP`
+    /// windows count too, because their caption is drawn by the application or absent.
     frameless: bool,
-    /// `set_backdrop` set the frame attribute from its own `dark_mode`, which wins over the scheme.
+    /// `set_window_backdrop` wrote the frame attribute from its own `dark_mode`, which wins over
+    /// the scheme until a `BackdropType::None` hands the frame back.
     set_by_application: bool,
+    /// The attribute last written successfully, `None` when unknown (then it is written again).
+    applied_dark: Option<bool>,
 }
 
 #[cfg(any(windows, test))]
 impl WindowRegistry {
+    /// A new window has DWM's default, a light frame.
     fn insert(&mut self, hwnd: isize, frameless: bool) {
         self.windows.insert(
             hwnd,
             WindowEntry {
                 frameless,
                 set_by_application: false,
+                applied_dark: Some(false),
             },
         );
     }
@@ -209,9 +267,33 @@ impl WindowRegistry {
         self.windows.remove(&hwnd);
     }
 
-    fn mark_set_by_application(&mut self, hwnd: isize) {
+    /// Whether `hwnd` is tracked.
+    fn mark_set_by_application(&mut self, hwnd: isize) -> bool {
+        match self.windows.get_mut(&hwnd) {
+            Some(entry) => {
+                entry.set_by_application = true;
+                entry.applied_dark = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Gives the frame back to the scheme. Whether `hwnd` is tracked.
+    fn release_to_scheme(&mut self, hwnd: isize) -> bool {
+        match self.windows.get_mut(&hwnd) {
+            Some(entry) => {
+                entry.set_by_application = false;
+                entry.applied_dark = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn record_applied(&mut self, hwnd: isize, dark: bool) {
         if let Some(entry) = self.windows.get_mut(&hwnd) {
-            entry.set_by_application = true;
+            entry.applied_dark = Some(dark);
         }
     }
 
@@ -225,26 +307,63 @@ impl WindowRegistry {
     }
 }
 
+/// One pass over the windows: writes the frame of every window whose wanted value differs from
+/// what was last written. `set_frame(hwnd, dark)` reports whether the write was accepted; a
+/// refused one is not recorded, so the next pass tries again. The registry lock is not held
+/// while `set_frame` runs.
+#[cfg(any(windows, test))]
+fn apply_frames(
+    registry: &std::sync::Mutex<Option<WindowRegistry>>,
+    handling: DarkModeHandling,
+    scheme: ColorScheme,
+    mut set_frame: impl FnMut(isize, bool) -> bool,
+) {
+    let snapshot = registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(WindowRegistry::default)
+        .snapshot();
+    for (hwnd, entry) in snapshot {
+        let Some(dark) =
+            frame_should_be_dark(handling, scheme, entry.frameless, entry.set_by_application)
+        else {
+            continue;
+        };
+        if entry.applied_dark == Some(dark) {
+            continue;
+        }
+        if set_frame(hwnd, dark) {
+            let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+            // The window may have been destroyed, or reconfigured, meanwhile.
+            if let Some(r) = guard.as_mut() {
+                if r.entry(hwnd) == Some(entry) {
+                    r.record_applied(hwnd, dark);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) use win::{
-    set_dark_border_to_window, set_frame_by_application, window_created, window_destroyed,
+    release_frame_to_scheme, set_dark_border_to_window, set_frame_by_application, set_theme,
+    window_created, window_destroyed,
 };
 
 /// The effective colour scheme changed (or was just installed): move the app-level mode of the
-/// native menus and the frame of every window. Called by the platform theme bridge
-/// ([`crate::theme::install_style_hints_theme`]) on whichever thread noticed the change. No
-/// effect outside Windows.
-pub(crate) fn scheme_changed(scheme: ColorScheme) {
+/// native menus and the frame of every window to the scheme the theme reports *now*. Called by
+/// the platform theme bridge ([`crate::theme::install_style_hints_theme`]) on whichever thread
+/// noticed the change, and safe to call re-entrantly from a message handler. No effect outside
+/// Windows.
+pub(crate) fn scheme_changed() {
     #[cfg(windows)]
-    win::apply_scheme(scheme);
-    #[cfg(not(windows))]
-    let _ = scheme;
+    win::apply_scheme();
 }
 
 #[cfg(windows)]
 mod win {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
+    use std::sync::{Arc, LazyLock, Mutex};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
     use windows_sys::Win32::System::LibraryLoader::{
@@ -271,7 +390,9 @@ mod win {
         allow_dark_mode_for_app: Option<AllowDarkModeForApp>,
         set_preferred_app_mode: Option<SetPreferredAppMode>,
         flush_menu_themes: Option<FlushMenuThemes>,
-        /// The plan last applied, so a repeated scheme does not flush the menu themes again.
+        /// The plan committed last, so a repeated scheme does not flush the menu themes again.
+        /// Never held while an export runs: `FlushMenuThemes` sends messages to our windows, and
+        /// their handlers may come back here.
         applied: Mutex<Option<AppModePlan>>,
     }
 
@@ -347,35 +468,43 @@ mod win {
         }
 
         /// Sets the app-level mode for `scheme` and flushes the menu themes. Returns whether
-        /// the mode call was made (not when unsupported, missing, or already in that state).
+        /// the mode call was made (not when unsupported, when the export is missing, or when the
+        /// mode is already that one).
+        ///
+        /// The plan is compared and committed under the lock; the exports run after it is
+        /// released. A plan that cannot be carried out (no export) is not committed, so it is
+        /// not mistaken for done.
         pub(super) fn apply_app_scheme(&self, scheme: ColorScheme) -> bool {
             let plan = plan_app_mode(self.build, scheme);
-            let mut applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
-            if *applied == Some(plan) {
-                return false;
-            }
-            // SAFETY: the pointers were resolved for this build by `resolve`.
-            unsafe {
-                match plan {
-                    AppModePlan::Unsupported => return false,
-                    AppModePlan::AllowDarkForApp(on) => match self.allow_dark_mode_for_app {
-                        Some(f) => {
-                            f(on as i32);
-                        }
-                        None => return false,
-                    },
-                    AppModePlan::Preferred(mode) => match self.set_preferred_app_mode {
-                        Some(f) => {
-                            f(mode as i32);
-                        }
-                        None => return false,
-                    },
+            let call: Box<dyn Fn()> = match plan {
+                AppModePlan::Unsupported => return false,
+                AppModePlan::AllowDarkForApp(on) => match self.allow_dark_mode_for_app {
+                    // SAFETY: resolved for this build range by `resolve`.
+                    Some(f) => Box::new(move || unsafe {
+                        f(on as i32);
+                    }),
+                    None => return false,
+                },
+                AppModePlan::Preferred(mode) => match self.set_preferred_app_mode {
+                    // SAFETY: as above.
+                    Some(f) => Box::new(move || unsafe {
+                        f(mode as i32);
+                    }),
+                    None => return false,
+                },
+            };
+            {
+                let mut applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+                if *applied == Some(plan) {
+                    return false;
                 }
-                if let Some(flush) = self.flush_menu_themes {
-                    flush();
-                }
+                *applied = Some(plan);
             }
-            *applied = Some(plan);
+            call();
+            if let Some(flush) = self.flush_menu_themes {
+                // SAFETY: resolved for this build range by `resolve`.
+                unsafe { flush() };
+            }
             true
         }
 
@@ -383,7 +512,7 @@ mod win {
         pub(super) fn allow_window(&self, hwnd: HWND, allow: bool) -> bool {
             match self.allow_dark_mode_for_window {
                 Some(f) if !hwnd.is_null() => {
-                    // SAFETY: resolved for this build; `hwnd` is a window handle.
+                    // SAFETY: resolved for this build range; `hwnd` is a window handle.
                     unsafe { f(hwnd, allow as i32) };
                     true
                 }
@@ -394,10 +523,24 @@ mod win {
 
     static UXTHEME: LazyLock<UxTheme> = LazyLock::new(UxTheme::load);
     static WINDOWS: Mutex<Option<WindowRegistry>> = Mutex::new(None);
+    static PASSES: LazyLock<Coalescer> = LazyLock::new(Coalescer::default);
+    /// The theme whose scheme is the effective one (`install_style_hints_theme`).
+    static THEME: Mutex<Option<Arc<dyn crate::theme::PlatformTheme>>> = Mutex::new(None);
 
     fn with_registry<R>(f: impl FnOnce(&mut WindowRegistry) -> R) -> R {
         let mut guard = WINDOWS.lock().unwrap_or_else(|e| e.into_inner());
         f(guard.get_or_insert_with(WindowRegistry::default))
+    }
+
+    /// Remembers the theme whose scheme the windows and menus follow.
+    pub(crate) fn set_theme(theme: Arc<dyn crate::theme::PlatformTheme>) {
+        *THEME.lock().unwrap_or_else(|e| e.into_inner()) = Some(theme);
+    }
+
+    /// The scheme the theme reports now, `Unknown` before there is a theme.
+    fn current_scheme() -> ColorScheme {
+        let theme = THEME.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        theme.map_or(ColorScheme::Unknown, |t| t.color_scheme())
     }
 
     /// `QWindowsWindow::setDarkBorderToWindow` (qwindowswindow.cpp:3857-3866): attribute 20, and
@@ -421,52 +564,56 @@ mod win {
         }
     }
 
-    fn apply_to_window(hwnd: isize, entry: WindowEntry, scheme: ColorScheme) {
-        let Some(dark) = frame_should_be_dark(
-            super::dark_mode_handling(),
-            scheme,
-            entry.frameless,
-            entry.set_by_application,
-        ) else {
-            return;
-        };
+    fn set_frame(hwnd: isize, dark: bool) -> bool {
         UXTHEME.allow_window(hwnd as HWND, dark);
-        set_dark_border_to_window(hwnd as HWND, dark);
+        set_dark_border_to_window(hwnd as HWND, dark)
     }
 
-    /// A top-level window exists: a dark scheme darkens its frame from the start
-    /// (qwindowswindow.cpp:971-972). `frameless` windows draw no frame of their own to darken.
+    /// One pass: the app mode and every frame, for the scheme the theme reports at this moment.
+    fn pass() {
+        let scheme = current_scheme();
+        UXTHEME.apply_app_scheme(scheme);
+        apply_frames(&WINDOWS, super::dark_mode_handling(), scheme, set_frame);
+    }
+
+    pub(super) fn apply_scheme() {
+        PASSES.request(pass);
+    }
+
+    /// A top-level window exists. It is registered, and then a pass runs (or the running one is
+    /// asked to repeat), so that a scheme change racing with the creation cannot miss it: the
+    /// pass reads the scheme after the window is in the registry. A dark scheme darkens the
+    /// frame from the start (qwindowswindow.cpp:971-972); under a light one the pass finds a
+    /// new window already light and writes nothing.
+    ///
+    /// `frameless` windows draw no frame the scheme could darken. That is wider than Qt's
+    /// `Qt::FramelessWindowHint` test: ferrokit's `CUSTOM_FRAMELESS`, `LAYERED` and `TOOLTIP`
+    /// windows are counted too (their caption is drawn by the application, or absent).
     pub(crate) fn window_created(hwnd: HWND, frameless: bool) {
-        let key = hwnd as isize;
-        with_registry(|r| r.insert(key, frameless));
-        let scheme = crate::integration::platform().theme().color_scheme();
-        if scheme == ColorScheme::Dark {
-            apply_to_window(
-                key,
-                WindowEntry {
-                    frameless,
-                    set_by_application: false,
-                },
-                scheme,
-            );
-        }
+        with_registry(|r| r.insert(hwnd as isize, frameless));
+        // The theme may not be installed yet when the first window is made.
+        let _ = crate::integration::platform();
+        apply_scheme();
     }
 
     pub(crate) fn window_destroyed(hwnd: HWND) {
         with_registry(|r| r.remove(hwnd as isize));
     }
 
-    /// `set_backdrop` chose the frame attribute from its own `dark_mode`; the scheme leaves it.
-    pub(crate) fn set_frame_by_application(hwnd: HWND) {
-        with_registry(|r| r.mark_set_by_application(hwnd as isize));
+    /// `set_window_backdrop` chose the frame attribute from its own `dark_mode`; the scheme
+    /// leaves it until [`release_frame_to_scheme`]. Whether the window is tracked.
+    pub(crate) fn set_frame_by_application(hwnd: HWND) -> bool {
+        with_registry(|r| r.mark_set_by_application(hwnd as isize))
     }
 
-    pub(super) fn apply_scheme(scheme: ColorScheme) {
-        UXTHEME.apply_app_scheme(scheme);
-        // The lock is not held across the DWM calls.
-        for (hwnd, entry) in with_registry(|r| r.snapshot()) {
-            apply_to_window(hwnd, entry, scheme);
+    /// Hands the frame back to the scheme and applies it now. Whether the window is tracked;
+    /// for an untracked one nothing happens.
+    pub(crate) fn release_frame_to_scheme(hwnd: HWND) -> bool {
+        let tracked = with_registry(|r| r.release_to_scheme(hwnd as isize));
+        if tracked {
+            apply_scheme();
         }
+        tracked
     }
 
     #[cfg(test)]
@@ -507,12 +654,11 @@ mod win {
         }
 
         #[test]
-        fn absent_exports_are_tolerated() {
+        fn absent_exports_are_tolerated_and_not_remembered_as_applied() {
             let fns = UxTheme::resolve(Some(22631), |_| 0);
             assert!(!fns.apply_app_scheme(ColorScheme::Dark));
             assert!(!fns.apply_app_scheme(ColorScheme::Light));
             assert!(!fns.allow_window(0x10 as HWND, true));
-            // A failed attempt is not remembered as applied.
             assert_eq!(*fns.applied.lock().unwrap(), None);
         }
 
@@ -586,6 +732,51 @@ mod win {
             assert_eq!(APP_CALLS.load(Ordering::SeqCst), 2);
         }
 
+        // The flush stub of this test comes back into `apply_app_scheme` on the same thread, as a
+        // window procedure would when `FlushMenuThemes` sends it a message. With the lock held
+        // across the export this deadlocks.
+        static REENTRANT: std::sync::OnceLock<&'static UxTheme> = std::sync::OnceLock::new();
+        static REENTRANT_FLUSHES: AtomicUsize = AtomicUsize::new(0);
+        static REENTRANT_RESULT: AtomicI32 = AtomicI32::new(-1);
+        unsafe extern "system" fn reentrant_mode_stub(_mode: i32) -> i32 {
+            1
+        }
+        unsafe extern "system" fn reentrant_flush_stub() {
+            if REENTRANT_FLUSHES.fetch_add(1, Ordering::SeqCst) == 0 {
+                // The same plan is already committed: nothing to do, and no deadlock.
+                let again = REENTRANT.get().unwrap().apply_app_scheme(ColorScheme::Dark);
+                REENTRANT_RESULT.store(again as i32, Ordering::SeqCst);
+            }
+        }
+
+        #[test]
+        fn an_export_may_re_enter_apply_app_scheme_without_deadlocking() {
+            let fns: &'static UxTheme = Box::leak(Box::new(UxTheme::resolve(
+                Some(22631),
+                |ordinal| match ordinal {
+                    135 => reentrant_mode_stub as *const () as usize,
+                    136 => reentrant_flush_stub as *const () as usize,
+                    _ => 0,
+                },
+            )));
+            REENTRANT.set(fns).ok().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                tx.send(fns.apply_app_scheme(ColorScheme::Dark)).ok();
+            });
+            // A deadlock would never answer; the timeout only bounds a failing run.
+            let done = rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .expect("apply_app_scheme deadlocked");
+            assert!(done);
+            assert_eq!(REENTRANT_FLUSHES.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                REENTRANT_RESULT.load(Ordering::SeqCst),
+                0,
+                "re-entry is a no-op"
+            );
+        }
+
         #[test]
         fn the_real_exports_resolve_on_this_machine_without_being_called() {
             let build = crate::theme::win32_theme::Win32Theme::build_number();
@@ -612,13 +803,19 @@ mod win {
                 registered(hwnd),
                 Some(WindowEntry {
                     frameless: false,
-                    set_by_application: false
+                    set_by_application: false,
+                    applied_dark: Some(false),
                 })
             );
-            set_frame_by_application(hwnd);
+            assert!(set_frame_by_application(hwnd));
             assert!(registered(hwnd).unwrap().set_by_application);
+            assert!(release_frame_to_scheme(hwnd));
+            assert!(!registered(hwnd).unwrap().set_by_application);
             window_destroyed(hwnd);
             assert_eq!(registered(hwnd), None);
+            // Untracked windows are not ours to touch.
+            assert!(!set_frame_by_application(hwnd));
+            assert!(!release_frame_to_scheme(hwnd));
         }
     }
 }
@@ -626,6 +823,8 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::sync::Mutex;
 
     #[test]
     fn the_default_is_qts_darkmode_2() {
@@ -700,34 +899,21 @@ mod tests {
     #[test]
     fn frames_follow_the_scheme_unless_opted_out_frameless_or_set_by_the_application() {
         let all = DarkModeHandling::default();
-        assert_eq!(
-            frame_should_be_dark(all, ColorScheme::Dark, false, false),
-            Some(true)
-        );
-        assert_eq!(
-            frame_should_be_dark(all, ColorScheme::Light, false, false),
-            Some(false)
-        );
-        assert_eq!(
-            frame_should_be_dark(all, ColorScheme::Unknown, false, false),
-            Some(false)
-        );
+        let f = frame_should_be_dark;
+        assert_eq!(f(all, ColorScheme::Dark, false, false), Some(true));
+        assert_eq!(f(all, ColorScheme::Light, false, false), Some(false));
+        assert_eq!(f(all, ColorScheme::Unknown, false, false), Some(false));
         // `Qt::FramelessWindowHint`.
-        assert_eq!(
-            frame_should_be_dark(all, ColorScheme::Dark, true, false),
-            Some(false)
-        );
+        assert_eq!(f(all, ColorScheme::Dark, true, false), Some(false));
         // `darkmode=0` and `darkmode=1` differ in the style only; frames need `WINDOW_FRAMES`.
+        let empty = DarkModeHandling::empty();
+        assert_eq!(f(empty, ColorScheme::Dark, false, false), Some(false));
         assert_eq!(
-            frame_should_be_dark(DarkModeHandling::empty(), ColorScheme::Dark, false, false),
+            f(DarkModeHandling::STYLE, ColorScheme::Dark, false, false),
             Some(false)
         );
         assert_eq!(
-            frame_should_be_dark(DarkModeHandling::STYLE, ColorScheme::Dark, false, false),
-            Some(false)
-        );
-        assert_eq!(
-            frame_should_be_dark(
+            f(
                 DarkModeHandling::WINDOW_FRAMES,
                 ColorScheme::Dark,
                 false,
@@ -735,11 +921,8 @@ mod tests {
             ),
             Some(true)
         );
-        // The application's own `set_backdrop` dark flag is left alone.
-        assert_eq!(
-            frame_should_be_dark(all, ColorScheme::Dark, false, true),
-            None
-        );
+        // The application's own `set_window_backdrop` dark flag is left alone.
+        assert_eq!(f(all, ColorScheme::Dark, false, true), None);
     }
 
     #[test]
@@ -747,27 +930,223 @@ mod tests {
         let mut r = WindowRegistry::default();
         r.insert(1, false);
         r.insert(2, true);
-        r.mark_set_by_application(1);
-        r.mark_set_by_application(99); // unknown window: ignored
-        assert_eq!(
-            r.entry(1),
-            Some(WindowEntry {
-                frameless: false,
-                set_by_application: true
-            })
-        );
-        assert_eq!(
-            r.entry(2),
-            Some(WindowEntry {
-                frameless: true,
-                set_by_application: false
-            })
-        );
+        assert!(r.mark_set_by_application(1));
+        assert!(!r.mark_set_by_application(99)); // unknown window: ignored
+        assert!(r.entry(1).unwrap().set_by_application);
+        assert!(!r.entry(2).unwrap().set_by_application);
+        assert!(r.entry(2).unwrap().frameless);
         assert_eq!(r.snapshot().len(), 2);
+        // `BackdropType::None` gives the frame back and forgets what was written.
+        assert!(r.release_to_scheme(1));
+        assert_eq!(r.entry(1).unwrap().applied_dark, None);
+        assert!(!r.entry(1).unwrap().set_by_application);
+        assert!(!r.release_to_scheme(99));
         r.remove(1);
         assert_eq!(r.entry(1), None);
-        // A new window with a reused handle starts clean.
+        // A new window with a reused handle starts clean and light.
         r.insert(1, false);
-        assert!(!r.entry(1).unwrap().set_by_application);
+        let e = r.entry(1).unwrap();
+        assert!(!e.set_by_application);
+        assert_eq!(e.applied_dark, Some(false));
+    }
+
+    fn registry(windows: &[(isize, bool)]) -> Mutex<Option<WindowRegistry>> {
+        let mut r = WindowRegistry::default();
+        for (hwnd, frameless) in windows {
+            r.insert(*hwnd, *frameless);
+        }
+        Mutex::new(Some(r))
+    }
+
+    fn entry(reg: &Mutex<Option<WindowRegistry>>, hwnd: isize) -> WindowEntry {
+        reg.lock().unwrap().as_ref().unwrap().entry(hwnd).unwrap()
+    }
+
+    #[test]
+    fn a_pass_writes_only_the_frames_that_change() {
+        let reg = registry(&[(1, false), (2, true)]);
+        let all = DarkModeHandling::default();
+        let writes = RefCell::new(Vec::new());
+        let run = |scheme| {
+            apply_frames(&reg, all, scheme, |h, d| {
+                writes.borrow_mut().push((h, d));
+                true
+            });
+        };
+        // New windows are already light: nothing to write under Light.
+        run(ColorScheme::Light);
+        assert!(writes.borrow().is_empty());
+        // Dark darkens the framed window; the frameless one stays light.
+        run(ColorScheme::Dark);
+        assert_eq!(*writes.borrow(), [(1, true)]);
+        // Again: nothing.
+        run(ColorScheme::Dark);
+        assert_eq!(writes.borrow().len(), 1);
+        run(ColorScheme::Light);
+        assert_eq!(*writes.borrow(), [(1, true), (1, false)]);
+    }
+
+    #[test]
+    fn a_refused_write_is_retried_by_the_next_pass() {
+        let reg = registry(&[(1, false)]);
+        let all = DarkModeHandling::default();
+        apply_frames(&reg, all, ColorScheme::Dark, |_, _| false);
+        assert_eq!(entry(&reg, 1).applied_dark, Some(false), "not recorded");
+        let writes = Cell::new(0);
+        apply_frames(&reg, all, ColorScheme::Dark, |_, d| {
+            assert!(d);
+            writes.set(writes.get() + 1);
+            true
+        });
+        assert_eq!(writes.get(), 1);
+        assert_eq!(entry(&reg, 1).applied_dark, Some(true));
+    }
+
+    #[test]
+    fn a_window_owned_by_the_application_is_skipped_until_released() {
+        let reg = registry(&[(1, false)]);
+        let all = DarkModeHandling::default();
+        reg.lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .mark_set_by_application(1);
+        let writes = Cell::new(0);
+        let run = |scheme| {
+            apply_frames(&reg, all, scheme, |_, _| {
+                writes.set(writes.get() + 1);
+                true
+            })
+        };
+        run(ColorScheme::Dark);
+        run(ColorScheme::Light);
+        assert_eq!(writes.get(), 0, "the scheme leaves an owned frame alone");
+        // `BackdropType::None` hands the frame back: the scheme is applied again, even though it
+        // equals what was there before the application took over.
+        reg.lock().unwrap().as_mut().unwrap().release_to_scheme(1);
+        run(ColorScheme::Light);
+        assert_eq!(writes.get(), 1);
+        assert_eq!(entry(&reg, 1).applied_dark, Some(false));
+    }
+
+    #[test]
+    fn a_window_destroyed_during_a_write_is_not_resurrected() {
+        let reg = registry(&[(1, false)]);
+        apply_frames(
+            &reg,
+            DarkModeHandling::default(),
+            ColorScheme::Dark,
+            |h, _| {
+                reg.lock().unwrap().as_mut().unwrap().remove(h);
+                true
+            },
+        );
+        assert_eq!(reg.lock().unwrap().as_ref().unwrap().entry(1), None);
+    }
+
+    #[test]
+    fn the_coalescer_runs_a_request_that_arrives_during_a_pass_after_it() {
+        let c = Coalescer::default();
+        let scheme = Cell::new(ColorScheme::Light);
+        let applied = RefCell::new(Vec::new());
+        let passes = Cell::new(0);
+        c.request(|| {
+            passes.set(passes.get() + 1);
+            // The pass reads the scheme first, as `pass` does ...
+            let read = scheme.get();
+            // ... and the scheme moves, and says so, while it is still working (another thread,
+            // or a message sent by an export, in the real code).
+            if passes.get() == 1 {
+                scheme.set(ColorScheme::Dark);
+                c.request(|| unreachable!("a nested request must not run a pass"));
+            }
+            applied.borrow_mut().push(read);
+        });
+        assert_eq!(passes.get(), 2);
+        assert_eq!(
+            *applied.borrow(),
+            [ColorScheme::Light, ColorScheme::Dark],
+            "the last pass saw the last scheme"
+        );
+        // And it is idle again afterwards.
+        c.request(|| passes.set(passes.get() + 1));
+        assert_eq!(passes.get(), 3);
+    }
+
+    #[test]
+    fn a_window_created_during_a_pass_is_seen_by_the_repeat() {
+        // `window_created`: insert, then request. A pass that started before the insert took its
+        // snapshot without the window; the request makes it repeat with a fresh snapshot.
+        let reg = registry(&[]);
+        let c = Coalescer::default();
+        let scheme = Cell::new(ColorScheme::Dark);
+        let writes = RefCell::new(Vec::new());
+        let all = DarkModeHandling::default();
+        let passes = Cell::new(0);
+        c.request(|| {
+            passes.set(passes.get() + 1);
+            let s = scheme.get();
+            if passes.get() == 1 {
+                // Another thread creates a window after this pass's scheme read ...
+                reg.lock().unwrap().as_mut().unwrap().insert(7, false);
+                c.request(|| unreachable!());
+            }
+            apply_frames(&reg, all, s, |h, d| {
+                writes.borrow_mut().push((h, d));
+                true
+            });
+        });
+        // ... the first pass may or may not have seen the window; the repeat surely did.
+        assert_eq!(passes.get(), 2);
+        assert_eq!(*writes.borrow().last().unwrap(), (7, true));
+        assert_eq!(entry(&reg, 7).applied_dark, Some(true));
+    }
+
+    #[test]
+    fn the_coalescer_survives_a_panicking_pass() {
+        let c = Coalescer::default();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.request(|| panic!("pass failed"));
+        }));
+        assert!(r.is_err());
+        let ran = Cell::new(false);
+        c.request(|| ran.set(true));
+        assert!(ran.get(), "not stuck in the running state");
+    }
+
+    #[test]
+    fn concurrent_requests_end_on_the_latest_scheme() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+        let c = Arc::new(Coalescer::default());
+        let scheme = Arc::new(AtomicU8::new(ColorScheme::Light as u8));
+        let last_applied = Arc::new(AtomicU8::new(ColorScheme::Unknown as u8));
+        let workers: Vec<_> = (0..4)
+            .map(|i| {
+                let (c, scheme, last) = (c.clone(), scheme.clone(), last_applied.clone());
+                std::thread::spawn(move || {
+                    for n in 0..200 {
+                        let s = if (n + i) % 2 == 0 {
+                            ColorScheme::Dark
+                        } else {
+                            ColorScheme::Light
+                        };
+                        scheme.store(s as u8, Ordering::SeqCst);
+                        c.request(|| {
+                            // Reads the scheme at the time of the pass, like `pass`.
+                            last.store(scheme.load(Ordering::SeqCst), Ordering::SeqCst);
+                        });
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        assert_eq!(
+            last_applied.load(Ordering::SeqCst),
+            scheme.load(Ordering::SeqCst),
+            "the last applied scheme is the last one set"
+        );
     }
 }
