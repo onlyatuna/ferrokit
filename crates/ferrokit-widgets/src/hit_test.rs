@@ -653,7 +653,7 @@ impl EventTreeDispatcher {
         let (_id, target) = self.drag_target.take()?;
         let target = target.upgrade()?;
         let chain = ancestors(&target);
-        if !chain.first().is_some_and(|w| Rc::ptr_eq(w, root))
+        if !chain.last().is_some_and(|w| Rc::ptr_eq(w, root))
             || !chain.iter().all(|w| {
                 let b = w.borrow();
                 b.is_visible() && b.is_enabled()
