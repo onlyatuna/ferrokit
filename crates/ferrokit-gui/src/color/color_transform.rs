@@ -200,9 +200,9 @@ impl ColorTransform {
         }
 
         // 1. Decode to linear light
-        let lr = self.src_space.to_linear(r);
-        let lg = self.src_space.to_linear(g);
-        let lb = self.src_space.to_linear(b);
+        let lr = self.src_space.to_linear_channel(0, r);
+        let lg = self.src_space.to_linear_channel(1, g);
+        let lb = self.src_space.to_linear_channel(2, b);
 
         // 2. Matrix conversion
         let m = self.matrix;
@@ -217,9 +217,9 @@ impl ColorTransform {
 
         // 3. Encode to destination transfer function
         (
-            self.dst_space.to_encoded(tr),
-            self.dst_space.to_encoded(tg),
-            self.dst_space.to_encoded(tb),
+            self.dst_space.to_encoded_channel(0, tr),
+            self.dst_space.to_encoded_channel(1, tg),
+            self.dst_space.to_encoded_channel(2, tb),
         )
     }
 
