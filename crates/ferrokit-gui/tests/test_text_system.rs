@@ -491,6 +491,24 @@ fn test_cursor_sticky_x_with_wrapping() {
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "original x on the first line");
 
+    // A failed Down at the last line / Up at the first keeps the x.
+    let mut c = TextCursor::at_position(6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "last line: no move");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "first line: no move");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "x still sticky");
+    let mut c = TextCursor::at_position(6);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18, "x survived the failed Down");
+
     // Selecting with Shift+Down keeps the column too.
     let mut c = TextCursor::at_position(6);
     c.move_position(&doc, MoveOperation::Down, MoveMode::KeepAnchor, 2);

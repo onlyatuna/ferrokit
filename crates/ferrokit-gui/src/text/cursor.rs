@@ -135,7 +135,8 @@ fn visual_line_edge(doc: &TextDocument, pos: usize, end: bool) -> usize {
 }
 
 /// `Up` / `Down` over visual lines, keeping the x coordinate; crosses into the adjacent block's
-/// last/first visual line at a block edge. `None` when the document has no wrap width.
+/// last/first visual line at a block edge. `None` when the document has no wrap width; at the
+/// document's first/last visual line it stays put and keeps the x.
 fn visual_line_step(
     doc: &TextDocument,
     pos: usize,
@@ -153,22 +154,32 @@ fn visual_line_step(
     let line = layout.line_for_text_position(local)?;
     let x = sticky_x.unwrap_or_else(|| line.cursor_to_x(local, Edge::Leading));
     let n = line.line_number();
+    // At the first/last visual line of the document nothing moves but the x column is kept.
+    let stay = Some((pos, x));
     let (target_block, target_layout, target_n) = if up {
         if n > 0 {
             (b, layout, n - 1)
         } else {
-            let pb = doc.block_at(block_idx.checked_sub(1)?)?;
+            let Some(pb) = block_idx.checked_sub(1).and_then(|i| doc.block_at(i)) else {
+                return stay;
+            };
             let pl = doc.block_layout(pb);
-            let last = pl.line_count().checked_sub(1)?;
+            let Some(last) = pl.line_count().checked_sub(1) else {
+                return stay;
+            };
             (pb, pl, last)
         }
     } else if n + 1 < layout.line_count() {
         (b, layout, n + 1)
     } else {
-        let nb = doc.block_at(block_idx + 1)?;
+        let Some(nb) = doc.block_at(block_idx + 1) else {
+            return stay;
+        };
         (nb, doc.block_layout(nb), 0)
     };
-    let target_line = target_layout.line_at(target_n)?;
+    let Some(target_line) = target_layout.line_at(target_n) else {
+        return stay;
+    };
     let mut col = target_line.x_to_cursor(x, CursorPosition::CursorBetweenCharacters);
     let end = target_line.text_start() + target_line.text_length();
     // On a wrapped line the end position is the next line's start: stay on this line.
