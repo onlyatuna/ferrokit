@@ -213,11 +213,8 @@ fn test_platform_integration_factory() {
     let mut tray = p
         .create_tray_icon("Factory Tray", &pixmap)
         .expect("factory tray icon creation failed");
-    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
-    assert_eq!(
-        tray.show().is_ok(),
-        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
-    );
+    // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
+    assert!(tray.show().is_ok());
     assert!(tray.set_tooltip("Updated Factory Tray").is_ok());
     assert!(tray.hide().is_ok());
 }
@@ -658,11 +655,8 @@ fn test_unix_platform_integration_dbus_tray_and_window() {
     let mut tray = unix_integration
         .create_tray_icon("Linux Tray Icon", &pixmap)
         .expect("failed to create Linux D-Bus tray icon");
-    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
-    assert_eq!(
-        tray.show().is_ok(),
-        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
-    );
+    // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
+    assert!(tray.show().is_ok());
     assert!(tray.hide().is_ok());
 
     let primary = unix_integration.primary_screen();
