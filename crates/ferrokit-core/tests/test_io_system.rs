@@ -687,7 +687,10 @@ fn process_wait_honours_timeout_when_grandchild_holds_pipe() {
     set_shell(&mut proc, "sleep 20 & exit 0");
     proc.start().unwrap();
     let begin = std::time::Instant::now();
-    assert!(proc.wait_for_finished(Some(Duration::from_millis(500))));
+    // The shell exits at once; the margin only covers a slow process start on a loaded runner.
+    // The grandchild holds the pipe for 20 s, so returning within the bound proves the wait did
+    // not follow the pipe.
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(5))));
     assert!(begin.elapsed() < Duration::from_secs(10));
     assert_eq!(proc.exit_code(), Some(0));
     assert_eq!(proc.state(), ProcessState::NotRunning);
