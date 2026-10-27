@@ -614,6 +614,8 @@
     "lib::color::icc::tests::icc_unparsable_or_degenerate_curves_keep_the_gamut::SB": "pass",
     "lib::color::icc::tests::icc_unparsable_or_degenerate_curves_keep_the_gamut::TB": "pass",
     "test_text_system::test_highlight_overlay_survives_fragment_splitting::SB": "pass",
-    "test_text_system::test_highlight_overlay_survives_fragment_splitting::TB": "pass"
+    "test_text_system::test_highlight_overlay_survives_fragment_splitting::TB": "pass",
+    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::SB": "pass",
+    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::TB": "pass"
   }
 }
