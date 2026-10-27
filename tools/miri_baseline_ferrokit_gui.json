@@ -635,6 +635,8 @@
     "lib::color::icc::tests::icc_divergent_and_malformed_curves_mix::TB": "pass",
     "lib::color::icc::tests::icc_malformed_colorants_fall_back_to_srgb::SB": "pass",
     "lib::color::icc::tests::icc_malformed_colorants_fall_back_to_srgb::TB": "pass",
+    "lib::color::icc::tests::icc_nearly_identical_curves_still_map_to_the_named_space::SB": "pass",
+    "lib::color::icc::tests::icc_nearly_identical_curves_still_map_to_the_named_space::TB": "pass",
     "test_text_system::test_highlight_overlay_survives_fragment_splitting::SB": "pass",
     "test_text_system::test_highlight_overlay_survives_fragment_splitting::TB": "pass"
   }

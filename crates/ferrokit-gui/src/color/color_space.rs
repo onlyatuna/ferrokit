@@ -231,7 +231,7 @@ impl ColorSpace {
     /// When the three curves are equal this is exactly `from_primary_points`; otherwise
     /// `transfer_function()` reports [`TransferFunction::Custom`] (as `QColorSpace` does for
     /// non-uniform curves) and the per-channel curves are kept in
-    /// [`Self::channel_transfer_functions`].
+    /// `channel_transfer_functions`.
     pub fn from_primary_points_per_channel(
         primaries: Primaries,
         primary_points: PrimaryPoints,
@@ -307,33 +307,35 @@ impl ColorSpace {
     ///
     /// Equal to `[transfer_function(); 3]` unless the space was built with divergent
     /// per-channel curves (e.g. an ICC profile whose `rTRC`, `gTRC` and `bTRC` differ).
-    pub fn channel_transfer_functions(&self) -> [TransferFunction; 3] {
+    pub(crate) fn channel_transfer_functions(&self) -> [TransferFunction; 3] {
         self.channel_curves.unwrap_or([self.transfer_function; 3])
     }
 
     /// Decodes an electro-optically encoded non-linear value [0.0, 1.0] to linear light.
     ///
     /// For a space with divergent per-channel curves (`transfer_function()` is
-    /// [`TransferFunction::Custom`]) this is the identity; use [`Self::to_linear_channel`].
+    /// [`TransferFunction::Custom`]) this is the identity; use `to_linear_channel`.
     pub fn to_linear(&self, encoded: f32) -> f32 {
         Self::decode(self.transfer_function, encoded)
     }
 
     /// Like [`Self::to_linear`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
-    pub fn to_linear_channel(&self, channel: usize, encoded: f32) -> f32 {
-        Self::decode(self.channel_transfer_functions()[channel.min(2)], encoded)
+    pub(crate) fn to_linear_channel(&self, channel: usize, encoded: f32) -> f32 {
+        debug_assert!(channel < 3, "colour channel index out of range: {channel}");
+        Self::decode(self.channel_transfer_functions()[channel], encoded)
     }
 
     /// Encodes linear light value to non-linear signal representation.
     ///
-    /// See [`Self::to_linear`] for the per-channel caveat; use [`Self::to_encoded_channel`].
+    /// See [`Self::to_linear`] for the per-channel caveat; use `to_encoded_channel`.
     pub fn to_encoded(&self, linear: f32) -> f32 {
         Self::encode(self.transfer_function, linear)
     }
 
     /// Like [`Self::to_encoded`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
-    pub fn to_encoded_channel(&self, channel: usize, linear: f32) -> f32 {
-        Self::encode(self.channel_transfer_functions()[channel.min(2)], linear)
+    pub(crate) fn to_encoded_channel(&self, channel: usize, linear: f32) -> f32 {
+        debug_assert!(channel < 3, "colour channel index out of range: {channel}");
+        Self::encode(self.channel_transfer_functions()[channel], linear)
     }
 
     fn decode(tf: TransferFunction, encoded: f32) -> f32 {

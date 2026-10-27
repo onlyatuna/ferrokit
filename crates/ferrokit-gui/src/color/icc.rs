@@ -318,8 +318,22 @@ impl IccProfile {
             .next()
             .copied()
             .unwrap_or(TransferFunction::Srgb);
-        let curves = parsed.map(|c| c.unwrap_or(fallback));
-        let uniform = curves[0] == curves[1] && curves[1] == curves[2];
+        let parsed_curves = parsed.map(|c| c.unwrap_or(fallback));
+        // Fitted gammas that differ only by float noise (same curve sampled differently per
+        // channel) are one curve, so a standard profile still maps to its named space.
+        let same = |a: TransferFunction, b: TransferFunction| match (a, b) {
+            (TransferFunction::Gamma(x), TransferFunction::Gamma(y)) => {
+                (x - y).abs() <= 1e-4 * x.abs().max(y.abs())
+            }
+            _ => a == b,
+        };
+        let uniform =
+            same(parsed_curves[0], parsed_curves[1]) && same(parsed_curves[0], parsed_curves[2]);
+        let curves = if uniform {
+            [parsed_curves[0]; 3]
+        } else {
+            parsed_curves
+        };
         let tf = curves[0];
 
         // Profile colorants are PCS-relative, i.e. already adapted to D50.
@@ -1035,6 +1049,25 @@ mod tests {
                 (r, g, b)
             );
         }
+    }
+
+    #[test]
+    fn icc_nearly_identical_curves_still_map_to_the_named_space() {
+        // Three tables that differ in the last digits (not bit-identical, fitted gammas differ
+        // by far less than 1e-4 relative) are one curve, not divergent per-channel curves.
+        let tables = [2.2f32, 2.20005, 2.2001].map(|g| sampled_curve(|x| x.powf(g)));
+        let profile = rgb_profile_curves(&ColorSpace::adobe_rgb(), tables, PrimaryPoints::D50);
+        let fitted = [b"rTRC", b"gTRC", b"bTRC"].map(|s| profile.trc_tag(s).unwrap());
+        assert!(fitted[0] != fitted[1] || fitted[1] != fitted[2], "{fitted:?}");
+        let cs = profile.to_color_space().unwrap();
+        assert_eq!(cs, ColorSpace::adobe_rgb());
+
+        // Clearly different gammas remain divergent.
+        let tables = [2.2f32, 2.3, 2.4].map(|g| sampled_curve(|x| x.powf(g)));
+        let cs = rgb_profile_curves(&ColorSpace::adobe_rgb(), tables, PrimaryPoints::D50)
+            .to_color_space()
+            .unwrap();
+        assert_eq!(cs.transfer_function(), TransferFunction::Custom);
     }
 
     #[test]
