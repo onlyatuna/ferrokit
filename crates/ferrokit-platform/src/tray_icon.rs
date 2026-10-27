@@ -250,7 +250,8 @@ impl Menu {
 ///   the initial value Qt assigns before classifying. Not run on macOS.
 /// - Linux (`QStatusNotifierItemAdaptor`): the StatusNotifierItem methods `Activate`,
 ///   `ContextMenu` and `SecondaryActivate` give `Trigger`, `Context` and `MiddleClick`; there is
-///   no `DoubleClick`. Not run on Linux.
+///   no `DoubleClick`. The item also answers the host's `org.freedesktop.DBus.Properties`
+///   reads and confirms its registration from the watcher's reply. Not run on Linux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum TrayActivation {
@@ -938,7 +939,11 @@ impl TrayIcon {
 
     /// Dispatches what the desktop sent to the icon since the last call, which may emit
     /// [`TrayIcon::on_activated`]. Only the Linux StatusNotifierItem back end needs this (its
-    /// calls arrive on the session bus socket); on macOS AppKit calls back by itself.
+    /// calls, the registration reply and `NameOwnerChanged` arrive on the session bus socket),
+    /// and nothing calls it automatically: the application must bind the socket with
+    /// [`TrayIcon::bind_event_dispatcher`] and call this when the notifier fires (the event
+    /// loop's dispatcher is not reachable from here, and the icon is `!Send`). On macOS AppKit
+    /// calls back by itself.
     pub fn process_events(&mut self) {
         self.inner.process_events();
     }
@@ -968,6 +973,12 @@ impl TrayIcon {
         self.inner.set_tooltip(tooltip)
     }
 
+    /// Shows the icon. On Linux `Ok` only means the StatusNotifierWatcher registration was
+    /// queued on the session bus: nothing here reads the answer, so the application must drive
+    /// [`TrayIcon::process_events`] (from the notifier returned by
+    /// [`TrayIcon::bind_event_dispatcher`]) for the registration to be confirmed and for the
+    /// host's activations and property reads to be served. Without that the icon stays
+    /// unconfirmed and the host's calls go unanswered. macOS shows it at once.
     pub fn show(&mut self) -> Result<(), &'static str> {
         self.inner.show()
     }
