@@ -15,6 +15,12 @@ pub struct PositionedGlyph {
     pub x: f32,
     /// Vertical offset in points.
     pub y: f32,
+    /// Byte offset in the shaped text of the first character of the cluster this glyph belongs
+    /// to (`hb_glyph_info_t::cluster`, made absolute across font runs).
+    pub cluster: usize,
+    /// Pen advance after this glyph in points, including the letter spacing Qt adds after the last
+    /// glyph of a cluster. The advances of all glyphs add up to [`GlyphLayout::width`].
+    pub advance: f32,
 }
 
 /// A single font engine instance combining the glyph source (metrics, coverage bitmaps and
@@ -413,6 +419,50 @@ impl GlyphLayout {
         }
     }
 
+    /// The advance of every grapheme of the shaped text.
+    ///
+    /// `starts` holds the byte offset at which each grapheme of the shaped text starts, followed
+    /// by the byte length of the text. Glyphs are folded into graphemes through their cluster:
+    /// a cluster's advance (kerning included, as the first glyph of a pair carries it) goes to
+    /// the graphemes the cluster covers, split evenly when one glyph stands for several of them
+    /// (`QTextEngine::positionInLigature` divides a ligature's width evenly between its
+    /// characters). The result sums to [`GlyphLayout::width`] and is in logical order, so
+    /// cursor positions stay on grapheme boundaries.
+    pub fn grapheme_advances(&self, starts: &[usize]) -> Vec<f32> {
+        let count = starts.len().saturating_sub(1);
+        let mut advances = vec![0.0f32; count];
+        if count == 0 {
+            return advances;
+        }
+        let text_len = starts[count];
+
+        // Glyph order is visual (right to left runs come reversed); clusters are logical.
+        let mut by_cluster: Vec<&PositionedGlyph> = self.glyphs.iter().collect();
+        by_cluster.sort_by_key(|g| g.cluster);
+        let mut clusters: Vec<(usize, f32)> = Vec::with_capacity(by_cluster.len());
+        for glyph in by_cluster {
+            match clusters.last_mut() {
+                Some((cluster, advance)) if *cluster == glyph.cluster => *advance += glyph.advance,
+                _ => clusters.push((glyph.cluster, glyph.advance)),
+            }
+        }
+
+        // The grapheme containing byte `byte`.
+        let grapheme_at = |byte: usize| {
+            (starts[..count].partition_point(|&s| s <= byte).max(1) - 1).min(count - 1)
+        };
+        for (i, &(cluster, advance)) in clusters.iter().enumerate() {
+            let end = clusters.get(i + 1).map_or(text_len, |next| next.0);
+            let first = grapheme_at(cluster);
+            let last = grapheme_at(end.saturating_sub(1).max(cluster)).max(first);
+            let share = advance / (last - first + 1) as f32;
+            for slot in &mut advances[first..=last] {
+                *slot += share;
+            }
+        }
+        advances
+    }
+
     /// Shapes and positions text using Qt 6 Run-based architecture:
     /// partitions text into font runs and uses `rustybuzz` with fallback to face metrics.
     pub fn shape(text: &str, font: &Font, face: SharedGlyphFace) -> Self {
@@ -446,13 +496,16 @@ impl GlyphLayout {
         let mut glyphs = Vec::with_capacity(infos.len());
 
         for (info, pos) in infos.iter().zip(positions.iter()) {
+            let advance = (pos.x_advance as f32) * scale;
             glyphs.push(PositionedGlyph {
                 glyph_id: info.glyph_id as u16,
                 font_index: 0,
                 x: current_x + (pos.x_offset as f32) * scale,
                 y: current_y + (pos.y_offset as f32) * scale,
+                cluster: info.cluster as usize,
+                advance,
             });
-            current_x += (pos.x_advance as f32) * scale;
+            current_x += advance;
             current_y += (pos.y_advance as f32) * scale;
         }
 
@@ -581,6 +634,8 @@ impl GlyphLayout {
         let direct_write = crate::text::font_database::uses_directwrite_engine();
 
         for run in runs {
+            // `run.text` is a subslice of `text`, so the pointer difference is its byte offset.
+            let run_offset = run.text.as_ptr() as usize - text.as_ptr() as usize;
             let engine = &engines[run.engine_index];
             let shaping_face = engine.shaping_face(ppem);
 
@@ -619,18 +674,25 @@ impl GlyphLayout {
                         Some(m) => (m[i].0 as f32 / 64.0, m[i].1 as f32 / 64.0),
                         None => ((pos.x_advance as f32) * scale, (pos.x_offset as f32) * scale),
                     };
+                    let x = current_x + x_offset;
+                    let y = current_y + (pos.y_offset as f32) * scale;
+                    let mut advance = adv;
+                    current_x += adv;
+                    // `QTextEngine::shapeText`: spacing goes after the last glyph of every cluster.
+                    if infos.get(i + 1).is_none_or(|next| next.cluster != info.cluster) {
+                        let spacing = qt_letter_spacing(font.letter_spacing);
+                        current_x += spacing;
+                        advance += spacing;
+                    }
                     glyphs.push(PositionedGlyph {
                         glyph_id: info.glyph_id as u16,
                         font_index: run.engine_index as u8,
-                        x: current_x + x_offset,
-                        y: current_y + (pos.y_offset as f32) * scale,
+                        x,
+                        y,
+                        cluster: run_offset + info.cluster as usize,
+                        advance,
                     });
-                    current_x += adv;
                     current_y += (pos.y_advance as f32) * scale;
-                    // `QTextEngine::shapeText`: spacing goes after the last glyph of every cluster.
-                    if infos.get(i + 1).is_none_or(|next| next.cluster != info.cluster) {
-                        current_x += qt_letter_spacing(font.letter_spacing);
-                    }
                 }
             } else {
                 // Fallback path (per-glyph face metrics) for runs without raw binary font data:
@@ -646,7 +708,7 @@ impl GlyphLayout {
                     None
                 };
 
-                for ch in run.text.chars() {
+                for (byte, ch) in run.text.char_indices() {
                     let gid = engine.face.glyph_index(ch);
                     let metrics = engine.face.metrics(ch, font.size);
                     let adv_x = if ch.is_ascii_digit() && run.engine_index == 0 {
@@ -658,13 +720,16 @@ impl GlyphLayout {
                             .unwrap_or(metrics.advance_width)
                     };
 
+                    let advance = adv_x + qt_letter_spacing(font.letter_spacing);
                     glyphs.push(PositionedGlyph {
                         glyph_id: gid,
                         font_index: run.engine_index as u8,
                         x: current_x,
                         y: current_y,
+                        cluster: run_offset + byte,
+                        advance,
                     });
-                    current_x += adv_x + qt_letter_spacing(font.letter_spacing);
+                    current_x += advance;
                 }
             }
         }
@@ -722,6 +787,63 @@ mod tests {
         assert_eq!(layout_8.glyphs.len(), 1);
 
         assert!((layout_1.width - layout_8.width).abs() < 1.0);
+    }
+
+    /// A glyph of `cluster` (a byte offset) with pen advance `advance`.
+    fn glyph(cluster: usize, advance: f32) -> PositionedGlyph {
+        PositionedGlyph {
+            glyph_id: 1,
+            font_index: 0,
+            x: 0.0,
+            y: 0.0,
+            cluster,
+            advance,
+        }
+    }
+
+    fn layout_of(glyphs: Vec<PositionedGlyph>) -> GlyphLayout {
+        let width = glyphs.iter().map(|g| g.advance).sum();
+        GlyphLayout { glyphs, width }
+    }
+
+    #[test]
+    fn grapheme_advances_divide_a_ligature_evenly() {
+        // "ffi!": one `ffi` ligature glyph over three graphemes, then `!`.
+        let layout = layout_of(vec![glyph(0, 9.0), glyph(3, 2.0)]);
+        assert_eq!(
+            layout.grapheme_advances(&[0, 1, 2, 3, 4]),
+            vec![3.0, 3.0, 3.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn grapheme_advances_keep_kerning_on_the_first_glyph_of_the_pair() {
+        // "AV": the pair kern shortens the advance of `A`; measured one grapheme at a time `A`
+        // would be 8 wide.
+        let layout = layout_of(vec![glyph(0, 7.0), glyph(1, 8.0)]);
+        let advances = layout.grapheme_advances(&[0, 1, 2]);
+        assert_eq!(advances, vec![7.0, 8.0]);
+        assert_eq!(advances.iter().sum::<f32>(), layout.width);
+    }
+
+    #[test]
+    fn grapheme_advances_are_in_logical_order_for_right_to_left_glyphs() {
+        // Three Hebrew letters (two bytes each); rustybuzz returns them visually, last first.
+        let layout = layout_of(vec![glyph(4, 3.0), glyph(2, 2.0), glyph(0, 1.0)]);
+        assert_eq!(layout.grapheme_advances(&[0, 2, 4, 6]), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn grapheme_advances_merge_marks_into_their_base_grapheme() {
+        // "e" + U+0301 + "x": the mark's glyph shares the base's cluster and has no advance.
+        let layout = layout_of(vec![glyph(0, 5.0), glyph(0, 0.0), glyph(3, 4.0)]);
+        assert_eq!(layout.grapheme_advances(&[0, 3, 4]), vec![5.0, 4.0]);
+    }
+
+    #[test]
+    fn grapheme_advances_of_empty_text_are_empty() {
+        assert!(GlyphLayout::empty().grapheme_advances(&[0]).is_empty());
+        assert!(GlyphLayout::empty().grapheme_advances(&[]).is_empty());
     }
     #[test]
     fn test_glyph_layout_emoji_fallback() {

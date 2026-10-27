@@ -283,6 +283,43 @@ impl FontMetrics {
         self.horizontal_advance(text, font)
     }
 
+    /// The advance of every grapheme of `text`, shaped as one string so kerning, ligatures and
+    /// contextual forms across grapheme boundaries are measured as Qt measures them
+    /// (`QTextEngine` shapes a whole item, then divides it over the characters). The advances
+    /// add up to `horizontal_advance_exact(text, font)`.
+    pub fn grapheme_advances(&self, text: &str, font: &Font) -> Vec<f32> {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        starts.push(text.len());
+        self.grapheme_advances_at(text, &starts, font)
+    }
+
+    /// [`grapheme_advances`](Self::grapheme_advances) for a text whose grapheme start offsets
+    /// (followed by the text length) the caller already has.
+    pub(crate) fn grapheme_advances_at(
+        &self,
+        text: &str,
+        starts: &[usize],
+        font: &Font,
+    ) -> Vec<f32> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
+        if !engines.is_empty() {
+            let layout =
+                crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
+            if layout.width > 0.0 {
+                return layout.grapheme_advances(starts);
+            }
+        }
+
+        starts
+            .windows(2)
+            .map(|w| self.horizontal_advance(&text[w[0]..w[1]], font))
+            .collect()
+    }
+
     /// Calculates the exact bounding rectangle of a string using OpenType shaping.
     pub fn bounding_rect_exact(&self, text: &str, font: &Font) -> RectF {
         let width = self.horizontal_advance_exact(text, font);
