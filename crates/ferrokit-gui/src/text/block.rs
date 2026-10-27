@@ -11,6 +11,7 @@ use crate::text::fragment::TextFragment;
 use crate::text::layout::TextLayout;
 use crate::text::position::{byte_to_grapheme, grapheme_count};
 use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Paragraph block model (`QTextBlock`).
 #[derive(Debug, Clone)]
@@ -27,6 +28,12 @@ pub struct TextBlock {
     pub(crate) fragments: Vec<TextFragment>,
     /// Syntax highlighter multi-line parse state (defaults to -1).
     pub(crate) user_state: i32,
+    /// Syntax-highlighter overlay (`QTextLayout::additionalFormats`), grapheme-indexed. Kept apart
+    /// from the fragments so highlighting never alters the user's character formats.
+    additional_formats: Vec<FormatRange>,
+    /// Hash of the block text `additional_formats` was computed for; the overlay is ignored once
+    /// the text has changed.
+    additional_formats_key: u64,
     /// Custom user data pointer/payload.
     pub(crate) user_data: Option<Arc<dyn TextBlockUserData>>,
 }
@@ -38,6 +45,7 @@ impl PartialEq for TextBlock {
             && self.char_format == other.char_format
             && self.fragments == other.fragments
             && self.user_state == other.user_state
+            && self.additional_formats() == other.additional_formats()
     }
 }
 
@@ -50,6 +58,8 @@ impl Default for TextBlock {
             char_format: TextCharFormat::default(),
             fragments: Vec::new(),
             user_state: -1,
+            additional_formats: Vec::new(),
+            additional_formats_key: 0,
             user_data: None,
         }
     }
@@ -147,6 +157,59 @@ impl TextBlock {
     pub fn set_user_state(&mut self, state: i32) {
         self.user_state = state;
     }
+
+    fn text_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for f in &self.fragments {
+            f.text().hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// Syntax-highlighter overlay ranges (`QTextLayout::additionalFormats`); empty once the block
+    /// text has changed since they were set.
+    pub fn additional_formats(&self) -> &[FormatRange] {
+        if self.additional_formats_key == self.text_key() {
+            &self.additional_formats
+        } else {
+            &[]
+        }
+    }
+
+    /// Replaces the overlay formats (`QSyntaxHighlighter::setFormat` results) without touching
+    /// the fragments' user formats.
+    pub fn set_additional_formats(&mut self, formats: Vec<FormatRange>) {
+        self.additional_formats_key = self.text_key();
+        self.additional_formats = formats;
+    }
+
+    /// Returns the fragments with the overlay merged in: each fragment is split where the overlay
+    /// changes and overlay formats are merged over the user format.
+    pub fn effective_fragments(&self) -> Vec<TextFragment> {
+        let overlay = self.additional_formats();
+        if overlay.is_empty() {
+            return self.fragments.clone();
+        }
+        let mut out: Vec<TextFragment> = Vec::new();
+        let mut index = 0usize;
+        for frag in &self.fragments {
+            for g in frag.text().graphemes(true) {
+                let mut fmt = frag.char_format().clone();
+                for r in overlay {
+                    if index >= r.start && index < r.start + r.length {
+                        fmt.merge(&r.format);
+                    }
+                }
+                match out.last_mut() {
+                    Some(prev) if prev.format == fmt => prev.text.push_str(g),
+                    _ => out.push(TextFragment::new(g, fmt)),
+                }
+                index += 1;
+            }
+        }
+        out
+    }
     /// Returns custom user data attached to this block (`QTextBlock::userData`).
     #[inline]
     pub fn user_data(&self) -> Option<Arc<dyn TextBlockUserData>> {
@@ -164,7 +227,9 @@ impl TextBlock {
         let text = self.text();
         let mut layout = TextLayout::new(text, base_font.clone());
         layout.set_alignment(self.block_format.alignment);
-        layout.set_formats(self.format_ranges());
+        let mut formats = self.format_ranges();
+        formats.extend_from_slice(self.additional_formats());
+        layout.set_formats(formats);
         layout.do_layout();
         layout
     }

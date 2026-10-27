@@ -296,19 +296,80 @@ fn test_syntax_highlighter() {
 
     highlighter.rehighlight(&mut doc);
 
-    // Verify block 0 ("fn main() {") has highlighted fragment for "fn"
+    // The highlight is an overlay (`QTextLayout::additionalFormats`): the document fragments keep
+    // their user formats, and `effective_fragments` merges the overlay in.
     let block0 = doc.block_at(0).unwrap();
+    assert!(block0.fragments().iter().all(|f| f.char_format().foreground.is_none()));
     assert!(block0
-        .fragments()
+        .effective_fragments()
         .iter()
         .any(|f| f.text() == "fn" && f.char_format().foreground.is_some()));
 
     // Verify block 2 has comment color
     let block2 = doc.block_at(2).unwrap();
     assert!(block2
-        .fragments()
+        .effective_fragments()
         .iter()
         .any(|f| f.char_format().foreground == Some(Color::from_rgba8(0, 128, 0, 255))));
+}
+
+#[test]
+fn test_rehighlight_preserves_user_character_formatting() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("fn main");
+    let user = TextCharFormat::default().with_foreground(Color::from_rgba8(1, 2, 3, 255));
+    doc.merge_char_format(0, 7, &user);
+    let before = doc.block_at(0).unwrap().fragments().to_vec();
+
+    let mut highlighter = SyntaxHighlighter::new();
+    highlighter.add_keyword(
+        "fn",
+        TextCharFormat::default().with_foreground(Color::from_rgba8(200, 0, 100, 255)),
+    );
+    highlighter.rehighlight(&mut doc);
+    assert_eq!(doc.block_at(0).unwrap().fragments(), &before[..], "fragments untouched");
+    let fn_color = |doc: &TextDocument| {
+        doc.block_at(0)
+            .unwrap()
+            .effective_fragments()
+            .iter()
+            .find(|f| f.text() == "fn")
+            .and_then(|f| f.char_format().foreground)
+    };
+    assert_eq!(fn_color(&doc), Some(Color::from_rgba8(200, 0, 100, 255)));
+
+    // Dropping the rule and rehighlighting restores the user colour.
+    SyntaxHighlighter::new().rehighlight(&mut doc);
+    assert_eq!(doc.block_at(0).unwrap().effective_fragments(), before);
+    assert_eq!(doc.block_at(0).unwrap().fragments(), &before[..]);
+}
+
+#[test]
+fn test_cursor_visual_line_navigation_in_wrapped_blocks() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("abc\nde");
+    doc.set_text_width(1.0); // every grapheme wraps onto its own visual line
+    fn step(doc: &TextDocument, from: usize, op: MoveOperation) -> usize {
+        let mut c = TextCursor::at_position(from);
+        c.move_position(doc, op, MoveMode::MoveAnchor, 1);
+        c.position()
+    }
+    assert_eq!(step(&doc, 1, MoveOperation::StartOfLine), 1);
+    assert_eq!(step(&doc, 1, MoveOperation::EndOfLine), 2);
+    assert_eq!(step(&doc, 0, MoveOperation::Down), 1);
+    assert_eq!(step(&doc, 1, MoveOperation::Down), 2);
+    assert_eq!(step(&doc, 3, MoveOperation::Down), 4, "crosses into the next block's first line");
+    assert_eq!(
+        step(&doc, 4, MoveOperation::Up),
+        2,
+        "crosses back to the previous block's last line"
+    );
+    assert_eq!(step(&doc, 1, MoveOperation::Up), 0);
+
+    // Without a text width every block is one line.
+    doc.set_text_width(-1.0);
+    assert_eq!(step(&doc, 1, MoveOperation::EndOfLine), 3);
+    assert_eq!(step(&doc, 1, MoveOperation::StartOfLine), 0);
 }
 
 #[test]

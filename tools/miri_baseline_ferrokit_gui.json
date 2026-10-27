@@ -582,6 +582,26 @@
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::SB": "pass",
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::TB": "pass",
     "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::SB": "panic",
-    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic"
+    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic",
+    "lib::color::icc::tests::icc_rgb_profiles_map_to_distinct_color_spaces::SB": "pass",
+    "lib::color::icc::tests::icc_rgb_profiles_map_to_distinct_color_spaces::TB": "pass",
+    "lib::color::icc::tests::icc_custom_gamma_and_gray_ktrc::SB": "pass",
+    "lib::color::icc::tests::icc_custom_gamma_and_gray_ktrc::TB": "pass",
+    "lib::paint::text_blend::tests::composite_masked_applies_the_blend_mode_weighted_by_coverage::SB": "pass",
+    "lib::paint::text_blend::tests::composite_masked_applies_the_blend_mode_weighted_by_coverage::TB": "pass",
+    "lib::text::layout::tests::trailing_newline_adds_an_empty_last_line::SB": "unsupported",
+    "lib::text::layout::tests::trailing_newline_adds_an_empty_last_line::TB": "unsupported",
+    "lib::text::layout::tests::line_for_text_position_end_is_exclusive_except_on_the_last_line::SB": "unsupported",
+    "lib::text::layout::tests::line_for_text_position_end_is_exclusive_except_on_the_last_line::TB": "unsupported",
+    "lib::text::layout::tests::line_advances_follow_shaped_widths::SB": "unsupported",
+    "lib::text::layout::tests::line_advances_follow_shaped_widths::TB": "unsupported",
+    "test_text_system::test_rehighlight_preserves_user_character_formatting::SB": "pass",
+    "test_text_system::test_rehighlight_preserves_user_character_formatting::TB": "pass",
+    "test_text_system::test_cursor_visual_line_navigation_in_wrapped_blocks::SB": "unsupported",
+    "test_text_system::test_cursor_visual_line_navigation_in_wrapped_blocks::TB": "unsupported",
+    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::SB": "pass",
+    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::TB": "pass",
+    "test_painter_advanced_features::draw_text_honours_composition_mode::SB": "unsupported",
+    "test_painter_advanced_features::draw_text_honours_composition_mode::TB": "unsupported"
   }
 }

@@ -7,7 +7,6 @@
 use crate::text::block::TextBlock;
 use crate::text::document::TextDocument;
 use crate::text::format::{FormatRange, TextCharFormat};
-use crate::text::fragment::TextFragment;
 use tiny_skia::Color;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -199,59 +198,11 @@ impl SyntaxHighlighter {
             }
         }
 
-        // Apply context ranges to split/reformat block fragments
-        if !ctx.ranges.is_empty() {
-            Self::apply_ranges_to_block(block, &ctx.ranges);
-        }
-
+        // Like `QSyntaxHighlighter::setFormat` -> `QTextLayout::setAdditionalFormats`: the result
+        // is a per-block overlay; the fragments' user formats are left untouched.
+        block.set_additional_formats(ctx.ranges);
         block.set_user_state(ctx.current_state);
         ctx.current_state
-    }
-
-    fn apply_ranges_to_block(block: &mut TextBlock, ranges: &[FormatRange]) {
-        let text = block.text();
-        let graphemes: Vec<&str> = text.graphemes(true).collect();
-        if graphemes.is_empty() {
-            return;
-        }
-
-        let mut fragment_formats: Vec<Option<&TextCharFormat>> = vec![None; graphemes.len()];
-        for range in ranges {
-            let slice_end = (range.start + range.length).min(graphemes.len());
-            if range.start < slice_end {
-                fragment_formats[range.start..slice_end].fill(Some(&range.format));
-            }
-        }
-
-        // Segment text into continuous fragments
-        let mut new_fragments = Vec::new();
-        let mut curr_text = String::new();
-        let mut curr_fmt: Option<TextCharFormat> = None;
-
-        for (i, &g) in graphemes.iter().enumerate() {
-            let active_fmt = fragment_formats[i]
-                .cloned()
-                .unwrap_or_else(|| block.char_format().clone());
-
-            if curr_fmt.as_ref() == Some(&active_fmt) {
-                curr_text.push_str(g);
-            } else {
-                if !curr_text.is_empty() {
-                    new_fragments.push(TextFragment::new(
-                        std::mem::take(&mut curr_text),
-                        curr_fmt.unwrap_or_default(),
-                    ));
-                }
-                curr_fmt = Some(active_fmt);
-                curr_text.push_str(g);
-            }
-        }
-
-        if !curr_text.is_empty() {
-            new_fragments.push(TextFragment::new(curr_text, curr_fmt.unwrap_or_default()));
-        }
-
-        block.fragments = new_fragments;
     }
 }
 
