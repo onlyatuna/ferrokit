@@ -288,6 +288,10 @@ fn painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole() {
     );
 }
 
+const HATCH_ROW_0_AT_1_25: [u8; 16] = [
+    160, 0, 0, 0, 0, 159, 255, 255, 160, 0, 0, 0, 0, 159, 255, 160,
+];
+
 #[test]
 fn hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25() {
     // Build a 6x6 texture where texel (tx, ty) encodes tx in its red channel, matching the
@@ -323,6 +327,41 @@ fn hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25() {
         assert_eq!(got, expected, "texel phase at DPR 1.25 gx={gx}");
     }
 
+    // The same phase along y: translating by `gy` steps the texel rows exactly as translating by
+    // `gx` steps the columns.
+    for &(gy, ref expected) in expected_at_1_25 {
+        let mut pm = Pixmap::with_dpr(2, 20, 1.25).unwrap();
+        {
+            let mut p = Painter::begin(&mut pm);
+            p.translate(0.0, gy);
+            p.set_pen(None);
+            p.set_brush(tex_brush.clone());
+            p.draw_rect(RectF::new(0.0, -10.0, 2.0, 30.0));
+        }
+        let got: Vec<u8> = (0..15).map(|dy| pm.pixel(0, dy).unwrap().green()).collect();
+        assert_eq!(got, expected, "texel row phase at DPR 1.25 gy={gy}");
+    }
+
+    // Qt classifies a matrix as pure translation only when BOTH axes have unit scale. With
+    // `sx == 1.0, sy == 1.25` (`TxScale`) the x axis takes the `fmod` path as well, which does not
+    // round a half-texel translation away from zero: at tx = -0.5 `qRound` would shift the
+    // columns by one texel, `fmod` does not.
+    let mut pm = Pixmap::new(20, 4).unwrap();
+    {
+        let mut p = Painter::begin(&mut pm);
+        p.scale(1.0, 1.25);
+        p.translate(-0.5, 0.0);
+        p.set_pen(None);
+        p.set_brush(tex_brush.clone());
+        p.draw_rect(RectF::new(-10.0, 0.0, 40.0, 2.0));
+    }
+    let got: Vec<u8> = (0..12).map(|dx| pm.pixel(dx, 0).unwrap().red()).collect();
+    assert_eq!(
+        got,
+        [0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5],
+        "non-uniform scale sends the x axis through the TxScale path"
+    );
+
     // `Brush::Hatched` uses the same 6x6 nearest-neighbour repeat phase at DPR 1.25:
     // translating by 6 logical pixels (7.5 physical pixels, one full 6-texel period) repeats the
     // exact stripe phase at device pixel 0, and `set_brush_origin` shifts the phase identically
@@ -354,4 +393,6 @@ fn hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25() {
     // physical pixels 6 and 7 both sample tile column 5 (alpha == 255).
     assert_eq!(row_0[6], 255);
     assert_eq!(row_0[7], 255);
+    assert!(row_0[1] <= 2 && row_0[2] <= 2);
+    assert_eq!(row_0, HATCH_ROW_0_AT_1_25, "full hatch row at DPR 1.25");
 }

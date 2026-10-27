@@ -2336,7 +2336,28 @@ impl WindowEventHandler {
         }
     }
 
-    fn handle_drag_enter(&mut self, pos: Point, formats: Vec<String>, drop_action: u32) -> bool {
+    /// The window-level callback is the fallback for a drag no widget accepted. It returns the
+    /// drop action it left on an accepted event.
+    fn window_drag_fallback(&self, mut win_ev: Event) -> Option<u32> {
+        match self.core.event_cb.borrow().as_ref() {
+            Some(cb) => {
+                cb(&mut win_ev);
+                if win_ev.is_accepted() {
+                    crate::hit_test::event_drop_action(&win_ev.kind)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
+
+    fn handle_drag_enter(
+        &mut self,
+        pos: Point,
+        formats: Vec<String>,
+        drop_action: u32,
+    ) -> Option<u32> {
         let root = self.core.root();
         let mut ev = Event::new_spontaneous(EventKind::DragEnter {
             pos_x: pos.x,
@@ -2345,24 +2366,17 @@ impl WindowEventHandler {
             drop_action,
         });
         if self.dispatcher.dispatch_event(&root, &mut ev) {
-            return true;
+            return crate::hit_test::event_drop_action(&ev.kind);
         }
-        let mut win_ev = Event::new_spontaneous(EventKind::DragEnter {
+        self.window_drag_fallback(Event::new_spontaneous(EventKind::DragEnter {
             pos_x: pos.x,
             pos_y: pos.y,
             formats,
             drop_action,
-        });
-        match self.core.event_cb.borrow().as_ref() {
-            Some(cb) => {
-                cb(&mut win_ev);
-                win_ev.is_accepted()
-            }
-            None => false,
-        }
+        }))
     }
 
-    fn handle_drag_move(&mut self, pos: Point, drop_action: u32) -> bool {
+    fn handle_drag_move(&mut self, pos: Point, drop_action: u32) -> Option<u32> {
         let root = self.core.root();
         let mut ev = Event::new_spontaneous(EventKind::DragMove {
             pos_x: pos.x,
@@ -2370,20 +2384,13 @@ impl WindowEventHandler {
             drop_action,
         });
         if self.dispatcher.dispatch_event(&root, &mut ev) {
-            return true;
+            return crate::hit_test::event_drop_action(&ev.kind);
         }
-        let mut win_ev = Event::new_spontaneous(EventKind::DragMove {
+        self.window_drag_fallback(Event::new_spontaneous(EventKind::DragMove {
             pos_x: pos.x,
             pos_y: pos.y,
             drop_action,
-        });
-        match self.core.event_cb.borrow().as_ref() {
-            Some(cb) => {
-                cb(&mut win_ev);
-                win_ev.is_accepted()
-            }
-            None => false,
-        }
+        }))
     }
 
     fn handle_drop(
@@ -2392,8 +2399,11 @@ impl WindowEventHandler {
         formats: Vec<String>,
         data: Vec<(String, Vec<u8>)>,
         drop_action: u32,
-    ) -> bool {
+    ) -> Option<u32> {
         let root = self.core.root();
+        // A widget that holds the drag target decides the drop on its own: if it refuses, the
+        // window-level callback must not receive the same `Drop` a second time.
+        let had_target = self.dispatcher.has_drag_target();
         let mut ev = Event::new_spontaneous(EventKind::Drop {
             pos_x: pos.x,
             pos_y: pos.y,
@@ -2402,22 +2412,18 @@ impl WindowEventHandler {
             drop_action,
         });
         if self.dispatcher.dispatch_event(&root, &mut ev) {
-            return true;
+            return crate::hit_test::event_drop_action(&ev.kind);
         }
-        let mut win_ev = Event::new_spontaneous(EventKind::Drop {
+        if had_target {
+            return None;
+        }
+        self.window_drag_fallback(Event::new_spontaneous(EventKind::Drop {
             pos_x: pos.x,
             pos_y: pos.y,
             formats,
             data,
             drop_action,
-        });
-        match self.core.event_cb.borrow().as_ref() {
-            Some(cb) => {
-                cb(&mut win_ev);
-                win_ev.is_accepted()
-            }
-            None => false,
-        }
+        }))
     }
 }
 
@@ -2812,25 +2818,29 @@ impl WindowSystemEventHandler for WindowEventHandler {
         }
     }
 
-    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> bool {
+    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> u32 {
         match event {
             WindowSystemEvent::DragEnter {
                 pos,
                 formats,
                 drop_action,
-            } => self.handle_drag_enter(pos, formats, drop_action),
+            } => self
+                .handle_drag_enter(pos, formats, drop_action)
+                .unwrap_or(0),
             WindowSystemEvent::DragMove { pos, drop_action } => {
-                self.handle_drag_move(pos, drop_action)
+                self.handle_drag_move(pos, drop_action).unwrap_or(0)
             }
             WindowSystemEvent::Drop {
                 pos,
                 formats,
                 data,
                 drop_action,
-            } => self.handle_drop(pos, formats, data, drop_action),
+            } => self
+                .handle_drop(pos, formats, data, drop_action)
+                .unwrap_or(0),
             other => {
                 self.handle_window_event(other);
-                false
+                0
             }
         }
     }

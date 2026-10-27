@@ -225,10 +225,15 @@ fn qt_round(v: f64) -> i32 {
 /// setupMatrix` + `adjustSpanMethods` + `qBlendTexture`, `qpaintengine_raster.cpp` /
 /// `qdrawhelper.cpp`) samples under `painter_transform` and `brush_origin`.
 ///
-/// Under pure translation (`TxTranslate`), Qt rounds the device-space translation with `qRound`.
-/// Under axis-aligned scaling (`TxScale`, such as `devicePixelRatio != 1.0`), Qt wraps the
-/// inverse translation modulo the tile size (`fmod`) before truncating to 16.16 fixed point and
-/// steps `fx = (fdx >> 1) + int(fmod(inv_dx, tile_w) * 65536) - 1 + x * fdx`.
+/// Only when BOTH axes have unit scale does Qt classify the matrix as pure translation
+/// (`TxTranslate`) and round the device-space translation with `qRound`. Any other axis-aligned
+/// scale (`TxScale`, such as `devicePixelRatio != 1.0` or `sx == 1.0, sy == 1.25`) sends BOTH axes
+/// through the `TxScale` path, which wraps the inverse translation modulo the tile size (`fmod`)
+/// before truncating to 16.16 fixed point and steps
+/// `fx = (fdx >> 1) + int(fmod(inv_dx, tile_w) * 65536) - 1 + x * fdx`.
+///
+/// Rotation or skew (`kx != 0 || ky != 0`) and non-positive scales (`sx <= 0 || sy <= 0`)
+/// intentionally keep the unadjusted `origin_ts` transform.
 fn qt_nearest_pattern_transform(
     painter_transform: Transform,
     brush_origin: PointF,
@@ -248,10 +253,12 @@ fn qt_nearest_pattern_transform(
     let Some(painter_inv) = painter_transform.invert() else {
         return origin_ts;
     };
+    let is_translate_only =
+        (combined.sx - 1.0).abs() <= 1e-6 && (combined.sy - 1.0).abs() <= 1e-6;
     let axis = |scale: f32, trans: f32, tile: u32| -> (f32, f32) {
         let s = f64::from(scale);
         let t = f64::from(trans);
-        if (s - 1.0).abs() <= 1e-6 {
+        if is_translate_only {
             let want_ts_tx = f64::from(-qt_round(t));
             (1.0, -want_ts_tx as f32)
         } else {

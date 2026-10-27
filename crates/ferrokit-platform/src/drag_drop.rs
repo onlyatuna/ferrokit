@@ -173,7 +173,10 @@ pub mod win32_ole {
         pub vtbl: *const IDropTargetVtbl,
         pub ref_count: AtomicU32,
         pub hwnd: HWND,
-        pub callback: Box<dyn Fn(DropEvent) -> bool + Send + Sync>,
+        /// Returns the `DROPEFFECT_*` the target accepts the event with (it may differ from the
+        /// proposed `effect`); `DROPEFFECT_NONE` refuses. The result is limited to the effects the
+        /// source allows.
+        pub callback: Box<dyn Fn(DropEvent) -> u32 + Send + Sync>,
         /// Whether the drag currently over the window carries a format this target can decode.
         pub accepts: std::sync::atomic::AtomicBool,
     }
@@ -181,7 +184,7 @@ pub mod win32_ole {
     impl OleDropTarget {
         pub fn new<F>(hwnd: HWND, callback: F) -> *mut Self
         where
-            F: Fn(DropEvent) -> bool + Send + Sync + 'static,
+            F: Fn(DropEvent) -> u32 + Send + Sync + 'static,
         {
             #[cfg(any(test, feature = "test-hooks"))]
             LIVE_DROP_TARGETS.fetch_add(1, Ordering::SeqCst);
@@ -425,6 +428,28 @@ pub mod win32_ole {
         }
     }
 
+    /// The single effect reported to the source: the callback's reply limited to what the source
+    /// allowed (`allowed`, the incoming `*pdwEffect`), reduced to one `DROPEFFECT_*` bit (copy,
+    /// then move, then link), and none without decodable formats.
+    fn reported_effect(has_formats: bool, reply: u32, allowed: u32) -> u32 {
+        if !has_formats {
+            return DROPEFFECT_NONE;
+        }
+        let mask = reply & allowed;
+        [DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_LINK]
+            .into_iter()
+            .find(|e| mask & e != 0)
+            .unwrap_or(DROPEFFECT_NONE)
+    }
+
+    unsafe fn incoming_effects(pdw_effect: *const u32) -> u32 {
+        if pdw_effect.is_null() {
+            DROPEFFECT_NONE
+        } else {
+            *pdw_effect
+        }
+    }
+
     unsafe extern "system" fn drag_enter(
         this: *mut c_void,
         p_data_obj: *mut c_void,
@@ -436,24 +461,18 @@ pub mod win32_ole {
         let formats = data_object_formats(p_data_obj);
         let has_formats = !formats.is_empty();
         target.accepts.store(has_formats, Ordering::SeqCst);
+        let allowed = incoming_effects(pdw_effect);
         let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
         // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
-        let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Enter {
                 pos: logical_client_pos(target.hwnd, pt),
                 formats,
                 effect: proposed,
             })
         }))
-        .unwrap_or(false);
-        write_effect(
-            pdw_effect,
-            if has_formats && accepted {
-                proposed
-            } else {
-                DROPEFFECT_NONE
-            },
-        );
+        .unwrap_or(DROPEFFECT_NONE);
+        write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
         S_OK
     }
 
@@ -465,22 +484,16 @@ pub mod win32_ole {
     ) -> HRESULT {
         let target = &*(this as *mut OleDropTarget);
         let has_formats = target.accepts.load(Ordering::SeqCst);
+        let allowed = incoming_effects(pdw_effect);
         let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
-        let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Over {
                 pos: logical_client_pos(target.hwnd, pt),
                 effect: proposed,
             })
         }))
-        .unwrap_or(false);
-        write_effect(
-            pdw_effect,
-            if has_formats && accepted {
-                proposed
-            } else {
-                DROPEFFECT_NONE
-            },
-        );
+        .unwrap_or(DROPEFFECT_NONE);
+        write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
         S_OK
     }
 
@@ -505,8 +518,9 @@ pub mod win32_ole {
         let formats = data_object_formats(p_data_obj);
         let data = data_object_payload(p_data_obj);
         let has_formats = !formats.is_empty();
+        let allowed = incoming_effects(pdw_effect);
         let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
-        let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (target.callback)(DropEvent::Drop {
                 pos: logical_client_pos(target.hwnd, pt),
                 formats,
@@ -514,15 +528,8 @@ pub mod win32_ole {
                 effect: proposed,
             })
         }))
-        .unwrap_or(false);
-        write_effect(
-            pdw_effect,
-            if has_formats && accepted {
-                proposed
-            } else {
-                DROPEFFECT_NONE
-            },
-        );
+        .unwrap_or(DROPEFFECT_NONE);
+        write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
         S_OK
     }
 
@@ -541,7 +548,7 @@ pub mod win32_ole {
         callback: F,
     ) -> Result<*mut OleDropTarget, &'static str>
     where
-        F: Fn(DropEvent) -> bool + Send + Sync + 'static,
+        F: Fn(DropEvent) -> u32 + Send + Sync + 'static,
     {
         use windows_sys::Win32::System::Ole::OleInitialize;
         unsafe {

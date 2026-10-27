@@ -1204,6 +1204,10 @@
     "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::SB": "pass",
     "test_key_sequence_hotkey::virtual_keys_without_a_qt_key_give_none::TB": "pass",
     "test_widget_attributes_api::drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_target_transitions::SB": "pass",
-    "test_widget_attributes_api::drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_target_transitions::TB": "pass"
+    "test_widget_attributes_api::drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_target_transitions::TB": "pass",
+    "test_widget_attributes_api::a_drag_target_that_does_not_handle_drag_move_keeps_the_drag_and_its_action_reaches_the_caller::SB": "pass",
+    "test_widget_attributes_api::a_drag_target_that_does_not_handle_drag_move_keeps_the_drag_and_its_action_reaches_the_caller::TB": "pass",
+    "test_widget_attributes_api::drop_goes_only_to_the_drag_target_and_a_destroyed_target_is_not_kept_alive::SB": "pass",
+    "test_widget_attributes_api::drop_goes_only_to_the_drag_target_and_a_destroyed_target_is_not_kept_alive::TB": "pass"
   }
 }

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::focus::{find_widget_by_id, FocusManager};
 use crate::popup::PopupManager;
-use crate::widget::{Widget, WidgetRef};
+use crate::widget::{Widget, WidgetRef, WidgetWeak};
 use ferrokit_core::event::FocusReason;
 use ferrokit_core::event::{Event, EventKind, EventPointPos, MouseButtons};
 use ferrokit_core::event_loop::notify_borrowed_with;
 use ferrokit_core::object::ObjectId;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
+use std::rc::Rc;
 
 pub struct EventTreeDispatcher {
     last_hovered: Option<(ObjectId, WidgetRef)>,
@@ -20,7 +21,7 @@ pub struct EventTreeDispatcher {
     last_dpr: f32,
     /// `QWidgetWindow::m_dragTarget`: the widget that accepted the current drag (`DragEnter` /
     /// `DragMove`), and the formats offered when the drag entered.
-    drag_target: Option<(ObjectId, WidgetRef)>,
+    drag_target: Option<(ObjectId, WidgetWeak)>,
     drag_formats: Vec<String>,
 }
 
@@ -445,7 +446,11 @@ impl EventTreeDispatcher {
                 let formats = formats.clone();
                 let action = *drop_action;
                 self.drag_formats = formats.clone();
-                self.deliver_drag(root, win_pos, action, true)
+                let accepted = self.deliver_drag(root, win_pos, action, true);
+                if let Some(a) = accepted {
+                    set_event_drop_action(&mut event.kind, a);
+                }
+                accepted.is_some()
             }
             EventKind::DragMove {
                 pos_x,
@@ -454,13 +459,19 @@ impl EventTreeDispatcher {
             } => {
                 let win_pos = Point::new(*pos_x, *pos_y);
                 let action = *drop_action;
-                self.deliver_drag(root, win_pos, action, false)
+                let accepted = self.deliver_drag(root, win_pos, action, false);
+                if let Some(a) = accepted {
+                    set_event_drop_action(&mut event.kind, a);
+                }
+                accepted.is_some()
             }
             EventKind::DragLeave => {
                 self.drag_formats.clear();
                 if let Some((_id, prev)) = self.drag_target.take() {
-                    let mut leave = Event::new_spontaneous(EventKind::DragLeave);
-                    let _ = notify_widget(&prev, &mut leave);
+                    if let Some(prev) = prev.upgrade() {
+                        let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+                        let _ = notify_widget(&prev, &mut leave);
+                    }
                 }
                 true
             }
@@ -476,7 +487,11 @@ impl EventTreeDispatcher {
                 let data = data.clone();
                 let action = *drop_action;
                 self.drag_formats.clear();
-                self.deliver_drop(root, win_pos, formats, data, action)
+                let accepted = self.deliver_drop(root, win_pos, formats, data, action);
+                if let Some(a) = accepted {
+                    set_event_drop_action(&mut event.kind, a);
+                }
+                accepted.is_some()
             }
             EventKind::DpiChanged { dpi_x, .. } => {
                 let new_dpr = ferrokit_gui::round_scale_factor(*dpi_x as f64 / 96.0) as f32;
@@ -552,7 +567,7 @@ impl EventTreeDispatcher {
         win_pos: Point,
         drop_action: u32,
         is_enter: bool,
-    ) -> bool {
+    ) -> Option<u32> {
         let path = hit_path(root, win_pos);
         let any_explicit = has_any_accept_drops(root);
         let prev_id = self.drag_target.as_ref().map(|(id, _)| *id);
@@ -564,7 +579,12 @@ impl EventTreeDispatcher {
                 continue;
             }
             let cand_id = step.widget.borrow().id();
+            // The action a widget or filter left on the accepted event, which is what the caller
+            // reports back to the drag source.
+            let mut action = drop_action;
             if is_enter || prev_id != Some(cand_id) {
+                // `QWidget::dragEnterEvent` ignores the event, so the widget (or a filter) has to
+                // handle and accept `DragEnter` itself.
                 let mut enter = Event::new_spontaneous(EventKind::DragEnter {
                     pos_x: step.pos.x,
                     pos_y: step.pos.y,
@@ -574,43 +594,54 @@ impl EventTreeDispatcher {
                 if !(notify_widget(&step.widget, &mut enter) && enter.is_accepted()) {
                     continue;
                 }
+                action = event_drop_action(&enter.kind).unwrap_or(drop_action);
                 if prev_id != Some(cand_id) {
                     if let Some((_old_id, old_w)) = self.drag_target.take() {
-                        let mut leave = Event::new_spontaneous(EventKind::DragLeave);
-                        let _ = notify_widget(&old_w, &mut leave);
+                        send_drag_leave(&old_w);
                     }
                 }
-                self.drag_target = Some((cand_id, step.widget.clone()));
+                self.drag_target = Some((cand_id, Rc::downgrade(&step.widget)));
                 if is_enter {
-                    return true;
+                    return Some(action);
                 }
             }
+            // `QDragMoveEvent` starts accepted and `QWidget::dragMoveEvent` is a no-op, so a
+            // target that only implements `DragEnter` and `Drop` keeps the drag unless it (or a
+            // filter) explicitly ignores the move; whether `event` reported handling is moot.
             let mut mv = Event::new_spontaneous(EventKind::DragMove {
                 pos_x: step.pos.x,
                 pos_y: step.pos.y,
-                drop_action,
+                drop_action: action,
             });
-            if notify_widget(&step.widget, &mut mv) && mv.is_accepted() {
-                self.drag_target = Some((cand_id, step.widget.clone()));
-                return true;
+            let _ = notify_widget(&step.widget, &mut mv);
+            if mv.is_accepted() {
+                self.drag_target = Some((cand_id, Rc::downgrade(&step.widget)));
+                return Some(event_drop_action(&mv.kind).unwrap_or(action));
             }
             // The current drag target rejected `DragMove`: send it `DragLeave` and continue up.
             if self.drag_target.as_ref().map(|(id, _)| *id) == Some(cand_id) {
                 if let Some((_old_id, old_w)) = self.drag_target.take() {
-                    let mut leave = Event::new_spontaneous(EventKind::DragLeave);
-                    let _ = notify_widget(&old_w, &mut leave);
+                    send_drag_leave(&old_w);
                 }
             }
         }
         if let Some((_old_id, old_w)) = self.drag_target.take() {
-            let mut leave = Event::new_spontaneous(EventKind::DragLeave);
-            let _ = notify_widget(&old_w, &mut leave);
+            send_drag_leave(&old_w);
         }
-        false
+        None
     }
 
-    /// `QWidgetWindow::handleDropEvent`: delivers `Drop` to the current drag target if one was
-    /// tracked, else walks the hit path like `deliver_drag`.
+    /// Whether a live widget currently holds the drag (`QWidgetWindow::m_dragTarget`).
+    pub fn has_drag_target(&self) -> bool {
+        self.drag_target
+            .as_ref()
+            .is_some_and(|(_, w)| w.upgrade().is_some())
+    }
+
+    /// `QWidgetWindow::handleDropEvent`: `Drop` goes only to the widget that accepted the drag
+    /// (`m_dragTarget`), in its own coordinates, and only while it is still alive, visible and
+    /// enabled. A widget that never received `DragEnter` is never handed a `Drop`, and a refused
+    /// `Drop` is not offered to anyone else. Returns the accepted drop action.
     fn deliver_drop(
         &mut self,
         root: &WidgetRef,
@@ -618,42 +649,57 @@ impl EventTreeDispatcher {
         formats: Vec<String>,
         data: Vec<(String, Vec<u8>)>,
         drop_action: u32,
-    ) -> bool {
-        let path = hit_path(root, win_pos);
-        if let Some((target_id, target)) = self.drag_target.take() {
-            if let Some(step) = path.iter().find(|s| s.widget.borrow().id() == target_id) {
-                if step.enabled {
-                    let mut drop_ev = Event::new_spontaneous(EventKind::Drop {
-                        pos_x: step.pos.x,
-                        pos_y: step.pos.y,
-                        formats,
-                        data,
-                        drop_action,
-                    });
-                    return notify_widget(&target, &mut drop_ev) && drop_ev.is_accepted();
-                }
-            }
+    ) -> Option<u32> {
+        let (_id, target) = self.drag_target.take()?;
+        let target = target.upgrade()?;
+        let chain = ancestors(&target);
+        if !chain.first().is_some_and(|w| Rc::ptr_eq(w, root))
+            || !chain.iter().all(|w| {
+                let b = w.borrow();
+                b.is_visible() && b.is_enabled()
+            })
+        {
+            return None;
         }
-        let any_explicit = has_any_accept_drops(root);
-        for step in path.iter().rev() {
-            if !step.enabled {
-                continue;
-            }
-            if any_explicit && !step.widget.borrow().widget_base().accept_drops() {
-                continue;
-            }
-            let mut drop_ev = Event::new_spontaneous(EventKind::Drop {
-                pos_x: step.pos.x,
-                pos_y: step.pos.y,
-                formats: formats.clone(),
-                data: data.clone(),
-                drop_action,
-            });
-            if notify_widget(&step.widget, &mut drop_ev) && drop_ev.is_accepted() {
-                return true;
-            }
+        let pos = local_pos(&chain, win_pos);
+        let mut drop_ev = Event::new_spontaneous(EventKind::Drop {
+            pos_x: pos.x,
+            pos_y: pos.y,
+            formats,
+            data,
+            drop_action,
+        });
+        if notify_widget(&target, &mut drop_ev) && drop_ev.is_accepted() {
+            Some(event_drop_action(&drop_ev.kind).unwrap_or(drop_action))
+        } else {
+            None
         }
-        false
+    }
+}
+
+fn send_drag_leave(target: &WidgetWeak) {
+    if let Some(w) = target.upgrade() {
+        let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+        let _ = notify_widget(&w, &mut leave);
+    }
+}
+
+/// The drop action carried by a drag or drop event.
+pub(crate) fn event_drop_action(kind: &EventKind) -> Option<u32> {
+    match kind {
+        EventKind::DragEnter { drop_action, .. }
+        | EventKind::DragMove { drop_action, .. }
+        | EventKind::Drop { drop_action, .. } => Some(*drop_action),
+        _ => None,
+    }
+}
+
+fn set_event_drop_action(kind: &mut EventKind, action: u32) {
+    if let EventKind::DragEnter { drop_action, .. }
+    | EventKind::DragMove { drop_action, .. }
+    | EventKind::Drop { drop_action, .. } = kind
+    {
+        *drop_action = action;
     }
 }
 

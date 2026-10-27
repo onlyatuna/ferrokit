@@ -751,14 +751,20 @@ fn run_handler(hwnd: isize, event: WindowSystemEvent) {
     }
 }
 
-/// Delivers `event` to `hwnd`'s handler synchronously on the window's thread and returns whether
-/// the handler accepted it. Returns `false` if the window is not on the calling thread, has no
-/// handler, or its handler is already running on the stack.
-pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -> bool {
+/// Delivers `event` to `hwnd`'s handler synchronously on the window's thread and returns the
+/// `DROPEFFECT_*` the handler accepted it with (`0` = refused). Returns `0` if the window is not
+/// on the calling thread, has no handler, or its handler is already running on the stack.
+///
+/// Unlike [`send_window_system_event_immediately`], an event that arrives while the window's
+/// handler is already running is deliberately not queued. OLE needs the answer before
+/// `IDropTarget::DragEnter` / `DragOver` / `Drop` returns, and the handler is taken out of the
+/// registry for the outer call, so it cannot run now. Running a queued `Drop` after OLE was
+/// already told `DROPEFFECT_NONE` would perform a drop the source believes was refused.
+pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -> u32 {
     use std::collections::hash_map::Entry;
     if !is_window_thread(hwnd) {
         post_window_system_event(hwnd, event);
-        return false;
+        return 0;
     }
     let key = hwnd as isize;
     let entered = ACTIVE_DISPATCH
@@ -771,7 +777,7 @@ pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -
         })
         .unwrap_or(false);
     if !entered {
-        return false;
+        return 0;
     }
     let _active = ActiveDispatch(key);
     let taken = WINDOW_EVENT_HANDLERS
@@ -786,9 +792,9 @@ pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -
         running
             .handler
             .as_mut()
-            .is_some_and(|h| h.handle_window_event_accepted(event))
+            .map_or(0, |h| h.handle_window_event_accepted(event))
     } else {
-        false
+        0
     };
     while let Some(ev) = ACTIVE_DISPATCH
         .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
@@ -2879,7 +2885,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                 return true;
             }
             let hwnd_isize = self.hwnd as isize;
-            let callback = move |ev: crate::drag_drop::DropEvent| -> bool {
+            let callback = move |ev: crate::drag_drop::DropEvent| -> u32 {
                 let hwnd = hwnd_isize as HWND;
                 match ev {
                     crate::drag_drop::DropEvent::Enter {
@@ -2909,7 +2915,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                             hwnd,
                             WindowSystemEvent::DragLeave,
                         );
-                        true
+                        0
                     }
                     crate::drag_drop::DropEvent::Drop {
                         pos,
