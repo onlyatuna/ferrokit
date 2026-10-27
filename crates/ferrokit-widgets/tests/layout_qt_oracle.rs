@@ -16,6 +16,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 const ORACLE: &str = include_str!("fixtures/layout_qt_oracle.txt");
+/// Under Miri every `STRIDE`-th record is replayed: the whole fixture takes about 30 minutes under
+/// Tree Borrows. The cases cycle through the same layout kinds and options throughout the file, so
+/// the sample still has boxes, grids, stacks, nesting, spacers and hidden items;
+/// `oracle_covers_required_features` still checks the whole fixture's text for every feature.
+const STRIDE: usize = if cfg!(miri) { 8 } else { 1 };
+
 /// Known mismatches against Qt, replayed for reporting only.
 const KNOWN: &str = include_str!("fixtures/layout_qt_oracle_known.txt");
 
@@ -71,6 +77,12 @@ fn layout_matches_pyside6_oracle() {
     assert!(
         cases.len() >= 300,
         "oracle fixture has only {} cases",
+        cases.len()
+    );
+    let cases: Vec<_> = cases.into_iter().step_by(STRIDE).collect();
+    assert!(
+        cases.len() * STRIDE >= 300,
+        "sample of {} cases",
         cases.len()
     );
     let diffs = compare(&cases);

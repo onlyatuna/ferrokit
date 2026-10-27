@@ -3,6 +3,18 @@
 //! (`qt_alphamapblit_*` for grey-scale masks, `qt_alphargbblit_argb32` for LCD masks).
 
 use crate::text::smoothing::{blend_linear, TrcLut};
+use tiny_skia::{
+    BlendMode, Color, FilterQuality, IntSize, Paint, Pattern, Pixmap, Rect, Shader,
+    SpreadMode, Transform,
+};
+
+/// What a masked blit composites onto the destination.
+pub(crate) enum MaskedSource<'a> {
+    /// One colour (alpha included), as for a glyph drawn with the pen.
+    Solid(Color),
+    /// Premultiplied RGBA pixels (`w * h * 4`) with a whole-image opacity, as for colour glyphs.
+    Image(&'a [u8], f32),
+}
 
 /// `qRgbAvg` of `qdrawhelper.cpp`: how an LCD mask is reduced to one coverage where the
 /// destination is not opaque.
@@ -61,6 +73,85 @@ pub(crate) fn blend_lcd(px: &mut [u8], cov: [u8; 3], base_alpha: f32, target: [u
     }
 }
 
+/// Composites `source` into the `w` x `h` box at `(x0, y0)` of the premultiplied RGBA surface `pix`
+/// (`pw` x `ph`) with the Porter-Duff / blend `mode`, weighted per pixel by `cov` (`w * h`): where
+/// the coverage is partial the result is the destination lerped towards the composited pixel, as
+/// Qt's mask blits do. Covers every mode, unlike [`blend_grey`]/[`blend_lcd`] (source-over only).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn composite_masked(
+    pix: &mut [u8],
+    (pw, ph): (u32, u32),
+    (x0, y0): (i32, i32),
+    (w, h): (u32, u32),
+    cov: &[u8],
+    source: MaskedSource<'_>,
+    mode: BlendMode,
+) {
+    let ix0 = x0.max(0);
+    let iy0 = y0.max(0);
+    let ix1 = (x0 as i64 + w as i64).min(pw as i64) as i32;
+    let iy1 = (y0 as i64 + h as i64).min(ph as i64) as i32;
+    if ix0 >= ix1 || iy0 >= iy1 || cov.len() < (w * h) as usize {
+        return;
+    }
+    let (sw, sh) = ((ix1 - ix0) as u32, (iy1 - iy0) as u32);
+    let Some(mut scratch) = Pixmap::new(sw, sh) else {
+        return;
+    };
+    let mut mask_data = Vec::with_capacity((sw * sh) as usize);
+    let mut before = Vec::with_capacity((sw * sh * 4) as usize);
+    for row in 0..sh as usize {
+        let dy = iy0 as usize + row;
+        let dst = (dy * pw as usize + ix0 as usize) * 4;
+        scratch.data_mut()[row * sw as usize * 4..(row + 1) * sw as usize * 4]
+            .copy_from_slice(&pix[dst..dst + sw as usize * 4]);
+        before.extend_from_slice(&pix[dst..dst + sw as usize * 4]);
+        let cy = (iy0 - y0) as usize + row;
+        let cx = (ix0 - x0) as usize;
+        mask_data.extend_from_slice(&cov[cy * w as usize + cx..cy * w as usize + cx + sw as usize]);
+    }
+    let image;
+    let shader = match source {
+        MaskedSource::Solid(c) => Shader::SolidColor(c),
+        MaskedSource::Image(rgba, opacity) => {
+            let Some(size) = IntSize::from_wh(w, h) else {
+                return;
+            };
+            let Some(img) = Pixmap::from_vec(rgba.to_vec(), size) else {
+                return;
+            };
+            image = img;
+            Pattern::new(
+                image.as_ref(),
+                SpreadMode::Pad,
+                FilterQuality::Nearest,
+                opacity,
+                Transform::from_translate((x0 - ix0) as f32, (y0 - iy0) as f32),
+            )
+        }
+    };
+    let paint = Paint {
+        shader,
+        blend_mode: mode,
+        anti_alias: false,
+        ..Default::default()
+    };
+    if let Some(rect) = Rect::from_xywh(0.0, 0.0, sw as f32, sh as f32) {
+        scratch.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    // The composited pixel is applied at the coverage: dst + (result - dst) * cov / 255.
+    let result = scratch.data();
+    for row in 0..sh as usize {
+        let dst = ((iy0 as usize + row) * pw as usize + ix0 as usize) * 4;
+        for i in 0..sw as usize * 4 {
+            let old = before[row * sw as usize * 4 + i] as i32;
+            let new = result[row * sw as usize * 4 + i] as i32;
+            let c = mask_data[row * sw as usize + i / 4] as i32;
+            pix[dst + i] = (old + ((new - old) * c + 127 * (new - old).signum()) / 255) as u8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +174,24 @@ mod tests {
         assert_eq!(px, [22, 25, 32, 255]);
         blend_lcd(&mut px, [255, 255, 255], 1.0, [226, 232, 240], &lut);
         assert_eq!(px, [226, 232, 240, 255]);
+    }
+
+    #[test]
+    fn composite_masked_applies_the_blend_mode_weighted_by_coverage() {
+        let src = || MaskedSource::Solid(Color::from_rgba8(200, 100, 50, 255));
+        // 2x1 surface of opaque (10, 20, 30); coverage 255 then 0.
+        let surface = [10u8, 20, 30, 255, 10, 20, 30, 255];
+        let run = |mode| {
+            let mut px = surface;
+            composite_masked(&mut px, (2, 1), (0, 0), (2, 1), &[255, 0], src(), mode);
+            px
+        };
+        assert_eq!(run(BlendMode::SourceOver)[..4], [200, 100, 50, 255]);
+        assert_eq!(run(BlendMode::Clear)[..4], [0, 0, 0, 0]);
+        assert_eq!(run(BlendMode::DestinationOver)[..4], [10, 20, 30, 255]);
+        assert_eq!(run(BlendMode::Plus)[..4], [210, 120, 80, 255]);
+        // Zero coverage leaves the destination alone in every mode.
+        assert_eq!(run(BlendMode::Clear)[4..], surface[4..]);
+        assert_eq!(run(BlendMode::Source)[4..], surface[4..]);
     }
 }

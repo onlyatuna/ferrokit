@@ -174,7 +174,7 @@ impl TextDocument {
     }
 
     /// Lays out one block at the document's text width (`setTextWidth` wrap).
-    fn block_layout(&self, block: &TextBlock) -> TextLayout {
+    pub(crate) fn block_layout(&self, block: &TextBlock) -> TextLayout {
         let mut layout = block.create_layout(&self.default_font);
         if let Some(w) = self.page_size.map(|s| s.width) {
             layout.set_wrap_width(Some(w));

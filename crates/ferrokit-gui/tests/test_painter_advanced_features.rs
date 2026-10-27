@@ -187,6 +187,58 @@ fn test_composition_modes() {
 }
 
 #[test]
+fn draw_pixmap_honours_composition_mode() {
+    let mut source = Pixmap::new(4, 4).unwrap();
+    source.fill(Color::from_rgba8(0, 0, 255, 255));
+    let draw = |mode: CompositionMode| {
+        let mut target = Pixmap::new(4, 4).unwrap();
+        target.fill(Color::from_rgba8(255, 0, 0, 255));
+        {
+            let mut painter = Painter::begin(&mut target);
+            painter.set_composition_mode(mode);
+            painter.draw_pixmap(RectF::new(0.0, 0.0, 4.0, 4.0), &source, None);
+        }
+        target.pixel(1, 1).unwrap()
+    };
+    let over = draw(CompositionMode::SourceOver);
+    assert_eq!((over.red(), over.blue()), (0, 255));
+    let under = draw(CompositionMode::DestinationOver);
+    assert_eq!((under.red(), under.blue()), (255, 0));
+    assert_eq!(draw(CompositionMode::Clear).alpha(), 0);
+    let plus = draw(CompositionMode::Plus);
+    assert_eq!((plus.red(), plus.blue()), (255, 255));
+}
+
+#[test]
+fn draw_text_honours_composition_mode() {
+    let render = |mode: CompositionMode| {
+        let mut target = Pixmap::new(80, 40).unwrap();
+        target.fill(Color::WHITE);
+        {
+            let mut painter = Painter::begin(&mut target);
+            painter.set_pen(ferrokit_gui::paint::painter::Pen::new(Color::BLACK, 1.0));
+            painter.set_composition_mode(mode);
+            painter.draw_text(PointF::new(2.0, 30.0), "MMM", &Font::new("Segoe UI", 28.0));
+        }
+        (0..40)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .map(|(x, y)| target.pixel(x, y).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let over = render(CompositionMode::SourceOver);
+    if over.iter().all(|p| p.alpha() == 255 && p.red() == 255) {
+        return; // no font face available on this machine: nothing was drawn to compare
+    }
+    // Clear erases exactly where glyphs have coverage; DestinationOver keeps the opaque backdrop.
+    let cleared = render(CompositionMode::Clear);
+    assert!(cleared.iter().any(|p| p.alpha() == 0));
+    assert!(cleared.iter().any(|p| p.alpha() == 255));
+    let under = render(CompositionMode::DestinationOver);
+    assert!(under.iter().all(|p| p.alpha() == 255 && p.red() == 255));
+    assert_ne!(over, under);
+}
+
+#[test]
 fn test_palette_system() {
     let dark_palette = Palette::dark();
     assert_eq!(dark_palette.window(), Color::from_rgba8(30, 30, 30, 255));

@@ -198,6 +198,23 @@ impl ColorSpace {
         }
     }
 
+    /// Creates a color space from explicit chromaticities and a transfer function.
+    ///
+    /// `primaries` is the closest standard primary set (or `Primaries::Custom`).
+    pub fn from_primary_points(
+        primaries: Primaries,
+        primary_points: PrimaryPoints,
+        transfer_function: TransferFunction,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            primaries,
+            primary_points,
+            transfer_function,
+            description: description.into(),
+        }
+    }
+
     /// Constructs from a named color space.
     pub fn from_named(named: NamedColorSpace) -> Self {
         match named {
@@ -389,8 +406,17 @@ impl ColorSpace {
         let zw_norm = zw / yw;
 
         // Invert [xr xg xb; yr yg yb; zr zg zb] to solve for scaling coefficients (Sr, Sg, Sb)
-        let det = xr * (yg * zb - zg * yb) - xg * (yr * zb - zr * yb) + xb * (yr * zg - zr * yg);
-        if det.abs() < 1e-7 {
+        // Scale-relative singularity test (as in `Transform::inverted`), not an absolute epsilon.
+        let (det, magnitude) = super::color_transform::det3_with_magnitude(&[
+            [xr, xg, xb],
+            [yr, yg, yb],
+            [zr, zg, zb],
+        ]);
+        if crate::geometry::transform::is_singular(det, magnitude) {
+            return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        }
+        let det = det as f32;
+        if det == 0.0 || !det.is_finite() {
             return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         }
         let inv_det = 1.0 / det;

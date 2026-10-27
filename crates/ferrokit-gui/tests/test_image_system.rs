@@ -93,8 +93,8 @@ fn test_image_format_conversions() {
     let gray = src.converted_to(ImageFormat::Grayscale8);
     assert_eq!(gray.format(), ImageFormat::Grayscale8);
     let g = gray.pixel_color(0, 0).unwrap().to_color_u8();
-    // BT.601 red luminance is ~76 (255 * 0.299)
-    assert!(g.red() > 70 && g.red() < 80);
+    // Qt's qGray(255, 0, 0) = 255 * 11 / 32 = 87
+    assert_eq!(g.red(), 87);
     assert_eq!(g.red(), g.green());
     assert_eq!(g.green(), g.blue());
 

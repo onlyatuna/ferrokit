@@ -678,16 +678,24 @@ fn process_signal_death_is_crash_exit() {
     assert_eq!(proc.exit_status(), Some(ExitStatus::CrashExit));
 }
 
-#[cfg(unix)]
 #[test]
 fn process_wait_honours_timeout_when_grandchild_holds_pipe() {
     let mut proc = Process::new();
+    #[cfg(windows)]
+    set_shell(&mut proc, "start /B ping -n 20 127.0.0.1 >nul & exit 0");
+    #[cfg(not(windows))]
     set_shell(&mut proc, "sleep 20 & exit 0");
     proc.start().unwrap();
     let begin = std::time::Instant::now();
     assert!(proc.wait_for_finished(Some(Duration::from_millis(500))));
     assert!(begin.elapsed() < Duration::from_secs(10));
     assert_eq!(proc.exit_code(), Some(0));
+    assert_eq!(proc.state(), ProcessState::NotRunning);
+    // The readers were stopped, not detached: a second run starts and finishes cleanly.
+    set_shell(&mut proc, "exit 3");
+    proc.start().unwrap();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(10))));
+    assert_eq!(proc.exit_code(), Some(3));
 }
 
 #[test]

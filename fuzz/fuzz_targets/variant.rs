@@ -19,7 +19,9 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn check_round_trip(v: &Variant) {
-    let bytes = v.to_bytes();
+    let bytes = v
+        .to_bytes()
+        .unwrap_or_else(|e| panic!("Variant within the depth cap failed to serialize ({e}): {v:?}"));
     let back = Variant::from_bytes(&bytes)
         .unwrap_or_else(|e| panic!("serialized Variant does not deserialize ({e}): {v:?}"));
     assert!(same(v, &back), "round trip changed {v:?} into {back:?}");

@@ -2,7 +2,7 @@
 //! CPU-side canonical image buffer matching Qt 6 `QImage`.
 
 use crate::geometry::primitives::{Rect, Size};
-use crate::image::image_format::ImageFormat;
+use crate::image::image_format::{q_gray, ImageFormat};
 use crate::image::image_view::{ImageView, ImageViewMut};
 use tiny_skia::Color;
 
@@ -465,9 +465,7 @@ impl Image {
             }
             ImageFormat::Grayscale8 => {
                 let u = color.to_color_u8();
-                let lum =
-                    (u.red() as u32 * 299 + u.green() as u32 * 587 + u.blue() as u32 * 114) / 1000;
-                line[x as usize] = lum as u8;
+                line[x as usize] = q_gray(u.red(), u.green(), u.blue());
                 true
             }
             ImageFormat::Alpha8 => {
@@ -477,8 +475,7 @@ impl Image {
             }
             ImageFormat::Mono | ImageFormat::MonoLsb => {
                 let u = color.to_color_u8();
-                let lum =
-                    (u.red() as u32 * 299 + u.green() as u32 * 587 + u.blue() as u32 * 114) / 1000;
+                let lum = q_gray(u.red(), u.green(), u.blue());
                 let bit = lum >= 128;
                 let bit_index = (x % 8) as u8;
                 let mask = match self.format {
@@ -496,11 +493,7 @@ impl Image {
             ImageFormat::Indexed8 => {
                 let u = color.to_color_u8();
                 if self.color_table.is_empty() {
-                    line[x as usize] = if u.red() as u32 * 299
-                        + u.green() as u32 * 587
-                        + u.blue() as u32 * 114
-                        >= 128_000
-                    {
+                    line[x as usize] = if q_gray(u.red(), u.green(), u.blue()) >= 128 {
                         1
                     } else {
                         0

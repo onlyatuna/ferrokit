@@ -4173,12 +4173,20 @@ pub trait QObject: std::any::Any {
     }
 
     /// Kills the timer with the specified timer ID (`QObject::killTimer`). A timer this object did
-    /// not start is refused and `false` is returned, as in Qt.
+    /// not start is refused and `false` is returned, as in Qt. An id returned by
+    /// [`start_timer`](QObject::start_timer) stays valid when a thread move gave the timer a fresh
+    /// id because the target thread already used the old one.
     fn kill_timer(&mut self, id: crate::timer::TimerId) -> bool {
-        if !self.object_data_mut().remove_timer(id) {
-            return false;
-        }
-        crate::timer::kill_receiver_timer(self.object_data().id(), id)
+        let receiver = self.object_data().id();
+        let id = if self.object_data_mut().remove_timer(id) {
+            id
+        } else {
+            match crate::timer::reidentified_as(receiver, id) {
+                Some(fresh) if self.object_data_mut().remove_timer(fresh) => fresh,
+                _ => return false,
+            }
+        };
+        crate::timer::kill_receiver_timer(receiver, id)
     }
 
     /// Schedules this object for deferred deletion (`QObject::deleteLater`).

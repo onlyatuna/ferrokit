@@ -419,6 +419,8 @@
     "lib::signal::signal::tests::test_signal_emit_queued_dispatch::TB": "pass",
     "lib::timer::receiver_index_tests::adopting_a_timer_with_a_live_id_gives_it_a_fresh_id::SB": "pass",
     "lib::timer::receiver_index_tests::adopting_a_timer_with_a_live_id_gives_it_a_fresh_id::TB": "pass",
+    "lib::timer::receiver_index_tests::a_reidentified_object_timer_leaves_no_stale_id_or_redirect::SB": "pass",
+    "lib::timer::receiver_index_tests::a_reidentified_object_timer_leaves_no_stale_id_or_redirect::TB": "pass",
     "lib::timer::tests::set_interval_on_active_timer_restarts_with_new_interval::SB": "pass",
     "lib::timer::tests::set_interval_on_active_timer_restarts_with_new_interval::TB": "pass",
     "lib::timer::tests::set_single_shot_false_on_active_timer_keeps_repeating::SB": "pass",
@@ -1197,6 +1199,10 @@
     "test_core_runtime_extensions::test_qsettings_round_trips_typed_and_multiline_values::SB": "unsupported",
     "lib::io::file::save_file_tests::save_file_open_is_unique_and_reopen_removes_previous_temp::TB": "unsupported",
     "lib::io::file::save_file_tests::save_file_preserves_target_permissions_and_commits::TB": "unsupported",
+    "lib::io::process::tests::a_stopped_reader_closes_a_pipe_that_still_has_a_writer::SB": "ignored",
+    "lib::io::process::tests::a_stopped_reader_closes_a_pipe_that_still_has_a_writer::TB": "ignored",
+    "lib::io::process::tests::a_reader_collects_everything_up_to_the_end_of_its_pipe::SB": "ignored",
+    "lib::io::process::tests::a_reader_collects_everything_up_to_the_end_of_its_pipe::TB": "ignored",
     "test_core_runtime_extensions::test_qsettings_refuses_to_overwrite_after_load_error::TB": "unsupported",
     "test_core_runtime_extensions::test_qsettings_round_trips_typed_and_multiline_values::TB": "unsupported",
     "test_application_exit_from_worker_thread::exit_from_worker_thread_ends_exec_with_requested_code::SB": "unsupported",
@@ -1478,6 +1484,10 @@
     "test_timer_local_single_shot::a_queued_zero_ms_event_dropped_on_another_thread_still_drops_the_closure_on_the_owner::SB": "pass",
     "test_timer_local_single_shot::a_queued_zero_ms_event_dropped_on_another_thread_still_drops_the_closure_on_the_owner::TB": "pass",
     "test_timer_local_single_shot::a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic::SB": "pass",
-    "test_timer_local_single_shot::a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic::TB": "pass"
+    "test_timer_local_single_shot::a_capture_whose_drop_arms_single_shot_at_thread_exit_does_not_panic::TB": "pass",
+    "test_data_parse_hardening::json_nesting_at_cap_fits_a_2mb_stack::SB": "pass",
+    "test_data_parse_hardening::json_nesting_at_cap_fits_a_2mb_stack::TB": "pass",
+    "test_data_parse_hardening::variant_serialize_depth_cap_matches_deserialize::SB": "pass",
+    "test_data_parse_hardening::variant_serialize_depth_cap_matches_deserialize::TB": "pass"
   }
 }
