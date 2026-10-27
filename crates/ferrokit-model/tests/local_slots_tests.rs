@@ -71,6 +71,30 @@ fn a_foreign_drop_waits_for_the_owner_drain() {
 }
 
 #[test]
+fn a_burst_of_foreign_drops_coalesces_into_one_wake_post() {
+    let w = world();
+    let (to_main, from_owner) = mpsc::channel();
+    let (to_owner, from_main) = mpsc::channel::<()>();
+    let w2 = Arc::clone(&w);
+    let owner = thread::spawn(move || {
+        let hs: Vec<_> = (0..8).map(|_| install(&w2, SlotSpec::default())).collect();
+        let keys: Vec<u64> = hs.iter().map(|h| h.key()).collect();
+        to_main.send(hs).unwrap();
+        from_main.recv().unwrap();
+        assert!(keys.iter().all(|&k| w2.drop_count(k) == 0));
+        assert_eq!(drain_retired(&w2), 8, "all 8 keys were buffered together");
+        assert!(keys.iter().all(|&k| w2.drop_count(k) == 1));
+    });
+    let hs = from_owner.recv().unwrap();
+    drop(hs);
+    assert_eq!(w.stats().posts_delivered, 1, "8 drops, one wake post");
+    to_owner.send(()).unwrap();
+    owner.join().unwrap();
+    w.wait_exited(1);
+    w.verify();
+}
+
+#[test]
 fn thread_exit_drops_the_closure_once_on_the_owner() {
     let w = world();
     let w2 = Arc::clone(&w);
@@ -85,7 +109,8 @@ fn thread_exit_drops_the_closure_once_on_the_owner() {
     // thread, and neither panics.
     assert!(!h.call());
     drop(h);
-    assert_eq!(w.stats().posts_to_ended, 1);
+    assert_eq!(w.stats().retires_skipped_ended, 1);
+    assert_eq!(w.stats().posts_to_ended, 0);
     w.verify();
 }
 
@@ -214,7 +239,8 @@ fn many_owners_and_foreign_droppers() {
     let s = w.stats();
     assert_eq!((s.installed, s.drops, s.threads_exited), (32, 32, 4));
     drop(handles);
-    assert_eq!(w.stats().posts_to_ended, 32);
+    assert_eq!(w.stats().retires_skipped_ended, 32);
+    assert_eq!(w.stats().posts_to_ended, 0);
     w.verify();
 }
 
@@ -292,7 +318,7 @@ fn mutant_a_post_to_an_ended_owner_treated_as_an_error_is_caught() {
 #[test]
 fn reverse_teardown_order_still_satisfies_invariants() {
     scenarios::foreign_drop_after_owner_exit(LocalMutants {
-        close_queue_after_slots: true,
+        end_owner_after_slots: true,
         ..LocalMutants::default()
     });
 }
@@ -328,5 +354,21 @@ fn mutant_foreign_inline_call_is_caught_by_e3() {
         .unwrap();
     let _ = h.call();
     drop(h);
+    w.verify();
+}
+
+#[test]
+#[should_panic(expected = "retire keys leaked")]
+fn mutant_a_retire_for_an_exited_owner_is_leaked_and_caught_by_e6() {
+    let w = World::new(LocalMutants {
+        leak_retire_after_owner_exit: true,
+        ..LocalMutants::default()
+    });
+    let w2 = Arc::clone(&w);
+    let h = thread::spawn(move || install(&w2, SlotSpec::default()))
+        .join()
+        .unwrap();
+    w.wait_exited(1);
+    drop(h); // without the ended check this buffers a key nobody will ever drain
     w.verify();
 }

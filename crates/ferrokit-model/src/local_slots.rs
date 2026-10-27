@@ -12,14 +12,16 @@
 //! * a per-thread table of non-`Send` slots, a `thread_local!` of `Rc<Slot>` by key
 //!   (`LOCAL_SLOTS`), reached only through `LocalKey::try_with` (I1);
 //! * a `Send + Sync` [`Handle`] that holds only `{owner, key}` (`LocalHandle`), with `install`,
-//!   `call` and a `Drop` that retires the slot on the owner at once or posts the key (I3) to the
-//!   owner's queue otherwise;
-//! * the owner's queue and its drain (`post_event_to_thread` + the event loop running the
-//!   `MetaCallNoTarget` job), reduced to one mutex-protected `Vec<u64>` per live thread; a post
-//!   to a thread that has ended is dropped;
-//! * thread exit: the table is dropped by the thread-local destructor, on that thread, and the
-//!   thread's queue disappears with it (the queue first, then the closures, then the exit is
-//!   announced so that a test can wait for it);
+//!   `call` and a `Drop` that retires the slot on the owner at once or buffers the key (I3) for
+//!   the owner otherwise;
+//! * the owner's wake-up and its drain (`post_event_to_thread` + the event loop running the
+//!   `MetaCallNoTarget` job), reduced to a `PendingRetires { keys, wake_posted }` per owner
+//!   (`PENDING_RETIRES`): a foreign drop buffers its key and posts one wake only when none is in
+//!   flight, so a burst of drops coalesces into one post. A retire for a thread that has ended
+//!   is skipped, and a wake post to one is dropped (the event registry's `ended` set);
+//! * thread exit: the table is dropped by the thread-local destructor, on that thread. The owner
+//!   is first marked ended and its buffered retires cleared, then the closures are dropped, then
+//!   the exit is announced so that a test can wait for it;
 //! * the process-wide key counter (I4, [`World::next_key`]) and the "table `RefCell` never
 //!   borrowed while user code runs" rule (I2), including a slot whose captures hold the handle
 //!   of another slot (so a destructor re-enters the table) and a slot that releases such a
@@ -30,19 +32,21 @@
 //! 1. Payload types, `Any` downcasts, the `Signal` subscriber list, `ConnectionType`,
 //!    `catch_unwind`, single-shot/scoped connections, and the once-per-connection diagnostic.
 //! 2. The event loop. `drain_retired` is called explicitly by the owner; a thread that never
-//!    drains keeps its slots until it exits, as the real owner does without a loop.
+//!    drains keeps its slots until it exits, as the real owner does without a loop. The owner
+//!    also drains on `install`, `call` and its own `Handle::drop`, as `local.rs` does.
 //! 3. `ThreadId` and `ObjectId(0)` routing: threads get a model id from a counter the first time
 //!    they touch the model, and posts are routed by that id.
 //! 4. Identity inside a thread-local destructor. In Loom every mock local of a thread is
 //!    destroyed *before* any destructor runs, so the model's thread id is unreadable there
 //!    (`thread::current()` is unusable in Loom destructors too). A handle dropped in that window
-//!    is therefore treated as foreign and posts; the post is dropped because the owner queue is
-//!    already closed, and the slot is dropped by the table being torn down. The real code asks
+//!    is therefore treated as foreign; the owner is already marked ended, so the retire is skipped,
+//!    and the slot is dropped by the table being torn down. The real code asks
 //!    `ThreadId::current()`, which is always available; the end state (closure dropped exactly
 //!    once, on the owner) is the same, the path differs.
 //! 5. The bookkeeping `Audit` uses `std::sync::Mutex` on purpose: it is not part of the protocol,
 //!    must stay invisible to the schedulers (no extra interleavings) and is never held across a
-//!    modeled operation. The key counter, the queues, and the thread-local tables are modeled.
+//!    modeled operation. The key counter, the buffered retires, the ended set and the thread-local
+//!    tables are modeled.
 //! 6. Under Loom and Shuttle all mock threads share one OS thread, so "dropped on the owner
 //!    thread" is checked against the model thread id, not an OS thread id. The native
 //!    `stress_tests` (ThreadSanitizer) run real threads against the same code.
@@ -61,9 +65,11 @@
 //! E5: no protocol violation was recorded in flight: a post to a thread that has ended is dropped
 //! (not an error) and the table is never borrowed re-entrantly (I2). The negative tests turn
 //! each of these off in turn and expect `verify` to fail.
+//!
+//! E6: no retire keys stay buffered in `pending_retires` for an owner that has exited.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64 as StdAtomicU64;
 use std::sync::atomic::Ordering as StdOrdering;
@@ -93,7 +99,8 @@ pub struct LocalMutants {
     /// `retire_here` drops the removed closure while the table is still borrowed (breaks I2); the
     /// re-entrant borrow is recorded as a violation rather than panicking.
     pub hold_borrow_on_retire: bool,
-    /// A post to an exited owner is treated as an error instead of being dropped.
+    /// A retire for an exited owner is treated as an error instead of being skipped (also when
+    /// the wake post finds the owner ended).
     pub error_on_ended_post: bool,
     /// `call` does not compare the owner first. Not a breakage: the invariants must still hold,
     /// because a foreign thread looks the key up in its own, empty, table (the owner compare is
@@ -106,9 +113,15 @@ pub struct LocalMutants {
     pub foreign_drop_inline: bool,
     /// `Handle::call` on a foreign thread runs the slot directly (breaks E3).
     pub foreign_call_inline: bool,
-    /// `Table::drop` drops the closures before closing the queue (reverse teardown order). Not a
-    /// breakage: invariants must still hold.
-    pub close_queue_after_slots: bool,
+    /// `Table::drop` drops the closures before the owner is marked ended and its buffered
+    /// retires are cleared (reverse teardown order). Not a breakage: invariants must still hold.
+    pub end_owner_after_slots: bool,
+    /// A foreign `Handle::drop` skips the "owner has ended" check, so a retire for an exited
+    /// owner is buffered for good (breaks E6).
+    pub leak_retire_after_owner_exit: bool,
+    /// The owner's buffered retires are cleared *before* it is marked ended, leaving a window in
+    /// which a foreign drop buffers a retire that nothing will ever clear (breaks E6).
+    pub clear_pending_before_mark_ended: bool,
 }
 
 /// Counters of what happened, for tests.
@@ -120,6 +133,7 @@ pub struct Stats {
     pub drops: usize,
     pub posts_delivered: usize,
     pub posts_to_ended: usize,
+    pub retires_skipped_ended: usize,
     pub threads_exited: usize,
 }
 
@@ -134,6 +148,7 @@ struct Audit {
     foreign_skips: usize,
     posts_delivered: usize,
     posts_to_ended: usize,
+    retires_skipped_ended: usize,
     exited: Vec<u64>,
     /// Protocol breaches seen in flight. Recorded instead of panicking in the thread so that a
     /// breach in a thread that still owns a table cannot turn into a panic inside a thread-local
@@ -141,12 +156,22 @@ struct Audit {
     violations: Vec<&'static str>,
 }
 
-/// The shared side of the model: key counter, per-thread queues, bookkeeping.
+/// Retires buffered for one owner (`PendingRetires`).
+#[derive(Default)]
+struct PendingRetires {
+    keys: Vec<u64>,
+    /// A wake job is in flight; cleared by the owner's drain.
+    wake_posted: bool,
+}
+
+/// The shared side of the model: key counter, buffered retires, ended threads, bookkeeping.
 pub struct World {
     next_key: AtomicU64,
-    /// Live threads that have installed a slot -> keys posted to them and not yet drained.
-    /// An absent entry is a thread that ended.
-    queues: Mutex<BTreeMap<u64, Vec<u64>>>,
+    /// Foreign retires by owner, until the owner drains them (`PENDING_RETIRES`). An owner that
+    /// has ended must have no entry.
+    pending_retires: Mutex<BTreeMap<u64, PendingRetires>>,
+    /// Threads whose thread-local teardown has begun (the event loop registry's `ended` set).
+    ended: Mutex<BTreeSet<u64>>,
     /// Threads whose thread-local teardown has finished, and the signal for it.
     exits: Mutex<usize>,
     exited: Condvar,
@@ -158,7 +183,8 @@ impl World {
     pub fn new(mutants: LocalMutants) -> Arc<Self> {
         Arc::new(Self {
             next_key: AtomicU64::new(1),
-            queues: Mutex::new(BTreeMap::new()),
+            pending_retires: Mutex::new(BTreeMap::new()),
+            ended: Mutex::new(BTreeSet::new()),
             exits: Mutex::new(0),
             exited: Condvar::new(),
             audit: StdMutex::new(Audit::default()),
@@ -178,18 +204,42 @@ impl World {
         }
     }
 
-    /// Posts `key` to `owner`'s queue; dropped if that thread has ended.
-    fn post_retire(&self, owner: u64, key: u64) {
-        let delivered = {
-            let mut queues = self.queues.lock().unwrap();
-            match queues.get_mut(&owner) {
-                Some(queue) => {
-                    queue.push(key);
-                    true
-                }
-                None => false,
+    /// A foreign `Handle::drop`: buffers `key` for `owner` unless the owner has ended, and posts
+    /// the wake job when none is in flight (`LocalHandle::drop`). The ended check happens under
+    /// the `pending_retires` lock, which is taken before `ended` and never the other way round.
+    fn retire_foreign(&self, owner: u64, key: u64) {
+        let post_wake = {
+            let mut pending = self.pending_retires.lock().unwrap();
+            if !self.mutants.leak_retire_after_owner_exit && self.is_ended(owner) {
+                None
+            } else {
+                let entry = pending.entry(owner).or_default();
+                entry.keys.push(key);
+                Some(!std::mem::replace(&mut entry.wake_posted, true))
             }
         };
+        match post_wake {
+            None => {
+                self.audit().retires_skipped_ended += 1;
+                if self.mutants.error_on_ended_post {
+                    self.audit()
+                        .violations
+                        .push("a retire for an ended owner thread was treated as an error");
+                }
+            }
+            Some(true) => self.post_wake(owner),
+            Some(false) => {}
+        }
+    }
+
+    fn is_ended(&self, tid: u64) -> bool {
+        self.ended.lock().unwrap().contains(&tid)
+    }
+
+    /// `post_event_to_thread` of the wake job: delivered unless the owner has ended, in which
+    /// case it is dropped (not an error).
+    fn post_wake(&self, owner: u64) {
+        let delivered = !self.is_ended(owner);
         {
             let mut audit = self.audit();
             if delivered {
@@ -205,10 +255,19 @@ impl World {
         }
     }
 
-    /// The owner thread starts to end: its queue disappears, pending keys with it.
-    fn close_queue(&self, tid: u64) {
-        let pending = self.queues.lock().unwrap().remove(&tid);
-        drop(pending);
+    /// The owner thread starts to end (`LocalSlotTable::drop`): it is marked ended first, and
+    /// only then are the keys buffered for it cleared. A foreign drop that takes the lock before
+    /// the clear has its entry cleared with the rest; one that takes it after sees the mark.
+    fn end_owner(&self, tid: u64) {
+        if self.mutants.clear_pending_before_mark_ended {
+            let pending = self.pending_retires.lock().unwrap().remove(&tid);
+            drop(pending);
+            self.ended.lock().unwrap().insert(tid);
+        } else {
+            self.ended.lock().unwrap().insert(tid);
+            let pending = self.pending_retires.lock().unwrap().remove(&tid);
+            drop(pending);
+        }
     }
 
     /// The owner thread's table is gone, closures included.
@@ -237,6 +296,7 @@ impl World {
             drops: audit.drops.len(),
             posts_delivered: audit.posts_delivered,
             posts_to_ended: audit.posts_to_ended,
+            retires_skipped_ended: audit.retires_skipped_ended,
             threads_exited: audit.exited.len(),
         }
     }
@@ -300,6 +360,18 @@ impl World {
             assert_eq!(
                 caller, owner,
                 "closure {key} of thread {owner} called on thread {caller}"
+            );
+        }
+        // E6: an owner that has exited never drains again, so nothing may stay buffered for it.
+        // (The audit lock is released first: it never nests inside a modeled lock.)
+        let exited = audit.exited.clone();
+        drop(audit);
+        let pending = self.pending_retires.lock().unwrap();
+        for tid in exited {
+            assert!(
+                !pending.contains_key(&tid),
+                "retire keys leaked in pending_retires for exited owner thread {tid}: {:?}",
+                pending.get(&tid).map(|p| &p.keys)
             );
         }
     }
@@ -366,11 +438,11 @@ impl Table {
 impl Drop for Table {
     fn drop(&mut self) {
         if let Some((tid, world)) = self.home.take() {
-            if world.mutants.close_queue_after_slots {
+            if world.mutants.end_owner_after_slots {
                 drop(std::mem::take(&mut self.slots));
-                world.close_queue(tid);
+                world.end_owner(tid);
             } else {
-                world.close_queue(tid);
+                world.end_owner(tid);
                 drop(std::mem::take(&mut self.slots));
             }
             world.finish_exit(tid);
@@ -392,6 +464,7 @@ const _: fn() = assert_send_sync::<Handle>;
 /// Stores a closure described by `spec` in this thread's table and returns its handle.
 pub fn install(world: &Arc<World>, spec: SlotSpec) -> Arc<Handle> {
     let owner = TID.with(|t| *t);
+    drain_pending_for(world, owner);
     let key = world.alloc_key();
     {
         let mut audit = world.audit();
@@ -414,7 +487,6 @@ pub fn install(world: &Arc<World>, spec: SlotSpec) -> Arc<Handle> {
                     "model limitation: one world per thread"
                 ),
                 None => {
-                    world.queues.lock().unwrap().insert(owner, Vec::new());
                     table.home = Some((owner, Arc::clone(world)));
                 }
             }
@@ -456,6 +528,9 @@ impl Handle {
         if here != self.owner && !self.world.mutants.skip_owner_check {
             self.world.audit().foreign_skips += 1;
             return false;
+        }
+        if here == self.owner {
+            drain_pending_for(&self.world, here);
         }
         let entry = TABLE
             .try_with(|table| table.borrow().slots.get(&self.key).cloned())
@@ -503,30 +578,45 @@ fn retire_here(world: &World, key: u64) {
 impl Drop for Handle {
     fn drop(&mut self) {
         // No thread id available (own thread-local teardown): treat as foreign and post. Either
-        // the owner's queue is already closed (dropped) or this is another thread, for which
-        // posting is the normal path.
+        // the owner has already ended (skipped) or this is another thread, for which posting is
+        // the normal path.
         match TID.try_with(|t| *t) {
-            Ok(here) if here == self.owner => retire_here(&self.world, self.key),
+            Ok(here) if here == self.owner => {
+                retire_here(&self.world, self.key);
+                drain_pending_for(&self.world, self.owner);
+            }
             Ok(here) if self.world.mutants.foreign_drop_inline => {
                 self.world
                     .audit()
                     .drops
                     .push((self.key, self.owner, Some(here)));
             }
-            _ => self.world.post_retire(self.owner, self.key),
+            _ => self.world.retire_foreign(self.owner, self.key),
         }
     }
 }
 
-/// The owner runs the keys posted to it (the event loop turn that runs the `MetaCallNoTarget`
-/// jobs). Returns how many keys it took.
+/// The owner takes the keys other threads retired for it (the event loop turn that runs the wake
+/// job, or a touch of its table) and retires them here. Returns how many keys it took.
 pub fn drain_retired(world: &World) -> usize {
-    let Ok(me) = TID.try_with(|t| *t) else {
-        return 0;
-    };
+    match TID.try_with(|t| *t) {
+        Ok(me) => drain_pending_for(world, me),
+        Err(_) => 0,
+    }
+}
+
+/// `drain_pending_retires_for`: clears the wake flag, takes the keys under the lock and retires
+/// them after releasing it (a destructor may retire or post again).
+fn drain_pending_for(world: &World, me: u64) -> usize {
     let keys = {
-        let mut queues = world.queues.lock().unwrap();
-        queues.get_mut(&me).map(std::mem::take).unwrap_or_default()
+        let mut pending = world.pending_retires.lock().unwrap();
+        match pending.get_mut(&me) {
+            Some(entry) => {
+                entry.wake_posted = false;
+                std::mem::take(&mut entry.keys)
+            }
+            None => return 0,
+        }
     };
     if !world.mutants.drop_retire_posts {
         for key in &keys {
@@ -679,7 +769,8 @@ pub mod scenarios {
         assert!(!hb.call());
         drop(ha);
         drop(hb);
-        assert_eq!(world.stats().posts_to_ended, 2);
+        let s = world.stats();
+        assert_eq!((s.retires_skipped_ended, s.posts_to_ended), (2, 0));
         world.verify();
     }
 }

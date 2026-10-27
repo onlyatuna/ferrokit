@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::ThreadId;
-use ferrokit_core::signal::{ConnectionId, Signal};
+use ferrokit_core::signal::{has_pending_local_retires, ConnectionId, Signal};
 
 fn assert_send_sync<X: Send + Sync>() {}
 
@@ -289,6 +289,32 @@ fn the_exit_of_the_connecting_thread_drops_the_closure_on_that_thread() {
     signal.emit(&1); // the slot is gone with its thread: nothing runs, nothing panics
     drop(signal);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_handle_dropped_on_another_thread_after_the_owner_exited_buffers_nothing() {
+    let kept: Arc<Mutex<Option<Signal<i32>>>> = Arc::new(Mutex::new(None));
+    let kept_in = Arc::clone(&kept);
+    let owner = std::thread::spawn(move || {
+        let signal: Signal<i32> = Signal::new();
+        let marker = Rc::new(());
+        signal.connect_local(move |_| {
+            let _ = &marker;
+        });
+        *kept_in.lock().unwrap() = Some(signal);
+        ThreadId::current()
+    })
+    .join()
+    .unwrap();
+    assert!(!has_pending_local_retires(owner));
+
+    // The owner has ended and will never drain again: the retire key must not be buffered for it.
+    let signal = kept.lock().unwrap().take().unwrap();
+    std::thread::spawn(move || drop(signal)).join().unwrap();
+    assert!(
+        !has_pending_local_retires(owner),
+        "a retire for an exited owner leaked into PENDING_RETIRES"
+    );
 }
 
 #[test]

@@ -67,7 +67,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -103,10 +103,23 @@ struct LocalSlotTable(RefCell<HashMap<u64, Rc<dyn Any>>>);
 impl Drop for LocalSlotTable {
     fn drop(&mut self) {
         let owner = raw_current_thread();
+        // Marked ended first, then cleared. A foreign `LocalHandle::drop` checks "ended" under the
+        // `PENDING_RETIRES` lock: either it runs before the clear below and the entry is removed
+        // with the rest, or it runs after and sees the mark, so no entry outlives its owner.
+        crate::event_loop::mark_thread_ended(owner);
         if let Some(map) = lock_unpoisoned(&PENDING_RETIRES).as_mut() {
             map.remove(&owner);
         }
     }
+}
+
+/// Whether retire keys are buffered for `owner`. For tests: an owner that has ended must have
+/// none, whichever thread dropped the handle.
+#[doc(hidden)]
+pub fn has_pending_local_retires(owner: ThreadId) -> bool {
+    lock_unpoisoned(&PENDING_RETIRES)
+        .as_ref()
+        .is_some_and(|map| map.contains_key(&owner))
 }
 
 thread_local! {
@@ -239,9 +252,9 @@ fn retire_here(key: u64) {
 }
 
 /// Drains the keys that other threads retired for `owner` and drops their closures outside the
-/// table borrow (I2). If the table is currently borrowed (a slot is not borrowing it by I2, so
-/// only a re-entrant destructor inside `Drop for LocalSlotTable` can find that), the keys are put
-/// back for the next turn.
+/// table borrow (I2). Runs on the owner thread. If the table is already destroyed (the owner is
+/// in its thread-local destructors), `LocalSlotTable::drop` has cleared the buffered keys and the
+/// closures went with the table, so there is nothing left to drop.
 fn drain_pending_retires_for(owner: ThreadId) {
     let keys = {
         let mut guard = lock_unpoisoned(&PENDING_RETIRES);
@@ -254,35 +267,13 @@ fn drain_pending_retires_for(owner: ThreadId) {
     if keys.is_empty() {
         return;
     }
-    let mut removed = Vec::with_capacity(keys.len());
-    let borrowed = LOCAL_SLOTS.try_with(|table| match table.0.try_borrow_mut() {
-        Ok(mut map) => {
-            for key in &keys {
-                if let Some(entry) = map.remove(key) {
-                    removed.push(entry);
-                }
-            }
-            false
-        }
-        Err(_) => true,
-    });
-    if matches!(borrowed, Ok(true)) {
-        let mut guard = lock_unpoisoned(&PENDING_RETIRES);
-        let entry = guard
-            .get_or_insert_with(HashMap::new)
-            .entry(owner)
-            .or_insert_with(|| PendingRetires {
-                keys: Vec::new(),
-                wake_posted: false,
-            });
-        let existing: HashSet<u64> = entry.keys.iter().copied().collect();
-        for key in keys {
-            if !existing.contains(&key) {
-                entry.keys.push(key);
-            }
-        }
-        return;
-    }
+    // I2: no borrow of the table is held while user code runs, so `borrow_mut` cannot fail here.
+    let removed: Vec<Rc<dyn Any>> = LOCAL_SLOTS
+        .try_with(|table| {
+            let mut map = table.0.borrow_mut();
+            keys.iter().filter_map(|key| map.remove(key)).collect()
+        })
+        .unwrap_or_default();
     for entry in removed {
         // A capture whose `Drop` panics must not strand the remaining closures in `removed`.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(entry)));
@@ -298,6 +289,13 @@ impl Drop for LocalHandle {
         } else {
             let post_wake = {
                 let mut guard = lock_unpoisoned(&PENDING_RETIRES);
+                // An owner that has ended never drains again, and `LocalSlotTable::drop` marked it
+                // ended before it cleared its entry (see there): an entry made now would stay
+                // for good. The lock order is `PENDING_RETIRES` then the event registry; nothing
+                // takes them the other way round.
+                if crate::event_loop::is_thread_ended(owner) {
+                    return;
+                }
                 let entry = guard
                     .get_or_insert_with(HashMap::new)
                     .entry(owner)

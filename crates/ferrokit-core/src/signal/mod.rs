@@ -15,5 +15,5 @@
 pub mod signal;
 pub(crate) mod local;
 pub use crate::object::SignalBlocker;
-pub use local::LocalConnectError;
+pub use local::{has_pending_local_retires, LocalConnectError};
 pub use signal::*;
