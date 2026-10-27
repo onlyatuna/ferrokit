@@ -658,6 +658,10 @@
     "lib::text::layout::tests::cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries::SB": "unsupported",
     "lib::text::layout::tests::cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries::TB": "unsupported",
     "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::SB": "pass",
-    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::TB": "pass"
+    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::TB": "pass",
+    "test_text_system::test_cursor_sticky_column_without_wrapping::SB": "pass",
+    "test_text_system::test_cursor_sticky_column_without_wrapping::TB": "pass",
+    "test_text_system::test_cursor_sticky_x_with_wrapping::SB": "unsupported",
+    "test_text_system::test_cursor_sticky_x_with_wrapping::TB": "unsupported"
   }
 }
