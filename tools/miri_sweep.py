@@ -517,9 +517,42 @@ def parse_shard(text):
     return index, count
 
 
-def shard_targets(names, index, count):
-    """Deterministic partition: shard `index` of `count` takes every count-th name of the sorted list."""
-    return sorted(names)[index - 1 :: count]
+# Seconds assumed for a target that has no recorded time (a new test file).
+DEFAULT_TARGET_SECONDS = 30
+WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miri_target_weights.json")
+
+
+def load_target_weights(crate, models, path=WEIGHTS_PATH):
+    """Recorded Miri seconds per target of `crate`, summed over `models`; {} when none are recorded.
+
+    The file maps crate -> target -> model -> seconds, measured on CI. The numbers only balance the
+    shards; a stale or missing entry changes how long a shard takes, never which tests run.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            recorded = json.load(f).get(crate, {})
+    except FileNotFoundError:
+        return {}
+    return {t: sum(per_model.get(m, 0) for m in models) for t, per_model in recorded.items()}
+
+
+def shard_targets(names, index, count, weights=None):
+    """Deterministic partition of `names` into `count` shards; returns shard `index` (1-based).
+
+    Longest-processing-time first: targets go heaviest first, each to the currently lightest shard
+    (ties: lower shard number). `weights` maps target -> seconds; unknown targets weigh
+    DEFAULT_TARGET_SECONDS. Without weights every target weighs the same and this is round-robin
+    over the sorted names. The result depends only on the set of names and the weights.
+    """
+    weights = weights or {}
+    order = sorted(names, key=lambda n: (-weights.get(n, DEFAULT_TARGET_SECONDS), n))
+    load = [0] * count
+    shards = [[] for _ in range(count)]
+    for name in order:
+        lightest = min(range(count), key=lambda i: (load[i], i))
+        load[lightest] += weights.get(name, DEFAULT_TARGET_SECONDS)
+        shards[lightest].append(name)
+    return sorted(shards[index - 1])
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -587,7 +620,7 @@ def main():
         "--shard",
         type=parse_shard,
         metavar="I/N",
-        help="run only shard I (1-based) of N over the sorted target list; shards partition the targets",
+        help="run only shard I (1-based) of N; shards partition the targets, balanced by tools/miri_target_weights.json",
     )
     ap.add_argument(
         "--list-targets",
@@ -633,7 +666,10 @@ def main():
     target_list = [t.strip() for t in targets_str.split(",") if t.strip()]
     if args.shard:
         index, count = args.shard
-        target_list = shard_targets(target_list, index, count)
+        shard_models = [m.strip() for m in args.models.split(",") if m.strip()]
+        target_list = shard_targets(
+            target_list, index, count, load_target_weights(args.crate, shard_models)
+        )
         if not target_list:
             ap.error(f"--shard {index}/{count} selects no targets")
     if args.list_targets:
