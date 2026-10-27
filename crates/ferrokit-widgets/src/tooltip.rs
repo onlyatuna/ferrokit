@@ -379,6 +379,46 @@ fn hide_tip() {
     });
 }
 
+/// One level of `Controller::placing`: a tip is taken out of its slot while the guard lives. The
+/// level is released on every exit, an unwind out of a window event handler included; otherwise
+/// a panic caught further up would leave the tip looking forever "on its way", and every later
+/// hide would be recorded in `pending_hide` instead of applied.
+struct PlacingGuard {
+    armed: bool,
+}
+
+impl PlacingGuard {
+    fn enter() -> Self {
+        CONTROLLER.with(|c| c.placing.set(c.placing.get() + 1));
+        Self { armed: true }
+    }
+
+    /// Leaves the level and returns the hide that arrived while the tip was out (`finish_place`
+    /// applies it).
+    fn finish(mut self, c: &Controller) -> PendingHide {
+        self.armed = false;
+        c.placing.set(c.placing.get() - 1);
+        c.pending_hide.replace(PendingHide::None)
+    }
+}
+
+impl Drop for PlacingGuard {
+    /// Leaves the level without applying anything. Leaving the outermost one also drops a hide
+    /// recorded meanwhile: no tip is out for it to apply to.
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = CONTROLLER.try_with(|c| {
+            let level = c.placing.get() - 1;
+            c.placing.set(level);
+            if level == 0 {
+                c.pending_hide.set(PendingHide::None);
+            }
+        });
+    }
+}
+
 /// `QTipLabel::hideTipImmediately`: the tip goes away now.
 fn hide_tip_immediately() {
     CONTROLLER.with(|c| {
@@ -393,17 +433,15 @@ fn hide_tip_immediately() {
         let Some(mut tip) = c.tip.try_borrow_mut().ok().and_then(|mut slot| slot.take()) else {
             return;
         };
-        c.placing.set(c.placing.get() + 1);
+        let placing = PlacingGuard::enter();
         if tip.window.is_visible() {
             tip.window.hide();
         }
         tip.text.clear();
         tip.widget = None;
-        c.placing.set(c.placing.get() - 1);
-        if c.placing.get() == 0 {
-            // A hide recorded by a re-entrant call has nothing left to apply to.
-            c.pending_hide.set(PendingHide::None);
-        }
+        // Leaving the outermost level drops a hide recorded by a re-entrant call: it has
+        // nothing left to apply to.
+        drop(placing);
         put_back(c, tip);
     });
 }
@@ -469,9 +507,14 @@ fn new_tip_label(text: &str) -> Label {
 /// outside the slot borrow, and applies what happened while it was out (a newer tip, a hide,
 /// a palette or font change). No window operation runs while the slot (or the palette and font
 /// cells) is borrowed: a `Hide` handler may call the tip API.
-fn finish_place(c: &Controller, mut tip: Tip, text: &str, msec_display_time: i32) {
-    c.placing.set(c.placing.get() - 1);
-    let pending = c.pending_hide.replace(PendingHide::None);
+fn finish_place(
+    c: &Controller,
+    placing: PlacingGuard,
+    mut tip: Tip,
+    text: &str,
+    msec_display_time: i32,
+) {
+    let pending = placing.finish(c);
     let occupied = c.tip.borrow().is_some();
     if occupied {
         // A re-entrant call installed a newer tip while this one was showing; the
@@ -650,21 +693,19 @@ impl ToolTip {
     ) {
         // The controller's slot is never borrowed across a call that can re-enter (window
         // creation, `set_geometry`, `show`): the tip is taken out, worked on, and put back.
-        let taken = CONTROLLER.with(|c| {
-            c.placing.set(c.placing.get() + 1);
-            c.pending_hide.set(PendingHide::None);
-            c.tip.borrow_mut().take()
-        });
+        let placing = PlacingGuard::enter();
+        let taken = CONTROLLER.with(|c| c.tip.borrow_mut().take());
         let mut tip = match taken {
             Some(tip) => tip,
             None => {
                 let mut label = new_tip_label(text);
                 label.set_text(text);
                 let label: WidgetRef = std::rc::Rc::new(RefCell::new(Box::new(label)));
+                // Failing here leaves the controller as it was, a hide that an outer `place`
+                // is still to apply included: the guard only releases this level.
                 let Ok(mut window) =
                     Window::new("tooltip", Rect::new(0, 0, 1, 1), WindowFlags::TOOLTIP)
                 else {
-                    CONTROLLER.with(|c| c.placing.set(c.placing.get() - 1));
                     return;
                 };
                 window.set_root_widget(label.clone());
@@ -677,6 +718,8 @@ impl ToolTip {
                 }
             }
         };
+        // This show is newer than any hide recorded so far, and its window now exists.
+        CONTROLLER.with(|c| c.pending_hide.set(PendingHide::None));
         tip.text = text.to_string();
         tip.widget = widget;
         tip.rect = rect;
@@ -712,13 +755,14 @@ impl ToolTip {
         if !tip.window.is_visible() {
             tip.window.show();
         }
-        CONTROLLER.with(|c| finish_place(c, tip, text, msec_display_time));
+        CONTROLLER.with(|c| finish_place(c, placing, tip, text, msec_display_time));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use crate::widget::EmptyWidget;
     use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, QObject};
     use std::cell::RefCell;
@@ -988,6 +1032,266 @@ mod tests {
         assert_eq!(ToolTip::text(), "again");
         assert_eq!(counters(), (0, PendingHide::None));
         hide_tip_immediately();
+    }
+
+    // ---- unwinding, nesting and window creation failure ---------------------------------
+
+    fn tip_windows() -> usize {
+        crate::application::Application::top_level_windows().len()
+    }
+
+    thread_local! {
+        static FAIL_WINDOW_CREATION: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Delegates to the platform that was current, but fails `create_window` on a thread that
+    /// raised `FAIL_WINDOW_CREATION`.
+    struct FailingWindows(Arc<dyn ferrokit_platform::integration::PlatformIntegration>);
+
+    impl ferrokit_platform::integration::PlatformIntegration for FailingWindows {
+        fn create_window(
+            &self,
+            title: &str,
+            rect: Rect,
+            flags: WindowFlags,
+        ) -> Result<Box<dyn ferrokit_platform::PlatformWindow>, &'static str> {
+            if FAIL_WINDOW_CREATION.with(Cell::get) {
+                return Err("injected window creation failure");
+            }
+            self.0.create_window(title, rect, flags)
+        }
+        fn create_tray_icon(
+            &self,
+            tooltip: &str,
+            pixmap: &ferrokit_gui::paint::Pixmap,
+        ) -> Result<Box<dyn ferrokit_platform::PlatformTrayIcon>, &'static str> {
+            self.0.create_tray_icon(tooltip, pixmap)
+        }
+        fn primary_screen(&self) -> Box<dyn ferrokit_platform::screen::PlatformScreen> {
+            self.0.primary_screen()
+        }
+        fn screens(&self) -> Vec<Box<dyn ferrokit_platform::screen::PlatformScreen>> {
+            self.0.screens()
+        }
+        fn screen_at(
+            &self,
+            pos: Point,
+        ) -> Option<Box<dyn ferrokit_platform::screen::PlatformScreen>> {
+            self.0.screen_at(pos)
+        }
+        fn screen_changed(&self) -> &ferrokit_core::signal::Signal<()> {
+            self.0.screen_changed()
+        }
+        fn theme(&self) -> Arc<dyn ferrokit_platform::theme::PlatformTheme> {
+            self.0.theme()
+        }
+        fn clipboard(&self) -> Box<dyn ferrokit_platform::PlatformClipboard> {
+            self.0.clipboard()
+        }
+        fn create_hotkey_manager(
+            &self,
+        ) -> Result<Box<dyn ferrokit_platform::hotkey::PlatformHotkeyManager>, &'static str> {
+            self.0.create_hotkey_manager()
+        }
+        fn cursor(&self) -> Box<dyn ferrokit_platform::PlatformCursor> {
+            self.0.cursor()
+        }
+    }
+
+    /// Makes `Window::new` fail on this thread while the returned guard lives.
+    fn failing_window_creation() -> impl Drop {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_WINDOW_CREATION.with(|f| f.set(false));
+            }
+        }
+        ferrokit_platform::integration::set_platform_integration(Arc::new(FailingWindows(
+            ferrokit_platform::integration::platform(),
+        )));
+        FAIL_WINDOW_CREATION.with(|f| f.set(true));
+        Reset
+    }
+
+    fn assert_idle() {
+        assert_eq!(counters(), (0, PendingHide::None));
+        CONTROLLER.with(|c| {
+            assert!(!timer_active(&c.expire));
+            assert!(!timer_active(&c.hide));
+        });
+    }
+
+    /// A panic in a `Show` handler unwinds through `place`: the nesting counter must come back
+    /// down, or every later hide is taken for "the tip is on its way" and deferred.
+    #[test]
+    fn a_panic_while_the_tip_is_shown_does_not_leave_the_place_counter_raised() {
+        retained_hidden_tip();
+        on_tip_window_event(|ev| {
+            if matches!(ev.kind, EventKind::Show) {
+                panic!("boom in the Show handler");
+            }
+        });
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            ToolTip::show_text(Point::new(10, 10), "again", None, -1);
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(counters(), (0, PendingHide::None), "the unwind released `placing`");
+        // A hide now reaches the idle controller instead of being recorded for a tip that is
+        // not on its way.
+        hide_tip();
+        hide_tip_immediately();
+        assert_eq!(counters(), (0, PendingHide::None));
+        // The tip API still works.
+        ToolTip::show_text(Point::new(10, 10), "after", None, -1);
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "after");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
+        assert!(!ToolTip::is_visible());
+    }
+
+    /// The same for the `Hide` handler `hide_tip_immediately` runs with the tip taken out.
+    #[test]
+    fn a_panic_while_the_tip_is_hidden_does_not_leave_the_place_counter_raised() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        on_tip_window_event(|ev| {
+            if matches!(ev.kind, EventKind::Hide) {
+                panic!("boom in the Hide handler");
+            }
+        });
+        let unwound = catch_unwind(AssertUnwindSafe(hide_tip_immediately));
+        assert!(unwound.is_err());
+        assert_eq!(counters(), (0, PendingHide::None), "the unwind released `placing`");
+        hide_tip();
+        assert_eq!(counters(), (0, PendingHide::None));
+        ToolTip::show_text(Point::new(10, 10), "after", None, -1);
+        assert_eq!(ToolTip::text(), "after");
+        assert_eq!(tip_windows(), 1);
+        hide_tip_immediately();
+    }
+
+    /// A `Hide` handler that shows a tip while `hide_tip_immediately` hides the old one leaves
+    /// one tip window, the new one: the old window is not kept next to it.
+    #[test]
+    fn showing_from_a_hide_handler_leaves_a_single_tip_window() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        assert_eq!(tip_windows(), 1);
+        on_tip_window_event(|ev| {
+            if matches!(ev.kind, EventKind::Hide) {
+                ToolTip::show_text(Point::new(30, 30), "from hide", None, -1);
+                // A second request from the same handler reuses the tip the first one made.
+                ToolTip::show_text(Point::new(31, 31), "from hide 2", None, -1);
+            }
+        });
+        hide_tip_immediately();
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "from hide 2");
+        assert_eq!(tip_windows(), 1, "the replaced window is gone");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
+        assert!(!ToolTip::is_visible());
+        assert_eq!(tip_windows(), 1, "the hidden tip is kept for reuse");
+        assert_idle();
+    }
+
+    /// `finish_place` applies a hide that arrived meanwhile with the slot empty: a `Hide` handler
+    /// there that shows a tip must not leave a second window behind.
+    #[test]
+    fn showing_from_a_hide_handler_of_a_pending_hide_leaves_a_single_tip_window() {
+        retained_hidden_tip();
+        on_tip_window_event(|ev| match ev.kind {
+            EventKind::Show => hide_tip_immediately(),
+            EventKind::Hide => ToolTip::show_text(Point::new(30, 30), "revived", None, -1),
+            _ => {}
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        assert_eq!(ToolTip::text(), "revived");
+        assert_eq!(tip_windows(), 1);
+        hide_tip_immediately();
+        assert_idle();
+    }
+
+    /// A tip shown and hidden again from inside the `Show` handler of an outer `place`: the outer
+    /// one finds the slot taken and goes away, whatever the nested calls did.
+    #[test]
+    fn a_nested_show_then_hide_leaves_no_tip_and_no_stray_window() {
+        retained_hidden_tip();
+        let nested = Rc::new(Cell::new(false));
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) && !nested.replace(true) {
+                ToolTip::show_text(Point::new(20, 20), "nested", None, -1);
+                assert_eq!(counters(), (1, PendingHide::None));
+                hide_tip_immediately();
+                assert_eq!(counters(), (1, PendingHide::None));
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        assert!(!ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "");
+        assert_eq!(tip_windows(), 1);
+        assert_idle();
+    }
+
+    /// A hide, then a show that cannot create its window, from inside the `Show` handler of an
+    /// outer `place`: the hide was asked for last, so the outer tip must not stay up.
+    #[test]
+    fn a_failed_nested_show_does_not_lose_a_pending_hide() {
+        retained_hidden_tip();
+        let nested = Rc::new(Cell::new(false));
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) && !nested.replace(true) {
+                hide_tip_immediately();
+                let _fail = failing_window_creation();
+                ToolTip::show_text(Point::new(20, 20), "nested", None, -1);
+                assert_eq!(counters(), (1, PendingHide::Now), "the failed show left the hide");
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        assert!(!ToolTip::is_visible(), "the hide wins over the outer show");
+        assert_eq!(ToolTip::text(), "");
+        assert_idle();
+    }
+
+    /// A tip whose window cannot be created leaves the controller as it was, and a later
+    /// attempt works.
+    #[test]
+    fn a_failed_window_creation_leaves_the_controller_consistent() {
+        {
+            let _fail = failing_window_creation();
+            ToolTip::show_text(Point::new(10, 10), "no window", None, -1);
+            assert!(!ToolTip::is_visible());
+            assert_eq!(ToolTip::text(), "");
+            assert_eq!(tip_windows(), 0);
+            assert_idle();
+            // A hide with no tip is not recorded for a tip that is not on its way.
+            hide_tip();
+            hide_tip_immediately();
+            assert_idle();
+        }
+        ToolTip::show_text(Point::new(10, 10), "window", None, -1);
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "window");
+        assert_eq!(tip_windows(), 1);
+        hide_tip_immediately();
+        assert_idle();
+    }
+
+    /// A `Hide` handler that cannot show a tip (no window) leaves the tip hidden, kept for reuse,
+    /// and the controller idle.
+    #[test]
+    fn a_failed_show_from_a_hide_handler_leaves_the_tip_hidden() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        on_tip_window_event(|ev| {
+            if matches!(ev.kind, EventKind::Hide) {
+                let _fail = failing_window_creation();
+                ToolTip::show_text(Point::new(30, 30), "from hide", None, -1);
+            }
+        });
+        hide_tip_immediately();
+        assert!(!ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "");
+        assert_eq!(tip_windows(), 1);
+        assert_idle();
     }
 
     #[test]
