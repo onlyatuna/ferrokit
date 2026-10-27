@@ -250,7 +250,8 @@ impl Menu {
 ///   the initial value Qt assigns before classifying. Not run on macOS.
 /// - Linux (`QStatusNotifierItemAdaptor`): the StatusNotifierItem methods `Activate`,
 ///   `ContextMenu` and `SecondaryActivate` give `Trigger`, `Context` and `MiddleClick`; there is
-///   no `DoubleClick`. Not run on Linux.
+///   no `DoubleClick`. The item also answers the host's `org.freedesktop.DBus.Properties`
+///   reads and confirms its registration from the watcher's reply. Not run on Linux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum TrayActivation {

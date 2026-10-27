@@ -174,8 +174,8 @@ fn unknown_calls_to_the_item_get_an_unknown_method_error() {
     use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_ERROR;
 
     let (mut item, bus, seen) = item_with_bus();
-    let mut other_interface = host_call("GetAll", 50);
-    other_interface.interface = Some("org.freedesktop.DBus.Properties".to_string());
+    let mut other_interface = host_call("Introspect", 50);
+    other_interface.interface = Some("org.freedesktop.DBus.Introspectable".to_string());
     bus.push_to_client(&host_call("NoSuchMethod", 51).to_bytes());
     bus.push_to_client(&other_interface.to_bytes());
     item.process_events();
@@ -196,6 +196,429 @@ fn unknown_calls_to_the_item_get_an_unknown_method_error() {
         );
         assert_eq!(error.destination.as_deref(), Some(":1.99"));
     }
+}
+
+// --- org.freedesktop.DBus.Properties on /StatusNotifierItem -------------------------------
+
+const ITEM: &str = "org.kde.StatusNotifierItem";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+/// A decoded variant value of the StatusNotifierItem properties.
+#[derive(Debug, PartialEq)]
+enum Value {
+    Str(String),
+    Path(String),
+    U32(u32),
+    Bool(bool),
+    Pixmaps(Vec<(i32, i32, Vec<u8>)>),
+    ToolTip(String, Vec<(i32, i32, Vec<u8>)>, String, String),
+}
+
+/// Little-endian D-Bus decoder over a message body (alignment relative to its first byte).
+struct Dec<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Dec<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+    fn align(&mut self, to: usize) {
+        let padded = self.pos.next_multiple_of(to);
+        assert!(
+            self.buf[self.pos..padded].iter().all(|&b| b == 0),
+            "padding must be zero"
+        );
+        self.pos = padded;
+    }
+    fn u32(&mut self) -> u32 {
+        self.align(4);
+        let v = u32::from_le_bytes(self.buf[self.pos..self.pos + 4].try_into().unwrap());
+        self.pos += 4;
+        v
+    }
+    fn str(&mut self) -> String {
+        let len = self.u32() as usize;
+        let s = String::from_utf8(self.buf[self.pos..self.pos + len].to_vec()).unwrap();
+        self.pos += len;
+        assert_eq!(self.buf[self.pos], 0, "strings are NUL-terminated");
+        self.pos += 1;
+        s
+    }
+    fn sig(&mut self) -> String {
+        let len = self.buf[self.pos] as usize;
+        let s = String::from_utf8(self.buf[self.pos + 1..self.pos + 1 + len].to_vec()).unwrap();
+        assert_eq!(self.buf[self.pos + 1 + len], 0);
+        self.pos += len + 2;
+        s
+    }
+    fn pixmaps(&mut self) -> Vec<(i32, i32, Vec<u8>)> {
+        let len = self.u32() as usize;
+        self.align(8);
+        let end = self.pos + len;
+        let mut out = Vec::new();
+        while self.pos < end {
+            self.align(8);
+            let w = self.u32() as i32;
+            let h = self.u32() as i32;
+            let n = self.u32() as usize;
+            out.push((w, h, self.buf[self.pos..self.pos + n].to_vec()));
+            self.pos += n;
+        }
+        assert_eq!(self.pos, end, "array length covers exactly its elements");
+        out
+    }
+    fn variant(&mut self) -> Value {
+        match self.sig().as_str() {
+            "s" => Value::Str(self.str()),
+            "o" => Value::Path(self.str()),
+            "u" => Value::U32(self.u32()),
+            "b" => Value::Bool(self.u32() != 0),
+            "a(iiay)" => Value::Pixmaps(self.pixmaps()),
+            "(sa(iiay)ss)" => {
+                self.align(8);
+                let icon = self.str();
+                let pixmaps = self.pixmaps();
+                let title = self.str();
+                let description = self.str();
+                Value::ToolTip(icon, pixmaps, title, description)
+            }
+            other => panic!("unexpected variant type {other}"),
+        }
+    }
+    fn dict(&mut self) -> Vec<(String, Value)> {
+        let len = self.u32() as usize;
+        self.align(8);
+        let end = self.pos + len;
+        let mut out = Vec::new();
+        while self.pos < end {
+            self.align(8);
+            let key = self.str();
+            out.push((key, self.variant()));
+        }
+        assert_eq!(self.pos, end);
+        out
+    }
+}
+
+fn properties_call(member: &str, serial: u32, args: &[&str]) -> DbusMessage {
+    let mut call = host_call(member, serial);
+    call.interface = Some(PROPERTIES.to_string());
+    call.signature.clear();
+    call.body.clear();
+    for arg in args {
+        call.append_string(arg);
+    }
+    call
+}
+
+fn reply_to(
+    bus: &ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusBus,
+    serial: u32,
+) -> DbusMessage {
+    bus.received()
+        .into_iter()
+        .find(|m| m.reply_serial == Some(serial))
+        .expect("the item answered")
+}
+
+fn pixmap_item() -> (
+    DbusStatusNotifierItem,
+    ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusBus,
+) {
+    use ferrokit_gui::paint::Pixmap;
+    use ferrokit_gui::tiny_skia::Color;
+
+    let (mut item, bus, _seen) = item_with_bus();
+    let mut pixmap = Pixmap::new(2, 1).unwrap();
+    pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
+    item.set_icon(&pixmap).unwrap();
+    item.set_tooltip("CPU 45%").unwrap();
+    (item, bus)
+}
+
+#[test]
+fn get_status_replies_with_a_variant_string_byte_exactly() {
+    let (mut item, bus, _seen) = item_with_bus();
+    item.show().unwrap();
+    bus.push_to_client(&properties_call("Get", 80, &[ITEM, "Status"]).to_bytes());
+    item.process_events();
+    let reply = reply_to(&bus, 80);
+    assert_eq!(reply.msg_type, DBUS_MESSAGE_TYPE_METHOD_RETURN);
+    assert_eq!(reply.destination.as_deref(), Some(":1.99"));
+    assert_eq!(reply.signature, "v");
+    // Variant signature "s", one pad byte up to the 4-aligned length, then the NUL-terminated text.
+    assert_eq!(
+        reply.body,
+        [1, b's', 0, 0, 6, 0, 0, 0, b'A', b'c', b't', b'i', b'v', b'e', 0]
+    );
+}
+
+#[test]
+fn get_reports_each_property_with_its_type() {
+    let (mut item, bus) = pixmap_item();
+    let expected = [
+        ("Category", Value::Str("ApplicationStatus".into())),
+        ("Id", Value::Str("ferrokit.app".into())),
+        ("Title", Value::Str("HUD".into())),
+        ("Status", Value::Str("Passive".into())),
+        ("WindowId", Value::U32(0)),
+        ("IconThemeName", Value::Str(String::new())),
+        ("OverlayIconName", Value::Str(String::new())),
+        ("OverlayIconPixmap", Value::Pixmaps(Vec::new())),
+        ("AttentionIconName", Value::Str(String::new())),
+        ("AttentionIconPixmap", Value::Pixmaps(Vec::new())),
+        ("AttentionMovieName", Value::Str(String::new())),
+        (
+            "ToolTip",
+            Value::ToolTip(String::new(), Vec::new(), "CPU 45%".into(), String::new()),
+        ),
+        ("ItemIsMenu", Value::Bool(false)),
+        ("Menu", Value::Path("/NO_DBUSMENU".into())),
+    ];
+    for (i, (name, _)) in expected.iter().enumerate() {
+        bus.push_to_client(&properties_call("Get", 100 + i as u32, &[ITEM, name]).to_bytes());
+    }
+    item.process_events();
+    for (i, (name, value)) in expected.iter().enumerate() {
+        let reply = reply_to(&bus, 100 + i as u32);
+        assert_eq!(reply.signature, "v", "{name}");
+        let mut dec = Dec::new(&reply.body);
+        assert_eq!(&dec.variant(), value, "{name}");
+        assert_eq!(dec.pos, reply.body.len(), "{name}: no trailing bytes");
+    }
+}
+
+#[test]
+fn icon_pixmap_is_width_height_and_argb_bytes() {
+    let (mut item, bus) = pixmap_item();
+    bus.push_to_client(&properties_call("Get", 90, &[ITEM, "IconPixmap"]).to_bytes());
+    item.process_events();
+    let reply = reply_to(&bus, 90);
+    let mut expected = vec![7, b'a', b'(', b'i', b'i', b'a', b'y', b')', 0];
+    expected.extend_from_slice(&[0; 3]); // up to the 4-aligned array length
+    expected.extend_from_slice(&(12u32 + 8).to_le_bytes()); // one element: 4 + 4 + 4 + 8 bytes
+                                                            // 12 (sig 9 + pad 3) + 4 = 16: already 8-aligned, so the struct starts right here.
+    expected.extend_from_slice(&2i32.to_le_bytes());
+    expected.extend_from_slice(&1i32.to_le_bytes());
+    expected.extend_from_slice(&8u32.to_le_bytes());
+    expected.extend_from_slice(&[255, 10, 20, 30, 255, 10, 20, 30]);
+    assert_eq!(reply.body, expected);
+}
+
+#[test]
+fn empty_pixmap_arrays_still_pad_to_the_struct_alignment() {
+    let (mut item, bus, _seen) = item_with_bus();
+    bus.push_to_client(&properties_call("Get", 91, &[ITEM, "IconPixmap"]).to_bytes());
+    item.process_events();
+    let reply = reply_to(&bus, 91);
+    // sig (9) + pad (3) + length (4) = 16, already aligned; nothing follows.
+    assert_eq!(reply.body.len(), 16);
+    assert_eq!(&reply.body[12..], [0, 0, 0, 0]);
+    // Inside a dict entry the array data would start 8-aligned too: ToolTip exercises that.
+    bus.push_to_client(&properties_call("Get", 92, &[ITEM, "ToolTip"]).to_bytes());
+    item.process_events();
+    let tip = reply_to(&bus, 92);
+    let mut dec = Dec::new(&tip.body);
+    assert_eq!(
+        dec.variant(),
+        Value::ToolTip(String::new(), Vec::new(), String::new(), String::new())
+    );
+}
+
+#[test]
+fn get_all_lists_every_property() {
+    let (mut item, bus) = pixmap_item();
+    bus.push_to_client(&properties_call("GetAll", 110, &[ITEM]).to_bytes());
+    item.process_events();
+    let reply = reply_to(&bus, 110);
+    assert_eq!(reply.msg_type, DBUS_MESSAGE_TYPE_METHOD_RETURN);
+    assert_eq!(reply.signature, "a{sv}");
+    let mut dec = Dec::new(&reply.body);
+    let entries = dec.dict();
+    assert_eq!(dec.pos, reply.body.len());
+    let names: Vec<_> = entries.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, DbusStatusNotifierItem::property_names());
+    for name in [
+        "Category",
+        "Id",
+        "Title",
+        "Status",
+        "WindowId",
+        "IconThemeName",
+        "IconPixmap",
+        "OverlayIconName",
+        "OverlayIconPixmap",
+        "AttentionIconName",
+        "AttentionIconPixmap",
+        "AttentionMovieName",
+        "ToolTip",
+        "ItemIsMenu",
+        "Menu",
+    ] {
+        assert!(names.contains(&name), "{name} is listed");
+    }
+    let get = |name: &str| &entries.iter().find(|(k, _)| k == name).unwrap().1;
+    assert_eq!(
+        get("IconPixmap"),
+        &Value::Pixmaps(vec![(2, 1, vec![255, 10, 20, 30, 255, 10, 20, 30])])
+    );
+    assert_eq!(get("Status"), &Value::Str("Passive".into()));
+    assert_eq!(get("Menu"), &Value::Path("/NO_DBUSMENU".into()));
+}
+
+#[test]
+fn property_reads_that_cannot_be_answered_are_errors() {
+    use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_ERROR;
+
+    let (mut item, bus, _seen) = item_with_bus();
+    bus.push_to_client(&properties_call("Get", 120, &[ITEM, "NoSuchProperty"]).to_bytes());
+    bus.push_to_client(&properties_call("Get", 121, &["org.example.Other", "Status"]).to_bytes());
+    bus.push_to_client(&properties_call("GetAll", 122, &["org.example.Other"]).to_bytes());
+    bus.push_to_client(&properties_call("Get", 123, &[ITEM]).to_bytes());
+    let mut set = properties_call("Set", 124, &[ITEM, "Status"]);
+    set.append_variant_u32(1);
+    bus.push_to_client(&set.to_bytes());
+    item.process_events();
+    for serial in 120..=123 {
+        let reply = reply_to(&bus, serial);
+        assert_eq!(reply.msg_type, DBUS_MESSAGE_TYPE_ERROR, "{serial}");
+        assert_eq!(
+            reply.error_name.as_deref(),
+            Some("org.freedesktop.DBus.Error.InvalidArgs"),
+            "{serial}"
+        );
+    }
+    let set_reply = reply_to(&bus, 124);
+    assert_eq!(set_reply.msg_type, DBUS_MESSAGE_TYPE_ERROR);
+    assert_eq!(
+        set_reply.error_name.as_deref(),
+        Some("org.freedesktop.DBus.Error.PropertyReadOnly")
+    );
+}
+
+// --- registration with the StatusNotifierWatcher ------------------------------------------
+
+fn register_serials(
+    bus: &ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusBus,
+) -> Vec<u32> {
+    bus.received()
+        .into_iter()
+        .filter(|m| m.member.as_deref() == Some("RegisterStatusNotifierItem"))
+        .map(|m| m.serial)
+        .collect()
+}
+
+fn name_owner_changed(sender: &str, name: &str, old: &str, new: &str) -> DbusMessage {
+    let mut signal = DbusMessage::signal(
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameOwnerChanged",
+        200,
+    );
+    signal.sender = Some(sender.to_string());
+    signal.append_string(name);
+    signal.append_string(old);
+    signal.append_string(new);
+    signal
+}
+
+#[test]
+fn registration_is_confirmed_by_the_watchers_reply() {
+    let (mut item, bus, _seen) = item_with_bus();
+    assert!(item.show().is_ok());
+    // The RequestName reply arrives first; it does not register the item.
+    item.process_events();
+    assert!(!item.is_registered());
+    let serial = register_serials(&bus)[0];
+    // A reply to some other call does not confirm it.
+    bus.push_to_client(&DbusMessage::method_return(serial + 1000, ":1.42", 3).to_bytes());
+    item.process_events();
+    assert!(!item.is_registered());
+    bus.push_to_client(&DbusMessage::method_return(serial, ":1.42", 4).to_bytes());
+    item.process_events();
+    assert!(item.is_registered());
+}
+
+#[test]
+fn registration_is_rejected_when_there_is_no_watcher() {
+    let (mut item, bus, _seen) = item_with_bus();
+    item.show().unwrap();
+    let serial = register_serials(&bus)[0];
+    bus.push_to_client(
+        &DbusMessage::error(
+            serial,
+            ":1.42",
+            3,
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+            "The name org.kde.StatusNotifierWatcher was not provided by any .service files",
+        )
+        .to_bytes(),
+    );
+    item.process_events();
+    assert!(!item.is_registered());
+    // The rejection is final: a later stray return for the same serial changes nothing.
+    bus.push_to_client(&DbusMessage::method_return(serial, ":1.42", 4).to_bytes());
+    item.process_events();
+    assert!(!item.is_registered());
+}
+
+#[test]
+fn a_new_watcher_owner_registers_the_item_again() {
+    let (mut item, bus, _seen) = item_with_bus();
+    item.show().unwrap();
+    let first = register_serials(&bus)[0];
+    bus.push_to_client(&DbusMessage::method_return(first, ":1.42", 3).to_bytes());
+    item.process_events();
+    assert!(item.is_registered());
+
+    // Not from the bus daemon, or about another name: ignored.
+    bus.push_to_client(
+        &name_owner_changed(":1.5", "org.kde.StatusNotifierWatcher", "", ":1.6").to_bytes(),
+    );
+    bus.push_to_client(
+        &name_owner_changed("org.freedesktop.DBus", "org.other", "", ":1.6").to_bytes(),
+    );
+    item.process_events();
+    assert!(item.is_registered());
+    assert_eq!(register_serials(&bus).len(), 1);
+
+    // The watcher goes away: no longer registered.
+    bus.push_to_client(
+        &name_owner_changed(
+            "org.freedesktop.DBus",
+            "org.kde.StatusNotifierWatcher",
+            ":1.3",
+            "",
+        )
+        .to_bytes(),
+    );
+    item.process_events();
+    assert!(!item.is_registered());
+    assert_eq!(register_serials(&bus).len(), 1);
+
+    // A new one takes the name: the item registers again, confirmed by its own reply.
+    bus.push_to_client(
+        &name_owner_changed(
+            "org.freedesktop.DBus",
+            "org.kde.StatusNotifierWatcher",
+            "",
+            ":1.77",
+        )
+        .to_bytes(),
+    );
+    item.process_events();
+    let serials = register_serials(&bus);
+    assert_eq!(serials.len(), 2);
+    assert!(!item.is_registered());
+    // The old serial's reply no longer counts.
+    bus.push_to_client(&DbusMessage::method_return(first, ":1.42", 5).to_bytes());
+    item.process_events();
+    assert!(!item.is_registered());
+    bus.push_to_client(&DbusMessage::method_return(serials[1], ":1.42", 6).to_bytes());
+    item.process_events();
+    assert!(item.is_registered());
 }
 
 #[test]

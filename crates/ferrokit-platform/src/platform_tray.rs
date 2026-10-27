@@ -41,8 +41,11 @@ pub trait PlatformTrayIcon {
 
     /// Reads and dispatches whatever the desktop sent to the icon since the last call, which
     /// may invoke the activation handler. The D-Bus back end receives `Activate`,
-    /// `ContextMenu` and `SecondaryActivate` method calls on the session bus socket and needs
-    /// this to be driven (see `DbusStatusNotifierItem::bind_event_dispatcher`); back ends that
+    /// `ContextMenu` and `SecondaryActivate` method calls, `org.freedesktop.DBus.Properties`
+    /// reads, the StatusNotifierWatcher's registration reply and `NameOwnerChanged` signals on
+    /// the session bus socket and needs this to be driven (see
+    /// `DbusStatusNotifierItem::bind_event_dispatcher`); its `show` only queues the
+    /// registration, so the registration is confirmed here. Back ends that
     /// are called back by the OS (AppKit) have nothing to do.
     fn process_events(&mut self) {}
 
