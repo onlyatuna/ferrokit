@@ -60,6 +60,43 @@ pub struct TextCursor {
     pub(crate) anchor: usize,
     /// Default character format applied when typing.
     pub(crate) char_format: TextCharFormat,
+    /// Target column of repeated `Up`/`Down` (`QTextCursorPrivate::x`).
+    pub(crate) sticky: StickyColumn,
+}
+
+/// Target column kept across consecutive vertical moves: the x coordinate on a wrapping document,
+/// the grapheme column otherwise. It is only honoured while the cursor still sits where the last
+/// vertical move left it, and every other cursor operation clears it. Compares equal always so
+/// cursor equality stays position/anchor/format, as `QTextCursor::operator==`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct StickyColumn(Option<(usize, Target)>);
+
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    X(f32),
+    Column(usize),
+}
+
+impl PartialEq for StickyColumn {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl StickyColumn {
+    fn x_at(self, pos: usize) -> Option<f32> {
+        match self.0 {
+            Some((p, Target::X(x))) if p == pos => Some(x),
+            _ => None,
+        }
+    }
+
+    fn column_at(self, pos: usize) -> Option<usize> {
+        match self.0 {
+            Some((p, Target::Column(c))) if p == pos => Some(c),
+            _ => None,
+        }
+    }
 }
 
 /// Whether the document wraps blocks into visual lines (`QTextDocument::setTextWidth`).
@@ -98,8 +135,14 @@ fn visual_line_edge(doc: &TextDocument, pos: usize, end: bool) -> usize {
 }
 
 /// `Up` / `Down` over visual lines, keeping the x coordinate; crosses into the adjacent block's
-/// last/first visual line at a block edge. `None` when the document has no wrap width.
-fn visual_line_step(doc: &TextDocument, pos: usize, up: bool) -> Option<usize> {
+/// last/first visual line at a block edge. `None` when the document has no wrap width; at the
+/// document's first/last visual line it stays put and keeps the x.
+fn visual_line_step(
+    doc: &TextDocument,
+    pos: usize,
+    up: bool,
+    sticky_x: Option<f32>,
+) -> Option<(usize, f32)> {
     use crate::text::line::{CursorPosition, Edge};
     if !wraps(doc) {
         return None;
@@ -109,46 +152,63 @@ fn visual_line_step(doc: &TextDocument, pos: usize, up: bool) -> Option<usize> {
     let layout = doc.block_layout(b);
     let local = pos.checked_sub(b.position)?;
     let line = layout.line_for_text_position(local)?;
-    let x = line.cursor_to_x(local, Edge::Leading);
+    let x = sticky_x.unwrap_or_else(|| line.cursor_to_x(local, Edge::Leading));
     let n = line.line_number();
+    // At the first/last visual line of the document nothing moves but the x column is kept.
+    let stay = Some((pos, x));
     let (target_block, target_layout, target_n) = if up {
         if n > 0 {
             (b, layout, n - 1)
         } else {
-            let pb = doc.block_at(block_idx.checked_sub(1)?)?;
+            let Some(pb) = block_idx.checked_sub(1).and_then(|i| doc.block_at(i)) else {
+                return stay;
+            };
             let pl = doc.block_layout(pb);
-            let last = pl.line_count().checked_sub(1)?;
+            let Some(last) = pl.line_count().checked_sub(1) else {
+                return stay;
+            };
             (pb, pl, last)
         }
     } else if n + 1 < layout.line_count() {
         (b, layout, n + 1)
     } else {
-        let nb = doc.block_at(block_idx + 1)?;
+        let Some(nb) = doc.block_at(block_idx + 1) else {
+            return stay;
+        };
         (nb, doc.block_layout(nb), 0)
     };
-    let target_line = target_layout.line_at(target_n)?;
+    let Some(target_line) = target_layout.line_at(target_n) else {
+        return stay;
+    };
     let mut col = target_line.x_to_cursor(x, CursorPosition::CursorBetweenCharacters);
     let end = target_line.text_start() + target_line.text_length();
     // On a wrapped line the end position is the next line's start: stay on this line.
     if col >= end && target_n + 1 < target_layout.line_count() && target_line.text_length() > 0 {
         col = end - 1;
     }
-    Some(target_block.position + col)
+    Some((target_block.position + col, x))
 }
 
 /// `Up` / `Down` without a layout: every block is one line, so keep the column and move to the
-/// adjacent block, clamped to its length; at the first/last block nothing moves.
-fn block_line_step(doc: &TextDocument, pos: usize, up: bool) -> usize {
+/// adjacent block, clamped to its length; at the first/last block nothing moves. Returns the new
+/// position and the column to keep.
+fn block_line_step(
+    doc: &TextDocument,
+    pos: usize,
+    up: bool,
+    sticky_col: Option<usize>,
+) -> (usize, usize) {
     let block_idx = doc.block_index_at_grapheme(pos);
-    let column = doc.block_at(block_idx).map_or(0, |b| pos - b.position);
+    let column =
+        sticky_col.unwrap_or_else(|| doc.block_at(block_idx).map_or(0, |b| pos - b.position));
     let target = if up {
         block_idx.checked_sub(1)
     } else {
         (block_idx + 1 < doc.block_count()).then_some(block_idx + 1)
     };
     match target.and_then(|i| doc.block_at(i)) {
-        Some(b) => b.position + column.min(b.text().graphemes(true).count()),
-        None => pos,
+        Some(b) => (b.position + column.min(b.text().graphemes(true).count()), column),
+        None => (pos, column),
     }
 }
 
@@ -164,6 +224,7 @@ impl TextCursor {
             position: pos,
             anchor: pos,
             char_format: TextCharFormat::default(),
+            sticky: StickyColumn::default(),
         }
     }
 
@@ -181,6 +242,7 @@ impl TextCursor {
 
     /// Sets the cursor position, optionally keeping the anchor to form a selection.
     pub fn set_position(&mut self, pos: usize, mode: MoveMode) {
+        self.sticky = StickyColumn::default();
         self.position = pos;
         if mode == MoveMode::MoveAnchor {
             self.anchor = pos;
@@ -233,6 +295,8 @@ impl TextCursor {
         let total_graphemes = doc.character_count();
         let old_pos = self.position;
         let mut new_pos = old_pos;
+        let mut sticky = self.sticky;
+        let mut vertical = false;
 
         for _ in 0..n {
             new_pos = match op {
@@ -294,18 +358,32 @@ impl TextCursor {
                 }
                 MoveOperation::Up | MoveOperation::Down => {
                     let up = op == MoveOperation::Up;
-                    visual_line_step(doc, new_pos, up)
-                        .unwrap_or_else(|| block_line_step(doc, new_pos, up))
+                    vertical = true;
+                    let x = sticky.x_at(new_pos);
+                    let (next, target) = match visual_line_step(doc, new_pos, up, x) {
+                        Some((p, x)) => (p, Target::X(x)),
+                        None => {
+                            let col = sticky.column_at(new_pos);
+                            let (p, c) = block_line_step(doc, new_pos, up, col);
+                            (p, Target::Column(c))
+                        }
+                    };
+                    sticky = StickyColumn(Some((next, target)));
+                    next
                 }
             };
         }
 
         self.set_position(new_pos, mode);
+        if vertical {
+            self.sticky = sticky;
+        }
         self.position != old_pos
     }
 
     /// Selects text under cursor according to `SelectionType`.
     pub fn select(&mut self, doc: &TextDocument, selection: SelectionType) {
+        self.sticky = StickyColumn::default();
         match selection {
             SelectionType::Document => {
                 self.anchor = 0;
@@ -344,6 +422,7 @@ impl TextCursor {
 
     /// Deletes character forward (Delete key).
     pub fn delete_char(&mut self, doc: &mut TextDocument) {
+        self.sticky = StickyColumn::default();
         if self.has_selection() {
             self.remove_selected_text(doc);
         } else {
@@ -354,6 +433,7 @@ impl TextCursor {
 
     /// Deletes character backward (Backspace key).
     pub fn delete_previous_char(&mut self, doc: &mut TextDocument) {
+        self.sticky = StickyColumn::default();
         if self.has_selection() {
             self.remove_selected_text(doc);
         } else if self.position > 0 {
@@ -365,6 +445,7 @@ impl TextCursor {
 
     /// Removes currently selected text.
     pub fn remove_selected_text(&mut self, doc: &mut TextDocument) {
+        self.sticky = StickyColumn::default();
         if !self.has_selection() {
             return;
         }
@@ -388,6 +469,7 @@ impl TextCursor {
         text: &str,
         format: &TextCharFormat,
     ) {
+        self.sticky = StickyColumn::default();
         if self.has_selection() {
             self.remove_selected_text(doc);
         }
