@@ -228,6 +228,12 @@ impl Settings {
     /// are merged into it: keys set here win, keys removed here are removed, and keys that
     /// other instances or processes wrote since this instance last read the file are kept.
     /// This instance then adopts the merged contents.
+    ///
+    /// A file that could not be read completely, such as one with a line that is not valid
+    /// UTF-8, is never overwritten: `sync` returns an [`InvalidData`](std::io::ErrorKind::InvalidData)
+    /// error and leaves the file alone. This is deliberate, the data-safe choice: writing back
+    /// only the lines that were parsed would silently drop the others. The test
+    /// `test_qsettings_refuses_to_overwrite_after_load_error` pins it.
     pub fn sync(&mut self) -> std::io::Result<()> {
         if !self.dirty {
             return Ok(());

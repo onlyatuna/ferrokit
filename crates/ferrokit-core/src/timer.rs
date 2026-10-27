@@ -28,12 +28,52 @@ static NEXT_TIMER_ID: AtomicU32 = AtomicU32::new(1);
 
 thread_local! {
     /// `(receiver, old id) -> new id` for moved timers that were given a fresh id on adoption.
-    /// A `Timer` handle learns its new id from here.
+    /// A `Timer` handle, or the owner of an `Object::start_timer` id, learns the new id from
+    /// here. An entry lives only while its target timer is registered: unregistering the timer
+    /// (kill, single-shot expiry, object destruction), registering a new timer under the old id,
+    /// or tearing down the thread's timer context drops it.
     static REIDENTIFIED: RefCell<HashMap<(ObjectId, TimerId), TimerId>> = RefCell::new(HashMap::new());
 }
 
+/// Consumes the redirect of `receiver`'s timer `old` (a `Timer` handle adopts the new id once).
 fn take_reidentified(receiver: ObjectId, old: TimerId) -> Option<TimerId> {
     REIDENTIFIED.try_with(|map| map.borrow_mut().remove(&(receiver, old))).ok().flatten()
+}
+
+/// The id `receiver`'s timer `old` was given on adoption, leaving the redirect in place: the
+/// owner of an `Object::start_timer` id may still hold `old` until it kills the timer.
+pub(crate) fn reidentified_as(receiver: ObjectId, old: TimerId) -> Option<TimerId> {
+    REIDENTIFIED.try_with(|map| map.borrow().get(&(receiver, old)).copied()).ok().flatten()
+}
+
+/// Drops the redirect that starts at `old`: a timer registered under `old` supersedes it.
+fn forget_reidentified_from(receiver: ObjectId, old: TimerId) {
+    let _ = REIDENTIFIED.try_with(|map| {
+        let mut map = map.borrow_mut();
+        if !map.is_empty() {
+            map.remove(&(receiver, old));
+        }
+    });
+}
+
+/// Removes and returns the old ids of `receiver` that redirect to the timer `id`.
+fn take_redirects_to(receiver: ObjectId, id: TimerId) -> Vec<TimerId> {
+    REIDENTIFIED
+        .try_with(|map| {
+            let mut map = map.borrow_mut();
+            let mut olds = Vec::new();
+            if !map.is_empty() {
+                map.retain(|&(owner, old), fresh| {
+                    let hit = owner == receiver && *fresh == id;
+                    if hit {
+                        olds.push(old);
+                    }
+                    !hit
+                });
+            }
+            olds
+        })
+        .unwrap_or_default()
 }
 
 pub fn allocate_timer_id() -> TimerId {
@@ -264,6 +304,8 @@ impl TimerRegistry {
 
         self.entries.insert(id, entry);
         self.by_receiver.entry(receiver).or_default().push(id);
+        // A live timer under `id` supersedes a stale redirect from it (after the counter wrapped).
+        forget_reidentified_from(receiver, id);
         true
     }
 
@@ -281,6 +323,7 @@ impl TimerRegistry {
     pub fn unregister(&mut self, id: TimerId) -> Option<TimerEntry> {
         let entry = self.entries.remove(&id)?;
         self.unindex(entry.receiver, id);
+        drop(take_redirects_to(entry.receiver, id));
         Some(entry)
     }
 
@@ -359,6 +402,7 @@ pub fn unregister_thread_timer_context() {
             *borrow = None;
         }
     });
+    let _ = REIDENTIFIED.try_with(|map| map.borrow_mut().clear());
 }
 
 pub fn has_thread_timer_context() -> bool {
@@ -509,8 +553,15 @@ pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> DetachedTimer
 
 /// Timers taken from a moved subtree, to be re-armed on the target thread by [`adopt_timers`].
 pub(crate) struct DetachedTimers {
-    entries: Vec<TimerEntry>,
+    entries: Vec<MovedTimer>,
     shots: Vec<(ObjectId, u64, SingleShotFn)>,
+}
+
+/// A timer taken from its thread, with the ids its owner may still hold for it from earlier
+/// re-identifications; they follow the timer, as the redirects of a thread are dropped with it.
+struct MovedTimer {
+    entry: TimerEntry,
+    aliases: Vec<TimerId>,
 }
 
 impl DetachedTimers {
@@ -519,7 +570,7 @@ impl DetachedTimers {
     }
 }
 
-fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<TimerEntry> {
+fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<MovedTimer> {
     with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
         let ids: Vec<TimerId> = receivers
@@ -528,6 +579,10 @@ fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<TimerEntry> {
             .collect();
         let mut detached = Vec::with_capacity(ids.len());
         for id in ids {
+            let aliases = reg
+                .get(id)
+                .map(|entry| take_redirects_to(entry.receiver, id))
+                .unwrap_or_default();
             let Some(entry) = reg.unregister(id) else {
                 continue;
             };
@@ -537,7 +592,7 @@ fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<TimerEntry> {
                     kill_native(ctx.internal_hwnd, id);
                 }
             }
-            detached.push(entry);
+            detached.push(MovedTimer { entry, aliases });
         }
         detached
     })
@@ -557,17 +612,17 @@ pub(crate) fn adopt_timers(detached: DetachedTimers) {
     adopt_entries(detached.entries);
 }
 
-fn adopt_entries(entries: Vec<TimerEntry>) {
+fn adopt_entries(entries: Vec<MovedTimer>) {
     let current = crate::object::ThreadId::current();
     let mut local = Vec::with_capacity(entries.len());
-    for entry in entries {
-        match crate::object::qobject::registration_thread_of(entry.receiver) {
-            Some(owner) if owner == current => local.push(entry),
+    for moved in entries {
+        match crate::object::qobject::registration_thread_of(moved.entry.receiver) {
+            Some(owner) if owner == current => local.push(moved),
             Some(owner) => crate::event_loop::post_event_to_thread(
                 owner,
                 crate::object::ObjectId(0),
                 crate::event::Event::new(crate::event::EventKind::MetaCall(Box::new(move |_| {
-                    adopt_entries(vec![entry])
+                    adopt_entries(vec![moved])
                 }))),
             ),
             None => {}
@@ -576,9 +631,13 @@ fn adopt_entries(entries: Vec<TimerEntry>) {
     if local.is_empty() {
         return;
     }
+    let lost: Vec<(ObjectId, TimerId)> = local
+        .iter()
+        .map(|moved| (moved.entry.receiver, moved.entry.id))
+        .collect();
     let armed = with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
-        for entry in local {
+        for MovedTimer { entry, mut aliases } in local {
             // Ids are allocated process-wide, so a collision only happens after the counter
             // wrapped; the moved timer then gets a fresh id here instead of being dropped.
             let id = if reg.register_with_id(
@@ -596,20 +655,31 @@ fn adopt_entries(entries: Vec<TimerEntry>) {
                     entry.timer_type,
                     entry.single_shot,
                 );
-                // The owner still holds the old id: tell its `Timer` handle and object list.
-                REIDENTIFIED.with(|map| {
-                    map.borrow_mut().insert((entry.receiver, entry.id), fresh);
-                });
+                // The owner still holds the old id: relabel it in the object's timer list.
                 crate::object::with_object_mut(entry.receiver, |obj| {
                     obj.object_data_mut().replace_timer(entry.id, fresh);
                 });
+                aliases.push(entry.id);
                 fresh
             };
+            // Tell the owner (`Timer` handle, `kill_timer` caller) the new id of each old one.
+            let _ = REIDENTIFIED.try_with(|map| {
+                let mut map = map.borrow_mut();
+                for old in aliases {
+                    map.insert((entry.receiver, old), id);
+                }
+            });
             arm_source(ctx, id, entry.receiver, entry.interval_ms, entry.timer_type);
         }
     });
     if armed.is_none() {
         eprintln!("ferrokit: cannot re-register moved timers: this thread has no timer context");
+        // Nothing is scheduled, so the objects must not keep ids of timers that do not exist.
+        for (receiver, id) in lost {
+            crate::object::with_object_mut(receiver, |obj| {
+                obj.object_data_mut().remove_timer(id);
+            });
+        }
     }
 }
 
@@ -2385,7 +2455,7 @@ mod receiver_index_tests {
             TimerType::Coarse,
             false
         ));
-        adopt_entries(vec![entry]);
+        adopt_entries(vec![MovedTimer { entry, aliases: Vec::new() }]);
         let fresh = {
             let reg = registry.lock().unwrap();
             assert_eq!(reg.len(), 2, "the moved timer was dropped");
@@ -2409,6 +2479,113 @@ mod receiver_index_tests {
         drop(held);
         drop(mover);
         unregister_thread_timer_context();
+    }
+
+    /// An object that starts its timers through `QObject::start_timer`.
+    struct TimerOwner {
+        data: ObjectData,
+    }
+
+    impl QObject for TimerOwner {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+            crate::object::ObjectDataMut::new(&mut self.data)
+        }
+    }
+
+    fn owner_timers(owner: &OwnedObject<TimerOwner>) -> Vec<TimerId> {
+        owner.with(|o| o.data.timers.clone()).unwrap()
+    }
+
+    /// Moves the object timer `started` of `receiver` away and back while `held`'s timer occupies
+    /// its id, as after the id counter wrapped. Returns the id it was given on adoption.
+    fn reidentify_object_timer(
+        registry: &Mutex<TimerRegistry>,
+        receiver: ObjectId,
+        started: TimerId,
+        held: &Timer,
+    ) -> TimerId {
+        let moved = detach_registered_timers(&[receiver]);
+        assert_eq!(moved.len(), 1);
+        assert!(registry.lock().unwrap().register_with_id(
+            started,
+            held.object_id(),
+            50,
+            TimerType::Coarse,
+            false
+        ));
+        adopt_entries(moved);
+        let reg = registry.lock().unwrap();
+        let ids = reg.ids_for_receiver(receiver);
+        assert_eq!(ids.len(), 1);
+        assert_ne!(ids[0], started);
+        ids[0]
+    }
+
+    /// A re-identified `QObject::start_timer` timer leaves no stale id in its object's list, the
+    /// id its owner holds still kills it, and no redirect outlives the timer.
+    #[test]
+    fn a_reidentified_object_timer_leaves_no_stale_id_or_redirect() {
+        let registry = Arc::new(Mutex::new(TimerRegistry::new()));
+        #[cfg(windows)]
+        register_thread_timer_context(Arc::clone(&registry), std::ptr::null_mut());
+        #[cfg(not(windows))]
+        register_thread_timer_context(Arc::clone(&registry));
+        let held = Timer::new();
+        let data = ObjectData::new(ObjectId::next());
+        let receiver = data.id();
+        // SAFETY: the owner is used on this thread only and no callback of it runs.
+        let mut owner = unsafe { crate::object::register_owned_qobject(TimerOwner { data }) };
+
+        // Killed through the id `start_timer` returned, which the re-id made stale.
+        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        assert!(started.is_valid());
+        let fresh = reidentify_object_timer(&registry, receiver, started, &held);
+        assert_eq!(owner_timers(&owner), vec![fresh], "stale id left in the object's list");
+        assert_eq!(reidentified_as(receiver, started), Some(fresh));
+        assert!(owner.with_mut(|o| o.kill_timer(started)).unwrap());
+        assert!(owner_timers(&owner).is_empty());
+        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        {
+            let reg = registry.lock().unwrap();
+            assert!(reg.get(fresh).is_none());
+            assert_eq!(reg.len(), 1, "an unrelated timer was killed");
+        }
+        assert!(!owner.with_mut(|o| o.kill_timer(started)).unwrap(), "killed twice");
+
+        // Killed through the new id: the redirect goes with the timer.
+        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let fresh = reidentify_object_timer(&registry, receiver, started, &held);
+        assert!(owner.with_mut(|o| o.kill_timer(fresh)).unwrap());
+        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        assert!(owner_timers(&owner).is_empty());
+
+        // The redirect follows the timer through a second move and is dropped with the timer
+        // when the object's timers are removed (as on its destruction).
+        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let fresh = reidentify_object_timer(&registry, receiver, started, &held);
+        let moved = detach_registered_timers(&[receiver]);
+        assert_eq!(reidentified_as(receiver, started), None, "redirect stayed on the old thread");
+        adopt_entries(moved);
+        assert_eq!(owner_timers(&owner), vec![fresh]);
+        assert_eq!(reidentified_as(receiver, started), Some(fresh));
+        assert_eq!(stop_timers_for_object(receiver), 1);
+        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        // The object's list is dropped with the object; here it is emptied to go on.
+        assert!(!owner.with_mut(|o| o.kill_timer(fresh)).unwrap(), "already unregistered");
+
+        // A thread without a timer context schedules nothing, so the object keeps no id.
+        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let moved = detach_registered_timers(&[receiver]);
+        unregister_thread_timer_context();
+        adopt_entries(moved);
+        assert!(owner_timers(&owner).is_empty(), "{started} left in the list");
+        assert!(registry.lock().unwrap().ids_for_receiver(receiver).is_empty());
+        drop(held);
+        drop(owner);
     }
 
     #[test]
