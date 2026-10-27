@@ -908,7 +908,9 @@ pub(crate) fn write_html(blocks: &[TextBlock], title: &str) -> String {
             html.push_str(" style=\"white-space:pre-wrap\"");
         }
         html.push('>');
-        for f in &b.fragments {
+        // Exports describe the displayed text, so the highlighter overlay is merged over the
+        // user formats (`effective_fragments`); the document's own fragments stay untouched.
+        for f in &b.effective_fragments() {
             write_html_fragment(&mut html, f);
         }
         html.push_str("</");
@@ -1334,7 +1336,7 @@ pub(crate) fn write_markdown(blocks: &[TextBlock]) -> String {
             }
             md.push(' ');
         }
-        for (j, f) in b.fragments.iter().enumerate() {
+        for (j, f) in b.effective_fragments().iter().enumerate() {
             write_markdown_fragment(&mut md, f, heading > 0, heading == 0 && j == 0);
         }
     }
