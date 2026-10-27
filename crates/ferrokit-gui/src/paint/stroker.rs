@@ -1119,8 +1119,10 @@ impl PainterPathStroker {
     }
 
     /// `QPainterPathStroker::createStroke`: the outline of the stroke of `path` as a path to be
-    /// filled with the winding rule (the result's fill rule is [`FillRule::Winding`]). An empty
-    /// `path` is returned as it is.
+    /// filled with the winding rule: the fill rule of a non-empty result is
+    /// [`FillRule::Winding`]. An empty `path` (no elements, or only its initial move) is
+    /// returned as a copy that keeps the input path's [`fill_rule`](PainterPath::fill_rule), as
+    /// Qt returns its input unchanged.
     ///
     /// Qt hangs/UB here; ferrokit guards against input that makes Qt's strokers loop for ever or
     /// allocate without bound, and does not panic on any input:

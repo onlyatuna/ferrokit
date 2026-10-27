@@ -32,8 +32,14 @@ fn target_with(
 ) -> (*mut OleDropTarget, &'static IDropTargetVtbl) {
     let sink = Arc::clone(events);
     let t = OleDropTarget::new(hwnd, move |ev| {
+        let proposed = match &ev {
+            DropEvent::Enter { effect, .. }
+            | DropEvent::Over { effect, .. }
+            | DropEvent::Drop { effect, .. } => *effect,
+            DropEvent::Leave => 0,
+        };
         sink.lock().push(ev);
-        true
+        proposed
     });
     let vtbl = unsafe { &*(*t).vtbl };
     (t, vtbl)
@@ -299,7 +305,7 @@ fn drag_positions_are_logical_client_coordinates() {
 
 #[test]
 fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shift_move() {
-    let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| false);
+    let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| 0);
     let vtbl = unsafe { &*(*t).vtbl };
     let mut obj = data_object(Some("refused"), None);
     unsafe {
@@ -314,6 +320,28 @@ fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shi
         effect = 7;
         assert_eq!((vtbl.drop)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
         assert_eq!(effect, 0, "refused Drop reports DROPEFFECT_NONE so the source never deletes");
+        (vtbl.release)(this);
+    }
+}
+
+#[test]
+fn a_callback_may_change_the_effect_but_never_beyond_what_the_source_allows() {
+    // The callback answers LINK (4) whatever was proposed.
+    let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| 4);
+    let vtbl = unsafe { &*(*t).vtbl };
+    let mut obj = data_object(Some("relink"), None);
+    unsafe {
+        let this = t as *mut c_void;
+        let o = &mut obj as *mut MockData as *mut c_void;
+        let mut effect = 7u32; // copy | move | link
+        assert_eq!((vtbl.drag_enter)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 4, "the effect the callback chose is reported");
+        effect = 7;
+        assert_eq!((vtbl.drag_over)(this, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 4, "DragOver reports the callback's effect");
+        effect = 3; // the source allows copy | move only
+        assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(effect, 0, "an effect the source does not allow is a refusal");
         (vtbl.release)(this);
     }
 }

@@ -228,12 +228,14 @@ pub enum PowerEvent {
 pub trait WindowSystemEventHandler: 'static {
     fn handle_window_event(&mut self, event: WindowSystemEvent);
 
-    /// Handles a window-system event whose caller needs the acceptance outcome before it returns
-    /// to the OS (`IDropTarget::DragEnter` / `DragOver` / `Drop`). Defaults to calling
-    /// [`handle_window_event`](Self::handle_window_event) and returning `false`.
-    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> bool {
+    /// Handles a window-system event whose caller needs the outcome before it returns to the OS
+    /// (`IDropTarget::DragEnter` / `DragOver` / `Drop`). Returns the `DROPEFFECT_*` the target
+    /// accepted the event with, which a handler may change from the proposed one; `0`
+    /// (`DROPEFFECT_NONE`) means refused. Defaults to calling
+    /// [`handle_window_event`](Self::handle_window_event) and returning `0`.
+    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> u32 {
         self.handle_window_event(event);
-        false
+        0
     }
 }
 

@@ -733,6 +733,8 @@
     "test_signal_local_slots::a_capture_that_connects_and_disconnects_local_slots_while_it_is_retired_does_not_double_borrow::TB": "pass",
     "test_signal_local_slots::a_foreign_emission_neither_runs_nor_consumes_a_single_shot_local_slot::SB": "pass",
     "test_signal_local_slots::a_foreign_emission_neither_runs_nor_consumes_a_single_shot_local_slot::TB": "pass",
+    "test_signal_local_slots::a_handle_dropped_on_another_thread_after_the_owner_exited_buffers_nothing::SB": "pass",
+    "test_signal_local_slots::a_handle_dropped_on_another_thread_after_the_owner_exited_buffers_nothing::TB": "pass",
     "test_signal_local_slots::a_local_slot_captures_an_rc_and_runs_on_the_connecting_thread::SB": "pass",
     "test_signal_local_slots::a_local_slot_captures_an_rc_and_runs_on_the_connecting_thread::TB": "pass",
     "test_signal_local_slots::a_panicking_local_slot_is_contained_like_any_other_and_the_slot_stays_usable::SB": "pass",

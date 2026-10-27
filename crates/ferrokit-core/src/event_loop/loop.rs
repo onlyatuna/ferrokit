@@ -1529,6 +1529,14 @@ pub(crate) fn mark_thread_ended(thread_id: ThreadId) {
     drop(held);
 }
 
+/// Whether `thread_id` has been reported by [`mark_thread_ended`] and no loop has registered on it
+/// since. A thread id is never reused, so a `true` answer stays true unless that same thread
+/// starts a loop while its locals are being destroyed.
+pub(crate) fn is_thread_ended(thread_id: ThreadId) -> bool {
+    let reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
+    reg.as_ref().is_some_and(|reg| reg.ended.contains(&thread_id))
+}
+
 /// Registers the live loop for `thread_id` and delivers, in posting order, every event that was
 /// posted to that thread before the loop existed. The drain happens under the registry
 /// lock so a concurrent poster cannot overtake the buffered events.

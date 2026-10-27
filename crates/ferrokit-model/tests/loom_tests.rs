@@ -175,7 +175,7 @@ use ferrokit_model::local_slots::{scenarios, LocalMutants};
 
 /// Preemption bound for these scenarios: every interleaving with at most three preemptions per
 /// execution is explored (loom's usual setting for "exhaustive, bounded"). The scenarios have a
-/// handful of modeled operations (key counter, queue lock, exit counter), so this covers every
+/// handful of modeled operations (key counter, pending-retires lock, ended set, exit counter), so this covers every
 /// ordering of post / drain / exit / foreign drop; interleavings that need four or more
 /// preemptions are NOT covered.
 fn bounded(f: impl Fn() + Sync + Send + 'static) {
@@ -257,7 +257,7 @@ fn test_loom_negative_mutant_error_on_ended_post_fails() {
 fn test_loom_reverse_teardown_order() {
     bounded(|| {
         scenarios::foreign_drop_after_owner_exit(LocalMutants {
-            close_queue_after_slots: true,
+            end_owner_after_slots: true,
             ..LocalMutants::default()
         })
     });
@@ -280,6 +280,28 @@ fn test_loom_negative_mutant_foreign_inline_drop_fails() {
     bounded(|| {
         scenarios::foreign_drop_then_owner_drain(LocalMutants {
             foreign_drop_inline: true,
+            ..LocalMutants::default()
+        })
+    });
+}
+
+#[test]
+#[should_panic(expected = "retire keys leaked")]
+fn test_loom_negative_mutant_leak_retire_after_owner_exit_fails() {
+    bounded(|| {
+        scenarios::foreign_drop_after_owner_exit(LocalMutants {
+            leak_retire_after_owner_exit: true,
+            ..LocalMutants::default()
+        })
+    });
+}
+
+#[test]
+#[should_panic(expected = "retire keys leaked")]
+fn test_loom_negative_mutant_clear_pending_before_mark_ended_fails() {
+    bounded(|| {
+        scenarios::foreign_drop_after_owner_exit(LocalMutants {
+            clear_pending_before_mark_ended: true,
             ..LocalMutants::default()
         })
     });

@@ -284,7 +284,7 @@ fn test_shuttle_reverse_teardown_order() {
     shuttle::check_random(
         || {
             scenarios::foreign_drop_after_owner_exit(LocalMutants {
-                close_queue_after_slots: true,
+                end_owner_after_slots: true,
                 ..LocalMutants::default()
             })
         },
@@ -313,6 +313,34 @@ fn test_shuttle_negative_mutant_foreign_inline_drop_fails() {
         || {
             scenarios::foreign_drop_then_owner_drain(LocalMutants {
                 foreign_drop_inline: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
+
+#[test]
+#[should_panic(expected = "retire keys leaked")]
+fn test_shuttle_negative_mutant_leak_retire_after_owner_exit_fails() {
+    shuttle::check_random(
+        || {
+            scenarios::foreign_drop_after_owner_exit(LocalMutants {
+                leak_retire_after_owner_exit: true,
+                ..LocalMutants::default()
+            })
+        },
+        ITERATIONS,
+    );
+}
+
+#[test]
+#[should_panic(expected = "retire keys leaked")]
+fn test_shuttle_negative_mutant_clear_pending_before_mark_ended_fails() {
+    shuttle::check_random(
+        || {
+            scenarios::foreign_drop_after_owner_exit(LocalMutants {
+                clear_pending_before_mark_ended: true,
                 ..LocalMutants::default()
             })
         },
