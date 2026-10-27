@@ -599,9 +599,13 @@
     "test_text_system::test_rehighlight_preserves_user_character_formatting::TB": "pass",
     "test_text_system::test_cursor_visual_line_navigation_in_wrapped_blocks::SB": "unsupported",
     "test_text_system::test_cursor_visual_line_navigation_in_wrapped_blocks::TB": "unsupported",
-    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::SB": "pass",
-    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::TB": "pass",
+    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::SB": "panic",
+    "test_painter_advanced_features::draw_pixmap_honours_composition_mode::TB": "panic",
     "test_painter_advanced_features::draw_text_honours_composition_mode::SB": "unsupported",
-    "test_painter_advanced_features::draw_text_honours_composition_mode::TB": "unsupported"
+    "test_painter_advanced_features::draw_text_honours_composition_mode::TB": "unsupported",
+    "lib::color::icc::tests::icc_unparsable_or_degenerate_curves_keep_the_gamut::SB": "pass",
+    "lib::color::icc::tests::icc_unparsable_or_degenerate_curves_keep_the_gamut::TB": "pass",
+    "test_text_system::test_highlight_overlay_survives_fragment_splitting::SB": "pass",
+    "test_text_system::test_highlight_overlay_survives_fragment_splitting::TB": "pass"
   }
 }

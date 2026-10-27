@@ -175,6 +175,9 @@ impl IccProfile {
             }
             // Parameter order after `g`: a b c d e f (ICC.1 parametricCurveType).
             let a = s15(16)?;
+            if a == 0.0 {
+                return None; // the knee `-b / a` and the curve itself are undefined
+            }
             let b = s15(20)?;
             let knee = -b / a;
             let (c, d, e, f) = match ty {
@@ -284,7 +287,12 @@ impl IccProfile {
         let r = self.xyz_tag(b"rXYZ")?;
         let g = self.xyz_tag(b"gXYZ")?;
         let b = self.xyz_tag(b"bXYZ")?;
-        let tf = self.trc_tag(b"rTRC")?;
+        // One transfer function serves all channels: the first parsable of rTRC/gTRC/bTRC. When
+        // none parses, the gamut is still honoured with an sRGB curve.
+        let tf = [b"rTRC", b"gTRC", b"bTRC"]
+            .into_iter()
+            .find_map(|sig| self.trc_tag(sig))
+            .unwrap_or(TransferFunction::Srgb);
         let xy = |v: [f32; 3]| {
             let s = v[0] + v[1] + v[2];
             PointF {
@@ -499,5 +507,35 @@ mod tests {
         );
         let lin = build(b"GRAY", &[(*b"kTRC", gamma_tag(1.0))]).to_color_space().unwrap();
         assert!(lin.is_linear());
+    }
+
+    #[test]
+    fn icc_unparsable_or_degenerate_curves_keep_the_gamut() {
+        // Degenerate parametric curve (a == 0) is rejected.
+        let mut bad = b"para\0\0\0\0".to_vec();
+        bad.extend_from_slice(&[0, 3, 0, 0]);
+        for v in [2.4, 0.0, 0.055, 1.0 / 12.92, 0.04045] {
+            bad.extend_from_slice(&s15(v));
+        }
+        assert!(build(b"GRAY", &[(*b"kTRC", bad.clone())]).trc_tag(b"kTRC").is_none());
+
+        // rTRC unusable, gTRC valid: the valid curve is used.
+        let p3 = ColorSpace::display_p3();
+        let ok = rgb_profile(&p3, srgb_para_tag(), PrimaryPoints::D50);
+        let mut tags = Vec::new();
+        for sig in [b"rXYZ", b"gXYZ", b"bXYZ", b"wtpt"] {
+            tags.push((*sig, ok.tag(sig).unwrap().to_vec()));
+        }
+        tags.push((*b"rTRC", bad.clone()));
+        tags.push((*b"gTRC", srgb_para_tag()));
+        assert_eq!(build(b"RGB ", &tags).to_color_space().unwrap(), ColorSpace::display_p3());
+
+        // No usable curve at all: still P3 primaries (sRGB-style curve), not plain sRGB.
+        tags.pop();
+        tags.pop();
+        tags.push((*b"rTRC", bad));
+        let cs = build(b"RGB ", &tags).to_color_space().unwrap();
+        assert_eq!(cs, ColorSpace::display_p3());
+        assert_ne!(cs, ColorSpace::srgb());
     }
 }

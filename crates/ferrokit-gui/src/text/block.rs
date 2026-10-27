@@ -159,10 +159,11 @@ impl TextBlock {
     }
 
     fn text_key(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hasher;
+        // Streamed bytes, so the key depends on the text only, not on how fragments split it.
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for f in &self.fragments {
-            f.text().hash(&mut h);
+            h.write(f.text().as_bytes());
         }
         h.finish()
     }

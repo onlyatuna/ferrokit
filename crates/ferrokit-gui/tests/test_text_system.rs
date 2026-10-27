@@ -345,6 +345,27 @@ fn test_rehighlight_preserves_user_character_formatting() {
 }
 
 #[test]
+fn test_highlight_overlay_survives_fragment_splitting() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("fn main");
+    let mut highlighter = SyntaxHighlighter::new();
+    let color = Color::from_rgba8(200, 0, 100, 255);
+    highlighter.add_keyword("fn", TextCharFormat::default().with_foreground(color));
+    highlighter.rehighlight(&mut doc);
+
+    // A formatting-only edit splits the fragments but leaves the text, so the overlay stays.
+    let user = TextCharFormat::default().with_background(Color::from_rgba8(9, 9, 9, 255));
+    doc.merge_char_format(1, 4, &user);
+    assert!(doc.block_at(0).unwrap().fragments().len() > 1);
+    assert!(doc
+        .block_at(0)
+        .unwrap()
+        .effective_fragments()
+        .iter()
+        .any(|f| f.char_format().foreground == Some(color)));
+}
+
+#[test]
 fn test_cursor_visual_line_navigation_in_wrapped_blocks() {
     let mut doc = TextDocument::new();
     doc.set_plain_text("abc\nde");
