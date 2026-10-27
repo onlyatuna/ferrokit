@@ -388,16 +388,53 @@ fn hide_tip_immediately() {
             c.pending_hide.set(PendingHide::Now);
             return;
         }
-        if let Ok(mut tip) = c.tip.try_borrow_mut() {
-            if let Some(tip) = tip.as_mut() {
-                if tip.window.is_visible() {
-                    tip.window.hide();
-                }
-                tip.text.clear();
-                tip.widget = None;
-            }
+        // Taken out of the slot while the window hides: a `Hide` handler or event filter may call
+        // the tip API, and no window operation runs with the slot borrowed.
+        let Some(mut tip) = c.tip.try_borrow_mut().ok().and_then(|mut slot| slot.take()) else {
+            return;
+        };
+        c.placing.set(c.placing.get() + 1);
+        if tip.window.is_visible() {
+            tip.window.hide();
         }
+        tip.text.clear();
+        tip.widget = None;
+        c.placing.set(c.placing.get() - 1);
+        if c.placing.get() == 0 {
+            // A hide recorded by a re-entrant call has nothing left to apply to.
+            c.pending_hide.set(PendingHide::None);
+        }
+        put_back(c, tip);
     });
+}
+
+/// Puts `tip` into the empty slot. When a re-entrant call installed a newer tip meanwhile, the
+/// newer one stays and `tip`'s window is hidden and dropped with the slot not borrowed (a
+/// `Window`'s drop may dispatch events). Returns whether `tip` went back.
+fn put_back(c: &Controller, tip: Tip) -> bool {
+    let rejected = {
+        let mut slot = c.tip.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(tip);
+            None
+        } else {
+            Some(tip)
+        }
+    };
+    match rejected {
+        None => true,
+        Some(mut tip) => {
+            tip.window.hide();
+            false
+        }
+    }
+}
+
+/// The tip's label (`None` while the slot is taken out or borrowed), cloned so the slot is not
+/// borrowed while the label changes.
+fn tip_label(c: &Controller) -> Option<WidgetRef> {
+    let slot = c.tip.try_borrow().ok()?;
+    slot.as_ref().map(|tip| tip.label.clone())
 }
 
 /// Whether `ToolTip::place` is working on the tip, so the slot is empty but a tip is on its way.
@@ -430,39 +467,44 @@ fn new_tip_label(text: &str) -> Label {
 
 /// The second half of `ToolTip::place`: puts the tip back into the controller after it was shown
 /// outside the slot borrow, and applies what happened while it was out (a newer tip, a hide,
-/// a palette or font change).
+/// a palette or font change). No window operation runs while the slot (or the palette and font
+/// cells) is borrowed: a `Hide` handler may call the tip API.
 fn finish_place(c: &Controller, mut tip: Tip, text: &str, msec_display_time: i32) {
     c.placing.set(c.placing.get() - 1);
     let pending = c.pending_hide.replace(PendingHide::None);
-    let mut slot = c.tip.borrow_mut();
-    if slot.is_some() {
+    let occupied = c.tip.borrow().is_some();
+    if occupied {
         // A re-entrant call installed a newer tip while this one was showing; the
         // newer one wins and this window must not stay up on its own.
         tip.window.hide();
         return;
     }
     // `set_palette` / `set_font` skip a tip that is taken out: catch up here.
+    let palette = c.custom_palette.borrow().clone();
+    let font = c.custom_font.borrow().clone();
     if let Ok(mut label) = tip.label.try_borrow_mut() {
         if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
-            if let Some(palette) = c.custom_palette.borrow().as_ref() {
+            if let Some(palette) = palette {
                 lbl.set_background_color(Some(
                     palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
                 ));
                 lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
             }
-            if let Some(font) = c.custom_font.borrow().as_ref() {
-                lbl.set_font(font.clone());
+            if let Some(font) = font {
+                lbl.set_font(font);
             }
         }
     }
     if pending == PendingHide::Now {
-        // A hide that came in while the tip was showing wins over this show.
+        // A hide that came in while the tip was showing wins over this show. The timers stop
+        // first: a `Hide` handler may show a newer tip, which starts its own.
         stop_timer(&c.hide);
         stop_timer(&c.expire);
         tip.window.hide();
         tip.text.clear();
         tip.widget = None;
-    } else {
+        put_back(c, tip);
+    } else if put_back(c, tip) {
         // `restartExpireTimer`: a new expiry cancels a pending hide.
         start_timer(&c.expire, expire_time_ms(text, msec_display_time));
         stop_timer(&c.hide);
@@ -470,7 +512,6 @@ fn finish_place(c: &Controller, mut tip: Tip, text: &str, msec_display_time: i32
             start_timer(&c.hide, HIDE_DELAY_MS);
         }
     }
-    *slot = Some(tip);
 }
 
 /// `QToolTip`.
@@ -503,10 +544,10 @@ impl ToolTip {
                 return;
             }
             let changed = CONTROLLER.with(|c| {
-                c.tip
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|t| t.text != text || t.widget != widget || t.rect != rect)
+                c.tip.try_borrow().is_ok_and(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|t| t.text != text || t.widget != widget || t.rect != rect)
+                })
             });
             if changed {
                 Self::place(pos, text, widget, rect, msec_display_time);
@@ -532,15 +573,13 @@ impl ToolTip {
     pub fn set_palette(palette: Palette) {
         CONTROLLER.with(|c| {
             *c.custom_palette.borrow_mut() = Some(palette.clone());
-            let Ok(slot) = c.tip.try_borrow() else { return };
-            if let Some(tip) = slot.as_ref() {
-                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
-                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
-                    lbl.set_background_color(Some(
-                        palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
-                    ));
-                    lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
-                }
+            let Some(label) = tip_label(c) else { return };
+            let Ok(mut label) = label.try_borrow_mut() else { return };
+            if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
+                lbl.set_background_color(Some(
+                    palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
+                ));
+                lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
             }
         });
     }
@@ -559,12 +598,10 @@ impl ToolTip {
     pub fn set_font(font: Font) {
         CONTROLLER.with(|c| {
             *c.custom_font.borrow_mut() = Some(font.clone());
-            let Ok(slot) = c.tip.try_borrow() else { return };
-            if let Some(tip) = slot.as_ref() {
-                let Ok(mut label) = tip.label.try_borrow_mut() else { return };
-                if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
-                    lbl.set_font(font);
-                }
+            let Some(label) = tip_label(c) else { return };
+            let Ok(mut label) = label.try_borrow_mut() else { return };
+            if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
+                lbl.set_font(font);
             }
         });
     }
@@ -582,9 +619,10 @@ impl ToolTip {
     /// `QToolTip::text`: the text of the visible tip, or an empty string.
     pub fn text() -> String {
         CONTROLLER.with(|c| {
-            c.tip
-                .borrow()
-                .as_ref()
+            let Ok(slot) = c.tip.try_borrow() else {
+                return String::new();
+            };
+            slot.as_ref()
                 .filter(|t| t.window.is_visible())
                 .map(|t| t.text.clone())
                 .unwrap_or_default()
@@ -594,9 +632,8 @@ impl ToolTip {
     /// Where the visible tip is, in global logical coordinates (`QTipLabel::geometry`).
     pub fn geometry() -> Option<Rect> {
         CONTROLLER.with(|c| {
-            c.tip
-                .borrow()
-                .as_ref()
+            let slot = c.tip.try_borrow().ok()?;
+            slot.as_ref()
                 .filter(|t| t.window.is_visible())
                 .map(|t| t.window.geometry())
         })
@@ -748,62 +785,127 @@ mod tests {
         CONTROLLER.with(|c| *c.tip.borrow_mut() = held);
     }
 
-    /// Takes the tip out of the controller as `place` does while it shows the window.
-    fn take_tip_out() -> Tip {
+    /// Leaves a hidden tip in the controller, so the next `show_text` reuses its window.
+    fn retained_hidden_tip() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        assert!(ToolTip::is_visible());
+        hide_tip_immediately();
+        assert!(!ToolTip::is_visible());
+    }
+
+    /// The window event handler of the controller's tip window: it receives `Show` and `Hide`
+    /// from inside `Window::show` / `Window::hide`, i.e. while `place`, `finish_place` or
+    /// `hide_tip_immediately` is working on that window.
+    fn on_tip_window_event(handler: impl Fn(&mut Event) + 'static) {
         CONTROLLER.with(|c| {
-            c.placing.set(c.placing.get() + 1);
-            c.pending_hide.set(PendingHide::None);
-            c.tip.borrow_mut().take().expect("a tip exists")
-        })
+            c.tip
+                .borrow_mut()
+                .as_mut()
+                .expect("a tip exists")
+                .window
+                .set_window_event_handler(handler);
+        });
+    }
+
+    fn counters() -> (u32, PendingHide) {
+        CONTROLLER.with(|c| (c.placing.get(), c.pending_hide.get()))
     }
 
     #[test]
     fn a_hide_that_re_enters_while_the_tip_is_shown_is_not_lost() {
-        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
-        assert!(ToolTip::is_visible());
-        hide_tip_immediately();
-        // The tip is hidden but kept; show it again the way `place` does.
-        let mut tip = take_tip_out();
-        tip.window.show();
-        hide_tip_immediately(); // arrives while the tip is out of the slot
-        CONTROLLER.with(|c| finish_place(c, tip, "again", -1));
+        retained_hidden_tip();
+        let during = Rc::new(Cell::new(None));
+        let seen = Rc::clone(&during);
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) {
+                // The expire timer's callback, arriving while `place` has the tip out.
+                hide_tip_immediately();
+                seen.set(Some(counters()));
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "again", None, -1);
+        assert_eq!(during.get(), Some((1, PendingHide::Now)));
         assert!(!ToolTip::is_visible(), "the re-entrant hide wins over the show");
         assert_eq!(ToolTip::text(), "");
         CONTROLLER.with(|c| {
             assert!(!timer_active(&c.expire));
-            assert_eq!(c.pending_hide.get(), PendingHide::None);
-            assert_eq!(c.placing.get(), 0);
+            assert!(!timer_active(&c.hide));
         });
+        assert_eq!(counters(), (0, PendingHide::None));
+    }
+
+    #[test]
+    fn a_delayed_hide_that_re_enters_while_the_tip_is_shown_is_applied_after_the_delay() {
+        let _el = ferrokit_core::event_loop::EventLoop::new(); // the timers need a loop to run on
+        retained_hidden_tip();
+        let during = Rc::new(Cell::new(None));
+        let seen = Rc::clone(&during);
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) {
+                leave(); // the pointer leaves while `place` has the tip out
+                seen.set(Some(counters()));
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "again", None, -1);
+        assert_eq!(during.get(), Some((1, PendingHide::Delayed)));
+        assert!(ToolTip::is_visible(), "a delayed hide leaves the tip up");
+        assert_eq!(ToolTip::text(), "again");
+        CONTROLLER.with(|c| {
+            assert!(timer_active(&c.expire));
+            assert!(timer_active(&c.hide));
+        });
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
+    }
+
+    #[test]
+    fn a_pending_hide_left_over_does_not_hide_the_next_show() {
+        retained_hidden_tip();
+        CONTROLLER.with(|c| c.pending_hide.set(PendingHide::Now));
+        ToolTip::show_text(Point::new(10, 10), "again", None, -1);
+        assert!(ToolTip::is_visible(), "`place` starts with no pending hide");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
     }
 
     #[test]
     fn a_re_entrant_show_text_leaves_exactly_one_visible_tip() {
-        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
-        hide_tip_immediately();
-        let mut outer = take_tip_out();
-        outer.window.show();
-        ToolTip::show_text(Point::new(20, 20), "nested", None, -1); // re-entrant
-        assert_eq!(ToolTip::text(), "nested");
-        CONTROLLER.with(|c| finish_place(c, outer, "outer", -1));
+        retained_hidden_tip();
+        let during = Rc::new(Cell::new(None));
+        let seen = Rc::clone(&during);
+        let nested = Rc::new(Cell::new(false));
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) && !nested.replace(true) {
+                ToolTip::show_text(Point::new(20, 20), "nested", None, -1);
+                seen.set(Some(counters()));
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        // The nested call ran with the outer one still counted, and took no tip from the slot.
+        assert_eq!(during.get(), Some((1, PendingHide::None)));
         assert!(ToolTip::is_visible());
         assert_eq!(ToolTip::text(), "nested", "the newer tip stays");
+        assert_eq!(counters(), (0, PendingHide::None));
         hide_tip_immediately();
         assert!(!ToolTip::is_visible());
     }
 
     #[test]
     fn a_palette_set_while_the_tip_is_out_is_applied_when_it_returns() {
-        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
-        hide_tip_immediately();
-        let tip = take_tip_out();
+        retained_hidden_tip();
         let mut palette = ToolTip::palette();
         palette.set_color(
             ColorGroup::Inactive,
             ColorRole::ToolTipText,
             ferrokit_gui::tiny_skia::Color::from_rgba8(1, 2, 3, 255),
         );
-        ToolTip::set_palette(palette.clone());
-        CONTROLLER.with(|c| finish_place(c, tip, "x", -1));
+        let during = palette.clone();
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Show) {
+                ToolTip::set_palette(during.clone());
+            }
+        });
+        ToolTip::show_text(Point::new(10, 10), "x", None, -1);
         let applied = CONTROLLER.with(|c| {
             let slot = c.tip.borrow();
             let mut label = slot.as_ref().unwrap().label.borrow_mut();
@@ -814,6 +916,77 @@ mod tests {
             applied,
             palette.color(ColorGroup::Inactive, ColorRole::ToolTipText)
         );
+        hide_tip_immediately();
+    }
+
+    /// `finish_place` hides the tip it replaces: a `Hide` handler there may use the whole tip API.
+    #[test]
+    fn a_hide_handler_may_use_the_tip_api_when_a_newer_tip_replaces_the_tip() {
+        retained_hidden_tip();
+        let log: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = Rc::clone(&log);
+        let nested = Rc::new(Cell::new(false));
+        on_tip_window_event(move |ev| match ev.kind {
+            EventKind::Show if !nested.replace(true) => {
+                ToolTip::show_text(Point::new(20, 20), "nested", None, -1);
+            }
+            EventKind::Hide => {
+                sink.borrow_mut()
+                    .push(format!("{} {}", ToolTip::is_visible(), ToolTip::text()));
+                ToolTip::show_text(Point::new(30, 30), "from hide", None, -1);
+            }
+            _ => {}
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        assert_eq!(*log.borrow(), ["true nested"]);
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "from hide");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
+    }
+
+    /// `finish_place` applies a hide that came in meanwhile: a `Hide` handler there may use the
+    /// whole tip API, and what it shows stays.
+    #[test]
+    fn a_hide_handler_may_use_the_tip_api_when_a_pending_hide_applies() {
+        retained_hidden_tip();
+        let log: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = Rc::clone(&log);
+        on_tip_window_event(move |ev| match ev.kind {
+            EventKind::Show => hide_tip_immediately(),
+            EventKind::Hide => {
+                sink.borrow_mut()
+                    .push(format!("{} {}", ToolTip::is_visible(), ToolTip::text()));
+                ToolTip::show_text(Point::new(30, 30), "revived", None, -1);
+            }
+            _ => {}
+        });
+        ToolTip::show_text(Point::new(10, 10), "outer", None, -1);
+        assert_eq!(*log.borrow(), ["false "]);
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "revived");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
+    }
+
+    /// `hide_tip_immediately` hides a visible tip: a `Hide` handler there may use the whole tip API.
+    #[test]
+    fn a_hide_handler_may_use_the_tip_api_during_hide_tip_immediately() {
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        let log: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = Rc::clone(&log);
+        on_tip_window_event(move |ev| {
+            if matches!(ev.kind, EventKind::Hide) {
+                sink.borrow_mut()
+                    .push(format!("{} {}", ToolTip::is_visible(), ToolTip::text()));
+                ToolTip::show_text(Point::new(30, 30), "again", None, -1);
+            }
+        });
+        hide_tip_immediately();
+        assert_eq!(*log.borrow(), ["false "]);
+        assert!(ToolTip::is_visible());
+        assert_eq!(ToolTip::text(), "again");
+        assert_eq!(counters(), (0, PendingHide::None));
         hide_tip_immediately();
     }
 
