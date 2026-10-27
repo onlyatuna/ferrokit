@@ -118,6 +118,9 @@ pub struct ColorSpace {
     primaries: Primaries,
     primary_points: PrimaryPoints,
     transfer_function: TransferFunction,
+    /// Divergent per-channel curves; `None` when one curve serves every channel. When set,
+    /// `transfer_function` is [`TransferFunction::Custom`].
+    channel_curves: Option<[TransferFunction; 3]>,
     description: String,
 }
 
@@ -134,6 +137,7 @@ impl ColorSpace {
             primaries: Primaries::Srgb,
             primary_points: PrimaryPoints::from_primaries(Primaries::Srgb),
             transfer_function: TransferFunction::Srgb,
+            channel_curves: None,
             description: "sRGB IEC61966-2.1".to_string(),
         }
     }
@@ -144,6 +148,7 @@ impl ColorSpace {
             primaries: Primaries::Srgb,
             primary_points: PrimaryPoints::from_primaries(Primaries::Srgb),
             transfer_function: TransferFunction::Linear,
+            channel_curves: None,
             description: "Linear sRGB".to_string(),
         }
     }
@@ -154,6 +159,7 @@ impl ColorSpace {
             primaries: Primaries::DciP3D65,
             primary_points: PrimaryPoints::from_primaries(Primaries::DciP3D65),
             transfer_function: TransferFunction::Srgb,
+            channel_curves: None,
             description: "Display P3".to_string(),
         }
     }
@@ -164,6 +170,7 @@ impl ColorSpace {
             primaries: Primaries::AdobeRgb,
             primary_points: PrimaryPoints::from_primaries(Primaries::AdobeRgb),
             transfer_function: TransferFunction::Gamma(2.2),
+            channel_curves: None,
             description: "Adobe RGB (1998)".to_string(),
         }
     }
@@ -174,6 +181,7 @@ impl ColorSpace {
             primaries: Primaries::Bt2020,
             primary_points: PrimaryPoints::from_primaries(Primaries::Bt2020),
             transfer_function: TransferFunction::Bt2020,
+            channel_curves: None,
             description: "ITU-R BT.2020".to_string(),
         }
     }
@@ -184,6 +192,7 @@ impl ColorSpace {
             primaries: Primaries::Bt2020,
             primary_points: PrimaryPoints::from_primaries(Primaries::Bt2020),
             transfer_function: TransferFunction::St2084,
+            channel_curves: None,
             description: "ITU-R BT.2100-PQ".to_string(),
         }
     }
@@ -194,6 +203,7 @@ impl ColorSpace {
             primaries: Primaries::Bt2020,
             primary_points: PrimaryPoints::from_primaries(Primaries::Bt2020),
             transfer_function: TransferFunction::Hlg,
+            channel_curves: None,
             description: "ITU-R BT.2100-HLG".to_string(),
         }
     }
@@ -211,6 +221,31 @@ impl ColorSpace {
             primaries,
             primary_points,
             transfer_function,
+            channel_curves: None,
+            description: description.into(),
+        }
+    }
+
+    /// Like [`Self::from_primary_points`] with one transfer function per channel (R, G, B).
+    ///
+    /// When the three curves are equal this is exactly `from_primary_points`; otherwise
+    /// `transfer_function()` reports [`TransferFunction::Custom`] (as `QColorSpace` does for
+    /// non-uniform curves) and the per-channel curves are kept in
+    /// [`Self::channel_transfer_functions`].
+    pub fn from_primary_points_per_channel(
+        primaries: Primaries,
+        primary_points: PrimaryPoints,
+        curves: [TransferFunction; 3],
+        description: impl Into<String>,
+    ) -> Self {
+        if curves[0] == curves[1] && curves[1] == curves[2] {
+            return Self::from_primary_points(primaries, primary_points, curves[0], description);
+        }
+        Self {
+            primaries,
+            primary_points,
+            transfer_function: TransferFunction::Custom,
+            channel_curves: Some(curves),
             description: description.into(),
         }
     }
@@ -226,6 +261,7 @@ impl ColorSpace {
                 primaries: Primaries::ProPhotoRgb,
                 primary_points: PrimaryPoints::from_primaries(Primaries::ProPhotoRgb),
                 transfer_function: TransferFunction::Gamma(1.8),
+                channel_curves: None,
                 description: "ProPhoto RGB".to_string(),
             },
             NamedColorSpace::Bt2020 => Self::bt2020(),
@@ -259,19 +295,52 @@ impl ColorSpace {
         matches!(self.transfer_function, TransferFunction::Linear)
     }
 
-    /// Creates a clone with a modified transfer function.
+    /// Creates a clone with a modified transfer function (applied to all channels).
     pub fn with_transfer_function(&self, tf: TransferFunction) -> Self {
         let mut copy = self.clone();
         copy.transfer_function = tf;
+        copy.channel_curves = None;
         copy
     }
 
+    /// Transfer function of each of the R, G and B channels.
+    ///
+    /// Equal to `[transfer_function(); 3]` unless the space was built with divergent
+    /// per-channel curves (e.g. an ICC profile whose `rTRC`, `gTRC` and `bTRC` differ).
+    pub fn channel_transfer_functions(&self) -> [TransferFunction; 3] {
+        self.channel_curves.unwrap_or([self.transfer_function; 3])
+    }
+
     /// Decodes an electro-optically encoded non-linear value [0.0, 1.0] to linear light.
+    ///
+    /// For a space with divergent per-channel curves (`transfer_function()` is
+    /// [`TransferFunction::Custom`]) this is the identity; use [`Self::to_linear_channel`].
     pub fn to_linear(&self, encoded: f32) -> f32 {
+        Self::decode(self.transfer_function, encoded)
+    }
+
+    /// Like [`Self::to_linear`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
+    pub fn to_linear_channel(&self, channel: usize, encoded: f32) -> f32 {
+        Self::decode(self.channel_transfer_functions()[channel.min(2)], encoded)
+    }
+
+    /// Encodes linear light value to non-linear signal representation.
+    ///
+    /// See [`Self::to_linear`] for the per-channel caveat; use [`Self::to_encoded_channel`].
+    pub fn to_encoded(&self, linear: f32) -> f32 {
+        Self::encode(self.transfer_function, linear)
+    }
+
+    /// Like [`Self::to_encoded`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
+    pub fn to_encoded_channel(&self, channel: usize, linear: f32) -> f32 {
+        Self::encode(self.channel_transfer_functions()[channel.min(2)], linear)
+    }
+
+    fn decode(tf: TransferFunction, encoded: f32) -> f32 {
         if encoded <= 0.0 {
             return 0.0;
         }
-        match self.transfer_function {
+        match tf {
             TransferFunction::Linear => encoded,
             TransferFunction::Gamma(g) => {
                 if g > 0.0 {
@@ -327,12 +396,11 @@ impl ColorSpace {
         }
     }
 
-    /// Encodes linear light value to non-linear signal representation.
-    pub fn to_encoded(&self, linear: f32) -> f32 {
+    fn encode(tf: TransferFunction, linear: f32) -> f32 {
         if linear <= 0.0 {
             return 0.0;
         }
-        match self.transfer_function {
+        match tf {
             TransferFunction::Linear => linear,
             TransferFunction::Gamma(g) => {
                 if g > 0.0 {
@@ -425,7 +493,7 @@ impl ColorSpace {
         let i12 = (xb * zg - xg * zb) * inv_det;
         let i13 = (xg * yb - xb * yg) * inv_det;
 
-        let i21 = (zg * yr - zr * yg) * inv_det;
+        let i21 = (zr * yb - yr * zb) * inv_det;
         let i22 = (xr * zb - xb * zr) * inv_det;
         let i23 = (xb * yr - xr * yb) * inv_det;
 
