@@ -72,9 +72,9 @@ class BuildMatrixTests(unittest.TestCase):
 
     def test_all_shard_counts(self):
         include = build_matrix(ALL)["include"]
-        self.assertEqual(len(include), 10)
+        self.assertEqual(len(include), 12)
         for model in ("SB", "TB"):
-            for crate, shards in [("ferrokit-core", 2), ("ferrokit-gui", 1), ("ferrokit-widgets", 2)]:
+            for crate, shards in [("ferrokit-core", 2), ("ferrokit-gui", 2), ("ferrokit-widgets", 2)]:
                 got = [e["shard"] for e in include if e["crate"] == crate and e["model"] == model]
                 self.assertEqual(got, list(range(1, shards + 1)))
                 self.assertTrue(all(e["shards"] == shards for e in include if e["crate"] == crate))

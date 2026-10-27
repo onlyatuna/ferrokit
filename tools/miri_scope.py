@@ -19,7 +19,7 @@ MODELS = ("SB", "TB")
 # crate -> (cargo package, baseline, shards per model)
 SHARDS = {
     "core": ("ferrokit-core", "tools/miri_baseline.json", 2),
-    "gui": ("ferrokit-gui", "tools/miri_baseline_ferrokit_gui.json", 1),
+    "gui": ("ferrokit-gui", "tools/miri_baseline_ferrokit_gui.json", 2),
     "widgets": ("ferrokit-widgets", "tools/miri_baseline_ferrokit_widgets.json", 2),
 }
 # Exact-name or prefix rules, checked in order; first match wins. Value: crates to run.
