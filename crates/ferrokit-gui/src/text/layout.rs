@@ -23,6 +23,8 @@ struct CompositeText {
     text: String,
     /// Byte offset where each grapheme starts, followed by `text.len()`.
     starts: Vec<usize>,
+    /// Shaped advance of each grapheme, shaped a paragraph at a time.
+    advances: Vec<f32>,
 }
 
 impl CompositeText {
@@ -246,7 +248,7 @@ impl TextLayout {
                 break;
             }
 
-            let g_width = metrics.horizontal_advance_exact(g, &self.font);
+            let g_width = composite.advances[curr_grapheme];
 
             if curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
                 // Wrapping needed
@@ -462,9 +464,40 @@ impl TextLayout {
         let text = self.composite_text();
         let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
         starts.push(text.len());
-        let built = Arc::new(CompositeText { text, starts });
+        let advances = self.paragraph_advances(&text, &starts);
+        let built = Arc::new(CompositeText {
+            text,
+            starts,
+            advances,
+        });
         self.composite.0 = Some(Arc::clone(&built));
         built
+    }
+
+    /// The advance of every grapheme of `text`, shaped one paragraph (the text between hard line
+    /// breaks) at a time, as `QTextEngine` shapes items: kerning and ligatures are measured
+    /// across grapheme boundaries and a ligature's width is divided over its graphemes. The
+    /// `'\n'` graphemes get no advance; line breaking never measures them.
+    fn paragraph_advances(&self, text: &str, starts: &[usize]) -> Vec<f32> {
+        let metrics = FontMetrics::from_font(&self.font);
+        let count = starts.len() - 1;
+        let mut advances = vec![0.0f32; count];
+        let mut first = 0;
+        while first < count {
+            let mut end = first;
+            while end < count && &text[starts[end]..starts[end + 1]] != "\n" {
+                end += 1;
+            }
+            if end > first {
+                let base = starts[first];
+                let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
+                let shaped =
+                    metrics.grapheme_advances_at(&text[base..starts[end]], &local, &self.font);
+                advances[first..end].copy_from_slice(&shaped);
+            }
+            first = end + 1;
+        }
+        advances
     }
 
     /// Produces combined text including preedit IME text.
@@ -491,6 +524,7 @@ pub type QTextLayout = TextLayout;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::line::CursorPosition;
     use std::cell::Cell;
 
     thread_local! {
@@ -554,8 +588,147 @@ mod tests {
         let mut layout = TextLayout::new("Wi", font.clone());
         layout.do_layout();
         let line = layout.line_at(0).unwrap();
-        let expected = metrics.horizontal_advance_exact("W", &font)
-            + metrics.horizontal_advance_exact("i", &font);
+        // The pair is shaped as one string, so whatever the font kerns between `W` and `i` is in.
+        let expected = metrics.horizontal_advance_exact("Wi", &font);
         assert!((line.natural_text_width() - expected).abs() < 1e-3);
+    }
+
+    /// A font and a letter pair its shaping kerns: the pair is measurably narrower shaped than
+    /// as two separate letters. `None` on a machine with none of the usual fonts.
+    fn kerned_pair() -> Option<(Font, &'static str)> {
+        let families = [
+            "Segoe UI",
+            "Arial",
+            "Calibri",
+            "Microsoft JhengHei UI",
+            "DejaVu Sans",
+        ];
+        for family in families {
+            let font = Font::new(family, 16.0);
+            let metrics = FontMetrics::from_font(&font);
+            for pair in ["AV", "To", "Wa", "AT", "Ty", "LT"] {
+                let whole = metrics.horizontal_advance_exact(pair, &font);
+                let apart: f32 = pair
+                    .chars()
+                    .map(|c| metrics.horizontal_advance_exact(&c.to_string(), &font))
+                    .sum();
+                if (whole - apart).abs() > 0.25 {
+                    return Some((font, pair));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn grapheme_advances_are_shaped_not_summed_per_grapheme() {
+        let Some((font, pair)) = kerned_pair() else {
+            eprintln!("no kerning font installed; skipping");
+            return;
+        };
+        let metrics = FontMetrics::from_font(&font);
+        let advances = metrics.grapheme_advances(pair, &font);
+        let whole = metrics.horizontal_advance_exact(pair, &font);
+        assert_eq!(advances.len(), 2);
+        assert!((advances.iter().sum::<f32>() - whole).abs() < 1e-3);
+        let first_alone = metrics.horizontal_advance_exact(&pair[..1], &font);
+        assert!(
+            (advances[0] - first_alone).abs() > 0.25,
+            "the kern lives on the first letter: {advances:?} vs alone {first_alone}"
+        );
+    }
+
+    #[test]
+    fn wrapping_measures_kerned_runs_as_shaped() {
+        let Some((font, pair)) = kerned_pair() else {
+            eprintln!("no kerning font installed; skipping");
+            return;
+        };
+        let metrics = FontMetrics::from_font(&font);
+        let text = pair.repeat(8); // no break opportunity: wrapping falls back to a grapheme cut
+        let advances = metrics.grapheme_advances(&text, &font);
+        let shaped: f32 = advances[..8].iter().sum();
+        let apart: f32 = text
+            .chars()
+            .take(8)
+            .map(|c| metrics.horizontal_advance_exact(&c.to_string(), &font))
+            .sum();
+        assert!(
+            apart > shaped + 0.5,
+            "precondition: kerning narrows the run ({apart} vs {shaped})"
+        );
+
+        let mut layout = TextLayout::new(text.clone(), font);
+        layout.set_wrap_width(Some(shaped + 0.001));
+        layout.do_layout();
+        let first = layout.line_at(0).unwrap();
+        assert_eq!(
+            first.text_length(),
+            8,
+            "eight kerned graphemes fit; summing letters cuts earlier"
+        );
+
+        // Lines tile the text on grapheme boundaries.
+        let mut next = 0;
+        for i in 0..layout.line_count() {
+            let line = layout.line_at(i).unwrap();
+            assert_eq!(line.text_start(), next);
+            assert_eq!(
+                line.byte_length(),
+                line.text_length(),
+                "ASCII: one byte per grapheme"
+            );
+            next += line.text_length();
+        }
+        assert_eq!(next, text.len());
+    }
+
+    #[test]
+    fn cursor_positions_follow_shaped_grapheme_boundaries() {
+        let Some((font, pair)) = kerned_pair() else {
+            eprintln!("no kerning font installed; skipping");
+            return;
+        };
+        let metrics = FontMetrics::from_font(&font);
+        let text = pair.repeat(3);
+        let advances = metrics.grapheme_advances(&text, &font);
+        let mut layout = TextLayout::new(text.clone(), font.clone());
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 1);
+        let line = layout.line_at(0).unwrap();
+
+        let mut x = 0.0f32;
+        for (i, advance) in advances.iter().enumerate() {
+            assert!(
+                (line.cursor_to_x(i, Edge::Leading) - x).abs() < 1e-3,
+                "boundary {i}"
+            );
+            assert_eq!(
+                line.x_to_cursor(x, CursorPosition::CursorBetweenCharacters),
+                i,
+                "boundary {i} maps back to its grapheme"
+            );
+            x += advance;
+        }
+        assert!((line.cursor_to_x(advances.len(), Edge::Leading) - x).abs() < 1e-3);
+        let first_alone = metrics.horizontal_advance_exact(&pair[..1], &font);
+        assert!((line.cursor_to_x(1, Edge::Leading) - first_alone).abs() > 0.25);
+    }
+
+    #[test]
+    fn cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries() {
+        // "e" + U+0301 is one grapheme: three graphemes for the four chars of "e\u{301}xy".
+        let text = "e\u{301}xy";
+        let mut layout = TextLayout::new(text, Font::new("Segoe UI", 12.0));
+        layout.do_layout();
+        let line = layout.line_at(0).unwrap();
+        assert_eq!(line.text_length(), 3);
+        assert_eq!(line.byte_length(), text.len());
+        let xs: Vec<f32> = (0..=3)
+            .map(|i| line.cursor_to_x(i, Edge::Leading))
+            .collect();
+        assert_eq!(xs[0], 0.0);
+        assert!(xs.windows(2).all(|w| w[1] > w[0]), "{xs:?}");
+        assert!((xs[3] - line.natural_text_width()).abs() < 1e-3);
     }
 }
