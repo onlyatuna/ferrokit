@@ -366,6 +366,40 @@ fn test_highlight_overlay_survives_fragment_splitting() {
 }
 
 #[test]
+fn test_html_export_merges_highlighter_overlay_over_user_formats() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("fn main");
+    let bold = TextCharFormat::default().with_font_weight(FontWeight::Bold);
+    doc.merge_char_format(0, 2, &bold);
+    let user_html = doc.to_html();
+    assert!(user_html.contains("<b>fn</b>"), "{user_html}");
+    assert!(!user_html.contains("<font"), "{user_html}");
+
+    let mut highlighter = SyntaxHighlighter::new();
+    highlighter.add_keyword(
+        "fn",
+        TextCharFormat::default().with_foreground(Color::from_rgba8(200, 0, 100, 255)),
+    );
+    highlighter.rehighlight(&mut doc);
+    // Bold (user) and colour (overlay) both survive in the export.
+    let html = doc.to_html();
+    assert!(html.contains("<b><font color=\"#c80064\">fn</font></b>"), "{html}");
+    assert!(html.contains(" main"), "{html}");
+    assert!(doc.to_markdown().contains("**fn**"));
+
+    // Clearing the highlighter returns the export to the user formats only.
+    SyntaxHighlighter::new().rehighlight(&mut doc);
+    assert_eq!(doc.to_html(), user_html);
+    // The export never wrote the overlay into the document itself.
+    assert!(doc
+        .block_at(0)
+        .unwrap()
+        .fragments()
+        .iter()
+        .all(|f| f.char_format().foreground.is_none()));
+}
+
+#[test]
 fn test_cursor_visual_line_navigation_in_wrapped_blocks() {
     let mut doc = TextDocument::new();
     doc.set_plain_text("abc\nde");

@@ -268,6 +268,8 @@ impl TextBlock {
 
     /// Returns the character format of the fragment containing the byte just before `byte`
     /// (or the first fragment when `byte` is at the start), falling back to the block's char format.
+    /// Reads the user formats only: this seeds typing/insert formats, which must never inherit the
+    /// highlighter overlay.
     pub(crate) fn char_format_before_byte(&self, byte: usize) -> &TextCharFormat {
         let mut offset = 0;
         let mut last = None;
@@ -354,7 +356,8 @@ impl TextBlock {
         tail
     }
 
-    /// Returns copies of the fragments covering the byte range `start..end`.
+    /// Returns copies of the fragments covering the byte range `start..end`. User formats only, so
+    /// copy/cut never bakes the highlighter overlay into the document.
     pub(crate) fn slice_fragments(&self, start: usize, end: usize) -> Vec<TextFragment> {
         let mut out = Vec::new();
         let mut offset = 0;
