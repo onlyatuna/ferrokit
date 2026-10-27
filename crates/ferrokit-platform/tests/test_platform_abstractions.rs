@@ -213,11 +213,8 @@ fn test_platform_integration_factory() {
     let mut tray = p
         .create_tray_icon("Factory Tray", &pixmap)
         .expect("factory tray icon creation failed");
-    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
-    assert_eq!(
-        tray.show().is_ok(),
-        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
-    );
+    // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
+    assert!(tray.show().is_ok());
     assert!(tray.set_tooltip("Updated Factory Tray").is_ok());
     assert!(tray.hide().is_ok());
 }
@@ -361,9 +358,8 @@ fn test_cross_platform_tray_icon_implementations() {
 
     assert!(dbus_tray.set_icon(&pixmap).is_ok());
     assert!(dbus_tray.set_tooltip("CPU 45% | RAM 62%").is_ok());
-    // With a session bus the registration reply is never read, so show() reports Err.
-    let shown = dbus_tray.show();
-    assert_eq!(shown.is_ok(), ferrokit_platform::DbusConnection::connect_session_bus().is_err());
+    // show() only queues the registration, so it succeeds with or without a session bus.
+    assert!(dbus_tray.show().is_ok());
     assert!(dbus_tray.hide().is_ok());
 
     // Verify D-Bus a(iiay) format conversion: width 24, height 24, channel order ARGB [180, 0, 200, 255]
@@ -659,11 +655,8 @@ fn test_unix_platform_integration_dbus_tray_and_window() {
     let mut tray = unix_integration
         .create_tray_icon("Linux Tray Icon", &pixmap)
         .expect("failed to create Linux D-Bus tray icon");
-    // A D-Bus tray with a session bus cannot confirm its registration: show() is Err there.
-    assert_eq!(
-        tray.show().is_ok(),
-        ferrokit_platform::DbusConnection::connect_session_bus().is_err()
-    );
+    // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
+    assert!(tray.show().is_ok());
     assert!(tray.hide().is_ok());
 
     let primary = unix_integration.primary_screen();
@@ -907,12 +900,13 @@ fn test_linux_dbus_connection_lifecycle_and_registration() {
         "the scripted transport owns no descriptor"
     );
 
-    assert!(conn
+    let name_serial = conn
         .request_name("org.kde.StatusNotifierItem-TestApp-1")
-        .unwrap());
-    assert!(conn
+        .unwrap();
+    let register_serial = conn
         .register_status_notifier_item("/StatusNotifierItem")
-        .unwrap());
+        .unwrap();
+    assert_ne!(name_serial, register_serial);
 
     assert!(conn.has_sent_member("Hello"));
     assert!(conn.has_sent_member("RequestName"));
@@ -1032,9 +1026,8 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
     assert!(tray.set_icon(&pixmap).is_ok());
     assert!(tray.set_tooltip("Running Smoothly").is_ok());
 
-    // show() sends the registration, but its reply is never read: it reports that instead of
-    // claiming a registration.
-    assert!(tray.show().is_err());
+    // show() queues the registration and returns; the watcher has not answered yet.
+    assert!(tray.show().is_ok());
     assert!(!tray.is_registered());
     assert!(tray.is_connected());
     assert_eq!(tray.status(), "Active");

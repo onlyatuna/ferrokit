@@ -4,6 +4,7 @@
 //!
 //! The protocol is implemented over [`DbusTransport`], so everything except opening the Unix
 //! socket (Linux only) runs and is tested on every platform.
+use super::dbus::DbusImage;
 use ferrokit_core::event_loop::{
     EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier, SocketNotifierError,
 };
@@ -121,6 +122,97 @@ impl<'a> Reader<'a> {
 
 fn align_up(n: usize, to: usize) -> usize {
     (n + to - 1) & !(to - 1)
+}
+
+fn pad(buf: &mut Vec<u8>, to: usize) {
+    while !buf.len().is_multiple_of(to) {
+        buf.push(0);
+    }
+}
+
+fn put_u32(buf: &mut Vec<u8>, val: u32) {
+    pad(buf, 4);
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+fn put_str(buf: &mut Vec<u8>, s: &str) {
+    put_u32(buf, s.len() as u32);
+    buf.extend_from_slice(s.as_bytes());
+    buf.push(0);
+}
+
+/// `a(iiay)`: the length of the elements (struct padding included), the padding up to the
+/// element alignment (written even for an empty array), then each `(width, height, bytes)`.
+fn put_pixmaps(buf: &mut Vec<u8>, images: &[DbusImage]) {
+    pad(buf, 4);
+    let len_at = buf.len();
+    put_u32(buf, 0);
+    pad(buf, 8);
+    let start = buf.len();
+    for image in images {
+        pad(buf, 8);
+        buf.extend_from_slice(&image.width.to_le_bytes());
+        buf.extend_from_slice(&image.height.to_le_bytes());
+        put_u32(buf, image.data.len() as u32);
+        buf.extend_from_slice(&image.data);
+    }
+    let len = (buf.len() - start) as u32;
+    buf[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
+}
+
+/// A value that can be sent inside a variant.
+#[derive(Debug, Clone, Copy)]
+pub enum DbusValue<'a> {
+    Str(&'a str),
+    ObjectPath(&'a str),
+    U32(u32),
+    Bool(bool),
+    /// `a(iiay)`, as `IconPixmap` of the StatusNotifierItem.
+    Pixmaps(&'a [DbusImage]),
+    /// `(sa(iiay)ss)` with no pixmaps: icon name, title and description of `ToolTip`.
+    ToolTip {
+        icon_name: &'a str,
+        title: &'a str,
+        description: &'a str,
+    },
+}
+
+impl DbusValue<'_> {
+    fn type_signature(&self) -> &'static str {
+        match self {
+            Self::Str(_) => "s",
+            Self::ObjectPath(_) => "o",
+            Self::U32(_) => "u",
+            Self::Bool(_) => "b",
+            Self::Pixmaps(_) => "a(iiay)",
+            Self::ToolTip { .. } => "(sa(iiay)ss)",
+        }
+    }
+
+    /// The variant's signature (`u8` length, text, NUL), then the value.
+    fn put_variant(&self, buf: &mut Vec<u8>) {
+        let sig = self.type_signature();
+        buf.push(sig.len() as u8);
+        buf.extend_from_slice(sig.as_bytes());
+        buf.push(0);
+        match self {
+            Self::Str(s) | Self::ObjectPath(s) => put_str(buf, s),
+            Self::U32(v) => put_u32(buf, *v),
+            Self::Bool(v) => put_u32(buf, u32::from(*v)),
+            Self::Pixmaps(images) => put_pixmaps(buf, images),
+            Self::ToolTip {
+                icon_name,
+                title,
+                description,
+            } => {
+                pad(buf, 8);
+                put_str(buf, icon_name);
+                put_pixmaps(buf, &[]);
+                put_str(buf, title);
+                put_str(buf, description);
+            }
+        }
+    }
 }
 
 impl DbusMessage {
@@ -251,6 +343,47 @@ impl DbusMessage {
         self.pad_body(4);
         self.body.extend_from_slice(&0u32.to_le_bytes());
         self.pad_body(8);
+    }
+
+    /// A `v` holding `value`: the variant's own signature, then the value at its alignment.
+    pub fn append_variant(&mut self, value: &DbusValue<'_>) {
+        self.signature.push('v');
+        value.put_variant(&mut self.body);
+    }
+
+    /// An `a{sv}` holding `entries`. Each dict entry starts 8-aligned; the array length counts
+    /// the entries including their padding but not the padding before the first one.
+    pub fn append_dict_sv(&mut self, entries: &[(&str, DbusValue<'_>)]) {
+        self.signature.push_str("a{sv}");
+        pad(&mut self.body, 4);
+        let len_at = self.body.len();
+        put_u32(&mut self.body, 0);
+        pad(&mut self.body, 8);
+        let start = self.body.len();
+        for (key, value) in entries {
+            pad(&mut self.body, 8);
+            put_str(&mut self.body, key);
+            value.put_variant(&mut self.body);
+        }
+        let len = (self.body.len() - start) as u32;
+        self.body[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
+    }
+
+    /// Every body argument when the signature consists only of strings (and object paths);
+    /// `None` for any other signature or a malformed body.
+    pub fn body_strings(&self) -> Option<Vec<String>> {
+        if !self.signature.chars().all(|c| c == 's' || c == 'o') {
+            return None;
+        }
+        let mut reader = Reader {
+            data: &self.body,
+            pos: 0,
+            big_endian: self.big_endian,
+        };
+        self.signature
+            .chars()
+            .map(|_| reader.string().ok())
+            .collect()
     }
 
     /// A reader over the body, positioned at its start. The body's alignment is relative to its
@@ -747,7 +880,8 @@ impl DbusConnection {
         Ok(name)
     }
 
-    pub fn request_name(&mut self, service_name: &str) -> Result<bool, &'static str> {
+    /// Queues `RequestName` and returns its serial, so the reply can be matched.
+    pub fn request_name(&mut self, service_name: &str) -> Result<u32, &'static str> {
         let serial = self.next_serial();
         let mut msg = DbusMessage::method_call(
             "org.freedesktop.DBus",
@@ -759,7 +893,7 @@ impl DbusConnection {
         msg.append_string(service_name);
         self.send_message(msg)?;
         self.registered_names.push(service_name.to_string());
-        Ok(true)
+        Ok(serial)
     }
     pub fn add_match(&mut self, match_rule: &str) -> Result<bool, &'static str> {
         let serial = self.next_serial();
@@ -775,10 +909,11 @@ impl DbusConnection {
         Ok(true)
     }
 
+    /// Queues `RegisterStatusNotifierItem` and returns its serial, so the reply can be matched.
     pub fn register_status_notifier_item(
         &mut self,
         service_or_path: &str,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<u32, &'static str> {
         let serial = self.next_serial();
         let mut msg = DbusMessage::method_call(
             "org.kde.StatusNotifierWatcher",
@@ -789,7 +924,7 @@ impl DbusConnection {
         );
         msg.append_string(service_or_path);
         self.send_message(msg)?;
-        Ok(true)
+        Ok(serial)
     }
 
     /// Queues the message and writes as much as the socket accepts now. A message the socket only
