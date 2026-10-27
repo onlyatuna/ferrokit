@@ -13,8 +13,8 @@
 //!   modelled. A float RGB component outside the range is clamped to it, which is what the 8-bit
 //!   `rgba()`, `name()` and `toRgb()` of an `ExtendedRgb` colour return (Qt stores in-range
 //!   channels as `qfloat16` too, so a channel round-trip such as `green()` can differ by 1 in rare
-//!   rounding cases); a `NaN` component or an
-//!   alpha outside `0.0..=1.0` makes the colour invalid, as in Qt.
+//!   rounding cases); a `NaN` component or an alpha outside `0.0..=1.0` makes the colour invalid,
+//!   as in Qt.
 //! * Qt prints a warning when an argument is out of range; this type just returns an invalid colour.
 //! * Colours are `Color` (aliased `QColor`); conversion to the painter's `tiny_skia::Color`
 //!   goes through the 8-bit `rgba()` value.

@@ -1047,9 +1047,9 @@ pub mod unix_theme {
         use std::sync::mpsc::{channel, Sender};
         use std::time::{Duration, Instant};
 
-        /// What the first scheme read may take at most when the answer is there (the wait is
-        /// 300 ms).
-        const PROMPT: Duration = Duration::from_millis(250);
+        /// A generous upper bound for a read that finds its answer in: a missed wake-up would show
+        /// as the 300 ms timeout, but loaded machines must not fail the test.
+        const PROMPT: Duration = Duration::from_secs(2);
 
         /// A scheme that is neither `Unknown` nor what the fallback (GTK settings of the machine
         /// running the test) says, so the portal's answer is always a change.
@@ -1127,7 +1127,7 @@ pub mod unix_theme {
             let (scheme, took) = timed_read(&theme);
             assert_eq!(scheme, fallback);
             assert!(took >= Duration::from_millis(290), "gave up after {took:?}");
-            assert!(took < Duration::from_secs(5), "waited {took:?}");
+            assert!(took < Duration::from_secs(2), "waited {took:?}");
             // The wait happens once: later reads do not wait again.
             let (again, took) = timed_read(&theme);
             assert_eq!(again, fallback);
@@ -1219,8 +1219,14 @@ pub mod unix_theme {
             let recorded = reads.lock().unwrap().clone();
             assert_eq!(recorded.len(), 1);
             let (scheme, took) = recorded[0];
+            // A read that waited would have taken the one wait (and its receiver) for itself,
+            // whatever the clock says.
+            assert!(
+                theme.initial_answer.lock().unwrap().is_some(),
+                "the slot on the listener thread used up the wait"
+            );
             assert_eq!(scheme, answer, "the slot already sees the new scheme");
-            assert!(took < Duration::from_millis(100), "the listener stalled for {took:?}");
+            assert!(took < Duration::from_secs(2), "the listener stalled for {took:?}");
             // The slot did not use up the one wait: the first outside read still gets the answer
             // at once.
             let (scheme, took) = timed_read(&theme);

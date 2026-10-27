@@ -88,15 +88,58 @@ fn a_local_target_dropped_on_another_thread_is_no_longer_performed() {
         tx.send((Moved(target), id.0 as usize)).unwrap();
         // Keep this thread (and its thread-local table) alive until the target is gone.
         done_rx.recv().unwrap();
-        // The entry this thread's table still holds must not run.
+        // The closure stays in this thread's table until this thread next touches a target.
+        let held_before = Rc::strong_count(&hits);
+        // The entry this thread's table still holds must not run, and releases the closure.
         let still = ActionTarget::perform(Id(id.0));
-        (hits.load(Ordering::SeqCst), still)
+        (
+            hits.load(Ordering::SeqCst),
+            still,
+            held_before,
+            Rc::strong_count(&hits),
+        )
     });
     let (moved, address) = rx.recv().unwrap();
     drop(moved);
     done_tx.send(()).unwrap();
-    let (hits, still_performed) = creator.join().unwrap();
+    let (hits, still_performed, held_before, held_after) = creator.join().unwrap();
     assert_ne!(address, 0);
     assert!(!still_performed, "a dropped target has no live callback");
     assert_eq!(hits, 0);
+    assert_eq!(
+        held_before, 2,
+        "released only when the owner next touches a target"
+    );
+    assert_eq!(held_after, 1, "the owner's next call released the closure");
+}
+
+#[test]
+fn a_foreign_drop_is_released_by_the_owners_next_new_or_drop() {
+    for next in ["new", "drop"] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let creator = std::thread::spawn(move || {
+            let witness = Rc::new(());
+            let held = Rc::clone(&witness);
+            let target = ActionTarget::new(move || {
+                let _ = &held;
+            })
+            .unwrap();
+            let other = ActionTarget::new(|| {}).unwrap();
+            tx.send(Moved(target)).unwrap();
+            go_rx.recv().unwrap();
+            let before = Rc::strong_count(&witness);
+            if next == "new" {
+                let _another = ActionTarget::new(|| {}).unwrap();
+                assert_eq!(Rc::strong_count(&witness), 1);
+            } else {
+                drop(other);
+            }
+            let after = Rc::strong_count(&witness);
+            (before, after)
+        });
+        drop(rx.recv().unwrap());
+        go_tx.send(()).unwrap();
+        assert_eq!(creator.join().unwrap(), (2, 1), "owner's next {next}");
+    }
 }
