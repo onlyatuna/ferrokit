@@ -154,6 +154,9 @@ impl<'a> ImageViewMut<'a> {
             return None;
         }
 
+        if bytes_per_line < format.bytes_per_line(width, 1) {
+            return None;
+        }
         let required_len = bytes_per_line.checked_mul(height as usize)?;
         if data.len() < required_len {
             return None;
@@ -236,5 +239,26 @@ impl<'a> ImageViewMut<'a> {
             bytes_per_line: self.bytes_per_line,
             format: self.format,
         }
+    }
+}
+
+#[cfg(test)]
+mod stride_tests {
+    use super::*;
+
+    #[test]
+    fn view_mut_rejects_stride_smaller_than_a_row() {
+        let mut buf = [0u8; 64];
+        // 4 px * 4 bytes = 16 bytes per row minimum.
+        assert!(ImageViewMut::new(&mut buf, 4, 2, 15, ImageFormat::Rgba8888).is_none());
+        assert!(ImageViewMut::new(&mut buf, 4, 2, 16, ImageFormat::Rgba8888).is_some());
+        assert!(ImageView::new(&buf, 4, 2, 15, ImageFormat::Rgba8888).is_none());
+    }
+
+    #[test]
+    fn view_mut_rejects_short_buffers() {
+        let mut buf = [0u8; 31];
+        assert!(ImageViewMut::new(&mut buf, 4, 2, 16, ImageFormat::Rgba8888).is_none());
+        assert!(ImageViewMut::new(&mut buf, 4, 2, usize::MAX, ImageFormat::Rgba8888).is_none());
     }
 }

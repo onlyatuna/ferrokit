@@ -5,7 +5,7 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, N
 
 use crate::geometry::primitives::Size;
 use crate::image::image::Image;
-use crate::image::image_format::ImageFormat;
+use crate::image::image_format::{q_gray, ImageFormat};
 
 /// 1-bit monochrome bitmap used for masks, cursors, and clipping boundaries matching `QBitmap`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,16 +34,26 @@ impl Bitmap {
     }
 
     /// Creates a new monochrome bitmap with specified dimensions.
+    ///
+    /// Returns a null bitmap if the dimensions are zero or the buffer size cannot be represented
+    /// or allocated. Padding bits (the unused trailing bits of each row) are always 0.
     pub fn new(width: u32, height: u32) -> Self {
         if width == 0 || height == 0 {
             return Self::null();
         }
         let bytes_per_line = (width as usize).div_ceil(8);
-        let total = bytes_per_line * (height as usize);
+        let Some(total) = bytes_per_line.checked_mul(height as usize) else {
+            return Self::null();
+        };
+        let mut data = Vec::new();
+        if data.try_reserve_exact(total).is_err() {
+            return Self::null();
+        }
+        data.resize(total, 0u8);
         Self {
             width,
             height,
-            data: vec![0u8; total],
+            data,
             bytes_per_line,
         }
     }
@@ -52,7 +62,7 @@ impl Bitmap {
     pub fn with_fill(width: u32, height: u32, fill_bit: bool) -> Self {
         let mut bm = Self::new(width, height);
         if fill_bit {
-            bm.data.fill(0xFF);
+            bm.set_all();
         }
         bm
     }
@@ -68,9 +78,7 @@ impl Bitmap {
             for x in 0..image.width() {
                 if let Some(c) = image.pixel_color(x, y) {
                     let u = c.to_color_u8();
-                    let lum =
-                        (u.red() as u32 * 299 + u.green() as u32 * 587 + u.blue() as u32 * 114)
-                            / 1000;
+                    let lum = q_gray(u.red(), u.green(), u.blue());
                     let bit = lum >= 128 && u.alpha() >= 128;
                     bm.set_bit(x, y, bit);
                 }
@@ -127,9 +135,10 @@ impl Bitmap {
         self.data.fill(0);
     }
 
-    /// Sets all bits to 1.
+    /// Sets all bits to 1 (padding bits stay 0).
     pub fn set_all(&mut self) {
         self.data.fill(0xFF);
+        self.clear_padding();
     }
 
     /// Gets the bit value at `(x, y)`.
@@ -163,6 +172,21 @@ impl Bitmap {
     pub fn toggle_bit(&mut self, x: u32, y: u32) {
         let current = self.bit(x, y);
         self.set_bit(x, y, !current);
+    }
+
+    /// Zeroes the unused trailing bits of every row so `PartialEq` and bitwise operations only
+    /// ever see pixel bits.
+    fn clear_padding(&mut self) {
+        let used = (self.width % 8) as u32;
+        if used == 0 || self.bytes_per_line == 0 {
+            return;
+        }
+        let mask = 0xFFu8 << (8 - used);
+        for row in self.data.chunks_exact_mut(self.bytes_per_line) {
+            if let Some(last) = row.last_mut() {
+                *last &= mask;
+            }
+        }
     }
 }
 
@@ -203,6 +227,7 @@ impl BitOrAssign for Bitmap {
         for i in 0..len {
             self.data[i] |= rhs.data[i];
         }
+        self.clear_padding();
     }
 }
 
@@ -221,6 +246,7 @@ impl BitXorAssign for Bitmap {
         for i in 0..len {
             self.data[i] ^= rhs.data[i];
         }
+        self.clear_padding();
     }
 }
 
@@ -231,9 +257,11 @@ impl Not for Bitmap {
         for b in &mut self.data {
             *b = !*b;
         }
+        self.clear_padding();
         self
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +276,39 @@ mod tests {
         assert_eq!(image.pixel_color(0, 0), Some(Color::WHITE));
         assert_eq!(image.pixel_color(1, 0), Some(Color::BLACK));
         assert_eq!(image.pixel_color(8, 0), Some(Color::WHITE));
+    }
+
+    #[test]
+    fn padding_bits_stay_zero_and_do_not_affect_equality() {
+        // Width 5: 3 trailing padding bits per row.
+        let filled = Bitmap::with_fill(5, 2, true);
+        assert_eq!(filled.data, vec![0b1111_1000, 0b1111_1000]);
+        let mut set = Bitmap::new(5, 2);
+        for y in 0..2 {
+            for x in 0..5 {
+                set.set_bit(x, y, true);
+            }
+        }
+        assert_eq!(filled, set);
+
+        let inverted = !Bitmap::new(5, 2);
+        assert_eq!(inverted.data, vec![0b1111_1000, 0b1111_1000]);
+        assert_eq!(inverted, filled);
+        assert_eq!(!inverted, Bitmap::new(5, 2));
+
+        let mut all = Bitmap::new(5, 2);
+        all.set_all();
+        assert_eq!(all, filled);
+        // Out-of-range writes cannot reach the padding bits.
+        all.set_bit(5, 0, false);
+        all.set_bit(7, 1, true);
+        assert_eq!(all, filled);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "attempts a multi-exabyte allocation, which Miri cannot refuse gracefully")]
+    fn huge_dimensions_yield_a_null_bitmap_instead_of_overflowing() {
+        assert!(Bitmap::new(u32::MAX, u32::MAX).is_null());
+        assert!(Bitmap::with_fill(u32::MAX, u32::MAX, true).is_null());
     }
 }

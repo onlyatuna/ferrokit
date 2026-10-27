@@ -190,15 +190,15 @@ impl PixelFormat {
         }
     }
 
-    /// Bits per pixel.
+    /// Bits per pixel. `u16` because six 6-bit channel sizes can sum to 378.
     #[inline]
-    pub const fn bits_per_pixel(&self) -> u8 {
-        self.first_size()
-            + self.second_size()
-            + self.third_size()
-            + self.fourth_size()
-            + self.fifth_size()
-            + self.alpha_size()
+    pub const fn bits_per_pixel(&self) -> u16 {
+        self.first_size() as u16
+            + self.second_size() as u16
+            + self.third_size() as u16
+            + self.fourth_size() as u16
+            + self.fifth_size() as u16
+            + self.alpha_size() as u16
     }
 
     /// Bytes per pixel (rounded up).
@@ -498,5 +498,32 @@ impl PixelFormat {
             ByteOrder::CurrentSystemEndian,
             0,
         )
+    }
+}
+
+#[cfg(test)]
+mod bits_per_pixel_tests {
+    use super::*;
+
+    #[test]
+    fn bits_per_pixel_does_not_overflow_with_maximal_channel_sizes() {
+        // Six 6-bit size fields of 63 sum to 378, which does not fit in a u8.
+        let f = PixelFormat::from_raw_parts(
+            ColorModel::Rgb,
+            63,
+            63,
+            63,
+            63,
+            63,
+            63,
+            AlphaUsage::UsesAlpha,
+            AlphaPosition::AtEnd,
+            AlphaPremultiplied::NotPremultiplied,
+            TypeInterpretation::UnsignedInteger,
+            ByteOrder::CurrentSystemEndian,
+            0,
+        );
+        assert_eq!(f.bits_per_pixel(), 378);
+        assert_eq!(f.bytes_per_pixel(), 48);
     }
 }

@@ -15,7 +15,7 @@ pub mod writer;
 pub use array::JsonArray;
 pub use document::JsonDocument;
 pub use object::JsonObject;
-pub use parser::{JsonParseError, ParseErrorReason};
+pub use parser::{JsonParseError, ParseErrorReason, MAX_NESTING_DEPTH};
 pub use value::{JsonType, JsonValue};
 pub use writer::JsonFormat;
 

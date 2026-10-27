@@ -590,7 +590,10 @@ fn serialize_variant_value(v: &Variant) -> String {
             return escape_text(text);
         }
     }
-    let bytes = v.to_bytes();
+    // A value nested beyond the serialization depth cap cannot be stored; write it as invalid.
+    let bytes = v
+        .to_bytes()
+        .unwrap_or_else(|_| Variant::Invalid.to_bytes().unwrap_or_default());
     let mut encoded = String::with_capacity(bytes.len() * 2 + 10);
     encoded.push_str("@Variant(");
     for byte in bytes {

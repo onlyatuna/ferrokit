@@ -582,6 +582,12 @@
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::SB": "pass",
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::TB": "pass",
     "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::SB": "panic",
-    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic"
+    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic",
+    "lib::paint::backing_store::tests::scroll_of_rect_outside_the_buffer_returns_false::SB": "pass",
+    "lib::paint::backing_store::tests::scroll_of_rect_outside_the_buffer_returns_false::TB": "pass",
+    "lib::paint::painter::tests::aliased_line_with_non_finite_or_huge_endpoints_is_bounded::SB": "pass",
+    "lib::paint::painter::tests::aliased_line_with_non_finite_or_huge_endpoints_is_bounded::TB": "pass",
+    "lib::paint::painter::tests::arc_span_is_clamped_to_one_full_turn::SB": "pass",
+    "lib::paint::painter::tests::arc_span_is_clamped_to_one_full_turn::TB": "pass"
   }
 }

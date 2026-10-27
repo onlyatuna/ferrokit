@@ -188,7 +188,8 @@ impl BackingStore {
 
     /// Scrolls the specified area by `(dx, dy)` (`QBackingStore::scroll()`).
     ///
-    /// Returns `true` if scrolling succeeded, or `false` if full repaint is required.
+    /// Returns `true` if pixels were scrolled (or the offset is zero), or `false` if nothing
+    /// remained after clipping to the buffer and a full repaint is required.
     pub fn scroll(&mut self, area: &Region, dx: i32, dy: i32) -> bool {
         if dx == 0 && dy == 0 {
             return true;
@@ -214,7 +215,7 @@ impl BackingStore {
         let right = (src_rect.x as i64 + src_rect.width as i64).min(w).min(w - phys_dx);
         let bottom = (src_rect.y as i64 + src_rect.height as i64).min(h).min(h - phys_dy);
         if left >= right || top >= bottom {
-            return true;
+            return false;
         }
         let width = right - left;
         let height = bottom - top;
@@ -449,8 +450,18 @@ mod tests {
     #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
     fn scroll_entirely_outside_is_a_no_op() {
         let mut bs = coordinate_store(100, 100, 1.0);
-        assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 10, 10)), 500, 0));
+        // Nothing survives clipping, so no pixels moved: report false.
+        assert!(!bs.scroll(&Region::from_rect(Rect::new(0, 0, 10, 10)), 500, 0));
         assert_eq!(px(&bs, 3, 3), [3, 3, 0, 255]);
         assert_eq!(px(&bs, 99, 9), [99, 9, 0, 255]);
+    }
+
+    #[test]
+    fn scroll_of_rect_outside_the_buffer_returns_false() {
+        let mut bs = BackingStore::new(Size::new(100, 100), 1.0).unwrap();
+        assert!(!bs.scroll(&Region::from_rect(Rect::new(200, 200, 10, 10)), 1, 1));
+        assert!(!bs.scroll(&Region::from_rect(Rect::new(0, 0, 0, 0)), 1, 1));
+        // A zero offset is trivially satisfied.
+        assert!(bs.scroll(&Region::from_rect(Rect::new(200, 200, 10, 10)), 0, 0));
     }
 }

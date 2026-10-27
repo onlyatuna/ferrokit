@@ -75,8 +75,9 @@ impl fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
-/// Maximum array/object nesting depth (same limit as Qt's `QJsonParser`).
-pub const MAX_NESTING_DEPTH: usize = 1024;
+/// Maximum array/object nesting depth. Qt's `QJsonParser` allows 1024, but the recursive
+/// parse/write/drop of that depth can overflow a 2 MiB debug-build thread stack, so this is lower.
+pub const MAX_NESTING_DEPTH: usize = 256;
 
 /// Internal recursive descent parser.
 pub(crate) struct Parser<'a> {

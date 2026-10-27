@@ -1043,11 +1043,13 @@ impl Variant {
     // =========================================================================
 
     /// Serializes this variant to binary bytes using `DataStream`.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    ///
+    /// Fails if List/Map nesting exceeds the depth cap that deserialization accepts.
+    pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
         let mut ds = DataStream::new();
         let mut writer = ds.writer();
-        let _ = self.serialize(&mut writer);
-        ds.into_bytes()
+        self.serialize(&mut writer)?;
+        Ok(ds.into_bytes())
     }
 
     /// Deserializes a `Variant` from binary bytes using `DataStream`.
@@ -1498,11 +1500,20 @@ impl Variant {
     }
 }
 
-impl DataSerializable for Variant {
-    fn serialize<W: std::io::Write>(
+impl Variant {
+    /// Serializes with the same List/Map depth cap as deserialization, so every
+    /// successfully serialized value can be read back.
+    fn serialize_at_depth<W: std::io::Write>(
         &self,
         stream: &mut DataStreamWriter<W>,
+        depth: usize,
     ) -> std::io::Result<()> {
+        if depth > MAX_DESERIALIZE_DEPTH {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Variant nesting too deep",
+            ));
+        }
         match self {
             Self::Invalid => stream.write_u8(0),
             Self::Bool(b) => {
@@ -1640,7 +1651,7 @@ impl DataSerializable for Variant {
                 stream.write_u8(26)?;
                 stream.write_len(list.len())?;
                 for item in list {
-                    item.serialize(stream)?;
+                    item.serialize_at_depth(stream, depth + 1)?;
                 }
                 Ok(())
             }
@@ -1649,12 +1660,21 @@ impl DataSerializable for Variant {
                 stream.write_len(map.len())?;
                 for (k, v) in map {
                     stream.write_str(k)?;
-                    v.serialize(stream)?;
+                    v.serialize_at_depth(stream, depth + 1)?;
                 }
                 Ok(())
             }
             Self::Custom(_) => stream.write_u8(0),
         }
+    }
+}
+
+impl DataSerializable for Variant {
+    fn serialize<W: std::io::Write>(
+        &self,
+        stream: &mut DataStreamWriter<W>,
+    ) -> std::io::Result<()> {
+        self.serialize_at_depth(stream, 0)
     }
 
     fn deserialize<R: std::io::Read>(stream: &mut DataStreamReader<R>) -> std::io::Result<Self> {

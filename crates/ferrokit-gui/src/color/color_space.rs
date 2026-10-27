@@ -389,10 +389,16 @@ impl ColorSpace {
         let zw_norm = zw / yw;
 
         // Invert [xr xg xb; yr yg yb; zr zg zb] to solve for scaling coefficients (Sr, Sg, Sb)
-        let det = xr * (yg * zb - zg * yb) - xg * (yr * zb - zr * yb) + xb * (yr * zg - zr * yg);
-        if det.abs() < 1e-7 {
+        // Scale-relative singularity test (as in `Transform::inverted`), not an absolute epsilon.
+        let (det, magnitude) = super::color_transform::det3_with_magnitude(&[
+            [xr, xg, xb],
+            [yr, yg, yb],
+            [zr, zg, zb],
+        ]);
+        if crate::geometry::transform::is_singular(det, magnitude) {
             return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         }
+        let det = det as f32;
         let inv_det = 1.0 / det;
 
         let i11 = (yg * zb - zg * yb) * inv_det;

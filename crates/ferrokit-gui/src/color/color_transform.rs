@@ -6,16 +6,34 @@
 //! and target OETF encoding.
 
 use super::color_space::ColorSpace;
+use crate::geometry::transform::is_singular;
+
+/// Determinant of a 3x3 matrix and the sum of the absolute values of its six terms, evaluated
+/// in `f64`. The sum is the scale reference for [`is_singular`].
+pub(crate) fn det3_with_magnitude(m: &[[f32; 3]; 3]) -> (f64, f64) {
+    let a = |r: usize, c: usize| m[r][c] as f64;
+    let t = [
+        a(0, 0) * a(1, 1) * a(2, 2),
+        a(0, 1) * a(1, 2) * a(2, 0),
+        a(0, 2) * a(1, 0) * a(2, 1),
+        -a(0, 2) * a(1, 1) * a(2, 0),
+        -a(0, 0) * a(1, 2) * a(2, 1),
+        -a(0, 1) * a(1, 0) * a(2, 2),
+    ];
+    (t.iter().sum(), t.iter().map(|v| v.abs()).sum())
+}
 
 /// Helper function to invert a 3x3 matrix.
+///
+/// Singularity is judged relative to the magnitude of the determinant's terms (as in
+/// `Transform::inverted` / `Matrix4x4::inverted`), so uniformly small but well-conditioned
+/// matrices invert.
 fn invert_3x3(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-
-    if det.abs() < 1e-8 {
+    let (det, magnitude) = det3_with_magnitude(m);
+    if is_singular(det, magnitude) {
         return None;
     }
+    let det = det as f32;
     let inv_det = 1.0 / det;
 
     Some([
@@ -222,5 +240,29 @@ impl ColorTransform {
             (ob * 255.0).round().clamp(0.0, 255.0) as u8,
             a,
         )
+    }
+}
+
+#[cfg(test)]
+mod singularity_tests {
+    use super::*;
+
+    #[test]
+    fn uniformly_small_matrix_is_invertible() {
+        // det = 1e-12 would have been rejected by the old absolute 1e-8 threshold.
+        let s = 1e-4f32;
+        let m = [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
+        let inv = invert_3x3(&m).expect("well-conditioned at a small scale");
+        for i in 0..3 {
+            assert!((inv[i][i] - 1.0 / s).abs() / (1.0 / s) < 1e-4);
+        }
+    }
+
+    #[test]
+    fn rank_deficient_matrix_is_rejected_at_any_scale() {
+        for s in [1e-4f32, 1.0, 1e4] {
+            let m = [[s, 2.0 * s, 3.0 * s], [2.0 * s, 4.0 * s, 6.0 * s], [s, 0.0, s]];
+            assert!(invert_3x3(&m).is_none(), "scale {s}");
+        }
     }
 }

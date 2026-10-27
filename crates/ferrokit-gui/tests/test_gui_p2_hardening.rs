@@ -40,9 +40,9 @@ fn html_eight_digit_hex_is_aarrggbb() {
 fn scroll_with_i32_min_offsets_does_not_overflow() {
     let mut bs = BackingStore::new(Size::new(10, 10), 1.0).unwrap();
     let area = Region::from_rect(Rect::new(0, 0, 10, 10));
-    assert!(bs.scroll(&area, i32::MIN, i32::MIN));
+    assert!(!bs.scroll(&area, i32::MIN, i32::MIN));
     let wide = Region::from_rect(Rect::new(-1_000_000_000, -1_000_000_000, 2_000_000_000, 2_000_000_000));
-    assert!(bs.scroll(&wide, i32::MAX, -1));
+    assert!(!bs.scroll(&wide, i32::MAX, -1));
 }
 
 #[test]
