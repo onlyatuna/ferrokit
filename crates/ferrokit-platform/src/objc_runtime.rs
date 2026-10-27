@@ -1629,11 +1629,21 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// Callbacks of [`ActionTarget::new_shared`], by target object address. Unlike
-/// `ACTION_CALLBACKS` they are found from whichever thread AppKit calls the target on.
-static SHARED_ACTION_CALLBACKS: Mutex<
-    Option<HashMap<usize, std::sync::Arc<dyn Fn() + Send + Sync>>>,
-> = Mutex::new(None);
+/// Who owns the callback of a live [`ActionTarget`], by target object address.
+enum Registered {
+    /// [`ActionTarget::new`]: the closure is in `ACTION_CALLBACKS` of this thread.
+    Local(std::thread::ThreadId),
+    /// [`ActionTarget::new_shared`]: found from whichever thread AppKit calls the target on.
+    Shared(std::sync::Arc<dyn Fn() + Send + Sync>),
+}
+
+/// The live action targets. Consulted by `perform` before any thread-local, so an entry left in a
+/// thread-local by a target that was dropped on another thread can never be run.
+static ACTION_TARGETS: Mutex<Option<HashMap<usize, Registered>>> = Mutex::new(None);
+
+/// Keys of local targets dropped off their creating thread, with that thread, awaiting the
+/// release of their closures there.
+static PENDING_REMOVALS: Mutex<Vec<(std::thread::ThreadId, usize)>> = Mutex::new(Vec::new());
 
 /// The class behind [`ActionTarget`]: an `NSObject` subclass named `FerrokitActionTarget` whose
 /// `-ferrokitPerformAction:` runs the target's callback. Registered once, on first use; nil if
@@ -1723,30 +1733,88 @@ impl ActionTarget {
 
     /// Creates the target object. Errors when the runtime cannot provide the class.
     ///
-    /// The callback is kept in a thread-local of the *creating* thread, and AppKit delivers on
-    /// the main thread, so this must be called on the main thread (as it is for controls and menu
-    /// items, which AppKit only allows there anyway). Use [`new_shared`](Self::new_shared) for a
-    /// target that may be created elsewhere.
+    /// The callback is not `Send`, so it is kept in a thread-local of the *creating* thread and
+    /// only runs there; AppKit delivers on the main thread, so this must be called on the main
+    /// thread (as it is for controls and menu items, which AppKit only allows there anyway). The
+    /// target is registered in the same process-wide table as [`new_shared`](Self::new_shared)
+    /// ones, which is what [`perform`](Self::perform) consults, so a stale thread-local entry is
+    /// never reachable. Dropping the target on the creating thread releases the callback at once.
+    /// Dropped on another thread, the callback is released when the creating thread next calls
+    /// `new`, `perform` or drops an `ActionTarget`, or when that thread exits; until then it
+    /// stays alive in that thread's table. Use [`new_shared`](Self::new_shared) for a target that
+    /// may be dropped (or created) elsewhere.
     pub fn new(callback: impl Fn() + 'static) -> Result<Self, &'static str> {
+        Self::drain_removals();
         let id = Self::alloc()?;
         ACTION_CALLBACKS.with(|callbacks| {
             callbacks
                 .borrow_mut()
                 .insert(id.0 as usize, std::rc::Rc::new(callback));
         });
+        Self::register(id, Registered::Local(std::thread::current().id()));
         Ok(Self { id })
     }
 
     /// Like [`new`](Self::new), but the callback is found whichever thread AppKit calls the
-    /// target on, so the creating thread does not matter. The callback must be `Send + Sync`.
+    /// target on, and the target may be dropped on any thread, so the creating thread does not
+    /// matter. The callback must be `Send + Sync`.
     pub fn new_shared(callback: impl Fn() + Send + Sync + 'static) -> Result<Self, &'static str> {
         let id = Self::alloc()?;
-        SHARED_ACTION_CALLBACKS
+        Self::register(id, Registered::Shared(std::sync::Arc::new(callback)));
+        Ok(Self { id })
+    }
+
+    /// Releases the closures of this thread's local targets that other threads dropped.
+    fn drain_removals() {
+        let me = std::thread::current().id();
+        let mine: Vec<usize> = {
+            let mut pending = PENDING_REMOVALS.lock().unwrap_or_else(|e| e.into_inner());
+            if pending.is_empty() {
+                return;
+            }
+            let mut mine = Vec::new();
+            pending.retain(|&(owner, key)| {
+                if owner == me {
+                    mine.push(key);
+                }
+                owner != me
+            });
+            mine
+        };
+        // The closures are dropped after the lock is released: one may own other targets.
+        let released: Vec<ActionCallback> = {
+            let targets = ACTION_TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+            mine.into_iter()
+                .filter(|key| {
+                    // The address may already belong to a newer local target of this thread.
+                    !matches!(
+                        targets.as_ref().and_then(|t| t.get(key)),
+                        Some(Registered::Local(owner)) if *owner == me
+                    )
+                })
+                .filter_map(Self::remove_local)
+                .collect()
+        };
+        drop(released);
+    }
+
+    /// Takes `key`'s closure out of this thread's table; the caller drops it, outside any borrow.
+    fn remove_local(key: usize) -> Option<ActionCallback> {
+        ACTION_CALLBACKS
+            .try_with(|callbacks| callbacks.borrow_mut().remove(&key))
+            .ok()
+            .flatten()
+    }
+
+    /// Records `entry` as the live registration of `id`. A leftover entry for a released object
+    /// at the same address is replaced.
+    fn register(id: Id, entry: Registered) {
+        let previous = ACTION_TARGETS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_or_insert_with(HashMap::new)
-            .insert(id.0 as usize, std::sync::Arc::new(callback));
-        Ok(Self { id })
+            .insert(id.0 as usize, entry);
+        drop(previous);
     }
 
     /// The object to pass to `setTarget:`.
@@ -1761,42 +1829,67 @@ impl ActionTarget {
         Sel::register(ACTION_TARGET_SELECTOR)
     }
 
-    /// What `-ferrokitPerformAction:` does: runs the callback registered for `target` on this
-    /// thread. Returns whether there was one. Tests use it to stand in for a click.
+    /// What `-ferrokitPerformAction:` does: runs the callback registered for `target`. Returns
+    /// whether there was one. A [`new`](Self::new) callback only runs on its creating thread (it
+    /// is not `Send`); a [`new_shared`](Self::new_shared) one runs on any. Tests use it to stand
+    /// in for a click.
     pub fn perform(target: Id) -> bool {
-        let callback = ACTION_CALLBACKS
-            .with(|callbacks| callbacks.borrow().get(&(target.0 as usize)).cloned());
-        if let Some(callback) = callback {
-            callback();
-            return true;
-        }
-        let shared = SHARED_ACTION_CALLBACKS
+        Self::drain_removals();
+        let key = target.0 as usize;
+        let registered = ACTION_TARGETS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|callbacks| callbacks.get(&(target.0 as usize)).cloned());
-        match shared {
-            Some(callback) => {
+            .and_then(|targets| match targets.get(&key)? {
+                Registered::Local(owner) => Some(Err(*owner)),
+                Registered::Shared(callback) => Some(Ok(std::sync::Arc::clone(callback))),
+            });
+        match registered {
+            Some(Ok(callback)) => {
                 callback();
                 true
             }
-            None => false,
+            Some(Err(owner)) if owner == std::thread::current().id() => {
+                let callback =
+                    ACTION_CALLBACKS.with(|callbacks| callbacks.borrow().get(&key).cloned());
+                match callback {
+                    Some(callback) => {
+                        callback();
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
         }
     }
 }
 
 impl Drop for ActionTarget {
     fn drop(&mut self) {
-        ACTION_CALLBACKS.with(|callbacks| {
-            callbacks.borrow_mut().remove(&(self.id.0 as usize));
-        });
-        if let Some(callbacks) = SHARED_ACTION_CALLBACKS
+        Self::drain_removals();
+        let key = self.id.0 as usize;
+        // The entry is dropped after the lock is released: a callback may own other targets.
+        let registered = ACTION_TARGETS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
-        {
-            callbacks.remove(&(self.id.0 as usize));
+            .and_then(|targets| targets.remove(&key));
+        if let Some(Registered::Local(owner)) = &registered {
+            // The closure lives in the creating thread's table. Here it is removed at once; from
+            // any other thread the key is queued for the owner, which releases the closure the
+            // next time it creates, performs or drops a target (or when it exits). Queued before
+            // the object is released below, so a reuse of the address cannot come first.
+            if *owner == std::thread::current().id() {
+                drop(Self::remove_local(key));
+            } else {
+                PENDING_REMOVALS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((*owner, key));
+            }
         }
+        drop(registered);
         #[cfg(target_os = "macos")]
         // SAFETY: balances the +1 from `alloc`/`init` in `new`.
         unsafe {

@@ -379,8 +379,6 @@
     "test_qcolor::other_specifications_match_qt::TB": "pass",
     "test_qcolor::qcolor_alias_and_default::SB": "pass",
     "test_qcolor::qcolor_alias_and_default::TB": "pass",
-    "test_qcolor::qcolor_ops_delegates_to_the_colour_type::SB": "pass",
-    "test_qcolor::qcolor_ops_delegates_to_the_colour_type::TB": "pass",
     "test_qcolor::setters_follow_qt::SB": "pass",
     "test_qcolor::setters_follow_qt::TB": "pass",
     "test_qcolor::the_name_table_is_qts::SB": "pass",
@@ -582,6 +580,10 @@
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::SB": "pass",
     "test_painter_advanced_features::painter_path_defaults_to_odd_even_fill_and_leaves_self_intersection_hole::TB": "pass",
     "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::SB": "panic",
-    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic"
+    "test_painter_advanced_features::hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25::TB": "panic",
+    "test_qcolor::lighter_and_darker_match_qt_for_every_spec_and_huge_factors::SB": "pass",
+    "test_qcolor::lighter_and_darker_match_qt_for_every_spec_and_huge_factors::TB": "pass",
+    "test_qcolor::qcolor_ops_match_qt_rgba_for_huge_factors::SB": "pass",
+    "test_qcolor::qcolor_ops_match_qt_rgba_for_huge_factors::TB": "pass"
   }
 }
