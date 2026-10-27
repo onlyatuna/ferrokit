@@ -8,7 +8,7 @@ toolchain and a Unix host.
 |---------------|-------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
 | `json_parse`  | `ferrokit_core::json::from_slice`                                                               | no panic; parse -> serialize (compact, indented) -> parse is stable |
 | `data_stream` | `DataStreamReader` typed reads, `DataStreamWriter` typed writes                                 | no panic or oversized allocation; write -> read returns the input   |
-| `variant`     | `Variant::from_bytes` / `to_bytes`                                                              | no panic; deserialize -> serialize -> deserialize is stable; generated variants round-trip |
+| `variant`     | `Variant::from_bytes` / `to_bytes` (fallible)                                                  | no panic; deserialize -> serialize -> deserialize is stable; generated variants round-trip |
 | `qcssparser`  | `QCssStyleSheet::parse`, `QCssParser::parse`, `parse_length`, `parse_color`                     | no panic, hang or memory blow-up                                    |
 | `dbus_frame`  | `DbusMessage::frame_len` / `from_bytes`, `DbusConnection::read_incoming` over a scripted bus    | no panic; decode -> encode -> decode is stable; chunked reads are fine |
 

@@ -399,6 +399,9 @@ impl ColorSpace {
             return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         }
         let det = det as f32;
+        if det == 0.0 || !det.is_finite() {
+            return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        }
         let inv_det = 1.0 / det;
 
         let i11 = (yg * zb - zg * yb) * inv_det;

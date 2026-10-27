@@ -34,6 +34,9 @@ fn invert_3x3(m: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
         return None;
     }
     let det = det as f32;
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
     let inv_det = 1.0 / det;
 
     Some([
