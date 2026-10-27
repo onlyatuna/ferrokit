@@ -417,8 +417,10 @@ pub mod cocoa_theme {
     /// reaches `theme_changed`.
     ///
     /// AppKit rules apply as in Qt: the appearance is read, and the observers are registered, on
-    /// the main thread. A theme constructed elsewhere registers them from the application's main
-    /// thread when it gets to run an event (and without an application, not at all: it then
+    /// the main thread (the application's: ferrokit's main thread, which need not be the OS main
+    /// thread; with no application yet, the OS main thread). A theme constructed elsewhere
+    /// registers them from the application's main thread when it gets to run an event (and
+    /// without an application, on a thread that is not the OS main thread, not at all: it then
     /// updates only through [`refresh`](PlatformTheme::refresh), and says so on stderr). The
     /// observers are removed when the theme is dropped.
     ///
@@ -470,6 +472,18 @@ pub mod cocoa_theme {
     #[cfg(not(target_os = "macos"))]
     struct AppearanceObserver;
 
+    /// What [`CocoaTheme::observe_plan`] decides for a theme being created.
+    #[cfg(any(target_os = "macos", test))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ObservePlan {
+        /// Register here and now.
+        Now,
+        /// Register from this thread (the application's main thread).
+        Post(ferrokit_core::object::ThreadId),
+        /// No thread to register from: the theme follows changes only through `refresh`.
+        Never,
+    }
+
     impl Default for CocoaTheme {
         fn default() -> Self {
             let core = Arc::new(SchemeCore::new(Self::query_color_scheme()));
@@ -484,11 +498,30 @@ pub mod cocoa_theme {
             Self::default()
         }
 
+        /// Where the observers are registered, given the application's main thread (when it has
+        /// named one), the calling thread and whether that is the OS main thread
+        /// (`pthread_main_np`). Ferrokit's main thread is the application's, and need not be the
+        /// OS one (a test, or a program that runs its application on a spawned thread), so it
+        /// decides when there is one; the OS main thread is only the answer with no application.
+        #[cfg(any(target_os = "macos", test))]
+        fn observe_plan(
+            app_main: Option<ferrokit_core::object::ThreadId>,
+            current: ferrokit_core::object::ThreadId,
+            os_main: bool,
+        ) -> ObservePlan {
+            match app_main {
+                Some(main) if main == current => ObservePlan::Now,
+                Some(main) => ObservePlan::Post(main),
+                None if os_main => ObservePlan::Now,
+                None => ObservePlan::Never,
+            }
+        }
+
         /// `QCocoaTheme::QCocoaTheme` (qcocoatheme.mm:217-230): key-value observation of
         /// `NSApp.effectiveAppearance` and of `NSSystemColorsDidChangeNotification`; either
         /// re-reads the appearance (`handleSystemThemeChange` -> `updateColorScheme`,
-        /// qcocoatheme.mm:245-262). On the main thread this registers at once; elsewhere the
-        /// registration is posted to the application's main thread.
+        /// qcocoatheme.mm:245-262). On the application's main thread this registers at once;
+        /// elsewhere the registration is posted to it. See [`observe_plan`](Self::observe_plan).
         #[cfg(target_os = "macos")]
         fn observe_appearance(
             core: &Arc<SchemeCore>,
@@ -497,15 +530,16 @@ pub mod cocoa_theme {
             extern "C" {
                 fn pthread_main_np() -> i32;
             }
-            // SAFETY: `pthread_main_np` takes no arguments and only reads the calling thread.
-            if unsafe { pthread_main_np() } != 0 {
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Self::register(core);
-                return;
-            }
             use ferrokit_core::event::{Event, EventKind};
             use ferrokit_core::object::{ObjectId, ThreadContext, ThreadId};
-            match ThreadContext::main_thread_id() {
-                Some(main) if main != ThreadId::current() => {
+            // SAFETY: `pthread_main_np` takes no arguments and only reads the calling thread.
+            let os_main = unsafe { pthread_main_np() } != 0;
+            match Self::observe_plan(ThreadContext::main_thread_id(), ThreadId::current(), os_main)
+            {
+                ObservePlan::Now => {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Self::register(core);
+                }
+                ObservePlan::Post(main) => {
                     let core = Arc::clone(core);
                     let slot = Arc::clone(slot);
                     ferrokit_core::event_loop::post_event_to_thread(
@@ -520,7 +554,7 @@ pub mod cocoa_theme {
                         }))),
                     );
                 }
-                _ => eprintln!(
+                ObservePlan::Never => eprintln!(
                     "ferrokit: the macOS theme was created off the main thread with no \
                      application to run on; it will not follow appearance changes"
                 ),
@@ -696,6 +730,52 @@ pub mod cocoa_theme {
             self.core.set_requested(scheme);
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use ferrokit_core::object::ThreadId;
+
+        fn other_thread_id() -> ThreadId {
+            std::thread::spawn(ThreadId::current).join().unwrap()
+        }
+
+        #[test]
+        fn the_application_main_thread_registers_at_once_even_off_the_os_main_thread() {
+            let me = ThreadId::current();
+            // A ferrokit main thread that `pthread_main_np` does not call the main thread.
+            assert_eq!(
+                CocoaTheme::observe_plan(Some(me), me, false),
+                ObservePlan::Now
+            );
+            assert_eq!(
+                CocoaTheme::observe_plan(Some(me), me, true),
+                ObservePlan::Now
+            );
+        }
+
+        #[test]
+        fn another_thread_posts_to_the_application_main_thread() {
+            let me = ThreadId::current();
+            let main = other_thread_id();
+            assert_eq!(
+                CocoaTheme::observe_plan(Some(main), me, false),
+                ObservePlan::Post(main)
+            );
+            // Even the OS main thread posts when the application lives elsewhere.
+            assert_eq!(
+                CocoaTheme::observe_plan(Some(main), me, true),
+                ObservePlan::Post(main)
+            );
+        }
+
+        #[test]
+        fn without_an_application_only_the_os_main_thread_registers() {
+            let me = ThreadId::current();
+            assert_eq!(CocoaTheme::observe_plan(None, me, true), ObservePlan::Now);
+            assert_eq!(CocoaTheme::observe_plan(None, me, false), ObservePlan::Never);
+        }
+    }
 }
 
 pub use cocoa_theme::CocoaTheme;
@@ -723,6 +803,36 @@ pub mod unix_theme {
             };
             self.core.set_system(system);
         }
+
+        /// Applies what the portal told, then recomputes (which emits `theme_changed` when the
+        /// effective scheme moved).
+        #[cfg(any(all(target_os = "linux", not(miri)), test))]
+        fn apply(&self, event: crate::theme_portal::PortalEvent) {
+            use crate::theme_portal::PortalEvent;
+            match event {
+                PortalEvent::Initial(Some(scheme)) | PortalEvent::Changed(scheme) => {
+                    self.portal.store(scheme as u8, Ordering::Release);
+                }
+                PortalEvent::Initial(None) => {}
+            }
+            self.recompute();
+        }
+    }
+
+    thread_local! {
+        static ON_LISTENER_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Marks the calling thread as a portal listener thread (see [`on_listener_thread`]).
+    #[cfg(any(all(target_os = "linux", not(miri)), test))]
+    pub(crate) fn mark_listener_thread() {
+        ON_LISTENER_THREAD.with(|flag| flag.set(true));
+    }
+
+    /// Whether the caller is a portal listener thread: a slot of `theme_changed` may read the
+    /// theme from there.
+    fn on_listener_thread() -> bool {
+        ON_LISTENER_THREAD.with(|flag| flag.get())
     }
 
     /// The colour scheme on Linux and the other Unixes.
@@ -784,7 +894,7 @@ pub mod unix_theme {
         /// Connects to the portal (if there is a session bus) and starts following it.
         #[cfg(all(target_os = "linux", not(miri)))]
         fn listen_to_portal(&self) {
-            use crate::theme_portal::{spawn_listener, PortalEvent};
+            use crate::theme_portal::spawn_listener;
             let for_alive = Arc::downgrade(&self.inner);
             let for_events = Arc::downgrade(&self.inner);
             let initial = spawn_listener(
@@ -793,13 +903,10 @@ pub mod unix_theme {
                     let Some(inner) = for_events.upgrade() else {
                         return;
                     };
-                    match event {
-                        PortalEvent::Initial(Some(scheme)) | PortalEvent::Changed(scheme) => {
-                            inner.portal.store(scheme as u8, Ordering::Release);
-                        }
-                        PortalEvent::Initial(None) => {}
-                    }
-                    inner.recompute();
+                    // `apply` stores the scheme and recomputes before any slot of `theme_changed`
+                    // runs, so a slot reading the theme from here sees the new value and, being on
+                    // the listener thread, never waits for this thread's own answer.
+                    inner.apply(event);
                 },
             );
             *self
@@ -812,11 +919,13 @@ pub mod unix_theme {
         #[cfg(not(all(target_os = "linux", not(miri))))]
         fn listen_to_portal(&self) {}
 
-        /// Waits (once, at most 300 ms) for the portal's answer to the start-up query. Not on the
-        /// listener thread itself, which would wait for its own answer.
+        /// Waits (once, at most 300 ms) for the portal's answer to the start-up query. Never on
+        /// the listener thread itself: a `theme_changed` slot (for instance
+        /// `handle_theme_changed` with no application yet, which re-reads the scheme in place)
+        /// runs there while the answer is still being handed over, and would wait out the
+        /// timeout for its own answer.
         fn wait_for_initial_answer(&self) {
-            #[cfg(all(target_os = "linux", not(miri)))]
-            if crate::theme_portal::on_listener_thread() {
+            if on_listener_thread() {
                 return;
             }
             let pending = self
@@ -928,6 +1037,208 @@ pub mod unix_theme {
         /// effective scheme is the request unless it is [`ColorScheme::Unknown`].
         fn request_color_scheme(&self, scheme: ColorScheme) {
             self.inner.core.set_requested(scheme);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::theme_portal::PortalEvent;
+        use std::sync::mpsc::{channel, Sender};
+        use std::time::{Duration, Instant};
+
+        /// What the first scheme read may take at most when the answer is there (the wait is
+        /// 300 ms).
+        const PROMPT: Duration = Duration::from_millis(250);
+
+        /// A scheme that is neither `Unknown` nor what the fallback (GTK settings of the machine
+        /// running the test) says, so the portal's answer is always a change.
+        fn answer_differing_from_fallback() -> ColorScheme {
+            if UnixTheme::query_color_scheme() == ColorScheme::Dark {
+                ColorScheme::Light
+            } else {
+                ColorScheme::Dark
+            }
+        }
+
+        fn record(theme: &UnixTheme) -> Arc<Mutex<Vec<ColorScheme>>> {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&seen);
+            theme.theme_changed().connect(move |scheme| {
+                sink.lock().unwrap_or_else(|e| e.into_inner()).push(*scheme)
+            });
+            seen
+        }
+
+        /// A theme whose start-up answer is delivered by a stand-in for `spawn_listener`'s
+        /// thread: it marks itself a listener thread, applies each event it is sent, and after an
+        /// `Initial` one signals the answer, in the order `spawn_listener` does.
+        fn theme_with_listener() -> (
+            Arc<UnixTheme>,
+            Sender<PortalEvent>,
+            std::thread::JoinHandle<()>,
+        ) {
+            let (events_tx, events_rx) = channel::<PortalEvent>();
+            let (answer_tx, answer_rx) = channel::<()>();
+            let theme = Arc::new(UnixTheme::without_portal());
+            *theme.initial_answer.lock().unwrap() = Some(answer_rx);
+            let inner = Arc::clone(&theme.inner);
+            let listener = std::thread::spawn(move || {
+                mark_listener_thread();
+                for event in events_rx {
+                    let is_initial = matches!(event, PortalEvent::Initial(_));
+                    inner.apply(event);
+                    if is_initial {
+                        let _ = answer_tx.send(());
+                    }
+                }
+            });
+            (theme, events_tx, listener)
+        }
+
+        fn timed_read(theme: &UnixTheme) -> (ColorScheme, Duration) {
+            let start = Instant::now();
+            let scheme = theme.color_scheme();
+            (scheme, start.elapsed())
+        }
+
+        #[test]
+        fn an_answer_before_the_timeout_wakes_the_first_read_at_once() {
+            let answer = answer_differing_from_fallback();
+            let (theme, events, listener) = theme_with_listener();
+            let sender = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                events.send(PortalEvent::Initial(Some(answer))).unwrap();
+                // Keep the listener (and its answer sender) alive: only the answer may wake it.
+                std::thread::sleep(Duration::from_millis(600));
+                drop(events);
+            });
+            let (scheme, took) = timed_read(&theme);
+            assert_eq!(scheme, answer);
+            assert!(took < PROMPT, "the read waited {took:?} for an answer already in");
+            sender.join().unwrap();
+            listener.join().unwrap();
+        }
+
+        #[test]
+        fn a_first_read_nobody_answers_times_out_once() {
+            let (theme, events, listener) = theme_with_listener();
+            let fallback = UnixTheme::query_color_scheme();
+            let (scheme, took) = timed_read(&theme);
+            assert_eq!(scheme, fallback);
+            assert!(took >= Duration::from_millis(290), "gave up after {took:?}");
+            assert!(took < Duration::from_secs(5), "waited {took:?}");
+            // The wait happens once: later reads do not wait again.
+            let (again, took) = timed_read(&theme);
+            assert_eq!(again, fallback);
+            assert!(took < PROMPT, "the second read waited {took:?}");
+            drop(events);
+            listener.join().unwrap();
+        }
+
+        #[test]
+        fn a_theme_without_a_session_bus_does_not_wait() {
+            // `spawn_listener`'s receiver disconnects without a message when there is no bus.
+            let (answer_tx, answer_rx) = channel::<()>();
+            drop(answer_tx);
+            let theme = UnixTheme::without_portal();
+            *theme.initial_answer.lock().unwrap() = Some(answer_rx);
+            let (scheme, took) = timed_read(&theme);
+            assert_eq!(scheme, UnixTheme::query_color_scheme());
+            assert!(took < PROMPT, "waited {took:?} on a closed channel");
+        }
+
+        #[test]
+        fn an_answer_after_the_timeout_is_emitted_as_a_change() {
+            let answer = answer_differing_from_fallback();
+            let (theme, events, listener) = theme_with_listener();
+            let seen = record(&theme);
+            let (first, _) = timed_read(&theme);
+            assert_eq!(first, UnixTheme::query_color_scheme());
+            assert!(seen.lock().unwrap().is_empty(), "nothing has changed yet");
+
+            events.send(PortalEvent::Initial(Some(answer))).unwrap();
+            drop(events);
+            listener.join().unwrap();
+            assert_eq!(*seen.lock().unwrap(), [answer]);
+            let (now, took) = timed_read(&theme);
+            assert_eq!(now, answer);
+            assert!(took < PROMPT);
+        }
+
+        #[test]
+        fn a_late_answer_without_a_preference_emits_nothing() {
+            let (theme, events, listener) = theme_with_listener();
+            let seen = record(&theme);
+            let _ = timed_read(&theme);
+            events.send(PortalEvent::Initial(None)).unwrap();
+            drop(events);
+            listener.join().unwrap();
+            assert!(seen.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn an_answer_before_the_timeout_that_the_read_saw_is_not_emitted_again() {
+            let answer = answer_differing_from_fallback();
+            let (theme, events, listener) = theme_with_listener();
+            let seen = record(&theme);
+            events.send(PortalEvent::Initial(Some(answer))).unwrap();
+            let (scheme, took) = timed_read(&theme);
+            assert_eq!(scheme, answer);
+            assert!(took < PROMPT);
+            // The same value reported again, as the portal's `SettingChanged` may.
+            events.send(PortalEvent::Changed(answer)).unwrap();
+            events.send(PortalEvent::Changed(answer)).unwrap();
+            drop(events);
+            listener.join().unwrap();
+            assert_eq!(*seen.lock().unwrap(), [answer], "one change, one emission");
+        }
+
+        #[test]
+        fn a_slot_reading_the_theme_on_the_listener_thread_does_not_wait_for_its_own_answer() {
+            // What `handle_theme_changed` does with no application: re-read the scheme in place,
+            // on the thread that reported the change, before the answer has been signalled.
+            let answer = answer_differing_from_fallback();
+            let (theme, events, listener) = theme_with_listener();
+            let reads: Arc<Mutex<Vec<(ColorScheme, Duration)>>> = Arc::default();
+            let weak = Arc::downgrade(&theme);
+            let log = Arc::clone(&reads);
+            theme.theme_changed().connect(move |_| {
+                if let Some(theme) = weak.upgrade() {
+                    let read = timed_read(&theme);
+                    log.lock().unwrap_or_else(|e| e.into_inner()).push(read);
+                }
+            });
+            events.send(PortalEvent::Initial(Some(answer))).unwrap();
+            // The listener stays alive (so the answer channel is not disconnected) while the read
+            // is checked.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while reads.lock().unwrap().is_empty() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let recorded = reads.lock().unwrap().clone();
+            assert_eq!(recorded.len(), 1);
+            let (scheme, took) = recorded[0];
+            assert_eq!(scheme, answer, "the slot already sees the new scheme");
+            assert!(took < Duration::from_millis(100), "the listener stalled for {took:?}");
+            // The slot did not use up the one wait: the first outside read still gets the answer
+            // at once.
+            let (scheme, took) = timed_read(&theme);
+            assert_eq!(scheme, answer);
+            assert!(took < PROMPT, "the outside read waited {took:?}");
+            drop(events);
+            listener.join().unwrap();
+        }
+
+        #[test]
+        fn other_threads_are_not_listener_threads() {
+            assert!(!std::thread::spawn(on_listener_thread).join().unwrap());
+            assert!(std::thread::spawn(|| {
+                mark_listener_thread();
+                on_listener_thread()
+            })
+            .join()
+            .unwrap());
         }
     }
 }
