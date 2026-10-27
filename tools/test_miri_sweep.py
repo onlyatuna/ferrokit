@@ -17,6 +17,7 @@ from miri_sweep import (
     parse_shard,
     run_miri,
     scan_outcomes,
+    load_target_weights,
     shard_targets,
     sweep_target,
 )
@@ -225,6 +226,36 @@ class TestMiriSweepSharding(unittest.TestCase):
         sizes = [len(shard_targets(targets, i, 2)) for i in (1, 2)]
         self.assertLessEqual(abs(sizes[0] - sizes[1]), 1)
         self.assertEqual(shard_targets(targets, 1, 2), shard_targets(list(reversed(targets)), 1, 2))
+
+    def test_weighted_shards_partition_and_keep_heavy_targets_apart(self):
+        weights = {"slow_a": 1000, "slow_b": 900, "mid": 100, "fast_a": 5, "fast_b": 5}
+        targets = list(weights) + ["unrecorded"]
+        shards = [shard_targets(targets, i, 2, weights) for i in (1, 2)]
+        self.assertEqual(sorted(shards[0] + shards[1]), sorted(targets))
+        self.assertNotEqual("slow_a" in shards[0], "slow_b" in shards[0])
+        self.assertEqual(shards[0], shard_targets(list(reversed(targets)), 1, 2, weights))
+
+    def test_recorded_weights_balance_every_crate_and_model(self):
+        baselines = {
+            "ferrokit-core": "miri_baseline.json",
+            "ferrokit-gui": "miri_baseline_ferrokit_gui.json",
+            "ferrokit-widgets": "miri_baseline_ferrokit_widgets.json",
+        }
+        for crate, name in baselines.items():
+            path = os.path.join(os.path.dirname(__file__), name)
+            with open(path, "r", encoding="utf-8") as f:
+                targets = json.load(f)["targets"]
+            for model in ("SB", "TB"):
+                weights = load_target_weights(crate, [model])
+                self.assertTrue(weights, f"no recorded times for {crate}")
+                total = sum(weights.get(t, 30) for t in targets)
+                loads = [
+                    sum(weights.get(t, 30) for t in shard_targets(targets, i, 2, weights))
+                    for i in (1, 2)
+                ]
+                # LPT guarantee: no shard exceeds the even split by more than the heaviest target.
+                bound = total / 2 + max(weights.get(t, 30) for t in targets) / 2
+                self.assertLessEqual(max(loads), bound, f"{crate} {model}: {loads}")
 
     def test_parse_shard_accepts_valid_and_rejects_invalid(self):
         self.assertEqual(parse_shard("1/2"), (1, 2))
