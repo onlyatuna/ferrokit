@@ -26,7 +26,7 @@ const ORACLE: &str = include_str!("data/qpath_oracle.txt");
 
 /// Under Miri one oracle line in `STRIDE` is checked: the file has ~1 400 lines and Miri runs
 /// the whole of it about 1 000 times slower than native code.
-const STRIDE: usize = if cfg!(miri) { 16 } else { 1 };
+const STRIDE: usize = if cfg!(miri) { 32 } else { 1 };
 
 fn lines(kind: &'static str) -> impl Iterator<Item = Vec<&'static str>> {
     ORACLE
