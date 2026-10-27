@@ -156,24 +156,30 @@ impl Icon {
                 match self.find_best_image(target_size, IconMode::Normal, IconState::Off) {
                     Some(base) => {
                         if mode == IconMode::Disabled {
-                            // Automatically generate disabled effect (grayed out + semi-translucent)
+                            // Automatically generate the disabled effect: desaturate each pixel
+                            // with `qGray` and halve its own alpha, so transparent pixels stay
+                            // transparent (a Grayscale8 round trip would make them opaque).
                             let mut disabled_img = base
-                                .converted_to(crate::image::image_format::ImageFormat::Grayscale8);
-                            disabled_img = disabled_img
                                 .converted_to(crate::image::image_format::ImageFormat::Rgba8888);
-                            // Reduce alpha
                             for y in 0..disabled_img.height() {
                                 for x in 0..disabled_img.width() {
                                     if let Some(c) = disabled_img.pixel_color(x, y) {
                                         let u = c.to_color_u8();
-                                        let new_alpha = ((u.alpha() as u32 * 128) / 255) as u8;
-                                        let new_color = tiny_skia::Color::from_rgba8(
+                                        let gray = crate::image::image_format::q_gray(
                                             u.red(),
                                             u.green(),
                                             u.blue(),
-                                            new_alpha,
                                         );
-                                        disabled_img.set_pixel_color(x, y, new_color);
+                                        disabled_img.set_pixel_color(
+                                            x,
+                                            y,
+                                            tiny_skia::Color::from_rgba8(
+                                                gray,
+                                                gray,
+                                                gray,
+                                                u.alpha() / 2,
+                                            ),
+                                        );
                                     }
                                 }
                             }
@@ -238,4 +244,31 @@ impl Icon {
 /// Pixel area in `i64`; negative extents count as zero.
 fn area(s: Size) -> i64 {
     i64::from(s.width.max(0)) * i64::from(s.height.max(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image::image_format::ImageFormat;
+    use tiny_skia::Color;
+
+    #[test]
+    fn auto_disabled_preserves_transparency_and_halves_alpha() {
+        let mut img = Image::new(2, 1, ImageFormat::Rgba8888);
+        img.set_pixel_color(0, 0, Color::from_rgba8(0, 0, 0, 0));
+        img.set_pixel_color(1, 0, Color::from_rgba8(200, 100, 50, 255));
+        let icon = Icon::from_image(img);
+        let pm = icon.pixmap(Size::new(2, 1), IconMode::Disabled, IconState::Off);
+        let out = pm.to_image();
+
+        let transparent = out.pixel_color(0, 0).unwrap().to_color_u8();
+        assert_eq!(transparent.alpha(), 0, "transparent background must stay transparent");
+
+        let opaque = out.pixel_color(1, 0).unwrap().to_color_u8();
+        assert_eq!(opaque.alpha(), 127, "alpha is halved: 255 / 2");
+        assert_eq!(opaque.red(), opaque.green());
+        assert_eq!(opaque.green(), opaque.blue());
+        // qGray(200, 100, 50) = (200 * 11 + 100 * 16 + 50 * 5) / 32 = 126
+        assert!((opaque.red() as i32 - 126).abs() <= 2, "red = {}", opaque.red());
+    }
 }

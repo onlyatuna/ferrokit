@@ -304,7 +304,7 @@ fn test_variant_binary_bytes_roundtrip() {
     let v_root = Variant::Map(map);
 
     // Serialize to binary bytes
-    let bytes = v_root.to_bytes();
+    let bytes = v_root.to_bytes().expect("serialize variant");
     assert!(!bytes.is_empty());
 
     // Deserialize from binary bytes

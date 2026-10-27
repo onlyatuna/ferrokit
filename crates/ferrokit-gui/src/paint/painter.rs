@@ -920,29 +920,6 @@ impl<'a> Painter<'a> {
         let mut d2 = tiny_skia::Point::from_xy(p2.x, p2.y);
         transform.map_point(&mut d1);
         transform.map_point(&mut d2);
-        // Local coverage spans both endpoint pixels plus the cap extent (half the pen width in
-        // device space) and a 2 px margin.
-        let scale = transform
-            .sx
-            .abs()
-            .max(transform.sy.abs())
-            .max(transform.kx.abs())
-            .max(transform.ky.abs());
-        let margin = 2 + (pen.width * scale).ceil() as i32;
-        let x0 = d1.x.min(d2.x).floor() as i32 - margin;
-        let y0 = d1.y.min(d2.y).floor() as i32 - margin;
-        let x1 = d1.x.max(d2.x).ceil() as i32 + margin;
-        let y1 = d1.y.max(d2.y).ceil() as i32 + margin;
-        let width = (x1 - x0) as u32;
-        let Some(mut coverage) = Mask::new(width, (y1 - y0) as u32) else {
-            return;
-        };
-        coverage.fill_path(
-            &outline,
-            tiny_skia::FillRule::Winding,
-            false,
-            transform.post_translate(-x0 as f32, -y0 as f32),
-        );
         let mut c = pen.color;
         c.apply_opacity(self.state.opacity);
         let paint = Paint {
@@ -953,15 +930,31 @@ impl<'a> Painter<'a> {
         };
         self.update_clip_mask_if_needed();
         let mask_ref = self.cached_mask.as_ref();
+        let mut pixmap = self.device.as_pixmap_mut();
+        let (pw, ph) = (pixmap.width() as f32, pixmap.height() as f32);
         for d in [d1, d2] {
+            // A non-finite or off-pixmap endpoint has no pixel to fill; checking before the
+            // `as i32` casts keeps huge coordinates from saturating or rasterising a giant box.
+            if !(d.x >= 0.0 && d.x < pw && d.y >= 0.0 && d.y < ph) {
+                continue;
+            }
             let (px, py) = (d.x.floor() as i32, d.y.floor() as i32);
-            let local = (py - y0) as u32 * width + (px - x0) as u32;
-            if coverage.data()[local as usize] != 0 {
+            // Coverage of the stroke at this pixel, from a 3x3 window centred on it.
+            let Some(mut coverage) = Mask::new(3, 3) else {
+                continue;
+            };
+            coverage.fill_path(
+                &outline,
+                tiny_skia::FillRule::Winding,
+                false,
+                transform.post_translate(-(px - 1) as f32, -(py - 1) as f32),
+            );
+            if coverage.data()[4] != 0 {
                 continue;
             }
             if let Some(rect) = tiny_skia::Rect::from_xywh(px as f32, py as f32, 1.0, 1.0) {
                 let path = PathBuilder::from_rect(rect);
-                self.device.as_pixmap_mut().fill_path(
+                pixmap.fill_path(
                     &path,
                     &paint,
                     tiny_skia::FillRule::Winding,
@@ -1483,8 +1476,18 @@ fn is_rect_polygon(pts: &[PointF]) -> bool {
         && pts[0].y < pts[2].y
 }
 
+/// Qt's `QPainterPath::arcTo` limits the sweep to one full turn. Returns `None` for a
+/// negligible or non-finite sweep.
+fn clamped_span(span_deg: f32) -> Option<f32> {
+    if !span_deg.is_finite() || span_deg.abs() < 1e-4 {
+        return None;
+    }
+    Some(span_deg.clamp(-360.0, 360.0))
+}
+
 pub fn create_arc_path(rect: RectF, start_deg: f32, span_deg: f32) -> Option<Path> {
-    if span_deg.abs() < 1e-4 || rect.width <= 0.0 || rect.height <= 0.0 {
+    let span_deg = clamped_span(span_deg)?;
+    if rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
     let rx = rect.width / 2.0;
@@ -1524,7 +1527,8 @@ pub fn create_arc_path(rect: RectF, start_deg: f32, span_deg: f32) -> Option<Pat
 }
 
 pub fn create_pie_path(rect: RectF, start_deg: f32, span_deg: f32) -> Option<Path> {
-    if span_deg.abs() < 1e-4 || rect.width <= 0.0 || rect.height <= 0.0 {
+    let span_deg = clamped_span(span_deg)?;
+    if rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
     let rx = rect.width / 2.0;
@@ -1572,7 +1576,8 @@ pub fn create_donut_arc_path(
     start_deg: f32,
     span_deg: f32,
 ) -> Option<Path> {
-    if span_deg.abs() < 1e-4 || rect.width <= 0.0 || rect.height <= 0.0 {
+    let span_deg = clamped_span(span_deg)?;
+    if rect.width <= 0.0 || rect.height <= 0.0 {
         return None;
     }
     let r_out_x = rect.width / 2.0;
@@ -2129,5 +2134,46 @@ mod tests {
                 "x={x}: each pixel of the line must be blended exactly once"
             );
         }
+    }
+
+    #[test]
+    fn aliased_line_with_non_finite_or_huge_endpoints_is_bounded() {
+        let mut pm = Pixmap::new(16, 16).unwrap();
+        {
+            let mut p = Painter::begin(&mut pm);
+            p.set_render_hint(RenderHint::Antialiasing, false);
+            p.set_pen(Pen::new(tiny_skia::Color::from_rgba8(255, 0, 0, 255), 1.0));
+            for (a, b) in [
+                (PointF::new(1.0, 1.0), PointF::new(f32::INFINITY, 5.0)),
+                (PointF::new(f32::NAN, 1.0), PointF::new(4.0, 4.0)),
+                (PointF::new(-3.0e9, 2.0), PointF::new(3.0e9, 9.0)),
+                (PointF::new(1.0, 1.0), PointF::new(f32::MAX, f32::MAX)),
+            ] {
+                p.draw_line(a, b);
+            }
+        }
+        assert_eq!(pm.data().len(), 16 * 16 * 4);
+    }
+
+    #[test]
+    fn arc_span_is_clamped_to_one_full_turn() {
+        let rect = RectF::new(0.0, 0.0, 100.0, 100.0);
+        let full = create_arc_path(rect, 0.0, 360.0).unwrap();
+        let huge = create_arc_path(rect, 0.0, 1.0e9).unwrap();
+        assert_eq!(huge.len(), full.len());
+        assert_eq!(huge.bounds(), full.bounds());
+        let neg_full = create_arc_path(rect, 0.0, -360.0).unwrap();
+        let neg_huge = create_arc_path(rect, 0.0, -1.0e9).unwrap();
+        assert_eq!(neg_huge.len(), neg_full.len());
+        assert_eq!(
+            create_pie_path(rect, 0.0, 1.0e9).unwrap().len(),
+            create_pie_path(rect, 0.0, 360.0).unwrap().len()
+        );
+        assert_eq!(
+            create_donut_arc_path(rect, 10.0, 0.0, f32::MAX).unwrap().len(),
+            create_donut_arc_path(rect, 10.0, 0.0, 360.0).unwrap().len()
+        );
+        assert!(create_arc_path(rect, 0.0, f32::INFINITY).is_none());
+        assert!(create_arc_path(rect, 0.0, f32::NAN).is_none());
     }
 }

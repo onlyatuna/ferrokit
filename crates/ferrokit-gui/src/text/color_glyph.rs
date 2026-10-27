@@ -9,20 +9,22 @@ pub struct ColorLayer {
 }
 
 /// Locates the SFNT table directory offset within a font or TTC collection.
+///
+/// All arithmetic on font-supplied values is checked: on 32-bit targets `usize` is only 32 bits
+/// wide, so offsets near `u32::MAX` would otherwise wrap past the bounds tests.
 fn get_sfnt_offset(font_data: &[u8], face_index: u32) -> Option<usize> {
     if font_data.len() < 12 {
         return None;
     }
     if &font_data[0..4] == b"ttcf" {
         let count = u32::from_be_bytes(font_data[8..12].try_into().ok()?) as usize;
-        if (face_index as usize) >= count {
+        let face_index = face_index as usize;
+        if face_index >= count {
             return None;
         }
-        let off_idx = 12 + (face_index as usize) * 4;
-        if off_idx + 4 > font_data.len() {
-            return None;
-        }
-        let offset = u32::from_be_bytes(font_data[off_idx..off_idx + 4].try_into().ok()?) as usize;
+        let off_idx = face_index.checked_mul(4)?.checked_add(12)?;
+        let off_end = off_idx.checked_add(4)?;
+        let offset = u32::from_be_bytes(font_data.get(off_idx..off_end)?.try_into().ok()?) as usize;
         Some(offset)
     } else {
         Some(0)
@@ -32,22 +34,20 @@ fn get_sfnt_offset(font_data: &[u8], face_index: u32) -> Option<usize> {
 /// Parses OpenType COLRv0 layers and CPAL palette colors for `glyph_id`.
 pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) -> Option<Vec<ColorLayer>> {
     let sfnt_offset = get_sfnt_offset(font_data, face_index)?;
-    if sfnt_offset + 12 > font_data.len() {
-        return None;
-    }
+    let header = font_data.get(sfnt_offset..sfnt_offset.checked_add(12)?)?;
 
-    let num_tables = u16::from_be_bytes([font_data[sfnt_offset + 4], font_data[sfnt_offset + 5]]) as usize;
+    let num_tables = u16::from_be_bytes([header[4], header[5]]) as usize;
     let mut colr_range: Option<(usize, usize)> = None;
     let mut cpal_range: Option<(usize, usize)> = None;
 
     for i in 0..num_tables {
-        let entry_off = sfnt_offset + 12 + i * 16;
-        if entry_off + 16 > font_data.len() {
+        let entry_off = i.checked_mul(16)?.checked_add(sfnt_offset)?.checked_add(12)?;
+        let Some(entry) = font_data.get(entry_off..entry_off.checked_add(16)?) else {
             break;
-        }
-        let tag = &font_data[entry_off..entry_off + 4];
-        let offset = u32::from_be_bytes(font_data[entry_off + 8..entry_off + 12].try_into().ok()?) as usize;
-        let length = u32::from_be_bytes(font_data[entry_off + 12..entry_off + 16].try_into().ok()?) as usize;
+        };
+        let tag = &entry[0..4];
+        let offset = u32::from_be_bytes(entry[8..12].try_into().ok()?) as usize;
+        let length = u32::from_be_bytes(entry[12..16].try_into().ok()?) as usize;
         if tag == b"COLR" {
             colr_range = Some((offset, length));
         } else if tag == b"CPAL" {
@@ -69,14 +69,11 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
     let layer_off = u32::from_be_bytes(colr[8..12].try_into().ok()?) as usize;
     let num_layers = u16::from_be_bytes([colr[12], colr[13]]) as usize;
 
-    // Checked: on 32-bit targets an offset near u32::MAX would wrap past the length test.
-    let base_end = base_off.checked_add(num_base * 6)?;
-    let layer_end = layer_off.checked_add(num_layers * 4)?;
-    if base_end > colr.len() || layer_end > colr.len() {
-        return None;
-    }
+    let base_end = num_base.checked_mul(6)?.checked_add(base_off)?;
+    let layer_end = num_layers.checked_mul(4)?.checked_add(layer_off)?;
+    let base_records = colr.get(base_off..base_end)?;
+    let layer_records = colr.get(layer_off..layer_end)?;
 
-    let base_records = &colr[base_off..base_end];
     let mut left = 0;
     let mut right = num_base;
     let mut found_record: Option<(u16, u16)> = None;
@@ -101,22 +98,19 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
     let first_layer = first_layer as usize;
     let n_layers = n_layers as usize;
 
-    if first_layer + n_layers > num_layers {
+    if first_layer.checked_add(n_layers)? > num_layers {
         return None;
     }
 
-    let cpal = &font_data[cpal_off..cpal_off + cpal_len];
     let n_palettes = u16::from_be_bytes([cpal[4], cpal[5]]) as usize;
     let n_colors = u16::from_be_bytes([cpal[6], cpal[7]]) as usize;
     let color_records_off = u32::from_be_bytes(cpal[8..12].try_into().ok()?) as usize;
 
-    let palette_start = if n_palettes > 0 && 12 + 2 <= cpal.len() {
-        u16::from_be_bytes([cpal[12], cpal[13]]) as usize
-    } else {
-        0
+    let palette_start = match cpal.get(12..14) {
+        Some(idx) if n_palettes > 0 => u16::from_be_bytes([idx[0], idx[1]]) as usize,
+        _ => 0,
     };
 
-    let layer_records = &colr[layer_off..layer_end];
     let mut result = Vec::with_capacity(n_layers);
 
     for i in 0..n_layers {
@@ -124,19 +118,23 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
         let layer_gid = u16::from_be_bytes([layer_records[l_off], layer_records[l_off + 1]]);
         let pal_idx = u16::from_be_bytes([layer_records[l_off + 2], layer_records[l_off + 3]]);
 
+        let fallback = [255, 255, 255, 255];
         let color = if pal_idx == 0xFFFF {
-            [255, 255, 255, 255]
+            fallback
         } else {
             let actual_idx = palette_start + pal_idx as usize;
-            if actual_idx < n_colors && color_records_off + actual_idx * 4 + 4 <= cpal.len() {
-                let c_off = color_records_off + actual_idx * 4;
-                let b = cpal[c_off];
-                let g = cpal[c_off + 1];
-                let r = cpal[c_off + 2];
-                let a = cpal[c_off + 3];
-                [r, g, b, a]
+            let record = if actual_idx < n_colors {
+                actual_idx
+                    .checked_mul(4)
+                    .and_then(|o| o.checked_add(color_records_off))
+                    .and_then(|o| Some(o..o.checked_add(4)?))
+                    .and_then(|r| cpal.get(r))
             } else {
-                [255, 255, 255, 255]
+                None
+            };
+            match record {
+                Some(c) => [c[2], c[1], c[0], c[3]],
+                None => fallback,
             }
         };
 
@@ -348,5 +346,31 @@ mod colr_bounds_tests {
         let mut ttc = b"ttcf".to_vec();
         ttc.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 1]);
         assert!(parse_colr_v0_layers(&ttc, 3, 5).is_none());
+    }
+
+    #[test]
+    fn crafted_header_counts_and_offsets_never_overflow() {
+        let p = cpal_table();
+        // Maximal counts with offsets at u32::MAX: the products/sums exceed 32-bit usize.
+        let mut c = colr_table();
+        c[2..4].copy_from_slice(&u16::MAX.to_be_bytes());
+        c[4..8].copy_from_slice(&(u32::MAX - 5).to_be_bytes());
+        c[8..12].copy_from_slice(&(u32::MAX - 3).to_be_bytes());
+        c[12..14].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+
+        // CPAL color record offset near u32::MAX falls back to white instead of wrapping.
+        let c = colr_table();
+        let mut p = cpal_table();
+        p[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+        let layers = parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).unwrap();
+        assert_eq!(layers[0].color, [255, 255, 255, 255]);
+
+        // TTC whose face offset is u32::MAX.
+        let mut ttc = b"ttcf".to_vec();
+        ttc.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 1]);
+        ttc.extend_from_slice(&u32::MAX.to_be_bytes());
+        ttc.extend_from_slice(&[0; 32]);
+        assert!(parse_colr_v0_layers(&ttc, 0, 5).is_none());
     }
 }

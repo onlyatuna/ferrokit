@@ -17,9 +17,35 @@ fn on_big_stack<F: FnOnce() + Send + 'static>(f: F) {
 }
 
 #[test]
+fn json_nesting_at_cap_fits_a_2mb_stack() {
+    // Parse, write and drop at the cap on a 2 MiB stack (debug builds included).
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let ok = nested("[", "]", MAX_NESTING_DEPTH);
+            let doc = JsonDocument::from_json_str(&ok).unwrap();
+            assert_eq!(doc.to_json_string(JsonFormat::Compact), ok);
+            drop(doc);
+            let ok_obj = format!(
+                "{}1{}",
+                "{\"a\":".repeat(MAX_NESTING_DEPTH),
+                "}".repeat(MAX_NESTING_DEPTH)
+            );
+            let doc = JsonDocument::from_json_str(&ok_obj).unwrap();
+            assert_eq!(doc.to_json_string(JsonFormat::Compact), ok_obj);
+            let deep = nested("[", "]", MAX_NESTING_DEPTH + 1);
+            let err = JsonDocument::from_json_str(&deep).unwrap_err();
+            assert_eq!(err.reason, ParseErrorReason::DeepNesting);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn json_deep_nesting_is_an_error_not_a_stack_overflow() {
     on_big_stack(|| {
-        let ok = nested("[", "]", 1024);
+        let ok = nested("[", "]", MAX_NESTING_DEPTH);
         assert!(JsonDocument::from_json_str(&ok).is_ok());
         let deep = "[".repeat(200_000);
         let err = JsonDocument::from_json_str(&deep).unwrap_err();
@@ -79,6 +105,25 @@ fn variant_deserialize_deep_nesting_is_an_error() {
             bytes.extend_from_slice(&1u32.to_be_bytes());
         }
         assert!(Variant::from_bytes(&bytes).is_err());
+    });
+}
+
+#[test]
+fn variant_serialize_depth_cap_matches_deserialize() {
+    // Deserialization accepts nesting depth 0..=128 (129 levels); serialization must agree.
+    fn nest(levels: usize) -> Variant {
+        let mut v = Variant::I64(1);
+        for _ in 0..levels {
+            v = Variant::List(vec![v]);
+        }
+        v
+    }
+    on_big_stack(|| {
+        let at_cap = nest(128);
+        let bytes = at_cap.to_bytes().expect("serialize at cap");
+        assert_eq!(Variant::from_bytes(&bytes).unwrap(), at_cap);
+        let over = nest(129);
+        assert!(over.to_bytes().is_err());
     });
 }
 

@@ -584,6 +584,12 @@
     "test_qcolor::lighter_and_darker_match_qt_for_every_spec_and_huge_factors::SB": "pass",
     "test_qcolor::lighter_and_darker_match_qt_for_every_spec_and_huge_factors::TB": "pass",
     "test_qcolor::qcolor_ops_match_qt_rgba_for_huge_factors::SB": "pass",
-    "test_qcolor::qcolor_ops_match_qt_rgba_for_huge_factors::TB": "pass"
+    "test_qcolor::qcolor_ops_match_qt_rgba_for_huge_factors::TB": "pass",
+    "lib::paint::backing_store::tests::scroll_of_rect_outside_the_buffer_returns_false::SB": "pass",
+    "lib::paint::backing_store::tests::scroll_of_rect_outside_the_buffer_returns_false::TB": "pass",
+    "lib::paint::painter::tests::aliased_line_with_non_finite_or_huge_endpoints_is_bounded::SB": "pass",
+    "lib::paint::painter::tests::aliased_line_with_non_finite_or_huge_endpoints_is_bounded::TB": "pass",
+    "lib::paint::painter::tests::arc_span_is_clamped_to_one_full_turn::SB": "pass",
+    "lib::paint::painter::tests::arc_span_is_clamped_to_one_full_turn::TB": "pass"
   }
 }

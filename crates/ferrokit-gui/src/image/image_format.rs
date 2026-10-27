@@ -16,9 +16,13 @@ pub enum ImageFormat {
     Rgb888,
     /// 32-bit RGB format (0xFF, R, G, B, 4 bytes per pixel, alpha ignored/opaque).
     Rgb32,
-    /// 32-bit ARGB format (A, R, G, B, 4 bytes per pixel).
+    /// 32-bit ARGB format. Bytes in memory are `[A, R, G, B]` on every platform.
+    ///
+    /// Qt's `Format_ARGB32` is the native-endian `uint32` `0xAARRGGBB`, i.e. `[B, G, R, A]`
+    /// on little-endian hosts, so raw buffers are not byte-compatible with Qt's there.
     Argb32,
-    /// 32-bit ARGB format with premultiplied alpha (A, R, G, B).
+    /// 32-bit ARGB format with premultiplied alpha; same `[A, R, G, B]` byte order as
+    /// [`ImageFormat::Argb32`] (Qt: native-endian `0xAARRGGBB`, `[B, G, R, A]` on little-endian).
     Argb32Premultiplied,
     /// 32-bit RGBA format (R, G, B, A, 4 bytes per pixel).
     #[default]
@@ -125,5 +129,25 @@ impl ImageFormat {
         } else {
             (raw_bytes + alignment - 1) & !(alignment - 1)
         }
+    }
+}
+
+/// Qt's `qGray(r, g, b)`: `(r * 11 + g * 16 + b * 5) / 32`.
+#[inline]
+pub(crate) const fn q_gray(r: u8, g: u8, b: u8) -> u8 {
+    ((r as u32 * 11 + g as u32 * 16 + b as u32 * 5) / 32) as u8
+}
+
+#[cfg(test)]
+mod q_gray_tests {
+    use super::q_gray;
+
+    #[test]
+    fn matches_qt_weights() {
+        assert_eq!(q_gray(0, 0, 0), 0);
+        assert_eq!(q_gray(255, 255, 255), 255);
+        assert_eq!(q_gray(255, 0, 0), 87); // 255 * 11 / 32
+        assert_eq!(q_gray(0, 255, 0), 127); // 255 * 16 / 32
+        assert_eq!(q_gray(0, 0, 255), 39); // 255 * 5 / 32
     }
 }
