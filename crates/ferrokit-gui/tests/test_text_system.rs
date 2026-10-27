@@ -427,6 +427,100 @@ fn test_cursor_visual_line_navigation_in_wrapped_blocks() {
     assert_eq!(step(&doc, 1, MoveOperation::StartOfLine), 0);
 }
 
+fn press(c: &mut TextCursor, doc: &TextDocument, op: MoveOperation) -> usize {
+    c.move_position(doc, op, MoveMode::MoveAnchor, 1);
+    c.position()
+}
+
+#[test]
+fn test_cursor_sticky_column_without_wrapping() {
+    let mut doc = TextDocument::new();
+    // Blocks start at 0, 7, 10, 17.
+    doc.set_plain_text("abcdef\nxy\nlonger\nabcdef");
+    let mut c = TextCursor::at_position(5);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 9, "clamped into the short block");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 15, "column 5 restored");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 22);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 15);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 9);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "back at the original column");
+
+    // Cloned cursors carry the column along.
+    press(&mut c, &doc, MoveOperation::Down);
+    let mut copy = c.clone();
+    assert_eq!(press(&mut copy, &doc, MoveOperation::Down), 15);
+
+    // Any non-vertical move or edit forgets it: Down behaves like on a fresh cursor.
+    for op in [
+        MoveOperation::Left,
+        MoveOperation::Right,
+        MoveOperation::StartOfLine,
+        MoveOperation::EndOfLine,
+        MoveOperation::StartOfWord,
+        MoveOperation::NextWord,
+    ] {
+        let mut c = TextCursor::at_position(5);
+        press(&mut c, &doc, MoveOperation::Down);
+        let at = press(&mut c, &doc, op);
+        let mut fresh = TextCursor::at_position(at);
+        assert_eq!(
+            press(&mut c, &doc, MoveOperation::Down),
+            press(&mut fresh, &doc, MoveOperation::Down),
+            "{op:?}"
+        );
+    }
+    let mut c = TextCursor::at_position(5);
+    let mut doc2 = doc.clone();
+    press(&mut c, &doc2, MoveOperation::Down);
+    c.insert_text(&mut doc2, "z");
+    assert_eq!(c.position(), 10);
+    assert_eq!(press(&mut c, &doc2, MoveOperation::Down), 11 + 3, "edit reset the column");
+}
+
+#[test]
+fn test_cursor_sticky_x_with_wrapping() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("abcdefgh\nab\nabcdefgh\nabcdefgh");
+    doc.set_text_width(10_000.0);
+    // Blocks start at 0, 9, 12, 21.
+    let mut c = TextCursor::at_position(6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "short line clamps");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18, "x restored across blocks");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "repeated press keeps x");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "original x on the first line");
+
+    // Selecting with Shift+Down keeps the column too.
+    let mut c = TextCursor::at_position(6);
+    c.move_position(&doc, MoveOperation::Down, MoveMode::KeepAnchor, 2);
+    assert_eq!((c.anchor(), c.position()), (6, 18));
+
+    // Non-vertical moves and edits reset it.
+    for op in [
+        MoveOperation::Left,
+        MoveOperation::Right,
+        MoveOperation::StartOfLine,
+        MoveOperation::EndOfLine,
+    ] {
+        let mut c = TextCursor::at_position(6);
+        press(&mut c, &doc, MoveOperation::Down);
+        let at = press(&mut c, &doc, op);
+        let down = press(&mut c, &doc, MoveOperation::Down);
+        let mut fresh = TextCursor::at_position(at);
+        assert_eq!(down, press(&mut fresh, &doc, MoveOperation::Down), "{op:?}");
+    }
+    let mut c = TextCursor::at_position(6);
+    let mut doc2 = doc.clone();
+    press(&mut c, &doc2, MoveOperation::Down);
+    c.insert_text(&mut doc2, "z");
+    let mut fresh = TextCursor::at_position(c.position());
+    assert_eq!(
+        press(&mut c, &doc2, MoveOperation::Down),
+        press(&mut fresh, &doc2, MoveOperation::Down)
+    );
+}
+
 #[test]
 fn test_qt_canonical_text_aliases() {
     let _l: QTextLayout = TextLayout::new("text", Font::new("Arial", 12.0));
