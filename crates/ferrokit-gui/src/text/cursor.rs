@@ -62,6 +62,96 @@ pub struct TextCursor {
     pub(crate) char_format: TextCharFormat,
 }
 
+/// Whether the document wraps blocks into visual lines (`QTextDocument::setTextWidth`).
+fn wraps(doc: &TextDocument) -> bool {
+    doc.text_width() >= 0.0
+}
+
+/// `StartOfLine` / `EndOfLine` (`QTextCursor::movePosition`): the edge of the visual line holding
+/// `pos`. Without a text width every block is a single line, so this is the block edge.
+fn visual_line_edge(doc: &TextDocument, pos: usize, end: bool) -> usize {
+    let block_idx = doc.block_index_at_grapheme(pos);
+    let Some(b) = doc.block_at(block_idx) else {
+        return if end { doc.character_count() } else { 0 };
+    };
+    let block_len = b.text().graphemes(true).count();
+    if !wraps(doc) {
+        return b.position + if end { block_len } else { 0 };
+    }
+    let layout = doc.block_layout(b);
+    let Some(line) = layout.line_for_text_position(pos.saturating_sub(b.position)) else {
+        return b.position + if end { block_len } else { 0 };
+    };
+    if !end {
+        return b.position + line.text_start();
+    }
+    let mut local = line.text_start() + line.text_length();
+    // A wrapped (non-last) line ends before the space that caused the break.
+    if local > 0 && line.line_number() + 1 < layout.line_count() {
+        if let Some(g) = b.text().graphemes(true).nth(local - 1) {
+            if g.chars().all(char::is_whitespace) {
+                local -= 1;
+            }
+        }
+    }
+    b.position + local.min(block_len)
+}
+
+/// `Up` / `Down` over visual lines, keeping the x coordinate; crosses into the adjacent block's
+/// last/first visual line at a block edge. `None` when the document has no wrap width.
+fn visual_line_step(doc: &TextDocument, pos: usize, up: bool) -> Option<usize> {
+    use crate::text::line::{CursorPosition, Edge};
+    if !wraps(doc) {
+        return None;
+    }
+    let block_idx = doc.block_index_at_grapheme(pos);
+    let b = doc.block_at(block_idx)?;
+    let layout = doc.block_layout(b);
+    let local = pos.checked_sub(b.position)?;
+    let line = layout.line_for_text_position(local)?;
+    let x = line.cursor_to_x(local, Edge::Leading);
+    let n = line.line_number();
+    let (target_block, target_layout, target_n) = if up {
+        if n > 0 {
+            (b, layout, n - 1)
+        } else {
+            let pb = doc.block_at(block_idx.checked_sub(1)?)?;
+            let pl = doc.block_layout(pb);
+            let last = pl.line_count().checked_sub(1)?;
+            (pb, pl, last)
+        }
+    } else if n + 1 < layout.line_count() {
+        (b, layout, n + 1)
+    } else {
+        let nb = doc.block_at(block_idx + 1)?;
+        (nb, doc.block_layout(nb), 0)
+    };
+    let target_line = target_layout.line_at(target_n)?;
+    let mut col = target_line.x_to_cursor(x, CursorPosition::CursorBetweenCharacters);
+    let end = target_line.text_start() + target_line.text_length();
+    // On a wrapped line the end position is the next line's start: stay on this line.
+    if col >= end && target_n + 1 < target_layout.line_count() && target_line.text_length() > 0 {
+        col = end - 1;
+    }
+    Some(target_block.position + col)
+}
+
+/// `Up` / `Down` without a layout: every block is one line, so keep the column and move to the
+/// adjacent block, clamped to its length; at the first/last block nothing moves.
+fn block_line_step(doc: &TextDocument, pos: usize, up: bool) -> usize {
+    let block_idx = doc.block_index_at_grapheme(pos);
+    let column = doc.block_at(block_idx).map_or(0, |b| pos - b.position);
+    let target = if up {
+        block_idx.checked_sub(1)
+    } else {
+        (block_idx + 1 < doc.block_count()).then_some(block_idx + 1)
+    };
+    match target.and_then(|i| doc.block_at(i)) {
+        Some(b) => b.position + column.min(b.text().graphemes(true).count()),
+        None => pos,
+    }
+}
+
 impl TextCursor {
     /// Creates a cursor at the start of a document.
     pub fn new() -> Self {
@@ -159,21 +249,13 @@ impl TextCursor {
                         b.position + b.text().graphemes(true).count()
                     })
                 }
-                MoveOperation::StartOfLine => {
-                    let block_idx = doc.block_index_at_grapheme(new_pos);
-                    doc.block_at(block_idx).map_or(0, |b| b.position)
-                }
+                MoveOperation::StartOfLine => visual_line_edge(doc, new_pos, false),
                 MoveOperation::StartOfWord => {
                     let full = doc.to_plain_text();
                     let pos = TextPosition::from_grapheme(&full, new_pos);
                     pos.prev_word(&full).grapheme.0
                 }
-                MoveOperation::EndOfLine => {
-                    let block_idx = doc.block_index_at_grapheme(new_pos);
-                    doc.block_at(block_idx).map_or(total_graphemes, |b| {
-                        b.position + b.text().graphemes(true).count()
-                    })
-                }
+                MoveOperation::EndOfLine => visual_line_edge(doc, new_pos, true),
                 MoveOperation::EndOfWord => {
                     let full = doc.to_plain_text();
                     let pos = TextPosition::from_grapheme(&full, new_pos);
@@ -211,19 +293,9 @@ impl TextCursor {
                     pos.next_word(&full).grapheme.0
                 }
                 MoveOperation::Up | MoveOperation::Down => {
-                    // Without a layout every block is one line: keep the column and move to the
-                    // adjacent block, clamped to its length; at the first/last block nothing moves.
-                    let block_idx = doc.block_index_at_grapheme(new_pos);
-                    let column = doc.block_at(block_idx).map_or(0, |b| new_pos - b.position);
-                    let target = if op == MoveOperation::Up {
-                        block_idx.checked_sub(1)
-                    } else {
-                        (block_idx + 1 < doc.block_count()).then_some(block_idx + 1)
-                    };
-                    match target.and_then(|i| doc.block_at(i)) {
-                        Some(b) => b.position + column.min(b.text().graphemes(true).count()),
-                        None => new_pos,
-                    }
+                    let up = op == MoveOperation::Up;
+                    visual_line_step(doc, new_pos, up)
+                        .unwrap_or_else(|| block_line_step(doc, new_pos, up))
                 }
             };
         }

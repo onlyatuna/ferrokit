@@ -15,7 +15,9 @@ use crate::paint::pixmap::Pixmap;
 use crate::text::document::TextDocument;
 use crate::text::font::Font;
 use crate::text::font_database::resolve_font_engines_for_text_global;
-use crate::paint::text_blend::{blend_grey, blend_lcd};
+use crate::paint::text_blend::{
+    blend_grey, blend_lcd, composite_masked, rgb_average, MaskedSource,
+};
 use crate::text::glyph_layout::GlyphLayout;
 use crate::text::smoothing::{gamma_lut, text_smoothing, TextSmoothing, TrcLut};
 use std::sync::Arc;
@@ -301,6 +303,33 @@ pub struct Painter<'a> {
     /// starts, like `QRasterPaintEngine::begin` fixes the glyph cache format.
     lcd_lut: Option<Arc<TrcLut>>,
 }
+/// Clip coverage (0 = clipped away, 255 = inside) of the device pixel `(x, y)` for a glyph blit:
+/// the clip box (logical, scaled by `dpr`), the device bounds, and a rotated clip's mask.
+fn glyph_clip_coverage(
+    clip_rect: Option<tiny_skia::Rect>,
+    dpr: f32,
+    clip_cov: Option<(&[u8], usize)>,
+    (pw, ph): (u32, u32),
+    (x, y): (i32, i32),
+) -> u8 {
+    if x < 0 || y < 0 || x >= pw as i32 || y >= ph as i32 {
+        return 0;
+    }
+    if let Some(clip) = clip_rect {
+        let inside = x >= (clip.left() * dpr).floor() as i32
+            && x < (clip.right() * dpr).ceil() as i32
+            && y >= (clip.top() * dpr).floor() as i32
+            && y < (clip.bottom() * dpr).ceil() as i32;
+        if !inside {
+            return 0;
+        }
+    }
+    match clip_cov {
+        Some((cov, mw)) => cov[y as usize * mw + x as usize],
+        None => 255,
+    }
+}
+
 impl<'a> Painter<'a> {
     // Begins painting on the specified `PaintDevice`, configuring initial DPR transform.
     pub fn begin(device: &'a mut dyn PaintDevice) -> Self {
@@ -1164,6 +1193,7 @@ impl<'a> Painter<'a> {
                 self.state.opacity,
                 patt_transform,
             ),
+            blend_mode: self.state.composition_mode.into(),
             anti_alias: self.state.render_hints.contains(RenderHint::Antialiasing),
             ..Default::default()
         };
@@ -1274,6 +1304,35 @@ impl<'a> Painter<'a> {
                 let c_h = color_metrics.height;
                 let color_data = color_pixmap.data();
 
+                if self.state.composition_mode != CompositionMode::SourceOver {
+                    // Non-source-over: composite through the active mode, weighted by the
+                    // clip coverage and the glyph's own alpha.
+                    let mut cov = vec![0u8; c_w * c_h];
+                    for gy in 0..c_h {
+                        for gx in 0..c_w {
+                            if color_data[(gy * c_w + gx) * 4 + 3] != 0 {
+                                cov[gy * c_w + gx] = glyph_clip_coverage(
+                                    self.state.clip_rect,
+                                    dpr,
+                                    clip_cov,
+                                    (pw, ph),
+                                    (start_x + gx as i32, start_y + gy as i32),
+                                );
+                            }
+                        }
+                    }
+                    composite_masked(
+                        pix_data,
+                        (pw, ph),
+                        (start_x, start_y),
+                        (c_w as u32, c_h as u32),
+                        &cov,
+                        MaskedSource::Image(color_data, self.state.opacity.clamp(0.0, 1.0)),
+                        self.state.composition_mode.into(),
+                    );
+                    continue;
+                }
+
                 for gy in 0..c_h {
                     let dst_y = start_y + gy as i32;
                     if dst_y < 0 || dst_y >= ph as i32 {
@@ -1366,6 +1425,46 @@ impl<'a> Painter<'a> {
                 if glyph_x1 <= cx0 || start_x >= cx1 || glyph_y1 <= cy0 || start_y >= cy1 {
                     continue;
                 }
+            }
+
+            if self.state.composition_mode != CompositionMode::SourceOver {
+                // Qt's mask blits composite the pen colour through the composition mode; an LCD
+                // mask is reduced to one coverage as for a non-opaque destination.
+                let mut cov = vec![0u8; metrics.width * metrics.height];
+                for gy in 0..metrics.height {
+                    for gx in 0..metrics.width {
+                        let glyph_cov = match (&lcd_glyph, &lcd_lut) {
+                            (Some(_), Some(_)) => {
+                                let i = (gy * metrics.width + gx) * 3;
+                                rgb_average([bitmap[i], bitmap[i + 1], bitmap[i + 2]])
+                            }
+                            _ => bitmap[gy * metrics.width + gx],
+                        };
+                        if glyph_cov != 0 {
+                            let clip = glyph_clip_coverage(
+                                self.state.clip_rect,
+                                dpr,
+                                clip_cov,
+                                (pw, ph),
+                                (start_x + gx as i32, start_y + gy as i32),
+                            );
+                            cov[gy * metrics.width + gx] =
+                                (glyph_cov as u32 * clip as u32 / 255) as u8;
+                        }
+                    }
+                }
+                let mut color = text_color;
+                color.set_alpha(base_alpha);
+                composite_masked(
+                    pix_data,
+                    (pw, ph),
+                    (start_x, start_y),
+                    (metrics.width as u32, metrics.height as u32),
+                    &cov,
+                    MaskedSource::Solid(color),
+                    self.state.composition_mode.into(),
+                );
+                continue;
             }
 
             for gy in 0..metrics.height {

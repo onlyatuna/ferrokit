@@ -181,26 +181,36 @@ impl TextLayout {
     /// Produces the next `TextLine` from the layout, wrapping words if necessary.
     pub fn create_line(&mut self) -> Option<TextLine> {
         let composite = self.composite();
-        let full_text = composite.text.as_str();
         let total_graphemes = composite.grapheme_count();
 
-        if self.layout_cursor >= total_graphemes && !full_text.is_empty() {
+        // A text ending in a hard break has a final empty line (the caret after `'\n'`); an
+        // empty text is a single empty line. `layout_cursor == total + 1` means that line is done.
+        let ends_with_break =
+            total_graphemes > 0 && composite.grapheme(total_graphemes - 1) == "\n";
+        if self.layout_cursor > total_graphemes
+            || (self.layout_cursor == total_graphemes && total_graphemes > 0 && !ends_with_break)
+        {
             return None;
         }
 
-        if full_text.is_empty() {
-            if self.layout_cursor > 0 {
-                return None;
-            }
-            self.layout_cursor = 1;
+        if self.layout_cursor == total_graphemes {
+            self.layout_cursor = total_graphemes + 1;
             let metrics = FontMetrics::from_font(&self.font);
+            let line_idx = self.lines.len();
+            let x_pos = if self.alignment.contains(Alignment::RIGHT) {
+                self.position.x + self.wrap_width.unwrap_or(0.0)
+            } else if self.alignment.contains(Alignment::H_CENTER) {
+                self.position.x + self.wrap_width.unwrap_or(0.0) * 0.5
+            } else {
+                self.position.x
+            };
             return Some(TextLine {
-                index: self.lines.len(),
-                text_start: 0,
+                index: line_idx,
+                text_start: total_graphemes,
                 text_length: 0,
-                byte_start: 0,
+                byte_start: composite.text.len(),
                 byte_length: 0,
-                position: PointF::new(self.position.x, self.position.y),
+                position: PointF::new(x_pos, self.position.y + line_idx as f32 * metrics.height),
                 width: self.wrap_width.unwrap_or(0.0),
                 height: metrics.height,
                 ascent: metrics.ascent,
@@ -236,7 +246,7 @@ impl TextLayout {
                 break;
             }
 
-            let g_width = metrics.horizontal_advance(g, &self.font);
+            let g_width = metrics.horizontal_advance_exact(g, &self.font);
 
             if curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
                 // Wrapping needed
@@ -334,12 +344,12 @@ impl TextLayout {
 
     /// Finds the line containing the given global grapheme cluster position.
     pub fn line_for_text_position(&self, pos: usize) -> Option<&TextLine> {
-        for line in &self.lines {
-            if pos >= line.text_start && pos <= line.text_start + line.text_length {
-                return Some(line);
-            }
-        }
-        self.lines.last()
+        // `QTextLayout::lineForTextPosition`: a line owns `[start, start + length)`; the end of
+        // text (and anything past it) belongs to the last line.
+        self.lines
+            .iter()
+            .find(|line| pos >= line.text_start && pos < line.text_start + line.text_length)
+            .or_else(|| self.lines.last())
     }
 
     /// Returns the complete bounding rectangle covering all laid out lines.
@@ -510,5 +520,42 @@ mod tests {
         layout.do_layout();
         assert_eq!(layout.line_count(), 4);
         assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\\n\"");
+    }
+
+    #[test]
+    fn trailing_newline_adds_an_empty_last_line() {
+        let mut layout = TextLayout::new("ab\n", Font::new("Segoe UI", 12.0));
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 2);
+        let last = layout.line_at(1).unwrap();
+        assert_eq!((last.text_start(), last.text_length()), (3, 0));
+        assert!(last.y() > layout.line_at(0).unwrap().y());
+        // The caret after the newline sits on the empty line.
+        assert_eq!(layout.line_for_text_position(3).map(|l| l.line_number()), Some(1));
+    }
+
+    #[test]
+    fn line_for_text_position_end_is_exclusive_except_on_the_last_line() {
+        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        layout.do_layout();
+        assert_eq!(layout.line_count(), 2);
+        let line_of = |p| layout.line_for_text_position(p).map(|l| l.line_number());
+        assert_eq!(line_of(0), Some(0));
+        assert_eq!(line_of(2), Some(0));
+        assert_eq!(line_of(3), Some(1), "boundary belongs to the next line");
+        assert_eq!(line_of(5), Some(1), "end of text belongs to the last line");
+        assert_eq!(line_of(99), Some(1));
+    }
+
+    #[test]
+    fn line_advances_follow_shaped_widths() {
+        let font = Font::new("Segoe UI", 12.0);
+        let metrics = FontMetrics::from_font(&font);
+        let mut layout = TextLayout::new("Wi", font.clone());
+        layout.do_layout();
+        let line = layout.line_at(0).unwrap();
+        let expected = metrics.horizontal_advance_exact("W", &font)
+            + metrics.horizontal_advance_exact("i", &font);
+        assert!((line.natural_text_width() - expected).abs() < 1e-3);
     }
 }

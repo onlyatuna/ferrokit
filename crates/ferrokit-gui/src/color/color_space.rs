@@ -198,6 +198,23 @@ impl ColorSpace {
         }
     }
 
+    /// Creates a color space from explicit chromaticities and a transfer function.
+    ///
+    /// `primaries` is the closest standard primary set (or `Primaries::Custom`).
+    pub fn from_primary_points(
+        primaries: Primaries,
+        primary_points: PrimaryPoints,
+        transfer_function: TransferFunction,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            primaries,
+            primary_points,
+            transfer_function,
+            description: description.into(),
+        }
+    }
+
     /// Constructs from a named color space.
     pub fn from_named(named: NamedColorSpace) -> Self {
         match named {
