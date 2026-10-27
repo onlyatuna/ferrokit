@@ -28,6 +28,9 @@ pub trait PlatformTrayIcon {
     fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
+    /// Shows the icon. The D-Bus back end only queues its StatusNotifierWatcher registration:
+    /// `Ok` then means queued, and `DbusStatusNotifierItem::is_registered` confirms it after
+    /// [`process_events`](Self::process_events) has read the watcher's reply.
     fn show(&mut self) -> Result<(), &'static str>;
     fn hide(&mut self) -> Result<(), &'static str>;
 
