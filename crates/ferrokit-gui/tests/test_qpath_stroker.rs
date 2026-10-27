@@ -29,10 +29,19 @@ const ORACLE: &str = include_str!("data/qpath_oracle.txt");
 const STRIDE: usize = if cfg!(miri) { 16 } else { 1 };
 
 fn lines(kind: &'static str) -> impl Iterator<Item = Vec<&'static str>> {
+    lines_every(kind, 1)
+}
+
+/// The tokens of every `stride`-th line of `kind`. A line is split only once it is chosen: under
+/// Tree Borrows every `&str` token kept in the `Vec` slows each further access to it, so splitting
+/// the lines that are skipped anyway (about 190 tokens per stroke line) used to dominate the run.
+fn lines_every(kind: &'static str, stride: usize) -> impl Iterator<Item = Vec<&'static str>> {
     ORACLE
         .lines()
         .filter(move |l| l.split(' ').next() == Some(kind))
-        .map(|l| l.split(' ').skip(1).collect())
+        .enumerate()
+        .filter(move |(n, _)| n % stride == 0)
+        .map(|(_, l)| l.split(' ').skip(1).collect())
 }
 
 /// Reads the tokens of an oracle line in order.
@@ -110,10 +119,7 @@ fn assert_same_elements(ours: &[(u8, f64, f64)], qt: &[(u8, f64, f64)], what: &s
 #[test]
 fn arc_to_and_arc_move_to_match_qt_element_lists() {
     let mut cases = 0;
-    for (n, line) in lines("arc").enumerate() {
-        if n % STRIDE != 0 {
-            continue;
-        }
+    for line in lines_every("arc", STRIDE) {
         let mut t = Tokens::new(&line);
         let mode = t.n();
         let rect = RectF::new(t.f32(), t.f32(), t.f32(), t.f32());
@@ -189,10 +195,7 @@ fn arc_move_to_replaces_a_preceding_move_and_invalid_arguments_are_ignored() {
 #[test]
 fn stroker_matches_qt_element_lists() {
     let mut cases = 0;
-    for (n, line) in lines("stroke").enumerate() {
-        if n % STRIDE != 0 {
-            continue;
-        }
+    for line in lines_every("stroke", STRIDE) {
         let mut t = Tokens::new(&line);
         let width = t.f();
         let cap = [PenCapStyle::Flat, PenCapStyle::Square, PenCapStyle::Round][t.n()];
@@ -313,10 +316,7 @@ fn shoelace(pts: &[(f64, f64)]) -> f64 {
 #[test]
 fn hud_donut_arc_stroke_matches_qt_bounds_and_area() {
     let mut cases = 0;
-    for (n, line) in lines("hud").enumerate() {
-        if n % STRIDE.min(4) != 0 {
-            continue;
-        }
+    for line in lines_every("hud", STRIDE.min(4)) {
         let mut t = Tokens::new(&line);
         let rect = RectF::new(t.f32(), t.f32(), t.f32(), t.f32());
         let (start, sweep, ring) = (t.f32(), t.f32(), t.f());
