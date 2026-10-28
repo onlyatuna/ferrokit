@@ -182,6 +182,13 @@ CURSOR_CASES = [
     ("arial_emoji_flag", "arial", "a\U0001F1EF\U0001F1F5b"),
     ("arial_emoji_skin_tone", "arial", "a\U0001F44D\U0001F3FDb"),
     ("arial_emoji_keycap", "arial", "a1\uFE0F\u20E3b"),
+    ("arial_emoji_keycap_hash", "arial", "a#\uFE0F\u20E3*\uFE0F\u20E3b"),
+    ("arial_emoji_vs16_heart", "arial", "a\u2764\uFE0Fb"),
+    ("arial_emoji_vs16_copyright", "arial", "a\u00A9\uFE0Fb\u00A9c"),
+    ("arial_emoji_rainbow_flag", "arial", "a\U0001F3F3\uFE0F\u200D\U0001F308b"),
+    ("arial_emoji_zwj_skin_tone", "arial", "a\U0001F468\U0001F3FD\u200D\U0001F469\U0001F3FDb"),
+    ("arial_emoji_couple_heart", "arial", "a\U0001F469\u200D\u2764\uFE0F\u200D\U0001F468b"),
+    ("arial_emoji_run", "arial", "ab\U0001F600\U0001F680\U0001F44D\U0001F3FEcd"),
     ("arial_hebrew", "arial", "\u05e9\u05dc\u05d5\u05dd"),
     ("arial_mixed_rtl", "arial", "abc \u05e9\u05dc\u05d5\u05dd def"),
 ]

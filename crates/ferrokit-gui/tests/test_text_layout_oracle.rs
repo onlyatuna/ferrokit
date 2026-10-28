@@ -60,29 +60,32 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          character (the three-letter `ffi`, 15.625 px: 5.203125 px each); ferrokit divides in f32 \
          (5.2083). 0.0104 px at most, and only for ligatures of 3+ characters",
     ),
-    ("cursor/syn_liga_run", "same ligature division as syn_liga_ffi"),
+    (
+        "cursor/syn_liga_run",
+        "same ligature division as syn_liga_ffi",
+    ),
     (
         "cursor/syn_rtl_hebrew",
         "`cursor_to_x` is in logical order: the x of position n is the sum of the advances of the \
          first n graphemes. Qt returns the visual x, which runs right to left inside a \
          right-to-left run (`TextLayout` has no bidi reordering)",
     ),
-    ("cursor/syn_rtl_mixed", "no bidi reordering, as syn_rtl_hebrew"),
-    ("cursor/syn_rtl_final", "no bidi reordering, as syn_rtl_hebrew"),
-    ("cursor/arial_hebrew", "no bidi reordering, as syn_rtl_hebrew"),
-    ("cursor/arial_mixed_rtl", "no bidi reordering, as syn_rtl_hebrew"),
     (
-        "cursor/arial_emoji_zwj",
-        "Qt shapes the ZWJ sequence 👨‍👩‍👧 as one Segoe UI Emoji glyph (20 px); ferrokit measures three \
-         separate emoji (66 px). [INFERENCE: `partition_into_runs` picks a font per character by \
-         its own coverage, and Arial covers U+200D, so the sequence is cut into runs]",
+        "cursor/syn_rtl_mixed",
+        "no bidi reordering, as syn_rtl_hebrew",
     ),
     (
-        "cursor/arial_emoji_keycap",
-        "Qt draws `1` U+FE0F U+20E3 as one Segoe UI Emoji keycap glyph (22 px); ferrokit keeps the \
-         Arial `1` (8.9 px). [INFERENCE: same run splitting as arial_emoji_zwj]",
+        "cursor/syn_rtl_final",
+        "no bidi reordering, as syn_rtl_hebrew",
     ),
-    // --- line breaking ---
+    (
+        "cursor/arial_hebrew",
+        "no bidi reordering, as syn_rtl_hebrew",
+    ),
+    (
+        "cursor/arial_mixed_rtl",
+        "no bidi reordering, as syn_rtl_hebrew",
+    ),
     // --- widths ---
     (
         "natural/arial_kerned_words/50",
@@ -92,8 +95,14 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          47.4375 against its `cursorToX` at the line end of 47.421875. [INFERENCE from the values; \
          ferrokit has no outline bounds of a glyph at hand]",
     ),
-    ("natural/arial_pangram/100", "same right bearing, of the `r` that ends `jumps over`: 0.21875 px"),
-    ("natural/arial_pangram/240", "same right bearing as arial_pangram/100"),
+    (
+        "natural/arial_pangram/100",
+        "same right bearing, of the `r` that ends `jumps over`: 0.21875 px",
+    ),
+    (
+        "natural/arial_pangram/240",
+        "same right bearing as arial_pangram/100",
+    ),
 ];
 
 fn hex_decode(s: &str) -> String {

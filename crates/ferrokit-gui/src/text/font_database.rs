@@ -517,6 +517,7 @@ impl FontDatabase {
         for slot in SLOTS {
             if let Some(text) = needed_for {
                 let covered = !engines.is_empty()
+                    && !crate::text::glyph_layout::GlyphLayout::has_emoji_sequence(text)
                     && text.chars().all(|ch| {
                         matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{200b}')
                             || engines.iter().any(|e| e.face.glyph_index(ch) != 0)
