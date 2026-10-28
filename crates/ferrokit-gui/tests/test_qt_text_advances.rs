@@ -23,9 +23,11 @@ fn width(text: &str, px: f32, weight: FontWeight) -> f32 {
 // The process-wide ratio is shared state: one test, run in order.
 #[test]
 fn widths_match_qt_at_every_device_pixel_ratio() {
-    if !std::path::Path::new("C:/Windows/Fonts/msjhbd.ttc").exists() {
-        return;
-    }
+    assert!(
+        std::path::Path::new("C:/Windows/Fonts/msjhbd.ttc").exists(),
+        "Microsoft JhengHei UI (C:/Windows/Fonts/msjhbd.ttc) is not installed, so the Qt widths \
+         cannot be checked; install it instead of skipping this test"
+    );
 
     // GDI engine.
     set_application_device_pixel_ratio(1.0);
