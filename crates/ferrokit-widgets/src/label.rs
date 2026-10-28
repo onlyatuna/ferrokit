@@ -8,7 +8,7 @@ use ferrokit_gui::application::LayoutDirection;
 use ferrokit_gui::geometry::primitives::{PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::qss_box::{draw_qss_box, QssBorder};
 use ferrokit_gui::paint::{Painter, Pen};
-use ferrokit_gui::text::{Font, FontMetrics, TextDocument};
+use ferrokit_gui::text::{Font, FontMetrics, TextDocument, WrapMode};
 use ferrokit_gui::tiny_skia::Color;
 use ferrokit_gui::Alignment;
 
@@ -217,6 +217,9 @@ impl Label {
             TextDocument::from_plain_text(self.text.as_str())
         };
         doc.set_default_font(font.clone());
+        // `QLabel` lays its text out with `QTextOption::WordWrap`: a word wider than the label is
+        // not broken, it overflows (`QTextDocument`'s own default would cut it).
+        doc.set_wrap_mode(WrapMode::WordWrap);
         doc
     }
 

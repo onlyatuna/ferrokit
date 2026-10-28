@@ -19,14 +19,19 @@ expected numbers are the same under every font backend. The cases that use the i
 Line formats (strings are UTF-8 in hex; offsets are UTF-16 code units, as Qt reports them; x
 values are Qt's doubles, shortest round-trip decimal):
     font ID file|family PX NAME      font ID, size in pixels; `file` fonts are oracle_text.ttf
-    cursor CASE FONT HEXTEXT N OFF:X ...
+    cursor CASE FONT HEXTEXT N OFF:X:XTRAILING ...
                                      cursorToX(OFF) of every grapheme boundary reached by
                                      nextCursorPosition from 0, on one unwrapped line;
                                      then N is the count and the pairs follow
     wrap CASE FONT MODE WIDTH HEXTEXT N START:LEN:NATURAL:ENDX ...
-                                     lines of the text wrapped at WIDTH (mode: word | anywhere):
+                                     lines of the text wrapped at WIDTH (mode: nowrap | word | anywhere
+                                     | word-or-anywhere, QTextOption's four wrap modes):
                                      textStart, textLength, naturalTextWidth() (trailing spaces
                                      excluded) and cursorToX(textStart + textLength) of each
+    align CASE FONT ALIGN WIDTH HEXTEXT N START:LEN:X0:XEND ...
+                                     lines wrapped (as `word-or-anywhere`) at WIDTH and aligned
+                                     (left | right | center): textStart, textLength,
+                                     cursorToX(textStart) and cursorToX(textStart + textLength)
 """
 import io
 import os
@@ -38,13 +43,14 @@ import PySide6
 from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontInfo,
     QGuiApplication,
     QTextLayout,
+    QTextLine,
     QTextOption,
 )
 
@@ -56,6 +62,10 @@ PX = 16
 GLYPHS = (
     [(0x20, "space", 256), (0x2D, "hyphen", 320), (0x2C, "comma", 256), (0x2E, "period", 256),
         (0x2F, "slash", 288)]
+    # the other ASCII punctuation, for the line breaking cases: one width, each its own glyph
+    + [(c, "punct%02x" % c, 384) for c in
+       list(range(0x21, 0x2C)) + list(range(0x3A, 0x41)) + list(range(0x5B, 0x61))
+       + list(range(0x7B, 0x7F))]
     + [(0x30 + i, "digit%d" % i, 512) for i in range(10)]
     # Capitals: wide, with distinct widths so that a wrong glyph shows.
     + [(0x41 + i, chr(0x41 + i), 640 + 16 * (i % 5)) for i in range(26)]
@@ -162,6 +172,12 @@ CURSOR_CASES = [
     ("syn_rtl_hebrew", "syn", "\u05d0\u05d1\u05d2\u05d3"),
     ("syn_rtl_mixed", "syn", "abc \u05d0\u05d1\u05d2 def"),
     ("syn_rtl_final", "syn", "A\u05dd\u05d0B"),
+    ("syn_rtl_numbers", "syn", "\u05d0\u05d1 12 \u05d2\u05d3"),
+    ("syn_rtl_nested", "syn", "a \u05d0\u05d1 b1 \u05d2 c"),
+    ("syn_rtl_trailing_space", "syn", "\u05d0\u05d1 "),
+    ("syn_rtl_then_ltr", "syn", "\u05d0\u05d1 abc"),
+    ("syn_rtl_punct", "syn", "abc \u05d0\u05d1, \u05d2. def"),
+    ("syn_rtl_two_runs", "syn", "ab \u05d0\u05d1 cd \u05d2\u05d3 ef"),
     # real Arial (Windows only in the Rust test)
     ("arial_AVAVAV", "arial", "AVAVAV"),
     ("arial_To", "arial", "To"),
@@ -173,35 +189,82 @@ CURSOR_CASES = [
     ("arial_emoji_flag", "arial", "a\U0001F1EF\U0001F1F5b"),
     ("arial_emoji_skin_tone", "arial", "a\U0001F44D\U0001F3FDb"),
     ("arial_emoji_keycap", "arial", "a1\uFE0F\u20E3b"),
+    ("arial_emoji_keycap_hash", "arial", "a#\uFE0F\u20E3*\uFE0F\u20E3b"),
+    ("arial_emoji_vs16_heart", "arial", "a\u2764\uFE0Fb"),
+    ("arial_emoji_vs16_copyright", "arial", "a\u00A9\uFE0Fb\u00A9c"),
+    ("arial_emoji_rainbow_flag", "arial", "a\U0001F3F3\uFE0F\u200D\U0001F308b"),
+    ("arial_emoji_zwj_skin_tone", "arial", "a\U0001F468\U0001F3FD\u200D\U0001F469\U0001F3FDb"),
+    ("arial_emoji_couple_heart", "arial", "a\U0001F469\u200D\u2764\uFE0F\u200D\U0001F468b"),
+    ("arial_emoji_run", "arial", "ab\U0001F600\U0001F680\U0001F44D\U0001F3FEcd"),
     ("arial_hebrew", "arial", "\u05e9\u05dc\u05d5\u05dd"),
+    ("arial_arabic", "arial", "\u0645\u0631\u062d\u0628\u0627"),
+    ("arial_arabic_mixed", "arial", "abc \u0645\u0631\u062d\u0628\u0627 def"),
+    ("arial_arabic_lam_alef", "arial", "a\u0644\u0627b"),
+    ("arial_hebrew_emoji", "arial", "\u05e9\u05dc\u05d5\u05dd \U0001F600 \u05e2\u05d5\u05dc\u05dd"),
+    ("arial_hebrew_numbers", "arial", "\u05e9\u05dc 123 \u05d5\u05dd"),
     ("arial_mixed_rtl", "arial", "abc \u05e9\u05dc\u05d5\u05dd def"),
 ]
 
+# The same texts in every wrap mode.
+MODE_CASES = [
+    ("syn_mode_words", "aaaa bbbb cccc dddd", [30, 40, 70]),
+    ("syn_mode_long", "aa bbbbbbbbbbbbbbbbbbbb cc  dd", [40, 80]),
+    ("syn_mode_spaces", "aaaa bbbb  ", [30, 36, 100]),
+    ("syn_mode_hyphen", "ab-cd ef-gh", [30, 50]),
+    ("syn_mode_leading", "  aaaa bbbb", [30, 100]),
+]
 PANGRAM = "The quick brown fox jumps over the lazy dog"
 
 # (name, font id, mode, text, widths): wrapped lines.
 WRAP_CASES = [
-    ("syn_words", "syn", "anywhere", "AT Wa To Ty VA aaa bbb ccc", [60, 100, 140, 200, 400]),
-    ("syn_hyphen", "syn", "anywhere", "ab-cd ef-gh ij-kl", [50, 80, 120]),
-    ("syn_trailing_space", "syn", "anywhere", "aaaa bbbb cccc", [60, 62, 64, 70, 80, 100]),
-    ("syn_long_word", "syn", "anywhere", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
+    ("syn_words", "syn", "word-or-anywhere", "AT Wa To Ty VA aaa bbb ccc", [60, 100, 140, 200, 400]),
+    ("syn_hyphen", "syn", "word-or-anywhere", "ab-cd ef-gh ij-kl", [50, 80, 120]),
+    ("syn_trailing_space", "syn", "word-or-anywhere", "aaaa bbbb cccc", [60, 62, 64, 70, 80, 100]),
+    ("syn_long_word", "syn", "word-or-anywhere", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
     ("syn_long_word_word_mode", "syn", "word", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
     # a space that does not fit hangs past the width in Qt
-    ("syn_hanging_space", "syn", "anywhere", "aaaa bbbb cccc", [30, 31, 33, 34, 35]),
-    ("syn_hanging_spaces", "syn", "anywhere", "aaaa   bbbb", [30, 32, 38, 60]),
-    ("syn_hyphen_hang", "syn", "anywhere", "ab-cd ef-gh ij-kl", [76, 77, 80]),
+    ("syn_hanging_space", "syn", "word-or-anywhere", "aaaa bbbb cccc", [30, 31, 33, 34, 35]),
+    ("syn_hanging_spaces", "syn", "word-or-anywhere", "aaaa   bbbb", [30, 32, 38, 60]),
+    ("syn_hyphen_hang", "syn", "word-or-anywhere", "ab-cd ef-gh ij-kl", [76, 77, 80]),
+    # the spaces at the end of the text stay in the width of the last line
+    ("syn_final_spaces", "syn", "word-or-anywhere", "aaaa bbbb  ", [30, 100]),
+    ("syn_leading_spaces", "syn", "word-or-anywhere", "  aaaa bbbb", [30, 40, 100]),
+    ("syn_only_spaces", "syn", "word-or-anywhere", "      ", [10, 100]),
     # QTextLayout does not break at '\n' (a paragraph separator belongs to QTextDocument); it breaks
     # at U+2028
-    ("syn_newline", "syn", "anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
-    ("syn_trailing_newline", "syn", "anywhere", "aaa bbb\n", [40, 200]),
-    ("syn_line_separator", "syn", "anywhere", "aaa\u2028bbb ccc\u2028\u2028ddd", [30, 60, 120]),
-    ("syn_trailing_line_separator", "syn", "anywhere", "aaa bbb\u2028", [40, 200]),
-    ("syn_liga_wrap", "syn", "anywhere", "fi fl ffi fi", [20, 40, 80]),
-    ("syn_slash", "syn", "anywhere", "ab/cd/ef gh/ij/kl", [30, 50, 90]),
-    ("syn_comma", "syn", "anywhere", "ab,cd,ef gh,ij,kl", [30, 50, 90]),
-    ("arial_pangram", "arial", "anywhere", PANGRAM, [60, 100, 160, 240, 500]),
-    ("arial_kerned_words", "arial", "anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
+    ("syn_newline", "syn", "word-or-anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
+    ("syn_trailing_newline", "syn", "word-or-anywhere", "aaa bbb\n", [40, 200]),
+    ("syn_line_separator", "syn", "word-or-anywhere", "aaa\u2028bbb ccc\u2028\u2028ddd", [30, 60, 120]),
+    ("syn_trailing_line_separator", "syn", "word-or-anywhere", "aaa bbb\u2028", [40, 200]),
+    ("syn_liga_wrap", "syn", "word-or-anywhere", "fi fl ffi fi", [20, 40, 80]),
+    ("syn_slash", "syn", "word-or-anywhere", "ab/cd/ef gh/ij/kl", [30, 50, 90]),
+    ("syn_comma", "syn", "word-or-anywhere", "ab,cd,ef gh,ij,kl", [30, 50, 90]),
+    ("syn_rtl_wrap", "syn", "word-or-anywhere", "ab \u05d0\u05d1 \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef", [30, 45, 60, 100]),
+    ("syn_rtl_wrap_numbers", "syn", "word-or-anywhere", "\u05d0\u05d1 12 \u05d2\u05d3 34 \u05d0", [25, 40, 70]),
+    ("arial_rtl_wrap", "arial", "word-or-anywhere", "abc \u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd def", [40, 70, 110]),
+    ("arial_pangram", "arial", "word-or-anywhere", PANGRAM, [60, 100, 160, 240, 500]),
+    ("arial_kerned_words", "arial", "word-or-anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
 ]
+
+
+# (name, font id, alignment, text, widths): wrapped lines aligned inside the width.
+ALIGN_CASES = [
+    ("syn_align_spaces", "syn", "right", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("syn_align_spaces", "syn", "center", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("syn_align_spaces", "syn", "left", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("syn_align_rtl", "syn", "right", "ab \u05d0\u05d1 \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef", [45, 100]),
+    ("syn_align_rtl", "syn", "center", "ab \u05d0\u05d1 \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef", [45, 100]),
+    ("arial_align_words", "arial", "right", "The quick brown fox jumps over", [60, 120]),
+    ("arial_align_words", "arial", "center", "The quick brown fox jumps over", [60, 120]),
+]
+
+
+WRAP_MODES = {
+    "nowrap": QTextOption.WrapMode.NoWrap,
+    "word": QTextOption.WrapMode.WordWrap,
+    "anywhere": QTextOption.WrapMode.WrapAnywhere,
+    "word-or-anywhere": QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere,
+}
 
 
 def utf16(text, upto=None):
@@ -225,18 +288,88 @@ def cursor_row(case, font_id, font, text):
         nxt = layout.nextCursorPosition(offs[-1])
         assert nxt > offs[-1], (case, offs)
         offs.append(nxt)
-    pairs = ["%d:%r" % (o, line.cursorToX(o)[0]) for o in offs]
+    from PySide6.QtGui import QTextLine
+
+    trailing = QTextLine.Edge.Trailing
+    pairs = ["%d:%r:%r" % (o, line.cursorToX(o)[0], line.cursorToX(o, trailing)[0]) for o in offs]
     return ["cursor", case, font_id, text.encode().hex(), str(len(offs))] + pairs
+
+
+# Texts whose hit tests (xToCursor) are recorded.
+HIT_CASES = [
+    "syn_AVAVAV", "syn_liga_run", "syn_combining_acute", "syn_rtl_hebrew", "syn_rtl_mixed",
+    "syn_rtl_numbers", "syn_rtl_nested", "syn_rtl_two_runs", "syn_rtl_trailing_space",
+    "arial_arabic_mixed", "arial_emoji_zwj", "arial_hebrew_emoji",
+]
+
+
+def hit_row(case, font_id, font, text):
+    """xToCursor at x from -3 to the width + 3 in steps of 1.25 px, in both cursor modes."""
+    layout = QTextLayout(text, font)
+    opt = QTextOption()
+    opt.setWrapMode(QTextOption.WrapMode.NoWrap)
+    layout.setTextOption(opt)
+    layout.beginLayout()
+    line = layout.createLine()
+    line.setLineWidth(100000)
+    layout.endLayout()
+    width = line.naturalTextWidth()
+    parts = []
+    x = -3.0
+    while x <= width + 3:
+        parts.append(
+            "%r:%d:%d"
+            % (x, line.xToCursor(x, QTextLine.CursorPosition.CursorBetweenCharacters),
+               line.xToCursor(x, QTextLine.CursorPosition.CursorOnCharacter))
+        )
+        x += 1.25
+    return ["hit", case, font_id, text.encode().hex(), str(len(parts))] + parts
+
+
+# (name, font id, text, width): wrapped text whose lines' hit tests are recorded.
+HITWRAP_CASES = [
+    ("syn_hitwrap", "syn", "aaaa bbbb cccc dddd", 45),
+    ("syn_hitwrap_long", "syn", "aa bbbbbbbbbbbbbbbbbbbb cc", 40),
+    ("syn_hitwrap_rtl", "syn", "ab \u05d0\u05d1 \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef", 45),
+    ("syn_hitwrap_rtl_base", "syn", "\u05d0\u05d1 ab \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef gh", 45),
+]
+
+
+def hitwrap_rows(case, font_id, font, text, width):
+    """xToCursor on every line of the text wrapped at `width`, x from -3 to width + 3."""
+    layout = QTextLayout(text, font)
+    opt = QTextOption()
+    opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    layout.setTextOption(opt)
+    layout.beginLayout()
+    lines = []
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(width)
+        lines.append(line)
+    layout.endLayout()
+    rows = []
+    for number, line in enumerate(lines):
+        parts = []
+        x = -3.0
+        while x <= width + 3:
+            parts.append(
+                "%r:%d:%d"
+                % (x, line.xToCursor(x, QTextLine.CursorPosition.CursorBetweenCharacters),
+                   line.xToCursor(x, QTextLine.CursorPosition.CursorOnCharacter))
+            )
+            x += 2.5
+        rows.append(["hitwrap", case, font_id, str(width), str(number), text.encode().hex(),
+                     str(len(parts))] + parts)
+    return rows
 
 
 def wrap_row(case, font_id, font, mode, width, text):
     layout = QTextLayout(text, font)
     opt = QTextOption()
-    opt.setWrapMode(
-        QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
-        if mode == "anywhere"
-        else QTextOption.WrapMode.WordWrap
-    )
+    opt.setWrapMode(WRAP_MODES[mode])
     layout.setTextOption(opt)
     layout.beginLayout()
     lines = []
@@ -253,7 +386,55 @@ def wrap_row(case, font_id, font, mode, width, text):
            l.cursorToX(l.textStart() + l.textLength())[0])
         for l in lines
     ]
-    return ["wrap", case, font_id, mode, str(width), text.encode().hex(), str(len(parts))] + parts
+    return ["wrap", case, font_id, mode, "%s" % (width,), text.encode().hex(), str(len(parts))] + parts
+
+
+# Templates of the line break opportunity cases: a word, a punctuation mark P and another word.
+LB_TEMPLATES = [("LL", "aaaa%sbbbb"), ("DD", "1111%s2222"), ("LD", "aaaa%s2222"), ("DL", "1111%sbbbb")]
+LB_PUNCT = [c for c in range(0x21, 0x7F) if not chr(c).isalnum()]
+
+
+def lb_rows(font_id, font):
+    """One row per template and punctuation mark: `anywhere` wrapping at a width that holds the
+    text up to two characters past the mark. A break opportunity after the mark ends the first
+    line right after it; without one the line runs on to the width."""
+    from PySide6.QtGui import QFontMetricsF
+
+    fm = QFontMetricsF(font)
+    rows = []
+    for name, tpl in LB_TEMPLATES:
+        for c in LB_PUNCT:
+            text = tpl % chr(c)
+            head = text[: text.index(chr(c)) + 1]
+            width = fm.horizontalAdvance(text[: len(head) + 2]) + 0.25
+            rows.append(wrap_row("lb_%s_%02x" % (name, c), font_id, font, "word-or-anywhere", width, text))
+    return rows
+
+
+def align_row(case, font_id, font, align, width, text):
+    layout = QTextLayout(text, font)
+    opt = QTextOption(
+        {"left": Qt.AlignmentFlag.AlignLeft, "right": Qt.AlignmentFlag.AlignRight,
+         "center": Qt.AlignmentFlag.AlignHCenter}[align]
+    )
+    opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    layout.setTextOption(opt)
+    layout.beginLayout()
+    lines = []
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(width)
+        lines.append(line)
+    layout.endLayout()
+    parts = [
+        "%d:%d:%r:%r"
+        % (l.textStart(), l.textLength(), l.cursorToX(l.textStart())[0],
+           l.cursorToX(l.textStart() + l.textLength())[0])
+        for l in lines
+    ]
+    return ["align", case, font_id, align, str(width), text.encode().hex(), str(len(parts))] + parts
 
 
 def main():
@@ -286,9 +467,24 @@ def main():
     print("font arial family %d Arial" % PX)
     for case, font_id, text in CURSOR_CASES:
         print(" ".join(cursor_row(case, font_id, fonts[font_id], text)))
+    for case, font_id, text in CURSOR_CASES:
+        if case in HIT_CASES:
+            print(" ".join(hit_row(case, font_id, fonts[font_id], text)))
+    for case, font_id, text, width in HITWRAP_CASES:
+        for row in hitwrap_rows(case, font_id, fonts[font_id], text, width):
+            print(" ".join(row))
     for case, font_id, mode, text, widths in WRAP_CASES:
         for w in widths:
             print(" ".join(wrap_row(case, font_id, fonts[font_id], mode, w, text)))
+    for mode in WRAP_MODES:
+        for case, text, widths in MODE_CASES:
+            for w in widths:
+                print(" ".join(wrap_row("%s_%s" % (case, mode), "syn", fonts["syn"], mode, w, text)))
+    for row in lb_rows("syn", fonts["syn"]):
+        print(" ".join(row))
+    for case, font_id, align, text, widths in ALIGN_CASES:
+        for w in widths:
+            print(" ".join(align_row(case, font_id, fonts[font_id], align, w, text)))
 
 
 if __name__ == "__main__":

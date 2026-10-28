@@ -7,6 +7,7 @@
 use crate::alignment::Alignment;
 use crate::geometry::primitives::{PointF, RectF};
 use crate::paint::painter::Painter;
+use crate::text::bidi;
 use crate::text::font::Font;
 use crate::text::font_metrics::FontMetrics;
 use crate::text::format::FormatRange;
@@ -72,6 +73,41 @@ impl std::fmt::Debug for ShapedParagraph {
     }
 }
 
+/// `QChar::LineSeparator`: what ends a line of a `QTextLayout` (`QTextEngine::itemize` marks it
+/// `LineOrParagraphSeparator`). A line feed does not: it is an ordinary character of no width,
+/// which is why `QTextDocument` splits its paragraphs into blocks and `qt_format_text` replaces
+/// the line feeds of a label's text with this before laying out.
+const LINE_SEPARATOR: &str = "\u{2028}";
+
+/// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed or the
+/// line separator.
+fn is_unshaped(grapheme: &str) -> bool {
+    grapheme == "\n" || grapheme == LINE_SEPARATOR
+}
+
+/// Whether a grapheme is white space that hangs past the end of a wrapped line instead of
+/// wrapping it: what `QTextEngine` flags `ScriptAnalysis::Space` (a space, a tab, the other
+/// separator spaces and the zero width space; not the no-break spaces, which are ordinary
+/// characters, and not the line and paragraph separators).
+fn is_hanging_space(grapheme: &str) -> bool {
+    grapheme.chars().all(|c| {
+        c == '\u{200b}'
+            || (c.is_whitespace()
+                && !matches!(
+                    c,
+                    '\n' | '\r'
+                        | '\u{b}'
+                        | '\u{c}'
+                        | '\u{85}'
+                        | '\u{a0}'
+                        | '\u{2007}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202f}'
+                ))
+    })
+}
+
 /// The text plus pre-edit as one string with the byte offset of every grapheme, built once per
 /// layout run so `create_line` does not rebuild and re-segment it for every line.
 #[derive(Debug)]
@@ -83,6 +119,14 @@ struct CompositeText {
     advances: Vec<f32>,
     /// The paragraphs a font shaped, in text order; the others are drawn grapheme by grapheme.
     paragraphs: Vec<ShapedParagraph>,
+    /// Whether UAX #14 allows a line break in front of each grapheme, plus one entry for the end
+    /// of the text (`QCharAttributes::lineBreak`).
+    break_before: Vec<bool>,
+    /// The bidi embedding level of every grapheme; empty when the text is left to right all
+    /// through.
+    levels: Vec<u8>,
+    /// Whether the text as a whole reads right to left (`QTextEngine::isRightToLeft`).
+    base_rtl: bool,
 }
 
 impl CompositeText {
@@ -111,6 +155,23 @@ impl PartialEq for CompositeCache {
     }
 }
 
+/// How a line that is wider than the wrap width is broken (`QTextOption::WrapMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrapMode {
+    /// Lines are never wrapped; the wrap width does not limit them.
+    NoWrap,
+    /// Lines wrap at word boundaries only. A word wider than the width is not broken: it
+    /// overflows. This is what `QTextOption` and so `QTextLayout` start with, and what `QLabel`
+    /// sets for its word wrap.
+    #[default]
+    WordWrap,
+    /// Lines wrap at any character, with no regard for word boundaries.
+    WrapAnywhere,
+    /// Lines wrap at word boundaries, and inside a word that does not fit a line of its own.
+    /// This is what `QTextDocument` starts with (and so `QTextEdit` and `QPlainTextEdit`).
+    WrapAtWordBoundaryOrAnywhere,
+}
+
 /// Multi-line text layout engine (`QTextLayout`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLayout {
@@ -125,6 +186,8 @@ pub struct TextLayout {
     formats: Vec<FormatRange>,
     /// Word wrapping width constraint (if None, single unbounded line per paragraph).
     wrap_width: Option<f32>,
+    /// How a line wider than `wrap_width` is broken.
+    wrap_mode: WrapMode,
     /// Horizontal paragraph alignment.
     alignment: Alignment,
     /// Laid-out lines.
@@ -147,6 +210,7 @@ impl TextLayout {
             preedit_text: String::new(),
             formats: Vec::new(),
             wrap_width: None,
+            wrap_mode: WrapMode::default(),
             alignment: Alignment::LEFT,
             lines: Vec::new(),
             position: PointF::new(0.0, 0.0),
@@ -217,6 +281,18 @@ impl TextLayout {
         self.clear_layout();
     }
 
+    /// Returns the wrap mode.
+    #[inline]
+    pub fn wrap_mode(&self) -> WrapMode {
+        self.wrap_mode
+    }
+
+    /// Sets the wrap mode (`QTextOption::setWrapMode`); `WordWrap` until set.
+    pub fn set_wrap_mode(&mut self, mode: WrapMode) {
+        self.wrap_mode = mode;
+        self.clear_layout();
+    }
+
     /// Sets text alignment (`QTextOption::setAlignment`); only the horizontal flags apply.
     pub fn set_alignment(&mut self, alignment: Alignment) {
         self.alignment = alignment;
@@ -249,10 +325,10 @@ impl TextLayout {
         let composite = self.composite();
         let total_graphemes = composite.grapheme_count();
 
-        // A text ending in a hard break has a final empty line (the caret after `'\n'`); an
+        // A text ending in a hard break has a final empty line (the caret after the separator); an
         // empty text is a single empty line. `layout_cursor == total + 1` means that line is done.
         let ends_with_break =
-            total_graphemes > 0 && composite.grapheme(total_graphemes - 1) == "\n";
+            total_graphemes > 0 && composite.grapheme(total_graphemes - 1) == LINE_SEPARATOR;
         if self.layout_cursor > total_graphemes
             || (self.layout_cursor == total_graphemes && total_graphemes > 0 && !ends_with_break)
         {
@@ -283,12 +359,30 @@ impl TextLayout {
                 descent: metrics.descent,
                 leading: metrics.leading(),
                 natural_width: 0.0,
+                right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
+                levels: Vec::new(),
+                base_rtl: composite.base_rtl,
+                is_last: true,
                 grapheme_x_advances: vec![0.0],
             });
         }
 
         let metrics = FontMetrics::from_font(&self.font);
-        let max_width = self.wrap_width.unwrap_or(f32::MAX);
+        let wraps = self.wrap_mode != WrapMode::NoWrap;
+        let max_width = if wraps { self.wrap_width.unwrap_or(f32::MAX) } else { f32::MAX };
+        let right_limit = if wraps {
+            self.position.x + self.wrap_width.unwrap_or(f32::INFINITY)
+        } else {
+            f32::INFINITY
+        };
+        let breaks_at_words = matches!(
+            self.wrap_mode,
+            WrapMode::WordWrap | WrapMode::WrapAtWordBoundaryOrAnywhere
+        );
+        let breaks_anywhere = matches!(
+            self.wrap_mode,
+            WrapMode::WrapAnywhere | WrapMode::WrapAtWordBoundaryOrAnywhere
+        );
 
         // `layout_cursor < total_graphemes` here, so `starts` has an entry for it.
         let line_start_grapheme = self.layout_cursor;
@@ -298,6 +392,12 @@ impl TextLayout {
         let mut advances = vec![0.0f32];
         let mut last_break_grapheme = None;
         let mut last_break_advances_len = 0;
+        // Set when the line ends because the next word does not fit (not at the end of the text
+        // or at a hard break): Qt leaves the spaces at the end of such a line out of its width.
+        let mut wrapped = false;
+        // Whether the line has text other than spaces yet: spaces in front of the first word
+        // are part of it, not a place to break, and a line of spaces only keeps them all.
+        let mut has_word = false;
 
         let byte_start = composite.starts[line_start_grapheme];
 
@@ -305,7 +405,7 @@ impl TextLayout {
 
         while curr_grapheme < total_graphemes {
             let g = composite.grapheme(curr_grapheme);
-            if g == "\n" {
+            if g == LINE_SEPARATOR {
                 // Hard line break
                 curr_grapheme += 1;
                 line_bytes += g.len();
@@ -313,30 +413,40 @@ impl TextLayout {
             }
 
             let g_width = composite.advances[curr_grapheme];
+            let is_space = is_hanging_space(g);
 
-            if curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
-                // Wrapping needed
-                if let Some(break_pos) = last_break_grapheme {
-                    if break_pos > line_start_grapheme {
+            // `QTextLine::layout_helper`: a space is added to the line without testing the width
+            // (it hangs past the line end when it does not fit); a word is added only if it fits
+            // after the spaces before it.
+            if !is_space && curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
+                // Wrapping needed: at the last place a word ends, if the mode breaks there and
+                // there is one on this line.
+                match last_break_grapheme {
+                    Some(break_pos) if breaks_at_words && break_pos > line_start_grapheme => {
+                        wrapped = true;
                         curr_grapheme = break_pos;
                         advances.truncate(last_break_advances_len);
                         // Recompute byte count up to break_pos
                         line_bytes = composite.starts[curr_grapheme] - byte_start;
                         break;
                     }
+                    // Otherwise before this character, if the mode breaks inside words; the others
+                    // let the word overflow.
+                    _ if breaks_anywhere => {
+                        wrapped = true;
+                        break;
+                    }
+                    _ => {}
                 }
-                // If no break point was found, break at current character (hard break)
-                break;
             }
 
             curr_x += g_width;
             advances.push(curr_x);
             line_bytes += g.len();
+            has_word |= !is_space;
 
-            // Track word break opportunity (whitespace or punctuation)
-            if g.chars()
-                .all(|c| c.is_whitespace() || c == '-' || c == '/' || c == ',')
-            {
+            // Track word break opportunity (UAX #14)
+            if breaks_at_words && has_word && composite.break_before[curr_grapheme + 1] {
                 last_break_grapheme = Some(curr_grapheme + 1);
                 last_break_advances_len = advances.len();
             }
@@ -345,13 +455,27 @@ impl TextLayout {
         }
 
         let text_len = curr_grapheme - line_start_grapheme;
-        let natural_w = advances.last().copied().unwrap_or(0.0);
+        // The width of the text of a wrapped line stops before its trailing spaces
+        // (`QTextLine::naturalTextWidth`); the last line of a paragraph keeps them unless they
+        // hang over the width.
+        let mut natural_len = text_len;
+        if has_word && (wrapped || curr_x > max_width) {
+            while natural_len > 0
+                && is_hanging_space(composite.grapheme(line_start_grapheme + natural_len - 1))
+            {
+                natural_len -= 1;
+            }
+        }
+        let natural_w = advances[natural_len.min(advances.len() - 1)];
         let line_idx = self.lines.len();
 
         let y_pos = self.position.y + (line_idx as f32) * metrics.height;
         // `QTextEngine::alignLine` (qtextengine.cpp:3558-3572): Right, else HCenter, else the
         // line starts at the left (Left, Justify, no flag).
-        let x_pos = if self.alignment.contains(Alignment::RIGHT) {
+        // Justified text of a right to left paragraph is aligned right.
+        let align_right = self.alignment.contains(Alignment::RIGHT)
+            || (self.alignment.contains(Alignment::JUSTIFY) && composite.base_rtl);
+        let x_pos = if align_right {
             let avail = self.wrap_width.unwrap_or(natural_w);
             self.position.x + (avail - natural_w).max(0.0)
         } else if self.alignment.contains(Alignment::H_CENTER) {
@@ -376,6 +500,13 @@ impl TextLayout {
             descent: metrics.descent,
             leading: metrics.leading(),
             natural_width: natural_w,
+            right_limit,
+            levels: match composite.levels.get(line_start_grapheme..curr_grapheme) {
+                Some(levels) if levels.iter().any(|&l| l != 0) => levels.to_vec(),
+                _ => Vec::new(),
+            },
+            base_rtl: composite.base_rtl,
+            is_last: curr_grapheme >= total_graphemes && !ends_with_break,
             grapheme_x_advances: advances,
         })
     }
@@ -469,16 +600,14 @@ impl TextLayout {
                 let overlap_end = sel_end.max(line_start).min(line_end);
 
                 if overlap_start < overlap_end {
-                    let x1 = line.cursor_to_x(overlap_start, Edge::Leading);
-                    let x2 = line.cursor_to_x(overlap_end, Edge::Leading);
                     let bg_color = sel
                         .format
                         .background
                         .unwrap_or(Color::from_rgba8(0, 120, 215, 80));
-
-                    let sel_rect =
-                        RectF::new(pos.x + x1, pos.y + line.position.y, x2 - x1, line.height);
-                    painter.fill_rect(sel_rect, bg_color);
+                    for (x, width) in line.selection_spans(overlap_start, overlap_end) {
+                        let sel_rect = RectF::new(pos.x + x, pos.y + line.position.y, width, line.height);
+                        painter.fill_rect(sel_rect, bg_color);
+                    }
                 }
             }
 
@@ -506,8 +635,13 @@ impl TextLayout {
                     None => {
                         // No font shaped this paragraph: draw it grapheme by grapheme.
                         let g_str = composite.grapheme(g_idx);
-                        if g_str != "\n" {
-                            let g_x = pos.x + line.cursor_to_x(g_idx, Edge::Leading);
+                        if !is_unshaped(g_str) {
+                            // The left edge of the grapheme: its trailing edge when it reads
+                            // right to left.
+                            let g_x = pos.x
+                                + line
+                                    .cursor_to_x(g_idx, Edge::Leading)
+                                    .min(line.cursor_to_x(g_idx, Edge::Trailing));
                             painter.draw_text_colored(
                                 PointF::new(g_x, line_y),
                                 g_str,
@@ -549,7 +683,14 @@ impl TextLayout {
         span: std::ops::Range<usize>,
         default_color: Color,
     ) {
-        let origin = PointF::new(pos.x + line.position.x, line_y);
+        // With right to left text on the line the span sits where its bidi run is shown.
+        let run_left = if line.levels.is_empty() {
+            0.0
+        } else {
+            line.run_left_of(span.start - line.text_start)
+                .map_or(0.0, |v| v.left)
+        };
+        let origin = PointF::new(pos.x + line.position.x + run_left, line_y);
         for (color, glyphs) in self.span_runs(composite, paragraph, span, default_color) {
             painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
         }
@@ -630,73 +771,123 @@ impl TextLayout {
         let text = self.composite_text();
         let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
         starts.push(text.len());
-        let (advances, paragraphs) = self.shape_paragraphs(&text, &starts);
+        let base_rtl = bidi::is_rtl(&text);
+        let (advances, paragraphs, levels) = self.shape_paragraphs(&text, &starts, base_rtl);
+        let break_before = crate::text::line_break::break_before(&text, &starts);
         let built = Arc::new(CompositeText {
             text,
             starts,
             advances,
             paragraphs,
+            break_before,
+            levels,
+            base_rtl,
         });
         self.composite.0 = Some(Arc::clone(&built));
         built
     }
 
-    /// Shapes `text` one paragraph (the text between hard line breaks) at a time, as
+    /// Shapes `text` one paragraph (the text between line feeds and hard line breaks) at a time, as
     /// `QTextEngine` shapes items: kerning and ligatures are measured across grapheme
-    /// boundaries and a ligature's width is divided over its graphemes. Returns the advance of
-    /// every grapheme (the `'\n'` graphemes get none; line breaking never measures them) and the
-    /// shaped glyphs of every paragraph a font shapes, which drawing uses so what is drawn sits
-    /// where the advances put it.
-    fn shape_paragraphs(&self, text: &str, starts: &[usize]) -> (Vec<f32>, Vec<ShapedParagraph>) {
-        let metrics = FontMetrics::from_font(&self.font);
+    /// boundaries and a ligature's width is divided over its graphemes. A paragraph with right to
+    /// left text is cut into runs of one embedding level and each is shaped in its own direction
+    /// (Qt's bidi items). Returns the advance of every grapheme (the `'\n'` and U+2028 graphemes
+    /// get none), the shaped glyphs of every run a font shapes, which drawing uses so what is drawn
+    /// sits where the advances put it, and the embedding level of every grapheme (empty when the
+    /// whole text is left to right).
+    fn shape_paragraphs(
+        &self,
+        text: &str,
+        starts: &[usize],
+        base_rtl: bool,
+    ) -> (Vec<f32>, Vec<ShapedParagraph>, Vec<u8>) {
         let count = starts.len() - 1;
         let mut advances = vec![0.0f32; count];
         let mut paragraphs = Vec::new();
+        let mut levels: Vec<u8> = Vec::new();
         let mut first = 0;
         while first < count {
             let mut end = first;
-            while end < count && &text[starts[end]..starts[end + 1]] != "\n" {
+            while end < count && !is_unshaped(&text[starts[end]..starts[end + 1]]) {
                 end += 1;
             }
             if end > first {
                 let base = starts[first];
                 let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
-                let paragraph = &text[base..starts[end]];
-                match FontMetrics::shape_paragraph(paragraph, &self.font) {
-                    Some((engines, layout)) => {
-                        let shaped = layout.grapheme_advances(&local);
-                        advances[first..end].copy_from_slice(&shaped);
-                        let mut pen = Vec::with_capacity(shaped.len() + 1);
-                        let mut x = 0.0f32;
-                        pen.push(x);
-                        for advance in &shaped {
-                            x += advance;
-                            pen.push(x);
-                        }
-                        let logical_order = layout
-                            .glyphs
-                            .windows(2)
-                            .all(|w| w[0].cluster <= w[1].cluster);
-                        paragraphs.push(ShapedParagraph {
-                            first,
-                            end,
-                            base,
-                            engines,
-                            layout,
-                            pen,
-                            logical_order,
-                        });
+                let paragraph_levels = bidi::grapheme_levels(&text[base..starts[end]], &local, base_rtl);
+                if paragraph_levels.is_empty() {
+                    self.shape_run(text, starts, first..end, None, &mut advances, &mut paragraphs);
+                } else {
+                    if levels.is_empty() {
+                        levels = vec![0; count];
                     }
-                    None => {
-                        let heuristic =
-                            metrics.heuristic_grapheme_advances(paragraph, &local, &self.font);
-                        advances[first..end].copy_from_slice(&heuristic);
+                    levels[first..end].copy_from_slice(&paragraph_levels);
+                    for run in bidi::level_runs(&paragraph_levels) {
+                        self.shape_run(
+                            text,
+                            starts,
+                            first + run.start..first + run.end,
+                            Some(run.is_rtl()),
+                            &mut advances,
+                            &mut paragraphs,
+                        );
                     }
                 }
             }
             first = end + 1;
         }
-        (advances, paragraphs)
+        (advances, paragraphs, levels)
+    }
+
+    /// Shapes the graphemes `range` of `text` as one run (`right_to_left` fixes its direction)
+    /// and records their advances and, when a font shapes it, the shaped glyphs.
+    fn shape_run(
+        &self,
+        text: &str,
+        starts: &[usize],
+        range: std::ops::Range<usize>,
+        right_to_left: Option<bool>,
+        advances: &mut [f32],
+        paragraphs: &mut Vec<ShapedParagraph>,
+    ) {
+        let (first, end) = (range.start, range.end);
+        let base = starts[first];
+        let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
+        let run_text = &text[base..starts[end]];
+        match FontMetrics::shape_paragraph_directed(run_text, &self.font, right_to_left) {
+            Some((engines, layout)) => {
+                let shaped = layout.grapheme_advances(&local);
+                advances[first..end].copy_from_slice(&shaped);
+                let mut pen = Vec::with_capacity(shaped.len() + 1);
+                let mut x = 0.0f32;
+                pen.push(x);
+                for advance in &shaped {
+                    x += advance;
+                    pen.push(x);
+                }
+                let logical_order = layout
+                    .glyphs
+                    .windows(2)
+                    .all(|w| w[0].cluster <= w[1].cluster);
+                paragraphs.push(ShapedParagraph {
+                    first,
+                    end,
+                    base,
+                    engines,
+                    layout,
+                    pen,
+                    logical_order,
+                });
+            }
+            None => {
+                let heuristic = FontMetrics::from_font(&self.font).heuristic_grapheme_advances(
+                    run_text,
+                    &local,
+                    &self.font,
+                );
+                advances[first..end].copy_from_slice(&heuristic);
+            }
+        }
     }
 
     /// Produces combined text including preedit IME text.
@@ -733,7 +924,7 @@ mod tests {
 
     #[test]
     fn do_layout_builds_the_composite_text_once() {
-        let mut layout = TextLayout::new("one\ntwo\nthree\nfour\nfive", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("one\u{2028}two\u{2028}three\u{2028}four\u{2028}five", Font::new("Segoe UI", 12.0));
         layout.set_preedit_area(3, "ime");
         COMPOSITE_BUILDS.with(|c| c.set(0));
         layout.do_layout();
@@ -743,33 +934,33 @@ mod tests {
 
     #[test]
     fn cached_composite_text_follows_text_and_preedit_changes() {
-        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("ab\u{2028}cd", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
-        layout.set_text("ab\ncd\nef");
+        layout.set_text("ab\u{2028}cd\u{2028}ef");
         layout.do_layout();
         assert_eq!(layout.line_count(), 3);
-        layout.set_preedit_area(2, "X\nY");
+        layout.set_preedit_area(2, "X\u{2028}Y");
         layout.do_layout();
         assert_eq!(layout.line_count(), 4);
-        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\\n\"");
+        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\u{2028}\"");
     }
 
     #[test]
-    fn trailing_newline_adds_an_empty_last_line() {
-        let mut layout = TextLayout::new("ab\n", Font::new("Segoe UI", 12.0));
+    fn trailing_line_separator_adds_an_empty_last_line() {
+        let mut layout = TextLayout::new("ab\u{2028}", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
         let last = layout.line_at(1).unwrap();
         assert_eq!((last.text_start(), last.text_length()), (3, 0));
         assert!(last.y() > layout.line_at(0).unwrap().y());
-        // The caret after the newline sits on the empty line.
+        // The caret after the separator sits on the empty line.
         assert_eq!(layout.line_for_text_position(3).map(|l| l.line_number()), Some(1));
     }
 
     #[test]
     fn line_for_text_position_end_is_exclusive_except_on_the_last_line() {
-        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("ab\u{2028}cd", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
         let line_of = |p| layout.line_for_text_position(p).map(|l| l.line_number());
@@ -858,6 +1049,7 @@ mod tests {
         );
 
         let mut layout = TextLayout::new(text.clone(), font);
+        layout.set_wrap_mode(WrapMode::WrapAnywhere);
         layout.set_wrap_width(Some(shaped + 0.001));
         layout.do_layout();
         let first = layout.line_at(0).unwrap();
@@ -971,11 +1163,15 @@ mod tests {
             pen,
             logical_order,
         };
+        let break_before = vec![false; starts.len()];
         let composite = CompositeText {
             text: text.to_owned(),
             starts,
             advances,
             paragraphs: vec![paragraph],
+            break_before,
+            levels: Vec::new(),
+            base_rtl: false,
         };
         (layout, composite)
     }

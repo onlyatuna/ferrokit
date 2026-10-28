@@ -4,6 +4,7 @@
 //! Provides geometric bounds, baseline metrics, and bidirectional cursor-to-coordinate mapping.
 
 use crate::geometry::primitives::{PointF, RectF};
+use crate::text::bidi::{level_runs, visual_order, LevelRun};
 
 /// Edge of a character or grapheme cluster for cursor positioning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,8 +47,19 @@ pub struct TextLine {
     pub(crate) descent: f32,
     /// Inter-line leading gap.
     pub(crate) leading: f32,
-    /// Natural advance width of the text glyphs on this line.
+    /// Natural advance width of the text glyphs on this line (`QTextLine::naturalTextWidth`): the
+    /// spaces at the end of a wrapped line are not part of it.
     pub(crate) natural_width: f32,
+    /// The x that [`cursor_to_x`](Self::cursor_to_x) never exceeds: the right end of the wrap
+    /// width, past which the spaces that hang over it are not shown (Qt clamps to the line width).
+    pub(crate) right_limit: f32,
+    /// The bidi embedding level of every grapheme of the line, in logical order; empty when the
+    /// line is left to right all through.
+    pub(crate) levels: Vec<u8>,
+    /// Whether the text of the layout reads right to left as a whole.
+    pub(crate) base_rtl: bool,
+    /// Whether this is the last line of its layout.
+    pub(crate) is_last: bool,
     /// Cumulative horizontal offsets for each grapheme in this line.
     /// Length is `text_length + 1` (ending with `natural_width`).
     pub(crate) grapheme_x_advances: Vec<f32>,
@@ -68,6 +80,10 @@ impl Default for TextLine {
             descent: 0.0,
             leading: 0.0,
             natural_width: 0.0,
+            right_limit: f32::INFINITY,
+            levels: Vec::new(),
+            base_rtl: false,
+            is_last: true,
             grapheme_x_advances: vec![0.0],
         }
     }
@@ -193,6 +209,9 @@ impl TextLine {
         }
 
         let local_pos = cursor_pos.min(self.text_length);
+        if !self.levels.is_empty() {
+            return self.bidi_cursor_to_x(local_pos, edge).min(self.right_limit);
+        }
         let base_x = if local_pos < self.grapheme_x_advances.len() {
             self.grapheme_x_advances[local_pos]
         } else {
@@ -210,45 +229,212 @@ impl TextLine {
             }
         };
 
-        self.position.x + base_x + offset
+        (self.position.x + base_x + offset).min(self.right_limit)
     }
 
-    /// Maps an X coordinate back to a grapheme cursor position (`xToCursor`).
+    /// Maps an X coordinate back to a grapheme cursor position (`xToCursor`, qtextlayout.cpp:3079).
     ///
-    /// Returns the global grapheme index within the layout text.
+    /// Returns the global grapheme index within the layout text. Left of the line is its start
+    /// (its end in a right to left text); right of the text it is the end (the start in a right
+    /// to left text), except on every line but the last, where it is one position short of that
+    /// so the cursor stays on the line instead of jumping to the next one.
     pub fn x_to_cursor(&self, x: f32, mode: CursorPosition) -> usize {
         let rel_x = x - self.position.x;
-        if rel_x <= 0.0 || self.text_length == 0 {
+        if self.text_length == 0 {
             return self.text_start;
         }
-        if rel_x >= self.natural_width {
-            return self.text_start + self.text_length;
+        if rel_x <= 0.0 {
+            return self.text_start + if self.base_rtl { self.text_length } else { 0 };
         }
+        if rel_x < self.natural_width {
+            return self.text_start + self.x_to_cursor_in_text(rel_x, mode);
+        }
+        let end = self.text_start + if self.base_rtl { 0 } else { self.text_length };
+        if self.is_last {
+            end
+        } else {
+            end.saturating_sub(1).min(end)
+        }
+    }
 
-        for i in 0..self.text_length {
-            let left_x = self.grapheme_x_advances.get(i).copied().unwrap_or(0.0);
-            let right_x = self
-                .grapheme_x_advances
-                .get(i + 1)
-                .copied()
-                .unwrap_or(self.natural_width);
-
-            if rel_x >= left_x && rel_x < right_x {
-                return match mode {
-                    CursorPosition::CursorBetweenCharacters => {
-                        let mid = (left_x + right_x) * 0.5;
-                        if rel_x >= mid {
-                            self.text_start + i + 1
-                        } else {
-                            self.text_start + i
-                        }
+    /// The position under `rel_x` (from the line's left edge) when it is over the text: the run
+    /// whose right edge is at or past it (so a boundary between runs belongs to the left one),
+    /// then the grapheme in it, counted from the run's leading edge.
+    fn x_to_cursor_in_text(&self, rel_x: f32, mode: CursorPosition) -> usize {
+        let visual = if self.levels.is_empty() {
+            vec![VisualRun {
+                run: LevelRun {
+                    start: 0,
+                    end: self.text_length,
+                    level: 0,
+                },
+                left: 0.0,
+                width: self.advance_between(0, self.text_length),
+            }]
+        } else {
+            self.visual_runs()
+        };
+        let Some(last) = visual.last().copied() else {
+            return 0;
+        };
+        let run = visual
+            .iter()
+            .find(|v| rel_x <= v.left + v.width)
+            .copied()
+            .unwrap_or(last);
+        let local = rel_x - run.left;
+        // Distance from the run's leading edge, where its first grapheme starts: the right edge of
+        // a right to left run.
+        let from_leading = if run.run.is_rtl() {
+            run.width - local
+        } else {
+            local
+        };
+        let boundary = |i: usize| self.advance_between(run.run.start, i);
+        match mode {
+            // The grapheme whose leading edge is the last one not past the point.
+            CursorPosition::CursorOnCharacter => (run.run.start..run.run.end)
+                .rev()
+                .find(|&i| boundary(i) <= from_leading)
+                .unwrap_or(run.run.start),
+            // The nearest boundary; halfway the first one reached from the leading edge wins.
+            CursorPosition::CursorBetweenCharacters => {
+                let mut best = run.run.start;
+                let mut best_distance = f32::INFINITY;
+                for i in run.run.start..=run.run.end {
+                    let distance = (from_leading - boundary(i)).abs();
+                    if distance < best_distance {
+                        best = i;
+                        best_distance = distance;
                     }
-                    CursorPosition::CursorOnCharacter => self.text_start + i,
-                };
+                }
+                best
             }
         }
+    }
+}
 
-        self.text_start + self.text_length
+/// One run of a line in the order it is shown, with where it sits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VisualRun {
+    /// The graphemes of the run, as indices into the line (not the layout).
+    pub run: LevelRun,
+    /// The left edge of the run, from the line's own left edge.
+    pub left: f32,
+    /// The width of the run.
+    pub width: f32,
+}
+
+impl TextLine {
+    /// The advance of the graphemes `start..end` of the line.
+    fn advance_between(&self, start: usize, end: usize) -> f32 {
+        let at = |i: usize| self.grapheme_x_advances.get(i).copied().unwrap_or(0.0);
+        at(end) - at(start)
+    }
+
+    /// The runs of the line from left to right (rule L2), each with its left edge. Only for lines
+    /// with right to left text; a left to right line is one run starting at 0.
+    pub(crate) fn visual_runs(&self) -> Vec<VisualRun> {
+        let runs = level_runs(&self.levels);
+        let levels: Vec<u8> = runs.iter().map(|r| r.level).collect();
+        let mut left = 0.0;
+        visual_order(&levels)
+            .into_iter()
+            .map(|i| {
+                let run = runs[i];
+                let width = self.advance_between(run.start, run.end);
+                let visual = VisualRun { run, left, width };
+                left += width;
+                visual
+            })
+            .collect()
+    }
+
+    /// The left edge, from the line's own left edge, of the visual run holding the line's
+    /// grapheme `at`, and that run's graphemes.
+    pub(crate) fn run_left_of(&self, at: usize) -> Option<VisualRun> {
+        self.visual_runs()
+            .into_iter()
+            .find(|v| v.run.start <= at && at < v.run.end)
+    }
+
+    /// The `(x, width)` pieces of the line covered by the layout graphemes `start..end` (clipped
+    /// to the line): one piece for left to right text, one per run of the selection in a line
+    /// with right to left text, where a selection can be in several places.
+    pub(crate) fn selection_spans(&self, start: usize, end: usize) -> Vec<(f32, f32)> {
+        let line_start = self.text_start;
+        let start = start.saturating_sub(line_start).min(self.text_length);
+        let end = end.saturating_sub(line_start).min(self.text_length);
+        if start >= end {
+            return Vec::new();
+        }
+        if self.levels.is_empty() {
+            let x = self.position.x + self.advance_between(0, start);
+            return vec![(x, self.advance_between(start, end))];
+        }
+        self.visual_runs()
+            .into_iter()
+            .filter_map(|v| {
+                let (a, b) = (start.max(v.run.start), end.min(v.run.end));
+                if a >= b {
+                    return None;
+                }
+                let before = if v.run.is_rtl() {
+                    self.advance_between(b, v.run.end)
+                } else {
+                    self.advance_between(v.run.start, a)
+                };
+                Some((
+                    self.position.x + v.left + before,
+                    self.advance_between(a, b),
+                ))
+            })
+            .collect()
+    }
+
+    /// `QTextLine::cursorToX` for a line with right to left text: the cursor between two runs of
+    /// different direction goes to the run that reads in the paragraph's direction (left to
+    /// right), and inside a right to left run the leading edge of a grapheme is its right edge.
+    fn bidi_cursor_to_x(&self, pos: usize, edge: Edge) -> f32 {
+        let runs = level_runs(&self.levels);
+        let Some(last) = runs.len().checked_sub(1) else {
+            return self.position.x;
+        };
+        let containing = |at: usize| runs.iter().position(|r| r.start <= at && at < r.end);
+        let mut item = if pos >= self.text_length {
+            containing(self.text_length.saturating_sub(1)).unwrap_or(last)
+        } else {
+            containing(pos).unwrap_or(last)
+        };
+        // Between two runs of different direction the cursor goes to the one that reads in the
+        // direction of the text.
+        if runs[item].is_rtl() != self.base_rtl {
+            let mut neighbor = item;
+            if item > 0 && runs[item].start == pos {
+                neighbor -= 1;
+            } else if item < last && runs[item].end == pos {
+                neighbor += 1;
+            }
+            if neighbor != item && runs[neighbor].level != runs[item].level {
+                item = neighbor;
+            }
+        }
+        let run = runs[item];
+        let mut inside = pos.clamp(run.start, run.end);
+        if edge == Edge::Trailing && inside < run.end {
+            inside += 1;
+        }
+        let left = self
+            .visual_runs()
+            .into_iter()
+            .find(|v| v.run == run)
+            .map_or(0.0, |v| v.left);
+        let within = if run.is_rtl() {
+            self.advance_between(inside, run.end)
+        } else {
+            self.advance_between(run.start, inside)
+        };
+        self.position.x + left + within
     }
 }
 

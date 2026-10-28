@@ -319,6 +319,19 @@ impl FontMetrics {
         Vec<crate::text::glyph_layout::FontEngine>,
         crate::text::glyph_layout::GlyphLayout,
     )> {
+        Self::shape_paragraph_directed(text, font, None)
+    }
+
+    /// [`shape_paragraph`](Self::shape_paragraph) with the direction fixed (see
+    /// [`GlyphLayout::shape_with_engines_directed`](crate::text::glyph_layout::GlyphLayout::shape_with_engines_directed)).
+    pub(crate) fn shape_paragraph_directed(
+        text: &str,
+        font: &Font,
+        right_to_left: Option<bool>,
+    ) -> Option<(
+        Vec<crate::text::glyph_layout::FontEngine>,
+        crate::text::glyph_layout::GlyphLayout,
+    )> {
         if text.is_empty() {
             return None;
         }
@@ -326,8 +339,12 @@ impl FontMetrics {
         if engines.is_empty() {
             return None;
         }
-        let layout =
-            crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
+        let layout = crate::text::glyph_layout::GlyphLayout::shape_with_engines_directed(
+            text,
+            font,
+            &engines,
+            right_to_left,
+        );
         (layout.width > 0.0).then_some((engines, layout))
     }
 

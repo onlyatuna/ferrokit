@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+mod bidi;
 pub mod block;
 pub mod block_data;
 pub mod color_glyph;
@@ -17,6 +18,7 @@ pub mod glyph_layout;
 pub mod highlighter;
 pub mod layout;
 mod line;
+mod line_break;
 mod markup;
 pub use markup::might_be_rich_text;
 pub mod outline_face;

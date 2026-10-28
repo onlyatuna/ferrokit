@@ -12,7 +12,7 @@ use crate::text::font::Font;
 use crate::text::font_metrics::FontMetrics;
 use crate::text::format::TextCharFormat;
 use crate::text::fragment::TextFragment;
-use crate::text::layout::TextLayout;
+use crate::text::layout::{TextLayout, WrapMode};
 use crate::text::markup;
 use crate::text::position::{byte_to_grapheme, grapheme_count, grapheme_to_byte};
 use tiny_skia::Color;
@@ -33,6 +33,9 @@ pub struct TextDocument {
     pub(crate) revision: usize,
     /// Document title meta information (from HTML `<title>`).
     pub(crate) title: String,
+    /// How lines wider than the text width are broken (`QTextOption::wrapMode` of the default
+    /// text option).
+    pub(crate) wrap_mode: WrapMode,
 }
 
 impl Default for TextDocument {
@@ -46,6 +49,7 @@ impl Default for TextDocument {
             is_modified: false,
             revision: 0,
             title: String::new(),
+            wrap_mode: WrapMode::WrapAtWordBoundaryOrAnywhere,
         }
     }
 }
@@ -86,6 +90,19 @@ impl TextDocument {
     /// Sets the default font.
     pub fn set_default_font(&mut self, font: Font) {
         self.default_font = font;
+    }
+
+    /// Returns how lines wider than the text width are broken.
+    #[inline]
+    pub fn wrap_mode(&self) -> WrapMode {
+        self.wrap_mode
+    }
+
+    /// Sets how lines wider than the text width are broken
+    /// (`QTextDocument::setDefaultTextOption` with a wrap mode). A document starts with
+    /// `WrapAtWordBoundaryOrAnywhere`; `QLabel` uses `WordWrap`.
+    pub fn set_wrap_mode(&mut self, mode: WrapMode) {
+        self.wrap_mode = mode;
     }
 
     /// Returns whether document has unsaved edits.
@@ -177,6 +194,7 @@ impl TextDocument {
     pub(crate) fn block_layout(&self, block: &TextBlock) -> TextLayout {
         let mut layout = block.create_layout(&self.default_font);
         if let Some(w) = self.page_size.map(|s| s.width) {
+            layout.set_wrap_mode(self.wrap_mode);
             layout.set_wrap_width(Some(w));
             layout.do_layout();
         }

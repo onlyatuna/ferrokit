@@ -541,6 +541,56 @@ impl GlyphLayout {
         Self::shape_with_engines(text, font, &engines)
     }
 
+    /// Whether `text` holds a sequence that Qt shapes in an emoji font as one item even when the
+    /// primary font has a glyph for every character of it (the keycap `1` U+FE0F U+20E3 is
+    /// all Arial characters): `QTextEngine::itemize` splits emoji sequences off with its emoji
+    /// segmenter. Such text needs the fallback fonts loaded.
+    pub(crate) fn has_emoji_sequence(text: &str) -> bool {
+        text.contains(['\u{200d}', '\u{fe0f}', '\u{20e3}'])
+    }
+
+    /// Whether `c` can start an emoji sequence: a pictograph or symbol block character, or a
+    /// keycap base.
+    fn is_emoji_base(c: char) -> bool {
+        let cp = c as u32;
+        cp >= 0x1F000
+            || (0x2190..=0x2BFF).contains(&cp)
+            || matches!(cp, 0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x3030 | 0x303D | 0x3297 | 0x3299)
+            || matches!(c, '0'..='9' | '#' | '*')
+    }
+
+    /// Qt shapes an emoji sequence (a ZWJ family, a keycap, a character with the emoji variation
+    /// selector) as one item in an emoji font. A per-character choice would cut it at every
+    /// character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so each
+    /// grapheme cluster that is such a sequence gets the first fallback font with emoji glyphs
+    /// that covers all of it.
+    fn keep_emoji_sequences_in_one_font(text: &str, engines: &[FontEngine], resolved: &mut [(char, usize)]) {
+        use unicode_segmentation::UnicodeSegmentation;
+        if engines.len() < 2 || !Self::has_emoji_sequence(text) {
+            return;
+        }
+        // Characters that need no glyph of their own in the font that shapes the sequence.
+        let joiner = |c: char| c == '\u{200d}' || ('\u{fe00}'..='\u{fe0f}').contains(&c);
+        let mut at = 0;
+        for cluster in text.graphemes(true) {
+            let n = cluster.chars().count();
+            let chars = &mut resolved[at..at + n];
+            at += n;
+            if n < 2 || !Self::has_emoji_sequence(cluster) || !cluster.chars().any(Self::is_emoji_base) {
+                continue;
+            }
+            let font = engines.iter().enumerate().skip(1).find(|(_, e)| {
+                e.face.glyph_index('\u{1F600}') != 0
+                    && cluster.chars().all(|c| joiner(c) || e.face.glyph_index(c) != 0)
+            });
+            if let Some((index, _)) = font {
+                for entry in chars {
+                    entry.1 = index;
+                }
+            }
+        }
+    }
+
     /// Step 1 & 2 (Qt parity: `QFontEngineMulti::stringToCMap` + `QTextEngine::itemBoundaries`):
     /// Maps characters to font engines and partitions the string into contiguous runs sharing the same engine.
     pub fn partition_into_runs<'a>(text: &'a str, engines: &[FontEngine]) -> Vec<FontRun<'a>> {
@@ -587,6 +637,7 @@ impl GlyphLayout {
 
             char_engine_indices.push((ch, resolved_idx));
         }
+        Self::keep_emoji_sequences_in_one_font(text, engines, &mut char_engine_indices);
 
         // Qt parity (`QTextEngine::itemBoundaries`): group adjacent characters with the same engine into runs.
         let mut runs = Vec::new();
@@ -619,6 +670,19 @@ impl GlyphLayout {
     /// batch-shaping each run with `rustybuzz` (with full OpenType GSUB/GPOS feature support),
     /// and falling back to the face's own per-glyph metrics when binary font data is unavailable.
     pub fn shape_with_engines(text: &str, font: &Font, engines: &[FontEngine]) -> Self {
+        Self::shape_with_engines_directed(text, font, engines, None)
+    }
+
+    /// [`shape_with_engines`](Self::shape_with_engines) with the direction of the text fixed:
+    /// `Some(true)` shapes right to left (the glyphs come out in visual order), `Some(false)`
+    /// left to right, `None` lets the shaper guess it from the characters. A bidi run takes its
+    /// direction from its embedding level, never from what its characters happen to be.
+    pub fn shape_with_engines_directed(
+        text: &str,
+        font: &Font,
+        engines: &[FontEngine],
+        right_to_left: Option<bool>,
+    ) -> Self {
         if text.is_empty() || engines.is_empty() {
             return Self::empty();
         }
@@ -627,7 +691,12 @@ impl GlyphLayout {
         // which selects the GPOS device-table adjustments.
         let ppem = font.size as u16;
 
-        let runs = Self::partition_into_runs(text, engines);
+        let mut runs = Self::partition_into_runs(text, engines);
+        // Right to left text is laid out from its right end: the first font run in the text is the
+        // rightmost, so the runs go in visual order.
+        if right_to_left == Some(true) {
+            runs.reverse();
+        }
         let mut glyphs = Vec::with_capacity(text.len());
         let mut current_x = 0.0;
         let mut current_y = 0.0;
@@ -643,6 +712,13 @@ impl GlyphLayout {
                 // Qt `shapeTextWithHarfbuzzNG` path:
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(run.text);
+                if let Some(rtl) = right_to_left {
+                    buffer.set_direction(if rtl {
+                        rustybuzz::Direction::RightToLeft
+                    } else {
+                        rustybuzz::Direction::LeftToRight
+                    });
+                }
 
                 // HarfBuzz applies a `kern` table itself when the font has no GPOS kerning; the pairs
                 // are then applied below, scaled as HarfBuzz scales them (see `legacy_kern_table`).
@@ -898,6 +974,30 @@ mod tests {
             assert_eq!(runs[1].engine_index, 1);
             assert_eq!(runs[2].text, " OK");
             assert_eq!(runs[2].engine_index, 0);
+        }
+    }
+
+    /// Hebrew and an emoji in one right to left run come from two fonts: the glyphs are laid out
+    /// from the right end, so the first character of the text has the largest x.
+    #[cfg(windows)]
+    #[test]
+    fn right_to_left_font_runs_are_laid_out_from_the_right() {
+        let font = Font::new("Arial", 16.0);
+        let text = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{1F600} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
+        let engines =
+            crate::text::font_database::resolve_font_engines_for_text_global(&font, text);
+        assert!(
+            engines.len() >= 2,
+            "the test needs Arial and a fallback font with the emoji"
+        );
+        let layout = GlyphLayout::shape_with_engines_directed(text, &font, &engines, Some(true));
+        assert!(layout.glyphs.iter().any(|g| g.font_index > 0), "the emoji comes from a fallback");
+        for pair in layout.glyphs.windows(2) {
+            assert!(pair[0].x <= pair[1].x, "glyphs go left to right: {pair:?}");
+            assert!(
+                pair[0].cluster >= pair[1].cluster,
+                "right to left: later text is further left: {pair:?}"
+            );
         }
     }
 
