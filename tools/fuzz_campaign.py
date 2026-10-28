@@ -178,11 +178,13 @@ def main():
             rc, out = cargo(
                 args.toolchain, "run", t, str(corpus), *extra, "--", *lf, timeout=args.seconds + args.slack_seconds
             )
-            # A clean exit, or 77 (libFuzzer's "a finding was reported"), is a campaign that ran.
-            # Anything else is one that did not finish: a build failure, a missing toolchain, a hang
-            # past the outer deadline (exit 124), a crash of the fuzzer itself. It must never look
-            # like "no findings".
-            if rc not in (0, 77) or "INFO:" not in out:
+            # A clean exit, or libFuzzer's exit 77 ("a finding was reported", which cargo-fuzz
+            # relays as its own exit 1 plus this message), is a campaign that ran. Anything else
+            # did not finish: a build failure, a missing toolchain, a hang past the outer
+            # deadline (exit 124), a crash of the fuzzer itself. It must never look like "no
+            # findings".
+            reported = "Fuzz target exited with exit status: 77" in out
+            if not (rc == 0 or (rc != 124 and reported)) or "INFO:" not in out:
                 why = "hit the outer deadline" if rc == 124 else f"exit {rc}"
                 print(f"{t}: the campaign did not finish ({why}):\n{out[-2000:]}", file=sys.stderr)
                 return 2
