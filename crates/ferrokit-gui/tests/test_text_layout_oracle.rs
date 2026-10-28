@@ -7,9 +7,16 @@
 //! (`textStart`, `textLength`, `naturalTextWidth`, `cursorToX` at the line end) of text wrapped at
 //! several widths.
 //!
+//! `naturalTextWidth` is the sum of the advances plus the negative right bearing of the last glyph,
+//! the ink that hangs over it; the `syn_bearing_*` and `arial_bearing_*` cases pin where Qt counts
+//! it (the width of a line, whether a word fits, the end of a line a separator or a wrap ends, not
+//! the end of a text that ends in white space) and where it does not (`cursorToX`, the alignment
+//! of the line, which go by the advances).
+//!
 //! Two fonts:
 //! * `tests/data/oracle_text.ttf`, a synthetic font with kerning, a `liga` ligature with a GDEF
-//!   caret, combining marks and Hebrew letters, built by the generator. Its units per em is 1024
+//!   caret, combining marks, Hebrew letters and glyphs whose ink hangs over their advance (the
+//!   bearings of 1.5, 0.375 and 1/64 px), built by the generator. Its units per em is 1024
 //!   and the cases use 16 px, so every design value is a multiple of 1/64 px: DirectWrite's
 //!   truncation to 26.6 changes nothing and the expected numbers are the same under every font
 //!   backend. These tests run on every platform.
@@ -140,31 +147,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
         "hit/syn_hitwrap_rtl_base/45/line1",
         "as hit/syn_hitwrap_rtl_base/45/line0",
         None,
-    ),
-    // --- widths ---
-    (
-        "natural/arial_kerned_words/50",
-        "Qt's `naturalTextWidth` is the sum of the advances plus the negative right bearing of \
-         the last glyph, the ink that hangs over its advance (`QTextLine::layout_helper`'s \
-         `negativeRightBearing`): the `A` that ends `AVAVA` hangs 1/64 px over, so Qt's width is \
-         47.4375 against its `cursorToX` at the line end of 47.421875. [INFERENCE from the values; \
-         ferrokit has no outline bounds of a glyph at hand]",
-        Some(0.016),
-    ),
-    (
-        "natural/arial_pangram/100",
-        "same right bearing, of the `r` that ends `jumps over`: 0.21875 px",
-        Some(0.22),
-    ),
-    (
-        "natural/arial_pangram/240",
-        "same right bearing as arial_pangram/100",
-        Some(0.22),
-    ),
-    (
-        "natural/arial_rtl_wrap/",
-        "same right bearing, of the `f` that ends `def`: 0.546875 px",
-        Some(0.55),
     ),
 ];
 
@@ -580,15 +562,15 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
 /// or renames lines must update this table, so fixtures cannot disappear unnoticed, and every
 /// `run` checks that it really went through all of the lines it stands for.
 const EXPECTED_LINES: &[(&str, &str, usize)] = &[
-    ("align", "arial", 4),
-    ("align", "syn", 13),
-    ("cursor", "arial", 24),
-    ("cursor", "syn", 21),
-    ("hit", "arial", 3),
-    ("hit", "syn", 9),
+    ("align", "arial", 6),
+    ("align", "syn", 21),
+    ("cursor", "arial", 25),
+    ("cursor", "syn", 23),
+    ("hit", "arial", 4),
+    ("hit", "syn", 11),
     ("hitwrap", "syn", 17),
-    ("wrap", "arial", 11),
-    ("wrap", "syn", 241),
+    ("wrap", "arial", 41),
+    ("wrap", "syn", 335),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {
