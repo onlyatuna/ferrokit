@@ -701,6 +701,27 @@ fn process_wait_honours_timeout_when_grandchild_holds_pipe() {
     assert_eq!(proc.exit_code(), Some(3));
 }
 
+/// The same with both streams on one pipe, which has a reader of its own kind.
+#[test]
+fn process_merged_channels_wait_honours_timeout_when_grandchild_holds_pipe() {
+    let mut proc = Process::new();
+    proc.set_channel_mode(ProcessChannelMode::MergedChannels);
+    #[cfg(windows)]
+    set_shell(&mut proc, "start /B ping -n 20 127.0.0.1 >nul & exit 0");
+    #[cfg(not(windows))]
+    set_shell(&mut proc, "sleep 20 & exit 0");
+    proc.start().unwrap();
+    let begin = std::time::Instant::now();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(5))));
+    assert!(begin.elapsed() < Duration::from_secs(10));
+    assert_eq!(proc.exit_code(), Some(0));
+    assert_eq!(proc.state(), ProcessState::NotRunning);
+    set_shell(&mut proc, "exit 3");
+    proc.start().unwrap();
+    assert!(proc.wait_for_finished(Some(Duration::from_secs(10))));
+    assert_eq!(proc.exit_code(), Some(3));
+}
+
 #[test]
 fn save_file_drop_without_commit_removes_temp_and_keeps_target() {
     let dir = TemporaryDir::new().unwrap();

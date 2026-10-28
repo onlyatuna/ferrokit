@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
@@ -19,96 +19,240 @@ use std::time::{Duration, Instant};
 /// not to hang on a grandchild that holds the pipe open.
 const READER_DRAIN: Duration = Duration::from_secs(1);
 
-/// The longest a reader waiting for data goes without looking at its stop flag.
-const READER_POLL: Duration = Duration::from_millis(20);
+/// A read end of a child pipe.
+enum PipeSource {
+    Stdout(ChildStdout),
+    Stderr(ChildStderr),
+    /// Both of the child's streams, for [`ProcessChannelMode::MergedChannels`].
+    Merged(io::PipeReader),
+}
 
-/// A read end of a child pipe that can be asked whether a read would block.
-#[cfg(unix)]
-trait PipeSource: Read + std::os::fd::AsRawFd + Send {}
-#[cfg(unix)]
-impl<T: Read + std::os::fd::AsRawFd + Send> PipeSource for T {}
-#[cfg(windows)]
-trait PipeSource: Read + std::os::windows::io::AsRawHandle + Send {}
-#[cfg(windows)]
-impl<T: Read + std::os::windows::io::AsRawHandle + Send> PipeSource for T {}
+impl PipeSource {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Stdout(pipe) => pipe.read(buf),
+            Self::Stderr(pipe) => pipe.read(buf),
+            Self::Merged(pipe) => pipe.read(buf),
+        }
+    }
 
-/// Waits until `source` can be read without blocking (data, end of the pipe or an error), or
-/// until `stop` is set. Returns `false` on stop. A reader that blocked in `read` could not be
-/// stopped while a grandchild still holds the write end open.
-#[cfg(unix)]
-fn wait_readable(source: &dyn PipeSource, stop: &AtomicBool) -> bool {
-    let mut poll_fd = libc::pollfd {
-        fd: source.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout_ms = READER_POLL.as_millis() as libc::c_int;
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return false;
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        match self {
+            Self::Stdout(pipe) => pipe.as_raw_fd(),
+            Self::Stderr(pipe) => pipe.as_raw_fd(),
+            Self::Merged(pipe) => pipe.as_raw_fd(),
         }
-        // SAFETY: `poll_fd` is one valid `pollfd`, and `source` keeps its descriptor open.
-        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-        if ready == 0 || (ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted)
-        {
-            continue;
+    }
+
+    #[cfg(windows)]
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        use std::os::windows::io::AsRawHandle;
+        match self {
+            Self::Stdout(pipe) => pipe.as_raw_handle(),
+            Self::Stderr(pipe) => pipe.as_raw_handle(),
+            Self::Merged(pipe) => pipe.as_raw_handle(),
         }
-        // Readable, hung up or failed: `read` reports which without blocking.
-        return true;
     }
 }
 
-/// See the Unix version. `PeekNamedPipe` fails once the pipe is closed and empty, which `read`
-/// then reports as the end of the pipe.
+/// The half of a reader's wake-up channel that stays with the reader thread: what lets it block
+/// until data arrives and still be stopped at once while a grandchild holds the pipe open.
+///
+/// On Unix this is the read end of a pipe that [`Stopper`] closes, and the reader `poll`s it
+/// together with the child's pipe. On Windows a blocked `ReadFile` is interrupted instead, with
+/// `CancelIoEx` (see [`ReaderThread::stop_and_join`]), so there is nothing to wait on.
+struct Waiter {
+    #[cfg(unix)]
+    bell: io::PipeReader,
+    /// Cleared once the other end is gone without a stop request, so it is not polled again.
+    #[cfg(unix)]
+    bell_open: bool,
+}
+
+/// The half of a reader's wake-up channel that stays with the owner of the reader.
+#[derive(Debug)]
+struct Stopper {
+    /// Never written: closing it is the signal.
+    #[cfg(unix)]
+    _bell: io::PipeWriter,
+}
+
+/// Creates the wake-up channel of one reader.
+fn wake_channel() -> io::Result<(Waiter, Stopper)> {
+    #[cfg(unix)]
+    {
+        let (rx, tx) = io::pipe()?;
+        Ok((Waiter { bell: rx, bell_open: true }, Stopper { _bell: tx }))
+    }
+    #[cfg(windows)]
+    {
+        Ok((Waiter {}, Stopper {}))
+    }
+}
+
+impl Waiter {
+    /// Waits until `source` can be read without blocking (data, end of the pipe or an error), or
+    /// until `stop` is set. Returns `false` on stop. A reader that blocked in `read` could not be
+    /// stopped while a grandchild still holds the write end open.
+    ///
+    /// `stop` is set before the stopper is closed, so a reader that saw the stopper closed and
+    /// finds `stop` clear knows its `Process` was dropped without a stop request: the pipe is
+    /// then read to its end, as it always was.
+    #[cfg(unix)]
+    fn wait(&mut self, source: &PipeSource, stop: &AtomicBool) -> bool {
+        use std::os::fd::AsRawFd;
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return false;
+            }
+            let mut fds = [
+                libc::pollfd { fd: source.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd {
+                    // A negative descriptor is ignored by `poll`.
+                    fd: if self.bell_open { self.bell.as_raw_fd() } else { -1 },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `fds` is two valid `pollfd`s, and `source` and `self.bell` keep their
+            // descriptors open for the whole call.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+            if ready < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // Let `read` report what is wrong.
+                return true;
+            }
+            if fds[1].revents != 0 {
+                if stop.load(Ordering::Acquire) {
+                    return false;
+                }
+                self.bell_open = false;
+            }
+            // Readable, hung up or failed: `read` reports which without blocking.
+            if fds[0].revents != 0 {
+                return true;
+            }
+        }
+    }
+
+    /// See the Unix version. A Windows reader blocks in `read` itself and is interrupted from
+    /// outside, so it only has to look at the flag between reads.
+    #[cfg(windows)]
+    fn wait(&mut self, _source: &PipeSource, stop: &AtomicBool) -> bool {
+        !stop.load(Ordering::Acquire)
+    }
+}
+
+/// The handle of the pipe a Windows reader thread reads, for as long as the thread may still be
+/// blocked in a read of it. The thread clears it before the pipe is closed, and a stopper holds
+/// the lock while it uses the value, so the value is never used after the handle was closed (and
+/// perhaps reused for something else).
 #[cfg(windows)]
-fn wait_readable(source: &dyn PipeSource, stop: &AtomicBool) -> bool {
-    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-    let handle = source.as_raw_handle();
-    let mut pause = Duration::from_millis(1);
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return false;
+type OpenHandle = Arc<Mutex<Option<usize>>>;
+
+/// A thread that appends everything read from a pipe to a buffer.
+#[derive(Debug)]
+struct ReaderThread {
+    thread: thread::JoinHandle<()>,
+    #[cfg(unix)]
+    stopper: Stopper,
+    #[cfg(windows)]
+    pipe: OpenHandle,
+}
+
+impl ReaderThread {
+    fn is_finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
+    /// Waits for the thread to reach the end of its pipe.
+    fn join(self) {
+        let _ = self.thread.join();
+    }
+
+    /// Makes the thread stop waiting for data, however long it would wait, and joins it. The
+    /// caller has set the stop flag. The pipe is closed when this returns.
+    #[cfg(unix)]
+    fn stop_and_join(self) {
+        let Self { thread, stopper } = self;
+        // Closing the stopper wakes the reader out of `poll`.
+        drop(stopper);
+        let _ = thread.join();
+    }
+
+    /// See the Unix version. `CancelIoEx` aborts the read the thread is blocked in. A thread that
+    /// is between two reads has none to abort and starts the next one, so the call is repeated
+    /// until the thread has seen the stop flag and ended.
+    #[cfg(windows)]
+    fn stop_and_join(self) {
+        use windows_sys::Win32::System::IO::CancelIoEx;
+        while !self.thread.is_finished() {
+            if let Some(handle) = *self.pipe.lock() {
+                // SAFETY: the reader clears `pipe` before it closes the handle and the lock is
+                // held, so `handle` is still open. A null `OVERLAPPED` cancels every pending
+                // operation on it; failing when there is none is expected.
+                unsafe { CancelIoEx(handle as _, std::ptr::null()) };
+            }
+            thread::sleep(Duration::from_millis(1));
         }
-        let mut available = 0u32;
-        // SAFETY: `handle` is the pipe handle of `source`, which stays open for the call; only
-        // the available-byte count is requested.
-        let peeked = unsafe {
-            PeekNamedPipe(
-                handle,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                &mut available,
-                std::ptr::null_mut(),
-            )
-        };
-        if peeked == 0 || available > 0 {
-            return true;
-        }
-        thread::sleep(pause);
-        pause = (pause * 2).min(READER_POLL);
+        let _ = self.thread.join();
     }
 }
 
 /// Starts a thread that appends everything read from `source` to `output` until the end of the
-/// pipe, or until `stop` is set while it waits for data. The pipe is closed when the thread ends.
+/// pipe, or until `stop` is set and the reader is woken. The thread closes the pipe when it ends.
 fn spawn_reader(
-    mut source: Box<dyn PipeSource>,
+    source: PipeSource,
+    (mut waiter, stopper): (Waiter, Stopper),
     output: &Arc<Mutex<Vec<u8>>>,
     stop: &Arc<AtomicBool>,
-) -> thread::JoinHandle<()> {
+) -> ReaderThread {
     let output = Arc::clone(output);
     let stop = Arc::clone(stop);
-    thread::spawn(move || {
+    // A Windows reader is interrupted through its pipe, not woken through a channel.
+    #[cfg(windows)]
+    let _ = stopper;
+    #[cfg(windows)]
+    let pipe: OpenHandle = Arc::new(Mutex::new(Some(source.as_raw_handle() as usize)));
+    #[cfg(windows)]
+    let thread_pipe = Arc::clone(&pipe);
+    let thread = thread::spawn(move || {
+        let mut source = source;
+        // Declared after `source`, so it runs first when the thread ends: `source` is closed
+        // only after the handle stoppers may use has been withdrawn.
+        #[cfg(windows)]
+        let _withdraw = Withdraw(thread_pipe);
         let mut chunk = [0u8; 4096];
-        while wait_readable(source.as_ref(), &stop) {
+        while waiter.wait(&source, &stop) {
             match source.read(&mut chunk) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Ok(0) | Err(_) => break,
                 Ok(count) => output.lock().extend_from_slice(&chunk[..count]),
             }
         }
-    })
+    });
+    ReaderThread {
+        thread,
+        #[cfg(unix)]
+        stopper,
+        #[cfg(windows)]
+        pipe,
+    }
+}
+
+/// Withdraws an [`OpenHandle`] when dropped.
+#[cfg(windows)]
+struct Withdraw(OpenHandle);
+
+#[cfg(windows)]
+impl Drop for Withdraw {
+    fn drop(&mut self) {
+        *self.0.lock() = None;
+    }
 }
 
 #[cfg(windows)]
@@ -149,8 +293,8 @@ pub struct Process {
 
     child: Option<Child>,
     stdin_handle: Option<ChildStdin>,
-    stdout_reader: Option<thread::JoinHandle<()>>,
-    stderr_reader: Option<thread::JoinHandle<()>>,
+    stdout_reader: Option<ReaderThread>,
+    stderr_reader: Option<ReaderThread>,
     stdout_buf: Arc<Mutex<Vec<u8>>>,
     stderr_buf: Arc<Mutex<Vec<u8>>>,
     /// Set to make the reader threads of the current run stop and close their pipes.
@@ -268,6 +412,26 @@ impl Process {
             cmd.env(k, v);
         }
 
+        // The wake-up channels of the readers, made before the child exists so that failing to
+        // make one leaves nothing to undo.
+        let reader_count = match self.channel_mode {
+            ProcessChannelMode::SeparateChannels => 2,
+            ProcessChannelMode::MergedChannels => 1,
+            ProcessChannelMode::ForwardedChannels => 0,
+        };
+        let mut wake_channels = Vec::with_capacity(reader_count);
+        for _ in 0..reader_count {
+            match wake_channel() {
+                Ok(channel) => wake_channels.push(channel),
+                Err(error) => {
+                    self.state = ProcessState::NotRunning;
+                    return Err(error);
+                }
+            }
+        }
+        let mut wake_channels = wake_channels.into_iter();
+        let (stdout_wake, stderr_wake) = (wake_channels.next(), wake_channels.next());
+
         let mut merged_reader = None;
         match self.channel_mode {
             ProcessChannelMode::SeparateChannels => {
@@ -328,18 +492,19 @@ impl Process {
         self.stdout_buf = Arc::new(Mutex::new(Vec::new()));
         self.stderr_buf = Arc::new(Mutex::new(Vec::new()));
         self.reader_stop = Arc::new(AtomicBool::new(false));
-        let stdout_source: Option<Box<dyn PipeSource>> = match merged_reader {
-            Some(reader) => Some(Box::new(reader)),
-            None => child
-                .stdout
-                .take()
-                .map(|out| Box::new(out) as Box<dyn PipeSource>),
+        let stdout_source = match merged_reader {
+            Some(reader) => Some(PipeSource::Merged(reader)),
+            None => child.stdout.take().map(PipeSource::Stdout),
         };
-        self.stdout_reader = stdout_source
-            .map(|out| spawn_reader(out, &self.stdout_buf, &self.reader_stop));
-        self.stderr_reader = child.stderr.take().map(|err| {
-            spawn_reader(Box::new(err), &self.stderr_buf, &self.reader_stop)
+        self.stdout_reader = stdout_source.zip(stdout_wake).map(|(source, wake)| {
+            spawn_reader(source, wake, &self.stdout_buf, &self.reader_stop)
         });
+        self.stderr_reader = child
+            .stderr
+            .take()
+            .map(PipeSource::Stderr)
+            .zip(stderr_wake)
+            .map(|(source, wake)| spawn_reader(source, wake, &self.stderr_buf, &self.reader_stop));
         self.child = Some(child);
         self.state = ProcessState::Running;
         Ok(())
@@ -413,9 +578,9 @@ impl Process {
 
     /// Joins the reader threads. With `Some(grace)`, readers that have not reached the end of
     /// their pipe `grace` after this call are told to stop instead of blocking on a pipe that a
-    /// grandchild still holds open: they close their end of the pipe within [`READER_POLL`] and
-    /// are joined, so no thread or descriptor outlives the call. With `None` they are joined
-    /// when they reach the end of their pipe.
+    /// grandchild still holds open: they are woken out of their wait, close their end of the
+    /// pipe and are joined, so no thread or descriptor outlives the call. With `None` they are
+    /// joined when they reach the end of their pipe.
     fn finish_readers(&mut self, grace: Option<Duration>) {
         let start = Instant::now();
         let readers = [self.stdout_reader.take(), self.stderr_reader.take()];
@@ -428,8 +593,13 @@ impl Process {
                 thread::sleep(Duration::from_millis(1));
             }
         }
+        let stopping = self.reader_stop.load(Ordering::Acquire);
         for reader in readers.into_iter().flatten() {
-            let _ = reader.join();
+            if stopping {
+                reader.stop_and_join();
+            } else {
+                reader.join();
+            }
         }
     }
 
@@ -537,6 +707,29 @@ mod tests {
         }
     }
 
+    fn reader_of(
+        reader: io::PipeReader,
+    ) -> (ReaderThread, Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let channel = wake_channel().unwrap();
+        let handle = spawn_reader(PipeSource::Merged(reader), channel, &output, &stop);
+        (handle, output, stop)
+    }
+
+    /// Stops `handle` on a helper thread, so that a reader that cannot be stopped fails the test
+    /// instead of hanging it.
+    fn stop_within_the_deadline(handle: ReaderThread) {
+        let (done, finished) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            handle.stop_and_join();
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reader to stop");
+    }
+
     /// A reader of a pipe that still has a writer (a grandchild holding it open) is not stuck in
     /// `read`: it stops on request and closes its end, so the thread and the descriptor are
     /// released.
@@ -544,20 +737,55 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn a_stopped_reader_closes_a_pipe_that_still_has_a_writer() {
         let (reader, mut writer) = io::pipe().unwrap();
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let handle = spawn_reader(Box::new(reader), &output, &stop);
+        let (handle, output, stop) = reader_of(reader);
 
         writer.write_all(b"hello").unwrap();
         wait_until("the written bytes", || output.lock().len() == 5);
         assert!(!handle.is_finished(), "the writer is open: the reader keeps waiting");
 
         stop.store(true, Ordering::Release);
-        wait_until("the reader to stop", || handle.is_finished());
-        handle.join().unwrap();
+        stop_within_the_deadline(handle);
         assert_eq!(*output.lock(), b"hello");
         // The read end is closed, so the pipe has no reader left.
         assert!(writer.write_all(b"x").is_err());
+    }
+
+    /// A stop that arrives while the reader is starting up, between two reads or before its first
+    /// one is not lost: whatever the reader was doing, it ends.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_stop_is_never_lost_whatever_the_reader_is_doing() {
+        for round in 0..200u32 {
+            let (reader, mut writer) = io::pipe().unwrap();
+            let (handle, output, stop) = reader_of(reader);
+            if round % 2 == 1 {
+                writer.write_all(b"x").unwrap();
+                if round % 4 == 3 {
+                    wait_until("the written byte", || output.lock().len() == 1);
+                }
+            }
+            stop.store(true, Ordering::Release);
+            stop_within_the_deadline(handle);
+            assert!(writer.write_all(b"y").is_err(), "round {round}: the read end is closed");
+        }
+    }
+
+    /// An owner that goes away without asking the reader to stop (a dropped `Process` whose child
+    /// could not be killed) leaves it reading to the end of the pipe.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_reader_whose_owner_is_gone_keeps_reading_until_the_end_of_its_pipe() {
+        let (reader, mut writer) = io::pipe().unwrap();
+        let (handle, output, _stop) = reader_of(reader);
+        drop(handle);
+
+        writer.write_all(b"a").unwrap();
+        wait_until("the first byte", || output.lock().len() == 1);
+        thread::sleep(Duration::from_millis(50));
+        writer.write_all(b"b").unwrap();
+        wait_until("the second byte", || output.lock().len() == 2);
+        drop(writer);
+        assert_eq!(*output.lock(), b"ab");
     }
 
     /// Without a stop request a reader runs to the end of the pipe, past the last byte.
@@ -565,14 +793,12 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn a_reader_collects_everything_up_to_the_end_of_its_pipe() {
         let (reader, mut writer) = io::pipe().unwrap();
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let handle = spawn_reader(Box::new(reader), &output, &stop);
+        let (handle, output, _stop) = reader_of(reader);
 
         let data = vec![7u8; 100_000];
         writer.write_all(&data).unwrap();
         drop(writer);
-        handle.join().unwrap();
+        handle.join();
         assert_eq!(*output.lock(), data);
     }
 }
