@@ -1795,9 +1795,10 @@ mod tests {
 
     #[test]
     fn the_first_word_scan_stops_at_the_width_not_at_the_end_of_the_word() {
-        // One word of 20 000 graphemes of 1 px, lines of 10 px: every line asks, and an answer
-        // that went to the end of the word would read 20 000 graphemes each time.
-        let n = 20_000;
+        // One word of 2 000 graphemes of 1 px, lines of 10 px: every line asks, and an answer
+        // that went to the end of the word would read up to 2 000 graphemes each time (200 lines
+        // would read 200 000 against the 2 000 allowed).
+        let n = 2_000;
         let text = "a".repeat(n);
         let c = bearing_composite(&text, &vec![1.0; n], &vec![0.0; n], Vec::new(), &[]);
         FIRST_WORD_SCANNED.with(|s| s.set(0));
