@@ -108,6 +108,13 @@ fn is_hanging_space(grapheme: &str) -> bool {
     })
 }
 
+/// Whether a grapheme is white space for the right bearing of a line: a hanging space, a line feed
+/// or the line separator (the characters Qt's `QCharAttributes::whiteSpace` is set for that this
+/// layout tells apart). The glyph before them is the one whose bearing ends the line.
+fn is_blank(grapheme: &str) -> bool {
+    is_hanging_space(grapheme) || is_unshaped(grapheme)
+}
+
 /// The text plus pre-edit as one string with the byte offset of every grapheme, built once per
 /// layout run so `create_line` does not rebuild and re-segment it for every line.
 #[derive(Debug)]
@@ -117,6 +124,15 @@ struct CompositeText {
     starts: Vec<usize>,
     /// Shaped advance of each grapheme, shaped a paragraph at a time.
     advances: Vec<f32>,
+    /// The negative right bearing of the glyph that ends each grapheme (its absolute value, 0 when
+    /// the ink stays inside the advance or the font gave none): what
+    /// `QTextLine::layout_helper`'s `negativeRightBearing` adds to the width of a line ending
+    /// there. A grapheme inside a ligature has the ligature's.
+    bearings: Vec<f32>,
+    /// `(grapheme, bearing)` for each word whose last grapheme is followed by white space that
+    /// starts another run: Qt reads that bearing from the space's run, not the word's (see
+    /// [`TextLayout::boundary_bearings`]). Sorted by grapheme.
+    space_bearings: Vec<(usize, f32)>,
     /// The paragraphs a font shaped, in text order; the others are drawn grapheme by grapheme.
     paragraphs: Vec<ShapedParagraph>,
     /// Whether UAX #14 allows a line break in front of each grapheme, plus one entry for the end
@@ -136,6 +152,46 @@ impl CompositeText {
 
     fn grapheme(&self, index: usize) -> &str {
         &self.text[self.starts[index]..self.starts[index + 1]]
+    }
+
+    /// Whether a word ends in grapheme `g`, for the line breaking of `layout_helper`: the next
+    /// grapheme is white space, a place where UAX #14 allows a break, or there is none.
+    fn ends_chunk(&self, g: usize) -> bool {
+        g + 1 >= self.grapheme_count()
+            || self.break_before[g + 1]
+            || is_blank(self.grapheme(g + 1))
+    }
+
+    /// The bearing `layout_helper` ends a line with when its last word ends in grapheme `g`:
+    /// that of the glyph before the white space after the word (read from the run of the space,
+    /// see [`TextLayout::boundary_bearings`]), or of the word's own last glyph.
+    fn end_bearing(&self, g: usize) -> f32 {
+        let spaced = g + 1 < self.grapheme_count() && is_blank(self.grapheme(g + 1));
+        self.space_bearings
+            .binary_search_by_key(&g, |entry| entry.0)
+            .ok()
+            .filter(|_| spaced)
+            .map_or(self.bearings[g], |at| self.space_bearings[at].1)
+    }
+
+    /// Whether the word of a line that starts at grapheme `from` (`x` the pen after what is
+    /// before it) is wider than `width` once the line is as `layout_helper` ends it. The word is
+    /// taken in whole, and the line then ends with the bearing of its last glyph, except for a
+    /// text whose rest is white space only: nothing follows the word to test or break at, and a
+    /// line that ends in white space has no bearing.
+    fn first_word_overflows(&self, from: usize, x: f32, width: f32) -> bool {
+        let mut end = from;
+        while !self.ends_chunk(end) {
+            end += 1;
+        }
+        let count = self.grapheme_count();
+        let rest_is_space = end + 1 < count
+            && (end + 1..count).all(|g| {
+                let grapheme = self.grapheme(g);
+                is_blank(grapheme) && grapheme != LINE_SEPARATOR
+            });
+        let bearing = if rest_is_space { 0.0 } else { self.end_bearing(end) };
+        x + self.advances[from..=end].iter().sum::<f32>() + bearing > width
     }
 
     /// The shaped paragraph holding grapheme `index`, if a font shaped it.
@@ -359,6 +415,7 @@ impl TextLayout {
                 descent: metrics.descent,
                 leading: metrics.leading(),
                 natural_width: 0.0,
+                advance_width: 0.0,
                 right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
                 levels: Vec::new(),
                 base_rtl: composite.base_rtl,
@@ -398,6 +455,11 @@ impl TextLayout {
         // Whether the line has text other than spaces yet: spaces in front of the first word
         // are part of it, not a place to break, and a line of spaces only keeps them all.
         let mut has_word = false;
+        // Set when the line ends at a line separator (which belongs to the line).
+        let mut ended_by_separator = false;
+
+        // Whether the first word of the line is laid out again inside the word, see below.
+        let mut first_word_relaid: Option<bool> = None;
 
         let byte_start = composite.starts[line_start_grapheme];
 
@@ -407,6 +469,7 @@ impl TextLayout {
             let g = composite.grapheme(curr_grapheme);
             if g == LINE_SEPARATOR {
                 // Hard line break
+                ended_by_separator = true;
                 curr_grapheme += 1;
                 line_bytes += g.len();
                 break;
@@ -415,10 +478,31 @@ impl TextLayout {
             let g_width = composite.advances[curr_grapheme];
             let is_space = is_hanging_space(g);
 
+            // `QTextLine::layout_helper` adds the negative right bearing of the glyph that would
+            // end the line to the width it tests (`calculateNewWidth`): at the end of a word, and
+            // at every grapheme once it breaks inside words. That is `WrapAnywhere`, and the first
+            // word of a line of `WrapAtWordBoundaryOrAnywhere` that is too wide for it, which is
+            // laid out again that way; whether it is too wide is decided by the width of the line
+            // as it ends, with or without the bearing (`first_word_overflows`).
+            let tests_bearing = !is_space
+                && match self.wrap_mode {
+                    WrapMode::WrapAnywhere => true,
+                    WrapMode::WrapAtWordBoundaryOrAnywhere if last_break_grapheme.is_none() => {
+                        *first_word_relaid.get_or_insert_with(|| {
+                            composite.first_word_overflows(curr_grapheme, curr_x, max_width)
+                        })
+                    }
+                    _ => composite.ends_chunk(curr_grapheme),
+                };
+            let bearing = if tests_bearing { composite.bearings[curr_grapheme] } else { 0.0 };
+
             // `QTextLine::layout_helper`: a space is added to the line without testing the width
             // (it hangs past the line end when it does not fit); a word is added only if it fits
             // after the spaces before it.
-            if !is_space && curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
+            if !is_space
+                && curr_x + g_width + bearing > max_width
+                && curr_grapheme > line_start_grapheme
+            {
                 // Wrapping needed: at the last place a word ends, if the mode breaks there and
                 // there is one on this line.
                 match last_break_grapheme {
@@ -454,19 +538,44 @@ impl TextLayout {
             curr_grapheme += 1;
         }
 
+        // Graphemes of the line before its separator: the ones `advances` has an end for.
         let text_len = curr_grapheme - line_start_grapheme;
+        let content_len = text_len - usize::from(ended_by_separator);
         // The width of the text of a wrapped line stops before its trailing spaces
-        // (`QTextLine::naturalTextWidth`); the last line of a paragraph keeps them unless they
-        // hang over the width.
-        let mut natural_len = text_len;
-        if has_word && (wrapped || curr_x > max_width) {
+        // (`QTextLine::naturalTextWidth`), as does that of a line a separator ends; the last line
+        // of a paragraph keeps them unless they hang over the width.
+        let mut natural_len = content_len;
+        if ended_by_separator || (has_word && (wrapped || curr_x > max_width)) {
             while natural_len > 0
                 && is_hanging_space(composite.grapheme(line_start_grapheme + natural_len - 1))
             {
                 natural_len -= 1;
             }
         }
-        let natural_w = advances[natural_len.min(advances.len() - 1)];
+        let advance_w = advances[natural_len.min(advances.len() - 1)];
+        // `layout_helper` ends with the negative right bearing of the last glyph that is not a
+        // space: `naturalTextWidth` is the advances plus it (`horizontalAdvance` and the alignment
+        // of the line go by the advances alone). The one exception: a line that is the end of the
+        // text and ends in white space has no bearing, whether its spaces fit or hang.
+        let line_end = line_start_grapheme + content_len;
+        let ends_in_blank = line_end > line_start_grapheme
+            && is_blank(composite.grapheme(line_end - 1));
+        let at_text_end = curr_grapheme >= total_graphemes && !ended_by_separator;
+        let bearing = if at_text_end && ends_in_blank {
+            0.0
+        } else {
+            (line_start_grapheme..line_end)
+                .rev()
+                .find(|&g| !is_blank(composite.grapheme(g)))
+                .map_or(0.0, |g| {
+                    if g + 1 < line_end {
+                        composite.end_bearing(g)
+                    } else {
+                        composite.bearings[g]
+                    }
+                })
+        };
+        let natural_w = advance_w + bearing;
         let line_idx = self.lines.len();
 
         let y_pos = self.position.y + (line_idx as f32) * metrics.height;
@@ -476,11 +585,11 @@ impl TextLayout {
         let align_right = self.alignment.contains(Alignment::RIGHT)
             || (self.alignment.contains(Alignment::JUSTIFY) && composite.base_rtl);
         let x_pos = if align_right {
-            let avail = self.wrap_width.unwrap_or(natural_w);
-            self.position.x + (avail - natural_w).max(0.0)
+            let avail = self.wrap_width.unwrap_or(advance_w);
+            self.position.x + (avail - advance_w).max(0.0)
         } else if self.alignment.contains(Alignment::H_CENTER) {
-            let avail = self.wrap_width.unwrap_or(natural_w);
-            self.position.x + (avail - natural_w).max(0.0) * 0.5
+            let avail = self.wrap_width.unwrap_or(advance_w);
+            self.position.x + (avail - advance_w).max(0.0) * 0.5
         } else {
             self.position.x
         };
@@ -500,6 +609,7 @@ impl TextLayout {
             descent: metrics.descent,
             leading: metrics.leading(),
             natural_width: natural_w,
+            advance_width: advance_w,
             right_limit,
             levels: match composite.levels.get(line_start_grapheme..curr_grapheme) {
                 Some(levels) if levels.iter().any(|&l| l != 0) => levels.to_vec(),
@@ -772,12 +882,16 @@ impl TextLayout {
         let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
         starts.push(text.len());
         let base_rtl = bidi::is_rtl(&text);
-        let (advances, paragraphs, levels) = self.shape_paragraphs(&text, &starts, base_rtl);
+        let (advances, bearings, paragraphs, levels) =
+            self.shape_paragraphs(&text, &starts, base_rtl);
+        let space_bearings = self.boundary_bearings(&text, &starts, &paragraphs);
         let break_before = crate::text::line_break::break_before(&text, &starts);
         let built = Arc::new(CompositeText {
             text,
             starts,
             advances,
+            bearings,
+            space_bearings,
             paragraphs,
             break_before,
             levels,
@@ -800,9 +914,10 @@ impl TextLayout {
         text: &str,
         starts: &[usize],
         base_rtl: bool,
-    ) -> (Vec<f32>, Vec<ShapedParagraph>, Vec<u8>) {
+    ) -> (Vec<f32>, Vec<f32>, Vec<ShapedParagraph>, Vec<u8>) {
         let count = starts.len() - 1;
         let mut advances = vec![0.0f32; count];
+        let mut bearings = vec![0.0f32; count];
         let mut paragraphs = Vec::new();
         let mut levels: Vec<u8> = Vec::new();
         let mut first = 0;
@@ -816,7 +931,15 @@ impl TextLayout {
                 let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
                 let paragraph_levels = bidi::grapheme_levels(&text[base..starts[end]], &local, base_rtl);
                 if paragraph_levels.is_empty() {
-                    self.shape_run(text, starts, first..end, None, &mut advances, &mut paragraphs);
+                    self.shape_run(
+                        text,
+                        starts,
+                        first..end,
+                        None,
+                        &mut advances,
+                        &mut bearings,
+                        &mut paragraphs,
+                    );
                 } else {
                     if levels.is_empty() {
                         levels = vec![0; count];
@@ -829,6 +952,7 @@ impl TextLayout {
                             first + run.start..first + run.end,
                             Some(run.is_rtl()),
                             &mut advances,
+                            &mut bearings,
                             &mut paragraphs,
                         );
                     }
@@ -836,7 +960,7 @@ impl TextLayout {
             }
             first = end + 1;
         }
-        (advances, paragraphs, levels)
+        (advances, bearings, paragraphs, levels)
     }
 
     /// Shapes the graphemes `range` of `text` as one run (`right_to_left` fixes its direction)
@@ -848,6 +972,7 @@ impl TextLayout {
         range: std::ops::Range<usize>,
         right_to_left: Option<bool>,
         advances: &mut [f32],
+        bearings: &mut [f32],
         paragraphs: &mut Vec<ShapedParagraph>,
     ) {
         let (first, end) = (range.start, range.end);
@@ -858,6 +983,7 @@ impl TextLayout {
             Some((engines, layout)) => {
                 let shaped = layout.grapheme_advances(&local);
                 advances[first..end].copy_from_slice(&shaped);
+                self.run_bearings(&local, &engines, &layout, &mut bearings[first..end]);
                 let mut pen = Vec::with_capacity(shaped.len() + 1);
                 let mut x = 0.0f32;
                 pen.push(x);
@@ -888,6 +1014,100 @@ impl TextLayout {
                 advances[first..end].copy_from_slice(&heuristic);
             }
         }
+    }
+
+    /// The glyph `QTextLine::layout_helper` reads for each grapheme of a shaped run (`local` its
+    /// grapheme byte offsets): `glyphs[logClusters[position - 1]]` of the last character, the
+    /// first glyph of the cluster that character is in, whichever way the run reads. A grapheme
+    /// that is not the first of a cluster (a ligature spans several) therefore has the glyph of
+    /// the cluster it continues. The index is into `layout.glyphs`.
+    fn glyph_of_graphemes(local: &[usize], layout: &GlyphLayout) -> Vec<Option<usize>> {
+        let count = local.len() - 1;
+        let mut first_glyph: Vec<Option<usize>> = vec![None; count];
+        for (index, glyph) in layout.glyphs.iter().enumerate() {
+            let grapheme = local[..count]
+                .partition_point(|&start| start <= glyph.cluster)
+                .saturating_sub(1);
+            first_glyph[grapheme].get_or_insert(index);
+        }
+        let mut glyph_of_cluster = None;
+        for slot in &mut first_glyph {
+            glyph_of_cluster = slot.or(glyph_of_cluster);
+            *slot = glyph_of_cluster;
+        }
+        first_glyph
+    }
+
+    /// The negative right bearing of `glyph`, as an absolute value: Qt keeps only a negative
+    /// bearing (the ink hangs over the advance, `calculateRightBearing`); 0 when the face gives
+    /// none.
+    fn glyph_bearing(&self, engines: &[FontEngine], glyph: &PositionedGlyph) -> f32 {
+        engines
+            .get(usize::from(glyph.font_index))
+            .and_then(|engine| engine.face.right_side_bearing(glyph.glyph_id, self.font.size))
+            .map_or(0.0, |rb| (-rb).max(0.0))
+    }
+
+    /// Fills `out` (one entry per grapheme of a shaped run, `local` its grapheme byte offsets)
+    /// with the negative right bearing of the glyph that ends the grapheme. A text has few
+    /// different glyphs, so each is asked of its font once.
+    fn run_bearings(
+        &self,
+        local: &[usize],
+        engines: &[FontEngine],
+        layout: &GlyphLayout,
+        out: &mut [f32],
+    ) {
+        let mut known: std::collections::HashMap<(u8, u16), f32> = std::collections::HashMap::new();
+        for (slot, index) in out.iter_mut().zip(Self::glyph_of_graphemes(local, layout)) {
+            *slot = index.map_or(0.0, |index| {
+                let glyph = &layout.glyphs[index];
+                *known
+                    .entry((glyph.font_index, glyph.glyph_id))
+                    .or_insert_with(|| self.glyph_bearing(engines, glyph))
+            });
+        }
+    }
+
+    /// The bearing of the word that ends in grapheme `g`, for every `g` that is followed by white
+    /// space starting another run (a bidi item of Qt).
+    ///
+    /// When `layout_helper` reaches white space it remembers the glyph of the last word again
+    /// (`saveCurrentGlyph`), but with the glyph array of the item the space is in and the cluster
+    /// index of the word's own item. If the space is in another item that is the glyph at the same
+    /// index of the space's item, and none when the index is past the end of it or the glyph is 0
+    /// (`calculateRightBearingForPreviousGlyph`). [INFERENCE from reading the source; the values
+    /// Qt 6.11.2 measures agree: a Hebrew word followed by a space of the left to right base has
+    /// no bearing in the `syn_bearing_rtl_wrap` oracle lines, the space's own glyph being read.]
+    fn boundary_bearings(
+        &self,
+        text: &str,
+        starts: &[usize],
+        paragraphs: &[ShapedParagraph],
+    ) -> Vec<(usize, f32)> {
+        let blank = |g: usize| is_blank(&text[starts[g]..starts[g + 1]]);
+        let mut out = Vec::new();
+        for pair in paragraphs.windows(2) {
+            let (before, after) = (&pair[0], &pair[1]);
+            if before.end != after.first || before.end == before.first {
+                continue;
+            }
+            let last = before.end - 1;
+            if blank(last) || !blank(after.first) {
+                continue;
+            }
+            let local: Vec<usize> = starts[before.first..=before.end]
+                .iter()
+                .map(|s| s - before.base)
+                .collect();
+            let index = Self::glyph_of_graphemes(&local, &before.layout)[last - before.first];
+            let bearing = index
+                .and_then(|index| after.layout.glyphs.get(index))
+                .filter(|glyph| glyph.glyph_id != 0)
+                .map_or(0.0, |glyph| self.glyph_bearing(&after.engines, glyph));
+            out.push((last, bearing));
+        }
+        out
     }
 
     /// Produces combined text including preedit IME text.
@@ -1168,6 +1388,8 @@ mod tests {
             text: text.to_owned(),
             starts,
             advances,
+            bearings: Vec::new(),
+            space_bearings: Vec::new(),
             paragraphs: vec![paragraph],
             break_before,
             levels: Vec::new(),
@@ -1446,5 +1668,118 @@ mod tests {
             |pm: &Pixmap| -> Vec<bool> { pm.data().chunks(4).map(|p| p[3] != 0).collect() };
         assert_eq!(covered(&a), covered(&b));
         assert_ne!(a.data(), b.data(), "the formatted run is red");
+    }
+
+    // ---- right bearings --------------------------------------------------------------------
+
+    /// The composite of `text` for the bearing helpers: one advance and one bearing per grapheme,
+    /// no font and no shaped paragraph. `breaks` are the graphemes a break is allowed in front of.
+    fn bearing_composite(
+        text: &str,
+        advances: &[f32],
+        bearings: &[f32],
+        space_bearings: Vec<(usize, f32)>,
+        breaks: &[usize],
+    ) -> CompositeText {
+        let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        starts.push(text.len());
+        assert_eq!(advances.len(), starts.len() - 1);
+        let mut break_before = vec![false; starts.len()];
+        for &g in breaks {
+            break_before[g] = true;
+        }
+        CompositeText {
+            text: text.to_owned(),
+            starts,
+            advances: advances.to_vec(),
+            bearings: bearings.to_vec(),
+            space_bearings,
+            paragraphs: Vec::new(),
+            break_before,
+            levels: Vec::new(),
+            base_rtl: false,
+        }
+    }
+
+    #[test]
+    fn a_grapheme_reads_the_first_glyph_of_the_cluster_it_is_in() {
+        let of = |starts: &[usize], clusters: &[usize]| {
+            let glyphs = clusters.iter().map(|&c| glyph(c, 0.0, 1.0)).collect();
+            TextLayout::glyph_of_graphemes(starts, &GlyphLayout { glyphs, width: 0.0 })
+        };
+        // "ffi!": one ligature glyph over three graphemes, the glyph of `!` after it.
+        assert_eq!(
+            of(&[0, 1, 2, 3, 4], &[0, 3]),
+            vec![Some(0), Some(0), Some(0), Some(1)]
+        );
+        // Three Hebrew letters of two bytes, shaped right to left: the glyphs come last
+        // character first, and the last character in reading order has the first glyph.
+        assert_eq!(of(&[0, 2, 4, 6], &[4, 2, 0]), vec![Some(2), Some(1), Some(0)]);
+        // "e" and a combining acute (two bytes) share a cluster: the base glyph, the first.
+        assert_eq!(of(&[0, 3, 4], &[0, 0, 3]), vec![Some(0), Some(2)]);
+    }
+
+    #[test]
+    fn a_word_ends_before_white_space_a_break_or_the_end() {
+        // "ab cd-ef": a break is allowed in front of `c` (after the space) and of `e`.
+        let c = bearing_composite("ab cd-ef", &[1.0; 8], &[0.0; 8], Vec::new(), &[3, 6]);
+        let ends: Vec<bool> = (0..8).map(|g| c.ends_chunk(g)).collect();
+        assert_eq!(
+            ends,
+            [false, true, true, false, false, true, false, true],
+            "a, b (a space follows), the space (a break follows), c, d, - (a break follows), e, f"
+        );
+        // A line feed is white space too.
+        let c = bearing_composite("a \nb", &[1.0; 4], &[0.0; 4], Vec::new(), &[]);
+        let ends: Vec<bool> = (0..4).map(|g| c.ends_chunk(g)).collect();
+        assert_eq!(ends, [true, true, false, true]);
+    }
+
+    #[test]
+    fn the_bearing_ending_a_line_follows_the_run_of_the_space_after_the_word() {
+        let c = bearing_composite(
+            "ab cd",
+            &[4.0, 4.0, 3.0, 4.0, 4.0],
+            &[0.0, 0.5, 0.0, 0.0, 1.0],
+            vec![(1, 0.25), (4, 9.0)],
+            &[3],
+        );
+        // `b` is followed by a space: the bearing read for the space.
+        assert_eq!(c.end_bearing(1), 0.25);
+        // `d` ends the text; an entry there would belong to another word end, not read.
+        assert_eq!(c.end_bearing(4), 1.0);
+        // Without an entry the word's own glyph.
+        assert_eq!(c.end_bearing(0), 0.0);
+    }
+
+    #[test]
+    fn the_first_word_is_too_wide_by_its_advances_and_the_bearing_that_ends_its_line() {
+        // "ab cd": the word `ab` is 8 px, its last glyph hangs 0.5 px over, and `cd` follows.
+        let words = bearing_composite(
+            "ab cd",
+            &[4.0, 4.0, 3.0, 4.0, 4.0],
+            &[0.0, 0.5, 0.0, 0.0, 1.0],
+            Vec::new(),
+            &[3],
+        );
+        assert!(words.first_word_overflows(0, 0.0, 8.25));
+        assert!(!words.first_word_overflows(0, 0.0, 8.5));
+        // The pen is where the word starts: after two spaces of 3 px.
+        assert!(words.first_word_overflows(0, 6.0, 14.25));
+        assert!(!words.first_word_overflows(0, 6.0, 14.5));
+        // The text ends after the word and its spaces: the line ends in white space, which has no
+        // bearing, so only the advances count.
+        let spaces =
+            bearing_composite("ab  ", &[4.0, 4.0, 3.0, 3.0], &[0.0, 0.5, 0.0, 0.0], Vec::new(), &[]);
+        assert!(!spaces.first_word_overflows(0, 0.0, 8.0));
+        assert!(spaces.first_word_overflows(0, 0.0, 7.75));
+        // A line separator after the word ends the line with the bearing of the word.
+        let separated =
+            bearing_composite("ab\u{2028}", &[4.0, 4.0, 0.0], &[0.0, 0.5, 0.0], Vec::new(), &[]);
+        assert!(separated.first_word_overflows(0, 0.0, 8.25));
+        // The word ends the text: its bearing counts.
+        let ending = bearing_composite("ab", &[4.0, 4.0], &[0.0, 0.5], Vec::new(), &[]);
+        assert!(ending.first_word_overflows(0, 0.0, 8.25));
+        assert!(!ending.first_word_overflows(0, 0.0, 8.5));
     }
 }

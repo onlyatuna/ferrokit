@@ -297,4 +297,49 @@ impl GlyphFace for DirectWriteFace {
     fn layout_advance_width(&self, glyph_id: u16, size: f32, direct_write: bool) -> Option<f32> {
         self.layout_advance_width(glyph_id, size, direct_write)
     }
+
+    /// The same design metrics DirectWrite reports (`rightSideBearing`); read from the font file
+    /// like the advances are (`windows_face_bearings_match_directwrite` compares them).
+    fn right_side_bearing(&self, glyph_id: u16, size: f32) -> Option<f32> {
+        self.base.right_side_bearing(glyph_id, size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `right_side_bearing` is what DirectWrite itself reports (`GetDesignGlyphMetrics`, the call
+    /// Qt's `QWindowsFontEngineDirectWrite::boundingBox(glyph_t)` makes) converted as Qt's
+    /// `DESIGN_TO_LOGICAL` does, for every Latin-1 glyph of Arial, Arial Italic and Segoe UI.
+    #[test]
+    fn right_side_bearings_match_directwrite() {
+        if !is_available() {
+            return;
+        }
+        let mut compared = 0;
+        for file in ["arial.ttf", "ariali.ttf", "segoeui.ttf"] {
+            let bytes = std::fs::read(format!("C:/Windows/Fonts/{file}"))
+                .unwrap_or_else(|e| panic!("the test needs C:/Windows/Fonts/{file}: {e}"));
+            let face = DirectWriteFace::new(SharedFontData::from_vec(bytes), 0).expect(file);
+            for ch in ('!'..='~').chain('\u{a1}'..='\u{ff}').filter(|&c| c != '\u{ad}') {
+                let glyph = face.glyph_index(ch);
+                let mut metric = DWRITE_GLYPH_METRICS::default();
+                unsafe { face.face.GetDesignGlyphMetrics(&glyph, 1, &mut metric, false) }
+                    .expect("metrics");
+                for size in [11.0f32, 13.0, 16.0, 24.0, 31.0] {
+                    let design = f64::from(metric.rightSideBearing);
+                    let pixels = design / f64::from(face.upem) * f64::from(size);
+                    let want = ((pixels * 64.0).trunc() / 64.0) as f32;
+                    assert_eq!(
+                        face.right_side_bearing(glyph, size),
+                        Some(want),
+                        "{file}: {ch:?} at {size} px"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 1000, "only {compared} glyphs compared");
+    }
 }
