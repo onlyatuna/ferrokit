@@ -281,7 +281,13 @@ jobs:
 
   model-tsan:
     if: github.event.action != 'labeled'
-    name: Concurrency Model ThreadSanitizer
+    # A skipped job reports its unexpanded name. This job is a required check with a fixed name, and a
+    # skipped run of that exact name (a `labeled` run) would replace the real result, so the name
+    # carries an (empty) matrix value: skipped -> template text, real run -> the required name.
+    name: Concurrency Model ThreadSanitizer${{ matrix.variant }}
+    strategy:
+      matrix:
+        variant: [""]
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
