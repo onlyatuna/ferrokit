@@ -68,7 +68,7 @@ def failure_message(output):
     """The first line that says what went wrong, without addresses, so equal bugs compare equal."""
     for line in output.splitlines():
         if "panicked at" in line or "ERROR: libFuzzer" in line or "SUMMARY:" in line:
-            return re.sub(r"0x[0-9a-f]+", "0x?", line.strip())[:300]
+            return re.sub(r"\(\d+\)", "(N)", re.sub(r"0x[0-9a-f]+", "0x?", line.strip()))[:300]
     tail = [l for l in output.splitlines() if l.strip()]
     return (tail[-1] if tail else "no output")[:300]
 
