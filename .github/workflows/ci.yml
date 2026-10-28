@@ -17,12 +17,15 @@ permissions:
   contents: read
 
 # A new push to a pull request cancels the superseded run; runs on main always finish.
+# A `labeled` run has its own group: opening a PR with a label fires `opened` and `labeled` together,
+# and they must not cancel each other (the cancelled run leaves cancelled required checks behind).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
+    if: github.event.action != 'labeled'
     name: Workspace Test (${{ matrix.os }})
     # Some tests are known to hang when run serially; cap a stuck run instead of the 6 h default.
     timeout-minutes: 90
@@ -94,6 +97,7 @@ jobs:
   # Non-required: the platform and widget tests that need an X server, run under a virtual one.
   # Not in the protect-main required checks; the required `Workspace Test (ubuntu-22.04)` is separate.
   test-xvfb:
+    if: github.event.action != 'labeled'
     name: Workspace Test (ubuntu-22.04, Xvfb)
     timeout-minutes: 60
     runs-on: ubuntu-22.04
@@ -125,6 +129,8 @@ jobs:
           --package ferrokit-platform --package ferrokit-widgets --test-threads 1
 
   miri-changes:
+    # A `labeled` run only matters for the miri labels; every other job is skipped for it.
+    if: github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name)
     name: Miri relevance
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -201,7 +207,7 @@ jobs:
     # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
     name: Nightly Miri (SB & TB)
     needs: [miri-changes, miri-shard]
-    if: always()
+    if: always() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name))
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
@@ -224,6 +230,7 @@ jobs:
           fi
 
   tools:
+    if: github.event.action != 'labeled'
     name: Tools unit tests and Miri baseline coverage
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -246,6 +253,7 @@ jobs:
           python tools/miri_sweep.py --crate ferrokit-widgets --baseline tools/miri_baseline_ferrokit_widgets.json --check-coverage
 
   model:
+    if: github.event.action != 'labeled'
     name: Concurrency Model Tests (${{ matrix.suite.name }})
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -272,6 +280,7 @@ jobs:
         run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml --locked ${{ matrix.suite.args }}
 
   model-tsan:
+    if: github.event.action != 'labeled'
     name: Concurrency Model ThreadSanitizer
     runs-on: ubuntu-22.04
     timeout-minutes: 30
