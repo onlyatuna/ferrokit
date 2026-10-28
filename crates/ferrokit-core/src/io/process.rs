@@ -60,7 +60,7 @@ impl PipeSource {
 /// The half of a reader's wake-up channel that stays with the reader thread: what lets it block
 /// until data arrives and still be stopped at once while a grandchild holds the pipe open.
 ///
-/// On Unix this is the read end of a pipe that [`Stopper`] closes, and the reader `poll`s it
+/// On Unix this is the read end of a pipe that [`Stopper`] writes to, and the reader `poll`s it
 /// together with the child's pipe. On Windows a blocked `ReadFile` is interrupted instead, with
 /// `CancelIoEx` (see [`ReaderThread::stop_and_join`]), so there is nothing to wait on.
 struct Waiter {
@@ -74,9 +74,11 @@ struct Waiter {
 /// The half of a reader's wake-up channel that stays with the owner of the reader.
 #[derive(Debug)]
 struct Stopper {
-    /// Never written: closing it is the signal.
+    /// What wakes the reader: a byte is written to it, and it is closed, when the reader is to
+    /// stop. The byte matters when a copy of this descriptor is held elsewhere (a child forked
+    /// before the descriptor was marked close-on-exec): closing alone would then not be seen.
     #[cfg(unix)]
-    _bell: io::PipeWriter,
+    bell: io::PipeWriter,
 }
 
 /// Creates the wake-up channel of one reader.
@@ -84,7 +86,7 @@ fn wake_channel() -> io::Result<(Waiter, Stopper)> {
     #[cfg(unix)]
     {
         let (rx, tx) = io::pipe()?;
-        Ok((Waiter { bell: rx, bell_open: true }, Stopper { _bell: tx }))
+        Ok((Waiter { bell: rx, bell_open: true }, Stopper { bell: tx }))
     }
     #[cfg(windows)]
     {
@@ -179,7 +181,9 @@ impl ReaderThread {
     #[cfg(unix)]
     fn stop_and_join(self) {
         let Self { thread, stopper } = self;
-        // Closing the stopper wakes the reader out of `poll`.
+        // The pipe is empty, so one byte does not block. A failed write means the reader is
+        // already gone, and the close below is then all that is left to do.
+        let _ = (&stopper.bell).write_all(&[1]);
         drop(stopper);
         let _ = thread.join();
     }
@@ -748,6 +752,28 @@ mod tests {
         assert_eq!(*output.lock(), b"hello");
         // The read end is closed, so the pipe has no reader left.
         assert!(writer.write_all(b"x").is_err());
+    }
+
+    /// A copy of the wake-up pipe's write end that lives on elsewhere (a child that inherited it)
+    /// keeps the pipe from ever reporting a hang-up: the stop must still reach the reader.
+    #[cfg(unix)]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_stop_wakes_the_reader_although_a_copy_of_the_wake_up_pipe_is_open() {
+        let (reader, mut writer) = io::pipe().unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (waiter, stopper) = wake_channel().unwrap();
+        let leaked = stopper.bell.try_clone().unwrap();
+        let handle = spawn_reader(PipeSource::Merged(reader), (waiter, stopper), &output, &stop);
+
+        writer.write_all(b"hi").unwrap();
+        wait_until("the written bytes", || output.lock().len() == 2);
+        stop.store(true, Ordering::Release);
+        stop_within_the_deadline(handle);
+        assert_eq!(*output.lock(), b"hi");
+        assert!(writer.write_all(b"x").is_err(), "the read end is closed");
+        drop(leaked);
     }
 
     /// A stop that arrives while the reader is starting up, between two reads or before its first
