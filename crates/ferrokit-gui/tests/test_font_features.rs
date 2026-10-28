@@ -227,10 +227,13 @@ mod embedded_shaping {
 
     #[test]
     fn the_embedded_font_is_the_one_that_kerns() {
-        // Not a no-op: without this the tests below could pass on a fallback font.
+        // Exact widths of `AVAVAV` in oracle_text.ttf at 16 px (50.75 is what Qt measured, see
+        // `syn_AVAVAV` in the oracle): a fallback font cannot give these, so the tests below
+        // are about the embedded font.
         let font = oracle_font();
         let unkerned = oracle_font().with_feature(FontTag::KERN, 0);
-        assert!(advance(TEXT, &unkerned) > advance(TEXT, &font) + 1.0);
+        assert_eq!(advance(TEXT, &font), 50.75);
+        assert_eq!(advance(TEXT, &unkerned), 60.75);
     }
 
     #[test]
