@@ -29,7 +29,8 @@
     "test_font_memory_face_cache",
     "test_gui_p2_hardening",
     "test_qregion_shapes",
-    "test_font_features"
+    "test_font_features",
+    "test_text_layout_oracle"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -661,6 +662,10 @@
     "test_text_system::test_cursor_sticky_column_without_wrapping::TB": "pass",
     "test_text_system::test_cursor_sticky_x_with_wrapping::SB": "unsupported",
     "test_text_system::test_cursor_sticky_x_with_wrapping::TB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_cursor_x_matches_qt::SB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_cursor_x_matches_qt::TB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_line_breaks_match_qt::SB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_line_breaks_match_qt::TB": "unsupported",
     "lib::text::layout::tests::a_ligature_is_drawn_as_one_glyph_at_its_first_grapheme::SB": "pass",
     "lib::text::layout::tests::a_ligature_is_drawn_as_one_glyph_at_its_first_grapheme::TB": "pass",
     "lib::text::layout::tests::drawn_positions_follow_the_shaped_pen_not_the_grapheme_widths::SB": "pass",
