@@ -74,31 +74,67 @@ def failure_message(output):
 
 
 def minimise(toolchain, target, path, tmin_seconds):
+    """Returns `(minimised path or None, note)`; None means the input could not be minimised."""
     before = set(artifacts(target))
-    cargo(toolchain, "tmin", target, str(path), "--", f"-max_total_time={tmin_seconds}", timeout=tmin_seconds + 120)
+    rc, out = cargo(
+        toolchain, "tmin", target, str(path), "--", f"-max_total_time={tmin_seconds}", timeout=tmin_seconds + 120
+    )
     new = [n for n in set(artifacts(target)) - before if n.startswith("minimized-from-")]
-    return artifacts(target)[new[0]] if new else path
+    if new:
+        return artifacts(target)[new[0]], "minimised"
+    if rc == 124:
+        return None, "minimisation timed out"
+    if rc != 0:
+        return None, f"cargo fuzz tmin failed (exit {rc})"
+    # It ran and found nothing smaller: the input is already minimal.
+    return path, "already minimal"
 
 
-def replay(toolchain, target, path):
+# What a replay prints when it fails the way a finding of that kind does.
+MARKERS = {
+    "crash": ("panicked at", "ERROR: AddressSanitizer", "deadly signal"),
+    "timeout": ("ERROR: libFuzzer: timeout",),
+    "oom": ("ERROR: libFuzzer: out-of-memory",),
+    "leak": ("ERROR: LeakSanitizer",),
+    "slow-unit": ("ERROR: libFuzzer: timeout",),
+}
+
+
+def replay(toolchain, target, path, kind):
+    """Replays one input. Returns `(reproduced, why, output)`; `reproduced` is True when the run
+    failed the way a finding of `kind` does, False when it ran clean, None when it proves nothing
+    (outer timeout, the harness did not start, a failure of another sort)."""
     rc, out = cargo(toolchain, "run", target, str(path), "--", "-runs=1", "-timeout=10", timeout=300)
-    return rc, out
+    if rc == 124:
+        return None, "replay timed out", out
+    if "INFO:" not in out:
+        return None, f"the harness did not start (exit {rc})", out
+    if rc == 0:
+        return False, "replay ran clean", out
+    markers = MARKERS.get(kind) or tuple(m for ms in MARKERS.values() for m in ms)
+    if any(m in out for m in markers):
+        return True, "replay failed as the finding did", out
+    return None, f"replay exited {rc} without the expected {kind} failure", out
 
 
 def investigate(toolchain, target, path, tmin_seconds):
-    small = minimise(toolchain, target, path, tmin_seconds)
-    rc, out = replay(toolchain, target, small)
-    data = small.read_bytes()
+    kind = next((k.rstrip("-") for k in KINDS if path.name.startswith(k)), "other")
+    small, note = minimise(toolchain, target, path, tmin_seconds)
+    used = small or path
+    reproduced, why, out = replay(toolchain, target, used, kind)
+    data = used.read_bytes()
     return {
         "target": target,
-        "kind": next((k.rstrip("-") for k in KINDS if path.name.startswith(k)), "other"),
+        "kind": kind,
         "artifact": str(path.relative_to(ROOT)),
-        "minimised": str(small.relative_to(ROOT)),
+        "minimised": str(small.relative_to(ROOT)) if small else None,
+        "minimisation": note,
         "bytes": len(data),
         "sha1": hashlib.sha1(data).hexdigest(),
         "hex": data.hex() if len(data) <= HEX_LIMIT else None,
-        "reproduces": rc != 0,
-        "message": failure_message(out),
+        "reproduces": reproduced,
+        "replay": why,
+        "message": failure_message(out) if reproduced else None,
     }
 
 
@@ -111,6 +147,7 @@ def main():
     ap.add_argument("--tmin-seconds", type=int, default=60, help="budget for minimising one finding")
     ap.add_argument("--replay-only", action="store_true", help="skip fuzzing; investigate existing artifacts")
     ap.add_argument("--json", help="also write the findings as JSON to this file")
+    ap.add_argument("--slack-seconds", type=int, default=900, help="outer deadline = --seconds + this (build time)")
     args = ap.parse_args()
 
     known = targets_from_manifest()
@@ -138,11 +175,15 @@ def main():
                 "-ignore_ooms=1",
             ]
             extra = [str(seeds)] if seeds.is_dir() else []
-            rc, out = cargo(args.toolchain, "run", t, str(corpus), *extra, "--", *lf, timeout=args.seconds + 900)
-            # A harness that does not build, or a missing toolchain, must not look like "no findings".
-            built = "INFO:" in out  # libFuzzer started
-            if rc not in (0, 124) and not built:
-                print(f"{t}: the campaign could not run (exit {rc}):\n{out[-2000:]}", file=sys.stderr)
+            rc, out = cargo(
+                args.toolchain, "run", t, str(corpus), *extra, "--", *lf, timeout=args.seconds + args.slack_seconds
+            )
+            # Anything but a clean libFuzzer exit is a campaign that did not finish: a build
+            # failure, a missing toolchain, a hang past the outer deadline (exit 124), a crash of
+            # the fuzzer itself. It must never look like "no findings".
+            if rc != 0 or "INFO:" not in out:
+                why = "hit the outer deadline" if rc == 124 else f"exit {rc}"
+                print(f"{t}: the campaign did not finish ({why}):\n{out[-2000:]}", file=sys.stderr)
                 return 2
         fresh = sorted(
             (p for n, p in artifacts(t).items() if n.startswith(KINDS) and (args.replay_only or n not in before)),
@@ -155,7 +196,9 @@ def main():
     # One entry per distinct failure.
     seen, unique = set(), []
     for f in findings:
-        key = (f["target"], f["message"])
+        # Only a replay that failed the way the finding did has a message to compare; every
+        # other input stays its own entry.
+        key = (f["target"], f["message"] or f["sha1"])
         if key not in seen:
             seen.add(key)
             unique.append(f)
@@ -167,8 +210,13 @@ def main():
     print(f"\n{len(findings)} new input(s), {len(unique)} distinct failure(s).\n")
     for f in unique:
         print(f"## {f['target']}: {f['kind']} ({f['bytes']} bytes, sha1 {f['sha1'][:12]})")
-        print(f"- message: `{f['message']}`")
-        print(f"- minimised: `{f['minimised']}`  (reproduces on replay: {f['reproduces']})")
+        if f["message"]:
+            print(f"- message: `{f['message']}`")
+        if f["minimised"]:
+            print(f"- minimised ({f['minimisation']}): `{f['minimised']}`")
+        else:
+            print(f"- NOT minimised ({f['minimisation']}); the input below is the original: `{f['artifact']}`")
+        print(f"- reproduces on replay: {f['reproduces']} ({f['replay']})")
         if f["hex"] is not None:
             print(f"- hex: `{f['hex']}`")
         print()
