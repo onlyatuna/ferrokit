@@ -4,7 +4,7 @@
 
 use crate::text::smoothing::{blend_linear, TrcLut};
 use tiny_skia::{
-    BlendMode, Color, FilterQuality, IntSize, Paint, Pattern, Pixmap, Rect, Shader,
+    BlendMode, Color, FilterQuality, Paint, Pattern, PixmapMut, PixmapRef, Rect, Shader,
     SpreadMode, Transform,
 };
 
@@ -77,6 +77,9 @@ pub(crate) fn blend_lcd(px: &mut [u8], cov: [u8; 3], base_alpha: f32, target: [u
 /// (`pw` x `ph`) with the Porter-Duff / blend `mode`, weighted per pixel by `cov` (`w * h`): where
 /// the coverage is partial the result is the destination lerped towards the composited pixel, as
 /// Qt's mask blits do. Covers every mode, unlike [`blend_grey`]/[`blend_lcd`] (source-over only).
+///
+/// The box is composited in `scratch`, a buffer the caller keeps between calls so that blitting a
+/// run of glyphs does not allocate per glyph; its contents on entry do not matter.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn composite_masked(
     pix: &mut [u8],
@@ -86,6 +89,7 @@ pub(crate) fn composite_masked(
     cov: &[u8],
     source: MaskedSource<'_>,
     mode: BlendMode,
+    scratch: &mut Vec<u8>,
 ) {
     let ix0 = x0.max(0);
     let iy0 = y0.max(0);
@@ -95,34 +99,26 @@ pub(crate) fn composite_masked(
         return;
     }
     let (sw, sh) = ((ix1 - ix0) as u32, (iy1 - iy0) as u32);
-    let Some(mut scratch) = Pixmap::new(sw, sh) else {
+    let row_bytes = sw as usize * 4;
+    scratch.clear();
+    for row in 0..sh as usize {
+        let dst = ((iy0 as usize + row) * pw as usize + ix0 as usize) * 4;
+        scratch.extend_from_slice(&pix[dst..dst + row_bytes]);
+    }
+    let Some(mut canvas) = PixmapMut::from_bytes(scratch, sw, sh) else {
         return;
     };
-    let mut mask_data = Vec::with_capacity((sw * sh) as usize);
-    let mut before = Vec::with_capacity((sw * sh * 4) as usize);
-    for row in 0..sh as usize {
-        let dy = iy0 as usize + row;
-        let dst = (dy * pw as usize + ix0 as usize) * 4;
-        scratch.data_mut()[row * sw as usize * 4..(row + 1) * sw as usize * 4]
-            .copy_from_slice(&pix[dst..dst + sw as usize * 4]);
-        before.extend_from_slice(&pix[dst..dst + sw as usize * 4]);
-        let cy = (iy0 - y0) as usize + row;
-        let cx = (ix0 - x0) as usize;
-        mask_data.extend_from_slice(&cov[cy * w as usize + cx..cy * w as usize + cx + sw as usize]);
-    }
-    let image;
     let shader = match source {
         MaskedSource::Solid(c) => Shader::SolidColor(c),
         MaskedSource::Image(rgba, opacity) => {
-            let Some(size) = IntSize::from_wh(w, h) else {
+            if (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(4)) != Some(rgba.len()) {
+                return;
+            }
+            let Some(image) = PixmapRef::from_bytes(rgba, w, h) else {
                 return;
             };
-            let Some(img) = Pixmap::from_vec(rgba.to_vec(), size) else {
-                return;
-            };
-            image = img;
             Pattern::new(
-                image.as_ref(),
+                image,
                 SpreadMode::Pad,
                 FilterQuality::Nearest,
                 opacity,
@@ -137,17 +133,26 @@ pub(crate) fn composite_masked(
         ..Default::default()
     };
     if let Some(rect) = Rect::from_xywh(0.0, 0.0, sw as f32, sh as f32) {
-        scratch.fill_rect(rect, &paint, Transform::identity(), None);
+        canvas.fill_rect(rect, &paint, Transform::identity(), None);
     }
-    // The composited pixel is applied at the coverage: dst + (result - dst) * cov / 255.
-    let result = scratch.data();
+    // The composited pixel is applied at the coverage: dst + (result - dst) * cov / 255. `pix` still
+    // holds the destination, so each byte is read before it is overwritten.
+    let result = canvas.data_mut();
     for row in 0..sh as usize {
         let dst = ((iy0 as usize + row) * pw as usize + ix0 as usize) * 4;
-        for i in 0..sw as usize * 4 {
-            let old = before[row * sw as usize * 4 + i] as i32;
-            let new = result[row * sw as usize * 4 + i] as i32;
-            let c = mask_data[row * sw as usize + i / 4] as i32;
-            pix[dst + i] = (old + ((new - old) * c + 127 * (new - old).signum()) / 255) as u8;
+        let cov_row = (iy0 - y0) as usize + row;
+        let cov_start = cov_row * w as usize + (ix0 - x0) as usize;
+        let result_row = &result[row * row_bytes..(row + 1) * row_bytes];
+        let out = &mut pix[dst..dst + row_bytes];
+        for ((out, new), &c) in out
+            .chunks_exact_mut(4)
+            .zip(result_row.chunks_exact(4))
+            .zip(&cov[cov_start..cov_start + sw as usize])
+        {
+            for (old, &new) in out.iter_mut().zip(new) {
+                let (o, n, c) = (*old as i32, new as i32, c as i32);
+                *old = (o + ((n - o) * c + 127 * (n - o).signum()) / 255) as u8;
+            }
         }
     }
 }
@@ -183,7 +188,7 @@ mod tests {
         let surface = [10u8, 20, 30, 255, 10, 20, 30, 255];
         let run = |mode| {
             let mut px = surface;
-            composite_masked(&mut px, (2, 1), (0, 0), (2, 1), &[255, 0], src(), mode);
+            composite_masked(&mut px, (2, 1), (0, 0), (2, 1), &[255, 0], src(), mode, &mut Vec::new());
             px
         };
         assert_eq!(run(BlendMode::SourceOver)[..4], [200, 100, 50, 255]);
@@ -193,5 +198,170 @@ mod tests {
         // Zero coverage leaves the destination alone in every mode.
         assert_eq!(run(BlendMode::Clear)[4..], surface[4..]);
         assert_eq!(run(BlendMode::Source)[4..], surface[4..]);
+    }
+
+    /// The implementation before its buffers were hoisted out: one `Pixmap` for the box, a copy of
+    /// the destination and a copy of the coverage per call, and an owned copy of an image source.
+    #[allow(clippy::too_many_arguments)]
+    fn composite_masked_reference(
+        pix: &mut [u8],
+        (pw, ph): (u32, u32),
+        (x0, y0): (i32, i32),
+        (w, h): (u32, u32),
+        cov: &[u8],
+        source: MaskedSource<'_>,
+        mode: BlendMode,
+    ) {
+        use tiny_skia::{IntSize, Pixmap};
+        let ix0 = x0.max(0);
+        let iy0 = y0.max(0);
+        let ix1 = (x0 as i64 + w as i64).min(pw as i64) as i32;
+        let iy1 = (y0 as i64 + h as i64).min(ph as i64) as i32;
+        if ix0 >= ix1 || iy0 >= iy1 || cov.len() < (w * h) as usize {
+            return;
+        }
+        let (sw, sh) = ((ix1 - ix0) as u32, (iy1 - iy0) as u32);
+        let Some(mut scratch) = Pixmap::new(sw, sh) else {
+            return;
+        };
+        let mut mask_data = Vec::with_capacity((sw * sh) as usize);
+        let mut before = Vec::with_capacity((sw * sh * 4) as usize);
+        for row in 0..sh as usize {
+            let dy = iy0 as usize + row;
+            let dst = (dy * pw as usize + ix0 as usize) * 4;
+            scratch.data_mut()[row * sw as usize * 4..(row + 1) * sw as usize * 4]
+                .copy_from_slice(&pix[dst..dst + sw as usize * 4]);
+            before.extend_from_slice(&pix[dst..dst + sw as usize * 4]);
+            let cy = (iy0 - y0) as usize + row;
+            let cx = (ix0 - x0) as usize;
+            mask_data
+                .extend_from_slice(&cov[cy * w as usize + cx..cy * w as usize + cx + sw as usize]);
+        }
+        let image;
+        let shader = match source {
+            MaskedSource::Solid(c) => Shader::SolidColor(c),
+            MaskedSource::Image(rgba, opacity) => {
+                let Some(size) = IntSize::from_wh(w, h) else {
+                    return;
+                };
+                let Some(img) = Pixmap::from_vec(rgba.to_vec(), size) else {
+                    return;
+                };
+                image = img;
+                Pattern::new(
+                    image.as_ref(),
+                    SpreadMode::Pad,
+                    FilterQuality::Nearest,
+                    opacity,
+                    Transform::from_translate((x0 - ix0) as f32, (y0 - iy0) as f32),
+                )
+            }
+        };
+        let paint = Paint {
+            shader,
+            blend_mode: mode,
+            anti_alias: false,
+            ..Default::default()
+        };
+        if let Some(rect) = Rect::from_xywh(0.0, 0.0, sw as f32, sh as f32) {
+            scratch.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+        let result = scratch.data();
+        for row in 0..sh as usize {
+            let dst = ((iy0 as usize + row) * pw as usize + ix0 as usize) * 4;
+            for i in 0..sw as usize * 4 {
+                let old = before[row * sw as usize * 4 + i] as i32;
+                let new = result[row * sw as usize * 4 + i] as i32;
+                let c = mask_data[row * sw as usize + i / 4] as i32;
+                pix[dst + i] = (old + ((new - old) * c + 127 * (new - old).signum()) / 255) as u8;
+            }
+        }
+    }
+
+    /// Every composition mode, both sources, boxes inside, straddling and outside the surface:
+    /// the same pixels as the allocating implementation, with one scratch buffer reused (and so
+    /// dirty) across all calls.
+    #[test]
+    fn composite_masked_matches_the_allocating_reference() {
+        use crate::paint::composition::CompositionMode::*;
+        let modes = [
+            SourceOver, DestinationOver, Clear, Source, Destination, SourceIn, DestinationIn,
+            SourceOut, DestinationOut, SourceAtop, DestinationAtop, Xor, Plus, Multiply, Screen,
+            Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight, Difference,
+            Exclusion,
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 33) as u32) % bound
+        };
+        let mut scratch = Vec::new();
+        for round in 0..60 {
+            let (pw, ph) = [(7u32, 5u32), (1, 1), (16, 9), (3, 12)][next(4) as usize];
+            let (w, h) = (1 + next(9), 1 + next(9));
+            let (x0, y0) = (next(pw + 8) as i32 - 6, next(ph + 8) as i32 - 6);
+            // Premultiplied surface and image pixels.
+            let mut premul = |n: usize| -> Vec<u8> {
+                (0..n)
+                    .flat_map(|_| {
+                        let a = next(256);
+                        [next(a + 1) as u8, next(a + 1) as u8, next(a + 1) as u8, a as u8]
+                    })
+                    .collect()
+            };
+            let surface = premul((pw * ph) as usize);
+            let image = premul((w * h) as usize);
+            let cov: Vec<u8> = (0..w * h)
+                .map(|_| match next(4) {
+                    0 => 0,
+                    1 => 255,
+                    _ => next(256) as u8,
+                })
+                .collect();
+            let color = Color::from_rgba8(next(256) as u8, next(256) as u8, next(256) as u8, next(256) as u8);
+            let opacity = [1.0, 0.5, 0.0, 0.37][next(4) as usize];
+            for mode in modes {
+                let sources = || {
+                    [
+                        MaskedSource::Solid(color),
+                        MaskedSource::Image(&image, opacity),
+                    ]
+                };
+                for (index, source) in sources().into_iter().enumerate() {
+                    let mut expected = surface.clone();
+                    composite_masked_reference(
+                        &mut expected, (pw, ph), (x0, y0), (w, h), &cov, source, mode.into(),
+                    );
+                    let mut actual = surface.clone();
+                    composite_masked(
+                        &mut actual, (pw, ph), (x0, y0), (w, h), &cov,
+                        sources().into_iter().nth(index).unwrap(), mode.into(), &mut scratch,
+                    );
+                    assert_eq!(
+                        actual, expected,
+                        "round {round}, {mode:?}, source {index}, surface {pw}x{ph}, box {w}x{h} at ({x0}, {y0})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Inputs the blit refuses leave the surface untouched, whatever the scratch held.
+    #[test]
+    fn composite_masked_ignores_a_short_coverage_or_a_mis_sized_image() {
+        let surface = [9u8; 4 * 4];
+        let mut scratch = vec![77u8; 100];
+        let mut px = surface;
+        let solid = MaskedSource::Solid(Color::from_rgba8(1, 2, 3, 255));
+        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 3], solid, BlendMode::Source, &mut scratch);
+        assert_eq!(px, surface, "coverage shorter than the box");
+        let image = MaskedSource::Image(&[255; 15], 1.0);
+        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 4], image, BlendMode::Source, &mut scratch);
+        assert_eq!(px, surface, "image shorter than the box");
+        let image = MaskedSource::Image(&[255; 17], 1.0);
+        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 4], image, BlendMode::Source, &mut scratch);
+        assert_eq!(px, surface, "image longer than the box");
     }
 }
