@@ -37,7 +37,7 @@ use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
 #[cfg(windows)]
 use ferrokit_gui::text::font_database::with_global_font_database;
 use ferrokit_gui::text::layout::{TextLayout, WrapMode};
-use ferrokit_gui::text::Edge;
+use ferrokit_gui::text::{CursorPosition, Edge};
 use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -48,7 +48,7 @@ const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
 const TOLERANCE: f64 = 1.0 / 128.0;
 
 /// Cases where ferrokit differs from Qt: `(key, reason)`. A key is `cursor/<case>`,
-/// `breaks/<case>/<width>`, `endx/<case>/<width>`, `natural/<case>/<width>` or
+/// `cursor-trailing/<case>`, `hit/<case>`, `breaks/<case>/<width>`, `endx/<case>/<width>`, `natural/<case>/<width>` or
 /// `align/<case>/<align>/<width>`; an entry ending in `/` stands for every key that
 /// starts with it, and all of them must diverge. The cursor and natural-width entries are
 /// differences of values; the `breaks` entries are different lines.
@@ -64,27 +64,63 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "cursor/syn_liga_run",
         "same ligature division as syn_liga_ffi",
     ),
+    // --- ligatures ---
     (
-        "cursor/syn_rtl_hebrew",
-        "`cursor_to_x` is in logical order: the x of position n is the sum of the advances of the \
-         first n graphemes. Qt returns the visual x, which runs right to left inside a \
-         right-to-left run (`TextLayout` has no bidi reordering)",
+        "cursor-trailing/syn_liga_fi",
+        "the trailing edge of a grapheme inside a ligature is the end of the whole glyph in Qt \
+         (`cursorToX(.., Trailing)` moves to the next glyph cluster); ferrokit's is the end of \
+         the grapheme, the ligature divided evenly",
     ),
     (
-        "cursor/syn_rtl_mixed",
-        "no bidi reordering, as syn_rtl_hebrew",
+        "cursor-trailing/syn_liga_ffi",
+        "as cursor-trailing/syn_liga_fi",
     ),
     (
-        "cursor/syn_rtl_final",
-        "no bidi reordering, as syn_rtl_hebrew",
+        "cursor-trailing/syn_liga_fl_caret",
+        "as cursor-trailing/syn_liga_fi",
     ),
     (
-        "cursor/arial_hebrew",
-        "no bidi reordering, as syn_rtl_hebrew",
+        "cursor-trailing/syn_liga_run",
+        "as cursor-trailing/syn_liga_fi",
     ),
     (
-        "cursor/arial_mixed_rtl",
-        "no bidi reordering, as syn_rtl_hebrew",
+        "hit/syn_liga_run",
+        "`CursorOnCharacter` inside a ligature is the start of the glyph in Qt, the grapheme \
+         under the point in ferrokit",
+    ),
+    (
+        "hit/syn_combining_acute",
+        "over the first letter of `a\u{301}e\u{301}b` Qt answers the end of the text (5) for \
+         `CursorBetweenCharacters`; ferrokit the end of that letter's grapheme. [INFERENCE: Qt's \
+         `positionInLigature` with a two character cluster]",
+    ),
+    (
+        "cursor/arial_arabic_lam_alef",
+        "inside the Arabic lam-alef glyph Qt puts the cursor at the glyph's end where it divides \
+         left-to-right ligatures; ferrokit divides it evenly. [INFERENCE: Qt's right to left \
+         branch of `cursorToX`]",
+    ),
+    (
+        "cursor-trailing/arial_arabic_lam_alef",
+        "as cursor/arial_arabic_lam_alef, for the trailing edge",
+    ),
+    // --- bidi ---
+    (
+        "align/syn_align_rtl/",
+        "when a line starts with a run of the opposite direction `cursorToX` of its first \
+         position takes the neighbouring item from the previous line and returns a position \
+         that depends on that unrelated item (the line width, clamped, or a sum of widths); \
+         ferrokit keeps the cursor on the run",
+    ),
+    (
+        "hit/syn_hitwrap_rtl_base/45/line0",
+        "over the space that hangs at the end of a wrapped right to left line `xToCursor` \
+         answers the position after the space in Qt; ferrokit the one before it, as for any \
+         other right to left grapheme halfway. [INFERENCE]",
+    ),
+    (
+        "hit/syn_hitwrap_rtl_base/45/line1",
+        "as hit/syn_hitwrap_rtl_base/45/line0",
     ),
     // --- widths ---
     (
@@ -102,6 +138,10 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     (
         "natural/arial_pangram/240",
         "same right bearing as arial_pangram/100",
+    ),
+    (
+        "natural/arial_rtl_wrap/",
+        "same right bearing, of the `f` that ends `def`: 0.546875 px",
     ),
 ];
 
@@ -210,11 +250,16 @@ fn max_dev(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
 fn check_cursor(report: &mut Report, tokens: &[&str]) {
     let (case, font_id, text, n) = (tokens[1], tokens[2], hex_decode(tokens[3]), tokens[4]);
     let n: usize = n.parse().unwrap();
-    let qt: Vec<(usize, f64)> = tokens[5..5 + n]
+    // (UTF-16 offset, x of its leading edge, x of its trailing edge)
+    let qt: Vec<(usize, f64, f64)> = tokens[5..5 + n]
         .iter()
         .map(|p| {
-            let (o, x) = p.split_once(':').unwrap();
-            (o.parse().unwrap(), x.parse().unwrap())
+            let f: Vec<&str> = p.split(':').collect();
+            (
+                f[0].parse().unwrap(),
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+            )
         })
         .collect();
 
@@ -231,7 +276,7 @@ fn check_cursor(report: &mut Report, tokens: &[&str]) {
     let line = layout.line_at(0).unwrap();
     let offs16 = grapheme_offsets16(&text);
     let ours: Vec<usize> = offs16.clone();
-    let theirs: Vec<usize> = qt.iter().map(|(o, _)| *o).collect();
+    let theirs: Vec<usize> = qt.iter().map(|(o, _, _)| *o).collect();
     if ours != theirs {
         report.push((
             key,
@@ -239,18 +284,132 @@ fn check_cursor(report: &mut Report, tokens: &[&str]) {
         ));
         return;
     }
-    let pairs: Vec<(f64, f64)> = qt
-        .iter()
-        .enumerate()
-        .map(|(g, (_, x))| (f64::from(line.cursor_to_x(g, Edge::Leading)), *x))
-        .collect();
-    let dev = max_dev(pairs.iter().copied());
-    if dev > TOLERANCE {
-        let ours: Vec<f64> = pairs.iter().map(|p| p.0).collect();
-        let theirs: Vec<f64> = pairs.iter().map(|p| p.1).collect();
-        println!("{key}: x at each cursor position\n  ferrokit {ours:?}\n  Qt       {theirs:?}");
+    for (edge, name, pick) in [
+        (Edge::Leading, "cursor", 1usize),
+        (Edge::Trailing, "cursor-trailing", 2),
+    ] {
+        let pairs: Vec<(f64, f64)> = qt
+            .iter()
+            .enumerate()
+            .map(|(g, q)| {
+                let want = if pick == 1 { q.1 } else { q.2 };
+                (f64::from(line.cursor_to_x(g, edge)), want)
+            })
+            .collect();
+        let dev = max_dev(pairs.iter().copied());
+        let key = format!("{name}/{case}");
+        if dev > TOLERANCE {
+            let ours: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+            let theirs: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+            println!(
+                "{key}: x at each cursor position\n  ferrokit {ours:?}\n  Qt       {theirs:?}"
+            );
+        }
+        report.push((key, Outcome::Dev(dev)));
     }
-    report.push((key, Outcome::Dev(dev)));
+}
+
+/// `xToCursor` along an unwrapped line: the cursor position at each sampled x, in both modes.
+fn check_hit(report: &mut Report, tokens: &[&str]) {
+    let (case, font_id, text) = (tokens[1], tokens[2], hex_decode(tokens[3]));
+    let n: usize = tokens[4].parse().unwrap();
+    // (x, between characters, on character), positions in UTF-16 units
+    let qt: Vec<(f32, usize, usize)> = tokens[5..5 + n]
+        .iter()
+        .map(|p| {
+            let f: Vec<&str> = p.split(':').collect();
+            (
+                f[0].parse().unwrap(),
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+            )
+        })
+        .collect();
+    let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    layout.do_layout();
+    let line = layout.line_at(0).unwrap();
+    let offs16 = grapheme_offsets16(&text);
+    let mut wrong = Vec::new();
+    for (x, between, on) in &qt {
+        let ours_between = offs16[line.x_to_cursor(*x, CursorPosition::CursorBetweenCharacters)];
+        let ours_on = offs16[line.x_to_cursor(*x, CursorPosition::CursorOnCharacter)];
+        if (ours_between, ours_on) != (*between, *on) {
+            wrong.push(format!(
+                "x {x}: ferrokit ({ours_between}, {ours_on}), Qt ({between}, {on})"
+            ));
+        }
+    }
+    let key = format!("hit/{case}");
+    if wrong.is_empty() {
+        report.push((key, Outcome::Dev(0.0)));
+    } else {
+        report.push((
+            key,
+            Outcome::Mismatch(format!(
+                "{} of {} x differ: {}",
+                wrong.len(),
+                qt.len(),
+                wrong[..wrong.len().min(6)].join("; ")
+            )),
+        ));
+    }
+}
+
+/// `xToCursor` on one line of wrapped text: the cursor position at each sampled x.
+fn check_hit_wrapped(report: &mut Report, tokens: &[&str]) {
+    let (case, font_id, width, number, text) = (
+        tokens[1],
+        tokens[2],
+        tokens[3],
+        tokens[4],
+        hex_decode(tokens[5]),
+    );
+    let number: usize = number.parse().unwrap();
+    let n: usize = tokens[6].parse().unwrap();
+    let qt: Vec<(f32, usize, usize)> = tokens[7..7 + n]
+        .iter()
+        .map(|p| {
+            let f: Vec<&str> = p.split(':').collect();
+            (
+                f[0].parse().unwrap(),
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+            )
+        })
+        .collect();
+    let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    layout.set_wrap_mode(WrapMode::WrapAtWordBoundaryOrAnywhere);
+    layout.set_wrap_width(Some(width.parse().unwrap()));
+    layout.do_layout();
+    let key = format!("hit/{case}/{width}/line{number}");
+    let Some(line) = layout.line_at(number) else {
+        report.push((key, Outcome::Mismatch(format!("no line {number}"))));
+        return;
+    };
+    let offs16 = grapheme_offsets16(&text);
+    let mut wrong = Vec::new();
+    for (x, between, on) in &qt {
+        let ours_between = offs16[line.x_to_cursor(*x, CursorPosition::CursorBetweenCharacters)];
+        let ours_on = offs16[line.x_to_cursor(*x, CursorPosition::CursorOnCharacter)];
+        if (ours_between, ours_on) != (*between, *on) {
+            wrong.push(format!(
+                "x {x}: ferrokit ({ours_between}, {ours_on}), Qt ({between}, {on})"
+            ));
+        }
+    }
+    if wrong.is_empty() {
+        report.push((key, Outcome::Dev(0.0)));
+    } else {
+        report.push((
+            key,
+            Outcome::Mismatch(format!(
+                "{} of {} x differ: {}",
+                wrong.len(),
+                qt.len(),
+                wrong[..wrong.len().min(6)].join("; ")
+            )),
+        ));
+    }
 }
 
 fn check_wrap(report: &mut Report, tokens: &[&str]) {
@@ -377,6 +536,20 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
             (f64::from(l.cursor_to_x(e, Edge::Leading)), q.3),
         ]
     }));
+    if dev > TOLERANCE {
+        let ours: Vec<(f32, f32)> = (0..layout.line_count())
+            .map(|i| {
+                let l = layout.line_at(i).unwrap();
+                let (s, e) = (l.text_start(), l.text_start() + l.text_length());
+                (
+                    l.cursor_to_x(s, Edge::Leading),
+                    l.cursor_to_x(e, Edge::Leading),
+                )
+            })
+            .collect();
+        let theirs: Vec<(f64, f64)> = qt.iter().map(|q| (q.2, q.3)).collect();
+        println!("{key}: (x of the first, x of the last position) per line\n  ferrokit {ours:?}\n  Qt       {theirs:?}");
+    }
     report.push((key, Outcome::Dev(dev)));
 }
 
@@ -395,6 +568,8 @@ fn run(kinds: &[&str], fonts: &[&str]) {
         }
         match t[0] {
             "cursor" => check_cursor(&mut report, &t),
+            "hit" => check_hit(&mut report, &t),
+            "hitwrap" => check_hit_wrapped(&mut report, &t),
             "wrap" => check_wrap(&mut report, &t),
             "align" => check_align(&mut report, &t),
             other => panic!("unknown oracle line kind {other}"),
@@ -442,6 +617,22 @@ fn synthetic_font_line_breaks_match_qt() {
 }
 
 #[test]
+fn synthetic_font_hit_tests_match_qt() {
+    run(&["hit"], &["syn"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn arial_hit_tests_match_qt() {
+    run(&["hit"], &["arial"]);
+}
+
+#[test]
+fn synthetic_font_hit_tests_on_wrapped_lines_match_qt() {
+    run(&["hitwrap"], &["syn"]);
+}
+
+#[test]
 fn synthetic_font_aligned_lines_match_qt() {
     run(&["align"], &["syn"]);
 }
@@ -479,4 +670,181 @@ fn default_wrap_modes_are_those_of_qt() {
         TextDocument::new().wrap_mode(),
         WrapMode::WrapAtWordBoundaryOrAnywhere
     );
+}
+
+/// What the layout draws sits where right to left text is shown: the synthetic font's glyphs are
+/// boxes of known width, so the expected picture follows from the advances (in 16 px: a space 4, `a`
+/// 7.5, `b` 7.625, `c` 7.75, `d` 7.875, a digit 8, alef 8.75, bet 8.5, gimel 6.25) and the order
+/// UAX #9 gives each text, worked out by hand below. Glyphs and selection rectangles are looked at
+/// away from their edges, which backends antialias differently.
+#[test]
+fn drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text() {
+    use ferrokit_gui::geometry::primitives::PointF;
+    use ferrokit_gui::paint::painter::Painter;
+    use ferrokit_gui::paint::pixmap::Pixmap;
+    use ferrokit_gui::text::{FormatRange, TextCharFormat};
+    use tiny_skia::Color;
+
+    set_application_device_pixel_ratio(2.0);
+    let advance = |c: char| -> f32 {
+        match c {
+            ' ' => 4.0,
+            'a' => 7.5,
+            'b' => 7.625,
+            'c' => 7.75,
+            'd' => 7.875,
+            '0'..='9' => 8.0,
+            '\u{5d0}' => 8.75,
+            '\u{5d1}' => 8.5,
+            '\u{5d2}' => 6.25,
+            other => panic!("no advance for {other:?}"),
+        }
+    };
+    // (text, the logical index of each grapheme from the left edge to the right, a selection, the
+    // runs of the line with their left edges: what is drawn is each run drawn as a string there)
+    type Shown = &'static [(&'static str, f32)];
+    let cases: [(&str, &[usize], std::ops::Range<usize>, Shown); 5] = [
+        (
+            "ab \u{5d0}\u{5d2} cd",
+            &[0, 1, 2, 4, 3, 5, 6, 7],
+            2..5,
+            &[("ab ", 0.0), ("\u{5d0}\u{5d2}", 19.125), (" cd", 34.125)],
+        ),
+        (
+            "ab \u{5d0}\u{5d2} cd",
+            &[0, 1, 2, 4, 3, 5, 6, 7],
+            1..4,
+            &[("ab ", 0.0), ("\u{5d0}\u{5d2}", 19.125), (" cd", 34.125)],
+        ),
+        (
+            "\u{5d2}\u{5d0} ab \u{5d2}",
+            &[6, 5, 3, 4, 2, 1, 0],
+            3..7,
+            &[
+                ("\u{5d2}", 0.0),
+                (" ", 6.25),
+                ("ab", 10.25),
+                (" ", 25.375),
+                ("\u{5d2}\u{5d0}", 29.375),
+            ],
+        ),
+        (
+            "\u{5d2}\u{5d0} ab \u{5d2}",
+            &[6, 5, 3, 4, 2, 1, 0],
+            1..4,
+            &[
+                ("\u{5d2}", 0.0),
+                (" ", 6.25),
+                ("ab", 10.25),
+                (" ", 25.375),
+                ("\u{5d2}\u{5d0}", 29.375),
+            ],
+        ),
+        (
+            "ab \u{5d0}\u{5d2} 12 \u{5d2}",
+            &[0, 1, 2, 9, 8, 6, 7, 5, 4, 3],
+            2..9,
+            &[
+                ("ab ", 0.0),
+                ("\u{5d2}", 19.125),
+                (" ", 25.375),
+                ("12", 29.375),
+                (" ", 45.375),
+                ("\u{5d0}\u{5d2}", 49.375),
+            ],
+        ),
+    ];
+    let origin = PointF::new(10.0, 2.0);
+    let green = Color::from_rgba8(0, 255, 0, 255);
+    for (text, visual, selection, shown) in cases {
+        let chars: Vec<char> = text.chars().collect();
+        assert_eq!(chars.len(), visual.len());
+        // The span of every grapheme from the left edge of the text.
+        let mut span = vec![(0.0f32, 0.0f32); chars.len()];
+        let mut x = 0.0;
+        for &logical in visual {
+            span[logical] = (x, x + advance(chars[logical]));
+            x += advance(chars[logical]);
+        }
+
+        let mut layout = TextLayout::new(text, font_for("syn"));
+        layout.do_layout();
+        let background = TextCharFormat {
+            background: Some(green),
+            ..TextCharFormat::default()
+        };
+        let selections = [FormatRange::new(
+            selection.start,
+            selection.len(),
+            background,
+        )];
+        let mut pixmap = Pixmap::new(120, 24).unwrap();
+        {
+            let mut painter = Painter::begin(&mut pixmap);
+            layout.draw(&mut painter, origin, &selections);
+        }
+        let alpha_at = |px: usize, y: f32| -> f32 {
+            f32::from(pixmap.data()[(y as usize * 120 + px) * 4 + 3]) / 255.0
+        };
+        // The share of the pixel column `px` that the intervals (from the left edge of the text)
+        // cover.
+        let covered = |px: usize, intervals: &[(f32, f32)]| -> f32 {
+            let (lo, hi) = (px as f32 - origin.x, px as f32 + 1.0 - origin.x);
+            intervals
+                .iter()
+                .map(|&(a, b)| (b.min(hi) - a.max(lo)).max(0.0))
+                .sum::<f32>()
+        };
+        let merge = |mut spans: Vec<(f32, f32)>| -> Vec<(f32, f32)> {
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f32, f32)> = Vec::new();
+            for (lo, hi) in spans {
+                match merged.last_mut() {
+                    Some(last) if lo <= last.1 + 1e-4 => last.1 = last.1.max(hi),
+                    _ => merged.push((lo, hi)),
+                }
+            }
+            merged
+        };
+        // Selection rectangles are snapped to whole pixels: half a pixel of error at an edge.
+        let tolerance = 0.51;
+
+        // The glyphs are where the runs of the line are shown: the picture is the one made by
+        // drawing every run as a string at its place (which shapes it in its own direction).
+        let mut plain = Pixmap::new(120, 24).unwrap();
+        {
+            let mut painter = Painter::begin(&mut plain);
+            layout.draw(&mut painter, origin, &[]);
+        }
+        let mut reference = Pixmap::new(120, 24).unwrap();
+        {
+            let line = layout.line_at(0).unwrap();
+            let baseline = origin.y + line.y() + line.ascent();
+            let mut painter = Painter::begin(&mut reference);
+            for &(run, left) in shown {
+                painter.draw_text_colored(
+                    PointF::new(origin.x + left, baseline),
+                    run,
+                    &font_for("syn"),
+                    Color::BLACK,
+                );
+            }
+        }
+        assert!(
+            reference.data().iter().any(|&b| b != 0),
+            "the reference draws something"
+        );
+        assert_eq!(plain.data(), reference.data(), "{text:?}");
+
+        // The selection fills the top of the line, above the glyphs, on the spans of the selected
+        // graphemes wherever they are shown, and nowhere else.
+        let selected = merge(selection.clone().map(|g| span[g]).collect());
+        for px in 8..(origin.x + x + 3.0) as usize {
+            let (got, want) = (alpha_at(px, origin.y + 0.5), covered(px, &selected));
+            assert!(
+                (got - want).abs() <= tolerance,
+                "{text:?}: selection {selection:?} covers {got:.2} of pixel column {px}, it should cover {want:.2}"
+            );
+        }
+    }
 }

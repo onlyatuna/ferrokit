@@ -695,6 +695,22 @@
     "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::SB": "pass",
     "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::TB": "pass",
     "test_text_layout_oracle::default_wrap_modes_are_those_of_qt::SB": "pass",
-    "test_text_layout_oracle::default_wrap_modes_are_those_of_qt::TB": "pass"
+    "test_text_layout_oracle::default_wrap_modes_are_those_of_qt::TB": "pass",
+    "lib::text::bidi::tests::left_to_right_text_needs_no_levels::SB": "pass",
+    "lib::text::bidi::tests::left_to_right_text_needs_no_levels::TB": "pass",
+    "lib::text::bidi::tests::hebrew_letters_are_one_right_to_left_run::SB": "pass",
+    "lib::text::bidi::tests::hebrew_letters_are_one_right_to_left_run::TB": "pass",
+    "lib::text::bidi::tests::the_first_strong_character_sets_the_base_direction::SB": "pass",
+    "lib::text::bidi::tests::the_first_strong_character_sets_the_base_direction::TB": "pass",
+    "lib::text::bidi::tests::digits_inside_right_to_left_text_go_up_one_level::SB": "pass",
+    "lib::text::bidi::tests::digits_inside_right_to_left_text_go_up_one_level::TB": "pass",
+    "lib::text::bidi::tests::visual_order_reverses_odd_runs_and_nested_runs_twice::SB": "pass",
+    "lib::text::bidi::tests::visual_order_reverses_odd_runs_and_nested_runs_twice::TB": "pass",
+    "test_text_layout_oracle::synthetic_font_hit_tests_match_qt::SB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_hit_tests_match_qt::TB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_hit_tests_on_wrapped_lines_match_qt::SB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_hit_tests_on_wrapped_lines_match_qt::TB": "unsupported",
+    "test_text_layout_oracle::drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text::SB": "unsupported",
+    "test_text_layout_oracle::drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text::TB": "unsupported"
   }
 }

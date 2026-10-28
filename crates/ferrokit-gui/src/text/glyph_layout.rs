@@ -670,6 +670,19 @@ impl GlyphLayout {
     /// batch-shaping each run with `rustybuzz` (with full OpenType GSUB/GPOS feature support),
     /// and falling back to the face's own per-glyph metrics when binary font data is unavailable.
     pub fn shape_with_engines(text: &str, font: &Font, engines: &[FontEngine]) -> Self {
+        Self::shape_with_engines_directed(text, font, engines, None)
+    }
+
+    /// [`shape_with_engines`](Self::shape_with_engines) with the direction of the text fixed:
+    /// `Some(true)` shapes right to left (the glyphs come out in visual order), `Some(false)`
+    /// left to right, `None` lets the shaper guess it from the characters. A bidi run takes its
+    /// direction from its embedding level, never from what its characters happen to be.
+    pub fn shape_with_engines_directed(
+        text: &str,
+        font: &Font,
+        engines: &[FontEngine],
+        right_to_left: Option<bool>,
+    ) -> Self {
         if text.is_empty() || engines.is_empty() {
             return Self::empty();
         }
@@ -678,7 +691,12 @@ impl GlyphLayout {
         // which selects the GPOS device-table adjustments.
         let ppem = font.size as u16;
 
-        let runs = Self::partition_into_runs(text, engines);
+        let mut runs = Self::partition_into_runs(text, engines);
+        // Right to left text is laid out from its right end: the first font run in the text is the
+        // rightmost, so the runs go in visual order.
+        if right_to_left == Some(true) {
+            runs.reverse();
+        }
         let mut glyphs = Vec::with_capacity(text.len());
         let mut current_x = 0.0;
         let mut current_y = 0.0;
@@ -694,6 +712,13 @@ impl GlyphLayout {
                 // Qt `shapeTextWithHarfbuzzNG` path:
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(run.text);
+                if let Some(rtl) = right_to_left {
+                    buffer.set_direction(if rtl {
+                        rustybuzz::Direction::RightToLeft
+                    } else {
+                        rustybuzz::Direction::LeftToRight
+                    });
+                }
 
                 // HarfBuzz applies a `kern` table itself when the font has no GPOS kerning; the pairs
                 // are then applied below, scaled as HarfBuzz scales them (see `legacy_kern_table`).
@@ -949,6 +974,30 @@ mod tests {
             assert_eq!(runs[1].engine_index, 1);
             assert_eq!(runs[2].text, " OK");
             assert_eq!(runs[2].engine_index, 0);
+        }
+    }
+
+    /// Hebrew and an emoji in one right to left run come from two fonts: the glyphs are laid out
+    /// from the right end, so the first character of the text has the largest x.
+    #[cfg(windows)]
+    #[test]
+    fn right_to_left_font_runs_are_laid_out_from_the_right() {
+        let font = Font::new("Arial", 16.0);
+        let text = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{1F600} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
+        let engines =
+            crate::text::font_database::resolve_font_engines_for_text_global(&font, text);
+        assert!(
+            engines.len() >= 2,
+            "the test needs Arial and a fallback font with the emoji"
+        );
+        let layout = GlyphLayout::shape_with_engines_directed(text, &font, &engines, Some(true));
+        assert!(layout.glyphs.iter().any(|g| g.font_index > 0), "the emoji comes from a fallback");
+        for pair in layout.glyphs.windows(2) {
+            assert!(pair[0].x <= pair[1].x, "glyphs go left to right: {pair:?}");
+            assert!(
+                pair[0].cluster >= pair[1].cluster,
+                "right to left: later text is further left: {pair:?}"
+            );
         }
     }
 

@@ -7,6 +7,7 @@
 use crate::alignment::Alignment;
 use crate::geometry::primitives::{PointF, RectF};
 use crate::paint::painter::Painter;
+use crate::text::bidi;
 use crate::text::font::Font;
 use crate::text::font_metrics::FontMetrics;
 use crate::text::format::FormatRange;
@@ -121,6 +122,11 @@ struct CompositeText {
     /// Whether UAX #14 allows a line break in front of each grapheme, plus one entry for the end
     /// of the text (`QCharAttributes::lineBreak`).
     break_before: Vec<bool>,
+    /// The bidi embedding level of every grapheme; empty when the text is left to right all
+    /// through.
+    levels: Vec<u8>,
+    /// Whether the text as a whole reads right to left (`QTextEngine::isRightToLeft`).
+    base_rtl: bool,
 }
 
 impl CompositeText {
@@ -354,6 +360,9 @@ impl TextLayout {
                 leading: metrics.leading(),
                 natural_width: 0.0,
                 right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
+                levels: Vec::new(),
+                base_rtl: composite.base_rtl,
+                is_last: true,
                 grapheme_x_advances: vec![0.0],
             });
         }
@@ -463,7 +472,10 @@ impl TextLayout {
         let y_pos = self.position.y + (line_idx as f32) * metrics.height;
         // `QTextEngine::alignLine` (qtextengine.cpp:3558-3572): Right, else HCenter, else the
         // line starts at the left (Left, Justify, no flag).
-        let x_pos = if self.alignment.contains(Alignment::RIGHT) {
+        // Justified text of a right to left paragraph is aligned right.
+        let align_right = self.alignment.contains(Alignment::RIGHT)
+            || (self.alignment.contains(Alignment::JUSTIFY) && composite.base_rtl);
+        let x_pos = if align_right {
             let avail = self.wrap_width.unwrap_or(natural_w);
             self.position.x + (avail - natural_w).max(0.0)
         } else if self.alignment.contains(Alignment::H_CENTER) {
@@ -489,6 +501,12 @@ impl TextLayout {
             leading: metrics.leading(),
             natural_width: natural_w,
             right_limit,
+            levels: match composite.levels.get(line_start_grapheme..curr_grapheme) {
+                Some(levels) if levels.iter().any(|&l| l != 0) => levels.to_vec(),
+                _ => Vec::new(),
+            },
+            base_rtl: composite.base_rtl,
+            is_last: curr_grapheme >= total_graphemes && !ends_with_break,
             grapheme_x_advances: advances,
         })
     }
@@ -582,16 +600,14 @@ impl TextLayout {
                 let overlap_end = sel_end.max(line_start).min(line_end);
 
                 if overlap_start < overlap_end {
-                    let x1 = line.cursor_to_x(overlap_start, Edge::Leading);
-                    let x2 = line.cursor_to_x(overlap_end, Edge::Leading);
                     let bg_color = sel
                         .format
                         .background
                         .unwrap_or(Color::from_rgba8(0, 120, 215, 80));
-
-                    let sel_rect =
-                        RectF::new(pos.x + x1, pos.y + line.position.y, x2 - x1, line.height);
-                    painter.fill_rect(sel_rect, bg_color);
+                    for (x, width) in line.selection_spans(overlap_start, overlap_end) {
+                        let sel_rect = RectF::new(pos.x + x, pos.y + line.position.y, width, line.height);
+                        painter.fill_rect(sel_rect, bg_color);
+                    }
                 }
             }
 
@@ -620,7 +636,12 @@ impl TextLayout {
                         // No font shaped this paragraph: draw it grapheme by grapheme.
                         let g_str = composite.grapheme(g_idx);
                         if !is_unshaped(g_str) {
-                            let g_x = pos.x + line.cursor_to_x(g_idx, Edge::Leading);
+                            // The left edge of the grapheme: its trailing edge when it reads
+                            // right to left.
+                            let g_x = pos.x
+                                + line
+                                    .cursor_to_x(g_idx, Edge::Leading)
+                                    .min(line.cursor_to_x(g_idx, Edge::Trailing));
                             painter.draw_text_colored(
                                 PointF::new(g_x, line_y),
                                 g_str,
@@ -662,7 +683,14 @@ impl TextLayout {
         span: std::ops::Range<usize>,
         default_color: Color,
     ) {
-        let origin = PointF::new(pos.x + line.position.x, line_y);
+        // With right to left text on the line the span sits where its bidi run is shown.
+        let run_left = if line.levels.is_empty() {
+            0.0
+        } else {
+            line.run_left_of(span.start - line.text_start)
+                .map_or(0.0, |v| v.left)
+        };
+        let origin = PointF::new(pos.x + line.position.x + run_left, line_y);
         for (color, glyphs) in self.span_runs(composite, paragraph, span, default_color) {
             painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
         }
@@ -743,7 +771,8 @@ impl TextLayout {
         let text = self.composite_text();
         let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
         starts.push(text.len());
-        let (advances, paragraphs) = self.shape_paragraphs(&text, &starts);
+        let base_rtl = bidi::is_rtl(&text);
+        let (advances, paragraphs, levels) = self.shape_paragraphs(&text, &starts, base_rtl);
         let break_before = crate::text::line_break::break_before(&text, &starts);
         let built = Arc::new(CompositeText {
             text,
@@ -751,6 +780,8 @@ impl TextLayout {
             advances,
             paragraphs,
             break_before,
+            levels,
+            base_rtl,
         });
         self.composite.0 = Some(Arc::clone(&built));
         built
@@ -758,15 +789,22 @@ impl TextLayout {
 
     /// Shapes `text` one paragraph (the text between line feeds and hard line breaks) at a time, as
     /// `QTextEngine` shapes items: kerning and ligatures are measured across grapheme
-    /// boundaries and a ligature's width is divided over its graphemes. Returns the advance of
-    /// every grapheme (the `'\n'` and U+2028 graphemes get none) and the
-    /// shaped glyphs of every paragraph a font shapes, which drawing uses so what is drawn sits
-    /// where the advances put it.
-    fn shape_paragraphs(&self, text: &str, starts: &[usize]) -> (Vec<f32>, Vec<ShapedParagraph>) {
-        let metrics = FontMetrics::from_font(&self.font);
+    /// boundaries and a ligature's width is divided over its graphemes. A paragraph with right to
+    /// left text is cut into runs of one embedding level and each is shaped in its own direction
+    /// (Qt's bidi items). Returns the advance of every grapheme (the `'\n'` and U+2028 graphemes
+    /// get none), the shaped glyphs of every run a font shapes, which drawing uses so what is drawn
+    /// sits where the advances put it, and the embedding level of every grapheme (empty when the
+    /// whole text is left to right).
+    fn shape_paragraphs(
+        &self,
+        text: &str,
+        starts: &[usize],
+        base_rtl: bool,
+    ) -> (Vec<f32>, Vec<ShapedParagraph>, Vec<u8>) {
         let count = starts.len() - 1;
         let mut advances = vec![0.0f32; count];
         let mut paragraphs = Vec::new();
+        let mut levels: Vec<u8> = Vec::new();
         let mut first = 0;
         while first < count {
             let mut end = first;
@@ -776,42 +814,80 @@ impl TextLayout {
             if end > first {
                 let base = starts[first];
                 let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
-                let paragraph = &text[base..starts[end]];
-                match FontMetrics::shape_paragraph(paragraph, &self.font) {
-                    Some((engines, layout)) => {
-                        let shaped = layout.grapheme_advances(&local);
-                        advances[first..end].copy_from_slice(&shaped);
-                        let mut pen = Vec::with_capacity(shaped.len() + 1);
-                        let mut x = 0.0f32;
-                        pen.push(x);
-                        for advance in &shaped {
-                            x += advance;
-                            pen.push(x);
-                        }
-                        let logical_order = layout
-                            .glyphs
-                            .windows(2)
-                            .all(|w| w[0].cluster <= w[1].cluster);
-                        paragraphs.push(ShapedParagraph {
-                            first,
-                            end,
-                            base,
-                            engines,
-                            layout,
-                            pen,
-                            logical_order,
-                        });
+                let paragraph_levels = bidi::grapheme_levels(&text[base..starts[end]], &local, base_rtl);
+                if paragraph_levels.is_empty() {
+                    self.shape_run(text, starts, first..end, None, &mut advances, &mut paragraphs);
+                } else {
+                    if levels.is_empty() {
+                        levels = vec![0; count];
                     }
-                    None => {
-                        let heuristic =
-                            metrics.heuristic_grapheme_advances(paragraph, &local, &self.font);
-                        advances[first..end].copy_from_slice(&heuristic);
+                    levels[first..end].copy_from_slice(&paragraph_levels);
+                    for run in bidi::level_runs(&paragraph_levels) {
+                        self.shape_run(
+                            text,
+                            starts,
+                            first + run.start..first + run.end,
+                            Some(run.is_rtl()),
+                            &mut advances,
+                            &mut paragraphs,
+                        );
                     }
                 }
             }
             first = end + 1;
         }
-        (advances, paragraphs)
+        (advances, paragraphs, levels)
+    }
+
+    /// Shapes the graphemes `range` of `text` as one run (`right_to_left` fixes its direction)
+    /// and records their advances and, when a font shapes it, the shaped glyphs.
+    fn shape_run(
+        &self,
+        text: &str,
+        starts: &[usize],
+        range: std::ops::Range<usize>,
+        right_to_left: Option<bool>,
+        advances: &mut [f32],
+        paragraphs: &mut Vec<ShapedParagraph>,
+    ) {
+        let (first, end) = (range.start, range.end);
+        let base = starts[first];
+        let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
+        let run_text = &text[base..starts[end]];
+        match FontMetrics::shape_paragraph_directed(run_text, &self.font, right_to_left) {
+            Some((engines, layout)) => {
+                let shaped = layout.grapheme_advances(&local);
+                advances[first..end].copy_from_slice(&shaped);
+                let mut pen = Vec::with_capacity(shaped.len() + 1);
+                let mut x = 0.0f32;
+                pen.push(x);
+                for advance in &shaped {
+                    x += advance;
+                    pen.push(x);
+                }
+                let logical_order = layout
+                    .glyphs
+                    .windows(2)
+                    .all(|w| w[0].cluster <= w[1].cluster);
+                paragraphs.push(ShapedParagraph {
+                    first,
+                    end,
+                    base,
+                    engines,
+                    layout,
+                    pen,
+                    logical_order,
+                });
+            }
+            None => {
+                let heuristic = FontMetrics::from_font(&self.font).heuristic_grapheme_advances(
+                    run_text,
+                    &local,
+                    &self.font,
+                );
+                advances[first..end].copy_from_slice(&heuristic);
+            }
+        }
     }
 
     /// Produces combined text including preedit IME text.
@@ -1094,6 +1170,8 @@ mod tests {
             advances,
             paragraphs: vec![paragraph],
             break_before,
+            levels: Vec::new(),
+            base_rtl: false,
         };
         (layout, composite)
     }
