@@ -27,6 +27,10 @@ values are Qt's doubles, shortest round-trip decimal):
                                      lines of the text wrapped at WIDTH (mode: word | anywhere):
                                      textStart, textLength, naturalTextWidth() (trailing spaces
                                      excluded) and cursorToX(textStart + textLength) of each
+    align CASE FONT ALIGN WIDTH HEXTEXT N START:LEN:X0:XEND ...
+                                     lines wrapped (as `anywhere`) at WIDTH and aligned
+                                     (left | right | center): textStart, textLength,
+                                     cursorToX(textStart) and cursorToX(textStart + textLength)
 """
 import io
 import os
@@ -38,7 +42,7 @@ import PySide6
 from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import (
     QFont,
     QFontDatabase,
@@ -190,6 +194,10 @@ WRAP_CASES = [
     ("syn_hanging_space", "syn", "anywhere", "aaaa bbbb cccc", [30, 31, 33, 34, 35]),
     ("syn_hanging_spaces", "syn", "anywhere", "aaaa   bbbb", [30, 32, 38, 60]),
     ("syn_hyphen_hang", "syn", "anywhere", "ab-cd ef-gh ij-kl", [76, 77, 80]),
+    # the spaces at the end of the text stay in the width of the last line
+    ("syn_final_spaces", "syn", "anywhere", "aaaa bbbb  ", [30, 100]),
+    ("syn_leading_spaces", "syn", "anywhere", "  aaaa bbbb", [30, 40, 100]),
+    ("syn_only_spaces", "syn", "anywhere", "      ", [10, 100]),
     # QTextLayout does not break at '\n' (a paragraph separator belongs to QTextDocument); it breaks
     # at U+2028
     ("syn_newline", "syn", "anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
@@ -201,6 +209,16 @@ WRAP_CASES = [
     ("syn_comma", "syn", "anywhere", "ab,cd,ef gh,ij,kl", [30, 50, 90]),
     ("arial_pangram", "arial", "anywhere", PANGRAM, [60, 100, 160, 240, 500]),
     ("arial_kerned_words", "arial", "anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
+]
+
+
+# (name, font id, alignment, text, widths): wrapped lines aligned inside the width.
+ALIGN_CASES = [
+    ("syn_align_spaces", "syn", "right", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("syn_align_spaces", "syn", "center", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("syn_align_spaces", "syn", "left", "aaaa bbbb cccc ", [34, 40, 100]),
+    ("arial_align_words", "arial", "right", "The quick brown fox jumps over", [60, 120]),
+    ("arial_align_words", "arial", "center", "The quick brown fox jumps over", [60, 120]),
 ]
 
 
@@ -256,6 +274,32 @@ def wrap_row(case, font_id, font, mode, width, text):
     return ["wrap", case, font_id, mode, str(width), text.encode().hex(), str(len(parts))] + parts
 
 
+def align_row(case, font_id, font, align, width, text):
+    layout = QTextLayout(text, font)
+    opt = QTextOption(
+        {"left": Qt.AlignmentFlag.AlignLeft, "right": Qt.AlignmentFlag.AlignRight,
+         "center": Qt.AlignmentFlag.AlignHCenter}[align]
+    )
+    opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    layout.setTextOption(opt)
+    layout.beginLayout()
+    lines = []
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(width)
+        lines.append(line)
+    layout.endLayout()
+    parts = [
+        "%d:%d:%r:%r"
+        % (l.textStart(), l.textLength(), l.cursorToX(l.textStart())[0],
+           l.cursorToX(l.textStart() + l.textLength())[0])
+        for l in lines
+    ]
+    return ["align", case, font_id, align, str(width), text.encode().hex(), str(len(parts))] + parts
+
+
 def main():
     sys.stdout.reconfigure(newline="\n")  # the fixture is committed with LF line ends
     ttf = build_font()
@@ -289,6 +333,9 @@ def main():
     for case, font_id, mode, text, widths in WRAP_CASES:
         for w in widths:
             print(" ".join(wrap_row(case, font_id, fonts[font_id], mode, w, text)))
+    for case, font_id, align, text, widths in ALIGN_CASES:
+        for w in widths:
+            print(" ".join(align_row(case, font_id, fonts[font_id], align, w, text)))
 
 
 if __name__ == "__main__":

@@ -687,6 +687,8 @@
     "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::SB": "pass",
     "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::TB": "pass",
     "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::SB": "pass",
-    "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::TB": "pass"
+    "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::TB": "pass",
+    "test_text_layout_oracle::synthetic_font_aligned_lines_match_qt::SB": "unsupported",
+    "test_text_layout_oracle::synthetic_font_aligned_lines_match_qt::TB": "unsupported"
   }
 }

@@ -31,6 +31,7 @@
 //!
 //! Text positions are compared in UTF-16 code units, as Qt reports them.
 
+use ferrokit_gui::alignment::Alignment;
 use ferrokit_gui::text::font::{Font, SharedFontData};
 use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
 #[cfg(windows)]
@@ -48,7 +49,7 @@ const TOLERANCE: f64 = 1.0 / 128.0;
 
 /// Cases where ferrokit differs from Qt: `(key, reason)`. A key is `cursor/<case>`,
 /// `breaks/<case>/<width>`, `endx/<case>/<width>`, `natural/<case>/<width>` or
-/// `natural-with-trailing-space/<case>/<width>`; an entry ending in `/` stands for every key that
+/// `align/<case>/<align>/<width>`; an entry ending in `/` stands for every key that
 /// starts with it, and all of them must diverge. The cursor and natural-width entries are
 /// differences of values; the `breaks` entries are different lines.
 const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
@@ -82,22 +83,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          Arial `1` (8.9 px). [INFERENCE: same run splitting as arial_emoji_zwj]",
     ),
     // --- line breaking ---
-    // A space that does not fit hangs past the width in Qt; ferrokit counts it, so the line
-    // breaks earlier (at the previous opportunity, or before the space).
-    ("breaks/syn_hyphen/80", HANGING_SPACE),
-    ("breaks/syn_long_word/40", HANGING_SPACE),
-    ("breaks/syn_long_word/80", HANGING_SPACE),
-    ("breaks/syn_hanging_space/30", HANGING_SPACE),
-    ("breaks/syn_hanging_space/31", HANGING_SPACE),
-    ("breaks/syn_hanging_space/33", HANGING_SPACE),
-    ("breaks/syn_hanging_space/34", HANGING_SPACE),
-    ("breaks/syn_hanging_spaces/30", HANGING_SPACE),
-    ("breaks/syn_hanging_spaces/32", HANGING_SPACE),
-    ("breaks/syn_hanging_spaces/38", HANGING_SPACE),
-    ("breaks/syn_hyphen_hang/77", HANGING_SPACE),
-    ("breaks/syn_hyphen_hang/80", HANGING_SPACE),
-    ("breaks/arial_pangram/60", HANGING_SPACE),
-    ("breaks/arial_kerned_words/80", HANGING_SPACE),
     (
         "breaks/syn_newline/",
         "ferrokit ends a line at '\\n'; QTextLayout does not (it is a paragraph separator, which \
@@ -127,22 +112,16 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     ),
     // --- widths ---
     (
-        "natural-with-trailing-space/",
-        "`QTextLine::naturalTextWidth` excludes the trailing spaces of a line; ferrokit's \
-         `natural_text_width` includes them (it equals Qt's `cursorToX` at the line end, which \
-         `endx/` checks)",
-    ),
-    (
         "natural/arial_kerned_words/50",
-        "Qt's own `naturalTextWidth` of `AVAVA` (47.4375) is 1/64 px more than its `cursorToX` at \
-         the end of the line (47.421875), which ferrokit reproduces [INFERENCE: a kern against the \
-         glyph after the break, counted by Qt's line width but not by the cursor]",
+        "Qt's `naturalTextWidth` is the sum of the advances plus the negative right bearing of \
+         the last glyph, the ink that hangs over its advance (`QTextLine::layout_helper`'s \
+         `negativeRightBearing`): the `A` that ends `AVAVA` hangs 1/64 px over, so Qt's width is \
+         47.4375 against its `cursorToX` at the line end of 47.421875. [INFERENCE from the values; \
+         ferrokit has no outline bounds of a glyph at hand]",
     ),
+    ("natural/arial_pangram/100", "same right bearing, of the `r` that ends `jumps over`: 0.21875 px"),
+    ("natural/arial_pangram/240", "same right bearing as arial_pangram/100"),
 ];
-
-const HANGING_SPACE: &str = "a space that does not fit the width hangs past the end of the line \
-    in Qt (`QTextLine` keeps trailing white space on the line it ends); ferrokit measures it, so \
-    the break moves to the previous opportunity or in front of the space";
 
 fn hex_decode(s: &str) -> String {
     let bytes: Vec<u8> = (0..s.len() / 2)
@@ -332,32 +311,79 @@ fn check_wrap(report: &mut Report, tokens: &[&str]) {
         )
     }));
     report.push((format!("endx/{case}/{width}"), Outcome::Dev(end)));
-    // `QTextLine::naturalTextWidth` leaves trailing spaces out; ferrokit's `natural_text_width`
-    // counts them (it is the cursor x at the line end). The two are compared on the lines
-    // without trailing spaces, and the other lines under their own key.
-    let mut plain = Vec::new();
-    let mut spaced = Vec::new();
-    for (l, q) in lines.iter().zip(&qt) {
-        let text_of_line = &text[l.byte_start()..l.byte_start() + l.byte_length()];
-        let pair = (f64::from(l.natural_text_width()), q.2);
-        if text_of_line.ends_with(char::is_whitespace) {
-            spaced.push(pair);
-        } else {
-            plain.push(pair);
-        }
+    let natural = max_dev(
+        lines
+            .iter()
+            .zip(&qt)
+            .map(|(l, q)| (f64::from(l.natural_text_width()), q.2)),
+    );
+    if natural > TOLERANCE {
+        let ours: Vec<f32> = lines.iter().map(|l| l.natural_text_width()).collect();
+        let theirs: Vec<f64> = qt.iter().map(|q| q.2).collect();
+        println!("natural/{case}/{width}: per line\n  ferrokit {ours:?}\n  Qt       {theirs:?}");
     }
-    if !plain.is_empty() {
+    report.push((format!("natural/{case}/{width}"), Outcome::Dev(natural)));
+}
+
+/// Lines wrapped at a width and aligned: where the first and the last position of each line are.
+fn check_align(report: &mut Report, tokens: &[&str]) {
+    let (case, font_id, align, width, text) = (
+        tokens[1],
+        tokens[2],
+        tokens[3],
+        tokens[4],
+        hex_decode(tokens[5]),
+    );
+    let n: usize = tokens[6].parse().unwrap();
+    // (start, length, x of the first position, x of the last) of every line.
+    let qt: Vec<(usize, usize, f64, f64)> = tokens[7..7 + n]
+        .iter()
+        .map(|p| {
+            let f: Vec<&str> = p.split(':').collect();
+            (
+                f[0].parse().unwrap(),
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+                f[3].parse().unwrap(),
+            )
+        })
+        .collect();
+
+    let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    layout.set_alignment(match align {
+        "left" => Alignment::LEFT,
+        "right" => Alignment::RIGHT,
+        "center" => Alignment::H_CENTER,
+        other => panic!("unknown alignment {other} in the oracle"),
+    });
+    layout.set_wrap_width(Some(width.parse().unwrap()));
+    layout.do_layout();
+    let offs16 = grapheme_offsets16(&text);
+    let ours: Vec<(usize, usize)> = (0..layout.line_count())
+        .map(|i| {
+            let l = layout.line_at(i).unwrap();
+            let (s, e) = (l.text_start(), l.text_start() + l.text_length());
+            (offs16[s], offs16[e] - offs16[s])
+        })
+        .collect();
+    let theirs: Vec<(usize, usize)> = qt.iter().map(|l| (l.0, l.1)).collect();
+    let key = format!("align/{case}/{align}/{width}");
+    if ours != theirs {
         report.push((
-            format!("natural/{case}/{width}"),
-            Outcome::Dev(max_dev(plain.into_iter())),
+            key,
+            Outcome::Mismatch(format!("lines (start, length) {ours:?}, Qt has {theirs:?}")),
         ));
+        return;
     }
-    if !spaced.is_empty() {
-        report.push((
-            format!("natural-with-trailing-space/{case}/{width}"),
-            Outcome::Dev(max_dev(spaced.into_iter())),
-        ));
-    }
+    let dev = max_dev((0..layout.line_count()).zip(&qt).flat_map(|(i, q)| {
+        let l = layout.line_at(i).unwrap();
+        let (s, e) = (l.text_start(), l.text_start() + l.text_length());
+        [
+            (f64::from(l.cursor_to_x(s, Edge::Leading)), q.2),
+            (f64::from(l.cursor_to_x(e, Edge::Leading)), q.3),
+        ]
+    }));
+    report.push((key, Outcome::Dev(dev)));
 }
 
 /// Runs every oracle line of `kind` whose font id is one of `fonts`, prints the table of
@@ -376,6 +402,7 @@ fn run(kinds: &[&str], fonts: &[&str]) {
         match t[0] {
             "cursor" => check_cursor(&mut report, &t),
             "wrap" => check_wrap(&mut report, &t),
+            "align" => check_align(&mut report, &t),
             other => panic!("unknown oracle line kind {other}"),
         }
     }
@@ -418,6 +445,17 @@ fn synthetic_font_cursor_x_matches_qt() {
 #[test]
 fn synthetic_font_line_breaks_match_qt() {
     run(&["wrap"], &["syn"]);
+}
+
+#[test]
+fn synthetic_font_aligned_lines_match_qt() {
+    run(&["align"], &["syn"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn arial_aligned_lines_match_qt() {
+    run(&["align"], &["arial"]);
 }
 
 #[cfg(windows)]

@@ -46,8 +46,12 @@ pub struct TextLine {
     pub(crate) descent: f32,
     /// Inter-line leading gap.
     pub(crate) leading: f32,
-    /// Natural advance width of the text glyphs on this line.
+    /// Natural advance width of the text glyphs on this line (`QTextLine::naturalTextWidth`): the
+    /// spaces at the end of a wrapped line are not part of it.
     pub(crate) natural_width: f32,
+    /// The x that [`cursor_to_x`](Self::cursor_to_x) never exceeds: the right end of the wrap
+    /// width, past which the spaces that hang over it are not shown (Qt clamps to the line width).
+    pub(crate) right_limit: f32,
     /// Cumulative horizontal offsets for each grapheme in this line.
     /// Length is `text_length + 1` (ending with `natural_width`).
     pub(crate) grapheme_x_advances: Vec<f32>,
@@ -68,6 +72,7 @@ impl Default for TextLine {
             descent: 0.0,
             leading: 0.0,
             natural_width: 0.0,
+            right_limit: f32::INFINITY,
             grapheme_x_advances: vec![0.0],
         }
     }
@@ -210,7 +215,7 @@ impl TextLine {
             }
         };
 
-        self.position.x + base_x + offset
+        (self.position.x + base_x + offset).min(self.right_limit)
     }
 
     /// Maps an X coordinate back to a grapheme cursor position (`xToCursor`).
@@ -221,7 +226,9 @@ impl TextLine {
         if rel_x <= 0.0 || self.text_length == 0 {
             return self.text_start;
         }
-        if rel_x >= self.natural_width {
+        // The end of the line is where its last grapheme ends, trailing spaces included.
+        let end_x = self.grapheme_x_advances.last().copied().unwrap_or(0.0);
+        if rel_x >= end_x {
             return self.text_start + self.text_length;
         }
 
@@ -231,7 +238,7 @@ impl TextLine {
                 .grapheme_x_advances
                 .get(i + 1)
                 .copied()
-                .unwrap_or(self.natural_width);
+                .unwrap_or(end_x);
 
             if rel_x >= left_x && rel_x < right_x {
                 return match mode {

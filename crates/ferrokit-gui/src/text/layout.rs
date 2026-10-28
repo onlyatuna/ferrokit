@@ -72,6 +72,29 @@ impl std::fmt::Debug for ShapedParagraph {
     }
 }
 
+/// Whether a grapheme is white space that hangs past the end of a wrapped line instead of
+/// wrapping it: what `QTextEngine` flags `ScriptAnalysis::Space` (a space, a tab, the other
+/// separator spaces and the zero width space; not the no-break spaces, which are ordinary
+/// characters, and not the line and paragraph separators).
+fn is_hanging_space(grapheme: &str) -> bool {
+    grapheme.chars().all(|c| {
+        c == '\u{200b}'
+            || (c.is_whitespace()
+                && !matches!(
+                    c,
+                    '\n' | '\r'
+                        | '\u{b}'
+                        | '\u{c}'
+                        | '\u{85}'
+                        | '\u{a0}'
+                        | '\u{2007}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202f}'
+                ))
+    })
+}
+
 /// The text plus pre-edit as one string with the byte offset of every grapheme, built once per
 /// layout run so `create_line` does not rebuild and re-segment it for every line.
 #[derive(Debug)]
@@ -283,6 +306,7 @@ impl TextLayout {
                 descent: metrics.descent,
                 leading: metrics.leading(),
                 natural_width: 0.0,
+                right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
                 grapheme_x_advances: vec![0.0],
             });
         }
@@ -298,6 +322,12 @@ impl TextLayout {
         let mut advances = vec![0.0f32];
         let mut last_break_grapheme = None;
         let mut last_break_advances_len = 0;
+        // Set when the line ends because the next word does not fit (not at the end of the text
+        // or at a hard break): Qt leaves the spaces at the end of such a line out of its width.
+        let mut wrapped = false;
+        // Whether the line has text other than spaces yet: spaces in front of the first word
+        // are part of it, not a place to break, and a line of spaces only keeps them all.
+        let mut has_word = false;
 
         let byte_start = composite.starts[line_start_grapheme];
 
@@ -313,8 +343,13 @@ impl TextLayout {
             }
 
             let g_width = composite.advances[curr_grapheme];
+            let is_space = is_hanging_space(g);
 
-            if curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
+            // `QTextLine::layout_helper`: a space is added to the line without testing the width
+            // (it hangs past the line end when it does not fit); a word is added only if it fits
+            // after the spaces before it.
+            if !is_space && curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
+                wrapped = true;
                 // Wrapping needed
                 if let Some(break_pos) = last_break_grapheme {
                     if break_pos > line_start_grapheme {
@@ -332,11 +367,10 @@ impl TextLayout {
             curr_x += g_width;
             advances.push(curr_x);
             line_bytes += g.len();
+            has_word |= !is_space;
 
             // Track word break opportunity (whitespace or punctuation)
-            if g.chars()
-                .all(|c| c.is_whitespace() || c == '-' || c == '/' || c == ',')
-            {
+            if has_word && (is_space || g.chars().all(|c| c == '-' || c == '/' || c == ',')) {
                 last_break_grapheme = Some(curr_grapheme + 1);
                 last_break_advances_len = advances.len();
             }
@@ -345,7 +379,18 @@ impl TextLayout {
         }
 
         let text_len = curr_grapheme - line_start_grapheme;
-        let natural_w = advances.last().copied().unwrap_or(0.0);
+        // The width of the text of a wrapped line stops before its trailing spaces
+        // (`QTextLine::naturalTextWidth`); the last line of a paragraph keeps them unless they
+        // hang over the width.
+        let mut natural_len = text_len;
+        if has_word && (wrapped || curr_x > max_width) {
+            while natural_len > 0
+                && is_hanging_space(composite.grapheme(line_start_grapheme + natural_len - 1))
+            {
+                natural_len -= 1;
+            }
+        }
+        let natural_w = advances[natural_len.min(advances.len() - 1)];
         let line_idx = self.lines.len();
 
         let y_pos = self.position.y + (line_idx as f32) * metrics.height;
@@ -376,6 +421,7 @@ impl TextLayout {
             descent: metrics.descent,
             leading: metrics.leading(),
             natural_width: natural_w,
+            right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
             grapheme_x_advances: advances,
         })
     }
