@@ -98,6 +98,7 @@
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_label_letter_spacing_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_label_natural_width_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_label_overflow_alignment": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_layered_geometry_sync": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_menu_popup_focus": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
