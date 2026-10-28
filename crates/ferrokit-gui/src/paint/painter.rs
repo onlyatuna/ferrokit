@@ -302,6 +302,11 @@ pub struct Painter<'a> {
     /// Gamma table of LCD (ClearType) text; `None` draws grey-scale text. Fixed when painting
     /// starts, like `QRasterPaintEngine::begin` fixes the glyph cache format.
     lcd_lut: Option<Arc<TrcLut>>,
+    /// Coverage of the glyph being blitted through `composite_masked`, kept between glyphs so a
+    /// run of text does not allocate one per glyph.
+    glyph_cov: Vec<u8>,
+    /// Scratch surface of `composite_masked`, kept for the same reason.
+    blit_scratch: Vec<u8>,
 }
 /// Clip coverage (0 = clipped away, 255 = inside) of the device pixel `(x, y)` for a glyph blit:
 /// the clip box (logical, scaled by `dpr`), the device bounds, and a rotated clip's mask.
@@ -351,6 +356,8 @@ impl<'a> Painter<'a> {
             scratch_mask: None,
             mask_dirty: (0, 0, 0, 0),
             lcd_lut: smoothing.cleartype.then(|| gamma_lut(smoothing.gamma)),
+            glyph_cov: Vec::new(),
+            blit_scratch: Vec::new(),
         }
     }
 
@@ -1323,7 +1330,9 @@ impl<'a> Painter<'a> {
                 if self.state.composition_mode != CompositionMode::SourceOver {
                     // Non-source-over: composite through the active mode, weighted by the
                     // clip coverage and the glyph's own alpha.
-                    let mut cov = vec![0u8; c_w * c_h];
+                    let cov = &mut self.glyph_cov;
+                    cov.clear();
+                    cov.resize(c_w * c_h, 0);
                     for gy in 0..c_h {
                         for gx in 0..c_w {
                             if color_data[(gy * c_w + gx) * 4 + 3] != 0 {
@@ -1342,9 +1351,10 @@ impl<'a> Painter<'a> {
                         (pw, ph),
                         (start_x, start_y),
                         (c_w as u32, c_h as u32),
-                        &cov,
+                        cov,
                         MaskedSource::Image(color_data, self.state.opacity.clamp(0.0, 1.0)),
                         self.state.composition_mode.into(),
+                        &mut self.blit_scratch,
                     );
                     continue;
                 }
@@ -1446,7 +1456,9 @@ impl<'a> Painter<'a> {
             if self.state.composition_mode != CompositionMode::SourceOver {
                 // Qt's mask blits composite the pen colour through the composition mode; an LCD
                 // mask is reduced to one coverage as for a non-opaque destination.
-                let mut cov = vec![0u8; metrics.width * metrics.height];
+                let cov = &mut self.glyph_cov;
+                cov.clear();
+                cov.resize(metrics.width * metrics.height, 0);
                 for gy in 0..metrics.height {
                     for gx in 0..metrics.width {
                         let glyph_cov = match (&lcd_glyph, &lcd_lut) {
@@ -1476,9 +1488,10 @@ impl<'a> Painter<'a> {
                     (pw, ph),
                     (start_x, start_y),
                     (metrics.width as u32, metrics.height as u32),
-                    &cov,
+                    cov,
                     MaskedSource::Solid(color),
                     self.state.composition_mode.into(),
+                    &mut self.blit_scratch,
                 );
                 continue;
             }
