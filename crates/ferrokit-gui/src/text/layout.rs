@@ -36,6 +36,33 @@ struct ShapedParagraph {
     logical_order: bool,
 }
 
+impl ShapedParagraph {
+    /// The glyphs whose cluster starts in the byte range `lo..hi` of the paragraph. A glyph for a
+    /// ligature the range ends inside belongs to the range it starts in, so a line break inside a
+    /// ligature draws it once, on the first line, and the next line leaves it out.
+    fn glyphs_in(&self, lo: usize, hi: usize) -> Vec<&PositionedGlyph> {
+        if self.logical_order {
+            // Clusters are sorted, so the range is one slice (no scan of the whole paragraph for
+            // every line).
+            let glyphs = &self.layout.glyphs;
+            let start = glyphs.partition_point(|g| g.cluster < lo);
+            let end = glyphs.partition_point(|g| g.cluster < hi);
+            glyphs[start..end.max(start)].iter().collect()
+        } else {
+            self.glyphs_in_by_scan(lo, hi)
+        }
+    }
+
+    /// [`glyphs_in`](Self::glyphs_in) by testing every glyph, for glyphs in visual order.
+    fn glyphs_in_by_scan(&self, lo: usize, hi: usize) -> Vec<&PositionedGlyph> {
+        self.layout
+            .glyphs
+            .iter()
+            .filter(|g| g.cluster >= lo && g.cluster < hi)
+            .collect()
+    }
+}
+
 impl std::fmt::Debug for ShapedParagraph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShapedParagraph")
@@ -461,6 +488,8 @@ impl TextLayout {
             while g_idx < line_end {
                 match composite.paragraph_of(g_idx) {
                     Some(paragraph) => {
+                        // A line break inside a ligature draws the ligature once, on the line
+                        // holding its first grapheme (see `ShapedParagraph::glyphs_in`).
                         let span_end = line_end.min(paragraph.end);
                         self.draw_shaped_span(
                             painter,
@@ -541,12 +570,7 @@ impl TextLayout {
     ) -> Vec<(Color, Vec<PositionedGlyph>)> {
         let byte_lo = composite.starts[span.start] - paragraph.base;
         let byte_hi = composite.starts[span.end] - paragraph.base;
-        let glyphs: Vec<&PositionedGlyph> = paragraph
-            .layout
-            .glyphs
-            .iter()
-            .filter(|g| g.cluster >= byte_lo && g.cluster < byte_hi)
-            .collect();
+        let glyphs = paragraph.glyphs_in(byte_lo, byte_hi);
         if glyphs.is_empty() {
             return Vec::new();
         }
@@ -1081,6 +1105,51 @@ mod tests {
         // leftmost of them.
         let first_two = layout.span_runs(&composite, paragraph, 0..2, Color::BLACK);
         assert_eq!(xs(&first_two[0]), vec![0.0, 2.0]);
+    }
+
+    #[test]
+    fn glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph() {
+        // 300 graphemes, every third pair shaped as one two-grapheme glyph, so lines of any width
+        // start and end on and inside glyphs.
+        let mut text = String::new();
+        let mut glyphs = Vec::new();
+        let mut pen = 0.0f32;
+        let mut byte = 0;
+        for i in 0..150 {
+            text.push_str("ab");
+            if i % 3 == 0 {
+                glyphs.push(glyph(byte, pen, 7.0));
+                pen += 7.0;
+            } else {
+                glyphs.push(glyph(byte, pen, 4.0));
+                glyphs.push(glyph(byte + 1, pen + 4.0, 5.0));
+                pen += 9.0;
+            }
+            byte += 2;
+        }
+        let (layout, composite) = synthetic(&text, glyphs);
+        let paragraph = &composite.paragraphs[0];
+        assert!(paragraph.logical_order);
+        let count = composite.grapheme_count();
+        let mut lines = 0;
+        for width in [1, 2, 7, 13, 64] {
+            let mut start = 0;
+            while start < count {
+                let end = (start + width).min(count);
+                let (lo, hi) = (composite.starts[start], composite.starts[end]);
+                assert_eq!(
+                    paragraph.glyphs_in(lo, hi),
+                    paragraph.glyphs_in_by_scan(lo, hi),
+                    "graphemes {start}..{end}"
+                );
+                let runs = layout.span_runs(&composite, paragraph, start..end, Color::BLACK);
+                let drawn: usize = runs.iter().map(|r| r.1.len()).sum();
+                assert_eq!(drawn, paragraph.glyphs_in_by_scan(lo, hi).len());
+                start = end;
+                lines += 1;
+            }
+        }
+        assert!(lines > 500);
     }
 
     /// Arial from the font database with its data attached, so shaping does not depend on how

@@ -680,6 +680,8 @@
     "lib::text::layout::tests::drawing_a_layout_matches_drawing_its_text_as_one_shaped_string::SB": "unsupported",
     "lib::text::layout::tests::drawing_a_layout_matches_drawing_its_text_as_one_shaped_string::TB": "unsupported",
     "lib::text::layout::tests::a_format_boundary_does_not_move_drawn_glyphs::SB": "unsupported",
-    "lib::text::layout::tests::a_format_boundary_does_not_move_drawn_glyphs::TB": "unsupported"
+    "lib::text::layout::tests::a_format_boundary_does_not_move_drawn_glyphs::TB": "unsupported",
+    "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::SB": "pass",
+    "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::TB": "pass"
   }
 }
