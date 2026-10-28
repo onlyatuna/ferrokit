@@ -693,6 +693,8 @@
     "lib::text::line_break::tests::a_slash_in_front_of_a_digit_breaks_unless_it_is_inside_a_number::SB": "pass",
     "lib::text::line_break::tests::a_slash_in_front_of_a_digit_breaks_unless_it_is_inside_a_number::TB": "pass",
     "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::SB": "pass",
-    "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::TB": "pass"
+    "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::TB": "pass",
+    "test_text_layout_oracle::default_wrap_modes_are_those_of_qt::SB": "pass",
+    "test_text_layout_oracle::default_wrap_modes_are_those_of_qt::TB": "pass"
   }
 }

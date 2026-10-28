@@ -137,6 +137,23 @@ impl PartialEq for CompositeCache {
     }
 }
 
+/// How a line that is wider than the wrap width is broken (`QTextOption::WrapMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrapMode {
+    /// Lines are never wrapped; the wrap width does not limit them.
+    NoWrap,
+    /// Lines wrap at word boundaries only. A word wider than the width is not broken: it
+    /// overflows. This is what `QTextOption` and so `QTextLayout` start with, and what `QLabel`
+    /// sets for its word wrap.
+    #[default]
+    WordWrap,
+    /// Lines wrap at any character, with no regard for word boundaries.
+    WrapAnywhere,
+    /// Lines wrap at word boundaries, and inside a word that does not fit a line of its own.
+    /// This is what `QTextDocument` starts with (and so `QTextEdit` and `QPlainTextEdit`).
+    WrapAtWordBoundaryOrAnywhere,
+}
+
 /// Multi-line text layout engine (`QTextLayout`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLayout {
@@ -151,6 +168,8 @@ pub struct TextLayout {
     formats: Vec<FormatRange>,
     /// Word wrapping width constraint (if None, single unbounded line per paragraph).
     wrap_width: Option<f32>,
+    /// How a line wider than `wrap_width` is broken.
+    wrap_mode: WrapMode,
     /// Horizontal paragraph alignment.
     alignment: Alignment,
     /// Laid-out lines.
@@ -173,6 +192,7 @@ impl TextLayout {
             preedit_text: String::new(),
             formats: Vec::new(),
             wrap_width: None,
+            wrap_mode: WrapMode::default(),
             alignment: Alignment::LEFT,
             lines: Vec::new(),
             position: PointF::new(0.0, 0.0),
@@ -240,6 +260,18 @@ impl TextLayout {
     /// Sets the line wrap width limit.
     pub fn set_wrap_width(&mut self, width: Option<f32>) {
         self.wrap_width = width;
+        self.clear_layout();
+    }
+
+    /// Returns the wrap mode.
+    #[inline]
+    pub fn wrap_mode(&self) -> WrapMode {
+        self.wrap_mode
+    }
+
+    /// Sets the wrap mode (`QTextOption::setWrapMode`); `WordWrap` until set.
+    pub fn set_wrap_mode(&mut self, mode: WrapMode) {
+        self.wrap_mode = mode;
         self.clear_layout();
     }
 
@@ -315,7 +347,21 @@ impl TextLayout {
         }
 
         let metrics = FontMetrics::from_font(&self.font);
-        let max_width = self.wrap_width.unwrap_or(f32::MAX);
+        let wraps = self.wrap_mode != WrapMode::NoWrap;
+        let max_width = if wraps { self.wrap_width.unwrap_or(f32::MAX) } else { f32::MAX };
+        let right_limit = if wraps {
+            self.position.x + self.wrap_width.unwrap_or(f32::INFINITY)
+        } else {
+            f32::INFINITY
+        };
+        let breaks_at_words = matches!(
+            self.wrap_mode,
+            WrapMode::WordWrap | WrapMode::WrapAtWordBoundaryOrAnywhere
+        );
+        let breaks_anywhere = matches!(
+            self.wrap_mode,
+            WrapMode::WrapAnywhere | WrapMode::WrapAtWordBoundaryOrAnywhere
+        );
 
         // `layout_cursor < total_graphemes` here, so `starts` has an entry for it.
         let line_start_grapheme = self.layout_cursor;
@@ -352,19 +398,25 @@ impl TextLayout {
             // (it hangs past the line end when it does not fit); a word is added only if it fits
             // after the spaces before it.
             if !is_space && curr_x + g_width > max_width && curr_grapheme > line_start_grapheme {
-                wrapped = true;
-                // Wrapping needed
-                if let Some(break_pos) = last_break_grapheme {
-                    if break_pos > line_start_grapheme {
+                // Wrapping needed: at the last place a word ends, if the mode breaks there and
+                // there is one on this line.
+                match last_break_grapheme {
+                    Some(break_pos) if breaks_at_words && break_pos > line_start_grapheme => {
+                        wrapped = true;
                         curr_grapheme = break_pos;
                         advances.truncate(last_break_advances_len);
                         // Recompute byte count up to break_pos
                         line_bytes = composite.starts[curr_grapheme] - byte_start;
                         break;
                     }
+                    // Otherwise before this character, if the mode breaks inside words; the others
+                    // let the word overflow.
+                    _ if breaks_anywhere => {
+                        wrapped = true;
+                        break;
+                    }
+                    _ => {}
                 }
-                // If no break point was found, break at current character (hard break)
-                break;
             }
 
             curr_x += g_width;
@@ -373,7 +425,7 @@ impl TextLayout {
             has_word |= !is_space;
 
             // Track word break opportunity (UAX #14)
-            if has_word && composite.break_before[curr_grapheme + 1] {
+            if breaks_at_words && has_word && composite.break_before[curr_grapheme + 1] {
                 last_break_grapheme = Some(curr_grapheme + 1);
                 last_break_advances_len = advances.len();
             }
@@ -424,7 +476,7 @@ impl TextLayout {
             descent: metrics.descent,
             leading: metrics.leading(),
             natural_width: natural_w,
-            right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
+            right_limit,
             grapheme_x_advances: advances,
         })
     }
@@ -909,6 +961,7 @@ mod tests {
         );
 
         let mut layout = TextLayout::new(text.clone(), font);
+        layout.set_wrap_mode(WrapMode::WrapAnywhere);
         layout.set_wrap_width(Some(shaped + 0.001));
         layout.do_layout();
         let first = layout.line_at(0).unwrap();

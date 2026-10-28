@@ -36,7 +36,7 @@ use ferrokit_gui::text::font::{Font, SharedFontData};
 use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
 #[cfg(windows)]
 use ferrokit_gui::text::font_database::with_global_font_database;
-use ferrokit_gui::text::layout::TextLayout;
+use ferrokit_gui::text::layout::{TextLayout, WrapMode};
 use ferrokit_gui::text::Edge;
 use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
@@ -98,12 +98,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "breaks/syn_trailing_line_separator/",
         "as syn_line_separator; Qt also gives a text ending in U+2028 an empty last line",
     ),
-    (
-        "breaks/syn_long_word_word_mode/",
-        "`QTextOption::WordWrap` (the default of a QTextLayout) never breaks inside a word and lets \
-         a long one overflow; ferrokit always falls back to a break between characters \
-         (`WrapAtWordBoundaryOrAnywhere`), and has no way to ask for the other mode",
-    ),
     // --- widths ---
     (
         "natural/arial_kerned_words/50",
@@ -122,6 +116,16 @@ fn hex_decode(s: &str) -> String {
         .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).expect("hex digit pair"))
         .collect();
     String::from_utf8(bytes).expect("oracle text is UTF-8")
+}
+
+fn wrap_mode(name: &str) -> WrapMode {
+    match name {
+        "nowrap" => WrapMode::NoWrap,
+        "word" => WrapMode::WordWrap,
+        "anywhere" => WrapMode::WrapAnywhere,
+        "word-or-anywhere" => WrapMode::WrapAtWordBoundaryOrAnywhere,
+        other => panic!("unknown wrap mode {other} in the oracle"),
+    }
 }
 
 /// What the generator recorded for one font line.
@@ -273,6 +277,7 @@ fn check_wrap(report: &mut Report, tokens: &[&str]) {
         .collect();
 
     let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    layout.set_wrap_mode(wrap_mode(tokens[3]));
     layout.set_wrap_width(Some(width.parse().unwrap()));
     layout.do_layout();
     let offs16 = grapheme_offsets16(&text);
@@ -350,6 +355,7 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
         "center" => Alignment::H_CENTER,
         other => panic!("unknown alignment {other} in the oracle"),
     });
+    layout.set_wrap_mode(WrapMode::WrapAtWordBoundaryOrAnywhere);
     layout.set_wrap_width(Some(width.parse().unwrap()));
     layout.do_layout();
     let offs16 = grapheme_offsets16(&text);
@@ -462,4 +468,21 @@ fn arial_cursor_x_matches_qt() {
 #[test]
 fn arial_line_breaks_match_qt() {
     run(&["wrap"], &["arial"]);
+}
+
+/// `QTextOption()` starts with `WordWrap` (what a `QTextLayout` and a `QLabel` use) and
+/// `QTextDocument` with `WrapAtWordBoundaryOrAnywhere` (which `QTextEdit` and `QPlainTextEdit`
+/// keep); measured in PySide6 6.11.2 with `QTextOption().wrapMode()` and
+/// `QTextDocument().defaultTextOption().wrapMode()`.
+#[test]
+fn default_wrap_modes_are_those_of_qt() {
+    use ferrokit_gui::text::document::TextDocument;
+    assert_eq!(
+        TextLayout::new("", Font::new("Arial", 16.0)).wrap_mode(),
+        WrapMode::WordWrap
+    );
+    assert_eq!(
+        TextDocument::new().wrap_mode(),
+        WrapMode::WrapAtWordBoundaryOrAnywhere
+    );
 }

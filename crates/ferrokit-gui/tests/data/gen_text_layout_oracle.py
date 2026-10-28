@@ -24,11 +24,12 @@ values are Qt's doubles, shortest round-trip decimal):
                                      nextCursorPosition from 0, on one unwrapped line;
                                      then N is the count and the pairs follow
     wrap CASE FONT MODE WIDTH HEXTEXT N START:LEN:NATURAL:ENDX ...
-                                     lines of the text wrapped at WIDTH (mode: word | anywhere):
+                                     lines of the text wrapped at WIDTH (mode: nowrap | word | anywhere
+                                     | word-or-anywhere, QTextOption's four wrap modes):
                                      textStart, textLength, naturalTextWidth() (trailing spaces
                                      excluded) and cursorToX(textStart + textLength) of each
     align CASE FONT ALIGN WIDTH HEXTEXT N START:LEN:X0:XEND ...
-                                     lines wrapped (as `anywhere`) at WIDTH and aligned
+                                     lines wrapped (as `word-or-anywhere`) at WIDTH and aligned
                                      (left | right | center): textStart, textLength,
                                      cursorToX(textStart) and cursorToX(textStart + textLength)
 """
@@ -185,34 +186,42 @@ CURSOR_CASES = [
     ("arial_mixed_rtl", "arial", "abc \u05e9\u05dc\u05d5\u05dd def"),
 ]
 
+# The same texts in every wrap mode.
+MODE_CASES = [
+    ("syn_mode_words", "aaaa bbbb cccc dddd", [30, 40, 70]),
+    ("syn_mode_long", "aa bbbbbbbbbbbbbbbbbbbb cc  dd", [40, 80]),
+    ("syn_mode_spaces", "aaaa bbbb  ", [30, 36, 100]),
+    ("syn_mode_hyphen", "ab-cd ef-gh", [30, 50]),
+    ("syn_mode_leading", "  aaaa bbbb", [30, 100]),
+]
 PANGRAM = "The quick brown fox jumps over the lazy dog"
 
 # (name, font id, mode, text, widths): wrapped lines.
 WRAP_CASES = [
-    ("syn_words", "syn", "anywhere", "AT Wa To Ty VA aaa bbb ccc", [60, 100, 140, 200, 400]),
-    ("syn_hyphen", "syn", "anywhere", "ab-cd ef-gh ij-kl", [50, 80, 120]),
-    ("syn_trailing_space", "syn", "anywhere", "aaaa bbbb cccc", [60, 62, 64, 70, 80, 100]),
-    ("syn_long_word", "syn", "anywhere", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
+    ("syn_words", "syn", "word-or-anywhere", "AT Wa To Ty VA aaa bbb ccc", [60, 100, 140, 200, 400]),
+    ("syn_hyphen", "syn", "word-or-anywhere", "ab-cd ef-gh ij-kl", [50, 80, 120]),
+    ("syn_trailing_space", "syn", "word-or-anywhere", "aaaa bbbb cccc", [60, 62, 64, 70, 80, 100]),
+    ("syn_long_word", "syn", "word-or-anywhere", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
     ("syn_long_word_word_mode", "syn", "word", "aa bbbbbbbbbbbbbbbbbbbb cc", [40, 80, 120]),
     # a space that does not fit hangs past the width in Qt
-    ("syn_hanging_space", "syn", "anywhere", "aaaa bbbb cccc", [30, 31, 33, 34, 35]),
-    ("syn_hanging_spaces", "syn", "anywhere", "aaaa   bbbb", [30, 32, 38, 60]),
-    ("syn_hyphen_hang", "syn", "anywhere", "ab-cd ef-gh ij-kl", [76, 77, 80]),
+    ("syn_hanging_space", "syn", "word-or-anywhere", "aaaa bbbb cccc", [30, 31, 33, 34, 35]),
+    ("syn_hanging_spaces", "syn", "word-or-anywhere", "aaaa   bbbb", [30, 32, 38, 60]),
+    ("syn_hyphen_hang", "syn", "word-or-anywhere", "ab-cd ef-gh ij-kl", [76, 77, 80]),
     # the spaces at the end of the text stay in the width of the last line
-    ("syn_final_spaces", "syn", "anywhere", "aaaa bbbb  ", [30, 100]),
-    ("syn_leading_spaces", "syn", "anywhere", "  aaaa bbbb", [30, 40, 100]),
-    ("syn_only_spaces", "syn", "anywhere", "      ", [10, 100]),
+    ("syn_final_spaces", "syn", "word-or-anywhere", "aaaa bbbb  ", [30, 100]),
+    ("syn_leading_spaces", "syn", "word-or-anywhere", "  aaaa bbbb", [30, 40, 100]),
+    ("syn_only_spaces", "syn", "word-or-anywhere", "      ", [10, 100]),
     # QTextLayout does not break at '\n' (a paragraph separator belongs to QTextDocument); it breaks
     # at U+2028
-    ("syn_newline", "syn", "anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
-    ("syn_trailing_newline", "syn", "anywhere", "aaa bbb\n", [40, 200]),
-    ("syn_line_separator", "syn", "anywhere", "aaa\u2028bbb ccc\u2028\u2028ddd", [30, 60, 120]),
-    ("syn_trailing_line_separator", "syn", "anywhere", "aaa bbb\u2028", [40, 200]),
-    ("syn_liga_wrap", "syn", "anywhere", "fi fl ffi fi", [20, 40, 80]),
-    ("syn_slash", "syn", "anywhere", "ab/cd/ef gh/ij/kl", [30, 50, 90]),
-    ("syn_comma", "syn", "anywhere", "ab,cd,ef gh,ij,kl", [30, 50, 90]),
-    ("arial_pangram", "arial", "anywhere", PANGRAM, [60, 100, 160, 240, 500]),
-    ("arial_kerned_words", "arial", "anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
+    ("syn_newline", "syn", "word-or-anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
+    ("syn_trailing_newline", "syn", "word-or-anywhere", "aaa bbb\n", [40, 200]),
+    ("syn_line_separator", "syn", "word-or-anywhere", "aaa\u2028bbb ccc\u2028\u2028ddd", [30, 60, 120]),
+    ("syn_trailing_line_separator", "syn", "word-or-anywhere", "aaa bbb\u2028", [40, 200]),
+    ("syn_liga_wrap", "syn", "word-or-anywhere", "fi fl ffi fi", [20, 40, 80]),
+    ("syn_slash", "syn", "word-or-anywhere", "ab/cd/ef gh/ij/kl", [30, 50, 90]),
+    ("syn_comma", "syn", "word-or-anywhere", "ab,cd,ef gh,ij,kl", [30, 50, 90]),
+    ("arial_pangram", "arial", "word-or-anywhere", PANGRAM, [60, 100, 160, 240, 500]),
+    ("arial_kerned_words", "arial", "word-or-anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
 ]
 
 
@@ -224,6 +233,14 @@ ALIGN_CASES = [
     ("arial_align_words", "arial", "right", "The quick brown fox jumps over", [60, 120]),
     ("arial_align_words", "arial", "center", "The quick brown fox jumps over", [60, 120]),
 ]
+
+
+WRAP_MODES = {
+    "nowrap": QTextOption.WrapMode.NoWrap,
+    "word": QTextOption.WrapMode.WordWrap,
+    "anywhere": QTextOption.WrapMode.WrapAnywhere,
+    "word-or-anywhere": QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere,
+}
 
 
 def utf16(text, upto=None):
@@ -254,11 +271,7 @@ def cursor_row(case, font_id, font, text):
 def wrap_row(case, font_id, font, mode, width, text):
     layout = QTextLayout(text, font)
     opt = QTextOption()
-    opt.setWrapMode(
-        QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
-        if mode == "anywhere"
-        else QTextOption.WrapMode.WordWrap
-    )
+    opt.setWrapMode(WRAP_MODES[mode])
     layout.setTextOption(opt)
     layout.beginLayout()
     lines = []
@@ -296,7 +309,7 @@ def lb_rows(font_id, font):
             text = tpl % chr(c)
             head = text[: text.index(chr(c)) + 1]
             width = fm.horizontalAdvance(text[: len(head) + 2]) + 0.25
-            rows.append(wrap_row("lb_%s_%02x" % (name, c), font_id, font, "anywhere", width, text))
+            rows.append(wrap_row("lb_%s_%02x" % (name, c), font_id, font, "word-or-anywhere", width, text))
     return rows
 
 
@@ -359,6 +372,10 @@ def main():
     for case, font_id, mode, text, widths in WRAP_CASES:
         for w in widths:
             print(" ".join(wrap_row(case, font_id, fonts[font_id], mode, w, text)))
+    for mode in WRAP_MODES:
+        for case, text, widths in MODE_CASES:
+            for w in widths:
+                print(" ".join(wrap_row("%s_%s" % (case, mode), "syn", fonts["syn"], mode, w, text)))
     for row in lb_rows("syn", fonts["syn"]):
         print(" ".join(row))
     for case, font_id, align, text, widths in ALIGN_CASES:
