@@ -202,3 +202,59 @@ mod shaping {
         assert_eq!(advance("1111", &both), advance("1111", &kern_off));
     }
 }
+
+/// The same kerning behaviour with a font that travels with the tests
+/// (`tests/data/oracle_text.ttf`, kerning pair `AV`), so it runs on every platform and cannot
+/// be skipped for lack of an installed font.
+mod embedded_shaping {
+    use super::*;
+    use ferrokit_gui::text::font::SharedFontData;
+    use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
+    use ferrokit_gui::text::font_metrics::FontMetrics;
+
+    const TEXT: &str = "AVAVAV";
+
+    fn advance(text: &str, font: &Font) -> f32 {
+        set_application_device_pixel_ratio(1.25);
+        FontMetrics::from_font(font).horizontal_advance_exact(text, font)
+    }
+
+    fn oracle_font() -> Font {
+        Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
+            include_bytes!("data/oracle_text.ttf").to_vec(),
+        ))
+    }
+
+    #[test]
+    fn the_embedded_font_is_the_one_that_kerns() {
+        // Not a no-op: without this the tests below could pass on a fallback font.
+        let font = oracle_font();
+        let unkerned = oracle_font().with_feature(FontTag::KERN, 0);
+        assert!(advance(TEXT, &unkerned) > advance(TEXT, &font) + 1.0);
+    }
+
+    #[test]
+    fn kern_feature_overrides_kerning() {
+        let plain = oracle_font();
+        let no_kern = oracle_font().with_feature(FontTag::KERN, 0);
+        assert!(advance(TEXT, &no_kern) > advance(TEXT, &plain) + 1.0);
+        // An explicit `kern` 1 is what Qt does anyway.
+        let kern_on = oracle_font().with_feature(FontTag::KERN, 1);
+        assert_eq!(advance(TEXT, &kern_on), advance(TEXT, &plain));
+        // Unsetting goes back to the default.
+        let mut unset = no_kern.clone();
+        unset.unset_feature(FontTag::KERN);
+        assert_eq!(advance(TEXT, &unset), advance(TEXT, &plain));
+    }
+
+    #[test]
+    fn features_are_part_of_the_measurement_identity() {
+        let plain = oracle_font();
+        let no_kern = oracle_font().with_feature(FontTag::KERN, 0);
+        let before = advance(TEXT, &plain);
+        let with = advance(TEXT, &no_kern);
+        assert_ne!(before, with);
+        assert_eq!(advance(TEXT, &plain), before);
+        assert_eq!(advance(TEXT, &no_kern), with);
+    }
+}

@@ -47,22 +47,30 @@ const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
 /// See the module documentation.
 const TOLERANCE: f64 = 1.0 / 128.0;
 
-/// Cases where ferrokit differs from Qt: `(key, reason)`. A key is `cursor/<case>`,
+/// Cases where ferrokit differs from Qt: `(key, reason, bound)`. A key is `cursor/<case>`,
 /// `cursor-trailing/<case>`, `hit/<case>`, `breaks/<case>/<width>`, `endx/<case>/<width>`, `natural/<case>/<width>` or
 /// `align/<case>/<align>/<width>`; an entry ending in `/` stands for every key that
 /// starts with it, and all of them must diverge. The cursor and natural-width entries are
 /// differences of values; the `breaks` entries are different lines.
-const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
+///
+/// `bound` is the largest deviation, in px, the entry accepts: a difference of values that
+/// grows past it fails, and so does one that turns into different lines or positions. `None`
+/// is for entries that are about different positions (`hit/`). Every entry must name at least
+/// one case (`every_known_divergence_names_at_least_one_case`), so a misspelt or stale key
+/// cannot keep a test green.
+const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
     // --- cursor_to_x ---
     (
         "cursor/syn_liga_ffi",
         "Qt divides a ligature over its characters in 26.6 fixed point, `floor(advance / n)` per \
          character (the three-letter `ffi`, 15.625 px: 5.203125 px each); ferrokit divides in f32 \
          (5.2083). 0.0104 px at most, and only for ligatures of 3+ characters",
+        Some(0.011),
     ),
     (
         "cursor/syn_liga_run",
         "same ligature division as syn_liga_ffi",
+        Some(0.011),
     ),
     // --- ligatures ---
     (
@@ -70,39 +78,47 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "the trailing edge of a grapheme inside a ligature is the end of the whole glyph in Qt \
          (`cursorToX(.., Trailing)` moves to the next glyph cluster); ferrokit's is the end of \
          the grapheme, the ligature divided evenly",
+        Some(5.5),
     ),
     (
         "cursor-trailing/syn_liga_ffi",
         "as cursor-trailing/syn_liga_fi",
+        Some(10.5),
     ),
     (
         "cursor-trailing/syn_liga_fl_caret",
         "as cursor-trailing/syn_liga_fi",
+        Some(6.0),
     ),
     (
         "cursor-trailing/syn_liga_run",
         "as cursor-trailing/syn_liga_fi",
+        Some(10.5),
     ),
     (
         "hit/syn_liga_run",
         "`CursorOnCharacter` inside a ligature is the start of the glyph in Qt, the grapheme \
          under the point in ferrokit",
+        None,
     ),
     (
         "hit/syn_combining_acute",
         "over the first letter of `a\u{301}e\u{301}b` Qt answers the end of the text (5) for \
          `CursorBetweenCharacters`; ferrokit the end of that letter's grapheme. [INFERENCE: Qt's \
          `positionInLigature` with a two character cluster]",
+        None,
     ),
     (
         "cursor/arial_arabic_lam_alef",
         "inside the Arabic lam-alef glyph Qt puts the cursor at the glyph's end where it divides \
          left-to-right ligatures; ferrokit divides it evenly. [INFERENCE: Qt's right to left \
          branch of `cursorToX`]",
+        Some(4.4),
     ),
     (
         "cursor-trailing/arial_arabic_lam_alef",
         "as cursor/arial_arabic_lam_alef, for the trailing edge",
+        Some(17.6),
     ),
     // --- bidi ---
     (
@@ -111,16 +127,19 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          position takes the neighbouring item from the previous line and returns a position \
          that depends on that unrelated item (the line width, clamped, or a sum of widths); \
          ferrokit keeps the cursor on the run",
+        Some(40.0),
     ),
     (
         "hit/syn_hitwrap_rtl_base/45/line0",
         "over the space that hangs at the end of a wrapped right to left line `xToCursor` \
          answers the position after the space in Qt; ferrokit the one before it, as for any \
          other right to left grapheme halfway. [INFERENCE]",
+        None,
     ),
     (
         "hit/syn_hitwrap_rtl_base/45/line1",
         "as hit/syn_hitwrap_rtl_base/45/line0",
+        None,
     ),
     // --- widths ---
     (
@@ -130,18 +149,22 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          `negativeRightBearing`): the `A` that ends `AVAVA` hangs 1/64 px over, so Qt's width is \
          47.4375 against its `cursorToX` at the line end of 47.421875. [INFERENCE from the values; \
          ferrokit has no outline bounds of a glyph at hand]",
+        Some(0.016),
     ),
     (
         "natural/arial_pangram/100",
         "same right bearing, of the `r` that ends `jumps over`: 0.21875 px",
+        Some(0.22),
     ),
     (
         "natural/arial_pangram/240",
         "same right bearing as arial_pangram/100",
+        Some(0.22),
     ),
     (
         "natural/arial_rtl_wrap/",
         "same right bearing, of the `f` that ends `def`: 0.546875 px",
+        Some(0.55),
     ),
 ];
 
@@ -553,19 +576,43 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
     report.push((key, Outcome::Dev(dev)));
 }
 
-/// Runs every oracle line of `kind` whose font id is one of `fonts`, prints the table of
-/// deviations (`--nocapture`) and fails on every unexpected result.
-fn run(kinds: &[&str], fonts: &[&str]) {
-    set_application_device_pixel_ratio(2.0);
-    let mut report = Report::new();
-    for line in ORACLE
+/// Number of lines of the oracle file per `(kind, font id)`. A generator run that adds, drops
+/// or renames lines must update this table, so fixtures cannot disappear unnoticed, and every
+/// `run` checks that it really went through all of the lines it stands for.
+const EXPECTED_LINES: &[(&str, &str, usize)] = &[
+    ("align", "arial", 4),
+    ("align", "syn", 13),
+    ("cursor", "arial", 24),
+    ("cursor", "syn", 21),
+    ("hit", "arial", 3),
+    ("hit", "syn", 9),
+    ("hitwrap", "syn", 17),
+    ("wrap", "arial", 11),
+    ("wrap", "syn", 241),
+];
+
+fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {
+    ORACLE
         .lines()
         .filter(|l| !l.starts_with('#') && !l.starts_with("font "))
-    {
-        let t: Vec<&str> = line.split(' ').collect();
+        .map(|l| l.split(' ').collect())
+}
+
+fn pattern_matches(key: &str, pattern: &str) -> bool {
+    key == pattern || (pattern.ends_with('/') && key.starts_with(pattern))
+}
+
+/// Every comparison of the oracle lines of `kinds` whose font id is one of `fonts`, and how
+/// many lines that was.
+fn collect(kinds: &[&str], fonts: &[&str]) -> (Report, usize) {
+    set_application_device_pixel_ratio(2.0);
+    let mut report = Report::new();
+    let mut lines = 0;
+    for t in oracle_lines() {
         if !kinds.contains(&t[0]) || !fonts.contains(&t[2]) {
             continue;
         }
+        lines += 1;
         match t[0] {
             "cursor" => check_cursor(&mut report, &t),
             "hit" => check_hit(&mut report, &t),
@@ -575,16 +622,29 @@ fn run(kinds: &[&str], fonts: &[&str]) {
             other => panic!("unknown oracle line kind {other}"),
         }
     }
-    assert!(
-        !report.is_empty(),
-        "no oracle line matched {kinds:?} {fonts:?}"
+    (report, lines)
+}
+
+/// Runs every oracle line of `kind` whose font id is one of `fonts`, prints the table of
+/// deviations (`--nocapture`) and fails on every unexpected result.
+fn run(kinds: &[&str], fonts: &[&str]) {
+    let (report, lines) = collect(kinds, fonts);
+    let expected: usize = EXPECTED_LINES
+        .iter()
+        .filter(|(k, f, _)| kinds.contains(k) && fonts.contains(f))
+        .map(|e| e.2)
+        .sum();
+    assert!(expected > 0, "no oracle line is expected for {kinds:?} {fonts:?}");
+    assert_eq!(
+        lines, expected,
+        "the oracle holds {lines} lines for {kinds:?} {fonts:?}, EXPECTED_LINES says {expected}"
     );
 
     let mut failures = Vec::new();
     for (key, outcome) in &report {
         let known = KNOWN_DIVERGENCES
             .iter()
-            .find(|(p, _)| key == p || (p.ends_with('/') && key.starts_with(p)));
+            .find(|(p, _, _)| pattern_matches(key, p));
         match outcome {
             Outcome::Dev(d) => println!("{key}: max deviation {d:.6} px"),
             Outcome::Mismatch(m) => println!("{key}: {m}"),
@@ -592,10 +652,20 @@ fn run(kinds: &[&str], fonts: &[&str]) {
         match (known, outcome.agrees()) {
             (None, true) => {}
             (None, false) => failures.push(format!("{key}: {outcome:?}")),
-            (Some((_, why)), true) => failures.push(format!(
+            (Some((_, why, _)), true) => failures.push(format!(
                 "{key}: listed in KNOWN_DIVERGENCES ({why}) but now agrees with Qt; remove the entry"
             )),
-            (Some(_), false) => {}
+            (Some((_, _, Some(max))), false) => match outcome {
+                Outcome::Dev(d) if d > max => failures.push(format!(
+                    "{key}: deviates {d:.6} px, more than the {max} px its KNOWN_DIVERGENCES entry allows"
+                )),
+                Outcome::Mismatch(m) => failures.push(format!(
+                    "{key}: its KNOWN_DIVERGENCES entry is about a difference of at most {max} px, \
+                     but it is now: {m}"
+                )),
+                Outcome::Dev(_) => {}
+            },
+            (Some((_, _, None)), false) => {}
         }
     }
     assert!(
@@ -604,6 +674,41 @@ fn run(kinds: &[&str], fonts: &[&str]) {
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[test]
+fn the_oracle_file_holds_the_expected_fixtures() {
+    let mut counts: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for t in oracle_lines() {
+        *counts.entry((t[0], t[2])).or_default() += 1;
+    }
+    let expected: BTreeMap<(&str, &str), usize> =
+        EXPECTED_LINES.iter().map(|&(k, f, n)| ((k, f), n)).collect();
+    assert_eq!(
+        counts, expected,
+        "tests/data/text_layout_oracle.txt and EXPECTED_LINES disagree; regenerate the file or \
+         update the table on purpose"
+    );
+}
+
+#[test]
+fn every_known_divergence_names_at_least_one_case() {
+    let fonts: &[&str] = if cfg!(windows) {
+        &["syn", "arial"]
+    } else {
+        &["syn"]
+    };
+    let (report, _) = collect(&["cursor", "hit", "hitwrap", "wrap", "align"], fonts);
+    for (pattern, _, _) in KNOWN_DIVERGENCES {
+        // The Arial cases only run where Arial is installed (Windows).
+        if !cfg!(windows) && pattern.contains("arial_") {
+            continue;
+        }
+        assert!(
+            report.iter().any(|(key, _)| pattern_matches(key, pattern)),
+            "KNOWN_DIVERGENCES entry {pattern:?} matches no oracle case"
+        );
+    }
 }
 
 #[test]
