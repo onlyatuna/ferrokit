@@ -30,12 +30,30 @@ Usage (from the repository root; a nightly toolchain with the `miri` component):
     python tools/miri_sweep.py [--crate ferrokit-core] [--targets lib,test_signal_owner_binding]
         [--cross x86_64-unknown-linux-gnu] [--toolchain nightly] [--models SB,TB]
         [--timeout SECONDS] [--flags "..."] [--baseline tools/miri_baseline.json]
-        [--run-isolation-allowlist] [--fail-on-regression] [--shard I/N] [--list-targets]
+        [--run-isolation-allowlist] [--fail-on-regression] [--shard I/N] [--list-targets] [--list-units]
         [--summary summary.md] [--out results.json] [--check-coverage]
 
 `--check-coverage` runs no Miri. Every `tests/*.rs` file of the baseline's crate must be either in its
 `targets` (swept) or in its `excluded` map ({target: reason}, reason non-empty). A file in neither, a
 target in both, or an entry with no test file fails.
+
+Sharding (`--shard I/N`, used by the CI matrix): the shards partition the tests, not the targets, so a
+target with many tests (`lib`) can be spread over shards. A sweep runs a target as one Miri process
+with all its tests, and starts it again only after a test that stops the run (UB, unsupported, ...),
+so the cost of a target is roughly its tests plus a restart per stopping test. The plan therefore
+weighs each test: the target's seconds in `tools/miri_target_weights.json` are spread over the tests
+the baseline records for it, a stopping test counting twice a test that does not (STOPPER_WEIGHT). The
+targets (by name) and their tests (by name) are laid end to end and cut into N equal parts, so every
+shard gets one contiguous run, at most N-1 targets are split (each split target is built in each shard
+that holds a part of it), and the same inputs give the same plan on every runner. A target is split at
+test names: a part is "tests up to this name", so a test that is not in the baseline yet runs in the
+one shard whose part its name falls into, and no shard needs to list the others' targets. A shard
+reports only the tests it ran, checks the baseline only for the tests it is responsible for, and runs
+the isolation allowlist entries it is responsible for; the leak pseudo-test is judged only by a shard
+that runs the whole target. `--list-units` prints what a shard (or everything) runs, per target and per
+baseline test with its estimated seconds, without running Miri. Weights only balance the shards: a
+stale or missing one changes how long a shard takes, never which tests run, and the plan covers every
+test exactly once whatever the weights are.
 """
 
 import argparse
@@ -164,7 +182,7 @@ def validate_flags(raw_flags):
     return raw_flags.split()
 
 
-def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
+def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None, only=None):
     env = dict(os.environ)
     # With isolation disabled the program sees the host environment: a host Wayland/X11 session
     # (for example WSLg) would make window creation connect to it and Miri cannot run that. CI has
@@ -190,6 +208,13 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None):
     cmd += target_args(target) + ["--", "--test-threads=1"]
     if exact_test is not None:
         cmd += ["--exact", exact_test]
+    elif only is not None:
+        # Part of a target (its chunk of a sharded sweep): name exactly the tests still to run.
+        remaining = sorted(set(only) - set(skip))
+        if not remaining:
+            raise ValueError(f"no tests left to run in {target}")
+        cmd.append("--exact")
+        cmd += remaining
     elif skip:
         cmd.append("--exact")
         for name in sorted(skip):
@@ -263,13 +288,14 @@ def last_start(text, name):
     return starts[-1] if starts else -1
 
 
-def sweep_target(args, target, names, model, results, excerpts):
+def sweep_target(args, target, names, model, results, excerpts, partial=False):
+    """Run `names` of `target`; `partial` when they are only some of the target's tests (a shard's chunk)."""
     done = set()
     started = time.time()
     for _ in range(len(names) + 3):
         if len(done) == len(names):
             break
-        text, timed_out = run_miri(args, target, model, done)
+        text, timed_out = run_miri(args, target, model, done, only=names if partial else None)
         outcomes, unresolved = scan_outcomes(text)
         for name, outcome in outcomes:
             if name in done or name not in names:
@@ -339,7 +365,7 @@ def sweep_target(args, target, names, model, results, excerpts):
     print(f"{target} {model}: {len(names)} tests {counts} in {round(time.time() - started)}s", flush=True)
 
 
-def run_isolation_allowlist(args, allowlist, swept_targets, models):
+def run_isolation_allowlist(args, allowlist, swept_targets, models, owns=None):
     iso_results = {}
     for item_key, meta in sorted(allowlist.items()):
         reason = (meta.get("reason") or "").strip()
@@ -347,6 +373,8 @@ def run_isolation_allowlist(args, allowlist, swept_targets, models):
             raise ValueError(f"Isolation allowlist entry `{item_key}` is missing a non-empty `reason`.")
         target, test_name = item_key.split("::", 1)
         if target not in swept_targets:
+            continue
+        if owns is not None and not owns(target, test_name):
             continue
         for model in models:
             text, timed_out = run_miri(
@@ -381,7 +409,13 @@ def run_isolation_allowlist(args, allowlist, swept_targets, models):
     return iso_results
 
 
-def compare_with_baseline(results, iso_results, baseline, swept_targets, models):
+def compare_with_baseline(results, iso_results, baseline, swept_targets, models, owns=None):
+    """Regressions and improvements of `results` against `baseline`.
+
+    `owns(target, test)` says whether this run was responsible for a test. A shard runs only part of
+    a target, so the baseline tests of the other shards are neither missing nor regressed here; with
+    `owns=None` every test of a swept target is expected.
+    """
     base_res = baseline.get("results", {})
     controls = set(baseline.get("negative_controls", []))
     allowlist = baseline.get("isolation_allowlist", {})
@@ -412,9 +446,9 @@ def compare_with_baseline(results, iso_results, baseline, swept_targets, models)
         else:
             regressions.append(f"{key}: baseline {exp_kind} -> {cur_kind}")
     for key, exp_kind in sorted(base_res.items()):
-        target = key.split("::", 1)[0]
-        model = key.rsplit("::", 1)[-1]
-        if target in swept_targets and model in models and key not in results:
+        target, rest = key.split("::", 1)
+        test, model = rest.rsplit("::", 1)
+        if target in swept_targets and model in models and key not in results and (owns is None or owns(target, test)):
             if exp_kind == "leak" and f"::{LEAK_PSEUDO_TEST}::" in key:
                 improvements.append(f"{key}: baseline leak -> no leak")
             else:
@@ -448,6 +482,7 @@ def format_summary(args, models, results, iso_results, baseline, regressions, im
         f"- Crate: `{args.crate}`",
         f"- Target: `{args.cross or 'host'}`",
         f"- Toolchain: `{args.toolchain}`",
+        *([f"- Shard: `{args.shard[0]}/{args.shard[1]}`"] if getattr(args, "shard", None) else []),
         f"- Isolation: enabled by default (`-Zmiri-disable-isolation` forbidden in global flags)",
         "",
         "| Model | Total | Pass | UB (Open Defect) | UB (Negative Control) | Panic / Timeout | Env / Unsupported (Not a Pass) |",
@@ -517,9 +552,18 @@ def parse_shard(text):
     return index, count
 
 
-# Seconds assumed for a target that has no recorded time (a new test file).
+# Seconds assumed for a target that has no recorded time and no known tests (a new test file).
 DEFAULT_TARGET_SECONDS = 30
+# Seconds assumed for each known test of a target that has no recorded time.
+DEFAULT_TEST_SECONDS = 5
 WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miri_target_weights.json")
+
+# Baseline kinds that stop a Miri run: `sweep_target` then starts the binary again without the
+# tests already accounted for, so such a test pays for a restart. One that lets the run go on does
+# not. From the CI logs of 2026-10-28 a stopping test cost about twice the others (fitted per
+# model: roughly 1.4x under SB, 2.2x under TB); like all weights this only balances the shards.
+STOPPER_KINDS = frozenset({"UB", "unsupported", "deadlock", "timeout", "error"})
+STOPPER_WEIGHT = 2
 
 
 def load_target_weights(crate, models, path=WEIGHTS_PATH):
@@ -536,23 +580,153 @@ def load_target_weights(crate, models, path=WEIGHTS_PATH):
     return {t: sum(per_model.get(m, 0) for m in models) for t, per_model in recorded.items()}
 
 
-def shard_targets(names, index, count, weights=None):
-    """Deterministic partition of `names` into `count` shards; returns shard `index` (1-based).
+def planned_tests(baseline, models):
+    """{target: {test: stops_the_run}} for the tests the baseline records under any of `models`.
 
-    Longest-processing-time first: targets go heaviest first, each to the currently lightest shard
-    (ties: lower shard number). `weights` maps target -> seconds; unknown targets weigh
-    DEFAULT_TARGET_SECONDS. Without weights every target weighs the same and this is round-robin
-    over the sorted names. The result depends only on the set of names and the weights.
+    The baseline lists every test whose result is not a plain pass (a new failing test is a
+    regression) and most passing ones, so it approximates a target's tests without running Miri;
+    tests it misses are still placed, by name (see ShardPlan). The leak pseudo-test is not a test.
     """
-    weights = weights or {}
-    order = sorted(names, key=lambda n: (-weights.get(n, DEFAULT_TARGET_SECONDS), n))
-    load = [0] * count
-    shards = [[] for _ in range(count)]
-    for name in order:
-        lightest = min(range(count), key=lambda i: (load[i], i))
-        load[lightest] += weights.get(name, DEFAULT_TARGET_SECONDS)
-        shards[lightest].append(name)
-    return sorted(shards[index - 1])
+    planned = {}
+    for key, kind in ((baseline or {}).get("results") or {}).items():
+        target, rest = key.split("::", 1)
+        test, model = rest.rsplit("::", 1)
+        if model not in models or test == LEAK_PSEUDO_TEST:
+            continue
+        tests = planned.setdefault(target, {})
+        tests[test] = tests.get(test, False) or kind in STOPPER_KINDS
+    return planned
+
+
+def work_units(targets, planned, weights):
+    """Ordered work units [(target, test or None, estimated seconds)].
+
+    Targets in name order, a target's known tests in name order. A target's recorded seconds are
+    spread over its known tests, a test that stops the run counting STOPPER_WEIGHT shares and the
+    others one; a target with no recorded time gives each test DEFAULT_TEST_SECONDS. A target with
+    no known tests is one unit (`test` None) that runs whole.
+    """
+    units = []
+    for target in sorted(set(targets)):
+        tests = planned.get(target)
+        if not tests:
+            units.append((target, None, weights.get(target, DEFAULT_TARGET_SECONDS)))
+            continue
+        shares = {test: STOPPER_WEIGHT if stops else 1 for test, stops in tests.items()}
+        recorded = weights.get(target)
+        per_share = DEFAULT_TEST_SECONDS if recorded is None else recorded / sum(shares.values())
+        for test in sorted(shares):
+            units.append((target, test, per_share * shares[test]))
+    return units
+
+
+def assign_units(seconds, count):
+    """Shard index (0-based) of each unit: the units, in order, are laid end to end on a line of
+    total length sum(seconds), which is cut into `count` equal parts; a unit goes to the part that
+    holds its midpoint. Every shard gets one contiguous run of units, within half the heaviest
+    unit of an even split, and a target is cut at most `count - 1` times over all shards. When
+    there are at least `count` units, no shard is left empty.
+    """
+    n = len(seconds)
+    total = sum(seconds)
+    if total <= 0:
+        return [i * count // n for i in range(n)]
+    shard, before = [], 0.0
+    for s in seconds:
+        shard.append(min(count - 1, int((before + s / 2) * count / total)))
+        before += s
+    if n >= count:
+        # A few very heavy units can leave a part holding no midpoint: let the shard index grow
+        # by at most one per unit, from 0 at the first unit to count - 1 at the last.
+        shard[0] = 0
+        for i in range(1, n):
+            shard[i] = min(shard[i], shard[i - 1] + 1)
+        shard[-1] = count - 1
+        for i in range(n - 2, -1, -1):
+            shard[i] = max(shard[i], shard[i + 1] - 1)
+    return shard
+
+
+class ShardPlan:
+    """How the work units of a sweep are divided over `count` shards (shard numbers are 1-based).
+
+    The plan is a function of the target names, the baseline's known tests and the recorded
+    weights only, so every runner computes the same one. A shard runs, per target, either the whole
+    target or one chunk of it. Chunks are bounded by test name: the chunk of a target ends at the
+    last known test it holds, and a test outside the baseline (a new one) belongs to the first
+    chunk whose bound is not below its name, so it too runs in exactly one shard and no listing
+    of the other shards' targets is needed.
+    """
+
+    def __init__(self, targets, count, planned, weights):
+        self.count = count
+        self.units = work_units(targets, planned, weights)
+        owner = assign_units([seconds for _, _, seconds in self.units], count)
+        self.chunks = {}  # target -> [[shard, last known test of the chunk or None], ...]
+        for (target, test, _), shard in zip(self.units, owner):
+            chunks = self.chunks.setdefault(target, [])
+            if chunks and chunks[-1][0] == shard + 1:
+                chunks[-1][1] = test
+            else:
+                chunks.append([shard + 1, test])
+        for chunks in self.chunks.values():
+            chunks[-1][1] = None
+        self.unit_shard = [shard + 1 for shard in owner]
+
+    def shard_of(self, target, test):
+        for shard, upper in self.chunks[target]:
+            if upper is None or test <= upper:
+                return shard
+
+    def is_split(self, target):
+        return len(self.chunks[target]) > 1
+
+    def targets(self, index):
+        return sorted(t for t, chunks in self.chunks.items() if any(s == index for s, _ in chunks))
+
+    def tests(self, index, target, names):
+        """The tests among `names` (the target's listed tests) that shard `index` runs."""
+        return [name for name in names if self.shard_of(target, name) == index]
+
+    def owns(self, index):
+        """`owns(target, test)`: whether shard `index` is responsible for that test's result.
+
+        The leak pseudo-test is attributed to no single test, so only a target the shard runs whole
+        has it.
+        """
+
+        def owns(target, test):
+            if target not in self.chunks:
+                return False
+            if test == LEAK_PSEUDO_TEST:
+                return not self.is_split(target) and self.chunks[target][0][0] == index
+            return self.shard_of(target, test) == index
+
+        return owns
+
+    def units_of(self, index):
+        return [u for u, shard in zip(self.units, self.unit_shard) if shard == index]
+
+    def seconds(self, index):
+        return sum(seconds for _, _, seconds in self.units_of(index))
+
+    def describe(self, index):
+        """Lines saying, per target, what shard `index` runs of it."""
+        lines = []
+        for target in self.targets(index):
+            chunks = self.chunks[target]
+            if len(chunks) == 1:
+                lines.append(f"# {target}: whole target")
+                continue
+            lower = None
+            for number, (shard, upper) in enumerate(chunks, 1):
+                if shard == index:
+                    bounds = [f"> {lower}"] if lower is not None else []
+                    if upper is not None:
+                        bounds.append(f"<= {upper}")
+                    lines.append(f"# {target}: chunk {number} of {len(chunks)}, test names {' and '.join(bounds)}")
+                lower = upper
+        return lines
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -620,12 +794,20 @@ def main():
         "--shard",
         type=parse_shard,
         metavar="I/N",
-        help="run only shard I (1-based) of N; shards partition the targets, balanced by tools/miri_target_weights.json",
+        help="run only shard I (1-based) of N; shards partition the tests, not the targets, balanced by "
+        "the baseline's test names and tools/miri_target_weights.json",
     )
     ap.add_argument(
         "--list-targets",
         action="store_true",
-        help="print the target list selected by --targets/--baseline/--shard and exit without running Miri",
+        help="print the targets selected by --targets/--baseline/--shard (a target split over shards is in each) "
+        "and exit without running Miri",
+    )
+    ap.add_argument(
+        "--list-units",
+        action="store_true",
+        help="print what --shard (or everything) runs per target and the baseline tests with their estimated "
+        "seconds, then exit without running Miri",
     )
     ap.add_argument(
         "--check-coverage",
@@ -664,37 +846,50 @@ def main():
             ap.error("--targets is required when --baseline does not specify `targets`")
 
     target_list = [t.strip() for t in targets_str.split(",") if t.strip()]
-    if args.shard:
-        index, count = args.shard
-        shard_models = [m.strip() for m in args.models.split(",") if m.strip()]
-        target_list = shard_targets(
-            target_list, index, count, load_target_weights(args.crate, shard_models)
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    plan, index, count = None, 1, 1
+    if args.shard or args.list_units:
+        index, count = args.shard or (1, 1)
+        plan = ShardPlan(
+            target_list, count, planned_tests(baseline, models), load_target_weights(args.crate, models)
         )
+        target_list = plan.targets(index)
         if not target_list:
-            ap.error(f"--shard {index}/{count} selects no targets")
+            ap.error(f"--shard {index}/{count} selects no tests")
     if args.list_targets:
         print("\n".join(target_list))
         return 0
+    if args.list_units:
+        print("\n".join(plan.describe(index)))
+        for target, test, seconds in plan.units_of(index):
+            print(f"{target}::{'*' if test is None else test}\t{seconds:.1f}")
+        estimates = ", ".join(f"{plan.seconds(i):.0f}" for i in range(1, count + 1))
+        print(
+            f"# shard {index}/{count}: {len(plan.units_of(index))} units, "
+            f"~{plan.seconds(index):.0f} s (estimate per shard: {estimates})"
+        )
+        return 0
     swept_targets = set(target_list)
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
     results, excerpts, tests = {}, {}, {}
     for target in target_list:
-        tests[target] = list_tests(args, target)
+        listed = list_tests(args, target)
+        tests[target] = plan.tests(index, target, listed) if plan else listed
+        partial = plan is not None and plan.is_split(target)
         for model in models:
-            sweep_target(args, target, tests[target], model, results, excerpts)
+            sweep_target(args, target, tests[target], model, results, excerpts, partial=partial)
 
     iso_results = {}
     if args.run_isolation_allowlist:
         if not baseline or "isolation_allowlist" not in baseline:
             ap.error("--run-isolation-allowlist requires --baseline with `isolation_allowlist`")
         iso_results = run_isolation_allowlist(
-            args, baseline["isolation_allowlist"], swept_targets, models
+            args, baseline["isolation_allowlist"], swept_targets, models, owns=plan.owns(index) if plan else None
         )
 
     regressions, improvements = [], []
     if baseline is not None:
         regressions, improvements = compare_with_baseline(
-            results, iso_results, baseline, swept_targets, models
+            results, iso_results, baseline, swept_targets, models, owns=plan.owns(index) if plan else None
         )
 
     summary_md = format_summary(args, models, results, iso_results, baseline, regressions, improvements)
@@ -711,6 +906,7 @@ def main():
                     "cross": args.cross,
                     "toolchain": args.toolchain,
                     "models": models,
+                    "shard": f"{index}/{count}" if args.shard else None,
                     "tests": tests,
                     "results": results,
                     "isolation_results": iso_results,

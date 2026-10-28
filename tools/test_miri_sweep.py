@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -7,19 +9,27 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
+import miri_sweep
 from miri_sweep import (
     ALLOWED_STATUS_TRANSITIONS,
+    DEFAULT_TARGET_SECONDS,
+    DEFAULT_TEST_SECONDS,
+    LEAK_PSEUDO_TEST,
+    STOPPER_WEIGHT,
+    ShardPlan,
+    assign_units,
     check_target_coverage,
     compare_with_baseline,
     crate_test_targets,
     failure_section,
     isolation_outcome,
+    load_target_weights,
     parse_shard,
+    planned_tests,
     run_miri,
     scan_outcomes,
-    load_target_weights,
-    shard_targets,
     sweep_target,
+    work_units,
 )
 
 
@@ -205,57 +215,139 @@ class TestMiriSweepBaselineComparison(unittest.TestCase):
         self.assertIsNone(isolation_outcome("test a::tt ... ok\n", "a::t"))
 
 
+BASELINE_FILES = {
+    "ferrokit-core": "miri_baseline.json",
+    "ferrokit-gui": "miri_baseline_ferrokit_gui.json",
+    "ferrokit-widgets": "miri_baseline_ferrokit_widgets.json",
+}
+MODEL_SETS = (["SB"], ["TB"], ["SB", "TB"])
+
+
+def load_baseline(crate):
+    with open(os.path.join(os.path.dirname(__file__), BASELINE_FILES[crate]), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def checked_in_plan(crate, models, count):
+    baseline = load_baseline(crate)
+    planned = planned_tests(baseline, models)
+    return baseline, planned, ShardPlan(baseline["targets"], count, planned, load_target_weights(crate, models))
+
+
 class TestMiriSweepSharding(unittest.TestCase):
-    @staticmethod
-    def baseline_targets():
-        path = os.path.join(os.path.dirname(__file__), "miri_baseline.json")
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)["targets"]
+    def test_every_test_runs_in_exactly_one_shard(self):
+        # Known tests, and names a new test could have: before, between and after the known ones.
+        for crate in BASELINE_FILES:
+            for models in MODEL_SETS:
+                for count in range(1, 6):
+                    baseline, planned, plan = checked_in_plan(crate, models, count)
+                    with self.subTest(crate=crate, models=models, count=count):
+                        self.assertEqual(
+                            {t for i in range(1, count + 1) for t in plan.targets(i)}, set(baseline["targets"])
+                        )
+                        for target in baseline["targets"]:
+                            names = sorted(planned.get(target, ())) + ["", "lib::mm_new_test", "~~last"]
+                            ran = [plan.tests(i, target, names) for i in range(1, count + 1)]
+                            self.assertEqual(sorted(n for part in ran for n in part), sorted(names), target)
+                            for name in names:
+                                owners = [i for i in range(1, count + 1) if plan.owns(i)(target, name)]
+                                self.assertEqual(len(owners), 1, f"{target}::{name}")
+                                self.assertIn(name, plan.tests(owners[0], target, names))
 
-    def test_shards_union_covers_every_baseline_target_exactly_once(self):
-        targets = self.baseline_targets()
-        self.assertEqual(len(targets), len(set(targets)))
-        for count in range(1, 6):
-            shards = [shard_targets(targets, i, count) for i in range(1, count + 1)]
-            flat = [t for shard in shards for t in shard]
-            self.assertEqual(sorted(flat), sorted(targets), f"count={count}")
-            self.assertEqual(len(flat), len(set(flat)), f"count={count}")
+    def test_no_shard_is_empty_and_few_targets_are_split(self):
+        for crate in BASELINE_FILES:
+            for models in MODEL_SETS:
+                for count in range(2, 6):
+                    _, _, plan = checked_in_plan(crate, models, count)
+                    with self.subTest(crate=crate, models=models, count=count):
+                        for i in range(1, count + 1):
+                            self.assertTrue(plan.targets(i) and plan.units_of(i), f"shard {i} is empty")
+                        split = [t for t in plan.chunks if plan.is_split(t)]
+                        self.assertLessEqual(len(split), count - 1, split)
 
-    def test_shards_are_balanced_and_deterministic(self):
-        targets = self.baseline_targets()
-        sizes = [len(shard_targets(targets, i, 2)) for i in (1, 2)]
-        self.assertLessEqual(abs(sizes[0] - sizes[1]), 1)
-        self.assertEqual(shard_targets(targets, 1, 2), shard_targets(list(reversed(targets)), 1, 2))
+    def test_plan_does_not_depend_on_input_order(self):
+        baseline = load_baseline("ferrokit-gui")
+        models = ["TB"]
+        weights = load_target_weights("ferrokit-gui", models)
+        planned = planned_tests(baseline, models)
+        shuffled = {t: dict(reversed(list(tests.items()))) for t, tests in reversed(list(planned.items()))}
+        first = ShardPlan(baseline["targets"], 2, planned, weights)
+        second = ShardPlan(list(reversed(baseline["targets"])), 2, shuffled, weights)
+        self.assertEqual(first.chunks, second.chunks)
+        self.assertEqual(first.units, second.units)
 
-    def test_weighted_shards_partition_and_keep_heavy_targets_apart(self):
-        weights = {"slow_a": 1000, "slow_b": 900, "mid": 100, "fast_a": 5, "fast_b": 5}
-        targets = list(weights) + ["unrecorded"]
-        shards = [shard_targets(targets, i, 2, weights) for i in (1, 2)]
-        self.assertEqual(sorted(shards[0] + shards[1]), sorted(targets))
-        self.assertNotEqual("slow_a" in shards[0], "slow_b" in shards[0])
-        self.assertEqual(shards[0], shard_targets(list(reversed(targets)), 1, 2, weights))
+    def test_shards_are_balanced_by_estimated_seconds(self):
+        for crate in BASELINE_FILES:
+            for models in MODEL_SETS:
+                for count in range(2, 5):
+                    _, _, plan = checked_in_plan(crate, models, count)
+                    loads = [plan.seconds(i) for i in range(1, count + 1)]
+                    heaviest_unit = max(seconds for _, _, seconds in plan.units)
+                    # Cutting at unit midpoints keeps every shard within one unit of an even split.
+                    self.assertLessEqual(max(loads), sum(loads) / count + heaviest_unit, f"{crate} {models}: {loads}")
 
-    def test_recorded_weights_balance_every_crate_and_model(self):
-        baselines = {
-            "ferrokit-core": "miri_baseline.json",
-            "ferrokit-gui": "miri_baseline_ferrokit_gui.json",
-            "ferrokit-widgets": "miri_baseline_ferrokit_widgets.json",
+    def test_a_target_longer_than_a_shard_is_split_and_the_shards_match(self):
+        # ferrokit-gui under Tree Borrows: `lib` alone (about 1500 s on CI) is more than half the work.
+        baseline = load_baseline("ferrokit-gui")
+        planned = planned_tests(baseline, ["TB"])
+        weights = {target: 20 for target in baseline["targets"]}
+        weights["lib"] = 1500
+        plan = ShardPlan(baseline["targets"], 2, planned, weights)
+        self.assertTrue(plan.is_split("lib"))
+        self.assertEqual([s for s, _ in plan.chunks["lib"]], [1, 2])
+        lib = sorted(planned["lib"])
+        first, second = plan.tests(1, "lib", lib), plan.tests(2, "lib", lib)
+        self.assertTrue(first and second)
+        self.assertEqual(first + second, lib)
+        a, b = plan.seconds(1), plan.seconds(2)
+        self.assertLess(abs(a - b) / max(a, b), 0.10, (a, b))
+        self.assertEqual([t for t in plan.chunks if plan.is_split(t)], ["lib"])
+
+    def test_a_new_test_goes_with_the_chunk_its_name_sorts_into(self):
+        planned = {"t": {name: False for name in ("b", "d", "f")}}
+        plan = ShardPlan(["t"], 3, planned, {"t": 30})
+        self.assertEqual([upper for _, upper in plan.chunks["t"]], ["b", "d", None])
+        self.assertEqual(
+            [plan.shard_of("t", name) for name in ("a", "b", "c", "d", "e", "f", "zz")], [1, 1, 2, 2, 3, 3, 3]
+        )
+
+    def test_unit_seconds_follow_recorded_time_stoppers_and_defaults(self):
+        planned = {"t": {"a": True, "b": False, "c": False}, "u": {"x": False}}
+        units = work_units(["t", "u", "new"], planned, {"t": 40})
+        self.assertEqual(
+            units,
+            [
+                ("new", None, DEFAULT_TARGET_SECONDS),
+                ("t", "a", 40 * STOPPER_WEIGHT / (STOPPER_WEIGHT + 2)),
+                ("t", "b", 40 / (STOPPER_WEIGHT + 2)),
+                ("t", "c", 40 / (STOPPER_WEIGHT + 2)),
+                ("u", "x", DEFAULT_TEST_SECONDS),
+            ],
+        )
+        self.assertAlmostEqual(sum(s for tgt, _, s in units if tgt == "t"), 40)
+
+    def test_planned_tests_use_the_requested_models_and_skip_the_leak_pseudo_test(self):
+        baseline = {
+            "results": {
+                "lib::a::SB": "pass",
+                "lib::a::TB": "unsupported",
+                "lib::b::TB": "pass",
+                f"t::{LEAK_PSEUDO_TEST}::SB": "leak",
+                "t::c::SB": "UB",
+            }
         }
-        for crate, name in baselines.items():
-            path = os.path.join(os.path.dirname(__file__), name)
-            with open(path, "r", encoding="utf-8") as f:
-                targets = json.load(f)["targets"]
-            for model in ("SB", "TB"):
-                weights = load_target_weights(crate, [model])
-                self.assertTrue(weights, f"no recorded times for {crate}")
-                total = sum(weights.get(t, 30) for t in targets)
-                loads = [
-                    sum(weights.get(t, 30) for t in shard_targets(targets, i, 2, weights))
-                    for i in (1, 2)
-                ]
-                # LPT guarantee: no shard exceeds the even split by more than the heaviest target.
-                bound = total / 2 + max(weights.get(t, 30) for t in targets) / 2
-                self.assertLessEqual(max(loads), bound, f"{crate} {model}: {loads}")
+        self.assertEqual(planned_tests(baseline, ["SB"]), {"lib": {"a": False}, "t": {"c": True}})
+        self.assertEqual(planned_tests(baseline, ["TB"]), {"lib": {"a": True, "b": False}})
+        self.assertEqual(planned_tests(baseline, ["SB", "TB"])["lib"], {"a": True, "b": False})
+
+    def test_assign_units_cuts_evenly_and_never_leaves_a_shard_empty(self):
+        self.assertEqual(assign_units([1] * 6, 3), [0, 0, 1, 1, 2, 2])
+        self.assertEqual(assign_units([5, 5, 5, 5], 1), [0, 0, 0, 0])
+        self.assertEqual(assign_units([1000, 1, 1], 3), [0, 1, 2])
+        self.assertEqual(assign_units([1, 1, 1000], 3), [0, 1, 2])
+        self.assertEqual(assign_units([0, 0, 0, 0], 2), [0, 0, 1, 1])
+        # With fewer units than shards the surplus shards stay empty.
+        self.assertEqual(len(set(assign_units([5, 5], 3))), 2)
 
     def test_parse_shard_accepts_valid_and_rejects_invalid(self):
         self.assertEqual(parse_shard("1/2"), (1, 2))
@@ -263,6 +355,157 @@ class TestMiriSweepSharding(unittest.TestCase):
         for bad in ("0/2", "3/2", "1/0", "a/2", "1", "-1/2"):
             with self.assertRaises(argparse.ArgumentTypeError, msg=bad):
                 parse_shard(bad)
+
+
+class TestMiriShardedBaselineComparison(unittest.TestCase):
+    def plan(self):
+        planned = {"t": {name: False for name in ("a", "b", "c", "d")}}
+        return ShardPlan(["t"], 2, planned, {"t": 40})
+
+    def test_a_shard_neither_misses_nor_regresses_the_other_shards_tests(self):
+        plan = self.plan()
+        baseline = {"results": {f"t::{name}::SB": "pass" for name in "abcd"}}
+        for index, mine in ((1, "ab"), (2, "cd")):
+            results = {f"t::{name}::SB": {"kind": "pass"} for name in mine}
+            regs, imps = compare_with_baseline(results, {}, baseline, ["t"], ["SB"], owns=plan.owns(index))
+            self.assertEqual((regs, imps), ([], []), f"shard {index}")
+
+    def test_a_test_the_shard_owns_and_did_not_report_is_still_missing(self):
+        plan = self.plan()
+        baseline = {"results": {f"t::{name}::SB": "pass" for name in "abcd"}}
+        results = {"t::a::SB": {"kind": "pass"}}
+        regs, _ = compare_with_baseline(results, {}, baseline, ["t"], ["SB"], owns=plan.owns(1))
+        self.assertEqual(regs, ["t::b::SB: baseline test missing from sweep (expected pass)"])
+
+    def test_regressions_in_a_shards_own_tests_are_still_reported(self):
+        plan = self.plan()
+        baseline = {"results": {f"t::{name}::SB": "pass" for name in "abcd"}}
+        results = {"t::c::SB": {"kind": "UB"}, "t::d::SB": {"kind": "pass"}}
+        regs, _ = compare_with_baseline(results, {}, baseline, ["t"], ["SB"], owns=plan.owns(2))
+        self.assertEqual(regs, ["t::c::SB: baseline pass -> UB"])
+
+    def test_the_leak_pseudo_test_is_judged_only_where_the_whole_target_runs(self):
+        leak_key = f"t::{LEAK_PSEUDO_TEST}::SB"
+        baseline = {"results": {"t::a::SB": "pass", "t::b::SB": "pass", leak_key: "leak"}}
+        results = {"t::a::SB": {"kind": "pass"}, "t::b::SB": {"kind": "pass"}}
+        whole = ShardPlan(["t"], 1, planned_tests(baseline, ["SB"]), {"t": 10})
+        regs, imps = compare_with_baseline(results, {}, baseline, ["t"], ["SB"], owns=whole.owns(1))
+        self.assertEqual((regs, imps), ([], [f"{leak_key}: baseline leak -> no leak"]))
+        split = ShardPlan(["t"], 2, planned_tests(baseline, ["SB"]), {"t": 10})
+        self.assertTrue(split.is_split("t"))
+        for index in (1, 2):
+            regs, imps = compare_with_baseline(results, {}, baseline, ["t"], ["SB"], owns=split.owns(index))
+            self.assertEqual((regs, imps), ([], []), f"shard {index}")
+
+
+class TestMiriShardedRuns(unittest.TestCase):
+    def test_run_miri_names_exactly_the_chunk_still_to_run(self):
+        args = argparse.Namespace(flags="", toolchain="t", crate="c", cross=None, timeout=1)
+        with mock.patch("miri_sweep.subprocess.run") as run:
+            run.return_value = mock.Mock(stdout="", stderr="", returncode=0)
+            run_miri(args, "lib", "SB", {"b"}, only=["c", "a", "b"])
+            cmd = run.call_args.args[0]
+            self.assertEqual(cmd[cmd.index("--") :], ["--", "--test-threads=1", "--exact", "a", "c"])
+            run_miri(args, "lib", "SB", {"b"})
+            cmd = run.call_args.args[0]
+            self.assertEqual(cmd[cmd.index("--") :], ["--", "--test-threads=1", "--exact", "--skip", "b"])
+            with self.assertRaises(ValueError):
+                run_miri(args, "lib", "SB", {"a"}, only=["a"])
+
+    def test_sweep_target_asks_for_its_chunk_only_when_partial(self):
+        for partial, expected in ((True, ["a", "b"]), (False, None)):
+            results, excerpts = {}, {}
+            output = ("test a ... ok\ntest b ... ok\ntest result: ok.\n", False)
+            with mock.patch("miri_sweep.run_miri", return_value=output) as run:
+                sweep_target(None, "t", ["a", "b"], "SB", results, excerpts, partial=partial)
+            self.assertEqual(run.call_args.kwargs["only"], expected)
+            self.assertEqual(sorted(results), ["t::a::SB", "t::b::SB"])
+
+    @staticmethod
+    def fake_run_miri(listed, calls):
+        def fake(args, target, model, skip, exact_test=None, extra_miri_flags=None, only=None):
+            calls.append((target, exact_test, None if only is None else sorted(only)))
+            if exact_test is not None:
+                return f"test {exact_test} ... ok\ntest result: ok. 1 passed\n", False
+            names = listed[target] if only is None else only
+            lines = [f"test {n} ... ok" for n in names if n not in skip]
+            return "\n".join(lines + ["test result: ok."]) + "\n", False
+
+        return fake
+
+    def run_main(self, argv, listed, calls):
+        with mock.patch.object(sys, "argv", ["miri_sweep.py", *argv]), mock.patch(
+            "miri_sweep.list_tests", side_effect=lambda args, target: list(listed[target])
+        ), mock.patch("miri_sweep.run_miri", side_effect=self.fake_run_miri(listed, calls)):
+            with contextlib.redirect_stdout(io.StringIO()):
+                return miri_sweep.main()
+
+    def test_two_shards_together_run_every_test_once_with_no_regressions(self):
+        baseline = {
+            "crate": "fake-crate",
+            "targets": ["lib", "test_x"],
+            "results": {
+                **{f"lib::{n}::SB": "pass" for n in "abcde"},
+                "test_x::x1::SB": "pass",
+            },
+            "isolation_allowlist": {
+                "lib::a": {"reason": "r", "expected": {"SB": "pass"}},
+                "lib::e": {"reason": "r", "expected": {"SB": "pass"}},
+            },
+        }
+        # `new_f` is not in the baseline yet.
+        listed = {"lib": ["a", "b", "c", "d", "e", "new_f"], "test_x": ["x1"]}
+        everything = {f"lib::{n}::SB" for n in listed["lib"]} | {"test_x::x1::SB"}
+        outs, all_calls = [], []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "baseline.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(baseline, f)
+            for index in (1, 2):
+                out, calls = os.path.join(tmp, f"out{index}.json"), []
+                argv = [
+                    "--crate", "fake-crate", "--models", "SB", "--baseline", path, "--shard", f"{index}/2",
+                    "--run-isolation-allowlist", "--fail-on-regression", "--out", out,
+                ]
+                self.assertEqual(self.run_main(argv, listed, calls), 0, f"shard {index}")
+                with open(out, "r", encoding="utf-8") as f:
+                    outs.append(json.load(f))
+                all_calls.append(calls)
+        first, second = (set(o["results"]) for o in outs)
+        self.assertTrue(first and second)
+        self.assertFalse(first & second)
+        self.assertEqual(first | second, everything)
+        for o in outs:
+            self.assertEqual((o["regressions"], o["improvements"]), ([], []))
+        # The chunks of `lib` were run by name, and together they are all of `lib`.
+        lib_runs = [only for calls in all_calls for target, exact, only in calls if target == "lib" and exact is None]
+        self.assertEqual(sorted(n for only in lib_runs for n in only), sorted(listed["lib"]))
+        # Each allowlisted test is run isolation-disabled by the one shard that owns it.
+        iso = [set(o["isolation_results"]) for o in outs]
+        self.assertFalse(iso[0] & iso[1])
+        self.assertEqual(iso[0] | iso[1], {"lib::a::SB", "lib::e::SB"})
+
+    def test_list_units_shows_each_shards_content_and_the_shards_cover_the_baseline(self):
+        path = os.path.join(os.path.dirname(__file__), BASELINE_FILES["ferrokit-gui"])
+        baseline = load_baseline("ferrokit-gui")
+        lines = []
+        for index in (1, 2):
+            out = io.StringIO()
+            argv = [
+                "miri_sweep.py", "--crate", "ferrokit-gui", "--models", "TB", "--baseline", path,
+                "--shard", f"{index}/2", "--list-units",
+            ]
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+                self.assertEqual(miri_sweep.main(), 0)
+            lines.append(out.getvalue().splitlines())
+            self.assertRegex(lines[-1][-1], rf"^# shard {index}/2: \d+ units, ~\d+ s \(estimate per shard: \d+, \d+\)$")
+            self.assertTrue(any(line.startswith("# lib: chunk") for line in lines[-1]))
+        units = [[line.split("\t")[0] for line in part if not line.startswith("#")] for part in lines]
+        planned = planned_tests(baseline, ["TB"])
+        expected = [f"{target}::{test}" for target, tests in planned.items() for test in tests]
+        # A target the baseline lists no test for is one `target::*` unit.
+        expected += [f"{t}::*" for t in baseline["targets"] if t not in planned]
+        self.assertEqual(sorted(units[0] + units[1]), sorted(expected))
 
 
 class TestMiriLeakBaseline(unittest.TestCase):
