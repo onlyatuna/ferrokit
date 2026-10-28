@@ -366,14 +366,15 @@ fn test_highlight_overlay_survives_fragment_splitting() {
 }
 
 #[test]
-fn test_html_export_merges_highlighter_overlay_over_user_formats() {
+fn test_exports_do_not_include_highlighter_overlay_like_qt() {
+    // Qt: `QSyntaxHighlighter` only sets `QTextLayout::formats`, which `toHtml()` never reads.
     let mut doc = TextDocument::new();
     doc.set_plain_text("fn main");
     let bold = TextCharFormat::default().with_font_weight(FontWeight::Bold);
     doc.merge_char_format(0, 2, &bold);
     let user_html = doc.to_html();
+    let user_markdown = doc.to_markdown();
     assert!(user_html.contains("<b>fn</b>"), "{user_html}");
-    assert!(!user_html.contains("<font"), "{user_html}");
 
     let mut highlighter = SyntaxHighlighter::new();
     highlighter.add_keyword(
@@ -381,22 +382,17 @@ fn test_html_export_merges_highlighter_overlay_over_user_formats() {
         TextCharFormat::default().with_foreground(Color::from_rgba8(200, 0, 100, 255)),
     );
     highlighter.rehighlight(&mut doc);
-    // Bold (user) and colour (overlay) both survive in the export.
-    let html = doc.to_html();
-    assert!(html.contains("<b><font color=\"#c80064\">fn</font></b>"), "{html}");
-    assert!(html.contains(" main"), "{html}");
-    assert!(doc.to_markdown().contains("**fn**"));
-
-    // Clearing the highlighter returns the export to the user formats only.
-    SyntaxHighlighter::new().rehighlight(&mut doc);
-    assert_eq!(doc.to_html(), user_html);
-    // The export never wrote the overlay into the document itself.
+    // The overlay is applied for display ...
     assert!(doc
         .block_at(0)
         .unwrap()
-        .fragments()
+        .effective_fragments()
         .iter()
-        .all(|f| f.char_format().foreground.is_none()));
+        .any(|f| f.char_format().foreground.is_some()));
+    // ... but the exports are unchanged and keep the user's own bold.
+    assert_eq!(doc.to_html(), user_html);
+    assert_eq!(doc.to_markdown(), user_markdown);
+    assert!(!doc.to_html().contains("c80064"));
 }
 
 #[test]
