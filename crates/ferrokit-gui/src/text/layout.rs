@@ -1817,6 +1817,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // shapes 20 000 characters: minutes under Miri
     fn a_long_word_is_wrapped_in_work_linear_in_its_length() {
         // `WrapAtWordBoundaryOrAnywhere` lays the first word of each line again inside the word
         // when it does not fit; deciding that must not walk the rest of the word every time.
