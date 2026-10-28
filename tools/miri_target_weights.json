@@ -1,789 +1,784 @@
 {
   "ferrokit-core": {
     "layered_tests": {
-      "TB": 3,
-      "SB": 3
+      "SB": 2,
+      "TB": 3
     },
     "lib": {
-      "SB": 595,
-      "TB": 389
-    },
-    "t": {
-      "SB": 0
+      "SB": 291,
+      "TB": 658
     },
     "test_advanced_event_system": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_application_exit_from_worker_thread": {
-      "SB": 2,
-      "TB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_application_process_events_in_exec": {
-      "TB": 1,
-      "SB": 1
+      "SB": 0,
+      "TB": 1
     },
     "test_blocking_queued_bound": {
-      "SB": 3,
-      "TB": 2
+      "SB": 1,
+      "TB": 3
     },
     "test_compressor_panic_cleanup": {
-      "TB": 1,
-      "SB": 1
+      "SB": 0,
+      "TB": 1
     },
     "test_core_data_structures": {
-      "SB": 2,
-      "TB": 2
+      "SB": 1,
+      "TB": 3
     },
     "test_core_runtime_extensions": {
-      "TB": 8,
-      "SB": 7
-    },
-    "test_core_small_semantics": {
       "SB": 4,
-      "TB": 2
-    },
-    "test_data_parse_hardening": {
-      "TB": 352,
-      "SB": 464
-    },
-    "test_delete_later_destroys_subtree": {
-      "SB": 9,
       "TB": 6
     },
+    "test_core_small_semantics": {
+      "SB": 2,
+      "TB": 3
+    },
+    "test_data_parse_hardening": {
+      "SB": 292,
+      "TB": 256
+    },
+    "test_delete_later_destroys_subtree": {
+      "SB": 5,
+      "TB": 10
+    },
     "test_destroyed_signal": {
-      "TB": 9,
-      "SB": 8
+      "SB": 4,
+      "TB": 7
     },
     "test_epoll_real_fds": {
-      "SB": 3,
-      "TB": 2
+      "SB": 1,
+      "TB": 3
     },
     "test_event_queue_merge_index": {
-      "TB": 20,
-      "SB": 17
+      "SB": 8,
+      "TB": 15
     },
     "test_exec_cleanup_deferred_delete": {
-      "SB": 1,
+      "SB": 0,
       "TB": 1
     },
     "test_filter_consumed_returns_true": {
-      "TB": 2,
-      "SB": 2
-    },
-    "test_future_watcher_thread": {
-      "SB": 3,
+      "SB": 1,
       "TB": 2
     },
+    "test_future_watcher_thread": {
+      "SB": 2,
+      "TB": 4
+    },
     "test_install_event_filter_self_and_mutual": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_io_system": {
-      "SB": 46,
-      "TB": 33
+      "SB": 25,
+      "TB": 48
     },
     "test_kill_timer_ownership": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_loop_teardown_events": {
-      "SB": 2,
+      "SB": 1,
       "TB": 2
     },
     "test_main_thread_first_caller": {
-      "TB": 1,
-      "SB": 1
-    },
-    "test_meta_invoke_connection_type": {
-      "SB": 4,
-      "TB": 2
-    },
-    "test_meta_invoke_overload_signal": {
-      "TB": 2,
-      "SB": 2
-    },
-    "test_meta_invoke_queued_resolution": {
-      "SB": 3,
-      "TB": 2
-    },
-    "test_meta_object_system": {
-      "TB": 2,
-      "SB": 2
-    },
-    "test_meta_slots": {
-      "SB": 2,
+      "SB": 0,
       "TB": 1
     },
+    "test_meta_invoke_connection_type": {
+      "SB": 2,
+      "TB": 4
+    },
+    "test_meta_invoke_overload_signal": {
+      "SB": 1,
+      "TB": 1
+    },
+    "test_meta_invoke_queued_resolution": {
+      "SB": 2,
+      "TB": 3
+    },
+    "test_meta_object_system": {
+      "SB": 1,
+      "TB": 2
+    },
+    "test_meta_slots": {
+      "SB": 1,
+      "TB": 2
+    },
     "test_miri_aliasing_controls": {
-      "TB": 4,
-      "SB": 3
+      "SB": 1,
+      "TB": 3
     },
     "test_move_to_thread_handler_adds_child": {
-      "SB": 3,
-      "TB": 2
+      "SB": 1,
+      "TB": 3
     },
     "test_move_to_thread_state": {
-      "TB": 11,
-      "SB": 11
+      "SB": 5,
+      "TB": 9
     },
     "test_move_to_thread_three_levels": {
-      "SB": 4,
-      "TB": 2
+      "SB": 2,
+      "TB": 3
     },
     "test_move_to_thread_with_borrowed_data": {
-      "TB": 3,
-      "SB": 2
-    },
-    "test_object_data_encapsulation": {
-      "SB": 18,
-      "TB": 11
-    },
-    "test_owned_child_destroyed_in_callback": {
-      "TB": 9,
-      "SB": 8
-    },
-    "test_owned_child_not_read_during_its_callback": {
-      "SB": 4,
-      "TB": 3
-    },
-    "test_owned_child_ownership": {
-      "TB": 9,
-      "SB": 8
-    },
-    "test_owned_closure_access": {
-      "SB": 4,
+      "SB": 1,
       "TB": 2
     },
+    "test_object_data_encapsulation": {
+      "SB": 10,
+      "TB": 20
+    },
+    "test_owned_child_destroyed_in_callback": {
+      "SB": 4,
+      "TB": 9
+    },
+    "test_owned_child_not_read_during_its_callback": {
+      "SB": 2,
+      "TB": 5
+    },
+    "test_owned_child_ownership": {
+      "SB": 4,
+      "TB": 6
+    },
+    "test_owned_closure_access": {
+      "SB": 2,
+      "TB": 4
+    },
     "test_owned_drop_after_thread_move": {
-      "TB": 52,
-      "SB": 47
+      "SB": 22,
+      "TB": 51
     },
     "test_owned_drop_forwarded": {
-      "SB": 5,
-      "TB": 3
+      "SB": 3,
+      "TB": 4
     },
     "test_owned_object": {
-      "TB": 8,
-      "SB": 8
+      "SB": 3,
+      "TB": 8
     },
     "test_panic_containment": {
-      "SB": 2,
+      "SB": 1,
       "TB": 1
     },
     "test_parent_children_during_callbacks": {
-      "TB": 9,
-      "SB": 8
+      "SB": 4,
+      "TB": 9
     },
     "test_parent_thread_affinity": {
-      "SB": 9,
-      "TB": 5
+      "SB": 4,
+      "TB": 10
     },
     "test_parent_tree_rules": {
-      "TB": 8,
-      "SB": 7
+      "SB": 4,
+      "TB": 6
     },
     "test_parked_ancestor_frees_running_descendant": {
-      "SB": 3,
+      "SB": 1,
       "TB": 2
     },
     "test_pointer_registration_between_callbacks": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_pool_worker_not_main": {
       "SB": 1,
       "TB": 1
     },
     "test_post_before_loop": {
-      "TB": 4,
-      "SB": 4
+      "SB": 2,
+      "TB": 4
     },
     "test_posted_payload_dropped_outside_the_locks": {
-      "SB": 2,
-      "TB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_property_clone_and_race": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 1
     },
     "test_qobject_lifecycle_and_hierarchy": {
-      "SB": 8,
-      "TB": 5
+      "SB": 4,
+      "TB": 7
     },
     "test_qobject_safety_and_qt6_features": {
-      "TB": 6,
-      "SB": 5
+      "SB": 2,
+      "TB": 4
     },
     "test_queued_delivery_regressions": {
-      "SB": 5,
-      "TB": 3
+      "SB": 2,
+      "TB": 5
     },
     "test_quit_event_veto": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_recursive_mutex": {
       "SB": 1,
       "TB": 1
     },
     "test_registry_child_index": {
-      "TB": 56,
-      "SB": 53
+      "SB": 24,
+      "TB": 42
     },
     "test_serialization_and_json": {
-      "SB": 3,
-      "TB": 2
+      "SB": 2,
+      "TB": 3
     },
     "test_serialization_bounds": {
-      "TB": 1,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_signal_connection_identity": {
-      "SB": 2,
-      "TB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_signal_direct_and_queued": {
-      "TB": 3,
-      "SB": 3
+      "SB": 1,
+      "TB": 3
     },
     "test_signal_emit_while_mutating": {
-      "SB": 2,
-      "TB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_signal_local_context": {
-      "TB": 15,
-      "SB": 14
+      "SB": 8,
+      "TB": 11
     },
     "test_signal_local_slots": {
-      "SB": 7,
-      "TB": 5
+      "SB": 3,
+      "TB": 8
     },
     "test_signal_owner_binding": {
-      "TB": 3,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_signal_owner_liveness": {
-      "SB": 6,
-      "TB": 4
-    },
-    "test_signal_sender_destroyed_during_emit": {
-      "TB": 7,
-      "SB": 6
-    },
-    "test_signal_subscriber_drop_reentrancy": {
-      "SB": 2,
-      "TB": 1
-    },
-    "test_signal_unique_single_shot": {
-      "TB": 2,
-      "SB": 2
-    },
-    "test_thread_system": {
-      "SB": 19,
-      "TB": 13
-    },
-    "test_timer_context_single_shot": {
-      "TB": 8,
-      "SB": 7
-    },
-    "test_timer_huge_interval": {
-      "SB": 7,
+      "SB": 3,
       "TB": 5
     },
+    "test_signal_sender_destroyed_during_emit": {
+      "SB": 3,
+      "TB": 5
+    },
+    "test_signal_subscriber_drop_reentrancy": {
+      "SB": 1,
+      "TB": 2
+    },
+    "test_signal_unique_single_shot": {
+      "SB": 1,
+      "TB": 2
+    },
+    "test_thread_system": {
+      "SB": 9,
+      "TB": 21
+    },
+    "test_timer_context_single_shot": {
+      "SB": 4,
+      "TB": 7
+    },
+    "test_timer_huge_interval": {
+      "SB": 3,
+      "TB": 6
+    },
     "test_timer_local_single_shot": {
-      "TB": 5,
-      "SB": 5
+      "SB": 2,
+      "TB": 5
     },
     "test_timer_single_shot_before_loop": {
       "SB": 1,
       "TB": 1
     },
     "test_timer_thread_affinity": {
-      "TB": 27,
-      "SB": 23
+      "SB": 12,
+      "TB": 25
     },
     "test_unique_connection_slot_identity": {
-      "SB": 2,
-      "TB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_variant_extensibility": {
-      "TB": 3,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     }
   },
   "ferrokit-gui": {
     "lib": {
-      "SB": 491,
-      "TB": 1073
+      "SB": 437,
+      "TB": 1484
     },
     "render_gauge_preview": {
-      "TB": 46,
-      "SB": 21
-    },
-    "t": {
-      "SB": 0
+      "SB": 22,
+      "TB": 49
     },
     "test_color_system": {
       "SB": 1,
-      "TB": 2
+      "TB": 1
     },
     "test_font_fallback_metrics_parity": {
-      "TB": 3,
-      "SB": 4
+      "SB": 2,
+      "TB": 3
     },
     "test_font_features": {
-      "SB": 1,
-      "TB": 2
+      "SB": 4,
+      "TB": 3
     },
     "test_font_file_mapping": {
-      "TB": 9,
-      "SB": 11
+      "SB": 6,
+      "TB": 8
     },
     "test_font_memory_face_cache": {
       "SB": 1,
       "TB": 1
     },
     "test_font_resource_dedup": {
-      "TB": 1,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_geometry_system": {
-      "SB": 2,
+      "SB": 1,
       "TB": 2
     },
     "test_glyph_cache": {
-      "TB": 2,
-      "SB": 4
+      "SB": 4,
+      "TB": 3
     },
     "test_gui_p2_hardening": {
-      "SB": 3,
+      "SB": 1,
       "TB": 3
     },
     "test_image_p2_qimage_parity": {
-      "TB": 1,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_image_system": {
       "SB": 8,
       "TB": 16
     },
     "test_outline_face_parity": {
-      "TB": 1,
-      "SB": 2
-    },
-    "test_p2_geometry_overflow_singular": {
-      "SB": 24,
-      "TB": 38
-    },
-    "test_painter_advanced_features": {
-      "TB": 18,
-      "SB": 26
-    },
-    "test_painter_rotated_clip": {
-      "SB": 23,
-      "TB": 83
-    },
-    "test_qcolor": {
-      "TB": 278,
-      "SB": 329
-    },
-    "test_qcolor_ops": {
       "SB": 2,
       "TB": 2
     },
+    "test_p2_geometry_overflow_singular": {
+      "SB": 24,
+      "TB": 20
+    },
+    "test_painter_advanced_features": {
+      "SB": 27,
+      "TB": 35
+    },
+    "test_painter_rotated_clip": {
+      "SB": 13,
+      "TB": 48
+    },
+    "test_qcolor": {
+      "SB": 345,
+      "TB": 280
+    },
+    "test_qcolor_ops": {
+      "SB": 1,
+      "TB": 2
+    },
     "test_qcssparser": {
-      "TB": 2,
-      "SB": 3
+      "SB": 3,
+      "TB": 2
     },
     "test_qpath_stroker": {
-      "SB": 141,
-      "TB": 389
+      "SB": 82,
+      "TB": 215
     },
     "test_qregion_shapes": {
-      "TB": 193,
-      "SB": 197
+      "SB": 201,
+      "TB": 201
     },
     "test_rich_text_detection": {
       "SB": 1,
       "TB": 2
     },
     "test_shaping_face_cache": {
-      "TB": 1,
-      "SB": 2
+      "SB": 2,
+      "TB": 1
     },
     "test_solid_fill_blend": {
       "SB": 5,
-      "TB": 17
+      "TB": 9
+    },
+    "test_text_layout_oracle": {
+      "SB": 52,
+      "TB": 54
     },
     "test_text_system": {
-      "TB": 21,
-      "SB": 28
+      "SB": 36,
+      "TB": 28
     }
   },
   "ferrokit-widgets": {
     "layout_qt_oracle": {
-      "SB": 218,
-      "TB": 742
+      "SB": 124,
+      "TB": 1072
     },
     "lib": {
-      "TB": 57,
-      "SB": 42
-    },
-    "t": {
-      "SB": 0
+      "SB": 65,
+      "TB": 52
     },
     "test_accessibility": {
-      "SB": 3,
+      "SB": 2,
       "TB": 3
     },
     "test_action_reentrancy": {
-      "TB": 11,
-      "SB": 10
+      "SB": 6,
+      "TB": 6
     },
     "test_application_focus_widget": {
-      "SB": 4,
-      "TB": 5
+      "SB": 2,
+      "TB": 3
     },
     "test_application_layers": {
-      "TB": 12,
-      "SB": 10
+      "SB": 10,
+      "TB": 7
     },
     "test_arc_progress_and_custom_paint": {
       "SB": 3,
-      "TB": 6
+      "TB": 3
     },
     "test_attribute_selector": {
-      "TB": 4,
-      "SB": 4
-    },
-    "test_box_layout_add_stretch_zero": {
-      "SB": 5,
+      "SB": 4,
       "TB": 5
     },
+    "test_box_layout_add_stretch_zero": {
+      "SB": 3,
+      "TB": 3
+    },
     "test_box_layout_spacing": {
-      "TB": 11,
-      "SB": 10
+      "SB": 6,
+      "TB": 13
     },
     "test_button_block": {
       "SB": 1,
       "TB": 1
     },
     "test_button_minimum_size_hint": {
-      "TB": 1,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_command_flush_borrowed": {
-      "SB": 2,
-      "TB": 2
+      "SB": 1,
+      "TB": 1
     },
     "test_enabled_change": {
-      "TB": 7,
-      "SB": 6
+      "SB": 6,
+      "TB": 8
     },
     "test_event_filter_input": {
       "SB": 8,
-      "TB": 9
+      "TB": 10
     },
     "test_event_filter_notify": {
-      "TB": 5,
-      "SB": 4
+      "SB": 3,
+      "TB": 6
     },
     "test_event_propagation": {
-      "SB": 14,
-      "TB": 15
+      "SB": 8,
+      "TB": 9
     },
     "test_explicit_size_and_hfw": {
-      "TB": 6,
-      "SB": 5
+      "SB": 3,
+      "TB": 7
     },
     "test_focus_disable": {
       "SB": 4,
-      "TB": 5
+      "TB": 3
     },
     "test_focus_dispatch": {
-      "TB": 5,
-      "SB": 4
+      "SB": 2,
+      "TB": 5
     },
     "test_frame_extreme_line_width": {
       "SB": 10,
-      "TB": 16
+      "TB": 9
     },
     "test_frame_size_hint": {
-      "TB": 4,
-      "SB": 3
+      "SB": 2,
+      "TB": 4
     },
     "test_generic_double_click": {
-      "SB": 10,
-      "TB": 11
+      "SB": 6,
+      "TB": 6
     },
     "test_grid_layout_accessors": {
-      "TB": 2,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_grid_layout_python_semantics": {
       "SB": 1,
       "TB": 1
     },
     "test_hit_test_dpi_old_dpr": {
-      "TB": 2,
-      "SB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_input_cursor": {
-      "SB": 31,
-      "TB": 34
+      "SB": 29,
+      "TB": 20
     },
     "test_issue18_thread_review": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 1
     },
     "test_key_sequence_hotkey": {
-      "SB": 6,
-      "TB": 7
+      "SB": 3,
+      "TB": 4
     },
     "test_label_box_model": {
-      "TB": 4,
-      "SB": 3
+      "SB": 3,
+      "TB": 2
     },
     "test_label_focus_policy": {
       "SB": 1,
       "TB": 1
     },
     "test_last_window_closed_signal": {
-      "TB": 2,
-      "SB": 2
+      "SB": 2,
+      "TB": 3
     },
     "test_layout_alignment": {
       "SB": 9,
-      "TB": 10
+      "TB": 6
     },
     "test_layout_alignment_residual": {
-      "TB": 9,
-      "SB": 8
-    },
-    "test_layout_default_metrics": {
-      "SB": 9,
-      "TB": 10
-    },
-    "test_layout_direction": {
-      "TB": 12,
-      "SB": 11
-    },
-    "test_layout_grid_alignment": {
-      "SB": 9,
-      "TB": 11
-    },
-    "test_layout_metric_caching": {
-      "TB": 28,
-      "SB": 21
-    },
-    "test_layout_reentrancy": {
       "SB": 4,
       "TB": 5
     },
-    "test_layout_size_constraint": {
-      "TB": 14,
-      "SB": 13
+    "test_layout_default_metrics": {
+      "SB": 5,
+      "TB": 12
     },
-    "test_layout_stretch_minimum": {
-      "SB": 2,
-      "TB": 2
+    "test_layout_direction": {
+      "SB": 10,
+      "TB": 14
     },
-    "test_margin_longhand": {
-      "TB": 2,
-      "SB": 1
+    "test_layout_grid_alignment": {
+      "SB": 9,
+      "TB": 12
     },
-    "test_menu_key_normalization": {
-      "SB": 3,
+    "test_layout_metric_caching": {
+      "SB": 11,
+      "TB": 16
+    },
+    "test_layout_reentrancy": {
+      "SB": 4,
       "TB": 3
     },
-    "test_menu_reentrancy": {
-      "TB": 6,
-      "SB": 5
+    "test_layout_size_constraint": {
+      "SB": 7,
+      "TB": 8
     },
-    "test_menu_set_visible_false": {
+    "test_layout_stretch_minimum": {
+      "SB": 1,
+      "TB": 1
+    },
+    "test_margin_longhand": {
       "SB": 1,
       "TB": 2
     },
+    "test_menu_key_normalization": {
+      "SB": 1,
+      "TB": 2
+    },
+    "test_menu_reentrancy": {
+      "SB": 5,
+      "TB": 3
+    },
+    "test_menu_set_visible_false": {
+      "SB": 1,
+      "TB": 1
+    },
     "test_menu_style_box_model": {
-      "TB": 4,
-      "SB": 4
+      "SB": 2,
+      "TB": 5
     },
     "test_mouse_attributes_parity": {
       "SB": 2,
       "TB": 3
     },
     "test_native_dpi_changed": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 2
     },
     "test_nested_layout_maximum": {
       "SB": 3,
-      "TB": 3
+      "TB": 2
     },
     "test_per_monitor_dpi_sync": {
-      "TB": 1,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_qss_min_max_box": {
       "SB": 7,
-      "TB": 8
+      "TB": 9
     },
     "test_r3_visibility_focus": {
-      "TB": 36,
-      "SB": 32
+      "SB": 31,
+      "TB": 20
     },
     "test_reentrancy_and_deferred": {
       "SB": 6,
-      "TB": 6
+      "TB": 7
     },
     "test_root_resize_once": {
-      "TB": 3,
-      "SB": 3
+      "SB": 2,
+      "TB": 4
     },
     "test_scroll_area_content_resize": {
       "SB": 3,
-      "TB": 4
+      "TB": 2
     },
     "test_scroll_area_input": {
-      "TB": 10,
-      "SB": 9
+      "SB": 5,
+      "TB": 6
     },
     "test_scrollbar_extreme_range": {
       "SB": 2,
-      "TB": 2
+      "TB": 1
     },
     "test_show_hide_borrowed_child": {
-      "TB": 2,
-      "SB": 1
-    },
-    "test_show_hide_hooks": {
-      "SB": 2,
+      "SB": 1,
       "TB": 2
     },
+    "test_show_hide_hooks": {
+      "SB": 1,
+      "TB": 1
+    },
     "test_stacked_layout_geometry": {
-      "TB": 3,
-      "SB": 3
+      "SB": 1,
+      "TB": 2
     },
     "test_stacked_layout_hint": {
-      "SB": 5,
-      "TB": 5
+      "SB": 3,
+      "TB": 6
     },
     "test_stacked_layout_spacing": {
-      "TB": 1,
-      "SB": 1
+      "SB": 1,
+      "TB": 1
     },
     "test_style_and_commands": {
       "SB": 3,
       "TB": 4
     },
     "test_stylesheet_disabled": {
-      "TB": 4,
-      "SB": 4
+      "SB": 4,
+      "TB": 3
     },
     "test_stylesheet_enabled": {
       "SB": 5,
       "TB": 7
     },
     "test_stylesheet_focus": {
-      "TB": 2,
-      "SB": 1
-    },
-    "test_stylesheet_focus_label_bar": {
       "SB": 1,
       "TB": 2
     },
+    "test_stylesheet_focus_label_bar": {
+      "SB": 1,
+      "TB": 1
+    },
     "test_stylesheet_style": {
-      "TB": 4,
-      "SB": 3
+      "SB": 2,
+      "TB": 4
     },
     "test_stylesheet_type_inheritance": {
       "SB": 2,
       "TB": 3
     },
     "test_tab_key_hook": {
-      "TB": 16,
-      "SB": 15
+      "SB": 14,
+      "TB": 10
     },
     "test_tool_tip_change_event": {
       "SB": 3,
-      "TB": 4
+      "TB": 2
     },
     "test_top_level_minimum": {
-      "TB": 8,
-      "SB": 7
+      "SB": 4,
+      "TB": 4
     },
     "test_widget_attributes_api": {
-      "SB": 2,
-      "TB": 3
-    },
-    "test_widget_default_size_hint": {
-      "TB": 1,
-      "SB": 1
-    },
-    "test_widget_enabled": {
-      "SB": 4,
-      "TB": 5
-    },
-    "test_widget_extensions": {
-      "TB": 25,
-      "SB": 14
-    },
-    "test_widget_helpers_api": {
-      "SB": 19,
-      "TB": 25
-    },
-    "test_widget_invalidation": {
-      "TB": 15,
-      "SB": 13
-    },
-    "test_widget_partial_update": {
       "SB": 1,
       "TB": 1
     },
+    "test_widget_default_size_hint": {
+      "SB": 1,
+      "TB": 1
+    },
+    "test_widget_enabled": {
+      "SB": 2,
+      "TB": 2
+    },
+    "test_widget_extensions": {
+      "SB": 13,
+      "TB": 13
+    },
+    "test_widget_helpers_api": {
+      "SB": 11,
+      "TB": 13
+    },
+    "test_widget_invalidation": {
+      "SB": 13,
+      "TB": 8
+    },
+    "test_widget_partial_update": {
+      "SB": 1,
+      "TB": 2
+    },
     "test_widget_property_dirty": {
-      "TB": 2,
-      "SB": 1
+      "SB": 1,
+      "TB": 2
     },
     "test_widget_update_cross_thread": {
       "SB": 2,
-      "TB": 2
+      "TB": 1
     },
     "test_widgets_system": {
-      "TB": 21,
-      "SB": 13
+      "SB": 7,
+      "TB": 11
     },
     "test_window_activate_in_show_handler": {
-      "SB": 2,
+      "SB": 1,
       "TB": 2
     },
     "test_window_backdrop_suspend": {
-      "TB": 3,
-      "SB": 2
+      "SB": 2,
+      "TB": 3
     },
     "test_window_device_pixel_ratio": {
-      "SB": 59,
-      "TB": 205
+      "SB": 58,
+      "TB": 101
     },
     "test_window_drop_releases_graph": {
-      "TB": 2,
-      "SB": 2
+      "SB": 1,
+      "TB": 1
     },
     "test_window_flags_api": {
       "SB": 1,
       "TB": 2
     },
     "test_window_mask_and_transient": {
-      "TB": 73,
-      "SB": 36
+      "SB": 35,
+      "TB": 38
     },
     "test_window_screen_mapping": {
       "SB": 39,
-      "TB": 129
+      "TB": 67
     },
     "test_window_size_limits": {
-      "TB": 24,
-      "SB": 15
+      "SB": 14,
+      "TB": 13
     }
   }
 }
