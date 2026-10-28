@@ -106,6 +106,9 @@ struct CompositeText {
     advances: Vec<f32>,
     /// The paragraphs a font shaped, in text order; the others are drawn grapheme by grapheme.
     paragraphs: Vec<ShapedParagraph>,
+    /// Whether UAX #14 allows a line break in front of each grapheme, plus one entry for the end
+    /// of the text (`QCharAttributes::lineBreak`).
+    break_before: Vec<bool>,
 }
 
 impl CompositeText {
@@ -369,8 +372,8 @@ impl TextLayout {
             line_bytes += g.len();
             has_word |= !is_space;
 
-            // Track word break opportunity (whitespace or punctuation)
-            if has_word && (is_space || g.chars().all(|c| c == '-' || c == '/' || c == ',')) {
+            // Track word break opportunity (UAX #14)
+            if has_word && composite.break_before[curr_grapheme + 1] {
                 last_break_grapheme = Some(curr_grapheme + 1);
                 last_break_advances_len = advances.len();
             }
@@ -677,11 +680,13 @@ impl TextLayout {
         let mut starts: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
         starts.push(text.len());
         let (advances, paragraphs) = self.shape_paragraphs(&text, &starts);
+        let break_before = crate::text::line_break::break_before(&text, &starts);
         let built = Arc::new(CompositeText {
             text,
             starts,
             advances,
             paragraphs,
+            break_before,
         });
         self.composite.0 = Some(Arc::clone(&built));
         built
@@ -1017,11 +1022,13 @@ mod tests {
             pen,
             logical_order,
         };
+        let break_before = vec![false; starts.len()];
         let composite = CompositeText {
             text: text.to_owned(),
             starts,
             advances,
             paragraphs: vec![paragraph],
+            break_before,
         };
         (layout, composite)
     }

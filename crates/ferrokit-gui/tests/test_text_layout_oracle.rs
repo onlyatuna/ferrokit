@@ -104,12 +104,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          a long one overflow; ferrokit always falls back to a break between characters \
          (`WrapAtWordBoundaryOrAnywhere`), and has no way to ask for the other mode",
     ),
-    (
-        "breaks/syn_comma/",
-        "ferrokit takes ',' for a break opportunity; Qt does not (UAX #14: a comma is class IS, \
-         which allows no break before a following letter, LB29), so Qt breaks at the space or \
-         between letters instead",
-    ),
     // --- widths ---
     (
         "natural/arial_kerned_words/50",

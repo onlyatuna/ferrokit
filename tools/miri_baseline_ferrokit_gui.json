@@ -689,6 +689,10 @@
     "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::SB": "pass",
     "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::TB": "pass",
     "test_text_layout_oracle::synthetic_font_aligned_lines_match_qt::SB": "unsupported",
-    "test_text_layout_oracle::synthetic_font_aligned_lines_match_qt::TB": "unsupported"
+    "test_text_layout_oracle::synthetic_font_aligned_lines_match_qt::TB": "unsupported",
+    "lib::text::line_break::tests::a_slash_in_front_of_a_digit_breaks_unless_it_is_inside_a_number::SB": "pass",
+    "lib::text::line_break::tests::a_slash_in_front_of_a_digit_breaks_unless_it_is_inside_a_number::TB": "pass",
+    "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::SB": "pass",
+    "lib::text::line_break::tests::commas_do_not_break_in_front_of_letters::TB": "pass"
   }
 }

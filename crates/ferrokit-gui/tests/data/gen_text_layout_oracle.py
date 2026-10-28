@@ -60,6 +60,10 @@ PX = 16
 GLYPHS = (
     [(0x20, "space", 256), (0x2D, "hyphen", 320), (0x2C, "comma", 256), (0x2E, "period", 256),
         (0x2F, "slash", 288)]
+    # the other ASCII punctuation, for the line breaking cases: one width, each its own glyph
+    + [(c, "punct%02x" % c, 384) for c in
+       list(range(0x21, 0x2C)) + list(range(0x3A, 0x41)) + list(range(0x5B, 0x61))
+       + list(range(0x7B, 0x7F))]
     + [(0x30 + i, "digit%d" % i, 512) for i in range(10)]
     # Capitals: wide, with distinct widths so that a wrong glyph shows.
     + [(0x41 + i, chr(0x41 + i), 640 + 16 * (i % 5)) for i in range(26)]
@@ -271,7 +275,29 @@ def wrap_row(case, font_id, font, mode, width, text):
            l.cursorToX(l.textStart() + l.textLength())[0])
         for l in lines
     ]
-    return ["wrap", case, font_id, mode, str(width), text.encode().hex(), str(len(parts))] + parts
+    return ["wrap", case, font_id, mode, "%s" % (width,), text.encode().hex(), str(len(parts))] + parts
+
+
+# Templates of the line break opportunity cases: a word, a punctuation mark P and another word.
+LB_TEMPLATES = [("LL", "aaaa%sbbbb"), ("DD", "1111%s2222"), ("LD", "aaaa%s2222"), ("DL", "1111%sbbbb")]
+LB_PUNCT = [c for c in range(0x21, 0x7F) if not chr(c).isalnum()]
+
+
+def lb_rows(font_id, font):
+    """One row per template and punctuation mark: `anywhere` wrapping at a width that holds the
+    text up to two characters past the mark. A break opportunity after the mark ends the first
+    line right after it; without one the line runs on to the width."""
+    from PySide6.QtGui import QFontMetricsF
+
+    fm = QFontMetricsF(font)
+    rows = []
+    for name, tpl in LB_TEMPLATES:
+        for c in LB_PUNCT:
+            text = tpl % chr(c)
+            head = text[: text.index(chr(c)) + 1]
+            width = fm.horizontalAdvance(text[: len(head) + 2]) + 0.25
+            rows.append(wrap_row("lb_%s_%02x" % (name, c), font_id, font, "anywhere", width, text))
+    return rows
 
 
 def align_row(case, font_id, font, align, width, text):
@@ -333,6 +359,8 @@ def main():
     for case, font_id, mode, text, widths in WRAP_CASES:
         for w in widths:
             print(" ".join(wrap_row(case, font_id, fonts[font_id], mode, w, text)))
+    for row in lb_rows("syn", fonts["syn"]):
+        print(" ".join(row))
     for case, font_id, align, text, widths in ALIGN_CASES:
         for w in widths:
             print(" ".join(align_row(case, font_id, fonts[font_id], align, w, text)))

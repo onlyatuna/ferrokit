@@ -17,6 +17,7 @@ pub mod glyph_layout;
 pub mod highlighter;
 pub mod layout;
 mod line;
+mod line_break;
 mod markup;
 pub use markup::might_be_rich_text;
 pub mod outline_face;
