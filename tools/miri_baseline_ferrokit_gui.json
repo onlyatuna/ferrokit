@@ -657,8 +657,6 @@
     "lib::text::layout::tests::cursor_positions_follow_shaped_grapheme_boundaries::TB": "unsupported",
     "lib::text::layout::tests::cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries::SB": "unsupported",
     "lib::text::layout::tests::cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries::TB": "unsupported",
-    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::SB": "pass",
-    "test_text_system::test_html_export_merges_highlighter_overlay_over_user_formats::TB": "pass",
     "test_text_system::test_cursor_sticky_column_without_wrapping::SB": "pass",
     "test_text_system::test_cursor_sticky_column_without_wrapping::TB": "pass",
     "test_text_system::test_cursor_sticky_x_with_wrapping::SB": "unsupported",
@@ -682,6 +680,8 @@
     "lib::text::layout::tests::a_format_boundary_does_not_move_drawn_glyphs::SB": "unsupported",
     "lib::text::layout::tests::a_format_boundary_does_not_move_drawn_glyphs::TB": "unsupported",
     "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::SB": "pass",
-    "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::TB": "pass"
+    "lib::text::layout::tests::glyph_slices_match_scanning_every_glyph_on_a_many_line_paragraph::TB": "pass",
+    "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::SB": "pass",
+    "test_text_system::test_exports_do_not_include_highlighter_overlay_like_qt::TB": "pass"
   }
 }
