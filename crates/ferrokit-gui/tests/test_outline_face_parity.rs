@@ -84,4 +84,7 @@ fn right_side_bearing_is_the_design_value_truncated_to_a_64th_of_a_pixel() {
     assert_eq!(bearing('a', 13.0), 0.5);
     // A glyph without a contour (the combining acute) has no bearing.
     assert_eq!(bearing('\u{301}', 16.0), 0.0);
+    // The face keeps the design value of a glyph: asking again, at another size, scales it alike.
+    assert_eq!(bearing('\u{f8}', 16.0), -0.375);
+    assert_eq!(bearing('\u{f8}', 32.0), -0.75);
 }

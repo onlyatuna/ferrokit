@@ -21,6 +21,10 @@ pub struct OutlineFace {
     // Field order matters: `face` borrows from `_data` and must be dropped first.
     face: Face<'static>,
     units_per_em: f32,
+    /// Design right side bearing, in font units, of every glyph asked for so far (see
+    /// [`GlyphFace::right_side_bearing`]): reading it takes the glyph header, and a text asks for
+    /// the same few glyphs again for every layout. At most one entry per glyph of the font.
+    bearings: std::sync::Mutex<std::collections::HashMap<u16, f64>>,
     _data: SharedFontData,
 }
 
@@ -41,6 +45,7 @@ impl OutlineFace {
         Ok(Self {
             face,
             units_per_em,
+            bearings: std::sync::Mutex::new(std::collections::HashMap::new()),
             _data: data,
         })
     }
@@ -148,15 +153,25 @@ impl GlyphFace for OutlineFace {
     /// not the same where `hmtx` and `glyf` disagree on the left side bearing, and differs from Qt
     /// in 60 of them.
     fn right_side_bearing(&self, glyph_id: u16, size: f32) -> Option<f32> {
-        let gid = GlyphId(glyph_id);
-        // A glyph without a contour has no ink to hang over anything.
-        let Some(bbox) = self.face.glyph_bounding_box(gid) else {
-            return Some(0.0);
+        let mut known = self.bearings.lock().unwrap_or_else(|e| e.into_inner());
+        let design = match known.get(&glyph_id) {
+            Some(&design) => design,
+            None => {
+                let gid = GlyphId(glyph_id);
+                // A glyph without a contour has no ink to hang over anything.
+                let design = match self.face.glyph_bounding_box(gid) {
+                    None => 0.0,
+                    Some(bbox) => {
+                        let advance = f64::from(self.face.glyph_hor_advance(gid)?);
+                        let left = f64::from(self.face.glyph_hor_side_bearing(gid)?);
+                        advance - left - (f64::from(bbox.x_max) - f64::from(bbox.x_min))
+                    }
+                };
+                known.insert(glyph_id, design);
+                design
+            }
         };
-        let advance = f64::from(self.face.glyph_hor_advance(gid)?);
-        let left = f64::from(self.face.glyph_hor_side_bearing(gid)?);
-        let ink = f64::from(bbox.x_max) - f64::from(bbox.x_min);
-        let pixels = (advance - left - ink) / f64::from(self.units_per_em) * f64::from(size);
+        let pixels = design / f64::from(self.units_per_em) * f64::from(size);
         Some(((pixels * 64.0).trunc() / 64.0) as f32)
     }
 

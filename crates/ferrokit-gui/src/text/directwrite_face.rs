@@ -299,7 +299,7 @@ impl GlyphFace for DirectWriteFace {
     }
 
     /// The same design metrics DirectWrite reports (`rightSideBearing`); read from the font file
-    /// like the advances are (`windows_face_bearings_match_directwrite` compares them).
+    /// like the advances are (`right_side_bearings_match_directwrite` compares them).
     fn right_side_bearing(&self, glyph_id: u16, size: f32) -> Option<f32> {
         self.base.right_side_bearing(glyph_id, size)
     }
@@ -314,6 +314,9 @@ mod tests {
     /// `DESIGN_TO_LOGICAL` does, for every Latin-1 glyph of Arial, Arial Italic and Segoe UI.
     #[test]
     fn right_side_bearings_match_directwrite() {
+        // Like `tests/test_directwrite_face.rs`: DirectWrite's in-memory loader needs Windows 10
+        // 1703, and on an older system the crate itself falls back to `OutlineFace`, so there is
+        // nothing to compare. A missing font file below does fail the test.
         if !is_available() {
             return;
         }

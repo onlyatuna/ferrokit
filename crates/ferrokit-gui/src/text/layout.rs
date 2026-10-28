@@ -179,9 +179,23 @@ impl CompositeText {
     /// taken in whole, and the line then ends with the bearing of its last glyph, except for a
     /// text whose rest is white space only: nothing follows the word to test or break at, and a
     /// line that ends in white space has no bearing.
+    ///
+    /// The bearing is never negative, so a word that is too wide by its advances alone is too wide
+    /// whatever ends it: the scan stops there instead of at the end of the word, and a line costs
+    /// no more than its own width however long the word is.
     fn first_word_overflows(&self, from: usize, x: f32, width: f32) -> bool {
+        let mut pen = x;
         let mut end = from;
-        while !self.ends_chunk(end) {
+        loop {
+            #[cfg(test)]
+            tests::FIRST_WORD_SCANNED.with(|c| c.set(c.get() + 1));
+            pen += self.advances[end];
+            if pen > width {
+                return true;
+            }
+            if self.ends_chunk(end) {
+                break;
+            }
             end += 1;
         }
         let count = self.grapheme_count();
@@ -191,7 +205,7 @@ impl CompositeText {
                 is_blank(grapheme) && grapheme != LINE_SEPARATOR
             });
         let bearing = if rest_is_space { 0.0 } else { self.end_bearing(end) };
-        x + self.advances[from..=end].iter().sum::<f32>() + bearing > width
+        pen + bearing > width
     }
 
     /// The shaped paragraph holding grapheme `index`, if a font shaped it.
@@ -1049,8 +1063,8 @@ impl TextLayout {
     }
 
     /// Fills `out` (one entry per grapheme of a shaped run, `local` its grapheme byte offsets)
-    /// with the negative right bearing of the glyph that ends the grapheme. A text has few
-    /// different glyphs, so each is asked of its font once.
+    /// with the negative right bearing of the glyph that ends the grapheme. The faces keep what
+    /// they read of a glyph, so asking again for the same one is a lookup.
     fn run_bearings(
         &self,
         local: &[usize],
@@ -1058,14 +1072,8 @@ impl TextLayout {
         layout: &GlyphLayout,
         out: &mut [f32],
     ) {
-        let mut known: std::collections::HashMap<(u8, u16), f32> = std::collections::HashMap::new();
         for (slot, index) in out.iter_mut().zip(Self::glyph_of_graphemes(local, layout)) {
-            *slot = index.map_or(0.0, |index| {
-                let glyph = &layout.glyphs[index];
-                *known
-                    .entry((glyph.font_index, glyph.glyph_id))
-                    .or_insert_with(|| self.glyph_bearing(engines, glyph))
-            });
+            *slot = index.map_or(0.0, |index| self.glyph_bearing(engines, &layout.glyphs[index]));
         }
     }
 
@@ -1140,6 +1148,8 @@ mod tests {
     thread_local! {
         /// `composite_text` calls on this thread.
         pub(super) static COMPOSITE_BUILDS: Cell<usize> = const { Cell::new(0) };
+        /// Graphemes `first_word_overflows` looked at on this thread.
+        pub(super) static FIRST_WORD_SCANNED: Cell<usize> = const { Cell::new(0) };
     }
 
     #[test]
@@ -1781,5 +1791,49 @@ mod tests {
         let ending = bearing_composite("ab", &[4.0, 4.0], &[0.0, 0.5], Vec::new(), &[]);
         assert!(ending.first_word_overflows(0, 0.0, 8.25));
         assert!(!ending.first_word_overflows(0, 0.0, 8.5));
+    }
+
+    #[test]
+    fn the_first_word_scan_stops_at_the_width_not_at_the_end_of_the_word() {
+        // One word of 20 000 graphemes of 1 px, lines of 10 px: every line asks, and an answer
+        // that went to the end of the word would read 20 000 graphemes each time.
+        let n = 20_000;
+        let text = "a".repeat(n);
+        let c = bearing_composite(&text, &vec![1.0; n], &vec![0.0; n], Vec::new(), &[]);
+        FIRST_WORD_SCANNED.with(|s| s.set(0));
+        for from in (0..n).step_by(10) {
+            assert!(c.first_word_overflows(from, 0.0, 10.0 - 0.5));
+        }
+        let scanned = FIRST_WORD_SCANNED.with(Cell::get);
+        assert!(scanned <= n, "scanned {scanned} graphemes for {n}");
+    }
+
+    /// The synthetic font of the Qt oracle: it has no installed-font dependency.
+    fn oracle_font() -> Font {
+        use crate::text::font::SharedFontData;
+        Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
+            include_bytes!("../../tests/data/oracle_text.ttf").to_vec(),
+        ))
+    }
+
+    #[test]
+    fn a_long_word_is_wrapped_in_work_linear_in_its_length() {
+        // `WrapAtWordBoundaryOrAnywhere` lays the first word of each line again inside the word
+        // when it does not fit; deciding that must not walk the rest of the word every time.
+        let count = |n: usize| {
+            let mut layout = TextLayout::new("abcdefghij".repeat(n / 10), oracle_font());
+            layout.set_wrap_mode(WrapMode::WrapAtWordBoundaryOrAnywhere);
+            layout.set_wrap_width(Some(100.0));
+            FIRST_WORD_SCANNED.with(|s| s.set(0));
+            layout.do_layout();
+            assert!(layout.line_count() > n / 30, "the word is cut into many lines");
+            FIRST_WORD_SCANNED.with(Cell::get)
+        };
+        let (small, large) = (count(4_000), count(16_000));
+        assert!(small > 0, "the scan is reached");
+        assert!(
+            large <= 5 * small,
+            "4x the text scanned {large} graphemes against {small}: not linear"
+        );
     }
 }
