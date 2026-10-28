@@ -95,7 +95,7 @@ pub(crate) fn composite_masked(
     let iy0 = y0.max(0);
     let ix1 = (x0 as i64 + w as i64).min(pw as i64) as i32;
     let iy1 = (y0 as i64 + h as i64).min(ph as i64) as i32;
-    if ix0 >= ix1 || iy0 >= iy1 || cov.len() < (w * h) as usize {
+    if ix0 >= ix1 || iy0 >= iy1 || cov.len() < w as usize * h as usize {
         return;
     }
     let (sw, sh) = ((ix1 - ix0) as u32, (iy1 - iy0) as u32);
@@ -330,6 +330,16 @@ mod tests {
                     ]
                 };
                 for (index, source) in sources().into_iter().enumerate() {
+                    // tiny-skia 0.11.4's low-precision pipeline overflows `u16x16` subtraction
+                    // (wide/u16x16_t.rs) for a solid colour in these two modes, which panics in a
+                    // debug build, in the reference and the blit alike. Release wraps; every
+                    // other mode and the image source run in both profiles.
+                    if cfg!(debug_assertions)
+                        && index == 0
+                        && matches!(mode, Overlay | HardLight)
+                    {
+                        continue;
+                    }
                     let mut expected = surface.clone();
                     composite_masked_reference(
                         &mut expected, (pw, ph), (x0, y0), (w, h), &cov, source, mode.into(),
