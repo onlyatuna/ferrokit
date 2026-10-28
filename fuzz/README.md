@@ -33,3 +33,23 @@ test in the crate that owns the code before fixing it. Artifacts are not committ
 
 `fuzz/seeds/` holds a few small hand-written inputs per target (well under 1 MB in total); keep it
 that way and do not commit generated corpora.
+
+## Unattended campaigns
+
+`tools/fuzz_campaign.py` runs every target (or `--targets a,b`) for `--seconds` each on `--jobs`
+forked workers that keep going after a finding, then minimises every new crash/timeout/oom input,
+replays it, and prints a Markdown report (`--json FILE` for a machine-readable one) with one entry
+per distinct failure and the minimised input as hex when it is small. It is meant for a
+scheduled job or a long manual run on a Linux host, never for CI. Exit status 0 = no findings,
+1 = findings, 2 = the campaign could not run (a build failure or a missing toolchain is never
+reported as "no findings").
+
+```sh
+python tools/fuzz_campaign.py --seconds 3600 --jobs 4 --toolchain nightly --json /tmp/fuzz_report.json
+```
+
+Run it without `ulimit -v`: AddressSanitizer reserves terabytes of address space for its shadow
+memory and aborts under it. Each worker is capped by libFuzzer's `-rss_limit_mb=2048` instead.
+Only `fuzz/corpus/` and `fuzz/artifacts/` (both git-ignored) are written; `--replay-only` re-runs
+the investigation on whatever is already in `fuzz/artifacts/`. Turn a finding into a regression
+unit test with the hex input inlined, as described above; never commit the corpus or artifacts.
