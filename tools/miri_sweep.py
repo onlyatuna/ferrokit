@@ -58,6 +58,7 @@ test exactly once whatever the weights are.
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -577,7 +578,23 @@ def load_target_weights(crate, models, path=WEIGHTS_PATH):
             recorded = json.load(f).get(crate, {})
     except FileNotFoundError:
         return {}
-    return {t: sum(per_model.get(m, 0) for m in models) for t, per_model in recorded.items()}
+    weights = {}
+    for target, per_model in recorded.items():
+        per = [usable_seconds(per_model.get(m, 0)) for m in models]
+        if None not in per:  # a NaN, infinite or non-numeric entry is no time at all: default weight
+            weights[target] = sum(per)
+    return weights
+
+
+def usable_seconds(value):
+    """`value` as non-negative finite seconds, or None when it is not a finite number (NaN, inf, text).
+
+    A negative time is nonsense and counts as 0, so that a bad entry in the weights can only skew the
+    balance, never leave a test without a shard.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return max(value, 0)
 
 
 def planned_tests(baseline, models):
@@ -610,10 +627,11 @@ def work_units(targets, planned, weights):
     for target in sorted(set(targets)):
         tests = planned.get(target)
         if not tests:
-            units.append((target, None, weights.get(target, DEFAULT_TARGET_SECONDS)))
+            seconds = usable_seconds(weights.get(target))
+            units.append((target, None, DEFAULT_TARGET_SECONDS if seconds is None else seconds))
             continue
         shares = {test: STOPPER_WEIGHT if stops else 1 for test, stops in tests.items()}
-        recorded = weights.get(target)
+        recorded = usable_seconds(weights.get(target))
         per_share = DEFAULT_TEST_SECONDS if recorded is None else recorded / sum(shares.values())
         for test in sorted(shares):
             units.append((target, test, per_share * shares[test]))
@@ -628,12 +646,13 @@ def assign_units(seconds, count):
     there are at least `count` units, no shard is left empty.
     """
     n = len(seconds)
+    seconds = [usable_seconds(s) or 0 for s in seconds]
     total = sum(seconds)
     if total <= 0:
         return [i * count // n for i in range(n)]
     shard, before = [], 0.0
     for s in seconds:
-        shard.append(min(count - 1, int((before + s / 2) * count / total)))
+        shard.append(max(0, min(count - 1, int((before + s / 2) * count / total))))
         before += s
     if n >= count:
         # A few very heavy units can leave a part holding no midpoint: let the shard index grow

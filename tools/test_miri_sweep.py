@@ -349,6 +349,62 @@ class TestMiriSweepSharding(unittest.TestCase):
         # With fewer units than shards the surplus shards stay empty.
         self.assertEqual(len(set(assign_units([5, 5], 3))), 2)
 
+    def test_assign_units_survives_negative_nan_and_infinite_seconds(self):
+        nan, inf = float("nan"), float("inf")
+        cases = (
+            [-10, -10, -10, 200, 50, -100, -100],
+            [nan, 5, 5, nan],
+            [inf, 5, -inf, 5],
+            [-1, -1, -1],
+            [nan, nan],
+        )
+        for seconds in cases:
+            for count in range(1, 5):
+                with self.subTest(seconds=seconds, count=count):
+                    shards = assign_units(seconds, count)
+                    self.assertEqual(len(shards), len(seconds))
+                    self.assertTrue(all(0 <= s < count for s in shards), shards)
+                    self.assertEqual(shards, sorted(shards))
+                    if len(seconds) >= count:
+                        self.assertEqual(set(shards), set(range(count)))
+
+    def test_bad_recorded_seconds_never_leave_a_test_without_a_shard(self):
+        nan, inf = float("nan"), float("inf")
+        baseline = load_baseline("ferrokit-gui")
+        planned = planned_tests(baseline, ["TB"])
+        targets = baseline["targets"]
+        bad = [-50, nan, inf, -inf, 0, 1e9, "slow", True, None]
+        weights = {t: bad[i % len(bad)] for i, t in enumerate(targets)}
+        weights["lib"] = -3000
+        for count in range(1, 5):
+            plan = ShardPlan(targets, count, planned, weights)
+            for target in targets:
+                names = sorted(planned.get(target, ())) + ["", "~~new"]
+                owners = [[i for i in range(1, count + 1) if plan.owns(i)(target, n)] for n in names]
+                self.assertTrue(all(len(o) == 1 for o in owners), f"{target} count={count}")
+            self.assertTrue(all(plan.units_of(i) for i in range(1, count + 1)), count)
+
+    def test_load_target_weights_clamps_negative_and_drops_unusable_entries(self):
+        recorded = {
+            "c": {
+                "neg": {"SB": -5, "TB": 20},
+                "nan": {"SB": float("nan"), "TB": 1},
+                "inf": {"SB": 1, "TB": float("inf")},
+                "text": {"SB": "slow", "TB": 1},
+                "ok": {"SB": 3, "TB": 4},
+                "onlytb": {"TB": 7},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "weights.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(recorded, f)  # writes NaN / Infinity, which json.load accepts
+            weights = load_target_weights("c", ["SB", "TB"], path)
+            self.assertEqual(weights, {"neg": 20, "ok": 7, "onlytb": 7})
+            self.assertEqual(load_target_weights("c", ["SB"], path)["neg"], 0)
+        units = work_units(["nan", "neg"], {}, weights)
+        self.assertEqual(units, [("nan", None, DEFAULT_TARGET_SECONDS), ("neg", None, 20)])
+
     def test_parse_shard_accepts_valid_and_rejects_invalid(self):
         self.assertEqual(parse_shard("1/2"), (1, 2))
         self.assertEqual(parse_shard("2/2"), (2, 2))
