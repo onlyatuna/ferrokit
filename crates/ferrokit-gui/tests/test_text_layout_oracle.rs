@@ -83,21 +83,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
          Arial `1` (8.9 px). [INFERENCE: same run splitting as arial_emoji_zwj]",
     ),
     // --- line breaking ---
-    (
-        "breaks/syn_newline/",
-        "ferrokit ends a line at '\\n'; QTextLayout does not (it is a paragraph separator, which \
-         `QTextDocument` splits into blocks; the forced break of a layout is U+2028)",
-    ),
-    ("breaks/syn_trailing_newline/", "as syn_newline: no break at '\\n' in Qt"),
-    (
-        "breaks/syn_line_separator/",
-        "ferrokit does not end a line at U+2028 (QChar::LineSeparator), which is Qt's forced line \
-         break",
-    ),
-    (
-        "breaks/syn_trailing_line_separator/",
-        "as syn_line_separator; Qt also gives a text ending in U+2028 an empty last line",
-    ),
     // --- widths ---
     (
         "natural/arial_kerned_words/50",

@@ -72,6 +72,18 @@ impl std::fmt::Debug for ShapedParagraph {
     }
 }
 
+/// `QChar::LineSeparator`: what ends a line of a `QTextLayout` (`QTextEngine::itemize` marks it
+/// `LineOrParagraphSeparator`). A line feed does not: it is an ordinary character of no width,
+/// which is why `QTextDocument` splits its paragraphs into blocks and `qt_format_text` replaces
+/// the line feeds of a label's text with this before laying out.
+const LINE_SEPARATOR: &str = "\u{2028}";
+
+/// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed or the
+/// line separator.
+fn is_unshaped(grapheme: &str) -> bool {
+    grapheme == "\n" || grapheme == LINE_SEPARATOR
+}
+
 /// Whether a grapheme is white space that hangs past the end of a wrapped line instead of
 /// wrapping it: what `QTextEngine` flags `ScriptAnalysis::Space` (a space, a tab, the other
 /// separator spaces and the zero width space; not the no-break spaces, which are ordinary
@@ -307,10 +319,10 @@ impl TextLayout {
         let composite = self.composite();
         let total_graphemes = composite.grapheme_count();
 
-        // A text ending in a hard break has a final empty line (the caret after `'\n'`); an
+        // A text ending in a hard break has a final empty line (the caret after the separator); an
         // empty text is a single empty line. `layout_cursor == total + 1` means that line is done.
         let ends_with_break =
-            total_graphemes > 0 && composite.grapheme(total_graphemes - 1) == "\n";
+            total_graphemes > 0 && composite.grapheme(total_graphemes - 1) == LINE_SEPARATOR;
         if self.layout_cursor > total_graphemes
             || (self.layout_cursor == total_graphemes && total_graphemes > 0 && !ends_with_break)
         {
@@ -384,7 +396,7 @@ impl TextLayout {
 
         while curr_grapheme < total_graphemes {
             let g = composite.grapheme(curr_grapheme);
-            if g == "\n" {
+            if g == LINE_SEPARATOR {
                 // Hard line break
                 curr_grapheme += 1;
                 line_bytes += g.len();
@@ -607,7 +619,7 @@ impl TextLayout {
                     None => {
                         // No font shaped this paragraph: draw it grapheme by grapheme.
                         let g_str = composite.grapheme(g_idx);
-                        if g_str != "\n" {
+                        if !is_unshaped(g_str) {
                             let g_x = pos.x + line.cursor_to_x(g_idx, Edge::Leading);
                             painter.draw_text_colored(
                                 PointF::new(g_x, line_y),
@@ -744,10 +756,10 @@ impl TextLayout {
         built
     }
 
-    /// Shapes `text` one paragraph (the text between hard line breaks) at a time, as
+    /// Shapes `text` one paragraph (the text between line feeds and hard line breaks) at a time, as
     /// `QTextEngine` shapes items: kerning and ligatures are measured across grapheme
     /// boundaries and a ligature's width is divided over its graphemes. Returns the advance of
-    /// every grapheme (the `'\n'` graphemes get none; line breaking never measures them) and the
+    /// every grapheme (the `'\n'` and U+2028 graphemes get none) and the
     /// shaped glyphs of every paragraph a font shapes, which drawing uses so what is drawn sits
     /// where the advances put it.
     fn shape_paragraphs(&self, text: &str, starts: &[usize]) -> (Vec<f32>, Vec<ShapedParagraph>) {
@@ -758,7 +770,7 @@ impl TextLayout {
         let mut first = 0;
         while first < count {
             let mut end = first;
-            while end < count && &text[starts[end]..starts[end + 1]] != "\n" {
+            while end < count && !is_unshaped(&text[starts[end]..starts[end + 1]]) {
                 end += 1;
             }
             if end > first {
@@ -836,7 +848,7 @@ mod tests {
 
     #[test]
     fn do_layout_builds_the_composite_text_once() {
-        let mut layout = TextLayout::new("one\ntwo\nthree\nfour\nfive", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("one\u{2028}two\u{2028}three\u{2028}four\u{2028}five", Font::new("Segoe UI", 12.0));
         layout.set_preedit_area(3, "ime");
         COMPOSITE_BUILDS.with(|c| c.set(0));
         layout.do_layout();
@@ -846,33 +858,33 @@ mod tests {
 
     #[test]
     fn cached_composite_text_follows_text_and_preedit_changes() {
-        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("ab\u{2028}cd", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
-        layout.set_text("ab\ncd\nef");
+        layout.set_text("ab\u{2028}cd\u{2028}ef");
         layout.do_layout();
         assert_eq!(layout.line_count(), 3);
-        layout.set_preedit_area(2, "X\nY");
+        layout.set_preedit_area(2, "X\u{2028}Y");
         layout.do_layout();
         assert_eq!(layout.line_count(), 4);
-        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\\n\"");
+        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\u{2028}\"");
     }
 
     #[test]
-    fn trailing_newline_adds_an_empty_last_line() {
-        let mut layout = TextLayout::new("ab\n", Font::new("Segoe UI", 12.0));
+    fn trailing_line_separator_adds_an_empty_last_line() {
+        let mut layout = TextLayout::new("ab\u{2028}", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
         let last = layout.line_at(1).unwrap();
         assert_eq!((last.text_start(), last.text_length()), (3, 0));
         assert!(last.y() > layout.line_at(0).unwrap().y());
-        // The caret after the newline sits on the empty line.
+        // The caret after the separator sits on the empty line.
         assert_eq!(layout.line_for_text_position(3).map(|l| l.line_number()), Some(1));
     }
 
     #[test]
     fn line_for_text_position_end_is_exclusive_except_on_the_last_line() {
-        let mut layout = TextLayout::new("ab\ncd", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new("ab\u{2028}cd", Font::new("Segoe UI", 12.0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 2);
         let line_of = |p| layout.line_for_text_position(p).map(|l| l.line_number());
