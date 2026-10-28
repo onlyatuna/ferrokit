@@ -68,7 +68,8 @@ def failure_message(output):
     """The first line that says what went wrong, without addresses, so equal bugs compare equal."""
     for line in output.splitlines():
         if "panicked at" in line or "ERROR: libFuzzer" in line or "SUMMARY:" in line:
-            return re.sub(r"\(\d+\)", "(N)", re.sub(r"0x[0-9a-f]+", "0x?", line.strip()))[:300]
+            msg = re.sub(r"==\d+==", "==N==", re.sub(r"0x[0-9a-f]+", "0x?", line.strip()))
+            return re.sub(r"\(\d+\)", "(N)", msg)[:300]
     tail = [l for l in output.splitlines() if l.strip()]
     return (tail[-1] if tail else "no output")[:300]
 
@@ -148,6 +149,9 @@ def main():
     ap.add_argument("--replay-only", action="store_true", help="skip fuzzing; investigate existing artifacts")
     ap.add_argument("--json", help="also write the findings as JSON to this file")
     ap.add_argument("--slack-seconds", type=int, default=900, help="outer deadline = --seconds + this (build time)")
+    ap.add_argument(
+        "--max-investigate", type=int, default=10, help="minimise/replay at most this many new inputs per target"
+    )
     args = ap.parse_args()
 
     known = targets_from_manifest()
@@ -178,12 +182,12 @@ def main():
             rc, out = cargo(
                 args.toolchain, "run", t, str(corpus), *extra, "--", *lf, timeout=args.seconds + args.slack_seconds
             )
-            # A clean exit, or libFuzzer's exit 77 ("a finding was reported", which cargo-fuzz
-            # relays as its own exit 1 plus this message), is a campaign that ran. Anything else
-            # did not finish: a build failure, a missing toolchain, a hang past the outer
-            # deadline (exit 124), a crash of the fuzzer itself. It must never look like "no
-            # findings".
-            reported = "Fuzz target exited with exit status: 77" in out
+            # A clean exit, or one of libFuzzer's "a finding was reported" codes (70 timeout,
+            # 71 out of memory, 77 crash; cargo-fuzz relays them as its own exit 1 plus a message),
+            # is a campaign that ran. Anything else did not finish: a build failure, a missing
+            # toolchain, a hang past the outer deadline (exit 124), a crash of the fuzzer itself.
+            # It must never look like "no findings".
+            reported = re.search(r"Fuzz target exited with exit status: (70|71|77)\b", out) is not None
             if not (rc == 0 or (rc != 124 and reported)) or "INFO:" not in out:
                 why = "hit the outer deadline" if rc == 124 else f"exit {rc}"
                 print(f"{t}: the campaign did not finish ({why}):\n{out[-2000:]}", file=sys.stderr)
@@ -192,8 +196,11 @@ def main():
             (p for n, p in artifacts(t).items() if n.startswith(KINDS) and (args.replay_only or n not in before)),
             key=lambda p: p.name,
         )
-        runs.append({"target": t, "seconds": round(time.time() - started), "new_inputs": len(fresh)})
-        for p in fresh:
+        skipped = max(0, len(fresh) - args.max_investigate)
+        runs.append(
+            {"target": t, "seconds": round(time.time() - started), "new_inputs": len(fresh), "not_investigated": skipped}
+        )
+        for p in fresh[: args.max_investigate]:
             findings.append(investigate(args.toolchain, t, p, args.tmin_seconds))
 
     # One entry per distinct failure.
@@ -207,10 +214,10 @@ def main():
             unique.append(f)
 
     print("# Fuzz campaign\n")
-    print("| target | seconds | new inputs |\n|---|---:|---:|")
+    print("| target | seconds | new inputs | not investigated |\n|---|---:|---:|---:|")
     for r in runs:
-        print(f"| {r['target']} | {r['seconds']} | {r['new_inputs']} |")
-    print(f"\n{len(findings)} new input(s), {len(unique)} distinct failure(s).\n")
+        print(f"| {r['target']} | {r['seconds']} | {r['new_inputs']} | {r['not_investigated']} |")
+    print(f"\n{len(findings)} new input(s) investigated, {len(unique)} distinct failure(s).\n")
     for f in unique:
         print(f"## {f['target']}: {f['kind']} ({f['bytes']} bytes, sha1 {f['sha1'][:12]})")
         if f["message"]:
