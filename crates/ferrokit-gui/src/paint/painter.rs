@@ -18,7 +18,7 @@ use crate::text::font_database::resolve_font_engines_for_text_global;
 use crate::paint::text_blend::{
     blend_grey, blend_lcd, composite_masked, rgb_average, MaskedSource,
 };
-use crate::text::glyph_layout::GlyphLayout;
+use crate::text::glyph_layout::{FontEngine, GlyphLayout, PositionedGlyph};
 use crate::text::smoothing::{gamma_lut, text_smoothing, TextSmoothing, TrcLut};
 use std::sync::Arc;
 use tiny_skia::{
@@ -1232,11 +1232,30 @@ impl<'a> Painter<'a> {
             return;
         }
 
+        let layout = GlyphLayout::shape_with_engines(text, font, &engines);
+        self.draw_glyph_run(pos, &layout.glyphs, &engines, font);
+    }
+
+    /// Draws glyphs already shaped and placed relative to `pos` (the baseline origin), in the
+    /// pen colour: the glyph half of [`draw_text`](Self::draw_text). `engines` is the list the
+    /// glyphs' `font_index` points into. Callers that shaped a whole paragraph once (see
+    /// `TextLayout`) draw its pieces through this so ligatures and joined forms survive.
+    pub(crate) fn draw_glyph_run(
+        &mut self,
+        pos: PointF,
+        glyphs: &[PositionedGlyph],
+        engines: &[FontEngine],
+        font: &Font,
+    ) {
+        if glyphs.is_empty() || engines.is_empty() {
+            return;
+        }
+
         // Under rotation, scale or skew the translate-only glyph path below cannot place the
         // glyphs, but Qt draws the transformed glyphs (qpaintengine_raster.cpp:3094-3128). Fill the
         // glyph outlines with the pen colour instead; this is not pixel-identical to Qt's glyph cache.
         if !self.text_transform_is_translate_only() {
-            if let Some(path) = Self::text_path(pos, text, font) {
+            if let Some(path) = Self::glyph_path(pos, glyphs, engines, font) {
                 let color = self
                     .state
                     .pen
@@ -1249,9 +1268,6 @@ impl<'a> Painter<'a> {
             }
             return;
         }
-
-        // Compute glyph layout using Qt 6 Run-based OpenType fallback
-        let layout = GlyphLayout::shape_with_engines(text, font, &engines);
 
         let text_color = self
             .state
@@ -1280,7 +1296,7 @@ impl<'a> Painter<'a> {
         let ph = pixmap.height();
         let pix_data = pixmap.data_mut();
 
-        for glyph in layout.glyphs {
+        for glyph in glyphs.iter().copied() {
             let lx = pos.x + glyph.x;
             let ly = pos.y + glyph.y;
 
@@ -1533,8 +1549,18 @@ impl<'a> Painter<'a> {
             return None;
         }
         let layout = GlyphLayout::shape_with_engines(text, font, &engines);
+        Self::glyph_path(pos, &layout.glyphs, &engines, font)
+    }
+
+    /// The outline of shaped `glyphs` placed relative to `pos`.
+    fn glyph_path(
+        pos: PointF,
+        glyphs: &[PositionedGlyph],
+        engines: &[FontEngine],
+        font: &Font,
+    ) -> Option<Path> {
         let mut builder = tiny_skia::PathBuilder::new();
-        for glyph in layout.glyphs {
+        for glyph in glyphs {
             let engine = engines.get(glyph.font_index as usize).unwrap_or(&engines[0]);
             let Some(outline) = engine.face.glyph_outline(glyph.glyph_id, font.size) else {
                 continue;
@@ -1549,6 +1575,22 @@ impl<'a> Painter<'a> {
         }
         builder.finish()
     }
+
+    /// [`draw_glyph_run`](Self::draw_glyph_run) in a specific colour.
+    pub(crate) fn draw_glyph_run_colored(
+        &mut self,
+        pos: PointF,
+        glyphs: &[PositionedGlyph],
+        engines: &[FontEngine],
+        font: &Font,
+        color: Color,
+    ) {
+        let old_pen = self.state.pen.clone();
+        self.set_pen(Pen::new(color, 1.0));
+        self.draw_glyph_run(pos, glyphs, engines, font);
+        self.state.pen = old_pen;
+    }
+
     /// Draws text with a specific color.
     pub fn draw_text_colored(&mut self, pos: PointF, text: &str, font: &Font, color: Color) {
         let old_pen = self.state.pen.clone();

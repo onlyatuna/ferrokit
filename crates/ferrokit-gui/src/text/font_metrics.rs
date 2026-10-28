@@ -302,18 +302,42 @@ impl FontMetrics {
         starts: &[usize],
         font: &Font,
     ) -> Vec<f32> {
+        match Self::shape_paragraph(text, font) {
+            Some((_, layout)) => layout.grapheme_advances(starts),
+            None => self.heuristic_grapheme_advances(text, starts, font),
+        }
+    }
+
+    /// Shapes `text` as one paragraph: the font engines resolved for it and the glyph layout they
+    /// produce. `None` when no font resolves or the shaped text has no width, where callers fall
+    /// back to [`heuristic_grapheme_advances`](Self::heuristic_grapheme_advances). Advances and
+    /// drawing both take the layout from here so the pen positions they use are the same.
+    pub(crate) fn shape_paragraph(
+        text: &str,
+        font: &Font,
+    ) -> Option<(
+        Vec<crate::text::glyph_layout::FontEngine>,
+        crate::text::glyph_layout::GlyphLayout,
+    )> {
         if text.is_empty() {
-            return Vec::new();
+            return None;
         }
         let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
-        if !engines.is_empty() {
-            let layout =
-                crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
-            if layout.width > 0.0 {
-                return layout.grapheme_advances(starts);
-            }
+        if engines.is_empty() {
+            return None;
         }
+        let layout =
+            crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
+        (layout.width > 0.0).then_some((engines, layout))
+    }
 
+    /// Per-grapheme advances from the character-class heuristic, for text no font shapes.
+    pub(crate) fn heuristic_grapheme_advances(
+        &self,
+        text: &str,
+        starts: &[usize],
+        font: &Font,
+    ) -> Vec<f32> {
         starts
             .windows(2)
             .map(|w| self.horizontal_advance(&text[w[0]..w[1]], font))
