@@ -715,6 +715,16 @@
     "test_text_layout_oracle::synthetic_font_hit_tests_on_wrapped_lines_match_qt::SB": "unsupported",
     "test_text_layout_oracle::synthetic_font_hit_tests_on_wrapped_lines_match_qt::TB": "unsupported",
     "test_text_layout_oracle::drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text::SB": "unsupported",
-    "test_text_layout_oracle::drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text::TB": "unsupported"
+    "test_text_layout_oracle::drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text::TB": "unsupported",
+    "test_font_features::embedded_shaping::features_are_part_of_the_measurement_identity::SB": "unsupported",
+    "test_font_features::embedded_shaping::features_are_part_of_the_measurement_identity::TB": "unsupported",
+    "test_font_features::embedded_shaping::kern_feature_overrides_kerning::SB": "unsupported",
+    "test_font_features::embedded_shaping::kern_feature_overrides_kerning::TB": "unsupported",
+    "test_font_features::embedded_shaping::the_embedded_font_is_the_one_that_kerns::SB": "unsupported",
+    "test_font_features::embedded_shaping::the_embedded_font_is_the_one_that_kerns::TB": "unsupported",
+    "test_text_layout_oracle::every_known_divergence_names_at_least_one_case::SB": "unsupported",
+    "test_text_layout_oracle::every_known_divergence_names_at_least_one_case::TB": "unsupported",
+    "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::SB": "pass",
+    "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::TB": "pass"
   }
 }
