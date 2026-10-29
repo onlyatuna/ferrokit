@@ -176,6 +176,12 @@ CURSOR_CASES = [
     ("syn_Ty", "syn", "Ty"),
     ("syn_kern_sentence", "syn", "AT Wa To Ty VA"),
     ("syn_kern_after_space", "syn", "x Ab"),
+    # a carriage return is a character of no width, alone or before a line feed
+    ("syn_carriage_return", "syn", "a\rb"),
+    ("syn_crlf", "syn", "a\r\nb"),
+    ("syn_carriage_return_end", "syn", "ab\r"),
+    ("arial_carriage_return", "arial", "ab\rcd"),
+    ("arial_crlf", "arial", "ab\r\ncd"),
     # ligatures: caret positions inside them (f_l has a GDEF caret, the others divide evenly)
     ("syn_liga_fi", "syn", "fi"),
     ("syn_liga_ffi", "syn", "ffi"),
@@ -258,6 +264,14 @@ WRAP_CASES = [
     # at U+2028
     ("syn_newline", "syn", "word-or-anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
     ("syn_trailing_newline", "syn", "word-or-anywhere", "aaa bbb\n", [40, 200]),
+    ("syn_carriage_return_wrap", "syn", "word-or-anywhere", "aaa\rbbb ccc\r\rddd", [30, 60, 120]),
+    ("syn_crlf_wrap", "syn", "word-or-anywhere", "aaa\r\nbbb ccc\r\n\r\nddd", [30, 60, 120]),
+    ("syn_trailing_crlf", "syn", "word-or-anywhere", "aaa bbb\r\n", [40, 200]),
+    ("syn_carriage_return_break_after", "syn", "word-or-anywhere", "aaaa\rbbb", [45]),
+    ("syn_crlf_break_after", "syn", "word-or-anywhere", "aaaa\r\nbbb", [45]),
+    ("syn_space_carriage_return_hangs", "syn", "word-or-anywhere", "a \r", [10]),
+    ("syn_space_carriage_return_text", "syn", "word-or-anywhere", "a \rb", [10]),
+    ("syn_crlf_line_separator", "syn", "word-or-anywhere", "aaa\r\u2028bbb\u2028\r\nccc", [30, 120]),
     ("syn_line_separator", "syn", "word-or-anywhere", "aaa\u2028bbb ccc\u2028\u2028ddd", [30, 60, 120]),
     ("syn_trailing_line_separator", "syn", "word-or-anywhere", "aaa bbb\u2028", [40, 200]),
     ("syn_liga_wrap", "syn", "word-or-anywhere", "fi fl ffi fi", [20, 40, 80]),

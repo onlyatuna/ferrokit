@@ -209,12 +209,27 @@ impl Label {
         (if h { indent } else { 0.0 }, if v { indent } else { 0.0 })
     }
 
+    /// The plain text as `QLabel` measures and draws it (`qt_format_text`): a carriage return in
+    /// front of a line feed has no width, any other one is as wide as a space (measured: `"a\rb"` is
+    /// as wide as `"a b"`, `"a\r\nb"` and `"a\r\r\nb"` are two lines of `"a"` and `"b"`).
+    fn plain_text(&self) -> std::borrow::Cow<'_, str> {
+        if !self.text.contains('\r') {
+            return std::borrow::Cow::Borrowed(&self.text);
+        }
+        let mut lines: Vec<&str> = self.text.split('\n').collect();
+        let last = lines.len() - 1;
+        for line in &mut lines[..last] {
+            *line = line.trim_end_matches('\r');
+        }
+        std::borrow::Cow::Owned(lines.join("\n").replace('\r', " "))
+    }
+
     /// The text as a `TextDocument` in `font`: HTML when rich, plain text otherwise.
     fn document(&self, font: &Font) -> TextDocument {
         let mut doc = if self.rich {
             TextDocument::from_html(&self.text)
         } else {
-            TextDocument::from_plain_text(self.text.as_str())
+            TextDocument::from_plain_text(self.plain_text().as_ref())
         };
         doc.set_default_font(font.clone());
         // `QLabel` lays its text out with `QTextOption::WordWrap`: a word wider than the label is
@@ -252,7 +267,8 @@ impl Label {
                 return self.document_size(font, None);
             }
             // Plain and unwrapped: one `layout_height` line per `\n`-separated line.
-            let lines: Vec<&str> = self.text.split('\n').collect();
+            let text = self.plain_text();
+            let lines: Vec<&str> = text.split('\n').collect();
             let line_h = lines
                 .iter()
                 .map(|line| FontMetrics::layout_height_for_text(font, line).ceil())
@@ -586,8 +602,9 @@ impl Widget for Label {
             return;
         }
 
-        if self.text.contains('\n') {
-            let lines: Vec<&str> = self.text.split('\n').collect();
+        let text = self.plain_text();
+        if text.contains('\n') {
+            let lines: Vec<&str> = text.split('\n').collect();
             let line_height = FontMetrics::layout_height(&font).ceil();
             let total_text_h = line_height * lines.len() as f32;
             let top = y_for(total_text_h);
@@ -612,9 +629,9 @@ impl Widget for Label {
                 painter.restore();
             }
         } else {
-            let text_w = metrics.horizontal_advance_exact(&self.text, &font);
+            let text_w = metrics.horizontal_advance_exact(&text, &font);
             // A line that uses fallback fonts is as tall as the tallest engine (`sizeHint` agrees).
-            let (ascent, text_h) = match FontMetrics::fallback_line_metrics(&font, &self.text) {
+            let (ascent, text_h) = match FontMetrics::fallback_line_metrics(&font, &text) {
                 Some((a, d)) => (a, (a + d).ceil()),
                 None => (metrics.ascent, metrics.height),
             };
@@ -625,7 +642,7 @@ impl Widget for Label {
                 painter.save();
                 painter.clip_to_rect(content);
             }
-            painter.draw_text(PointF::new(x, top + ascent), &self.text, &font);
+            painter.draw_text(PointF::new(x, top + ascent), &text, &font);
             if clip {
                 painter.restore();
             }
