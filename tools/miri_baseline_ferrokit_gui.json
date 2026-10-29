@@ -739,6 +739,8 @@
     "test_text_layout_oracle::every_known_divergence_names_at_least_one_case::SB": "unsupported",
     "test_text_layout_oracle::every_known_divergence_names_at_least_one_case::TB": "unsupported",
     "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::SB": "pass",
-    "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::TB": "pass"
+    "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::TB": "pass",
+    "test_text_system::test_cursor_move_position_zero_count_is_a_no_op_as_in_qt::SB": "pass",
+    "test_text_system::test_cursor_move_position_zero_count_is_a_no_op_as_in_qt::TB": "pass"
   }
 }
