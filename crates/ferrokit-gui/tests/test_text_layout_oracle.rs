@@ -650,7 +650,7 @@ const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("align", "arial", 6),
     ("align", "syn", 21),
     ("cursor", "arial", 28),
-    ("cursor", "syn", 37),
+    ("cursor", "syn", 40),
     ("hit", "arial", 4),
     ("hit", "syn", 12),
     ("hitwrap", "syn", 17),
