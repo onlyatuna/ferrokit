@@ -30,7 +30,8 @@
     "test_gui_p2_hardening",
     "test_qregion_shapes",
     "test_font_features",
-    "test_text_layout_oracle"
+    "test_text_layout_oracle",
+    "test_text_tabs"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -741,6 +742,8 @@
     "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::SB": "pass",
     "test_text_layout_oracle::the_oracle_file_holds_the_expected_fixtures::TB": "pass",
     "test_text_system::test_cursor_move_position_zero_count_is_a_no_op_as_in_qt::SB": "pass",
-    "test_text_system::test_cursor_move_position_zero_count_is_a_no_op_as_in_qt::TB": "pass"
+    "test_text_system::test_cursor_move_position_zero_count_is_a_no_op_as_in_qt::TB": "pass",
+    "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::SB": "unsupported",
+    "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::TB": "unsupported"
   }
 }
