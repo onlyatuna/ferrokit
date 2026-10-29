@@ -59,3 +59,32 @@ fn outline_face_matches_fontdue_on_latin_fonts() {
 fn outline_face_matches_fontdue_on_cjk_collection() {
     compare("msjh.ttc", 0);
 }
+
+/// The synthetic font of the text layout oracle has glyphs whose ink hangs past the advance by a
+/// known number of font units (1024 per em): `ae` 96, `oslash` 24, `germandbls` 1, `thorn` 0, and
+/// `a`, a plain box with 40 units of space on its right.
+#[test]
+fn right_side_bearing_is_the_design_value_truncated_to_a_64th_of_a_pixel() {
+    let data = SharedFontData::from_vec(include_bytes!("data/oracle_text.ttf").to_vec());
+    let face = OutlineFace::new(data, 0).expect("outline face");
+    let bearing = |ch: char, px: f32| {
+        face.right_side_bearing(face.glyph_index(ch), px)
+            .unwrap_or_else(|| panic!("no bearing for {ch:?}"))
+    };
+    // At 16 px a unit is 1/64 px: nothing to round.
+    assert_eq!(bearing('\u{e6}', 16.0), -1.5);
+    assert_eq!(bearing('\u{f8}', 16.0), -0.375);
+    assert_eq!(bearing('\u{df}', 16.0), -1.0 / 64.0);
+    assert_eq!(bearing('\u{fe}', 16.0), 0.0);
+    assert_eq!(bearing('a', 16.0), 0.625);
+    // At 13 px 24 units are 0.3046875 px = 19.5/64: Qt's `QFixed::fromReal` truncates it to 19/64
+    // (0.296875), where rounding would give 20/64; the positive side truncates alike, 40 units are
+    // 0.5078125 px = 32.5/64, 32/64.
+    assert_eq!(bearing('\u{f8}', 13.0), -19.0 / 64.0);
+    assert_eq!(bearing('a', 13.0), 0.5);
+    // A glyph without a contour (the combining acute) has no bearing.
+    assert_eq!(bearing('\u{301}', 16.0), 0.0);
+    // The face keeps the design value of a glyph: asking again, at another size, scales it alike.
+    assert_eq!(bearing('\u{f8}', 16.0), -0.375);
+    assert_eq!(bearing('\u{f8}', 32.0), -0.75);
+}

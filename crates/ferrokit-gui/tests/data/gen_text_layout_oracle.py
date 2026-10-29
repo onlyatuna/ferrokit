@@ -10,7 +10,7 @@ reproduces) with fontTools installed:
 
 `oracle_text.ttf` (written next to this script) is a synthetic font built here, so that the cases
 that exercise shaping (kerning, a ligature, ligature carets, combining marks, right-to-left
-letters) give the same numbers on every platform and do not depend on an installed font's
+letters, ink hanging over the advance) give the same numbers on every platform and do not depend on an installed font's
 version. Its units per em is 1024 and the cases use 16 px, so every design value is an exact
 multiple of 1/64 px: DirectWrite's truncation to 26.6 does not change any advance and the
 expected numbers are the same under every font backend. The cases that use the installed Arial
@@ -80,6 +80,15 @@ GLYPHS = (
 # Glyph names that exist only through GSUB.
 LIGATURES = [("f_i", 700), ("f_l", 760), ("f_f_i", 1000)]
 
+# Glyphs whose ink hangs over the advance, a negative right bearing (Qt adds it to the width of a
+# line that ends in the glyph, `QTextLine::layout_helper`): (codepoint, glyph name, advance, font
+# units the box reaches past the advance). At 16 px a unit is 1/64 px, so the bearings are
+# 1.5 px, 0.375 px and 1/64 px; `thorn` ends exactly at its advance (no bearing) and `tav` is a
+# Hebrew letter, whose bearing belongs to a right to left run. `ligature` hangs by 0.625 px.
+OVERHANG = [(0xE6, "ae", 640, 96), (0xF8, "oslash", 576, 24), (0xDF, "germandbls", 608, 1),
+            (0xFE, "thorn", 592, 0), (0x5EA, "tav", 560, 64)]
+OVERHANG_LIGATURE = ("oslash_oslash", 1152, 40)
+
 FEATURES = """
 languagesystem DFLT dflt;
 languagesystem latn dflt;
@@ -89,7 +98,7 @@ languagesystem hebr dflt;
 @MARK = [acutecomb dieresiscomb];
 
 table GDEF {
-    GlyphClassDef @BASE, [f_i f_l f_f_i], @MARK, ;
+    GlyphClassDef @BASE, [f_i f_l f_f_i oslash_oslash], @MARK, ;
     LigatureCaretByPos f_l 200;
 } GDEF;
 
@@ -107,6 +116,7 @@ feature liga {
     sub f f i by f_f_i;
     sub f i by f_i;
     sub f l by f_l;
+    sub oslash oslash by oslash_oslash;
 } liga;
 
 markClass [acutecomb dieresiscomb] <anchor 0 0> @TOP;
@@ -118,14 +128,20 @@ feature mark {
 
 
 def build_font():
-    order = [".notdef"] + [g[1] for g in GLYPHS] + [g[0] for g in LIGATURES]
+    hang = {name: over for _, name, _, over in OVERHANG}
+    hang[OVERHANG_LIGATURE[0]] = OVERHANG_LIGATURE[2]
+    order = ([".notdef"] + [g[1] for g in GLYPHS] + [g[0] for g in LIGATURES]
+             + [g[1] for g in OVERHANG] + [OVERHANG_LIGATURE[0]])
     cmap = {cp: name for cp, name, _ in GLYPHS}
+    cmap.update({cp: name for cp, name, _, _ in OVERHANG})
     fb = FontBuilder(UPEM, isTTF=True)
     fb.setupGlyphOrder(order)
     fb.setupCharacterMap(cmap)
     adv = {".notdef": 600}
     adv.update({name: a for _, name, a in GLYPHS})
     adv.update({name: a for name, a in LIGATURES})
+    adv.update({name: a for _, name, a, _ in OVERHANG})
+    adv[OVERHANG_LIGATURE[0]] = OVERHANG_LIGATURE[1]
     glyphs = {}
     for name in order:
         pen = TTGlyphPen(None)
@@ -133,8 +149,9 @@ def build_font():
         if w:
             pen.moveTo((40, 0))
             pen.lineTo((40, 700))
-            pen.lineTo((w - 40, 700))
-            pen.lineTo((w - 40, 0))
+            right = w + hang[name] if name in hang else w - 40
+            pen.lineTo((right, 700))
+            pen.lineTo((right, 0))
             pen.closePath()
         glyphs[name] = pen.glyph()
     fb.setupGlyf(glyphs)
@@ -178,6 +195,9 @@ CURSOR_CASES = [
     ("syn_rtl_then_ltr", "syn", "\u05d0\u05d1 abc"),
     ("syn_rtl_punct", "syn", "abc \u05d0\u05d1, \u05d2. def"),
     ("syn_rtl_two_runs", "syn", "ab \u05d0\u05d1 cd \u05d2\u05d3 ef"),
+    # ink hanging over the advance of the last glyph (the hit tests reach into it)
+    ("syn_bearing", "syn", "ab \u00e6"),
+    ("syn_bearing_rtl", "syn", "ab \u05d0\u05ea"),
     # real Arial (Windows only in the Rust test)
     ("arial_AVAVAV", "arial", "AVAVAV"),
     ("arial_To", "arial", "To"),
@@ -203,6 +223,7 @@ CURSOR_CASES = [
     ("arial_hebrew_emoji", "arial", "\u05e9\u05dc\u05d5\u05dd \U0001F600 \u05e2\u05d5\u05dc\u05dd"),
     ("arial_hebrew_numbers", "arial", "\u05e9\u05dc 123 \u05d5\u05dd"),
     ("arial_mixed_rtl", "arial", "abc \u05e9\u05dc\u05d5\u05dd def"),
+    ("arial_bearing", "arial", "def"),
 ]
 
 # The same texts in every wrap mode.
@@ -212,6 +233,9 @@ MODE_CASES = [
     ("syn_mode_spaces", "aaaa bbbb  ", [30, 36, 100]),
     ("syn_mode_hyphen", "ab-cd ef-gh", [30, 50]),
     ("syn_mode_leading", "  aaaa bbbb", [30, 100]),
+    # the bearing of an ae (1.5 px) decides whether the last of them fits
+    ("syn_mode_bearing", "\u00e6\u00e6\u00e6\u00e6", [20, 21.25, 21.5, 31.5, 41.5]),
+    ("syn_mode_bearing_words", "aa \u00e6\u00e6 bb \u00e6 \u00f8\u00f8", [20, 22, 39, 40.5, 59, 60.5]),
 ]
 PANGRAM = "The quick brown fox jumps over the lazy dog"
 
@@ -244,6 +268,45 @@ WRAP_CASES = [
     ("arial_rtl_wrap", "arial", "word-or-anywhere", "abc \u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd def", [40, 70, 110]),
     ("arial_pangram", "arial", "word-or-anywhere", PANGRAM, [60, 100, 160, 240, 500]),
     ("arial_kerned_words", "arial", "word-or-anywhere", "AVAVAV To Ty AVAT Wa", [50, 80, 120]),
+    # --- the negative right bearing of the last glyph of a line ---
+    # a line ends in each kind of glyph: ae 1.5 px, oslash 0.375 px, germandbls 1/64 px, thorn none,
+    # the oslash ligature 0.625 px; spaces before the separator are left out
+    ("syn_bearing_ends", "syn", "word-or-anywhere",
+     "ab \u00e6\u2028cd \u00f8\u2028ef \u00df\u2028gh \u00fe\u2028ij \u00f8\u00f8\u2028kl \u00e6  \u2028mn", [400]),
+    ("syn_bearing_text_end", "syn", "word-or-anywhere", "ab \u00e6", [400]),
+    # a text that ends in white space has no bearing, whether the spaces fit or hang
+    ("syn_bearing_trailing_space", "syn", "word-or-anywhere", "ab \u00e6 ", [28, 30, 400]),
+    ("syn_bearing_trailing_spaces", "syn", "word-or-anywhere", "ab \u00e6   ", [28, 30, 33, 400]),
+    ("syn_bearing_line_feed", "syn", "word-or-anywhere", "ab \u00e6\ncd", [400]),
+    ("syn_bearing_line_feed_end", "syn", "word-or-anywhere", "ab \u00e6\n", [400]),
+    # the bearing counts when the width is tested: the ae fits at 44 px by its advance, at 45.5 by
+    # its advance and its bearing
+    ("syn_bearing_fit", "syn", "word-or-anywhere", "aaaa \u00e6", [43.75, 44, 44.25, 45.25, 45.5, 46]),
+    ("syn_bearing_fit_small", "syn", "word-or-anywhere", "aaaa \u00f8", [43, 43.25, 43.375, 43.5]),
+    ("syn_bearing_fit_tiny", "syn", "word-or-anywhere", "aaaa \u00df", [43.5, 43.515625, 43.53125]),
+    ("syn_bearing_fit_flush", "syn", "word-or-anywhere", "aaaa \u00fe", [43.234375, 43.25, 43.5]),
+    ("syn_bearing_fit_lig", "syn", "word-or-anywhere", "aaaa \u00f8\u00f8", [48.75, 49, 49.375, 49.5]),
+    ("syn_bearing_fit_middle", "syn", "word-or-anywhere", "ab \u00e6 cd", [29.125, 30.5, 30.625, 38]),
+    ("syn_bearing_fit_word", "syn", "word", "aaaa \u00e6", [44, 45.25, 45.5]),
+    # right to left: the bearing is that of the last character in reading order
+    ("syn_bearing_rtl", "syn", "word-or-anywhere", "ab \u05d0\u05ea", [400]),
+    ("syn_bearing_rtl_base", "syn", "word-or-anywhere", "\u05d0\u05d1 \u05d2\u05ea", [400, 14]),
+    ("syn_bearing_rtl_first", "syn", "word-or-anywhere", "\u05d0\u05ea ab", [400]),
+    ("syn_bearing_rtl_wrap", "syn", "word-or-anywhere", "ab \u05d0\u05d1 \u05d2\u05ea cd \u05d0\u05ea ef",
+     [24, 31, 32, 40, 41, 50, 60, 70]),
+    # Arial: every ASCII and Latin-1 glyph ends a line of its own
+    ("arial_bearing_ascii", "arial", "word-or-anywhere", "\u2028".join(chr(c) for c in range(0x21, 0x7F)), [400]),
+    ("arial_bearing_latin1", "arial", "word-or-anywhere",
+     "\u2028".join(chr(c) for c in range(0xA1, 0x100) if c != 0xAD), [400]),
+    ("arial_bearing_fit", "arial", "word-or-anywhere", "aa def", [44.4375, 44.96875, 44.984375, 45]),
+    ("arial_bearing_fit_words", "arial", "word-or-anywhere", "jumps over the lazy dog",
+     [78.203125, 78.40625, 78.421875, 78.5]),
+    ("arial_bearing_trailing", "arial", "word-or-anywhere", "aa def ", [44.4375, 44.984375, 45.03125]),
+    ("arial_bearing_hanging", "arial", "word-or-anywhere", "def   x", [22.3, 22.8, 23, 45]),
+    ("arial_bearing_hanging_end", "arial", "word-or-anywhere", "def   ", [22.3, 22.8, 23, 45]),
+    ("arial_bearing_word_or_anywhere", "arial", "word-or-anywhere", "defdef", [22.21875, 22.5, 22.765625]),
+    ("arial_bearing_anywhere", "arial", "anywhere", "defdef", [22.21875, 22.5, 22.765625]),
+    ("arial_bearing_word", "arial", "word", "defdef", [22.21875, 22.5, 22.765625]),
 ]
 
 
@@ -256,6 +319,13 @@ ALIGN_CASES = [
     ("syn_align_rtl", "syn", "center", "ab \u05d0\u05d1 \u05d2\u05d3 cd \u05d0\u05d1\u05d2 ef", [45, 100]),
     ("arial_align_words", "arial", "right", "The quick brown fox jumps over", [60, 120]),
     ("arial_align_words", "arial", "center", "The quick brown fox jumps over", [60, 120]),
+    # the line is aligned by its advances: the bearing of its last glyph hangs past the edge
+    ("syn_align_bearing", "syn", "right", "aaa \u00e6", [60, 100]),
+    ("syn_align_bearing", "syn", "center", "aaa \u00e6", [60, 100]),
+    ("syn_align_bearing", "syn", "left", "aaa \u00e6", [60, 100]),
+    ("syn_align_bearing_wrap", "syn", "right", "aaa \u00e6 bb \u00e6 cc", [30, 40]),
+    ("arial_align_bearing", "arial", "right", "def", [100]),
+    ("arial_align_bearing", "arial", "center", "def", [100]),
 ]
 
 
@@ -299,7 +369,8 @@ def cursor_row(case, font_id, font, text):
 HIT_CASES = [
     "syn_AVAVAV", "syn_liga_run", "syn_combining_acute", "syn_rtl_hebrew", "syn_rtl_mixed",
     "syn_rtl_numbers", "syn_rtl_nested", "syn_rtl_two_runs", "syn_rtl_trailing_space",
-    "arial_arabic_mixed", "arial_emoji_zwj", "arial_hebrew_emoji",
+    "arial_arabic_mixed", "arial_emoji_zwj", "arial_hebrew_emoji", "syn_bearing", "syn_bearing_rtl",
+    "arial_bearing",
 ]
 
 
