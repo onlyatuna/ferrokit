@@ -1096,6 +1096,14 @@ impl TextLayout {
             }
             first = end + 1;
         }
+        // A line feed or separator between the paragraphs is at the base level.
+        if base_rtl && !levels.is_empty() {
+            for (index, level) in levels.iter_mut().enumerate() {
+                if is_unshaped(&text[starts[index]..starts[index + 1]]) {
+                    *level = 1;
+                }
+            }
+        }
         (advances, bearings, paragraphs, levels)
     }
 
