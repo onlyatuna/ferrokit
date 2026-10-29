@@ -190,6 +190,10 @@ CURSOR_CASES = [
     # an x a hair below a stop (49.625 of 50 px) counts as on it: the tab goes to the next stop
     ("syn_tab_rounding", "syn", "bbbbb a\tb"),
     ("arial_tab", "arial", "ab\tcd"),
+    # the base direction is that of the first strong character of the whole text, past line feeds
+    ("syn_rtl_after_line_feed", "syn", "\n\u05d0\u05d1a"),
+    ("syn_rtl_after_digit_line_feed", "syn", "1\n\u05d0\u05d1"),
+    ("syn_ltr_before_line_feed", "syn", "a\n\u05d0\u05d1"),
     # a tab between right to left runs separates them (rule L1)
     ("syn_tab_rtl", "syn", "ab\t\u05d0\u05d1\t\u05d2\u05d3"),
     # a carriage return is a character of no width, alone or before a line feed
