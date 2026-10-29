@@ -5,11 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # `labeled` lets adding `miri` (run the affected crates) or `miri-full` (run every crate) start the sweep.
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
   schedule:
-    # Full Miri sweep on main every night, whatever changed.
+    # The whole suite every night, whatever changed (miri.yml runs its own full sweep).
     - cron: '0 18 * * *'
 
 # Read-only token by default; jobs that need more must request it explicitly.
@@ -17,15 +15,14 @@ permissions:
   contents: read
 
 # A new push to a pull request cancels the superseded run; runs on main always finish.
-# A `labeled` run has its own group: opening a PR with a label fires `opened` and `labeled` together,
-# and they must not cancel each other (the cancelled run leaves cancelled required checks behind).
+# The Miri sweep is in miri.yml, which also runs on `labeled`; CI must not, because a skipped matrix
+# job of a `labeled` run keeps the pull request BLOCKED (see miri.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
-    if: github.event.action != 'labeled'
     name: Workspace Test (${{ matrix.os }})
     # Some tests are known to hang when run serially; cap a stuck run instead of the 6 h default.
     timeout-minutes: 90
@@ -97,7 +94,6 @@ jobs:
   # Non-required: the platform and widget tests that need an X server, run under a virtual one.
   # Not in the protect-main required checks; the required `Workspace Test (ubuntu-22.04)` is separate.
   test-xvfb:
-    if: github.event.action != 'labeled'
     name: Workspace Test (ubuntu-22.04, Xvfb)
     timeout-minutes: 60
     runs-on: ubuntu-22.04
@@ -128,109 +124,7 @@ jobs:
           xvfb-run -a python tools/run_test_binaries.py --timeout 120 --jobs 4
           --package ferrokit-platform --package ferrokit-widgets --test-threads 1
 
-  miri-changes:
-    # A `labeled` run only matters for the miri labels; every other job is skipped for it.
-    if: github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name)
-    name: Miri relevance
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    outputs:
-      run: ${{ steps.diff.outputs.run }}
-      matrix: ${{ steps.diff.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - id: diff
-        env:
-          EVENT: ${{ github.event_name }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.sha }}
-        run: |
-          # tools/miri_scope.py maps changed paths to the crates whose Miri shards must run and
-          # prints the shard matrix. Only pull requests have a base to diff against.
-          if [ "$EVENT" = pull_request ]; then
-            git diff --name-only "$BASE" "$HEAD" > changed.txt
-          else
-            : > changed.txt
-          fi
-          python3 tools/miri_scope.py --event "$EVENT" --labels-json "$LABELS" < changed.txt >> "$GITHUB_OUTPUT"
-
-  miri-shard:
-    needs: miri-changes
-    if: needs.miri-changes.outputs.run == 'true'
-    name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }}, ${{ matrix.shard }}/${{ matrix.shards }})
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        # One entry per (crate, model, shard), computed by `miri-changes` from the changed paths;
-        # a shard's sweep is estimated well under 40 minutes.
-        include: ${{ fromJSON(needs.miri-changes.outputs.matrix).include }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install nightly Miri toolchain
-        run: |
-          rustup toolchain install nightly-2026-10-16 --profile minimal -c miri -c rust-src
-          cargo +nightly-2026-10-16 miri setup
-          rustc +nightly-2026-10-16 -V
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: Run Miri sweep tool unit tests
-        run: python -m unittest tools/test_miri_sweep.py
-
-      - name: Run Miri sweep (${{ matrix.crate }}, ${{ matrix.model }}, shard ${{ matrix.shard }}/${{ matrix.shards }}, baseline diff, isolation allowlist)
-        run: >-
-          python tools/miri_sweep.py
-          --crate ${{ matrix.crate }}
-          --toolchain nightly-2026-10-16
-          --models ${{ matrix.model }}
-          --shard ${{ matrix.shard }}/${{ matrix.shards }}
-          --baseline ${{ matrix.baseline }}
-          --run-isolation-allowlist
-          --fail-on-regression
-          --timeout 2700
-          --summary "$GITHUB_STEP_SUMMARY"
-          --out miri_results.json
-        # --timeout is seconds per `cargo miri test` invocation (one target's remaining tests, plus
-        # its first build), below the 60-minute job limit. On expiry the run is recorded as a timeout
-        # result and the sweep carries on, instead of cancelling the job.
-
-  miri:
-    # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
-    name: Nightly Miri (SB & TB)
-    needs: [miri-changes, miri-shard]
-    if: always() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name))
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
-    steps:
-      - name: Require every Miri shard to succeed (or Miri not requested for this run)
-        env:
-          RELEVANT: ${{ needs.miri-changes.outputs.run }}
-          CHANGES_RESULT: ${{ needs.miri-changes.result }}
-          SHARD_RESULT: ${{ needs.miri-shard.result }}
-        run: |
-          echo "relevance: $CHANGES_RESULT run=$RELEVANT; shards: $SHARD_RESULT"
-          if [ "$CHANGES_RESULT" != "success" ]; then
-            echo "::error::Miri relevance check failed ($CHANGES_RESULT)"; exit 1
-          fi
-          if [ "$RELEVANT" != "true" ]; then
-            echo "No Miri-relevant crate affected by this run; shards skipped."; exit 0
-          fi
-          if [ "$SHARD_RESULT" != "success" ]; then
-            echo "::error::Miri shards did not all succeed (result: $SHARD_RESULT)"
-            exit 1
-          fi
-
   tools:
-    if: github.event.action != 'labeled'
     name: Tools unit tests and Miri baseline coverage
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -253,7 +147,6 @@ jobs:
           python tools/miri_sweep.py --crate ferrokit-widgets --baseline tools/miri_baseline_ferrokit_widgets.json --check-coverage
 
   model:
-    if: github.event.action != 'labeled'
     name: Concurrency Model Tests (${{ matrix.suite.name }})
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -280,14 +173,7 @@ jobs:
         run: cargo test --manifest-path crates/ferrokit-model/Cargo.toml --locked ${{ matrix.suite.args }}
 
   model-tsan:
-    if: github.event.action != 'labeled'
-    # A skipped job reports its unexpanded name. This job is a required check with a fixed name, and a
-    # skipped run of that exact name (a `labeled` run) would replace the real result, so the name
-    # carries an (empty) matrix value: skipped -> template text, real run -> the required name.
-    name: Concurrency Model ThreadSanitizer${{ matrix.variant }}
-    strategy:
-      matrix:
-        variant: [""]
+    name: Concurrency Model ThreadSanitizer
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:

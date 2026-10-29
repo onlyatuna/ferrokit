@@ -36,6 +36,7 @@ class SelectCratesTests(unittest.TestCase):
             "tools/test_miri_sweep.py",
             "tools/miri_scope.py",
             ".github/workflows/ci.yml",
+            ".github/workflows/miri.yml",
             "rust-toolchain.toml",
         ]:
             with self.subTest(path=path):

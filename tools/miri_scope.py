@@ -42,6 +42,7 @@ PREFIX = (
 )
 ALL_FILES = {
     ".github/workflows/ci.yml",
+    ".github/workflows/miri.yml",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain",
