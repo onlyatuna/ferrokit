@@ -118,6 +118,11 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
         "as cursor-trailing/syn_tab",
         Some(62.3),
     ),
+    (
+        "cursor-trailing/syn_tab_rtl",
+        "as cursor-trailing/syn_tab",
+        Some(65.0),
+    ),
     // --- cursor_to_x ---
     (
         "cursor/syn_liga_ffi",
@@ -639,9 +644,9 @@ const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("align", "arial", 6),
     ("align", "syn", 21),
     ("cursor", "arial", 28),
-    ("cursor", "syn", 35),
+    ("cursor", "syn", 36),
     ("hit", "arial", 4),
-    ("hit", "syn", 11),
+    ("hit", "syn", 12),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
     ("wrap", "syn", 360),

@@ -176,7 +176,6 @@ CURSOR_CASES = [
     ("syn_Ty", "syn", "Ty"),
     ("syn_kern_sentence", "syn", "AT Wa To Ty VA"),
     ("syn_kern_after_space", "syn", "x Ab"),
-    # a carriage return is a character of no width, alone or before a line feed
     # tabs: the default stop distance, a distance, a tab on a stop, and distances that are not
     # whole pixels (Qt keeps the distance in 1/64 px)
     ("syn_tab", "syn", "a\tb"),
@@ -189,6 +188,9 @@ CURSOR_CASES = [
     ("syn_tab_small_gap", "syn", "aa\tb"),
     ("syn_tab_crlf", "syn", "a\t\r\nb"),
     ("arial_tab", "arial", "ab\tcd"),
+    # a tab between right to left runs separates them (rule L1)
+    ("syn_tab_rtl", "syn", "ab\t\u05d0\u05d1\t\u05d2\u05d3"),
+    # a carriage return is a character of no width, alone or before a line feed
     ("syn_carriage_return", "syn", "a\rb"),
     ("syn_crlf", "syn", "a\r\nb"),
     ("syn_carriage_return_end", "syn", "ab\r"),
@@ -418,7 +420,7 @@ def cursor_row(case, font_id, font, text):
 HIT_CASES = [
     "syn_AVAVAV", "syn_liga_run", "syn_combining_acute", "syn_rtl_hebrew", "syn_rtl_mixed",
     "syn_rtl_numbers", "syn_rtl_nested", "syn_rtl_two_runs", "syn_rtl_trailing_space",
-    "arial_arabic_mixed", "arial_emoji_zwj", "arial_hebrew_emoji", "syn_bearing", "syn_bearing_rtl",
+    "arial_arabic_mixed", "arial_emoji_zwj", "arial_hebrew_emoji", "syn_bearing", "syn_bearing_rtl", "syn_tab_rtl",
     "arial_bearing",
 ]
 

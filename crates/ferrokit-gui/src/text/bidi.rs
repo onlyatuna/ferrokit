@@ -29,9 +29,18 @@ pub(crate) fn grapheme_levels(text: &str, starts: &[usize], base_rtl: bool) -> V
         text,
         Some(if base_rtl { Level::rtl() } else { Level::ltr() }),
     );
+    // A tab is a segment separator (rule L1): it is at the paragraph level, whatever surrounds it,
+    // so the runs on either side of it do not join (`QTextEngine` gives it the base level).
+    let paragraph_level = if base_rtl { 1 } else { 0 };
     let levels: Vec<u8> = starts[..starts.len() - 1]
         .iter()
-        .map(|&byte| info.levels[byte].number())
+        .map(|&byte| {
+            if text.as_bytes()[byte] == b'\t' {
+                paragraph_level
+            } else {
+                info.levels[byte].number()
+            }
+        })
         .collect();
     if levels.iter().all(|&level| level == 0) {
         Vec::new()
