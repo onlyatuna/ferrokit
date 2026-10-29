@@ -31,8 +31,8 @@
 //! A deviation larger than `TOLERANCE` (1/128 px) is a divergence. The synthetic font's values are
 //! exact in 26.6, so any honest port agrees to `f32` rounding (the sums reach 120 px: 4e-6 px);
 //! half of the 1/64 px quantum of Qt's DirectWrite advances is the smallest tolerance that cannot
-//! be hit by a legitimate rounding choice and is still 8 times smaller than the smallest kerning
-//! pair (the 1 px of `AV` is 64 quanta). It is applied to every case alike; no case has a looser
+//! be hit by a legitimate rounding choice and is still 96 times smaller than the smallest kerning
+//! pair (`space A`, 0.75 px; the 2 px of `AV` is 256 times). It is applied to every case alike; no case has a looser
 //! one. A case that does diverge is listed in `KNOWN_DIVERGENCES` with the reason and the test
 //! asserts it still diverges, so fixing ferrokit makes the entry fail until it is removed.
 //!
