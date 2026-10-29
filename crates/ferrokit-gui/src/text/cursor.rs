@@ -60,22 +60,16 @@ pub struct TextCursor {
     pub(crate) anchor: usize,
     /// Default character format applied when typing.
     pub(crate) char_format: TextCharFormat,
-    /// Target column of repeated `Up`/`Down` (`QTextCursorPrivate::x`).
+    /// Target x of repeated `Up`/`Down` (`QTextCursorPrivate::x`).
     pub(crate) sticky: StickyColumn,
 }
 
-/// Target column kept across consecutive vertical moves: the x coordinate on a wrapping document,
-/// the grapheme column otherwise. It is only honoured while the cursor still sits where the last
-/// vertical move left it, and every other cursor operation clears it. Compares equal always so
-/// cursor equality stays position/anchor/format, as `QTextCursor::operator==`.
+/// Target x coordinate kept across consecutive vertical moves (`QTextCursorPrivate::x`). It is
+/// only honoured while the cursor still sits where the last vertical move left it, and every other
+/// cursor operation clears it. Compares equal always so cursor equality stays position/anchor/
+/// format, as `QTextCursor::operator==`.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct StickyColumn(Option<(usize, Target)>);
-
-#[derive(Debug, Clone, Copy)]
-enum Target {
-    X(f32),
-    Column(usize),
-}
+pub(crate) struct StickyColumn(Option<(usize, f32)>);
 
 impl PartialEq for StickyColumn {
     fn eq(&self, _: &Self) -> bool {
@@ -86,14 +80,7 @@ impl PartialEq for StickyColumn {
 impl StickyColumn {
     fn x_at(self, pos: usize) -> Option<f32> {
         match self.0 {
-            Some((p, Target::X(x))) if p == pos => Some(x),
-            _ => None,
-        }
-    }
-
-    fn column_at(self, pos: usize) -> Option<usize> {
-        match self.0 {
-            Some((p, Target::Column(c))) if p == pos => Some(c),
+            Some((p, x)) if p == pos => Some(x),
             _ => None,
         }
     }
@@ -135,7 +122,7 @@ fn visual_line_edge(doc: &TextDocument, pos: usize, end: bool) -> usize {
 }
 
 /// `Up` / `Down` over visual lines, keeping the x coordinate; crosses into the adjacent block's
-/// last/first visual line at a block edge. `None` when the document has no wrap width; at the
+/// last/first visual line at a block edge. Without a text width every block is one line. At the
 /// document's first/last visual line it stays put and keeps the x.
 fn visual_line_step(
     doc: &TextDocument,
@@ -144,9 +131,6 @@ fn visual_line_step(
     sticky_x: Option<f32>,
 ) -> Option<(usize, f32)> {
     use crate::text::line::{CursorPosition, Edge};
-    if !wraps(doc) {
-        return None;
-    }
     let block_idx = doc.block_index_at_grapheme(pos);
     let b = doc.block_at(block_idx)?;
     let layout = doc.block_layout(b);
@@ -187,29 +171,6 @@ fn visual_line_step(
         col = end - 1;
     }
     Some((target_block.position + col, x))
-}
-
-/// `Up` / `Down` without a layout: every block is one line, so keep the column and move to the
-/// adjacent block, clamped to its length; at the first/last block nothing moves. Returns the new
-/// position and the column to keep.
-fn block_line_step(
-    doc: &TextDocument,
-    pos: usize,
-    up: bool,
-    sticky_col: Option<usize>,
-) -> (usize, usize) {
-    let block_idx = doc.block_index_at_grapheme(pos);
-    let column =
-        sticky_col.unwrap_or_else(|| doc.block_at(block_idx).map_or(0, |b| pos - b.position));
-    let target = if up {
-        block_idx.checked_sub(1)
-    } else {
-        (block_idx + 1 < doc.block_count()).then_some(block_idx + 1)
-    };
-    match target.and_then(|i| doc.block_at(i)) {
-        Some(b) => (b.position + column.min(b.text().graphemes(true).count()), column),
-        None => (pos, column),
-    }
 }
 
 impl TextCursor {
@@ -374,15 +335,11 @@ impl TextCursor {
                     let up = op == MoveOperation::Up;
                     vertical = true;
                     let x = sticky.x_at(new_pos);
-                    let (next, target) = match visual_line_step(doc, new_pos, up, x) {
-                        Some((p, x)) => (p, Target::X(x)),
-                        None => {
-                            let col = sticky.column_at(new_pos);
-                            let (p, c) = block_line_step(doc, new_pos, up, col);
-                            (p, Target::Column(c))
-                        }
-                    };
-                    sticky = StickyColumn(Some((next, target)));
+                    // Every block has a line, so the step only fails for a position outside the
+                    // document: the cursor stays where it is.
+                    let (next, x) =
+                        visual_line_step(doc, new_pos, up, x).unwrap_or((new_pos, x.unwrap_or(0.0)));
+                    sticky = StickyColumn(Some((next, x)));
                     next
                 }
             };

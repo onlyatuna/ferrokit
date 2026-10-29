@@ -608,3 +608,39 @@ fn test_qt_canonical_text_aliases() {
     let _df: QTextDocumentFragment = TextDocumentFragment::new();
     let _hl: QSyntaxHighlighter = SyntaxHighlighter::new();
 }
+
+/// `Up` and `Down` keep the x coordinate in a document without a text width too, not the grapheme
+/// column. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 (document margin 0) with the
+/// synthetic oracle font (16 px: "b" is 7.625 px, a space 4 px, "a" 7.5 px), so the same column is
+/// a different x on the lines of `"bbbbbb\n      ab\nbbbbbbbb"`.
+#[test]
+fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
+    use ferrokit_gui::text::font::SharedFontData;
+    ferrokit_gui::text::font_database::set_application_device_pixel_ratio(2.0);
+    let font = Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
+        include_bytes!("data/oracle_text.ttf").to_vec(),
+    ));
+    // (text, start, moves: true is Down, positions after each move)
+    let cases: [(&str, usize, &[bool], &[usize]); 7] = [
+        ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true], &[14, 20]),
+        ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true, false, false], &[14, 20, 14, 4]),
+        ("bbbbbb\n  ab\nbbbbbbbb", 5, &[true, true], &[11, 17]),
+        ("      ab\nbbbbbb", 5, &[true], &[12]),
+        ("bbbbbb\n      ab", 6, &[true], &[15]),
+        ("bbbbbb\n      ab\nbb", 3, &[true, true, false, false], &[13, 18, 13, 3]),
+        ("ab\n\nbbbbbb", 2, &[true, true], &[3, 6]),
+    ];
+    for (text, start, moves, expected) in cases {
+        let mut doc = TextDocument::from_plain_text(text);
+        doc.set_default_font(font.clone());
+        let mut cursor = TextCursor::at_position(start);
+        let mut got = Vec::new();
+        for &down in moves {
+            let op = if down { MoveOperation::Down } else { MoveOperation::Up };
+            cursor.move_position(&doc, op, MoveMode::MoveAnchor, 1);
+            got.push(cursor.position());
+        }
+        assert_eq!(got, expected, "{text:?} from {start}");
+    }
+}
+
