@@ -535,6 +535,64 @@ fn test_cursor_sticky_x_with_wrapping() {
     );
 }
 
+// Measured with QTextCursor.movePosition on "hello world\nsecond line here\nthird" with the
+// selection 5..14: a count of 0 changes nothing and returns true, except Start, End, StartOfLine
+// and EndOfLine, which move once whatever the count.
+#[test]
+fn test_cursor_move_position_zero_count_is_a_no_op_as_in_qt() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("hello world\nsecond line here\nthird");
+    let selected = || {
+        let mut c = TextCursor::at_position(5);
+        c.set_position(14, MoveMode::KeepAnchor);
+        c
+    };
+    for op in [
+        MoveOperation::NoMove,
+        MoveOperation::StartOfBlock,
+        MoveOperation::EndOfBlock,
+        MoveOperation::StartOfWord,
+        MoveOperation::EndOfWord,
+        MoveOperation::PreviousBlock,
+        MoveOperation::NextBlock,
+        MoveOperation::PreviousCharacter,
+        MoveOperation::NextCharacter,
+        MoveOperation::PreviousWord,
+        MoveOperation::NextWord,
+        MoveOperation::Left,
+        MoveOperation::Right,
+        MoveOperation::Up,
+        MoveOperation::Down,
+    ] {
+        for mode in [MoveMode::MoveAnchor, MoveMode::KeepAnchor] {
+            let mut c = selected();
+            assert!(c.move_position(&doc, op, mode, 0), "{op:?} {mode:?}");
+            assert_eq!((c.anchor(), c.position()), (5, 14), "{op:?} {mode:?}");
+        }
+    }
+    for (op, to) in [
+        (MoveOperation::Start, 0),
+        (MoveOperation::End, 34),
+        (MoveOperation::StartOfLine, 12),
+        (MoveOperation::EndOfLine, 28),
+    ] {
+        let mut c = selected();
+        assert!(c.move_position(&doc, op, MoveMode::MoveAnchor, 0), "{op:?}");
+        assert_eq!((c.anchor(), c.position()), (to, to), "{op:?} moves once");
+        let mut c = selected();
+        assert!(c.move_position(&doc, op, MoveMode::KeepAnchor, 0), "{op:?}");
+        assert_eq!((c.anchor(), c.position()), (5, to), "{op:?} keeps the anchor");
+    }
+
+    // A zero-count move does not reset the column that Up and Down keep.
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("abcdef\nxy\nlonger\nabcdef");
+    let mut c = TextCursor::at_position(5);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 9, "clamped to the short line");
+    c.move_position(&doc, MoveOperation::Left, MoveMode::MoveAnchor, 0);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "the column of 5 survived");
+}
+
 #[test]
 fn test_qt_canonical_text_aliases() {
     let _l: QTextLayout = TextLayout::new("text", Font::new("Arial", 12.0));
