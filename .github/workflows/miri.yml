@@ -17,15 +17,15 @@ permissions:
   contents: read
 
 # A new push to a pull request cancels the superseded run; runs on main always finish.
-# A `labeled` run has its own group: opening a PR with a label fires `opened` and `labeled` together,
-# and adding an unrelated label must not cancel a running sweep of the code.
+# A `labeled` run has its own group per label: opening a PR with a label fires `opened` and `labeled`
+# together, and adding another label (which skips every job here) must not cancel a running sweep.
 #
 # Miri lives in its own workflow on purpose. A `labeled` run of a workflow with matrix jobs skips them
 # by `if`, and a skipped matrix job reports its unexpanded name (`Workspace Test (${{ matrix.os }})`);
 # a pull request with such a check run stays BLOCKED however green the required checks are. CI does
 # not run on `labeled`, so it has no such skipped jobs; the Miri jobs below are not required checks.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && 'label' || 'code' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'code' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
