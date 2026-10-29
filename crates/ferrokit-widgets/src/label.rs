@@ -224,6 +224,13 @@ impl Label {
         std::borrow::Cow::Owned(lines.join("\n").replace('\r', " "))
     }
 
+    /// The distance between the tab stops of plain text: eight times the width of an `x`
+    /// (`qt_format_text` with `Qt::TextExpandTabs`, which `QLabel` passes; measured: with a font
+    /// whose `x` is 7.75 px wide `a\tb` is 62 px past the `a`).
+    fn tab_stop_distance(font: &Font) -> f32 {
+        FontMetrics::from_font(font).horizontal_advance_exact("x", font) * 8.0
+    }
+
     /// The text as a `TextDocument` in `font`: HTML when rich, plain text otherwise.
     fn document(&self, font: &Font) -> TextDocument {
         let mut doc = if self.rich {
@@ -231,6 +238,9 @@ impl Label {
         } else {
             TextDocument::from_plain_text(self.plain_text().as_ref())
         };
+        if !self.rich {
+            doc.set_tab_stop_distance(Self::tab_stop_distance(font));
+        }
         doc.set_default_font(font.clone());
         // `QLabel` lays its text out with `QTextOption::WordWrap`: a word wider than the label is
         // not broken, it overflows (`QTextDocument`'s own default would cut it).
@@ -253,10 +263,39 @@ impl Label {
     /// the widest `naturalTextWidth`), so "if" is 9 px wide in Arial 16 px, not the 8 px of its
     /// advance (7.98 px).
     fn natural_text_width(text: &str, font: &Font) -> f32 {
+        Self::unwrapped_line(text, font)
+            .line_at(0)
+            .map_or(0.0, |line| line.natural_text_width())
+    }
+
+    /// `text` laid out on one unwrapped line with the label's tab stops.
+    fn unwrapped_line(text: &str, font: &Font) -> TextLayout {
         let mut layout = TextLayout::new(text, font.clone());
         layout.set_wrap_mode(WrapMode::NoWrap);
+        layout.set_tab_stop_distance(Self::tab_stop_distance(font));
         layout.do_layout();
-        layout.line_at(0).map_or(0.0, |line| line.natural_text_width())
+        layout
+    }
+
+    /// Draws one line of plain text with its baseline at `baseline`: through the layout when it
+    /// has tabs (which the painter's plain text drawing does not expand), else as it always was.
+    fn draw_line(painter: &mut Painter, x: f32, baseline: f32, line: &str, font: &Font, color: Color) {
+        if line.contains('\t') {
+            let layout = Self::unwrapped_line(line, font);
+            let ascent = layout.line_at(0).map_or(0.0, |l| l.ascent());
+            layout.draw_with_color(painter, PointF::new(x, baseline - ascent), &[], color);
+        } else {
+            painter.draw_text(PointF::new(x, baseline), line, font);
+        }
+    }
+
+    /// The width a line of plain text is aligned by: its advances, or with tabs its layout's.
+    fn line_advance(line: &str, font: &Font, metrics: &FontMetrics) -> f32 {
+        if line.contains('\t') {
+            Self::natural_text_width(line, font)
+        } else {
+            metrics.horizontal_advance_exact(line, font)
+        }
     }
 
     /// Natural size of the text without box, margin or indent (`QLabelPrivate::sizeForWidth`,
@@ -610,7 +649,7 @@ impl Widget for Label {
             let top = y_for(total_text_h);
             let line_ws: Vec<f32> = lines
                 .iter()
-                .map(|line| metrics.horizontal_advance_exact(line, &font))
+                .map(|line| Self::line_advance(line, &font, &metrics))
                 .collect();
             let clip = lines
                 .iter()
@@ -622,14 +661,14 @@ impl Widget for Label {
             }
             let mut start_y = top + metrics.ascent;
             for (line, w) in lines.iter().zip(&line_ws) {
-                painter.draw_text(PointF::new(x_for(*w), start_y), line, &font);
+                Self::draw_line(painter, x_for(*w), start_y, line, &font, text_color);
                 start_y += line_height;
             }
             if clip {
                 painter.restore();
             }
         } else {
-            let text_w = metrics.horizontal_advance_exact(&text, &font);
+            let text_w = Self::line_advance(&text, &font, &metrics);
             // A line that uses fallback fonts is as tall as the tallest engine (`sizeHint` agrees).
             let (ascent, text_h) = match FontMetrics::fallback_line_metrics(&font, &text) {
                 Some((a, d)) => (a, (a + d).ceil()),
@@ -642,7 +681,7 @@ impl Widget for Label {
                 painter.save();
                 painter.clip_to_rect(content);
             }
-            painter.draw_text(PointF::new(x, top + ascent), &text, &font);
+            Self::draw_line(painter, x, top + ascent, &text, &font, text_color);
             if clip {
                 painter.restore();
             }

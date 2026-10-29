@@ -12,7 +12,7 @@ use crate::text::font::Font;
 use crate::text::font_metrics::FontMetrics;
 use crate::text::format::TextCharFormat;
 use crate::text::fragment::TextFragment;
-use crate::text::layout::{TextLayout, WrapMode};
+use crate::text::layout::{TextLayout, WrapMode, DEFAULT_TAB_STOP_DISTANCE};
 use crate::text::markup;
 use crate::text::position::{byte_to_grapheme, grapheme_count, grapheme_to_byte};
 use tiny_skia::Color;
@@ -36,6 +36,8 @@ pub struct TextDocument {
     /// How lines wider than the text width are broken (`QTextOption::wrapMode` of the default
     /// text option).
     pub(crate) wrap_mode: WrapMode,
+    /// Distance between tab stops (`QTextOption::tabStopDistance` of the default text option).
+    pub(crate) tab_stop_distance: f32,
 }
 
 impl Default for TextDocument {
@@ -50,6 +52,7 @@ impl Default for TextDocument {
             revision: 0,
             title: String::new(),
             wrap_mode: WrapMode::WrapAtWordBoundaryOrAnywhere,
+            tab_stop_distance: DEFAULT_TAB_STOP_DISTANCE,
         }
     }
 }
@@ -103,6 +106,19 @@ impl TextDocument {
     /// `WrapAtWordBoundaryOrAnywhere`; `QLabel` uses `WordWrap`.
     pub fn set_wrap_mode(&mut self, mode: WrapMode) {
         self.wrap_mode = mode;
+    }
+
+    /// Returns the distance between tab stops, 80 px until set.
+    #[inline]
+    pub fn tab_stop_distance(&self) -> f32 {
+        self.tab_stop_distance
+    }
+
+    /// Sets the distance between tab stops (`QTextOption::setTabStopDistance` of the default text
+    /// option, `QTextEdit::setTabStopDistance`): a tab advances to the next multiple of it from
+    /// the start of its line. Zero or less means the default of 80 px.
+    pub fn set_tab_stop_distance(&mut self, distance: f32) {
+        self.tab_stop_distance = distance;
     }
 
     /// Returns whether document has unsaved edits.
@@ -193,9 +209,15 @@ impl TextDocument {
     /// Lays out one block at the document's text width (`setTextWidth` wrap).
     pub(crate) fn block_layout(&self, block: &TextBlock) -> TextLayout {
         let mut layout = block.create_layout(&self.default_font);
+        let custom_tabs = self.tab_stop_distance != DEFAULT_TAB_STOP_DISTANCE;
+        if custom_tabs {
+            layout.set_tab_stop_distance(self.tab_stop_distance);
+        }
         if let Some(w) = self.page_size.map(|s| s.width) {
             layout.set_wrap_mode(self.wrap_mode);
             layout.set_wrap_width(Some(w));
+            layout.do_layout();
+        } else if custom_tabs {
             layout.do_layout();
         }
         layout
