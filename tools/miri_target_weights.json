@@ -311,12 +311,12 @@
   },
   "ferrokit-gui": {
     "lib": {
-      "SB": 437,
-      "TB": 1484
+      "SB": 731,
+      "TB": 1073
     },
     "render_gauge_preview": {
-      "SB": 22,
-      "TB": 49
+      "SB": 21,
+      "TB": 89
     },
     "test_color_system": {
       "SB": 1,
@@ -368,19 +368,19 @@
     },
     "test_p2_geometry_overflow_singular": {
       "SB": 24,
-      "TB": 20
+      "TB": 39
     },
     "test_painter_advanced_features": {
-      "SB": 27,
-      "TB": 35
+      "SB": 26,
+      "TB": 37
     },
     "test_painter_rotated_clip": {
-      "SB": 13,
-      "TB": 48
+      "SB": 24,
+      "TB": 89
     },
     "test_qcolor": {
-      "SB": 345,
-      "TB": 280
+      "SB": 256,
+      "TB": 538
     },
     "test_qcolor_ops": {
       "SB": 1,
@@ -391,12 +391,12 @@
       "TB": 2
     },
     "test_qpath_stroker": {
-      "SB": 82,
-      "TB": 215
+      "SB": 74,
+      "TB": 433
     },
     "test_qregion_shapes": {
-      "SB": 201,
-      "TB": 201
+      "SB": 97,
+      "TB": 366
     },
     "test_rich_text_detection": {
       "SB": 1,
@@ -411,12 +411,12 @@
       "TB": 9
     },
     "test_text_layout_oracle": {
-      "SB": 52,
-      "TB": 54
+      "SB": 33,
+      "TB": 119
     },
     "test_text_system": {
       "SB": 36,
-      "TB": 28
+      "TB": 50
     }
   },
   "ferrokit-widgets": {
