@@ -94,7 +94,8 @@
     "test_show_hide_hooks",
     "test_window_activate_in_show_handler",
     "test_key_sequence_hotkey",
-    "test_label_carriage_return"
+    "test_label_carriage_return",
+    "test_label_tabs"
   ],
   "excluded": {
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -1240,6 +1241,8 @@
     "test_label_carriage_return::a_carriage_return_line_feed_pair_alone_on_a_line_is_an_empty_line::SB": "unsupported",
     "test_label_carriage_return::a_carriage_return_line_feed_pair_alone_on_a_line_is_an_empty_line::TB": "unsupported",
     "test_label_carriage_return::carriage_returns_size_a_label_as_qt_does::SB": "unsupported",
-    "test_label_carriage_return::carriage_returns_size_a_label_as_qt_does::TB": "unsupported"
+    "test_label_carriage_return::carriage_returns_size_a_label_as_qt_does::TB": "unsupported",
+    "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::SB": "unsupported",
+    "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::TB": "unsupported"
   }
 }

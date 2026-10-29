@@ -417,6 +417,10 @@
     "test_text_system": {
       "SB": 36,
       "TB": 50
+    },
+    "test_text_tabs": {
+      "SB": 2,
+      "TB": 3
     }
   },
   "ferrokit-widgets": {
@@ -543,6 +547,10 @@
     "test_label_focus_policy": {
       "SB": 1,
       "TB": 1
+    },
+    "test_label_tabs": {
+      "SB": 2,
+      "TB": 3
     },
     "test_last_window_closed_signal": {
       "SB": 2,
