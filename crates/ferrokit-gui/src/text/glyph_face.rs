@@ -87,6 +87,16 @@ pub trait GlyphFace: Send + Sync {
     fn layout_advance_width(&self, _glyph_id: u16, _size: f32, _direct_write: bool) -> Option<f32> {
         None
     }
+
+    /// The right side bearing of a glyph in pixels at `size` per em: the advance minus the left
+    /// side bearing minus the ink width, so negative where the ink hangs over the advance. This is
+    /// the `rightBearing` of the `glyph_metrics_t` Qt's Windows engines build from
+    /// `GetDesignGlyphMetrics` (`QWindowsFontEngineDirectWrite::boundingBox(glyph_t)`), scaled with
+    /// `DESIGN_TO_LOGICAL` (a 26.6 value truncated toward zero). `None` when the backend has no
+    /// such metrics: the caller then counts no bearing.
+    fn right_side_bearing(&self, _glyph_id: u16, _size: f32) -> Option<f32> {
+        None
+    }
 }
 
 /// Largest glyph bitmap (in pixels) any rasterizer backend will allocate.

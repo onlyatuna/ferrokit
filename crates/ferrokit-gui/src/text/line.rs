@@ -47,9 +47,14 @@ pub struct TextLine {
     pub(crate) descent: f32,
     /// Inter-line leading gap.
     pub(crate) leading: f32,
-    /// Natural advance width of the text glyphs on this line (`QTextLine::naturalTextWidth`): the
-    /// spaces at the end of a wrapped line are not part of it.
+    /// Width of the text on this line with the ink that hangs over the end of its last glyph
+    /// (`QTextLine::naturalTextWidth`): [`advance_width`](Self::advance_width) plus the negative
+    /// right bearing of the last glyph. The spaces at the end of a wrapped line are not part of it.
     pub(crate) natural_width: f32,
+    /// The advances of the text of the line (`QTextLine::horizontalAdvance`): where the pen is
+    /// after its last glyph, what [`cursor_to_x`](Self::cursor_to_x) at the line end gives and
+    /// what aligning the line goes by.
+    pub(crate) advance_width: f32,
     /// The x that [`cursor_to_x`](Self::cursor_to_x) never exceeds: the right end of the wrap
     /// width, past which the spaces that hang over it are not shown (Qt clamps to the line width).
     pub(crate) right_limit: f32,
@@ -61,7 +66,7 @@ pub struct TextLine {
     /// Whether this is the last line of its layout.
     pub(crate) is_last: bool,
     /// Cumulative horizontal offsets for each grapheme in this line.
-    /// Length is `text_length + 1` (ending with `natural_width`).
+    /// Length is `text_length + 1` (ending with `advance_width`).
     pub(crate) grapheme_x_advances: Vec<f32>,
 }
 
@@ -80,6 +85,7 @@ impl Default for TextLine {
             descent: 0.0,
             leading: 0.0,
             natural_width: 0.0,
+            advance_width: 0.0,
             right_limit: f32::INFINITY,
             levels: Vec::new(),
             base_rtl: false,
@@ -166,9 +172,17 @@ impl TextLine {
         self.leading
     }
 
+    /// Width of the text including the ink that overhangs the advance of its last glyph
+    /// (`QTextLine::naturalTextWidth`).
     #[inline]
     pub fn natural_text_width(&self) -> f32 {
         self.natural_width
+    }
+
+    /// Sum of the advances of the text of the line (`QTextLine::horizontalAdvance`).
+    #[inline]
+    pub fn horizontal_advance(&self) -> f32 {
+        self.advance_width
     }
 
     #[inline]
@@ -212,10 +226,15 @@ impl TextLine {
         if !self.levels.is_empty() {
             return self.bidi_cursor_to_x(local_pos, edge).min(self.right_limit);
         }
+        // A line a separator ends has no entry for the end (the separator has no width): its end
+        // is where the pen stopped.
         let base_x = if local_pos < self.grapheme_x_advances.len() {
             self.grapheme_x_advances[local_pos]
         } else {
-            self.natural_width
+            self.grapheme_x_advances
+                .last()
+                .copied()
+                .unwrap_or(self.advance_width)
         };
 
         let offset = match edge {
@@ -246,8 +265,12 @@ impl TextLine {
         if rel_x <= 0.0 {
             return self.text_start + if self.base_rtl { self.text_length } else { 0 };
         }
+        // Qt looks for the run under x only up to `textWidth`; the ink that hangs over the last
+        // advance is within it but in no run, so it answers as the space right of the text.
         if rel_x < self.natural_width {
-            return self.text_start + self.x_to_cursor_in_text(rel_x, mode);
+            if let Some(pos) = self.x_to_cursor_in_text(rel_x, mode) {
+                return self.text_start + pos;
+            }
         }
         let end = self.text_start + if self.base_rtl { 0 } else { self.text_length };
         if self.is_last {
@@ -259,8 +282,9 @@ impl TextLine {
 
     /// The position under `rel_x` (from the line's left edge) when it is over the text: the run
     /// whose right edge is at or past it (so a boundary between runs belongs to the left one),
-    /// then the grapheme in it, counted from the run's leading edge.
-    fn x_to_cursor_in_text(&self, rel_x: f32, mode: CursorPosition) -> usize {
+    /// then the grapheme in it, counted from the run's leading edge. `None` when no run reaches
+    /// as far as `rel_x`.
+    fn x_to_cursor_in_text(&self, rel_x: f32, mode: CursorPosition) -> Option<usize> {
         let visual = if self.levels.is_empty() {
             vec![VisualRun {
                 run: LevelRun {
@@ -274,14 +298,10 @@ impl TextLine {
         } else {
             self.visual_runs()
         };
-        let Some(last) = visual.last().copied() else {
-            return 0;
-        };
-        let run = visual
-            .iter()
-            .find(|v| rel_x <= v.left + v.width)
-            .copied()
-            .unwrap_or(last);
+        if visual.is_empty() {
+            return Some(0);
+        }
+        let run = visual.iter().find(|v| rel_x <= v.left + v.width).copied()?;
         let local = rel_x - run.left;
         // Distance from the run's leading edge, where its first grapheme starts: the right edge of
         // a right to left run.
@@ -293,10 +313,12 @@ impl TextLine {
         let boundary = |i: usize| self.advance_between(run.run.start, i);
         match mode {
             // The grapheme whose leading edge is the last one not past the point.
-            CursorPosition::CursorOnCharacter => (run.run.start..run.run.end)
-                .rev()
-                .find(|&i| boundary(i) <= from_leading)
-                .unwrap_or(run.run.start),
+            CursorPosition::CursorOnCharacter => Some(
+                (run.run.start..run.run.end)
+                    .rev()
+                    .find(|&i| boundary(i) <= from_leading)
+                    .unwrap_or(run.run.start),
+            ),
             // The nearest boundary; halfway the first one reached from the leading edge wins.
             CursorPosition::CursorBetweenCharacters => {
                 let mut best = run.run.start;
@@ -308,7 +330,7 @@ impl TextLine {
                         best_distance = distance;
                     }
                 }
-                best
+                Some(best)
             }
         }
     }

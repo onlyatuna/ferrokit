@@ -8,7 +8,7 @@ use ferrokit_gui::application::LayoutDirection;
 use ferrokit_gui::geometry::primitives::{PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::qss_box::{draw_qss_box, QssBorder};
 use ferrokit_gui::paint::{Painter, Pen};
-use ferrokit_gui::text::{Font, FontMetrics, TextDocument, WrapMode};
+use ferrokit_gui::text::{Font, FontMetrics, TextDocument, TextLayout, WrapMode};
 use ferrokit_gui::tiny_skia::Color;
 use ferrokit_gui::Alignment;
 
@@ -233,6 +233,17 @@ impl Label {
         (size.width, size.height)
     }
 
+    /// `QTextLine::naturalTextWidth` of `text` on one unwrapped line: its advances plus the ink
+    /// that hangs over the last of them. `QLabel` sizes plain text by this (`qt_format_text` takes
+    /// the widest `naturalTextWidth`), so "if" is 9 px wide in Arial 16 px, not the 8 px of its
+    /// advance (7.98 px).
+    fn natural_text_width(text: &str, font: &Font) -> f32 {
+        let mut layout = TextLayout::new(text, font.clone());
+        layout.set_wrap_mode(WrapMode::NoWrap);
+        layout.do_layout();
+        layout.line_at(0).map_or(0.0, |line| line.natural_text_width())
+    }
+
     /// Natural size of the text without box, margin or indent (`QLabelPrivate::sizeForWidth`,
     /// qlabel.cpp:575-625). `hextra` is the horizontal space the box and indent take.
     fn text_size(&self, font: &Font, metrics: &FontMetrics, hextra: f32) -> (f32, f32) {
@@ -248,7 +259,7 @@ impl Label {
                 .fold(0.0, f32::max);
             let w = lines
                 .iter()
-                .map(|line| metrics.horizontal_advance_exact(line, font))
+                .map(|line| Self::natural_text_width(line, font))
                 .fold(0.0, f32::max);
             return (w, line_h * lines.len() as f32);
         }
