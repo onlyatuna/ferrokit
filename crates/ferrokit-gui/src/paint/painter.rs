@@ -213,6 +213,12 @@ fn zero_mask_region(mask: &mut Mask, bounds: PixelBounds) {
     }
 }
 
+/// The integer pixel of a glyph's origin. A glyph that far outside any target is not drawn, but its
+/// coordinates are still added to; keeping them within a billion keeps those sums inside an `i32`.
+fn glyph_pixel(v: f32) -> i32 {
+    v.round().clamp(-1.0e9, 1.0e9) as i32
+}
+
 /// `qRound` (`qnumeric.h`): rounds half away from zero.
 fn qt_round(v: f64) -> i32 {
     if v >= 0.0 {
@@ -1320,9 +1326,9 @@ impl<'a> Painter<'a> {
             if let Some((color_metrics, color_pixmap)) =
                 engine.rasterize_color_glyph(glyph.glyph_id, font.size * dpr)
             {
-                let start_x = (px + color_metrics.xmin as f32).round() as i32;
+                let start_x = glyph_pixel(px + color_metrics.xmin as f32);
                 let start_y =
-                    (py - color_metrics.ymin as f32 - color_metrics.height as f32).round() as i32;
+                    glyph_pixel(py - color_metrics.ymin as f32 - color_metrics.height as f32);
                 let c_w = color_metrics.width;
                 let c_h = color_metrics.height;
                 let color_data = color_pixmap.data();
@@ -1438,8 +1444,8 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
-            let start_x = (px + metrics.xmin as f32).round() as i32;
-            let start_y = (py - metrics.ymin as f32 - metrics.height as f32).round() as i32;
+            let start_x = glyph_pixel(px + metrics.xmin as f32);
+            let start_y = glyph_pixel(py - metrics.ymin as f32 - metrics.height as f32);
 
             if let Some(clip) = self.state.clip_rect {
                 let cx0 = (clip.left() * dpr).floor() as i32;

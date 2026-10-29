@@ -448,3 +448,23 @@ fn hatch_and_texture_brush_phase_matches_qt_raster_engine_at_dpr_1_25() {
     assert!(row_0[1] <= 2 && row_0[2] <= 2);
     assert_eq!(row_0, HATCH_ROW_0_AT_1_25, "full hatch row at DPR 1.25");
 }
+
+#[test]
+fn drawing_text_far_to_the_right_of_the_target_does_not_overflow() {
+    use ferrokit_gui::text::font::SharedFontData;
+    use ferrokit_gui::text::layout::TextLayout;
+    let font = Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
+        include_bytes!("data/oracle_text.ttf").to_vec(),
+    ));
+    // A tab stop of a billion pixels puts "b" about three billion pixels from the start of the line, past what an i32 holds.
+    let mut layout = TextLayout::new("a\t\t\tb", font);
+    layout.set_tab_stop_distance(1.0e9);
+    layout.do_layout();
+    let mut target = Pixmap::new(40, 20).unwrap();
+    target.fill(Color::WHITE);
+    let mut painter = Painter::begin(&mut target);
+    painter.set_pen(ferrokit_gui::paint::painter::Pen::new(Color::BLACK, 1.0));
+    painter.set_clip_rect(RectF::new(0.0, 0.0, 40.0, 20.0));
+    layout.draw(&mut painter, PointF::new(0.0, 16.0), &[]);
+}
+
