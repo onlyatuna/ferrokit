@@ -66,6 +66,58 @@ const TOLERANCE: f64 = 1.0 / 128.0;
 /// one case (`every_known_divergence_names_at_least_one_case`), so a misspelt or stale key
 /// cannot keep a test green.
 const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
+    // --- tabs ---
+    (
+        "cursor-trailing/syn_tab",
+        "Qt's trailing edge of a tab is where the tab starts (its glyph has no advance of its \
+         own); ferrokit's is the end of the tab, as for any other grapheme",
+        Some(72.5),
+    ),
+    (
+        "cursor-trailing/syn_tab_leading",
+        "as cursor-trailing/syn_tab",
+        Some(80.0),
+    ),
+    (
+        "cursor-trailing/syn_tab_two",
+        "as cursor-trailing/syn_tab",
+        Some(80.0),
+    ),
+    (
+        "cursor-trailing/syn_tab_long",
+        "as cursor-trailing/syn_tab",
+        Some(70.0),
+    ),
+    (
+        "cursor-trailing/syn_tab_stop_20",
+        "as cursor-trailing/syn_tab",
+        Some(17.5),
+    ),
+    (
+        "cursor-trailing/syn_tab_on_stop",
+        "as cursor-trailing/syn_tab",
+        Some(15.0),
+    ),
+    (
+        "cursor-trailing/syn_tab_fraction",
+        "as cursor-trailing/syn_tab",
+        Some(14.8),
+    ),
+    (
+        "cursor-trailing/syn_tab_small_gap",
+        "as cursor-trailing/syn_tab",
+        Some(1.0),
+    ),
+    (
+        "cursor-trailing/syn_tab_crlf",
+        "as cursor-trailing/syn_tab",
+        Some(72.5),
+    ),
+    (
+        "cursor-trailing/arial_tab",
+        "as cursor-trailing/syn_tab",
+        Some(62.3),
+    ),
     // --- cursor_to_x ---
     (
         "cursor/syn_liga_ffi",
@@ -196,6 +248,26 @@ fn font_specs() -> BTreeMap<&'static str, FontSpec> {
     out
 }
 
+/// The tab stop distance of the cases `gen_text_layout_oracle.py` lays out with one
+/// (`TAB_STOPS` there); the others use the default.
+const TAB_STOPS: &[(&str, f32)] = &[
+    ("syn_tab_stop_20", 20.0),
+    ("syn_tab_on_stop", 15.0),
+    ("syn_tab_fraction", 14.9),
+    ("syn_tab_small_gap", 16.0),
+    ("syn_tab_wrap_20", 20.0),
+    ("syn_tab_wrap_20_leading", 20.0),
+    ("syn_tab_wrap_20_space", 20.0),
+    ("syn_tab_wrap_20_after_space", 20.0),
+    ("syn_tab_wrap_20_word", 20.0),
+];
+
+fn set_tab_stop(layout: &mut TextLayout, case: &str) {
+    if let Some((_, distance)) = TAB_STOPS.iter().find(|(name, _)| *name == case) {
+        layout.set_tab_stop_distance(*distance);
+    }
+}
+
 /// The ferrokit font for an oracle font id. Fails (never skips) when an installed font is missing.
 fn font_for(id: &str) -> Font {
     let specs = font_specs();
@@ -269,6 +341,7 @@ fn check_cursor(report: &mut Report, tokens: &[&str]) {
         .collect();
 
     let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    set_tab_stop(&mut layout, case);
     layout.do_layout();
     let key = format!("cursor/{case}");
     if layout.line_count() != 1 {
@@ -435,6 +508,7 @@ fn check_wrap(report: &mut Report, tokens: &[&str]) {
         .collect();
 
     let mut layout = TextLayout::new(text.clone(), font_for(font_id));
+    set_tab_stop(&mut layout, case);
     layout.set_wrap_mode(wrap_mode(tokens[3]));
     layout.set_wrap_width(Some(width.parse().unwrap()));
     layout.do_layout();
@@ -564,13 +638,13 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
 const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("align", "arial", 6),
     ("align", "syn", 21),
-    ("cursor", "arial", 27),
-    ("cursor", "syn", 26),
+    ("cursor", "arial", 28),
+    ("cursor", "syn", 35),
     ("hit", "arial", 4),
     ("hit", "syn", 11),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
-    ("wrap", "syn", 349),
+    ("wrap", "syn", 360),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {

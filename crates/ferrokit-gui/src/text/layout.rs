@@ -79,6 +79,22 @@ impl std::fmt::Debug for ShapedParagraph {
 /// the line feeds of a label's text with this before laying out.
 const LINE_SEPARATOR: &str = "\u{2028}";
 
+/// The tab stop distance of a `QTextOption` that sets none, in pixels.
+pub const DEFAULT_TAB_STOP_DISTANCE: f32 = 80.0;
+
+/// The width of a tab at `x` (`QTextEngine::calculateTabWidth`): up to the next multiple of the
+/// distance, which Qt keeps in 1/64 px; a tab on a stop goes to the next one.
+fn tab_width(x: f32, distance: f32) -> f32 {
+    let distance = if distance.is_finite() && distance > 0.0 {
+        (distance * 64.0).trunc() / 64.0
+    } else {
+        DEFAULT_TAB_STOP_DISTANCE
+    };
+    // A distance below 1/64 px is no distance at all in Qt's fixed point; keep the tab positive.
+    let distance = distance.max(1.0 / 64.0);
+    ((x / distance).floor() + 1.0) * distance - x
+}
+
 /// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed, a
 /// carriage return (alone or as the `"\r\n"` cluster; Qt measures `\r` as a character of no width
 /// too) or the line separator.
@@ -264,6 +280,9 @@ pub struct TextLayout {
     wrap_mode: WrapMode,
     /// Horizontal paragraph alignment.
     alignment: Alignment,
+    /// `QTextOption::tabStopDistance`: a tab advances to the next multiple of it; zero or less
+    /// means [`DEFAULT_TAB_STOP_DISTANCE`].
+    tab_stop_distance: f32,
     /// Laid-out lines.
     lines: Vec<TextLine>,
     /// Top-left origin position.
@@ -286,6 +305,7 @@ impl TextLayout {
             wrap_width: None,
             wrap_mode: WrapMode::default(),
             alignment: Alignment::LEFT,
+            tab_stop_distance: DEFAULT_TAB_STOP_DISTANCE,
             lines: Vec::new(),
             position: PointF::new(0.0, 0.0),
             layout_cursor: 0,
@@ -364,6 +384,20 @@ impl TextLayout {
     /// Sets the wrap mode (`QTextOption::setWrapMode`); `WordWrap` until set.
     pub fn set_wrap_mode(&mut self, mode: WrapMode) {
         self.wrap_mode = mode;
+        self.clear_layout();
+    }
+
+    /// The distance between tab stops (`QTextOption::tabStopDistance`), 80 px until set.
+    #[inline]
+    pub fn tab_stop_distance(&self) -> f32 {
+        self.tab_stop_distance
+    }
+
+    /// Sets the distance between tab stops (`QTextOption::setTabStopDistance`): a tab advances to
+    /// the next multiple of it from the start of the line. Zero, a negative or a non-finite
+    /// distance means the default of 80 px, as in Qt.
+    pub fn set_tab_stop_distance(&mut self, distance: f32) {
+        self.tab_stop_distance = distance;
         self.clear_layout();
     }
 
@@ -493,7 +527,11 @@ impl TextLayout {
                 break;
             }
 
-            let g_width = composite.advances[curr_grapheme];
+            let g_width = if g == "\t" {
+                tab_width(curr_x, self.tab_stop_distance)
+            } else {
+                composite.advances[curr_grapheme]
+            };
             let is_space = is_hanging_space(g);
 
             // `QTextLine::layout_helper` adds the negative right bearing of the glyph that would
@@ -564,9 +602,14 @@ impl TextLayout {
         // of a paragraph keeps them unless they hang over the width.
         let mut natural_len = content_len;
         if ended_by_separator || (has_word && (wrapped || curr_x > max_width)) {
-            while natural_len > 0
-                && is_hanging_space(composite.grapheme(line_start_grapheme + natural_len - 1))
-            {
+            // A tab that ends within the width stays in the width of the line, as a word does
+            // (measured: `a\tb` wrapped at a width that holds the tab but not `b` is as wide as
+            // `a` and the tab); one that ends beyond it hangs like a space.
+            while natural_len > 0 && {
+                let last = line_start_grapheme + natural_len - 1;
+                is_hanging_space(composite.grapheme(last))
+                    && !(composite.grapheme(last) == "\t" && advances[natural_len] <= max_width)
+            } {
                 natural_len -= 1;
             }
         }
@@ -748,22 +791,22 @@ impl TextLayout {
                         // A line break inside a ligature draws the ligature once, on the line
                         // holding its first grapheme (see `ShapedParagraph::glyphs_in`).
                         let span_end = line_end.min(paragraph.end);
-                        self.draw_shaped_span(
-                            painter,
-                            pos,
-                            line,
-                            line_y,
-                            composite,
-                            paragraph,
-                            g_idx..span_end,
-                            default_color,
-                        );
+                        let span = g_idx..span_end;
+                        if span.clone().any(|g| composite.grapheme(g) == "\t") {
+                            self.draw_span_around_tabs(
+                                painter, pos, line, line_y, composite, paragraph, span, default_color,
+                            );
+                        } else {
+                            self.draw_shaped_span(
+                                painter, pos, line, line_y, composite, paragraph, span, default_color,
+                            );
+                        }
                         g_idx = span_end;
                     }
                     None => {
                         // No font shaped this paragraph: draw it grapheme by grapheme.
                         let g_str = composite.grapheme(g_idx);
-                        if !is_unshaped(g_str) {
+                        if !is_unshaped(g_str) && g_str != "\t" {
                             // The left edge of the grapheme: its trailing edge when it reads
                             // right to left.
                             let g_x = pos.x
@@ -821,6 +864,43 @@ impl TextLayout {
         let origin = PointF::new(pos.x + line.position.x + run_left, line_y);
         for (color, glyphs) in self.span_runs(composite, paragraph, span, default_color) {
             painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
+        }
+    }
+
+    /// Draws `span` without its tabs: a tab has no glyph, and what follows it sits where the line
+    /// put it (the tab's width comes from the line, not from shaping), so every piece between tabs
+    /// is a span of its own, drawn from the left edge of its graphemes on the line
+    /// (`cursor_to_x` includes the line position).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_span_around_tabs(
+        &self,
+        painter: &mut Painter,
+        pos: PointF,
+        line: &TextLine,
+        line_y: f32,
+        composite: &CompositeText,
+        paragraph: &ShapedParagraph,
+        span: std::ops::Range<usize>,
+        default_color: Color,
+    ) {
+        let mut start = span.start;
+        while start < span.end {
+            if composite.grapheme(start) == "\t" {
+                start += 1;
+                continue;
+            }
+            let mut end = start;
+            while end < span.end && composite.grapheme(end) != "\t" {
+                end += 1;
+            }
+            let left = (start..end)
+                .flat_map(|g| [line.cursor_to_x(g, Edge::Leading), line.cursor_to_x(g, Edge::Trailing)])
+                .fold(f32::INFINITY, f32::min);
+            let origin = PointF::new(pos.x + left, line_y);
+            for (color, glyphs) in self.span_runs(composite, paragraph, start..end, default_color) {
+                painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
+            }
+            start = end;
         }
     }
 

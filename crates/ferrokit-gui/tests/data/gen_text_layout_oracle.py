@@ -177,6 +177,18 @@ CURSOR_CASES = [
     ("syn_kern_sentence", "syn", "AT Wa To Ty VA"),
     ("syn_kern_after_space", "syn", "x Ab"),
     # a carriage return is a character of no width, alone or before a line feed
+    # tabs: the default stop distance, a distance, a tab on a stop, and distances that are not
+    # whole pixels (Qt keeps the distance in 1/64 px)
+    ("syn_tab", "syn", "a\tb"),
+    ("syn_tab_leading", "syn", "\tb"),
+    ("syn_tab_two", "syn", "a\t\tb"),
+    ("syn_tab_long", "syn", "aaaaaaaaaaaa\tb"),
+    ("syn_tab_stop_20", "syn", "aaa\tb"),
+    ("syn_tab_on_stop", "syn", "aa\tb"),
+    ("syn_tab_fraction", "syn", "aa\tb"),
+    ("syn_tab_small_gap", "syn", "aa\tb"),
+    ("syn_tab_crlf", "syn", "a\t\r\nb"),
+    ("arial_tab", "arial", "ab\tcd"),
     ("syn_carriage_return", "syn", "a\rb"),
     ("syn_crlf", "syn", "a\r\nb"),
     ("syn_carriage_return_end", "syn", "ab\r"),
@@ -264,6 +276,12 @@ WRAP_CASES = [
     # at U+2028
     ("syn_newline", "syn", "word-or-anywhere", "aaa\nbbb ccc\n\nddd", [30, 60, 120]),
     ("syn_trailing_newline", "syn", "word-or-anywhere", "aaa bbb\n", [40, 200]),
+    ("syn_tab_wrap", "syn", "word-or-anywhere", "a\tb", [20, 70, 87, 88, 90]),
+    ("syn_tab_wrap_20", "syn", "word-or-anywhere", "aa\tbb\tcc", [30, 45]),
+    ("syn_tab_wrap_20_leading", "syn", "word-or-anywhere", "\tb", [10]),
+    ("syn_tab_wrap_20_space", "syn", "word-or-anywhere", "a \tb", [25]),
+    ("syn_tab_wrap_20_after_space", "syn", "word-or-anywhere", "a\t b", [45]),
+    ("syn_tab_wrap_20_word", "syn", "word-or-anywhere", "ab\tcd", [25]),
     ("syn_carriage_return_wrap", "syn", "word-or-anywhere", "aaa\rbbb ccc\r\rddd", [30, 60, 120]),
     ("syn_crlf_wrap", "syn", "word-or-anywhere", "aaa\r\nbbb ccc\r\n\r\nddd", [30, 60, 120]),
     ("syn_trailing_crlf", "syn", "word-or-anywhere", "aaa bbb\r\n", [40, 200]),
@@ -343,6 +361,21 @@ ALIGN_CASES = [
 ]
 
 
+# Cases laid out with a tab stop distance (`QTextOption.setTabStopDistance`); the test has the same
+# table.
+TAB_STOPS = {
+    "syn_tab_stop_20": 20.0,
+    "syn_tab_on_stop": 15.0,
+    "syn_tab_fraction": 14.9,
+    "syn_tab_small_gap": 16.0,
+    "syn_tab_wrap_20": 20.0,
+    "syn_tab_wrap_20_leading": 20.0,
+    "syn_tab_wrap_20_space": 20.0,
+    "syn_tab_wrap_20_after_space": 20.0,
+    "syn_tab_wrap_20_word": 20.0,
+}
+
+
 WRAP_MODES = {
     "nowrap": QTextOption.WrapMode.NoWrap,
     "word": QTextOption.WrapMode.WordWrap,
@@ -360,6 +393,8 @@ def cursor_row(case, font_id, font, text):
     layout = QTextLayout(text, font)
     opt = QTextOption()
     opt.setWrapMode(QTextOption.WrapMode.NoWrap)
+    if case in TAB_STOPS:
+        opt.setTabStopDistance(TAB_STOPS[case])
     layout.setTextOption(opt)
     layout.beginLayout()
     line = layout.createLine()
@@ -455,6 +490,8 @@ def wrap_row(case, font_id, font, mode, width, text):
     layout = QTextLayout(text, font)
     opt = QTextOption()
     opt.setWrapMode(WRAP_MODES[mode])
+    if case in TAB_STOPS:
+        opt.setTabStopDistance(TAB_STOPS[case])
     layout.setTextOption(opt)
     layout.beginLayout()
     lines = []
