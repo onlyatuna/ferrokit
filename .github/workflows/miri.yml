@@ -17,15 +17,17 @@ permissions:
   contents: read
 
 # A new push to a pull request cancels the superseded run; runs on main always finish.
-# A `labeled` run has its own group per label: opening a PR with a label fires `opened` and `labeled`
-# together, and adding another label (which skips every job here) must not cancel a running sweep.
+# Opening a PR with a Miri label fires `opened` and `labeled` together, and both would run the whole
+# sweep; the Miri labels share the group of the code runs, so the later one cancels the earlier one
+# (they sweep the same commit). Any other label gets its own group: its run skips every job here and
+# must not cancel a running sweep.
 #
 # Miri lives in its own workflow on purpose. A `labeled` run of a workflow with matrix jobs skips them
 # by `if`, and a skipped matrix job reports its unexpanded name (`Workspace Test (${{ matrix.os }})`);
 # a pull request with such a check run stays BLOCKED however green the required checks are. CI does
 # not run on `labeled`, so it has no such skipped jobs; the Miri jobs below are not required checks.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'code' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'labeled' && !contains(fromJSON('["miri","miri-full"]'), github.event.label.name) && format('label-{0}', github.event.label.name) || 'code' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -105,7 +107,7 @@ jobs:
         # result and the sweep carries on, instead of cancelling the job.
 
   miri:
-    # Required check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
+    # Check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
     name: Nightly Miri (SB & TB)
     needs: [miri-changes, miri-shard]
     if: always() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name))
