@@ -421,12 +421,12 @@
   },
   "ferrokit-widgets": {
     "layout_qt_oracle": {
-      "SB": 124,
-      "TB": 1072
+      "SB": 208,
+      "TB": 551
     },
     "lib": {
-      "SB": 65,
-      "TB": 52
+      "SB": 67,
+      "TB": 75
     },
     "test_accessibility": {
       "SB": 2,
@@ -525,8 +525,8 @@
       "TB": 2
     },
     "test_input_cursor": {
-      "SB": 29,
-      "TB": 20
+      "SB": 33,
+      "TB": 29
     },
     "test_issue18_thread_review": {
       "SB": 1,
@@ -569,8 +569,8 @@
       "TB": 12
     },
     "test_layout_metric_caching": {
-      "SB": 11,
-      "TB": 16
+      "SB": 20,
+      "TB": 25
     },
     "test_layout_reentrancy": {
       "SB": 4,
@@ -625,8 +625,8 @@
       "TB": 9
     },
     "test_r3_visibility_focus": {
-      "SB": 31,
-      "TB": 20
+      "SB": 32,
+      "TB": 31
     },
     "test_reentrancy_and_deferred": {
       "SB": 6,
@@ -722,11 +722,11 @@
     },
     "test_widget_extensions": {
       "SB": 13,
-      "TB": 13
+      "TB": 22
     },
     "test_widget_helpers_api": {
-      "SB": 11,
-      "TB": 13
+      "SB": 20,
+      "TB": 21
     },
     "test_widget_invalidation": {
       "SB": 13,
@@ -757,8 +757,8 @@
       "TB": 3
     },
     "test_window_device_pixel_ratio": {
-      "SB": 58,
-      "TB": 101
+      "SB": 59,
+      "TB": 186
     },
     "test_window_drop_releases_graph": {
       "SB": 1,
@@ -769,16 +769,16 @@
       "TB": 2
     },
     "test_window_mask_and_transient": {
-      "SB": 35,
-      "TB": 38
+      "SB": 37,
+      "TB": 61
     },
     "test_window_screen_mapping": {
-      "SB": 39,
-      "TB": 67
+      "SB": 40,
+      "TB": 117
     },
     "test_window_size_limits": {
       "SB": 14,
-      "TB": 13
+      "TB": 21
     }
   }
 }
