@@ -3,18 +3,23 @@
 //! `QTextOption` starts with `LayoutDirectionAuto`, which takes it from the first strong
 //! character), embedding levels per grapheme, and the visual order of the runs of one line.
 
-use unicode_bidi::{BidiInfo, Level};
+use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
 
 /// Whether `text` reads right to left as a whole: its first strong character is a right to left
-/// one (rules P2 and P3).
+/// one (rules P2 and P3, `QString::isRightToLeft`). The whole text counts, line feeds included: a
+/// text that starts with a line feed before its first strong character is not taken as left to
+/// right for that.
 pub(crate) fn is_rtl(text: &str) -> bool {
     if text.is_ascii() {
         return false;
     }
-    BidiInfo::new(text, None)
-        .paragraphs
-        .first()
-        .is_some_and(|p| p.level.is_rtl())
+    text.chars()
+        .find_map(|c| match bidi_class(c) {
+            BidiClass::L => Some(false),
+            BidiClass::R | BidiClass::AL => Some(true),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// The embedding level of every grapheme of the paragraph `text`, whose graphemes start at the
