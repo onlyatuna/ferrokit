@@ -540,6 +540,10 @@
       "SB": 3,
       "TB": 2
     },
+    "test_label_carriage_return": {
+      "SB": 2,
+      "TB": 3
+    },
     "test_label_focus_policy": {
       "SB": 1,
       "TB": 1
