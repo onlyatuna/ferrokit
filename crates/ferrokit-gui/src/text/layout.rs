@@ -1794,6 +1794,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // pure arithmetic, but about 35 minutes under Tree Borrows
     fn the_first_word_scan_stops_at_the_width_not_at_the_end_of_the_word() {
         // One word of 2 000 graphemes of 1 px, lines of 10 px: every line asks, and an answer
         // that went to the end of the word would read up to 2 000 graphemes each time (200 lines
