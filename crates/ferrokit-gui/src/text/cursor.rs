@@ -489,23 +489,6 @@ mod line_move_tests {
         assert_eq!(mv(&d, 3, MoveOperation::EndOfLine), 7);
         assert_eq!(mv(&d, 1, MoveOperation::EndOfLine), 2);
     }
-
-    #[test]
-    fn up_down_keep_the_column_and_clamp() {
-        let d = doc("abcdef\nxy\nlonger text");
-        // Blocks start at 0, 7, 10.
-        assert_eq!(mv(&d, 4, MoveOperation::Down), 9); // clamped to end of "xy"
-        assert_eq!(mv(&d, 8, MoveOperation::Down), 10 + 1);
-        assert_eq!(mv(&d, 12, MoveOperation::Up), 9); // column 2 of "xy"
-        assert_eq!(mv(&d, 8, MoveOperation::Up), 1);
-    }
-
-    #[test]
-    fn up_on_first_and_down_on_last_block_do_not_move() {
-        let d = doc("abc\ndef");
-        assert_eq!(mv(&d, 2, MoveOperation::Up), 2);
-        assert_eq!(mv(&d, 6, MoveOperation::Down), 6);
-    }
 }
 
 /// Canonical Qt alias.

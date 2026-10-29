@@ -574,7 +574,7 @@ fn oracle_document(text: &str) -> TextDocument {
 #[test]
 fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
     // (text, start, moves: true is Down, positions after each move)
-    let cases: [(&str, usize, &[bool], &[usize]); 7] = [
+    let cases: [(&str, usize, &[bool], &[usize]); 10] = [
         ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true], &[14, 20]),
         ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true, false, false], &[14, 20, 14, 4]),
         ("bbbbbb\n  ab\nbbbbbbbb", 5, &[true, true], &[11, 17]),
@@ -582,6 +582,10 @@ fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
         ("bbbbbb\n      ab", 6, &[true], &[15]),
         ("bbbbbb\n      ab\nbb", 3, &[true, true, false, false], &[13, 18, 13, 3]),
         ("ab\n\nbbbbbb", 2, &[true, true], &[3, 6]),
+        // the first line has nothing above it and the last nothing below: the cursor stays
+        ("abc\ndef", 2, &[false], &[2]),
+        ("abc\ndef", 6, &[true], &[6]),
+        ("abc\ndef", 2, &[false, true], &[2, 6]),
     ];
     for (text, start, moves, expected) in cases {
         let doc = oracle_document(text);
