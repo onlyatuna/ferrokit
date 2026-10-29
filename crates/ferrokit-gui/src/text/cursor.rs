@@ -284,7 +284,11 @@ impl TextCursor {
         self.char_format = format;
     }
 
-    /// Navigates the cursor according to `MoveOperation`.
+    /// Navigates the cursor according to `MoveOperation`, `n` times.
+    ///
+    /// As in Qt, a count of 0 moves nothing and leaves the anchor and the vertical-movement column
+    /// alone (it returns `true`), except for `Start`, `End`, `StartOfLine` and `EndOfLine`, which
+    /// always move once whatever the count.
     pub fn move_position(
         &mut self,
         doc: &TextDocument,
@@ -292,6 +296,16 @@ impl TextCursor {
         mode: MoveMode,
         n: usize,
     ) -> bool {
+        let n = match op {
+            MoveOperation::Start
+            | MoveOperation::End
+            | MoveOperation::StartOfLine
+            | MoveOperation::EndOfLine => 1,
+            _ => n,
+        };
+        if n == 0 {
+            return true;
+        }
         let total_graphemes = doc.character_count();
         let old_pos = self.position;
         let mut new_pos = old_pos;
