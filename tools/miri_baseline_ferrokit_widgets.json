@@ -1243,6 +1243,8 @@
     "test_label_carriage_return::carriage_returns_size_a_label_as_qt_does::SB": "unsupported",
     "test_label_carriage_return::carriage_returns_size_a_label_as_qt_does::TB": "unsupported",
     "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::SB": "unsupported",
-    "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::TB": "unsupported"
+    "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::TB": "unsupported",
+    "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::SB": "unsupported",
+    "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::TB": "unsupported"
   }
 }
