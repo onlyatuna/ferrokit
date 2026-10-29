@@ -1,0 +1,38 @@
+name: Miri
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  miri-changes:
+    if: github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name)
+    name: Miri relevance
+    runs-on: ubuntu-22.04
+    outputs:
+      run: ${{ steps.d.outputs.run }}
+    steps:
+      - id: d
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
+  miri-shard:
+    needs: miri-changes
+    if: needs.miri-changes.outputs.run == 'true'
+    name: Miri shard (${{ matrix.crate }}, ${{ matrix.model }})
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        crate: [a, b]
+        model: [SB, TB]
+    steps:
+      - run: echo ok
+  miri:
+    name: Nightly Miri (SB & TB)
+    needs: [miri-changes, miri-shard]
+    if: always() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name))
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo ok
