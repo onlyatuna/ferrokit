@@ -551,7 +551,11 @@ class TestMiriShardedRuns(unittest.TestCase):
                 "miri_sweep.py", "--crate", "ferrokit-gui", "--models", "TB", "--baseline", path,
                 "--shard", f"{index}/2", "--list-units",
             ]
-            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+            # The recorded weights change with every refresh; fix them so that `lib`, by far the
+            # heaviest target, is always cut across both shards.
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), mock.patch.object(
+                miri_sweep, "load_target_weights", return_value={"lib": 100000}
+            ):
                 self.assertEqual(miri_sweep.main(), 0)
             lines.append(out.getvalue().splitlines())
             self.assertRegex(lines[-1][-1], rf"^# shard {index}/2: \d+ units, ~\d+ s \(estimate per shard: \d+, \d+\)$")
