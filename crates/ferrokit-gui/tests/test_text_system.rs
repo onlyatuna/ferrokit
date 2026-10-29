@@ -428,6 +428,68 @@ fn press(c: &mut TextCursor, doc: &TextDocument, op: MoveOperation) -> usize {
     c.position()
 }
 
+#[test]
+fn test_cursor_sticky_x_with_wrapping() {
+    let mut doc = TextDocument::new();
+    doc.set_plain_text("abcdefgh\nab\nabcdefgh\nabcdefgh");
+    doc.set_text_width(10_000.0);
+    // Blocks start at 0, 9, 12, 21.
+    let mut c = TextCursor::at_position(6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "short line clamps");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18, "x restored across blocks");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "repeated press keeps x");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "original x on the first line");
+
+    // A failed Down at the last line / Up at the first keeps the x.
+    let mut c = TextCursor::at_position(6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "last line: no move");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "first line: no move");
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "x still sticky");
+    let mut c = TextCursor::at_position(6);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    press(&mut c, &doc, MoveOperation::Down);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18, "x survived the failed Down");
+
+    // Selecting with Shift+Down keeps the column too.
+    let mut c = TextCursor::at_position(6);
+    c.move_position(&doc, MoveOperation::Down, MoveMode::KeepAnchor, 2);
+    assert_eq!((c.anchor(), c.position()), (6, 18));
+
+    // Non-vertical moves and edits reset it.
+    for op in [
+        MoveOperation::Left,
+        MoveOperation::Right,
+        MoveOperation::StartOfLine,
+        MoveOperation::EndOfLine,
+    ] {
+        let mut c = TextCursor::at_position(6);
+        press(&mut c, &doc, MoveOperation::Down);
+        let at = press(&mut c, &doc, op);
+        let down = press(&mut c, &doc, MoveOperation::Down);
+        let mut fresh = TextCursor::at_position(at);
+        assert_eq!(down, press(&mut fresh, &doc, MoveOperation::Down), "{op:?}");
+    }
+    let mut c = TextCursor::at_position(6);
+    let mut doc2 = doc.clone();
+    press(&mut c, &doc2, MoveOperation::Down);
+    c.insert_text(&mut doc2, "z");
+    let mut fresh = TextCursor::at_position(c.position());
+    assert_eq!(
+        press(&mut c, &doc2, MoveOperation::Down),
+        press(&mut fresh, &doc2, MoveOperation::Down)
+    );
+}
+
 // Measured with QTextCursor.movePosition on "hello world\nsecond line here\nthird" with the
 // selection 5..14: a count of 0 changes nothing and returns true, except Start, End, StartOfLine
 // and EndOfLine, which move once whatever the count.
