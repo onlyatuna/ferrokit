@@ -428,113 +428,6 @@ fn press(c: &mut TextCursor, doc: &TextDocument, op: MoveOperation) -> usize {
     c.position()
 }
 
-#[test]
-fn test_cursor_sticky_column_without_wrapping() {
-    let mut doc = TextDocument::new();
-    // Blocks start at 0, 7, 10, 17.
-    doc.set_plain_text("abcdef\nxy\nlonger\nabcdef");
-    let mut c = TextCursor::at_position(5);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 9, "clamped into the short block");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 15, "column 5 restored");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 22);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 15);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 9);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "back at the original column");
-
-    // Cloned cursors carry the column along.
-    press(&mut c, &doc, MoveOperation::Down);
-    let mut copy = c.clone();
-    assert_eq!(press(&mut copy, &doc, MoveOperation::Down), 15);
-
-    // Any non-vertical move or edit forgets it: Down behaves like on a fresh cursor.
-    for op in [
-        MoveOperation::Left,
-        MoveOperation::Right,
-        MoveOperation::StartOfLine,
-        MoveOperation::EndOfLine,
-        MoveOperation::StartOfWord,
-        MoveOperation::NextWord,
-    ] {
-        let mut c = TextCursor::at_position(5);
-        press(&mut c, &doc, MoveOperation::Down);
-        let at = press(&mut c, &doc, op);
-        let mut fresh = TextCursor::at_position(at);
-        assert_eq!(
-            press(&mut c, &doc, MoveOperation::Down),
-            press(&mut fresh, &doc, MoveOperation::Down),
-            "{op:?}"
-        );
-    }
-    let mut c = TextCursor::at_position(5);
-    let mut doc2 = doc.clone();
-    press(&mut c, &doc2, MoveOperation::Down);
-    c.insert_text(&mut doc2, "z");
-    assert_eq!(c.position(), 10);
-    assert_eq!(press(&mut c, &doc2, MoveOperation::Down), 11 + 3, "edit reset the column");
-}
-
-#[test]
-fn test_cursor_sticky_x_with_wrapping() {
-    let mut doc = TextDocument::new();
-    doc.set_plain_text("abcdefgh\nab\nabcdefgh\nabcdefgh");
-    doc.set_text_width(10_000.0);
-    // Blocks start at 0, 9, 12, 21.
-    let mut c = TextCursor::at_position(6);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "short line clamps");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18, "x restored across blocks");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "repeated press keeps x");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "original x on the first line");
-
-    // A failed Down at the last line / Up at the first keeps the x.
-    let mut c = TextCursor::at_position(6);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "last line: no move");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "first line: no move");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "x still sticky");
-    let mut c = TextCursor::at_position(6);
-    press(&mut c, &doc, MoveOperation::Down);
-    press(&mut c, &doc, MoveOperation::Down);
-    press(&mut c, &doc, MoveOperation::Down);
-    press(&mut c, &doc, MoveOperation::Down);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18, "x survived the failed Down");
-
-    // Selecting with Shift+Down keeps the column too.
-    let mut c = TextCursor::at_position(6);
-    c.move_position(&doc, MoveOperation::Down, MoveMode::KeepAnchor, 2);
-    assert_eq!((c.anchor(), c.position()), (6, 18));
-
-    // Non-vertical moves and edits reset it.
-    for op in [
-        MoveOperation::Left,
-        MoveOperation::Right,
-        MoveOperation::StartOfLine,
-        MoveOperation::EndOfLine,
-    ] {
-        let mut c = TextCursor::at_position(6);
-        press(&mut c, &doc, MoveOperation::Down);
-        let at = press(&mut c, &doc, op);
-        let down = press(&mut c, &doc, MoveOperation::Down);
-        let mut fresh = TextCursor::at_position(at);
-        assert_eq!(down, press(&mut fresh, &doc, MoveOperation::Down), "{op:?}");
-    }
-    let mut c = TextCursor::at_position(6);
-    let mut doc2 = doc.clone();
-    press(&mut c, &doc2, MoveOperation::Down);
-    c.insert_text(&mut doc2, "z");
-    let mut fresh = TextCursor::at_position(c.position());
-    assert_eq!(
-        press(&mut c, &doc2, MoveOperation::Down),
-        press(&mut fresh, &doc2, MoveOperation::Down)
-    );
-}
-
 // Measured with QTextCursor.movePosition on "hello world\nsecond line here\nthird" with the
 // selection 5..14: a count of 0 changes nothing and returns true, except Start, End, StartOfLine
 // and EndOfLine, which move once whatever the count.
@@ -583,14 +476,6 @@ fn test_cursor_move_position_zero_count_is_a_no_op_as_in_qt() {
         assert!(c.move_position(&doc, op, MoveMode::KeepAnchor, 0), "{op:?}");
         assert_eq!((c.anchor(), c.position()), (5, to), "{op:?} keeps the anchor");
     }
-
-    // A zero-count move does not reset the column that Up and Down keep.
-    let mut doc = TextDocument::new();
-    doc.set_plain_text("abcdef\nxy\nlonger\nabcdef");
-    let mut c = TextCursor::at_position(5);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 9, "clamped to the short line");
-    c.move_position(&doc, MoveOperation::Left, MoveMode::MoveAnchor, 0);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "the column of 5 survived");
 }
 
 #[test]
@@ -609,17 +494,23 @@ fn test_qt_canonical_text_aliases() {
     let _hl: QSyntaxHighlighter = SyntaxHighlighter::new();
 }
 
-/// `Up` and `Down` keep the x coordinate in a document without a text width too, not the grapheme
-/// column. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 (document margin 0) with the
-/// synthetic oracle font (16 px: "b" is 7.625 px, a space 4 px, "a" 7.5 px), so the same column is
-/// a different x on the lines of `"bbbbbb\n      ab\nbbbbbbbb"`.
-#[test]
-fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
+/// The document of the oracle font (16 px: "b" is 7.625 px, a space 4 px, "a" 7.5 px), which the
+/// vertical-move tests use because the same column is a different x on different lines.
+fn oracle_document(text: &str) -> TextDocument {
     use ferrokit_gui::text::font::SharedFontData;
     ferrokit_gui::text::font_database::set_application_device_pixel_ratio(2.0);
-    let font = Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
-        include_bytes!("data/oracle_text.ttf").to_vec(),
+    let mut doc = TextDocument::from_plain_text(text);
+    doc.set_default_font(Font::new("FerrokitOracleText", 16.0).with_font_data(
+        SharedFontData::from_vec(include_bytes!("data/oracle_text.ttf").to_vec()),
     ));
+    doc
+}
+
+/// `Up` and `Down` keep the x coordinate in a document without a text width too, not the grapheme
+/// column. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 (document margin 0), so the
+/// same column is a different x on the lines of `"bbbbbb\n      ab\nbbbbbbbb"`.
+#[test]
+fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
     // (text, start, moves: true is Down, positions after each move)
     let cases: [(&str, usize, &[bool], &[usize]); 7] = [
         ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true], &[14, 20]),
@@ -631,16 +522,61 @@ fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
         ("ab\n\nbbbbbb", 2, &[true, true], &[3, 6]),
     ];
     for (text, start, moves, expected) in cases {
-        let mut doc = TextDocument::from_plain_text(text);
-        doc.set_default_font(font.clone());
+        let doc = oracle_document(text);
         let mut cursor = TextCursor::at_position(start);
         let mut got = Vec::new();
         for &down in moves {
-            let op = if down { MoveOperation::Down } else { MoveOperation::Up };
-            cursor.move_position(&doc, op, MoveMode::MoveAnchor, 1);
-            got.push(cursor.position());
+            got.push(press(&mut cursor, &doc, if down { MoveOperation::Down } else { MoveOperation::Up }));
         }
         assert_eq!(got, expected, "{text:?} from {start}");
     }
+}
+
+/// The x that `Up` and `Down` keep goes with a cloned cursor, survives a zero-count move and is
+/// forgotten by every other move (`QTextCursorPrivate::x`).
+#[test]
+fn test_cursor_sticky_x_without_wrapping() {
+    let doc = oracle_document("bbbbbb\n  ab\nbbbbbbbb\nbbbbbb");
+    let mut c = TextCursor::at_position(5);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "clamped into the short line");
+    // A zero-count move does not reset it.
+    c.move_position(&doc, MoveOperation::Left, MoveMode::MoveAnchor, 0);
+    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "back at the original x");
+    press(&mut c, &doc, MoveOperation::Down);
+
+    // Cloned cursors carry it along.
+    let mut copy = c.clone();
+    assert_eq!(press(&mut copy, &doc, MoveOperation::Down), 17);
+
+    // Any non-vertical move forgets it: Down behaves like on a fresh cursor.
+    for op in [
+        MoveOperation::Left,
+        MoveOperation::Right,
+        MoveOperation::StartOfLine,
+        MoveOperation::EndOfLine,
+        MoveOperation::StartOfWord,
+        MoveOperation::NextWord,
+    ] {
+        let mut c = TextCursor::at_position(5);
+        press(&mut c, &doc, MoveOperation::Down);
+        let at = press(&mut c, &doc, op);
+        let mut fresh = TextCursor::at_position(at);
+        assert_eq!(
+            press(&mut c, &doc, MoveOperation::Down),
+            press(&mut fresh, &doc, MoveOperation::Down),
+            "{op:?}"
+        );
+    }
+
+    // An edit forgets it too.
+    let mut doc2 = doc.clone();
+    let mut c = TextCursor::at_position(5);
+    press(&mut c, &doc2, MoveOperation::Down);
+    c.insert_text(&mut doc2, "z");
+    let mut fresh = TextCursor::at_position(c.position());
+    assert_eq!(
+        press(&mut c, &doc2, MoveOperation::Down),
+        press(&mut fresh, &doc2, MoveOperation::Down)
+    );
 }
 
