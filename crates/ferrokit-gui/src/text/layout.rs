@@ -79,10 +79,11 @@ impl std::fmt::Debug for ShapedParagraph {
 /// the line feeds of a label's text with this before laying out.
 const LINE_SEPARATOR: &str = "\u{2028}";
 
-/// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed or the
-/// line separator.
+/// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed, a
+/// carriage return (alone or as the `"\r\n"` cluster; Qt measures `\r` as a character of no width
+/// too) or the line separator.
 fn is_unshaped(grapheme: &str) -> bool {
-    grapheme == "\n" || grapheme == LINE_SEPARATOR
+    matches!(grapheme, "\n" | "\r" | "\r\n") || grapheme == LINE_SEPARATOR
 }
 
 /// Whether a grapheme is white space that hangs past the end of a wrapped line instead of

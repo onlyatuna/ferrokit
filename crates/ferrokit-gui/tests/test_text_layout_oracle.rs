@@ -564,13 +564,13 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
 const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("align", "arial", 6),
     ("align", "syn", 21),
-    ("cursor", "arial", 25),
-    ("cursor", "syn", 23),
+    ("cursor", "arial", 27),
+    ("cursor", "syn", 26),
     ("hit", "arial", 4),
     ("hit", "syn", 11),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
-    ("wrap", "syn", 335),
+    ("wrap", "syn", 345),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {
