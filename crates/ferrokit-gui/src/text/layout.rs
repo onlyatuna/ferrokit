@@ -91,23 +91,26 @@ fn is_unshaped(grapheme: &str) -> bool {
 /// separator spaces and the zero width space; not the no-break spaces, which are ordinary
 /// characters, and not the line and paragraph separators).
 fn is_hanging_space(grapheme: &str) -> bool {
-    grapheme.chars().all(|c| {
-        c == '\u{200b}'
-            || (c.is_whitespace()
-                && !matches!(
-                    c,
-                    '\n' | '\r'
-                        | '\u{b}'
-                        | '\u{c}'
-                        | '\u{85}'
-                        | '\u{a0}'
-                        | '\u{2007}'
-                        | '\u{2028}'
-                        | '\u{2029}'
-                        | '\u{202f}'
-                ))
-    })
-}
+    // Line feeds and carriage returns hang like spaces in Qt (`a \r` at a width that fits `a ` is
+    // one line).
+    matches!(grapheme, "\n" | "\r" | "\r\n")
+        || grapheme.chars().all(|c| {
+            c == '\u{200b}'
+                || (c.is_whitespace()
+                    && !matches!(
+                        c,
+                        '\n' | '\r'
+                            | '\u{b}'
+                            | '\u{c}'
+                            | '\u{85}'
+                            | '\u{a0}'
+                            | '\u{2007}'
+                            | '\u{2028}'
+                            | '\u{2029}'
+                            | '\u{202f}'
+                    ))
+        })
+    }
 
 /// Whether a grapheme is white space for the right bearing of a line: a hanging space, a line feed
 /// or the line separator (the characters Qt's `QCharAttributes::whiteSpace` is set for that this

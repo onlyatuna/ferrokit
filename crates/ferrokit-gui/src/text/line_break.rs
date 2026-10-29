@@ -16,7 +16,11 @@ use unicode_linebreak::{break_property, linebreaks, BreakClass, BreakOpportunity
 pub(crate) fn break_before(text: &str, starts: &[usize]) -> Vec<bool> {
     let mut breaks = vec![false; starts.len()];
     for (offset, opportunity) in linebreaks(text) {
-        if opportunity == BreakOpportunity::Allowed {
+        // A mandatory break after a line feed or carriage return is a break for a layout too: Qt
+        // wraps `aaaa\rbbb` after the `\r`. The one at the end of the text is not an opportunity.
+        if opportunity == BreakOpportunity::Allowed
+            || (opportunity == BreakOpportunity::Mandatory && offset < text.len())
+        {
             // A break inside a grapheme is not an opportunity.
             if let Ok(index) = starts.binary_search(&offset) {
                 breaks[index] = true;

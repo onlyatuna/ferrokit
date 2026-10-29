@@ -139,6 +139,10 @@ wrap syn_crlf_wrap syn word-or-anywhere 60 6161610d0a626262206363630d0a0d0a64646
 wrap syn_crlf_wrap syn word-or-anywhere 120 6161610d0a626262206363630d0a0d0a646464 1 0:19:96.25:96.25
 wrap syn_trailing_crlf syn word-or-anywhere 40 616161206262620d0a 2 0:4:22.5:26.5 4:5:22.875:22.875
 wrap syn_trailing_crlf syn word-or-anywhere 200 616161206262620d0a 1 0:9:49.375:49.375
+wrap syn_carriage_return_break_after syn word-or-anywhere 45 616161610d626262 2 0:5:30.0:30.0 5:3:22.875:22.875
+wrap syn_crlf_break_after syn word-or-anywhere 45 616161610d0a626262 2 0:6:30.0:30.0 6:3:22.875:22.875
+wrap syn_space_carriage_return_hangs syn word-or-anywhere 10 61200d 1 0:3:7.5:10.0
+wrap syn_space_carriage_return_text syn word-or-anywhere 10 61200d62 2 0:3:7.5:10.0 3:1:7.625:7.625
 wrap syn_crlf_line_separator syn word-or-anywhere 30 6161610de280a8626262e280a80d0a636363 3 0:5:22.5:22.5 5:4:22.875:22.875 9:5:23.25:23.25
 wrap syn_crlf_line_separator syn word-or-anywhere 120 6161610de280a8626262e280a80d0a636363 3 0:5:22.5:22.5 5:4:22.875:22.875 9:5:23.25:23.25
 wrap syn_line_separator syn word-or-anywhere 30 616161e280a862626220636363e280a8e280a8646464 5 0:4:22.5:22.5 4:4:22.875:26.875 8:4:23.25:23.25 12:1:0.0:0.0 13:3:23.625:23.625

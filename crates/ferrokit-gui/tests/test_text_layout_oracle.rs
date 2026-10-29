@@ -570,7 +570,7 @@ const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("hit", "syn", 11),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
-    ("wrap", "syn", 345),
+    ("wrap", "syn", 349),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {
