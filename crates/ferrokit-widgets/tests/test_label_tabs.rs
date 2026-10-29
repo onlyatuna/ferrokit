@@ -46,3 +46,19 @@ fn tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt() {
         }
     }
 }
+
+/// Unwrapped only: a word-wrapped label tries a width of 80 average characters first and narrows
+/// it while the text stays short, and the synthetic font's average character width is not the
+/// one Qt takes from it, so a long text wraps differently here (with no tab involved).
+#[test]
+fn several_tabs_size_an_unwrapped_label_as_in_qt() {
+    set_application_device_pixel_ratio(2.0);
+    for (text, expected) in [
+        ("ab\tab\tab\tab", (202, 1)),
+        ("\t\t\t", (186, 1)),
+        ("x\tab\tx\taa", (201, 1)),
+        ("\t\t\t\tab\t", (310, 1)),
+    ] {
+        assert_eq!(hint(text, false), expected, "{text:?}");
+    }
+}

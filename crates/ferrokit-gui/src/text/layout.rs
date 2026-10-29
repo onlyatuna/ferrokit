@@ -83,16 +83,20 @@ const LINE_SEPARATOR: &str = "\u{2028}";
 pub const DEFAULT_TAB_STOP_DISTANCE: f32 = 80.0;
 
 /// The width of a tab at `x` (`QTextEngine::calculateTabWidth`): up to the next multiple of the
-/// distance, which Qt keeps in 1/64 px; a tab on a stop goes to the next one.
+/// distance, which Qt keeps in 1/64 px. `x / distance` is a 26.6 fixed point quotient that rounds
+/// to nearest, so an `x` less than `distance / 128` below a stop counts as on it, and a tab on a
+/// stop goes to the next one (measured against `QTextLayout`).
 fn tab_width(x: f32, distance: f32) -> f32 {
     let distance = if distance.is_finite() && distance > 0.0 {
-        (distance * 64.0).trunc() / 64.0
+        f64::from(distance)
     } else {
-        DEFAULT_TAB_STOP_DISTANCE
+        f64::from(DEFAULT_TAB_STOP_DISTANCE)
     };
     // A distance below 1/64 px is no distance at all in Qt's fixed point; keep the tab positive.
-    let distance = distance.max(1.0 / 64.0);
-    ((x / distance).floor() + 1.0) * distance - x
+    let distance = ((distance * 64.0).trunc() / 64.0).max(1.0 / 64.0);
+    let x = f64::from(x);
+    let stops = ((x / distance * 64.0 + 0.5).floor() / 64.0).floor();
+    ((stops + 1.0) * distance - x) as f32
 }
 
 /// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed, a
@@ -501,6 +505,13 @@ impl TextLayout {
         let mut advances = vec![0.0f32];
         let mut last_break_grapheme = None;
         let mut last_break_advances_len = 0;
+        // How many graphemes of the line (and of the line up to the last break) stay in its natural
+        // width when its trailing white space is left out: up to the last grapheme that is no
+        // hanging space, or a tab that ends within the width.
+        let mut solid = 0;
+        let mut last_break_solid = 0;
+        // Set when the line ended in a tab that does not fit: nothing else is added to it.
+        let mut closed = false;
         // Set when the line ends because the next word does not fit (not at the end of the text
         // or at a hard break): Qt leaves the spaces at the end of such a line out of its width.
         let mut wrapped = false;
@@ -519,6 +530,10 @@ impl TextLayout {
 
         while curr_grapheme < total_graphemes {
             let g = composite.grapheme(curr_grapheme);
+            if closed {
+                wrapped = true;
+                break;
+            }
             if g == LINE_SEPARATOR {
                 // Hard line break
                 ended_by_separator = true;
@@ -532,6 +547,7 @@ impl TextLayout {
             } else {
                 composite.advances[curr_grapheme]
             };
+            let is_tab = g == "\t";
             let is_space = is_hanging_space(g);
 
             // `QTextLine::layout_helper` adds the negative right bearing of the glyph that would
@@ -555,6 +571,22 @@ impl TextLayout {
             // `QTextLine::layout_helper`: a space is added to the line without testing the width
             // (it hangs past the line end when it does not fit); a word is added only if it fits
             // after the spaces before it.
+            // A tab is tested once the line has a word, and by where it starts, not where it ends
+            // (measured: a tab that begins within the width stays, hanging if it ends beyond it); it
+            // wraps at the last break, else in front of itself in every mode.
+            if is_tab && has_word && curr_x > max_width {
+                match last_break_grapheme {
+                    Some(break_pos) if breaks_at_words && break_pos > line_start_grapheme => {
+                        wrapped = true;
+                        curr_grapheme = break_pos;
+                        advances.truncate(last_break_advances_len);
+                        solid = last_break_solid;
+                        line_bytes = composite.starts[curr_grapheme] - byte_start;
+                    }
+                    _ => wrapped = true,
+                }
+                break;
+            }
             if !is_space
                 && curr_x + g_width + bearing > max_width
                 && curr_grapheme > line_start_grapheme
@@ -566,6 +598,7 @@ impl TextLayout {
                         wrapped = true;
                         curr_grapheme = break_pos;
                         advances.truncate(last_break_advances_len);
+                        solid = last_break_solid;
                         // Recompute byte count up to break_pos
                         line_bytes = composite.starts[curr_grapheme] - byte_start;
                         break;
@@ -583,12 +616,26 @@ impl TextLayout {
             curr_x += g_width;
             advances.push(curr_x);
             line_bytes += g.len();
-            has_word |= !is_space;
+            has_word |= !is_space || is_tab;
+            if is_tab {
+                // A tab that ends within the width (or starts the line) is part of the line's
+                // width; one that does not hangs, with the spaces in front of it kept, and
+                // closes the line.
+                if curr_x <= max_width || curr_grapheme == line_start_grapheme {
+                    solid = advances.len() - 1;
+                } else {
+                    solid = solid.max(advances.len() - 2);
+                    closed = true;
+                }
+            } else if !is_space {
+                solid = advances.len() - 1;
+            }
 
             // Track word break opportunity (UAX #14)
             if breaks_at_words && has_word && composite.break_before[curr_grapheme + 1] {
                 last_break_grapheme = Some(curr_grapheme + 1);
                 last_break_advances_len = advances.len();
+                last_break_solid = solid;
             }
 
             curr_grapheme += 1;
@@ -602,16 +649,7 @@ impl TextLayout {
         // of a paragraph keeps them unless they hang over the width.
         let mut natural_len = content_len;
         if ended_by_separator || (has_word && (wrapped || curr_x > max_width)) {
-            // A tab that ends within the width stays in the width of the line, as a word does
-            // (measured: `a\tb` wrapped at a width that holds the tab but not `b` is as wide as
-            // `a` and the tab); one that ends beyond it hangs like a space.
-            while natural_len > 0 && {
-                let last = line_start_grapheme + natural_len - 1;
-                is_hanging_space(composite.grapheme(last))
-                    && !(composite.grapheme(last) == "\t" && advances[natural_len] <= max_width)
-            } {
-                natural_len -= 1;
-            }
+            natural_len = natural_len.min(solid);
         }
         let advance_w = advances[natural_len.min(advances.len() - 1)];
         // `layout_helper` ends with the negative right bearing of the last glyph that is not a

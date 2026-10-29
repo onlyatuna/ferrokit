@@ -119,6 +119,11 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
         Some(62.3),
     ),
     (
+        "cursor-trailing/syn_tab_rounding",
+        "as cursor-trailing/syn_tab",
+        Some(50.5),
+    ),
+    (
         "cursor-trailing/syn_tab_rtl",
         "as cursor-trailing/syn_tab",
         Some(65.0),
@@ -260,6 +265,7 @@ const TAB_STOPS: &[(&str, f32)] = &[
     ("syn_tab_on_stop", 15.0),
     ("syn_tab_fraction", 14.9),
     ("syn_tab_small_gap", 16.0),
+    ("syn_tab_rounding", 50.0),
     ("syn_tab_wrap_20", 20.0),
     ("syn_tab_wrap_20_leading", 20.0),
     ("syn_tab_wrap_20_space", 20.0),
@@ -644,12 +650,12 @@ const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("align", "arial", 6),
     ("align", "syn", 21),
     ("cursor", "arial", 28),
-    ("cursor", "syn", 36),
+    ("cursor", "syn", 37),
     ("hit", "arial", 4),
     ("hit", "syn", 12),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
-    ("wrap", "syn", 360),
+    ("wrap", "syn", 367),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {

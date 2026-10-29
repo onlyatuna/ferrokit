@@ -16,6 +16,7 @@ cursor syn_tab_on_stop syn 61610962 5 0:0.0:7.5 1:7.5:15.0 2:15.0:15.0 3:30.0:37
 cursor syn_tab_fraction syn 61610962 5 0:0.0:7.5 1:7.5:15.0 2:15.0:15.0 3:29.78125:37.40625 4:37.40625:37.40625
 cursor syn_tab_small_gap syn 61610962 5 0:0.0:7.5 1:7.5:15.0 2:15.0:15.0 3:16.0:23.625 4:23.625:23.625
 cursor syn_tab_crlf syn 61090d0a62 5 0:0.0:7.5 1:7.5:7.5 2:80.0:80.0 4:80.0:87.625 5:87.625:87.625
+cursor syn_tab_rounding syn 626262626220610962 10 0:0.0:7.625 1:7.625:15.25 2:15.25:22.875 3:22.875:30.5 4:30.5:38.125 5:38.125:42.125 6:42.125:49.625 7:49.625:49.625 8:100.0:107.625 9:107.625:107.625
 cursor arial_tab arial 6162096364 6 0:0.0:8.890625 1:8.890625:17.78125 2:17.78125:17.78125 3:80.0:88.0 4:88.0:96.890625 5:96.890625:96.890625
 cursor syn_tab_rtl syn 616209d790d79109d792d793 9 0:0.0:7.5 1:7.5:15.125 2:15.125:15.125 3:80.0:80.0 4:88.5:80.0 5:97.25:97.25 6:160.0:160.0 7:168.25:160.0 8:160.0:160.0
 cursor syn_carriage_return syn 610d62 4 0:0.0:7.5 1:7.5:7.5 2:7.5:15.125 3:15.125:15.125
@@ -154,6 +155,13 @@ wrap syn_tab_wrap_20_leading syn word-or-anywhere 10 0962 2 0:1:20.0:10.0 1:1:7.
 wrap syn_tab_wrap_20_space syn word-or-anywhere 25 61200962 2 0:3:20.0:20.0 3:1:7.625:7.625
 wrap syn_tab_wrap_20_after_space syn word-or-anywhere 45 61092062 1 0:4:31.625:31.625
 wrap syn_tab_wrap_20_word syn word-or-anywhere 25 6162096364 2 0:3:20.0:20.0 3:2:15.625:15.625
+wrap syn_tab_wrap_tabs syn word-or-anywhere 10 0909 2 0:1:80.0:10.0 1:1:80.0:10.0
+wrap syn_tab_wrap_tabs_word syn word 10 0909 2 0:1:80.0:10.0 1:1:80.0:10.0
+wrap syn_tab_wrap_closed syn word-or-anywhere 10 61090962 3 0:2:7.5:10.0 2:1:80.0:10.0 3:1:7.625:7.625
+wrap syn_tab_wrap_space_tab syn word-or-anywhere 10 61200962 3 0:2:7.5:10.0 2:1:80.0:10.0 3:1:7.625:7.625
+wrap syn_tab_wrap_lead syn word-or-anywhere 100 09626161626162 2 0:1:80.0:80.0 1:6:45.375:45.375
+wrap syn_tab_wrap_lead_word syn word 10 0961 2 0:1:80.0:10.0 1:1:7.5:7.5
+wrap syn_tab_wrap_word syn word 10 616161610962 3 0:4:30.0:10.0 4:1:80.0:10.0 5:1:7.625:7.625
 wrap syn_carriage_return_wrap syn word-or-anywhere 30 6161610d626262206363630d0d646464 4 0:4:22.5:22.5 4:4:22.875:26.875 8:5:23.25:23.25 13:3:23.625:23.625
 wrap syn_carriage_return_wrap syn word-or-anywhere 60 6161610d626262206363630d0d646464 2 0:8:45.375:49.375 8:8:46.875:46.875
 wrap syn_carriage_return_wrap syn word-or-anywhere 120 6161610d626262206363630d0d646464 1 0:16:96.25:96.25
