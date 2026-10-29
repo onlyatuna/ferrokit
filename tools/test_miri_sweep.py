@@ -16,6 +16,7 @@ from miri_sweep import (
     DEFAULT_TEST_SECONDS,
     LEAK_PSEUDO_TEST,
     STOPPER_WEIGHT,
+    WEIGHTS_PATH,
     ShardPlan,
     assign_units,
     check_target_coverage,
@@ -264,6 +265,19 @@ class TestMiriSweepSharding(unittest.TestCase):
                             self.assertTrue(plan.targets(i) and plan.units_of(i), f"shard {i} is empty")
                         split = [t for t in plan.chunks if plan.is_split(t)]
                         self.assertLessEqual(len(split), count - 1, split)
+
+    def test_the_weights_name_exactly_the_baseline_targets_for_both_models(self):
+        # A target without a weight silently gets DEFAULT_TARGET_SECONDS and skews the shards (a
+        # new test file is easy to forget); a weight without a target is a leftover.
+        with open(WEIGHTS_PATH, "r", encoding="utf-8") as f:
+            recorded = json.load(f)
+        self.assertEqual(set(recorded), set(BASELINE_FILES))
+        for crate in BASELINE_FILES:
+            with self.subTest(crate=crate):
+                targets = set(load_baseline(crate)["targets"])
+                self.assertEqual(set(recorded[crate]), targets)
+                for target, per_model in recorded[crate].items():
+                    self.assertEqual(set(per_model), {"SB", "TB"}, target)
 
     def test_plan_does_not_depend_on_input_order(self):
         baseline = load_baseline("ferrokit-gui")
