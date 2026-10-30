@@ -492,6 +492,17 @@ impl TrayIcon {
         if hwnd.is_null() {
             return Err("failed to create tray message window");
         }
+        // Let `TaskbarCreated` through the UIPI filter, so a tray in an elevated process still
+        // hears an Explorer that was restarted without elevation
+        // (`QWindowsSystemTrayIcon::ensureInstalled`).
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::ChangeWindowMessageFilterEx(
+                hwnd,
+                taskbar_created_msg,
+                windows_sys::Win32::UI::WindowsAndMessaging::MSGFLT_ALLOW,
+                ptr::null_mut(),
+            );
+        }
 
         let mut tray = Box::new(Self {
             hwnd,
@@ -778,7 +789,8 @@ impl TrayIcon {
     }
 
     /// Shows a balloon whose icon is `icon` (`QSystemTrayIcon::showMessage(title, msg, QIcon,
-    /// msecs)`): `NIIF_USER | NIIF_LARGE_ICON` with a 32x32 `hBalloonIcon` made from the icon.
+    /// msecs)`): `NIIF_USER | NIIF_LARGE_ICON` with an `hBalloonIcon` made from the icon at its
+    /// actual size for 256x256 (`icon.actualSize(QSize(256, 256))`).
     /// A null icon shows the balloon without one.
     pub fn show_message_with_icon(
         &mut self,
@@ -787,7 +799,6 @@ impl TrayIcon {
         icon: &ferrokit_gui::image::Icon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        use ferrokit_gui::image::{IconMode, IconState};
         if !self.supports_messages() {
             return Ok(());
         }
@@ -801,18 +812,20 @@ impl TrayIcon {
         }
         const NIIF_USER: u32 = 0x00000004;
         const NIIF_LARGE_ICON: u32 = 0x00000020;
-        let pixmap = icon.pixmap(
-            ferrokit_gui::geometry::primitives::Size::new(32, 32),
-            IconMode::Normal,
-            IconState::Off,
-        );
-        let hballoon = Self::create_hicon_from_pixmap(&pixmap)?;
+        let hballoon = Self::hicon_for_balloon(icon)?;
         // The shell copies the balloon icon while handling `NIM_MODIFY`, so it is ours to free
         // as soon as the call returns.
         let result =
             self.notify_balloon(title, msg, NIIF_USER | NIIF_LARGE_ICON, hballoon, duration_ms);
         Self::destroy_hicon(hballoon);
         result
+    }
+
+    fn hicon_for_balloon(icon: &ferrokit_gui::image::Icon) -> Result<HICON, &'static str> {
+        use ferrokit_gui::geometry::primitives::Size;
+        use ferrokit_gui::image::{IconMode, IconState};
+        let size = icon.actual_size(Size::new(256, 256), IconMode::Normal, IconState::Off);
+        Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
     }
 
     fn notify_balloon(
@@ -1253,6 +1266,35 @@ mod tests {
             );
         }
         drop(tray);
+    }
+
+    #[test]
+    fn a_balloon_icon_is_made_at_the_actual_size_for_256_pixels() {
+        // `QWindowsSystemTrayIcon::showMessage`: `icon.actualSize(QSize(256, 256))`.
+        use ferrokit_gui::image::{Icon, IconMode, IconState};
+        use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
+        let width_of = |sides: &[u32]| {
+            let mut icon = Icon::new();
+            for &side in sides {
+                let pixmap = Pixmap::new(side, side).unwrap();
+                icon.add_pixmap(&pixmap, IconMode::Normal, IconState::Off);
+            }
+            let hicon = TrayIcon::hicon_for_balloon(&icon).expect("balloon icon");
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            assert_ne!(unsafe { GetIconInfo(hicon, &mut info) }, 0);
+            let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+            unsafe {
+                GetObjectW(info.hbmColor, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut _);
+                DeleteObject(info.hbmColor);
+                DeleteObject(info.hbmMask);
+            }
+            TrayIcon::destroy_hicon(hicon);
+            bm.bmWidth
+        };
+        assert_eq!(width_of(&[16, 128]), 128, "the image that fits, not a fixed 32 px");
+        assert_eq!(width_of(&[16, 512]), 256, "scaled down to fit 256 px");
+        assert_eq!(width_of(&[16]), 16, "never scaled up");
     }
 
     #[test]

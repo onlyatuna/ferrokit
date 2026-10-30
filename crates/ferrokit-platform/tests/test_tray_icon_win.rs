@@ -295,3 +295,24 @@ fn a_new_taskbar_builds_the_icon_again_from_the_kept_icon() {
     drop(plain);
     TrayIcon::destroy_hicon(caller_icon);
 }
+
+#[test]
+fn the_tray_window_lets_taskbar_created_through_the_message_filter() {
+    // `QWindowsSystemTrayIcon::ensureInstalled`: `ChangeWindowMessageFilterEx(hwnd, TaskbarCreated,
+    // MSGFLT_ALLOW)`, so a tray in an elevated process still hears the restarted Explorer. Asking
+    // again reports whether the message was already allowed for this window.
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        ChangeWindowMessageFilterEx, RegisterWindowMessageW, CHANGEFILTERSTRUCT,
+        MSGFLT_ALLOW,
+    };
+    // MSGFLTINFO_NONE is 0 (the message was not allowed before this call).
+    const MSGFLTINFO_ALREADYALLOWED_FORWINDOW: u32 = 1;
+    let name: Vec<u16> = "TaskbarCreated\0".encode_utf16().collect();
+    let msg = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
+    let mut change: CHANGEFILTERSTRUCT = unsafe { std::mem::zeroed() };
+    change.cbSize = std::mem::size_of::<CHANGEFILTERSTRUCT>() as u32;
+    let ok = unsafe { ChangeWindowMessageFilterEx(tray.hwnd(), msg, MSGFLT_ALLOW, &mut change) };
+    assert_ne!(ok, 0);
+    assert_eq!(change.ExtStatus, MSGFLTINFO_ALREADYALLOWED_FORWINDOW);
+}
