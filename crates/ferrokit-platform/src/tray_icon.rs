@@ -430,6 +430,25 @@ fn ensure_tray_window_class_registered() {
     });
 }
 
+/// An icon for a balloon message and whether this code owns it. `LoadIcon` hands out shared
+/// handles that belong to the system and must not be destroyed; an icon made by
+/// `SHDefExtractIcon` is ours to free.
+#[cfg(windows)]
+struct BalloonIcon {
+    hicon: HICON,
+    owned: bool,
+}
+
+#[cfg(windows)]
+impl BalloonIcon {
+    /// Frees the icon if it is owned; a shared system icon is left alone.
+    fn release(self) {
+        if self.owned {
+            unsafe { DestroyIcon(self.hicon) };
+        }
+    }
+}
+
 #[cfg(windows)]
 pub struct TrayIcon {
     hwnd: HWND,
@@ -774,16 +793,16 @@ impl TrayIcon {
         if !self.supports_messages() {
             return Ok(());
         }
-        let (flags, stock) = Self::balloon_style(icon);
+        let (flags, balloon) = Self::balloon_style(icon);
         let result = self.notify_balloon(
             title,
             msg,
             flags,
-            stock.unwrap_or(ptr::null_mut()),
+            balloon.as_ref().map_or(ptr::null_mut(), |b| b.hicon),
             duration_ms,
         );
-        if let Some(hballoon) = stock {
-            Self::destroy_hicon(hballoon);
+        if let Some(balloon) = balloon {
+            balloon.release();
         }
         result
     }
@@ -811,7 +830,7 @@ impl TrayIcon {
     /// `QWindowsTheme::standardPixmap` tries the shell's stock icon, then (for the types that
     /// have one, not these) a shell32 resource, then `LoadIcon(IDI_INFORMATION / IDI_WARNING /
     /// IDI_ERROR)`, and gives a null pixmap, hence `NIIF_INFO`, when all fail.
-    fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<HICON>) {
+    fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<BalloonIcon>) {
         use crate::platform_tray::TrayMessageIcon;
         use windows_sys::Win32::UI::Shell::{SIID_ERROR, SIID_INFO, SIID_WARNING};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -827,8 +846,10 @@ impl TrayIcon {
             TrayMessageIcon::Warning => (SIID_WARNING, IDI_WARNING),
             TrayMessageIcon::Critical => (SIID_ERROR, IDI_ERROR),
         };
-        match Self::stock_icon(siid).or_else(|| Self::system_icon(idi)) {
-            Some(hicon) => (NIIF_USER | NIIF_LARGE_ICON, Some(hicon)),
+        let owned_stock = Self::stock_icon(siid).map(|hicon| BalloonIcon { hicon, owned: true });
+        let shared = || Self::system_icon(idi).map(|hicon| BalloonIcon { hicon, owned: false });
+        match owned_stock.or_else(shared) {
+            Some(balloon) => (NIIF_USER | NIIF_LARGE_ICON, Some(balloon)),
             None => (NIIF_INFO, None),
         }
     }
@@ -855,8 +876,8 @@ impl TrayIcon {
         (hr >= 0 && !hicon.is_null()).then_some(hicon)
     }
 
-    /// A system icon (`LoadIcon(nullptr, idi)`), at the system's large icon size. It is a shared
-    /// handle: destroying it does nothing (Qt destroys it too).
+    /// A system icon (`LoadIcon(nullptr, idi)`), at the size the system chooses. It is a shared
+    /// handle owned by the system: it must never be passed to `DestroyIcon`.
     fn system_icon(idi: windows_sys::core::PCWSTR) -> Option<HICON> {
         let hicon = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(ptr::null_mut(), idi) };
         (!hicon.is_null()).then_some(hicon)
@@ -1372,7 +1393,14 @@ mod tests {
                 DeleteObject(info.hbmMask);
             }
             assert!(bm.bmWidth >= 16 && bm.bmWidth == bm.bmHeight, "square: {}", bm.bmWidth);
-            TrayIcon::destroy_hicon(icon);
+            // A shared system icon is not destroyed: it still works after `release`.
+            BalloonIcon { hicon: icon, owned: false }.release();
+            let mut again: ICONINFO = unsafe { std::mem::zeroed() };
+            assert_ne!(unsafe { GetIconInfo(icon, &mut again) }, 0, "the shared icon survives");
+            unsafe {
+                DeleteObject(again.hbmColor);
+                DeleteObject(again.hbmMask);
+            }
         }
     }
 
@@ -1384,15 +1412,18 @@ mod tests {
         use crate::platform_tray::TrayMessageIcon;
         const NIIF_INFO: u32 = 1;
         const NIIF_USER_LARGE: u32 = 0x4 | 0x20;
-        assert_eq!(TrayIcon::balloon_style(TrayMessageIcon::NoIcon), (NIIF_INFO, None));
+        let (flags, none) = TrayIcon::balloon_style(TrayMessageIcon::NoIcon);
+        assert_eq!(flags, NIIF_INFO);
+        assert!(none.is_none());
         for kind in [
             TrayMessageIcon::Information,
             TrayMessageIcon::Warning,
             TrayMessageIcon::Critical,
         ] {
-            let (flags, icon) = TrayIcon::balloon_style(kind);
+            let (flags, balloon) = TrayIcon::balloon_style(kind);
             assert_eq!(flags, NIIF_USER_LARGE, "{kind:?}");
-            let icon = icon.expect("the shell has a stock icon");
+            let balloon = balloon.expect("the shell has a stock icon");
+            let icon = balloon.hicon;
             assert!(!icon.is_null());
             // Extracted at 256 px, the largest size the balloon asks the style icon for.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
@@ -1414,7 +1445,16 @@ mod tests {
                 TrayIcon::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
             };
             assert_eq!(bm.bmWidth, expected as i32, "{kind:?}");
-            TrayIcon::destroy_hicon(icon);
+            // An owned icon is destroyed by `release`.
+            let (hicon, owned) = (balloon.hicon, balloon.owned);
+            assert!(owned, "{kind:?}: the extracted stock icon is ours");
+            balloon.release();
+            let mut gone: ICONINFO = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(hicon, &mut gone) },
+                0,
+                "{kind:?}: destroyed"
+            );
         }
     }
 
