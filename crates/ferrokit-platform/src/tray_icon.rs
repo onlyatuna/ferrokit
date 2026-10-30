@@ -808,49 +808,58 @@ impl TrayIcon {
     /// `SP_MessageBoxCritical`) and none for `NoIcon`; `QWindowsSystemTrayIcon::showMessage` then
     /// shows `NIIF_USER | NIIF_LARGE_ICON` with that icon, and `NIIF_INFO` when there is none
     /// (`NoIcon` included).
-    /// The Windows style's standard icons are the shell's stock icons (`QWindowsTheme::
-    /// standardPixmap`: `SHGetStockIconInfo(SHGSI_ICONLOCATION)` then `SHDefExtractIcon`), and
-    /// the balloon takes `icon.actualSize(QSize(256, 256))` of the style icon, whose pixmaps have
-    /// the sizes of the theme's `IconPixmapSizes` (see `stock_icon_size`). [INFERENCE]
-    /// When the shell gives no stock icon the native `NIIF_` flag of the type is used instead.
+    /// `QWindowsTheme::standardPixmap` tries the shell's stock icon, then (for the types that
+    /// have one, not these) a shell32 resource, then `LoadIcon(IDI_INFORMATION / IDI_WARNING /
+    /// IDI_ERROR)`, and gives a null pixmap, hence `NIIF_INFO`, when all fail.
     fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<HICON>) {
         use crate::platform_tray::TrayMessageIcon;
-        use windows_sys::Win32::UI::Shell::{
-            SHDefExtractIconW, SHGetStockIconInfo, SHGSI_ICONLOCATION, SHSTOCKICONINFO, SIID_ERROR,
-            SIID_INFO, SIID_WARNING,
+        use windows_sys::Win32::UI::Shell::{SIID_ERROR, SIID_INFO, SIID_WARNING};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IDI_ERROR, IDI_INFORMATION, IDI_WARNING,
         };
         const NIIF_INFO: u32 = 0x00000001;
-        const NIIF_WARNING: u32 = 0x00000002;
-        const NIIF_ERROR: u32 = 0x00000003;
         const NIIF_USER: u32 = 0x00000004;
         const NIIF_LARGE_ICON: u32 = 0x00000020;
 
-        let (siid, native) = match icon {
+        let (siid, idi) = match icon {
             TrayMessageIcon::NoIcon => return (NIIF_INFO, None),
-            TrayMessageIcon::Information => (SIID_INFO, NIIF_INFO),
-            TrayMessageIcon::Warning => (SIID_WARNING, NIIF_WARNING),
-            TrayMessageIcon::Critical => (SIID_ERROR, NIIF_ERROR),
+            TrayMessageIcon::Information => (SIID_INFO, IDI_INFORMATION),
+            TrayMessageIcon::Warning => (SIID_WARNING, IDI_WARNING),
+            TrayMessageIcon::Critical => (SIID_ERROR, IDI_ERROR),
         };
+        match Self::stock_icon(siid).or_else(|| Self::system_icon(idi)) {
+            Some(hicon) => (NIIF_USER | NIIF_LARGE_ICON, Some(hicon)),
+            None => (NIIF_INFO, None),
+        }
+    }
+
+    /// The shell's stock icon `siid`, extracted at `stock_icon_size` (`SHGetStockIconInfo` with
+    /// `SHGSI_ICONLOCATION`, then `SHDefExtractIcon`). The caller destroys it.
+    fn stock_icon(siid: i32) -> Option<HICON> {
+        use windows_sys::Win32::UI::Shell::{
+            SHDefExtractIconW, SHGetStockIconInfo, SHGSI_ICONLOCATION, SHSTOCKICONINFO,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXICON, SM_CXSMICON};
         let mut info: SHSTOCKICONINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<SHSTOCKICONINFO>() as u32;
         if unsafe { SHGetStockIconInfo(siid, SHGSI_ICONLOCATION, &mut info) } < 0 {
-            return (native, None);
+            return None;
         }
-        let mut hicon: HICON = ptr::null_mut();
         let size = unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SM_CXICON, SM_CXSMICON,
-            };
             Self::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
         };
+        let mut hicon: HICON = ptr::null_mut();
         let hr = unsafe {
             SHDefExtractIconW(info.szPath.as_ptr(), info.iIcon, 0, &mut hicon, ptr::null_mut(), size)
         };
-        if hr >= 0 && !hicon.is_null() {
-            (NIIF_USER | NIIF_LARGE_ICON, Some(hicon))
-        } else {
-            (native, None)
-        }
+        (hr >= 0 && !hicon.is_null()).then_some(hicon)
+    }
+
+    /// A system icon (`LoadIcon(nullptr, idi)`), at the system's large icon size. It is a shared
+    /// handle: destroying it does nothing (Qt destroys it too).
+    fn system_icon(idi: windows_sys::core::PCWSTR) -> Option<HICON> {
+        let hicon = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(ptr::null_mut(), idi) };
+        (!hicon.is_null()).then_some(hicon)
     }
 
     /// Shows a balloon whose icon is `icon` (`QSystemTrayIcon::showMessage(title, msg, QIcon,
@@ -1341,6 +1350,30 @@ mod tests {
         assert_eq!(TrayIcon::stock_icon_size(20, 40), 256, "125%: 20, 40, 60, 320 -> 256");
         assert_eq!(TrayIcon::stock_icon_size(16, 16), 128, "16, 16, 24, 128: the largest");
         assert_eq!(TrayIcon::stock_icon_size(32, 40), 256, "32, 40, 60, 320 -> 256");
+    }
+
+    #[test]
+    fn the_system_icons_are_the_fallback_when_the_shell_has_no_stock_icon() {
+        // `QWindowsTheme::standardPixmap`: `LoadIcon(nullptr, IDI_INFORMATION / IDI_WARNING /
+        // IDI_ERROR)` after the stock icon. The shell picks their size (40 px here, where
+        // `SM_CXICON` is 32), so only that they exist and are square is checked.
+        use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetIconInfo, IDI_ERROR, IDI_INFORMATION, IDI_WARNING,
+        };
+        for idi in [IDI_INFORMATION, IDI_WARNING, IDI_ERROR] {
+            let icon = TrayIcon::system_icon(idi).expect("a system icon");
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            assert_ne!(unsafe { GetIconInfo(icon, &mut info) }, 0);
+            let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+            unsafe {
+                GetObjectW(info.hbmColor, std::mem::size_of_val(&bm) as i32, &mut bm as *mut _ as *mut _);
+                DeleteObject(info.hbmColor);
+                DeleteObject(info.hbmMask);
+            }
+            assert!(bm.bmWidth >= 16 && bm.bmWidth == bm.bmHeight, "square: {}", bm.bmWidth);
+            TrayIcon::destroy_hicon(icon);
+        }
     }
 
     #[test]
