@@ -794,7 +794,8 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        if !self.supports_messages() {
+        // `QSystemTrayIcon::showMessage` (both overloads) does nothing while the icon is hidden.
+        if !self.visible || !self.supports_messages() {
             return Ok(());
         }
         // The previous message's icon is freed before this one is made.
@@ -908,7 +909,7 @@ impl TrayIcon {
         icon: &ferrokit_gui::image::Icon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        if !self.supports_messages() {
+        if !self.visible || !self.supports_messages() {
             return Ok(());
         }
         if icon.is_null() {
@@ -1203,6 +1204,8 @@ impl Drop for TrayIcon {
 #[cfg(not(windows))]
 pub struct TrayIcon {
     inner: Box<dyn crate::platform_tray::PlatformTrayIcon>,
+    /// Whether the icon is shown (`QSystemTrayIcon::isVisible`): messages are dropped while it is not.
+    visible: bool,
     pub on_menu_action: Signal<u32>,
     pub on_activated: Signal<TrayActivation>,
     pub on_context_menu_requested: Signal<Point>,
@@ -1216,8 +1219,10 @@ impl TrayIcon {
     ) -> Result<Box<Self>, &'static str> {
         let title_str = tooltip.into();
         let mut inner = crate::integration::platform().create_tray_icon(&title_str, icon)?;
-        let _ = inner.show();
-        Ok(Self::with_backend(inner))
+        let shown = inner.show().is_ok();
+        let mut tray = Self::with_backend(inner);
+        tray.visible = shown;
+        Ok(tray)
     }
 
     /// Wraps `inner`, forwarding the activations it reports to [`TrayIcon::on_activated`]
@@ -1227,6 +1232,7 @@ impl TrayIcon {
         crate::platform_tray::forward_activations(inner.as_mut(), &on_activated);
         Box::new(Self {
             inner,
+            visible: false,
             on_menu_action: Signal::new(),
             on_activated,
             on_context_menu_requested: Signal::new(),
@@ -1276,11 +1282,15 @@ impl TrayIcon {
     /// host's activations and property reads to be served. Without that the icon stays
     /// unconfirmed and the host's calls go unanswered. macOS shows it at once.
     pub fn show(&mut self) -> Result<(), &'static str> {
-        self.inner.show()
+        self.inner.show()?;
+        self.visible = true;
+        Ok(())
     }
 
     pub fn hide(&mut self) -> Result<(), &'static str> {
-        self.inner.hide()
+        self.inner.hide()?;
+        self.visible = false;
+        Ok(())
     }
 
     pub fn show_message(
@@ -1290,6 +1300,10 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        // `QSystemTrayIcon::showMessage` does nothing while the icon is hidden.
+        if !self.visible {
+            return Ok(());
+        }
         self.inner.show_message(title, msg, icon, duration_ms)
     }
 
@@ -1300,6 +1314,9 @@ impl TrayIcon {
         icon: &ferrokit_gui::image::Icon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        if !self.visible {
+            return Ok(());
+        }
         self.inner.show_message_with_icon(title, msg, icon, duration_ms)
     }
 }
@@ -1400,25 +1417,45 @@ mod tests {
         if !tray.supports_messages() {
             return;
         }
-        // The notification itself may fail while the icon is not shown; the icon is kept anyway.
-        let _ = tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000);
-        let first = tray.balloon_icon.as_ref().expect("kept after the message");
-        assert!(first.owned && alive(first.hicon), "still alive after the call");
-        let _ = tray.show_message_with_icon(
+        // `QSystemTrayIcon::showMessage` does nothing while the icon is hidden (`d->visible`):
+        // no notification, no icon kept.
+        assert!(!tray.is_visible());
+        tray.show_message(" ", "Hidden", TrayMessageIcon::Information, 1000).unwrap();
+        tray.show_message_with_icon(
             " ",
-            "Custom",
+            "Hidden",
             &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
             1000,
-        );
+        )
+        .unwrap();
+        assert!(tray.balloon_icon.is_none());
+
+        tray.show().expect("show");
+        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000).unwrap();
+        let first = tray.balloon_icon.as_ref().expect("kept after the message");
+        assert!(first.owned && alive(first.hicon), "still alive after the call");
+        // The shell refuses a balloon icon under 32 px (`Shell_NotifyIconW` fails for 31 px and
+        // below, measured), so the shown message uses a larger image.
+        let big = Pixmap::new(64, 64).unwrap();
+        tray.show_message_with_icon(
+            " ",
+            "Custom",
+            &ferrokit_gui::image::Icon::from_pixmap(&big),
+            1000,
+        )
+        .unwrap();
         let second = tray.balloon_icon.as_ref().expect("replaced by the next message");
         assert!(second.owned && alive(second.hicon));
         let handle = second.hicon;
+        // A message without an icon frees the previous one and keeps none.
+        tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000).unwrap();
+        assert!(tray.balloon_icon.is_none());
+        assert!(!alive(handle), "freed by the next message");
+        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000).unwrap();
+        let handle = tray.balloon_icon.as_ref().expect("kept").hicon;
         tray.hide().unwrap();
         assert!(tray.balloon_icon.is_none());
         assert!(!alive(handle), "freed on hide");
-        // A message without an icon keeps none.
-        let _ = tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000);
-        assert!(tray.balloon_icon.is_none());
     }
 
     #[test]
