@@ -402,6 +402,17 @@ fn test_cross_platform_tray_icon_implementations() {
         };
         test_tray.set_icon(&one(128, 128)).unwrap();
         assert_eq!(sent(&test_tray), vec![(22, 22, 22 * 22 * 4), (64, 64, 64 * 64 * 4)]);
+        // Letterboxed: the 2x1 image lands in the top row of a 2x2 square (`(2 - 1) / 2 == 0`),
+        // and its premultiplied pixels (100, 50, 25, 128) are sent as straight alpha
+        // (`qUnpremultiply`: (c * 255 + a / 2) / a).
+        let mut wide = Pixmap::new(2, 1).expect("pixmap");
+        wide.fill(Color::from_rgba8(200, 100, 50, 128));
+        let mut icon = Icon::new();
+        icon.add_pixmap(&wide, IconMode::Normal, IconState::Off);
+        test_tray.set_icon(&icon).unwrap();
+        let square = &test_tray.icon_pixmap()[0];
+        assert_eq!((square.width, square.height), (2, 2));
+        assert_eq!(square.data, vec![128, 199, 100, 50, 128, 199, 100, 50, 0, 0, 0, 0, 0, 0, 0, 0]);
         test_tray.set_icon(&one(16, 32)).unwrap();
         assert_eq!(sent(&test_tray), vec![(32, 32, 32 * 32 * 4), (22, 22, 22 * 22 * 4)]);
     }

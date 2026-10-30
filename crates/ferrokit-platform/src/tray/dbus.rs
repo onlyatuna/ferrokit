@@ -18,8 +18,8 @@ pub struct DbusImage {
 }
 
 impl DbusImage {
-    /// The pixmap as ARGB32, letterboxed on a transparent square when it is not square
-    /// (`iconToQXdgDBusImageVector`).
+    /// The pixmap as ARGB32 with straight (not premultiplied) alpha, letterboxed on a transparent
+    /// square when it is not square (`iconToQXdgDBusImageVector`).
     pub fn from_pixmap(pixmap: &Pixmap) -> Self {
         let (w, h) = (pixmap.physical_width() as usize, pixmap.physical_height() as usize);
         let side = w.max(h);
@@ -27,7 +27,18 @@ impl DbusImage {
         let mut data = vec![0u8; side * side * 4];
         for (i, chunk) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
             let at = (((i / w) + oy) * side + (i % w) + ox) * 4;
-            data[at..at + 4].copy_from_slice(&[chunk[3], chunk[0], chunk[1], chunk[2]]);
+            let a = u32::from(chunk[3]);
+            // `qUnpremultiply`
+            let straight = |c: u8| match a {
+                0 | 255 => c,
+                _ => ((u32::from(c) * 255 + a / 2) / a).min(255) as u8,
+            };
+            data[at..at + 4].copy_from_slice(&[
+                chunk[3],
+                straight(chunk[0]),
+                straight(chunk[1]),
+                straight(chunk[2]),
+            ]);
         }
         Self {
             width: side as i32,
