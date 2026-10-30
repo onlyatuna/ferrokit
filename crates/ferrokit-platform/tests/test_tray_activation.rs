@@ -333,7 +333,7 @@ fn pixmap_item() -> (
     let (mut item, bus, _seen) = item_with_bus();
     let mut pixmap = Pixmap::new(2, 1).unwrap();
     pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
-    item.set_icon(&pixmap).unwrap();
+    item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).unwrap();
     item.set_tooltip("CPU 45%").unwrap();
     (item, bus)
 }

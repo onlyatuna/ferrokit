@@ -199,9 +199,9 @@ fn set_platform_integration_installs_that_integrations_theme() {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &ferrokit_gui::paint::Pixmap,
+            icon: &ferrokit_gui::image::Icon,
         ) -> Result<Box<dyn ferrokit_platform::PlatformTrayIcon>, &'static str> {
-            self.inner.create_tray_icon(tooltip, pixmap)
+            self.inner.create_tray_icon(tooltip, icon)
         }
         fn primary_screen(&self) -> Box<dyn ferrokit_platform::PlatformScreen> {
             self.inner.primary_screen()

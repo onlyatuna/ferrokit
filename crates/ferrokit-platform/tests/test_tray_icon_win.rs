@@ -16,6 +16,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
 };
 
+fn icon() -> ferrokit_gui::image::Icon {
+    ferrokit_gui::image::Icon::from_pixmap(&pixmap())
+}
+
 fn pixmap() -> Pixmap {
     let mut p = Pixmap::new(16, 16).expect("pixmap");
     p.fill(Color::from_rgba8(10, 120, 200, 255));
@@ -30,7 +34,7 @@ fn send(hwnd: HWND, event: u32) {
 
 #[test]
 fn the_release_that_ends_a_double_click_is_not_a_click() {
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     tray.on_activated.connect(move |a| sink.lock().push(*a));
@@ -49,7 +53,7 @@ fn the_release_that_ends_a_double_click_is_not_a_click() {
 /// `WM_CONTEXTMENU`; Qt acts on the latter only, so a click is one `Trigger`, not two.
 #[test]
 fn raw_button_up_messages_do_not_activate_the_icon() {
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     tray.on_activated.connect(move |a| sink.lock().push(*a));
@@ -65,7 +69,7 @@ fn raw_button_up_messages_do_not_activate_the_icon() {
 #[test]
 fn a_slot_may_drop_the_tray_icon_while_it_is_being_signalled() {
     // The icon is `!Send`: its address travels as an integer, the slot runs on this thread.
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let hwnd = tray.hwnd();
     let address = Arc::new(Mutex::new(Box::into_raw(tray) as usize));
     let a = Arc::clone(&address);
@@ -86,9 +90,9 @@ fn a_slot_may_drop_the_tray_icon_while_it_is_being_signalled() {
 }
 
 #[test]
-fn a_tray_created_from_a_pixmap_releases_its_icon() {
+fn a_tray_releases_the_icon_it_made() {
     let trays: Vec<_> = (0..3)
-        .map(|_| TrayIcon::from_pixmap("leak", &pixmap()).expect("tray"))
+        .map(|_| TrayIcon::from_icon("leak", &icon()).expect("tray"))
         .collect();
     let icons: Vec<_> = trays.iter().map(|t| t.icon()).collect();
     let alive = |icon| {
@@ -114,7 +118,7 @@ fn replacing_the_icon_leaves_a_caller_owned_icon_alone() {
     let caller_icon = TrayIcon::create_hicon_from_pixmap(&pixmap()).expect("icon");
     let mut tray = TrayIcon::new("t", caller_icon).expect("tray");
 
-    PlatformTrayIcon::set_icon(&mut *tray, &pixmap()).expect("set_icon");
+    PlatformTrayIcon::set_icon(&mut *tray, &icon()).expect("set_icon");
 
     let mut info: ICONINFO = unsafe { std::mem::zeroed() };
     assert_ne!(
@@ -133,7 +137,7 @@ fn replacing_the_icon_leaves_a_caller_owned_icon_alone() {
 #[test]
 fn a_middle_button_release_is_a_middle_click() {
     // `QWindowsSystemTrayIcon::winEvent`: `WM_MBUTTONUP` -> `activated(MiddleClick)`.
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     tray.on_activated.connect(move |a| sink.lock().push(*a));
@@ -146,7 +150,7 @@ fn a_middle_button_release_is_a_middle_click() {
 fn the_context_menu_is_requested_where_the_shell_says() {
     // Under NOTIFYICON_VERSION_4 `wParam` is the anchor point (physical desktop pixels, signed
     // 16 bits each); Qt reports that point, not the cursor.
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     tray.on_context_menu_requested.connect(move |p| sink.lock().push(*p));
@@ -170,7 +174,7 @@ fn the_context_menu_is_requested_where_the_shell_says() {
 fn a_hidden_icon_has_an_empty_geometry() {
     // `QSystemTrayIcon::geometry()` is an empty rectangle until the icon is shown (PySide6:
     // `QRect(0, 0, 0, 0)` before `show()` and after `hide()`).
-    let mut tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let mut tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let empty = ferrokit_gui::geometry::primitives::Rect::new(0, 0, 0, 0);
     assert_eq!(tray.geometry(), empty);
     tray.show().expect("show");
@@ -180,7 +184,7 @@ fn a_hidden_icon_has_an_empty_geometry() {
 
 #[test]
 fn the_tooltip_and_availability_are_reported() {
-    let mut tray = TrayIcon::from_pixmap("first", &pixmap()).expect("tray");
+    let mut tray = TrayIcon::from_icon("first", &icon()).expect("tray");
     assert_eq!(tray.tooltip(), "first");
     tray.set_tooltip("second").expect("set_tooltip");
     assert_eq!(tray.tooltip(), "second");
@@ -198,7 +202,7 @@ fn closing_the_tray_window_quits_the_application() {
 
     CoreApplication::reset_for_test();
     let mut app = CoreApplication::new(vec!["tray_close".to_string()]);
-    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let hwnd = tray.hwnd() as usize;
     let about_to_quit = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&about_to_quit);
@@ -280,11 +284,4 @@ fn a_new_taskbar_builds_the_icon_again_from_the_kept_icon() {
     assert_ne!(kept.icon(), first, "a new icon was made");
     assert!(icon_alive(kept.icon()));
     assert!(!icon_alive(first), "the old icon, which the tray made, is destroyed");
-
-    // An icon given as a pixmap has no source to build from: it stays.
-    let plain = TrayIcon::from_pixmap("plain", &pixmap()).expect("tray");
-    let same = plain.icon();
-    unsafe { SendMessageW(plain.hwnd(), msg, 0, 0) };
-    assert_eq!(plain.icon(), same);
-    assert!(icon_alive(same));
 }

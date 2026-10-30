@@ -501,7 +501,7 @@ fn test_platform_tray_messages() {
 
     // 2. GenericTrayIcon
     let pm = Pixmap::new(16, 16).unwrap();
-    let mut generic_tray = GenericTrayIcon::new("Generic Tray", &pm);
+    let mut generic_tray = GenericTrayIcon::new("Generic Tray", &ferrokit_gui::image::Icon::from_pixmap(&pm));
     assert!(generic_tray.supports_messages());
     assert_eq!(generic_tray.last_message(), None);
     assert!(generic_tray
@@ -870,7 +870,7 @@ fn test_platform_tray_message_with_custom_icon() {
     let icon = Icon::from_pixmap(&pm);
 
     // The generic back end keeps the custom icon and shows no standard icon.
-    let mut generic = GenericTrayIcon::new("Generic", &pm);
+    let mut generic = GenericTrayIcon::new("Generic", &icon);
     assert!(generic.last_message_icon().is_none());
     generic.show_message_with_icon("T", "B", &icon, 0).unwrap();
     assert_eq!(generic.last_message(), Some(("T", "B", TrayMessageIcon::NoIcon, 10000)));

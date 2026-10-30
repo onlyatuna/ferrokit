@@ -423,9 +423,12 @@ impl DbusStatusNotifierItem {
 }
 
 impl PlatformTrayIcon for DbusStatusNotifierItem {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        let dbus_img = DbusImage::from_pixmap(pixmap);
-        self.icon_pixmap = vec![dbus_img];
+    fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        // One `IconPixmap` entry for each size the icon has.
+        self.icon_pixmap = crate::platform_tray::icon_pixmaps(icon)
+            .iter()
+            .map(DbusImage::from_pixmap)
+            .collect();
 
         // Emit NewIcon signal on Session Bus
         let mut guard = self.connection.lock().unwrap();

@@ -24,8 +24,20 @@ pub fn forward_activations(
     tray.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
 }
 
+/// One pixmap for each size `icon` has in its normal, off state (what a desktop tray that takes
+/// pixmaps, such as StatusNotifierItem, is given for `QSystemTrayIcon::setIcon`); smallest first,
+/// empty for a null icon.
+pub fn icon_pixmaps(icon: &Icon) -> Vec<Pixmap> {
+    use ferrokit_gui::image::{IconMode, IconState};
+    icon.available_sizes(IconMode::Normal, IconState::Off)
+        .into_iter()
+        .map(|size| icon.pixmap(size, IconMode::Normal, IconState::Off))
+        .collect()
+}
+
 pub trait PlatformTrayIcon {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str>;
+    /// Shows `icon` (`QSystemTrayIcon::setIcon`).
+    fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
     /// Shows the icon. The D-Bus back end only queues its StatusNotifierWatcher registration:
@@ -105,7 +117,7 @@ pub trait PlatformTrayIcon {
 
 pub struct GenericTrayIcon {
     tooltip: String,
-    pixmap: Option<Pixmap>,
+    icon: Icon,
     visible: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, TrayMessageIcon, u32)>,
@@ -113,10 +125,10 @@ pub struct GenericTrayIcon {
 }
 
 impl GenericTrayIcon {
-    pub fn new(tooltip: &str, pixmap: &Pixmap) -> Self {
+    pub fn new(tooltip: &str, icon: &Icon) -> Self {
         Self {
             tooltip: tooltip.to_string(),
-            pixmap: Some(pixmap.clone()),
+            icon: icon.clone(),
             visible: false,
             menu: None,
             last_message: None,
@@ -126,6 +138,11 @@ impl GenericTrayIcon {
 
     pub fn tooltip(&self) -> &str {
         &self.tooltip
+    }
+
+    /// The icon last given to [`new`](Self::new) or `set_icon`.
+    pub fn icon(&self) -> &Icon {
+        &self.icon
     }
 
     pub fn is_visible(&self) -> bool {
@@ -150,8 +167,8 @@ impl GenericTrayIcon {
 }
 
 impl PlatformTrayIcon for GenericTrayIcon {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        self.pixmap = Some(pixmap.clone());
+    fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str> {
+        self.icon = icon.clone();
         Ok(())
     }
 

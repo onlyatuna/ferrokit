@@ -524,20 +524,6 @@ impl TrayIcon {
         Ok(tray)
     }
 
-    pub fn from_pixmap(tooltip: impl Into<String>, pixmap: &Pixmap) -> Result<Box<Self>, &'static str> {
-        let hicon = Self::create_hicon_from_pixmap(pixmap)?;
-        match Self::new(tooltip, hicon) {
-            Ok(mut tray) => {
-                tray.owns_icon.set(true);
-                Ok(tray)
-            }
-            Err(e) => {
-                Self::destroy_hicon(hicon);
-                Err(e)
-            }
-        }
-    }
-
     pub fn set_menu(&mut self, menu: Box<dyn crate::menu::PlatformMenu>) {
         self.menu = Some(menu);
     }
@@ -988,10 +974,8 @@ impl TrayIcon {
 }
 #[cfg(windows)]
 impl crate::platform_tray::PlatformTrayIcon for TrayIcon {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        let new_hicon = Self::create_hicon_from_pixmap(pixmap)?;
-        // The old icon is destroyed only if this tray created it (`replace_icon`).
-        self.replace_icon(new_hicon, true)
+    fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        self.set_icon_from(icon)
     }
 
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str> {
@@ -1101,9 +1085,13 @@ pub struct TrayIcon {
 }
 #[cfg(not(windows))]
 impl TrayIcon {
-    pub fn from_pixmap(tooltip: impl Into<String>, pixmap: &Pixmap) -> Result<Box<Self>, &'static str> {
+    /// A tray icon showing `icon` (`QSystemTrayIcon(const QIcon &)`).
+    pub fn from_icon(
+        tooltip: impl Into<String>,
+        icon: &ferrokit_gui::image::Icon,
+    ) -> Result<Box<Self>, &'static str> {
         let title_str = tooltip.into();
-        let mut inner = crate::integration::platform().create_tray_icon(&title_str, pixmap)?;
+        let mut inner = crate::integration::platform().create_tray_icon(&title_str, icon)?;
         let _ = inner.show();
         Ok(Self::with_backend(inner))
     }
@@ -1252,7 +1240,7 @@ mod tests {
         let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");
         pixmap.fill(Color::from_rgba8(1, 2, 3, 255));
         let tray = Win32PlatformIntegration::default()
-            .create_tray_icon("Router Test", &pixmap)
+            .create_tray_icon("Router Test", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
             .expect("create_tray_icon");
         let addr = &*tray as *const dyn crate::platform_tray::PlatformTrayIcon as *const () as usize;
         {
