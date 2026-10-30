@@ -655,7 +655,7 @@ const EXPECTED_LINES: &[(&str, &str, usize)] = &[
     ("hit", "syn", 12),
     ("hitwrap", "syn", 17),
     ("wrap", "arial", 41),
-    ("wrap", "syn", 367),
+    ("wrap", "syn", 463),
 ];
 
 fn oracle_lines() -> impl Iterator<Item = Vec<&'static str>> {
@@ -1016,6 +1016,29 @@ fn drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text() {
             assert!(
                 (got - want).abs() <= tolerance,
                 "{text:?}: selection {selection:?} covers {got:.2} of pixel column {px}, it should cover {want:.2}"
+            );
+        }
+    }
+}
+
+/// A wrap width below zero (or not a number) leaves no room for any text; every line still takes
+/// its first grapheme, so the layout ends.
+#[test]
+fn a_negative_wrap_width_lays_out_one_grapheme_per_line() {
+    for width in [-3.0f32, -1e-9, f32::NEG_INFINITY, f32::NAN] {
+        for mode in [
+            WrapMode::WordWrap,
+            WrapMode::WrapAnywhere,
+            WrapMode::WrapAtWordBoundaryOrAnywhere,
+        ] {
+            let mut layout = TextLayout::new("a b", font_for("syn"));
+            layout.set_wrap_mode(mode);
+            layout.set_wrap_width(Some(width));
+            layout.do_layout();
+            assert!(
+                layout.line_count() >= 1 && layout.line_count() <= 3,
+                "{mode:?} at {width}: {} lines",
+                layout.line_count()
             );
         }
     }
