@@ -606,8 +606,12 @@ impl TrayIcon {
 
         if msg == windows_sys::Win32::UI::Shell::NIM_ADD {
             nid.Anonymous.uVersion = windows_sys::Win32::UI::Shell::NOTIFYICON_VERSION_4;
-            unsafe {
-                Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid);
+            // Without version 4 the shell sends callbacks in the old layout, which the window
+            // procedure would misread, so the icon is taken off again and the add fails
+            // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
+            if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) } == 0 {
+                unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+                return Err("Shell_NotifyIconW (NIM_SETVERSION) failed");
             }
         }
         Ok(())
