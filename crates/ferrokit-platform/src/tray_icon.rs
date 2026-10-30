@@ -303,6 +303,7 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         // drop the icon, so the pointer is re-validated before every later use.
         let tray = || &*(addr as *const TrayIcon);
         if msg == tray().taskbar_created_msg {
+            tray().rebuild_icon_from_source();
             if tray().visible {
                 let _ = tray().send_notify_icon_message(NIM_ADD);
             }
@@ -431,10 +432,15 @@ fn ensure_tray_window_class_registered() {
 #[cfg(windows)]
 pub struct TrayIcon {
     hwnd: HWND,
-    hicon: HICON,
+    /// Cells: `TaskbarCreated` replaces the icon from the window procedure, which only has
+    /// shared access (see `tray_window_proc_inner`).
+    hicon: std::cell::Cell<HICON>,
     /// Whether this icon created `hicon` (and so destroys it); an `HICON` passed to `new` or
     /// `set_icon` stays the caller's.
-    owns_icon: bool,
+    owns_icon: std::cell::Cell<bool>,
+    /// The icon `hicon` was made from, when the tray was given an [`Icon`]
+    /// (`QWindowsSystemTrayIcon::m_icon`): `TaskbarCreated` builds the `HICON` again from it.
+    source: Option<ferrokit_gui::image::Icon>,
     tooltip: String,
     visible: bool,
     taskbar_created_msg: u32,
@@ -488,8 +494,9 @@ impl TrayIcon {
 
         let mut tray = Box::new(Self {
             hwnd,
-            hicon,
-            owns_icon: false,
+            hicon: std::cell::Cell::new(hicon),
+            owns_icon: std::cell::Cell::new(false),
+            source: None,
             tooltip: tooltip.into(),
             visible: false,
             taskbar_created_msg,
@@ -521,7 +528,7 @@ impl TrayIcon {
         let hicon = Self::create_hicon_from_pixmap(pixmap)?;
         match Self::new(tooltip, hicon) {
             Ok(mut tray) => {
-                tray.owns_icon = true;
+                tray.owns_icon.set(true);
                 Ok(tray)
             }
             Err(e) => {
@@ -554,7 +561,7 @@ impl TrayIcon {
         if msg != NIM_DELETE {
             nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY_CALLBACK;
-            nid.hIcon = self.hicon;
+            nid.hIcon = self.hicon.get();
 
             let wide_tip: Vec<u16> = self.tooltip.encode_utf16().collect();
             let copy_len = wide_tip.len().min(127);
@@ -618,8 +625,9 @@ impl TrayIcon {
     }
 
     fn replace_icon(&mut self, hicon: HICON, owned: bool) -> Result<(), &'static str> {
-        let old = std::mem::replace(&mut self.hicon, hicon);
-        let old_owned = std::mem::replace(&mut self.owns_icon, owned);
+        let old = self.hicon.replace(hicon);
+        let old_owned = self.owns_icon.replace(owned);
+        self.source = None;
         let result = if self.visible {
             self.send_notify_icon_message(NIM_MODIFY)
         } else {
@@ -632,7 +640,79 @@ impl TrayIcon {
     }
 
     pub fn icon(&self) -> HICON {
-        self.hicon
+        self.hicon.get()
+    }
+
+    /// A tray icon showing `icon` at the size of a small icon (`QSystemTrayIcon(const QIcon &)`).
+    /// The tray keeps `icon`, so it can build the `HICON` again when the taskbar is re-created.
+    pub fn from_icon(
+        tooltip: impl Into<String>,
+        icon: &ferrokit_gui::image::Icon,
+    ) -> Result<Box<Self>, &'static str> {
+        let hicon = Self::hicon_for_small_icon(icon)?;
+        match Self::new(tooltip, hicon) {
+            Ok(mut tray) => {
+                tray.owns_icon.set(true);
+                tray.source = Some(icon.clone());
+                Ok(tray)
+            }
+            Err(e) => {
+                Self::destroy_hicon(hicon);
+                Err(e)
+            }
+        }
+    }
+
+    /// Shows `icon` (`QSystemTrayIcon::setIcon`) and keeps it for `TaskbarCreated`.
+    pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        let hicon = Self::hicon_for_small_icon(icon)?;
+        self.replace_icon(hicon, true)?;
+        self.source = Some(icon.clone());
+        Ok(())
+    }
+
+    /// `QWindowsSystemTrayIcon::createIcon`: the size of a small icon (`SM_CXSMICON`,
+    /// `SM_CYSMICON`) as far as `icon` has one (`QIcon::actualSize`), as one `HICON`.
+    fn hicon_for_small_icon(icon: &ferrokit_gui::image::Icon) -> Result<HICON, &'static str> {
+        use ferrokit_gui::geometry::primitives::Size;
+        use ferrokit_gui::image::{IconMode, IconState};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON, SM_CYSMICON};
+        if icon.is_null() {
+            return Err("null icon");
+        }
+        let requested = unsafe { Size::new(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+        let best = icon.actual_size(requested, IconMode::Normal, IconState::Off);
+        // `QIcon::actualSize`: the best image, scaled down (aspect kept) to fit the request; it is
+        // never scaled up (PySide6: images of 16 and 64 px give 20 for a request of 20, one of
+        // 16 px gives 16, 16 and 32 px give 32 for a request of 40).
+        let size = if best.width > requested.width || best.height > requested.height {
+            let by_width = i64::from(requested.width) * i64::from(best.height) / i64::from(best.width);
+            if by_width <= i64::from(requested.height) {
+                Size::new(requested.width, by_width as i32)
+            } else {
+                Size::new(
+                    (i64::from(requested.height) * i64::from(best.width) / i64::from(best.height)) as i32,
+                    requested.height,
+                )
+            }
+        } else {
+            best
+        };
+        Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
+    }
+
+    /// The `TaskbarCreated` half of `QWindowsSystemTrayIcon::winEvent`: the resolution or DPI
+    /// may have changed, so the `HICON` is built again from the kept [`Icon`] before the icon is
+    /// added to the new taskbar. Without a kept icon the `HICON` stays as it is.
+    fn rebuild_icon_from_source(&self) {
+        let Some(icon) = &self.source else { return };
+        let Ok(new) = Self::hicon_for_small_icon(icon) else { return };
+        let old = self.hicon.replace(new);
+        let old_owned = self.owns_icon.replace(true);
+        if old_owned && old != new {
+            // The shell has no icon of ours any more (it was re-created); the old one is ours.
+            Self::destroy_hicon(old);
+        }
     }
 
     pub fn is_visible(&self) -> bool {
@@ -1022,8 +1102,8 @@ impl Drop for TrayIcon {
                 DestroyWindow(self.hwnd);
             }
         }
-        if self.owns_icon {
-            Self::destroy_hicon(self.hicon);
+        if self.owns_icon.get() {
+            Self::destroy_hicon(self.hicon.get());
         }
     }
 }
