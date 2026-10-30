@@ -695,6 +695,9 @@ impl ToolTip {
         // creation, `set_geometry`, `show`): the tip is taken out, worked on, and put back.
         let placing = PlacingGuard::enter();
         let taken = CONTROLLER.with(|c| c.tip.borrow_mut().take());
+        // This show is newer than any hide recorded so far; one that arrives from here on (while
+        // the window is created, say) is newer than it and applies once the tip is up.
+        let hide_before = CONTROLLER.with(|c| c.pending_hide.replace(PendingHide::None));
         let mut tip = match taken {
             Some(tip) => tip,
             None => {
@@ -706,6 +709,11 @@ impl ToolTip {
                 let Ok(mut window) =
                     Window::new("tooltip", Rect::new(0, 0, 1, 1), WindowFlags::TOOLTIP)
                 else {
+                    CONTROLLER.with(|c| {
+                        if c.pending_hide.get() == PendingHide::None {
+                            c.pending_hide.set(hide_before);
+                        }
+                    });
                     return;
                 };
                 window.set_root_widget(label.clone());
@@ -718,8 +726,6 @@ impl ToolTip {
                 }
             }
         };
-        // This show is newer than any hide recorded so far, and its window now exists.
-        CONTROLLER.with(|c| c.pending_hide.set(PendingHide::None));
         tip.text = text.to_string();
         tip.widget = widget;
         tip.rect = rect;
@@ -1042,6 +1048,7 @@ mod tests {
 
     thread_local! {
         static FAIL_WINDOW_CREATION: Cell<bool> = const { Cell::new(false) };
+        static HIDE_DURING_CREATION: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Delegates to the platform that was current, but fails `create_window` on a thread that
@@ -1057,6 +1064,9 @@ mod tests {
         ) -> Result<Box<dyn ferrokit_platform::PlatformWindow>, &'static str> {
             if FAIL_WINDOW_CREATION.with(Cell::get) {
                 return Err("injected window creation failure");
+            }
+            if HIDE_DURING_CREATION.with(Cell::get) {
+                hide_tip_immediately();
             }
             self.0.create_window(title, rect, flags)
         }
@@ -1104,6 +1114,7 @@ mod tests {
         impl Drop for Reset {
             fn drop(&mut self) {
                 FAIL_WINDOW_CREATION.with(|f| f.set(false));
+                HIDE_DURING_CREATION.with(|f| f.set(false));
             }
         }
         ferrokit_platform::integration::set_platform_integration(Arc::new(FailingWindows(
@@ -1111,6 +1122,21 @@ mod tests {
         )));
         FAIL_WINDOW_CREATION.with(|f| f.set(true));
         Reset
+    }
+
+    #[test]
+    fn a_hide_during_window_creation_applies_to_the_new_tip() {
+        // `Window::new` of a first tip is where a platform may deliver events; a hide that comes
+        // in there is newer than the show and wins, as it does for a tip that already exists.
+        hide_tip_immediately();
+        let reset = failing_window_creation();
+        FAIL_WINDOW_CREATION.with(|f| f.set(false));
+        HIDE_DURING_CREATION.with(|f| f.set(true));
+        ToolTip::show_text(Point::new(10, 10), "first", None, -1);
+        drop(reset);
+        assert!(!ToolTip::is_visible(), "the hide that came in during creation applies");
+        assert_eq!(counters(), (0, PendingHide::None));
+        hide_tip_immediately();
     }
 
     fn assert_idle() {
