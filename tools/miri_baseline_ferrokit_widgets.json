@@ -1245,6 +1245,8 @@
     "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::SB": "unsupported",
     "test_label_tabs::tabs_advance_a_label_to_stops_of_eight_x_widths_as_in_qt::TB": "unsupported",
     "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::SB": "unsupported",
-    "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::TB": "unsupported"
+    "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::TB": "unsupported",
+    "lib::tooltip::tests::a_hide_during_window_creation_applies_to_the_new_tip::SB": "unsupported",
+    "lib::tooltip::tests::a_hide_during_window_creation_applies_to_the_new_tip::TB": "unsupported"
   }
 }
