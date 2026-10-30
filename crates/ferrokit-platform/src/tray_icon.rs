@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
+#[cfg(windows)]
+use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::Pixmap;
 #[allow(unused_imports)]
 use std::collections::HashMap;
@@ -19,7 +21,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_SELECT,
+    Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP,
+    NIF_TIP, NOTIFYICONIDENTIFIER, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_SELECT,
     NOTIFYICONDATAW,
 };
 #[cfg(windows)]
@@ -28,7 +31,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, DestroyWindow, GetCursorPos, RegisterClassExW, RegisterWindowMessageW,
     SetForegroundWindow, TrackPopupMenuEx, HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED,
     MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WNDCLASSEXW,
+    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
 };
 
 /// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
@@ -327,9 +330,14 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     return 0;
                 }
                 WM_CONTEXTMENU => {
-                    let mut pt = POINT { x: 0, y: 0 };
-                    GetCursorPos(&mut pt);
-                    let pos = crate::screen::native_cursor_to_logical(Point::new(pt.x, pt.y));
+                    // Under NOTIFYICON_VERSION_4 `wParam` holds the anchor point in physical
+                    // desktop pixels (Qt: `GET_X_LPARAM(message.wParam)`), not where the cursor
+                    // is by now, and not the cursor at all for a menu opened with the keyboard.
+                    let native = Point::new(
+                        (wparam & 0xFFFF) as u16 as i16 as i32,
+                        ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
+                    );
+                    let pos = crate::screen::native_cursor_to_logical(native);
                     let requested = tray().on_context_menu_requested.clone();
                     let activated = tray().on_activated.clone();
                     let has_menu = tray().menu.is_some();
@@ -347,6 +355,12 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
                     let clicked = tray().on_message_clicked.clone();
                     clicked.emit(&());
+                    return 0;
+                }
+                WM_MBUTTONUP => {
+                    // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
+                    let activated = tray().on_activated.clone();
+                    activated.emit(&TrayActivation::MiddleClick);
                     return 0;
                 }
                 _ => {}
@@ -529,9 +543,11 @@ impl TrayIcon {
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = self.hwnd;
         nid.uID = 1;
+        // Under NOTIFYICON_VERSION_4 the shell shows no tooltip without `NIF_SHOWTIP`.
+        nid.uFlags = NIF_SHOWTIP;
 
         if msg != NIM_DELETE {
-            nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+            nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY_CALLBACK;
             nid.hIcon = self.hicon;
 
@@ -618,6 +634,53 @@ impl TrayIcon {
         self.visible
     }
 
+    /// Whether the shell reports the icon on the taskbar (`QWindowsSystemTrayIcon::isIconVisible`):
+    /// a rectangle for it, that is not hidden by the overflow area (Windows 10 answers `S_FALSE`,
+    /// Windows 11 a rectangle below the monitor).
+    fn is_icon_shown(&self) -> Option<windows_sys::Win32::Foundation::RECT> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        if !self.visible {
+            return None;
+        }
+        let mut id: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
+        id.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
+        id.hWnd = self.hwnd;
+        id.uID = 1;
+        let mut rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let hr = unsafe { Shell_NotifyIconGetRect(&id, &mut rect) };
+        if hr != 0 {
+            return None;
+        }
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        unsafe { GetMonitorInfoW(monitor, &mut info) };
+        (rect.bottom <= info.rcMonitor.bottom).then_some(rect)
+    }
+
+    /// Where the shell shows the icon, in logical desktop pixels (`QSystemTrayIcon::geometry`);
+    /// an empty rectangle while the icon is hidden or not on the taskbar.
+    pub fn geometry(&self) -> Rect {
+        match self.is_icon_shown() {
+            Some(r) => crate::screen::native_rect_to_logical(Rect::new(
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+            )),
+            None => Rect::new(0, 0, 0, 0),
+        }
+    }
+
+    /// `QWindowsSystemTrayIcon::supportsMessages`: balloon messages are on unless the user turned
+    /// them off (`HKCU\...\Explorer\Advanced\EnableBalloonTips`; the key is typically absent
+    /// on Windows 10 and means on).
+    pub fn supports_messages(&self) -> bool {
+        enable_balloon_tips() != 0
+    }
+
     pub fn hwnd(&self) -> HWND {
         self.hwnd
     }
@@ -629,6 +692,9 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        if !self.supports_messages() {
+            return Ok(());
+        }
         const NIIF_NONE: u32 = 0x00000000;
         const NIIF_INFO: u32 = 0x00000001;
         const NIIF_WARNING: u32 = 0x00000002;
@@ -654,6 +720,9 @@ impl TrayIcon {
         duration_ms: u32,
     ) -> Result<(), &'static str> {
         use ferrokit_gui::image::{IconMode, IconState};
+        if !self.supports_messages() {
+            return Ok(());
+        }
         if icon.is_null() {
             return self.show_message(
                 title,
@@ -690,9 +759,10 @@ impl TrayIcon {
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = self.hwnd;
         nid.uID = 1;
-        const NIF_INFO: u32 = 0x00000010;
-        nid.uFlags = NIF_INFO;
+        nid.uFlags = NIF_INFO | NIF_SHOWTIP;
 
+        // A message that is empty next to a title still shows (qwindowssystemtrayicon.cpp).
+        let msg = if msg.is_empty() && !title.is_empty() { " " } else { msg };
         let wide_msg: Vec<u16> = msg.encode_utf16().collect();
         let msg_len = wide_msg.len().min(255);
         nid.szInfo[..msg_len].copy_from_slice(&wide_msg[..msg_len]);
@@ -881,7 +951,41 @@ impl crate::platform_tray::PlatformTrayIcon for TrayIcon {
     }
 
     fn supports_messages(&self) -> bool {
-        true
+        self.supports_messages()
+    }
+}
+
+/// `EnableBalloonTips` of the explorer's advanced settings, 1 when it is not set.
+#[cfg(windows)]
+fn enable_balloon_tips() -> u32 {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+    };
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced");
+    let name = wide("EnableBalloonTips");
+    unsafe {
+        let mut hkey: HKEY = ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return 1;
+        }
+        let mut kind = 0u32;
+        let mut data = 0u32;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = RegQueryValueExW(
+            hkey,
+            name.as_ptr(),
+            ptr::null_mut(),
+            &mut kind,
+            &mut data as *mut u32 as *mut u8,
+            &mut size,
+        );
+        RegCloseKey(hkey);
+        if status == 0 && kind == REG_DWORD {
+            data
+        } else {
+            1
+        }
     }
 }
 
