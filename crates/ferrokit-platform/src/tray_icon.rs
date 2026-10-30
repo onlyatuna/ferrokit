@@ -461,6 +461,8 @@ pub struct TrayIcon {
     /// The icon `hicon` was made from, when the tray was given an [`Icon`]
     /// (`QWindowsSystemTrayIcon::m_icon`): `TaskbarCreated` builds the `HICON` again from it.
     source: Option<ferrokit_gui::image::Icon>,
+    /// The icon of the last balloon message, kept as `QWindowsSystemTrayIcon::m_hMessageIcon`.
+    balloon_icon: Option<BalloonIcon>,
     tooltip: String,
     visible: bool,
     taskbar_created_msg: u32,
@@ -528,6 +530,7 @@ impl TrayIcon {
             hicon: std::cell::Cell::new(hicon),
             owns_icon: std::cell::Cell::new(false),
             source: None,
+            balloon_icon: None,
             tooltip: tooltip.into(),
             visible: false,
             taskbar_created_msg,
@@ -620,6 +623,7 @@ impl TrayIcon {
     }
 
     pub fn hide(&mut self) -> Result<(), &'static str> {
+        self.set_balloon_icon(None);
         if !self.visible {
             return Ok(());
         }
@@ -793,6 +797,8 @@ impl TrayIcon {
         if !self.supports_messages() {
             return Ok(());
         }
+        // The previous message's icon is freed before this one is made.
+        self.set_balloon_icon(None);
         let (flags, balloon) = Self::balloon_style(icon);
         let result = self.notify_balloon(
             title,
@@ -801,10 +807,18 @@ impl TrayIcon {
             balloon.as_ref().map_or(ptr::null_mut(), |b| b.hicon),
             duration_ms,
         );
-        if let Some(balloon) = balloon {
-            balloon.release();
-        }
+        self.set_balloon_icon(balloon);
         result
+    }
+
+    /// Replaces the icon of the last balloon message and frees the old one. As
+    /// `QWindowsSystemTrayIcon::m_hMessageIcon` the icon is kept after `NIM_MODIFY` returns (the
+    /// `hBalloonIcon` documentation does not say the shell is done with the handle by then) and
+    /// freed when the next message is shown, when the icon is hidden and when it is dropped.
+    fn set_balloon_icon(&mut self, icon: Option<BalloonIcon>) {
+        if let Some(old) = std::mem::replace(&mut self.balloon_icon, icon) {
+            old.release();
+        }
     }
 
     /// The pixel size of the balloon icon made from a stock icon: `QWindowsTheme::
@@ -907,12 +921,12 @@ impl TrayIcon {
         }
         const NIIF_USER: u32 = 0x00000004;
         const NIIF_LARGE_ICON: u32 = 0x00000020;
+        // The previous message's icon is freed before this one is made.
+        self.set_balloon_icon(None);
         let hballoon = Self::hicon_for_balloon(icon)?;
-        // The shell copies the balloon icon while handling `NIM_MODIFY`, so it is ours to free
-        // as soon as the call returns.
         let result =
             self.notify_balloon(title, msg, NIIF_USER | NIIF_LARGE_ICON, hballoon, duration_ms);
-        Self::destroy_hicon(hballoon);
+        self.set_balloon_icon(Some(BalloonIcon { hicon: hballoon, owned: true }));
         result
     }
 
@@ -1361,6 +1375,50 @@ mod tests {
             );
         }
         drop(tray);
+    }
+
+    #[test]
+    fn the_balloon_icon_lives_until_the_next_message_or_hide() {
+        // `QWindowsSystemTrayIcon::m_hMessageIcon`: kept after the notification, freed before the
+        // next message's icon is made and on cleanup.
+        use crate::platform_tray::TrayMessageIcon;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
+        let alive = |icon: HICON| {
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
+            if ok {
+                unsafe {
+                    DeleteObject(info.hbmColor);
+                    DeleteObject(info.hbmMask);
+                }
+            }
+            ok
+        };
+        let pixmap = Pixmap::new(16, 16).unwrap();
+        let mut tray = TrayIcon::from_icon("balloon", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .expect("tray");
+        if !tray.supports_messages() {
+            return;
+        }
+        // The notification itself may fail while the icon is not shown; the icon is kept anyway.
+        let _ = tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000);
+        let first = tray.balloon_icon.as_ref().expect("kept after the message");
+        assert!(first.owned && alive(first.hicon), "still alive after the call");
+        let _ = tray.show_message_with_icon(
+            " ",
+            "Custom",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+            1000,
+        );
+        let second = tray.balloon_icon.as_ref().expect("replaced by the next message");
+        assert!(second.owned && alive(second.hicon));
+        let handle = second.hicon;
+        tray.hide().unwrap();
+        assert!(tray.balloon_icon.is_none());
+        assert!(!alive(handle), "freed on hide");
+        // A message without an icon keeps none.
+        let _ = tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000);
+        assert!(tray.balloon_icon.is_none());
     }
 
     #[test]
