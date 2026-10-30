@@ -31,7 +31,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, DestroyWindow, GetCursorPos, RegisterClassExW, RegisterWindowMessageW,
     SetForegroundWindow, TrackPopupMenuEx, HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED,
     MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
+    TPM_RIGHTBUTTON, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
 };
 
 /// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
@@ -365,6 +365,11 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 }
                 _ => {}
             }
+        } else if msg == WM_CLOSE {
+            // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
+            // `taskkill` without force) -> `handleApplicationTermination`, which sends the
+            // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
+            ferrokit_core::application::CoreApplication::quit();
         } else if msg == 0x0218 {
             // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
             // in qwindowscontext.cpp); this is a ferrokit extension.
@@ -632,6 +637,17 @@ impl TrayIcon {
 
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// The tooltip (`QSystemTrayIcon::toolTip`).
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    /// `QSystemTrayIcon::isSystemTrayAvailable`: Qt's Windows engine answers `true` without
+    /// looking for a taskbar (`QWindowsSystemTrayIcon::isSystemTrayAvailable`).
+    pub fn is_system_tray_available() -> bool {
+        true
     }
 
     /// Whether the shell reports the icon on the taskbar (`QWindowsSystemTrayIcon::isIconVisible`):
