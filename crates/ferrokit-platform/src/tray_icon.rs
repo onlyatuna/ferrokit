@@ -792,12 +792,18 @@ impl TrayIcon {
     /// style's standard icon for the type (`SP_MessageBoxInformation`, `SP_MessageBoxWarning`,
     /// `SP_MessageBoxCritical`) and none for `NoIcon`; `QWindowsSystemTrayIcon::showMessage` then
     /// shows `NIIF_USER | NIIF_LARGE_ICON` with that icon, and `NIIF_INFO` when there is none
-    /// (`NoIcon` included). The Windows style's standard icons are the shell's stock icons.
+    /// (`NoIcon` included).
+    /// The Windows style's standard icons are the shell's stock icons (`QWindowsTheme::
+    /// standardPixmap`: `SHGetStockIconInfo(SHGSI_ICONLOCATION)` then `SHDefExtractIcon`), and
+    /// the balloon takes the largest of the style icon's sizes up to 256 px
+    /// (`icon.actualSize(QSize(256, 256))`), so the icon is extracted at 256 px. [INFERENCE]
+    /// Qt's style icon has the sizes 16, 32, 48 and 256 at 100% scaling; they follow
+    /// `SM_CXICON` at other scalings, which is not followed here.
     /// When the shell gives no stock icon the native `NIIF_` flag of the type is used instead.
     fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<HICON>) {
         use crate::platform_tray::TrayMessageIcon;
         use windows_sys::Win32::UI::Shell::{
-            SHGetStockIconInfo, SHGSI_ICON, SHGSI_LARGEICON, SHSTOCKICONINFO, SIID_ERROR,
+            SHDefExtractIconW, SHGetStockIconInfo, SHGSI_ICONLOCATION, SHSTOCKICONINFO, SIID_ERROR,
             SIID_INFO, SIID_WARNING,
         };
         const NIIF_INFO: u32 = 0x00000001;
@@ -814,9 +820,15 @@ impl TrayIcon {
         };
         let mut info: SHSTOCKICONINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<SHSTOCKICONINFO>() as u32;
-        let hr = unsafe { SHGetStockIconInfo(siid, SHGSI_ICON | SHGSI_LARGEICON, &mut info) };
-        if hr >= 0 && !info.hIcon.is_null() {
-            (NIIF_USER | NIIF_LARGE_ICON, Some(info.hIcon))
+        if unsafe { SHGetStockIconInfo(siid, SHGSI_ICONLOCATION, &mut info) } < 0 {
+            return (native, None);
+        }
+        let mut hicon: HICON = ptr::null_mut();
+        let hr = unsafe {
+            SHDefExtractIconW(info.szPath.as_ptr(), info.iIcon, 0, &mut hicon, ptr::null_mut(), 256)
+        };
+        if hr >= 0 && !hicon.is_null() {
+            (NIIF_USER | NIIF_LARGE_ICON, Some(hicon))
         } else {
             (native, None)
         }
@@ -1320,6 +1332,20 @@ mod tests {
             assert_eq!(flags, NIIF_USER_LARGE, "{kind:?}");
             let icon = icon.expect("the shell has a stock icon");
             assert!(!icon.is_null());
+            // Extracted at 256 px, the largest size the balloon asks the style icon for.
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            assert_ne!(unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(icon, &mut info) }, 0);
+            let mut bm: windows_sys::Win32::Graphics::Gdi::BITMAP = unsafe { std::mem::zeroed() };
+            unsafe {
+                windows_sys::Win32::Graphics::Gdi::GetObjectW(
+                    info.hbmColor,
+                    std::mem::size_of_val(&bm) as i32,
+                    &mut bm as *mut _ as *mut _,
+                );
+                DeleteObject(info.hbmColor);
+                DeleteObject(info.hbmMask);
+            }
+            assert_eq!(bm.bmWidth, 256, "{kind:?}");
             TrayIcon::destroy_hicon(icon);
         }
     }
