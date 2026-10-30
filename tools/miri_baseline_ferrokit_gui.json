@@ -748,6 +748,8 @@
     "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::SB": "unsupported",
     "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::TB": "unsupported",
     "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::SB": "unsupported",
-    "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::TB": "unsupported"
+    "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::TB": "unsupported",
+    "test_text_layout_oracle::a_negative_wrap_width_lays_out_one_grapheme_per_line::SB": "unsupported",
+    "test_text_layout_oracle::a_negative_wrap_width_lays_out_one_grapheme_per_line::TB": "unsupported"
   }
 }
