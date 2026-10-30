@@ -788,6 +788,21 @@ impl TrayIcon {
         result
     }
 
+    /// The pixel size of the balloon icon made from a stock icon: `QWindowsTheme::
+    /// refreshIconPixmapSizes` gives the style icon the sizes `SM_CXSMICON`, `SM_CXICON`,
+    /// 1.5 x `SM_CXICON` and 8 x `SM_CXICON` (16, 32, 48 and 256 at 100% scaling), and
+    /// `actualSize(QSize(256, 256))` takes the first with at least that area, else the largest,
+    /// scaled down to fit 256 px. (Qt scales the extracted icon down; here it is extracted at the
+    /// final size.)
+    fn stock_icon_size(small: i32, large: i32) -> u32 {
+        [small, large, large + large / 2, 8 * large]
+            .into_iter()
+            .find(|&s| i64::from(s) * i64::from(s) >= 256 * 256)
+            .unwrap_or(8 * large)
+            .min(256)
+            .max(1) as u32
+    }
+
     /// `QSystemTrayIcon::showMessage(title, msg, MessageIcon, msecs)` hands the platform the
     /// style's standard icon for the type (`SP_MessageBoxInformation`, `SP_MessageBoxWarning`,
     /// `SP_MessageBoxCritical`) and none for `NoIcon`; `QWindowsSystemTrayIcon::showMessage` then
@@ -795,10 +810,8 @@ impl TrayIcon {
     /// (`NoIcon` included).
     /// The Windows style's standard icons are the shell's stock icons (`QWindowsTheme::
     /// standardPixmap`: `SHGetStockIconInfo(SHGSI_ICONLOCATION)` then `SHDefExtractIcon`), and
-    /// the balloon takes the largest of the style icon's sizes up to 256 px
-    /// (`icon.actualSize(QSize(256, 256))`), so the icon is extracted at 256 px. [INFERENCE]
-    /// Qt's style icon has the sizes 16, 32, 48 and 256 at 100% scaling; they follow
-    /// `SM_CXICON` at other scalings, which is not followed here.
+    /// the balloon takes `icon.actualSize(QSize(256, 256))` of the style icon, whose pixmaps have
+    /// the sizes of the theme's `IconPixmapSizes` (see `stock_icon_size`). [INFERENCE]
     /// When the shell gives no stock icon the native `NIIF_` flag of the type is used instead.
     fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<HICON>) {
         use crate::platform_tray::TrayMessageIcon;
@@ -824,8 +837,14 @@ impl TrayIcon {
             return (native, None);
         }
         let mut hicon: HICON = ptr::null_mut();
+        let size = unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CXICON, SM_CXSMICON,
+            };
+            Self::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
+        };
         let hr = unsafe {
-            SHDefExtractIconW(info.szPath.as_ptr(), info.iIcon, 0, &mut hicon, ptr::null_mut(), 256)
+            SHDefExtractIconW(info.szPath.as_ptr(), info.iIcon, 0, &mut hicon, ptr::null_mut(), size)
         };
         if hr >= 0 && !hicon.is_null() {
             (NIIF_USER | NIIF_LARGE_ICON, Some(hicon))
@@ -1315,6 +1334,16 @@ mod tests {
     }
 
     #[test]
+    fn the_stock_icon_size_follows_the_style_icon_sizes_of_the_theme() {
+        // Sizes `SM_CXSMICON`, `SM_CXICON`, 1.5 x and 8 x `SM_CXICON`; the first whose area is at
+        // least 256 x 256, else the largest, never above 256 px.
+        assert_eq!(TrayIcon::stock_icon_size(16, 32), 256, "100%: 16, 32, 48, 256");
+        assert_eq!(TrayIcon::stock_icon_size(20, 40), 256, "125%: 20, 40, 60, 320 -> 256");
+        assert_eq!(TrayIcon::stock_icon_size(16, 16), 128, "16, 16, 24, 128: the largest");
+        assert_eq!(TrayIcon::stock_icon_size(32, 40), 256, "32, 40, 60, 320 -> 256");
+    }
+
+    #[test]
     fn a_balloon_message_shows_the_standard_icon_of_its_type() {
         // `QSystemTrayIcon::showMessage(.., MessageIcon, ..)`: the style's standard icon is shown
         // as `NIIF_USER | NIIF_LARGE_ICON`; `NoIcon` has none and gets `NIIF_INFO`
@@ -1345,7 +1374,13 @@ mod tests {
                 DeleteObject(info.hbmColor);
                 DeleteObject(info.hbmMask);
             }
-            assert_eq!(bm.bmWidth, 256, "{kind:?}");
+            let expected = unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetSystemMetrics, SM_CXICON, SM_CXSMICON,
+                };
+                TrayIcon::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
+            };
+            assert_eq!(bm.bmWidth, expected as i32, "{kind:?}");
             TrayIcon::destroy_hicon(icon);
         }
     }
