@@ -14,6 +14,19 @@ pub trait PlatformScreen: Send + Sync {
 /// and `QSystemTrayIcon` maps with `QHighDpi::fromNativePixels(pos, screen)` (`qsystemtrayicon.cpp:184`).
 /// Falls back to the primary screen, as Qt does (`screens().value(0)`).
 pub fn native_cursor_to_logical(native: Point) -> Point {
+    let (origin, dpr) = native_screen_mapping(native);
+    crate::high_dpi::from_native_global_point(native, origin, dpr)
+}
+
+/// Physical desktop rect to logical, through the screen that contains its top-left corner (the
+/// primary screen when none does): `QHighDpi::fromNativePixels(rect, screen)`.
+pub fn native_rect_to_logical(native: Rect) -> Rect {
+    let (origin, dpr) = native_screen_mapping(Point::new(native.x, native.y));
+    crate::high_dpi::from_native_global_rect(native, origin, dpr)
+}
+
+/// The logical origin and the ratio of the screen that contains the physical point `native`.
+fn native_screen_mapping(native: Point) -> (Point, f32) {
     let platform = crate::integration::platform();
     let screens = platform.screens();
     let hit = screens.iter().find(|s| {
@@ -21,7 +34,7 @@ pub fn native_cursor_to_logical(native: Point) -> Point {
         crate::high_dpi::to_native_global_rect(g, Point::new(g.x, g.y), s.device_pixel_ratio())
             .contains(native)
     });
-    let (origin, dpr) = match hit {
+    match hit {
         Some(s) => {
             let g = s.geometry();
             (Point::new(g.x, g.y), s.device_pixel_ratio())
@@ -31,8 +44,7 @@ pub fn native_cursor_to_logical(native: Point) -> Point {
             let g = primary.geometry();
             (Point::new(g.x, g.y), primary.device_pixel_ratio())
         }
-    };
-    crate::high_dpi::from_native_global_point(native, origin, dpr)
+    }
 }
 
 /// Logical desktop point to the physical desktop point native APIs (`TrackPopupMenu`,

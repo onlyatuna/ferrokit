@@ -13,7 +13,7 @@ use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CONTEXTMENU,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
 };
 
 fn pixmap() -> Pixmap {
@@ -128,4 +128,52 @@ fn replacing_the_icon_leaves_a_caller_owned_icon_alone() {
     }
     drop(tray);
     TrayIcon::destroy_hicon(caller_icon);
+}
+
+#[test]
+fn a_middle_button_release_is_a_middle_click() {
+    // `QWindowsSystemTrayIcon::winEvent`: `WM_MBUTTONUP` -> `activated(MiddleClick)`.
+    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    tray.on_activated.connect(move |a| sink.lock().push(*a));
+
+    send(tray.hwnd(), WM_MBUTTONUP);
+    assert_eq!(*seen.lock(), vec![TrayActivation::MiddleClick]);
+}
+
+#[test]
+fn the_context_menu_is_requested_where_the_shell_says() {
+    // Under NOTIFYICON_VERSION_4 `wParam` is the anchor point (physical desktop pixels, signed
+    // 16 bits each); Qt reports that point, not the cursor.
+    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    tray.on_context_menu_requested.connect(move |p| sink.lock().push(*p));
+
+    for (x, y) in [(123, 456), (-5, -7)] {
+        let packed = ((x as u16 as usize) | ((y as u16 as usize) << 16)) as isize;
+        unsafe {
+            SendMessageW(tray.hwnd(), WM_TRAY_CALLBACK, packed as usize, WM_CONTEXTMENU as isize);
+        }
+    }
+    let expected: Vec<_> = [(123, 456), (-5, -7)]
+        .iter()
+        .map(|&(x, y)| {
+            ferrokit_platform::screen::native_cursor_to_logical(ferrokit_gui::geometry::primitives::Point::new(x, y))
+        })
+        .collect();
+    assert_eq!(*seen.lock(), expected);
+}
+
+#[test]
+fn a_hidden_icon_has_an_empty_geometry() {
+    // `QSystemTrayIcon::geometry()` is an empty rectangle until the icon is shown (PySide6:
+    // `QRect(0, 0, 0, 0)` before `show()` and after `hide()`).
+    let mut tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let empty = ferrokit_gui::geometry::primitives::Rect::new(0, 0, 0, 0);
+    assert_eq!(tray.geometry(), empty);
+    tray.show().expect("show");
+    tray.hide().expect("hide");
+    assert_eq!(tray.geometry(), empty);
 }
