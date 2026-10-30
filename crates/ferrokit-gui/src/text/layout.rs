@@ -587,7 +587,9 @@ impl TextLayout {
                 }
                 break;
             }
+            // (A line always takes its first grapheme, whatever the width.)
             if !is_space
+                && curr_grapheme > line_start_grapheme
                 && (has_word || curr_x > max_width)
                 && curr_x + g_width + bearing > max_width
             {

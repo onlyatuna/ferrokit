@@ -1020,3 +1020,26 @@ fn drawn_glyphs_and_selections_follow_the_visual_order_of_bidi_text() {
         }
     }
 }
+
+/// A wrap width below zero (or not a number) leaves no room for any text; every line still takes
+/// its first grapheme, so the layout ends.
+#[test]
+fn a_negative_wrap_width_lays_out_one_grapheme_per_line() {
+    for width in [-3.0f32, -1e-9, f32::NEG_INFINITY, f32::NAN] {
+        for mode in [
+            WrapMode::WordWrap,
+            WrapMode::WrapAnywhere,
+            WrapMode::WrapAtWordBoundaryOrAnywhere,
+        ] {
+            let mut layout = TextLayout::new("a b", font_for("syn"));
+            layout.set_wrap_mode(mode);
+            layout.set_wrap_width(Some(width));
+            layout.do_layout();
+            assert!(
+                layout.line_count() >= 1 && layout.line_count() <= 3,
+                "{mode:?} at {width}: {} lines",
+                layout.line_count()
+            );
+        }
+    }
+}
