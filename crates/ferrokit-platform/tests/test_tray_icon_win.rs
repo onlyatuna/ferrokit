@@ -212,3 +212,79 @@ fn closing_the_tray_window_quits_the_application() {
     assert!(about_to_quit.load(Ordering::SeqCst));
     drop(tray);
 }
+
+fn icon_alive(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -> bool {
+    let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
+    if ok {
+        unsafe {
+            DeleteObject(info.hbmColor);
+            DeleteObject(info.hbmMask);
+        }
+    }
+    ok
+}
+
+fn icon_width(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -> i32 {
+    use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+    let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+    assert!(unsafe { GetIconInfo(icon, &mut info) } != 0);
+    let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+    unsafe {
+        GetObjectW(info.hbmColor, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut _);
+        DeleteObject(info.hbmColor);
+        DeleteObject(info.hbmMask);
+    }
+    bm.bmWidth
+}
+
+fn icon_of_sizes(sizes: &[u32]) -> ferrokit_gui::image::Icon {
+    use ferrokit_gui::image::{Icon, IconMode, IconState};
+    let mut icon = Icon::default();
+    for &s in sizes {
+        let mut p = Pixmap::new(s, s).expect("pixmap");
+        p.fill(Color::from_rgba8(1, 2, 3, 255));
+        icon.add_pixmap(&p, IconMode::Normal, IconState::Off);
+    }
+    icon
+}
+
+#[test]
+fn an_icon_is_shown_at_the_size_of_a_small_icon() {
+    // `QWindowsSystemTrayIcon::createIcon`: `QIcon::actualSize(SM_CXSMICON x SM_CYSMICON)`.
+    // PySide6 (no high DPI scaling): images of 16 and 64 px give the requested size, an image
+    // of 16 px never more than 16 and images of 16 and 32 px never more than 32.
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON};
+    let small = unsafe { GetSystemMetrics(SM_CXSMICON) };
+    for (sizes, expected) in [
+        (vec![16, 64], small),
+        (vec![16], small.min(16)),
+        (vec![16, 32], small.min(32)),
+    ] {
+        let tray = TrayIcon::from_icon("t", &icon_of_sizes(&sizes)).expect("tray");
+        assert_eq!(icon_width(tray.icon()), expected, "images {sizes:?}");
+    }
+}
+
+#[test]
+fn a_new_taskbar_builds_the_icon_again_from_the_kept_icon() {
+    // `QWindowsSystemTrayIcon::winEvent` on `TaskbarCreated`: `updateIcon(oldIcon)` makes a new
+    // `HICON` (the size of a small icon may have changed with the DPI), then `NIM_ADD`.
+    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+    let name: Vec<u16> = "TaskbarCreated\0".encode_utf16().collect();
+    let msg = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+
+    let kept = TrayIcon::from_icon("kept", &icon_of_sizes(&[16, 64])).expect("tray");
+    let first = kept.icon();
+    unsafe { SendMessageW(kept.hwnd(), msg, 0, 0) };
+    assert_ne!(kept.icon(), first, "a new icon was made");
+    assert!(icon_alive(kept.icon()));
+    assert!(!icon_alive(first), "the old icon, which the tray made, is destroyed");
+
+    // An icon given as a pixmap has no source to build from: it stays.
+    let plain = TrayIcon::from_pixmap("plain", &pixmap()).expect("tray");
+    let same = plain.icon();
+    unsafe { SendMessageW(plain.hwnd(), msg, 0, 0) };
+    assert_eq!(plain.icon(), same);
+    assert!(icon_alive(same));
+}
