@@ -890,3 +890,67 @@ fn test_platform_tray_message_with_custom_icon() {
     dbus.show_message_with_icon("Alert", "Body", &icon, 2000).unwrap();
     assert_eq!(dbus.last_message(), Some(("Alert", "Body", TrayMessageIcon::NoIcon, 2000)));
 }
+
+#[cfg(not(windows))]
+#[test]
+fn a_hidden_tray_icon_forwards_no_message() {
+    // `QSystemTrayIcon::showMessage` (both overloads) does nothing while the icon is hidden.
+    use ferrokit_gui::image::Icon;
+    use ferrokit_platform::menu::PlatformMenu;
+    use ferrokit_platform::tray_icon::TrayIcon;
+    use ferrokit_platform::{PlatformTrayIcon, TrayMessageIcon};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Spy(Rc<Cell<u32>>);
+    impl PlatformTrayIcon for Spy {
+        fn set_icon(&mut self, _: &Icon) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn set_tooltip(&mut self, _: &str) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn set_menu(&mut self, _: Box<dyn PlatformMenu>) {}
+        fn show(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn hide(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn show_message(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: TrayMessageIcon,
+            _: u32,
+        ) -> Result<(), &'static str> {
+            self.0.set(self.0.get() + 1);
+            Ok(())
+        }
+        fn show_message_with_icon(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: &Icon,
+            _: u32,
+        ) -> Result<(), &'static str> {
+            self.0.set(self.0.get() + 10);
+            Ok(())
+        }
+    }
+
+    let seen = Rc::new(Cell::new(0));
+    let mut tray = TrayIcon::with_backend(Box::new(Spy(seen.clone())));
+    let send = |tray: &mut TrayIcon| {
+        tray.show_message("T", "B", TrayMessageIcon::Information, 0).unwrap();
+        tray.show_message_with_icon("T", "B", &Icon::new(), 0).unwrap();
+    };
+    send(&mut tray);
+    assert_eq!(seen.get(), 0, "hidden: nothing is forwarded");
+    tray.show().unwrap();
+    send(&mut tray);
+    assert_eq!(seen.get(), 11, "shown: both are forwarded");
+    tray.hide().unwrap();
+    send(&mut tray);
+    assert_eq!(seen.get(), 11, "hidden again: nothing more");
+}
