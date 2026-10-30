@@ -2,7 +2,6 @@
 use crate::menu::PlatformMenu;
 use crate::tray_icon::TrayActivation;
 use ferrokit_gui::image::Icon;
-use ferrokit_gui::paint::Pixmap;
 
 /// Aligned with `QPlatformSystemTrayIcon::MessageIcon` (qtbase)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,7 +24,8 @@ pub fn forward_activations(
 }
 
 pub trait PlatformTrayIcon {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str>;
+    /// Shows `icon` (`QSystemTrayIcon::setIcon`).
+    fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
     /// Shows the icon. The D-Bus back end only queues its StatusNotifierWatcher registration:
@@ -105,7 +105,7 @@ pub trait PlatformTrayIcon {
 
 pub struct GenericTrayIcon {
     tooltip: String,
-    pixmap: Option<Pixmap>,
+    icon: Icon,
     visible: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, TrayMessageIcon, u32)>,
@@ -113,10 +113,10 @@ pub struct GenericTrayIcon {
 }
 
 impl GenericTrayIcon {
-    pub fn new(tooltip: &str, pixmap: &Pixmap) -> Self {
+    pub fn new(tooltip: &str, icon: &Icon) -> Self {
         Self {
             tooltip: tooltip.to_string(),
-            pixmap: Some(pixmap.clone()),
+            icon: icon.clone(),
             visible: false,
             menu: None,
             last_message: None,
@@ -126,6 +126,11 @@ impl GenericTrayIcon {
 
     pub fn tooltip(&self) -> &str {
         &self.tooltip
+    }
+
+    /// The icon last given to [`new`](Self::new) or `set_icon`.
+    pub fn icon(&self) -> &Icon {
+        &self.icon
     }
 
     pub fn is_visible(&self) -> bool {
@@ -150,8 +155,8 @@ impl GenericTrayIcon {
 }
 
 impl PlatformTrayIcon for GenericTrayIcon {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        self.pixmap = Some(pixmap.clone());
+    fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str> {
+        self.icon = icon.clone();
         Ok(())
     }
 

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::paint::Pixmap;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -234,7 +233,14 @@ impl CocoaStatusItem {
 }
 
 impl PlatformTrayIcon for CocoaStatusItem {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
+    fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        // The largest image; AppKit scales it to the status bar.
+        use ferrokit_gui::image::{IconMode, IconState};
+        let largest = icon
+            .available_sizes(IconMode::Normal, IconState::Off)
+            .pop()
+            .ok_or("null icon")?;
+        let pixmap = &icon.pixmap(largest, IconMode::Normal, IconState::Off);
         self.icon_width = pixmap.physical_width();
         self.icon_height = pixmap.physical_height();
         self.icon_bytes = pixmap.data().to_vec();

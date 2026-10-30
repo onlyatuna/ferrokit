@@ -1502,7 +1502,7 @@ mod checks {
 
         let button: Id = send(native, "button");
         t.expect(
-            item.set_icon(&pixmap(18, Color::from_rgba8(255, 255, 255, 255)))
+            item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap(18, Color::from_rgba8(255, 255, 255, 255))))
                 .is_ok(),
             "set_icon returns Ok",
         );
@@ -1851,7 +1851,7 @@ mod checks {
         let mut tray = integration
             .create_tray_icon(
                 "Factory Tray",
-                &pixmap(16, Color::from_rgba8(20, 120, 220, 255)),
+                &ferrokit_gui::image::Icon::from_pixmap(&pixmap(16, Color::from_rgba8(20, 120, 220, 255))),
             )
             .expect("create_tray_icon");
         t.expect(tray.show().is_ok(), "tray show returns Ok");

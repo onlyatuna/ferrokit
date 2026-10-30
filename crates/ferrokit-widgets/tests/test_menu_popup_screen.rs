@@ -129,9 +129,9 @@ impl PlatformIntegration for FakePlatform {
     fn create_tray_icon(
         &self,
         tooltip: &str,
-        pixmap: &Pixmap,
+        icon: &ferrokit_gui::image::Icon,
     ) -> Result<Box<dyn ferrokit_platform::platform_tray::PlatformTrayIcon>, &'static str> {
-        self.inner.create_tray_icon(tooltip, pixmap)
+        self.inner.create_tray_icon(tooltip, icon)
     }
     fn primary_screen(&self) -> Box<dyn PlatformScreen> {
         self.screen(true)

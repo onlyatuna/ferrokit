@@ -18,28 +18,60 @@ pub struct DbusImage {
 }
 
 impl DbusImage {
+    /// The pixmap as ARGB32 with straight (not premultiplied) alpha, letterboxed on a transparent
+    /// square when it is not square (`iconToQXdgDBusImageVector`).
     pub fn from_pixmap(pixmap: &Pixmap) -> Self {
-        let width = pixmap.physical_width() as i32;
-        let height = pixmap.physical_height() as i32;
-        let src_rgba = pixmap.data();
-
-        let mut data = Vec::with_capacity((width * height * 4) as usize);
-        for chunk in src_rgba.as_chunks::<4>().0 {
-            let r = chunk[0];
-            let g = chunk[1];
-            let b = chunk[2];
-            let a = chunk[3];
-            data.push(a);
-            data.push(r);
-            data.push(g);
-            data.push(b);
+        let (w, h) = (pixmap.physical_width() as usize, pixmap.physical_height() as usize);
+        let side = w.max(h);
+        let (ox, oy) = ((side - w) / 2, (side - h) / 2);
+        let mut data = vec![0u8; side * side * 4];
+        for (i, chunk) in pixmap.data().as_chunks::<4>().0.iter().enumerate() {
+            let at = (((i / w) + oy) * side + (i % w) + ox) * 4;
+            let a = u32::from(chunk[3]);
+            // `qUnpremultiply`
+            let straight = |c: u8| match a {
+                0 | 255 => c,
+                _ => ((u32::from(c) * 255 + a / 2) / a).min(255) as u8,
+            };
+            data[at..at + 4].copy_from_slice(&[
+                chunk[3],
+                straight(chunk[0]),
+                straight(chunk[1]),
+                straight(chunk[2]),
+            ]);
         }
-
         Self {
-            width,
-            height,
+            width: side as i32,
+            height: side as i32,
             data,
         }
+    }
+
+    /// The `IconPixmap` entries for `icon` (`iconToQXdgDBusImageVector`): its sizes in the normal,
+    /// off state without those over 64 px (D-Bus bandwidth), plus 22 px when none is that small
+    /// and 64 px when none lies between 22 and 64 px. A null icon gives none. The sizes of an
+    /// icon come smallest first here, where Qt lists them in the order they were added.
+    pub fn images_for_icon(icon: &ferrokit_gui::image::Icon) -> Vec<Self> {
+        use ferrokit_gui::geometry::primitives::Size;
+        use ferrokit_gui::image::{IconMode, IconState};
+        let mut sizes = icon.available_sizes(IconMode::Normal, IconState::Off);
+        if sizes.is_empty() {
+            return Vec::new();
+        }
+        let longest = |s: &Size| s.width.max(s.height);
+        let has_small = sizes.iter().any(|s| longest(s) <= 22);
+        let has_medium = sizes.iter().any(|s| (23..=64).contains(&longest(s)));
+        sizes.retain(|s| longest(s) <= 64);
+        if !has_small {
+            sizes.push(Size::new(22, 22));
+        }
+        if !has_medium {
+            sizes.push(Size::new(64, 64));
+        }
+        sizes
+            .into_iter()
+            .map(|s| Self::from_pixmap(&icon.pixmap(s, IconMode::Normal, IconState::Off)))
+            .collect()
     }
 }
 
@@ -423,9 +455,9 @@ impl DbusStatusNotifierItem {
 }
 
 impl PlatformTrayIcon for DbusStatusNotifierItem {
-    fn set_icon(&mut self, pixmap: &Pixmap) -> Result<(), &'static str> {
-        let dbus_img = DbusImage::from_pixmap(pixmap);
-        self.icon_pixmap = vec![dbus_img];
+    fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        // One `IconPixmap` entry for each size the icon has.
+        self.icon_pixmap = DbusImage::images_for_icon(icon);
 
         // Emit NewIcon signal on Session Bus
         let mut guard = self.connection.lock().unwrap();

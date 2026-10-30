@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
-use ferrokit_gui::paint::Pixmap;
+use ferrokit_gui::image::Icon;
 use std::sync::Arc;
 
 use crate::clipboard::PlatformClipboard;
@@ -24,7 +24,7 @@ pub trait PlatformIntegration: Send + Sync {
     fn create_tray_icon(
         &self,
         tooltip: &str,
-        pixmap: &Pixmap,
+        icon: &Icon,
     ) -> Result<Box<dyn PlatformTrayIcon>, &'static str>;
 
     fn primary_screen(&self) -> Box<dyn PlatformScreen>;
@@ -76,11 +76,11 @@ pub mod win32 {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &Pixmap,
+            icon: &Icon,
         ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
             // Keep the original allocation: the window-procedure router holds its address.
-            // `from_pixmap` also makes the tray own (and later destroy) the icon.
-            let tray = TrayIcon::from_pixmap(tooltip, pixmap)?;
+            // `from_icon` also makes the tray own (and later destroy) the `HICON`.
+            let tray = TrayIcon::from_icon(tooltip, icon)?;
             Ok(tray)
         }
 
@@ -158,9 +158,9 @@ pub mod generic {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &Pixmap,
+            icon: &Icon,
         ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
-            Ok(Box::new(GenericTrayIcon::new(tooltip, pixmap)))
+            Ok(Box::new(GenericTrayIcon::new(tooltip, icon)))
         }
 
         fn primary_screen(&self) -> Box<dyn PlatformScreen> {
@@ -318,10 +318,10 @@ pub mod unix {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &Pixmap,
+            icon: &Icon,
         ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
             let mut item = DbusStatusNotifierItem::new("ferrokit.app", tooltip);
-            let _ = item.set_icon(pixmap);
+            let _ = item.set_icon(icon);
             let _ = item.set_tooltip(tooltip);
             Ok(Box::new(item))
         }
@@ -533,13 +533,13 @@ pub mod cocoa {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &Pixmap,
+            icon: &Icon,
         ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
             if Self::is_headless() {
-                return Ok(Box::new(GenericTrayIcon::new(tooltip, pixmap)));
+                return Ok(Box::new(GenericTrayIcon::new(tooltip, icon)));
             }
             let mut item = CocoaStatusItem::new(1);
-            let _ = item.set_icon(pixmap);
+            let _ = item.set_icon(icon);
             let _ = item.set_tooltip(tooltip);
             Ok(Box::new(item))
         }

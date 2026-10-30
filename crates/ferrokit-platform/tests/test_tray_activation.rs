@@ -331,9 +331,18 @@ fn pixmap_item() -> (
     use ferrokit_gui::tiny_skia::Color;
 
     let (mut item, bus, _seen) = item_with_bus();
-    let mut pixmap = Pixmap::new(2, 1).unwrap();
-    pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
-    item.set_icon(&pixmap).unwrap();
+    // An icon with a small and a medium size, so that it is sent as it is (no size is added).
+    let mut icon = ferrokit_gui::image::Icon::new();
+    for side in [2, 24] {
+        let mut pixmap = Pixmap::new(side, side).unwrap();
+        pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
+        icon.add_pixmap(
+            &pixmap,
+            ferrokit_gui::image::IconMode::Normal,
+            ferrokit_gui::image::IconState::Off,
+        );
+    }
+    item.set_icon(&icon).unwrap();
     item.set_tooltip("CPU 45%").unwrap();
     (item, bus)
 }
@@ -398,12 +407,20 @@ fn icon_pixmap_is_width_height_and_argb_bytes() {
     let reply = reply_to(&bus, 90);
     let mut expected = vec![7, b'a', b'(', b'i', b'i', b'a', b'y', b')', 0];
     expected.extend_from_slice(&[0; 3]); // up to the 4-aligned array length
-    expected.extend_from_slice(&(12u32 + 8).to_le_bytes()); // one element: 4 + 4 + 4 + 8 bytes
-                                                            // 12 (sig 9 + pad 3) + 4 = 16: already 8-aligned, so the struct starts right here.
-    expected.extend_from_slice(&2i32.to_le_bytes());
-    expected.extend_from_slice(&1i32.to_le_bytes());
-    expected.extend_from_slice(&8u32.to_le_bytes());
-    expected.extend_from_slice(&[255, 10, 20, 30, 255, 10, 20, 30]);
+    // Two elements of 4 + 4 + 4 + bytes each; the second starts 8-aligned, after 4 padding bytes.
+    let first = 12 + 2 * 2 * 4;
+    let second = 12 + 24 * 24 * 4;
+    expected.extend_from_slice(&((first + 4 + second) as u32).to_le_bytes());
+    // 12 (sig 9 + pad 3) + 4 = 16: already 8-aligned, so the struct starts right here.
+    for (side, pad) in [(2i32, 4usize), (24, 0)] {
+        expected.extend_from_slice(&side.to_le_bytes());
+        expected.extend_from_slice(&side.to_le_bytes());
+        expected.extend_from_slice(&((side * side * 4) as u32).to_le_bytes());
+        for _ in 0..side * side {
+            expected.extend_from_slice(&[255, 10, 20, 30]);
+        }
+        expected.extend(std::iter::repeat(0).take(pad));
+    }
     assert_eq!(reply.body, expected);
 }
 
@@ -462,7 +479,10 @@ fn get_all_lists_every_property() {
     let get = |name: &str| &entries.iter().find(|(k, _)| k == name).unwrap().1;
     assert_eq!(
         get("IconPixmap"),
-        &Value::Pixmaps(vec![(2, 1, vec![255, 10, 20, 30, 255, 10, 20, 30])])
+        &Value::Pixmaps(vec![
+            (2, 2, [255, 10, 20, 30].repeat(2 * 2)),
+            (24, 24, [255, 10, 20, 30].repeat(24 * 24)),
+        ])
     );
     assert_eq!(get("Status"), &Value::Str("Passive".into()));
     assert_eq!(get("Menu"), &Value::Path("/NO_DBUSMENU".into()));
