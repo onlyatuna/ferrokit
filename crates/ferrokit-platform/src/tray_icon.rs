@@ -931,11 +931,30 @@ impl TrayIcon {
         result
     }
 
+    /// The balloon icon is made at `icon.actualSize(QSize(256, 256))` (as Qt), but never smaller
+    /// than the large icon size: the shell refuses `NIIF_USER | NIIF_LARGE_ICON` with a smaller
+    /// `hBalloonIcon` (documented as `SM_CXICON` x `SM_CYICON`; `Shell_NotifyIconW` failed for
+    /// 31 px and below, measured). Qt does not do this and does not look at the result.
     fn hicon_for_balloon(icon: &ferrokit_gui::image::Icon) -> Result<HICON, &'static str> {
         use ferrokit_gui::geometry::primitives::Size;
         use ferrokit_gui::image::{IconMode, IconState};
-        let size = icon.actual_size(Size::new(256, 256), IconMode::Normal, IconState::Off);
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXICON, SM_CYICON};
+        let actual = icon.actual_size(Size::new(256, 256), IconMode::Normal, IconState::Off);
+        let large = unsafe { Size::new(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)) };
+        let size = Self::balloon_icon_size(actual, large);
         Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
+    }
+
+    /// `large` when `actual` is smaller than it in either direction, else `actual`.
+    fn balloon_icon_size(
+        actual: ferrokit_gui::geometry::primitives::Size,
+        large: ferrokit_gui::geometry::primitives::Size,
+    ) -> ferrokit_gui::geometry::primitives::Size {
+        if actual.width < large.width || actual.height < large.height {
+            large
+        } else {
+            actual
+        }
     }
 
     fn notify_balloon(
@@ -1434,13 +1453,11 @@ mod tests {
         tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000).unwrap();
         let first = tray.balloon_icon.as_ref().expect("kept after the message");
         assert!(first.owned && alive(first.hicon), "still alive after the call");
-        // The shell refuses a balloon icon under 32 px (`Shell_NotifyIconW` fails for 31 px and
-        // below, measured), so the shown message uses a larger image.
-        let big = Pixmap::new(64, 64).unwrap();
+        // A small image is scaled up to the large icon size, which the shell accepts.
         tray.show_message_with_icon(
             " ",
             "Custom",
-            &ferrokit_gui::image::Icon::from_pixmap(&big),
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
             1000,
         )
         .unwrap();
@@ -1579,7 +1596,27 @@ mod tests {
         };
         assert_eq!(width_of(&[16, 128]), 128, "the image that fits, not a fixed 32 px");
         assert_eq!(width_of(&[16, 512]), 256, "scaled down to fit 256 px");
-        assert_eq!(width_of(&[16]), 16, "never scaled up");
+        let large = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                windows_sys::Win32::UI::WindowsAndMessaging::SM_CXICON,
+            )
+        };
+        assert_eq!(width_of(&[16]), large, "a smaller image is scaled up to SM_CXICON");
+        assert_eq!(width_of(&[large as u32 + 8]), large + 8, "a larger one is not touched");
+    }
+
+    #[test]
+    fn a_balloon_icon_under_the_large_icon_size_is_scaled_up_to_it() {
+        // The shell takes `NIIF_USER | NIIF_LARGE_ICON` only with an `hBalloonIcon` of the
+        // large icon size, `SM_CXICON` x `SM_CYICON` (31 px and below were refused, measured).
+        use ferrokit_gui::geometry::primitives::Size;
+        let large = Size::new(32, 32);
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(16, 16), large), large);
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(31, 40), large), large);
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(40, 20), large), large);
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(32, 32), large), large);
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(48, 48), large), Size::new(48, 48));
+        assert_eq!(TrayIcon::balloon_icon_size(Size::new(40, 33), Size::new(40, 40)), Size::new(40, 40));
     }
 
     #[test]
