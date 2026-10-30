@@ -1073,9 +1073,9 @@ mod tests {
         fn create_tray_icon(
             &self,
             tooltip: &str,
-            pixmap: &ferrokit_gui::paint::Pixmap,
+            icon: &ferrokit_gui::image::Icon,
         ) -> Result<Box<dyn ferrokit_platform::PlatformTrayIcon>, &'static str> {
-            self.0.create_tray_icon(tooltip, pixmap)
+            self.0.create_tray_icon(tooltip, icon)
         }
         fn primary_screen(&self) -> Box<dyn ferrokit_platform::screen::PlatformScreen> {
             self.0.primary_screen()

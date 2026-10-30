@@ -235,8 +235,12 @@ impl CocoaStatusItem {
 impl PlatformTrayIcon for CocoaStatusItem {
     fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
         // The largest image; AppKit scales it to the status bar.
-        let pixmap = crate::platform_tray::icon_pixmaps(icon).pop().ok_or("null icon")?;
-        let pixmap = &pixmap;
+        use ferrokit_gui::image::{IconMode, IconState};
+        let largest = icon
+            .available_sizes(IconMode::Normal, IconState::Off)
+            .pop()
+            .ok_or("null icon")?;
+        let pixmap = &icon.pixmap(largest, IconMode::Normal, IconState::Off);
         self.icon_width = pixmap.physical_width();
         self.icon_height = pixmap.physical_height();
         self.icon_bytes = pixmap.data().to_vec();

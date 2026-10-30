@@ -2,7 +2,6 @@
 use crate::menu::PlatformMenu;
 use crate::tray_icon::TrayActivation;
 use ferrokit_gui::image::Icon;
-use ferrokit_gui::paint::Pixmap;
 
 /// Aligned with `QPlatformSystemTrayIcon::MessageIcon` (qtbase)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,17 +21,6 @@ pub fn forward_activations(
 ) {
     let emitter = signal.clone();
     tray.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
-}
-
-/// One pixmap for each size `icon` has in its normal, off state (what a desktop tray that takes
-/// pixmaps, such as StatusNotifierItem, is given for `QSystemTrayIcon::setIcon`); smallest first,
-/// empty for a null icon.
-pub fn icon_pixmaps(icon: &Icon) -> Vec<Pixmap> {
-    use ferrokit_gui::image::{IconMode, IconState};
-    icon.available_sizes(IconMode::Normal, IconState::Off)
-        .into_iter()
-        .map(|size| icon.pixmap(size, IconMode::Normal, IconState::Off))
-        .collect()
 }
 
 pub trait PlatformTrayIcon {

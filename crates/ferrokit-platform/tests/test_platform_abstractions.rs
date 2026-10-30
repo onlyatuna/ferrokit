@@ -388,6 +388,22 @@ fn test_cross_platform_tray_icon_implementations() {
         assert_eq!(sizes, vec![(16, 16), (32, 32)]);
         test_tray.set_icon(&Icon::new()).unwrap();
         assert!(test_tray.icon_pixmap().is_empty());
+
+        // As `iconToQXdgDBusImageVector`: sizes over 64 px are left out, 22 px and 64 px are added
+        // when the icon has none that small or none in between, and a non-square image is
+        // letterboxed on a square.
+        let one = |w: u32, h: u32| {
+            let mut icon = Icon::new();
+            icon.add_pixmap(&Pixmap::new(w, h).expect("pixmap"), IconMode::Normal, IconState::Off);
+            icon
+        };
+        let sent = |tray: &DbusStatusNotifierItem| -> Vec<(i32, i32, usize)> {
+            tray.icon_pixmap().iter().map(|i| (i.width, i.height, i.data.len())).collect()
+        };
+        test_tray.set_icon(&one(128, 128)).unwrap();
+        assert_eq!(sent(&test_tray), vec![(22, 22, 22 * 22 * 4), (64, 64, 64 * 64 * 4)]);
+        test_tray.set_icon(&one(16, 32)).unwrap();
+        assert_eq!(sent(&test_tray), vec![(32, 32, 32 * 32 * 4), (22, 22, 22 * 22 * 4)]);
     }
 
     // 2. Verify macOS Cocoa NSStatusBar / NSStatusItem against the mock runtime. On macOS the

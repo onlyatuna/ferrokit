@@ -871,6 +871,10 @@ fn test_platform_tray_message_with_custom_icon() {
 
     // The generic back end keeps the custom icon and shows no standard icon.
     let mut generic = GenericTrayIcon::new("Generic", &icon);
+    assert_eq!(generic.icon().available_sizes(ferrokit_gui::image::IconMode::Normal, ferrokit_gui::image::IconState::Off), icon.available_sizes(ferrokit_gui::image::IconMode::Normal, ferrokit_gui::image::IconState::Off));
+    generic.set_icon(&Icon::new()).unwrap();
+    assert!(generic.icon().is_null());
+    generic.set_icon(&icon).unwrap();
     assert!(generic.last_message_icon().is_none());
     generic.show_message_with_icon("T", "B", &icon, 0).unwrap();
     assert_eq!(generic.last_message(), Some(("T", "B", TrayMessageIcon::NoIcon, 10000)));

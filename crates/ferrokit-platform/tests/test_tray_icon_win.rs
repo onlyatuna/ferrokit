@@ -284,4 +284,14 @@ fn a_new_taskbar_builds_the_icon_again_from_the_kept_icon() {
     assert_ne!(kept.icon(), first, "a new icon was made");
     assert!(icon_alive(kept.icon()));
     assert!(!icon_alive(first), "the old icon, which the tray made, is destroyed");
+
+    // A raw `HICON` given by the caller has no source to build from: it stays, and is not
+    // destroyed.
+    let caller_icon = TrayIcon::create_hicon_from_pixmap(&pixmap()).expect("icon");
+    let plain = TrayIcon::new("plain", caller_icon).expect("tray");
+    unsafe { SendMessageW(plain.hwnd(), msg, 0, 0) };
+    assert_eq!(plain.icon(), caller_icon);
+    assert!(icon_alive(caller_icon));
+    drop(plain);
+    TrayIcon::destroy_hicon(caller_icon);
 }

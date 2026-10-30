@@ -3,6 +3,7 @@ use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 #[cfg(windows)]
 use ferrokit_gui::geometry::primitives::Rect;
+#[cfg(windows)]
 use ferrokit_gui::paint::Pixmap;
 #[allow(unused_imports)]
 use std::collections::HashMap;
@@ -652,9 +653,10 @@ impl TrayIcon {
     /// Shows `icon` (`QSystemTrayIcon::setIcon`) and keeps it for `TaskbarCreated`.
     pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
         let hicon = Self::hicon_for_small_icon(icon)?;
-        self.replace_icon(hicon, true)?;
+        let result = self.replace_icon(hicon, true);
+        // Kept even when the shell refused the change: the `HICON` is shown from now on.
         self.source = Some(icon.clone());
-        Ok(())
+        result
     }
 
     /// `QWindowsSystemTrayIcon::createIcon`: the size of a small icon (`SM_CXSMICON`,
