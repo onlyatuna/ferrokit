@@ -116,23 +116,38 @@ impl Icon {
         sizes
     }
 
-    /// Returns the best-matching actual size for the requested target size.
+    /// The size the icon shows at for a request of `target` (`QIcon::actualSize`): the image
+    /// that fits best (the smallest one with at least the requested area, else the largest),
+    /// scaled down with its aspect ratio kept when it is larger than the request in either
+    /// direction. An image is never scaled up, so the result is not larger than `target`
+    /// unless the request is not positive. A null icon gives the invalid size `(-1, -1)`.
     pub fn actual_size(&self, target: Size, mode: IconMode, state: IconState) -> Size {
         let sizes = self.available_sizes(mode, state);
         if sizes.is_empty() {
-            return Size::new(0, 0);
+            return Size::new(-1, -1);
         }
 
-        // Find exact match or smallest size that is >= target
         let target_area = area(target);
-        for s in &sizes {
-            if area(*s) >= target_area {
-                return *s;
-            }
+        let best = sizes
+            .iter()
+            .find(|s| area(**s) >= target_area)
+            .or(sizes.last())
+            .copied()
+            .unwrap_or_default();
+        if best.width <= target.width && best.height <= target.height {
+            return best;
         }
-
-        // Otherwise return the largest available
-        *sizes.last().unwrap()
+        // `QSize::scale(target, Qt::KeepAspectRatio)`, with its integer arithmetic.
+        if best.width == 0 || best.height == 0 {
+            return target;
+        }
+        let rw = i64::from(target.height) * i64::from(best.width) / i64::from(best.height);
+        if rw <= i64::from(target.width) {
+            Size::new(rw as i32, target.height)
+        } else {
+            let rh = i64::from(target.width) * i64::from(best.height) / i64::from(best.width);
+            Size::new(target.width, rh as i32)
+        }
     }
 
     /// Returns a `Pixmap` of the requested size, generating fallbacks if necessary.

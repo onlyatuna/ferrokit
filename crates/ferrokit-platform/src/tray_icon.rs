@@ -681,23 +681,7 @@ impl TrayIcon {
             return Err("null icon");
         }
         let requested = unsafe { Size::new(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
-        let best = icon.actual_size(requested, IconMode::Normal, IconState::Off);
-        // `QIcon::actualSize`: the best image, scaled down (aspect kept) to fit the request; it is
-        // never scaled up (PySide6: images of 16 and 64 px give 20 for a request of 20, one of
-        // 16 px gives 16, 16 and 32 px give 32 for a request of 40).
-        let size = if best.width > requested.width || best.height > requested.height {
-            let by_width = i64::from(requested.width) * i64::from(best.height) / i64::from(best.width);
-            if by_width <= i64::from(requested.height) {
-                Size::new(requested.width, by_width as i32)
-            } else {
-                Size::new(
-                    (i64::from(requested.height) * i64::from(best.width) / i64::from(best.height)) as i32,
-                    requested.height,
-                )
-            }
-        } else {
-            best
-        };
+        let size = icon.actual_size(requested, IconMode::Normal, IconState::Off);
         Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
     }
 

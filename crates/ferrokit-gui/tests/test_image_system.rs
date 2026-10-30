@@ -264,15 +264,31 @@ fn test_icon_multi_resolution_and_states() {
     assert_eq!(sizes[0], Size::new(16, 16));
     assert_eq!(sizes[1], Size::new(32, 32));
 
-    // Actual size lookup
-    assert_eq!(
-        icon.actual_size(Size::new(12, 12), IconMode::Normal, IconState::Off),
-        Size::new(16, 16)
-    );
-    assert_eq!(
-        icon.actual_size(Size::new(24, 24), IconMode::Normal, IconState::Off),
-        Size::new(32, 32)
-    );
+    // Actual size lookup, as `QIcon::actualSize` (PySide6 6.11.2, high DPI scaling off): the
+    // best image scaled down to fit the request, never up.
+    let actual = |icon: &Icon, w: i32, h: i32| {
+        icon.actual_size(Size::new(w, h), IconMode::Normal, IconState::Off)
+    };
+    assert_eq!(actual(&icon, 12, 12), Size::new(12, 12));
+    assert_eq!(actual(&icon, 24, 24), Size::new(24, 24));
+    assert_eq!(actual(&icon, 40, 40), Size::new(32, 32));
+    assert_eq!(actual(&icon, 40, 10), Size::new(10, 10));
+    assert_eq!(actual(&icon, 0, 0), Size::new(0, 0));
+    assert_eq!(actual(&Icon::new(), 20, 20), Size::new(-1, -1));
+
+    let mut tall = Icon::new();
+    tall.add_image(Image::new(16, 32, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
+    assert_eq!(actual(&tall, 20, 20), Size::new(10, 20));
+    assert_eq!(actual(&tall, 40, 10), Size::new(5, 10));
+    assert_eq!(actual(&tall, 10, 40), Size::new(10, 20));
+    assert_eq!(actual(&tall, 100, 100), Size::new(16, 32));
+
+    let mut wide = Icon::new();
+    wide.add_image(Image::new(32, 16, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
+    wide.add_image(Image::new(10, 10, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
+    assert_eq!(actual(&wide, 20, 20), Size::new(20, 10));
+    assert_eq!(actual(&wide, 10, 40), Size::new(10, 5));
+    assert_eq!(actual(&wide, 30, 20), Size::new(30, 15));
 
     // Fallback generation for Disabled mode
     let pm_disabled = icon.pixmap(Size::new(16, 16), IconMode::Disabled, IconState::Off);
