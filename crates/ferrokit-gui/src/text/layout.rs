@@ -588,8 +588,8 @@ impl TextLayout {
                 break;
             }
             if !is_space
+                && (has_word || curr_x > max_width)
                 && curr_x + g_width + bearing > max_width
-                && curr_grapheme > line_start_grapheme
             {
                 // Wrapping needed: at the last place a word ends, if the mode breaks there and
                 // there is one on this line.
@@ -605,7 +605,9 @@ impl TextLayout {
                     }
                     // Otherwise before this character, if the mode breaks inside words; the others
                     // let the word overflow.
-                    _ if breaks_anywhere => {
+                    // A line of spaces that already hangs past the width wraps in front of its
+                    // first word whatever the mode.
+                    _ if breaks_anywhere || !has_word => {
                         wrapped = true;
                         break;
                     }
@@ -648,7 +650,7 @@ impl TextLayout {
         // (`QTextLine::naturalTextWidth`), as does that of a line a separator ends; the last line
         // of a paragraph keeps them unless they hang over the width.
         let mut natural_len = content_len;
-        if ended_by_separator || (has_word && (wrapped || curr_x > max_width)) {
+        if ended_by_separator || wrapped || (has_word && curr_x > max_width) {
             natural_len = natural_len.min(solid);
         }
         let advance_w = advances[natural_len.min(advances.len() - 1)];
