@@ -13,7 +13,7 @@ use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CONTEXTMENU,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
+    WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
 };
 
 fn pixmap() -> Pixmap {
@@ -176,4 +176,39 @@ fn a_hidden_icon_has_an_empty_geometry() {
     tray.show().expect("show");
     tray.hide().expect("hide");
     assert_eq!(tray.geometry(), empty);
+}
+
+#[test]
+fn the_tooltip_and_availability_are_reported() {
+    let mut tray = TrayIcon::from_pixmap("first", &pixmap()).expect("tray");
+    assert_eq!(tray.tooltip(), "first");
+    tray.set_tooltip("second").expect("set_tooltip");
+    assert_eq!(tray.tooltip(), "second");
+    // PySide6: `QSystemTrayIcon.isSystemTrayAvailable()` is True.
+    assert!(TrayIcon::is_system_tray_available());
+}
+
+#[test]
+fn closing_the_tray_window_quits_the_application() {
+    // PySide6: a `WM_CLOSE` to the tray window sends the application a Quit event, emits
+    // `aboutToQuit` and makes `exec()` return 0.
+    use ferrokit_core::application::CoreApplication;
+    use ferrokit_core::timer::Timer;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    CoreApplication::reset_for_test();
+    let mut app = CoreApplication::new(vec!["tray_close".to_string()]);
+    let tray = TrayIcon::from_pixmap("t", &pixmap()).expect("tray");
+    let hwnd = tray.hwnd() as usize;
+    let about_to_quit = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&about_to_quit);
+    let _conn = app.about_to_quit().connect(move |_| flag.store(true, Ordering::SeqCst));
+    Timer::single_shot(10, move || unsafe {
+        SendMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+    });
+    Timer::single_shot(2000, || CoreApplication::exit(7)); // watchdog
+    let code = app.exec();
+    assert_eq!(code, 0, "the watchdog ended exec instead of the Quit");
+    assert!(about_to_quit.load(Ordering::SeqCst));
+    drop(tray);
 }
