@@ -774,18 +774,52 @@ impl TrayIcon {
         if !self.supports_messages() {
             return Ok(());
         }
-        const NIIF_NONE: u32 = 0x00000000;
+        let (flags, stock) = Self::balloon_style(icon);
+        let result = self.notify_balloon(
+            title,
+            msg,
+            flags,
+            stock.unwrap_or(ptr::null_mut()),
+            duration_ms,
+        );
+        if let Some(hballoon) = stock {
+            Self::destroy_hicon(hballoon);
+        }
+        result
+    }
+
+    /// `QSystemTrayIcon::showMessage(title, msg, MessageIcon, msecs)` hands the platform the
+    /// style's standard icon for the type (`SP_MessageBoxInformation`, `SP_MessageBoxWarning`,
+    /// `SP_MessageBoxCritical`) and none for `NoIcon`; `QWindowsSystemTrayIcon::showMessage` then
+    /// shows `NIIF_USER | NIIF_LARGE_ICON` with that icon, and `NIIF_INFO` when there is none
+    /// (`NoIcon` included). The Windows style's standard icons are the shell's stock icons.
+    /// When the shell gives no stock icon the native `NIIF_` flag of the type is used instead.
+    fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<HICON>) {
+        use crate::platform_tray::TrayMessageIcon;
+        use windows_sys::Win32::UI::Shell::{
+            SHGetStockIconInfo, SHGSI_ICON, SHGSI_LARGEICON, SHSTOCKICONINFO, SIID_ERROR,
+            SIID_INFO, SIID_WARNING,
+        };
         const NIIF_INFO: u32 = 0x00000001;
         const NIIF_WARNING: u32 = 0x00000002;
         const NIIF_ERROR: u32 = 0x00000003;
+        const NIIF_USER: u32 = 0x00000004;
+        const NIIF_LARGE_ICON: u32 = 0x00000020;
 
-        let flags = match icon {
-            crate::platform_tray::TrayMessageIcon::NoIcon => NIIF_NONE,
-            crate::platform_tray::TrayMessageIcon::Information => NIIF_INFO,
-            crate::platform_tray::TrayMessageIcon::Warning => NIIF_WARNING,
-            crate::platform_tray::TrayMessageIcon::Critical => NIIF_ERROR,
+        let (siid, native) = match icon {
+            TrayMessageIcon::NoIcon => return (NIIF_INFO, None),
+            TrayMessageIcon::Information => (SIID_INFO, NIIF_INFO),
+            TrayMessageIcon::Warning => (SIID_WARNING, NIIF_WARNING),
+            TrayMessageIcon::Critical => (SIID_ERROR, NIIF_ERROR),
         };
-        self.notify_balloon(title, msg, flags, ptr::null_mut(), duration_ms)
+        let mut info: SHSTOCKICONINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<SHSTOCKICONINFO>() as u32;
+        let hr = unsafe { SHGetStockIconInfo(siid, SHGSI_ICON | SHGSI_LARGEICON, &mut info) };
+        if hr >= 0 && !info.hIcon.is_null() {
+            (NIIF_USER | NIIF_LARGE_ICON, Some(info.hIcon))
+        } else {
+            (native, None)
+        }
     }
 
     /// Shows a balloon whose icon is `icon` (`QSystemTrayIcon::showMessage(title, msg, QIcon,
@@ -1266,6 +1300,28 @@ mod tests {
             );
         }
         drop(tray);
+    }
+
+    #[test]
+    fn a_balloon_message_shows_the_standard_icon_of_its_type() {
+        // `QSystemTrayIcon::showMessage(.., MessageIcon, ..)`: the style's standard icon is shown
+        // as `NIIF_USER | NIIF_LARGE_ICON`; `NoIcon` has none and gets `NIIF_INFO`
+        // (`QWindowsSystemTrayIcon::showMessage` with a null pixmap).
+        use crate::platform_tray::TrayMessageIcon;
+        const NIIF_INFO: u32 = 1;
+        const NIIF_USER_LARGE: u32 = 0x4 | 0x20;
+        assert_eq!(TrayIcon::balloon_style(TrayMessageIcon::NoIcon), (NIIF_INFO, None));
+        for kind in [
+            TrayMessageIcon::Information,
+            TrayMessageIcon::Warning,
+            TrayMessageIcon::Critical,
+        ] {
+            let (flags, icon) = TrayIcon::balloon_style(kind);
+            assert_eq!(flags, NIIF_USER_LARGE, "{kind:?}");
+            let icon = icon.expect("the shell has a stock icon");
+            assert!(!icon.is_null());
+            TrayIcon::destroy_hicon(icon);
+        }
     }
 
     #[test]
