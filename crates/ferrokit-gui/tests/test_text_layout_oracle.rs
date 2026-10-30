@@ -54,6 +54,12 @@ const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
 /// See the module documentation.
 const TOLERANCE: f64 = 1.0 / 128.0;
 
+/// The reason of the `align/syn_align_rtl/*` entries.
+const ALIGN_RTL_WHY: &str = "when a line starts with a run of the opposite direction `cursorToX` of \
+     its first position takes the neighbouring item from the previous line and returns a position \
+     that depends on that unrelated item (the line width, clamped, or a sum of widths); ferrokit \
+     keeps the cursor on the run";
+
 /// Cases where ferrokit differs from Qt: `(key, reason, bound)`. A key is `cursor/<case>`,
 /// `cursor-trailing/<case>`, `hit/<case>`, `breaks/<case>/<width>`, `endx/<case>/<width>`, `natural/<case>/<width>` or
 /// `align/<case>/<align>/<width>`; an entry ending in `/` stands for every key that
@@ -190,14 +196,10 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
         Some(17.6),
     ),
     // --- bidi ---
-    (
-        "align/syn_align_rtl/",
-        "when a line starts with a run of the opposite direction `cursorToX` of its first \
-         position takes the neighbouring item from the previous line and returns a position \
-         that depends on that unrelated item (the line width, clamped, or a sum of widths); \
-         ferrokit keeps the cursor on the run",
-        Some(40.0),
-    ),
+    ("align/syn_align_rtl/right/45", ALIGN_RTL_WHY, Some(20.125)),
+    ("align/syn_align_rtl/right/100", ALIGN_RTL_WHY, Some(20.125)),
+    ("align/syn_align_rtl/center/45", ALIGN_RTL_WHY, Some(20.8125)),
+    ("align/syn_align_rtl/center/100", ALIGN_RTL_WHY, Some(39.75)),
     (
         "hit/syn_hitwrap_rtl_base/45/line0",
         "over the space that hangs at the end of a wrapped right to left line `xToCursor` \
@@ -766,9 +768,14 @@ fn every_known_divergence_names_at_least_one_case() {
         &["syn"]
     };
     let (report, _) = collect(&["cursor", "hit", "hitwrap", "wrap", "align"], fonts);
+    // The names of the cases that are laid out with Arial: `<kind> <case> <font> ...`.
+    let arial_cases: std::collections::BTreeSet<&str> = oracle_lines()
+        .filter(|f| f.get(2) == Some(&"arial"))
+        .map(|f| f[1])
+        .collect();
     for (pattern, _, _) in KNOWN_DIVERGENCES {
         // The Arial cases only run where Arial is installed (Windows).
-        if !cfg!(windows) && pattern.contains("arial_") {
+        if !cfg!(windows) && pattern.split('/').any(|part| arial_cases.contains(part)) {
             continue;
         }
         assert!(
