@@ -13,7 +13,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HRGN,
 };
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, HMENU};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreatePopupMenu, DestroyIcon, DestroyMenu, HICON, HMENU,
+};
 
 /// An owned movable global memory block (`GlobalAlloc(GMEM_MOVEABLE)`), freed with `GlobalFree`.
 ///
@@ -374,6 +376,71 @@ impl Drop for DibTarget {
     }
 }
 
+/// An icon handle and whether this code owns it.
+///
+/// `LoadIcon` hands out shared handles that belong to the system and must not be destroyed; an
+/// icon made by `CreateIconIndirect` or `SHDefExtractIcon` is ours to free with `DestroyIcon`. An
+/// owned handle is destroyed on drop; a shared (borrowed) one never is.
+pub(crate) struct IconHandle {
+    hicon: HICON,
+    owned: bool,
+}
+
+impl IconHandle {
+    /// An icon this code created and must destroy.
+    pub(crate) fn owned(hicon: HICON) -> Self {
+        Self { hicon, owned: true }
+    }
+
+    /// A handle someone else owns (a system icon, or one the caller keeps); never destroyed here.
+    pub(crate) fn shared(hicon: HICON) -> Self {
+        Self {
+            hicon,
+            owned: false,
+        }
+    }
+
+    /// The raw handle, still owned by the guard if `is_owned`.
+    pub(crate) fn as_raw(&self) -> HICON {
+        self.hicon
+    }
+
+    /// Whether dropping this destroys the icon.
+    #[cfg(test)]
+    pub(crate) fn is_owned(&self) -> bool {
+        self.owned
+    }
+
+    /// Stores `new` in place of the current icon. Returns the previous handle, which the caller
+    /// drops (destroying it if owned) once nothing shows it any more.
+    ///
+    /// When `new` is the same handle as the current one nothing is replaced and nothing is
+    /// returned: destroying it would destroy the icon `new` refers to, and downgrading an owned
+    /// handle to shared would leak it, so the handle stays owned if either side owned it.
+    #[must_use = "the replaced icon is destroyed when the returned handle drops"]
+    pub(crate) fn replace(&mut self, new: IconHandle) -> Option<IconHandle> {
+        if self.hicon == new.hicon {
+            self.owned |= new.owned;
+            // The ownership moved into `self`; `new` must not destroy the shared handle.
+            std::mem::forget(new);
+            return None;
+        }
+        Some(std::mem::replace(self, new))
+    }
+}
+
+impl Drop for IconHandle {
+    fn drop(&mut self) {
+        if !self.owned || self.hicon.is_null() {
+            return;
+        }
+        // SAFETY: an owned handle is an icon this guard created and solely owns (`owned` is only
+        // set for handles from CreateIconIndirect/SHDefExtractIcon, and `replace` never keeps two
+        // owners of one handle). DestroyIcon validates the handle and merely fails otherwise.
+        unsafe { DestroyIcon(self.hicon) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +451,7 @@ mod tests {
         GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{AppendMenuW, IsMenu, MF_POPUP, MF_STRING};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
     #[test]
     fn global_mem_copies_bytes_and_frees_on_drop() {
@@ -607,5 +675,65 @@ mod tests {
         drop(target);
         assert!(!bitmap_is_live(new));
         assert!(gdi_objects() <= before + 1);
+    }
+
+    fn new_icon() -> HICON {
+        let pixmap = ferrokit_gui::paint::Pixmap::new(16, 16).expect("pixmap");
+        crate::tray_icon::TrayIcon::create_hicon_from_pixmap(&pixmap).expect("icon")
+    }
+
+    /// `GetIconInfo` fails for a destroyed icon.
+    fn icon_is_live(icon: HICON) -> bool {
+        // SAFETY: GetIconInfo writes into `info`; the bitmaps it returns are ours to delete.
+        unsafe {
+            let mut info: ICONINFO = std::mem::zeroed();
+            let ok = GetIconInfo(icon, &mut info) != 0;
+            if ok {
+                DeleteObject(info.hbmColor);
+                DeleteObject(info.hbmMask);
+            }
+            ok
+        }
+    }
+
+    #[test]
+    fn icon_handle_destroys_an_owned_icon_and_leaves_a_shared_one() {
+        drop(IconHandle::owned(std::ptr::null_mut()));
+        let owned = new_icon();
+        let shared = new_icon();
+        drop(IconHandle::owned(owned));
+        drop(IconHandle::shared(shared));
+        assert!(!icon_is_live(owned), "an owned icon is destroyed on drop");
+        assert!(icon_is_live(shared), "a shared icon is not destroyed");
+        // SAFETY: the test still owns `shared` and destroys it once.
+        unsafe { DestroyIcon(shared) };
+    }
+
+    #[test]
+    fn icon_handle_replace_with_the_same_handle_keeps_ownership() {
+        let icon = new_icon();
+        let mut slot = IconHandle::owned(icon);
+        assert!(slot.replace(IconHandle::shared(icon)).is_none());
+        assert!(slot.is_owned(), "still owned after replacing with itself");
+        assert!(icon_is_live(icon));
+        drop(slot);
+        assert!(!icon_is_live(icon), "destroyed with its owner");
+    }
+
+    #[test]
+    fn icon_handle_replace_returns_the_previous_handle() {
+        let (first, second) = (new_icon(), new_icon());
+        let mut slot = IconHandle::owned(first);
+        let old = slot.replace(IconHandle::owned(second)).expect("replaced");
+        assert_eq!(old.as_raw(), first);
+        assert!(
+            icon_is_live(first),
+            "the caller decides when it is destroyed"
+        );
+        drop(old);
+        assert!(!icon_is_live(first));
+        assert!(icon_is_live(second));
+        drop(slot);
+        assert!(!icon_is_live(second));
     }
 }
