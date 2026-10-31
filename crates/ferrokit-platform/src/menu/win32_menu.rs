@@ -172,8 +172,14 @@ impl Win32Menu {
                 }
                 MenuEntry::SubMenu { text, menu } => {
                     // A failed build leaves nothing to free here; `hmenu` drops on the way out.
-                    // The default `build_native_menu` returns 0, which the guard tolerates.
-                    let sub_hmenu = OwnedMenu::from_raw(menu.build_native_menu()? as HMENU);
+                    let raw = menu.build_native_menu()?;
+                    if raw == 0 {
+                        // A submenu from another back end (the trait default returns 0) has no
+                        // native menu: appending `MF_POPUP` with a null menu would fail, so the
+                        // item is skipped and the rest of the menu is still built.
+                        continue;
+                    }
+                    let sub_hmenu = OwnedMenu::from_raw(raw as HMENU);
                     let wide_text: Vec<u16> =
                         text.encode_utf16().chain(std::iter::once(0)).collect();
                     // On failure both guards destroy their menu; on success the parent owns the
@@ -363,6 +369,23 @@ mod tests {
                 0,
                 "the parent owns and destroys the submenu"
             );
+        }
+    }
+
+    /// A submenu without a native menu (another back end, whose `build_native_menu` returns 0)
+    /// is skipped; the remaining items are still built.
+    #[test]
+    fn test_win32_menu_skips_a_submenu_without_a_native_menu() {
+        use crate::menu::CocoaMenu;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetMenuItemCount;
+        let mut menu = Win32Menu::new(ptr::null_mut());
+        menu.add_action(1, "Before");
+        menu.add_submenu("Foreign", Box::new(CocoaMenu::new()));
+        menu.add_action(2, "After");
+        unsafe {
+            let hmenu = menu.build_hmenu().expect("failed to build HMENU");
+            assert_eq!(GetMenuItemCount(hmenu), 2);
+            assert_ne!(DestroyMenu(hmenu), 0);
         }
     }
 }

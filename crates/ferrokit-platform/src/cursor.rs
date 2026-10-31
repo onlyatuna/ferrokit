@@ -240,10 +240,13 @@ pub mod win32_cursor {
                 // SAFETY: plain metrics query.
                 let width = unsafe { GetSystemMetrics(SM_CXCURSOR) };
                 let key = (shape as u8, width);
-                let cached = CUSTOM_CURSORS
-                    .try_with(|m| m.borrow().get(&key).copied())
-                    .ok()
-                    .flatten();
+                let Ok(cached) = CUSTOM_CURSORS.try_with(|m| m.borrow().get(&key).copied()) else {
+                    // The thread-local cache is gone (thread teardown): a cursor made now could
+                    // never be cached or destroyed and would leak on every call, so fall back to
+                    // the shared system arrow, which belongs to the system and is never destroyed.
+                    // SAFETY: a null instance loads a shared system cursor.
+                    return unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) };
+                };
                 if let Some(handle) = cached {
                     return handle as HCURSOR;
                 }

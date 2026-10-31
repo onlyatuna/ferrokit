@@ -12,6 +12,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HRGN,
 };
+use windows_sys::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyIcon, DestroyMenu, HICON, HMENU,
@@ -76,6 +77,34 @@ impl Drop for GlobalMem {
         // clipboard only takes blocks that `SetClipboardData` accepted, which are never wrapped
         // in a live guard.
         unsafe { GlobalFree(self.0) };
+    }
+}
+
+/// The clipboard opened by this thread, closed with `CloseClipboard` on drop, so an early
+/// return or a panic between open and close cannot leave the clipboard open for everyone else.
+pub(crate) struct ClipboardSession(std::marker::PhantomData<*const ()>);
+
+impl ClipboardSession {
+    /// Opens the clipboard, retrying briefly while another process holds it; `None` if it stays
+    /// busy.
+    pub(crate) fn open_with_retry() -> Option<Self> {
+        for _ in 0..3 {
+            // SAFETY: a null window associates the clipboard with the current task; no pointers.
+            if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
+                return Some(Self(std::marker::PhantomData));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        None
+    }
+}
+
+impl Drop for ClipboardSession {
+    fn drop(&mut self) {
+        // SAFETY: a session exists only after a successful OpenClipboard on this thread and is
+        // `!Send` (the raw-pointer marker), so it is dropped on that same thread; CloseClipboard
+        // is therefore called exactly once per open, by the thread that opened it.
+        unsafe { CloseClipboard() };
     }
 }
 
@@ -291,7 +320,12 @@ pub(crate) fn create_dib_section(dc: HDC, w: u32, h: u32) -> Option<(OwnedBitmap
     // out pointer, and `dc` is a DC (or null) the caller owns.
     let hbitmap =
         unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0) };
-    let bitmap = OwnedBitmap::from_raw(hbitmap)?;
+    dib_with_bits(OwnedBitmap::from_raw(hbitmap)?, bits)
+}
+
+/// Accepts a created bitmap only when GDI also gave it a pixel pointer. The bitmap is already
+/// owned, so rejecting it deletes it instead of leaking it.
+fn dib_with_bits(bitmap: OwnedBitmap, bits: *mut c_void) -> Option<(OwnedBitmap, *mut u8)> {
     (!bits.is_null()).then_some((bitmap, bits.cast::<u8>()))
 }
 
@@ -452,7 +486,9 @@ impl Drop for IconHandle {
 mod tests {
     use super::*;
     use windows_sys::Win32::Graphics::Gdi::CreateRectRgn;
-    use windows_sys::Win32::Graphics::Gdi::{GetCurrentObject, GetObjectW, BITMAP, OBJ_BITMAP};
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateCompatibleBitmap, GetCurrentObject, GetObjectW, BITMAP, OBJ_BITMAP,
+    };
     use windows_sys::Win32::System::Memory::GlobalSize;
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
@@ -626,6 +662,18 @@ mod tests {
         }
     }
 
+    /// A bitmap created without a pixel pointer is rejected and deleted, not leaked.
+    #[test]
+    fn dib_without_bits_is_rejected_and_the_bitmap_deleted() {
+        let screen = WindowDc::screen();
+        // SAFETY: plain GDI call; the result is checked by from_raw.
+        let raw = unsafe { CreateCompatibleBitmap(screen.as_raw(), 4, 4) };
+        let bitmap = OwnedBitmap::from_raw(raw).expect("bitmap");
+        assert!(bitmap_is_live(raw));
+        assert!(dib_with_bits(bitmap, std::ptr::null_mut()).is_none());
+        assert!(!bitmap_is_live(raw), "the rejected bitmap must be deleted");
+    }
+
     #[test]
     fn dib_target_selects_the_bitmap_and_drop_releases_it() {
         let target = new_target(8, 4);
@@ -742,5 +790,34 @@ mod tests {
         assert!(icon_is_live(second));
         drop(slot);
         assert!(!icon_is_live(second));
+    }
+
+    /// Whether this thread has the clipboard open: reading a format fails with
+    /// `ERROR_CLIPBOARD_NOT_OPEN` (1418) when it is not.
+    fn clipboard_is_open_here() -> bool {
+        use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
+        use windows_sys::Win32::System::DataExchange::GetClipboardData;
+        // SAFETY: only reads the clipboard state and the thread's last error.
+        unsafe {
+            SetLastError(0);
+            GetClipboardData(13); // CF_UNICODETEXT
+            GetLastError() != 1418
+        }
+    }
+
+    #[test]
+    fn clipboard_session_closes_on_drop_and_on_panic() {
+        assert!(!clipboard_is_open_here());
+        let session = ClipboardSession::open_with_retry().expect("open");
+        assert!(clipboard_is_open_here(), "open while the session lives");
+        drop(session);
+        assert!(!clipboard_is_open_here(), "drop must close the clipboard");
+
+        let unwound = std::panic::catch_unwind(|| {
+            let _session = ClipboardSession::open_with_retry().expect("open");
+            panic!("between open and close");
+        });
+        assert!(unwound.is_err());
+        assert!(!clipboard_is_open_here(), "a panic must still close it");
     }
 }
