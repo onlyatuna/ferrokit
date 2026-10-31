@@ -6,15 +6,12 @@ fn trace_record_at(kind: TraceKind, hwnd: usize, pos: (i32, i32), physical: (u32
     crate::resize_trace::record_at(kind, hwnd, pos, (0, 0), physical);
 }
 use crate::surface::PlatformSurface;
+use crate::win32_handles::{create_dib_section, DibTarget, MemDc, WindowDc};
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
 use std::ptr;
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT, SIZE};
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-    HBITMAP, HDC, HGDIOBJ,
-};
+use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HDC};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, UpdateLayeredWindow,
     UpdateLayeredWindowIndirect, GWL_EXSTYLE, ULW_ALPHA, UPDATELAYEREDWINDOWINFO, WS_EX_LAYERED,
@@ -106,26 +103,6 @@ pub struct LayeredStats {
     pub ulw_rect_changed_by_ulw_count: u64,
 }
 
-/// The screen device context (`GetDC(NULL)`) for one scope, released on drop. Never stored: the
-/// handle stops being valid for `UpdateLayeredWindow` after a display change, so each user
-/// acquires its own.
-pub(crate) struct ScreenDc(pub(crate) HDC);
-
-impl ScreenDc {
-    /// Acquires the screen DC; the held handle is null if `GetDC` failed.
-    pub(crate) fn acquire() -> Self {
-        Self(unsafe { GetDC(ptr::null_mut()) })
-    }
-}
-
-impl Drop for ScreenDc {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { ReleaseDC(ptr::null_mut(), self.0) };
-        }
-    }
-}
-
 pub struct Win32LayeredSurface {
     hwnd: HWND,
     /// Visible size: what is presented (`psize`) and the size of the source pixmap.
@@ -134,10 +111,9 @@ pub struct Win32LayeredSurface {
     /// DIB allocation. `>=` the visible size; rows are `alloc_width * 4` bytes apart.
     alloc_width: u32,
     alloc_height: u32,
-    mem_dc: HDC,
-    hbitmap: HBITMAP,
-    old_hbitmap: HGDIOBJ,
-    bits: *mut u8,
+    /// The memory DC with the DIB section selected into it; rows are `alloc_width * 4` bytes
+    /// apart.
+    target: DibTarget,
     /// Native interactive sizing loop active (see [`Self::set_interactive_resize`]).
     interactive: bool,
     /// Policy switch for A/B comparison: when `false`, the DIB is always sized exactly.
@@ -166,22 +142,21 @@ impl Win32LayeredSurface {
             if (ex_style as u32 & WS_EX_LAYERED) == 0 {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED as isize);
             }
-            let screen = ScreenDc::acquire();
-            if screen.0.is_null() {
+            let screen = WindowDc::screen();
+            if screen.as_raw().is_null() {
                 return Err("Failed to get screen DC (GetDC)");
             }
 
-            let mem_dc = CreateCompatibleDC(screen.0);
-            if mem_dc.is_null() {
+            let Some(mem_dc) = MemDc::create_compatible(screen.as_raw()) else {
                 return Err("Failed to create compatible DC (CreateCompatibleDC)");
-            }
+            };
 
-            let Some((hbitmap, bits)) = create_dib(mem_dc, width, height) else {
-                DeleteDC(mem_dc);
+            // A failed DIB drops `mem_dc` (DeleteDC) on the way out.
+            let Some((hbitmap, bits)) = create_dib_section(mem_dc.as_raw(), width, height) else {
                 return Err("CreateDIBSection failed to create layered bitmap");
             };
 
-            let old_hbitmap = SelectObject(mem_dc, hbitmap);
+            let target = DibTarget::select(mem_dc, hbitmap, bits);
 
             Ok(Self {
                 hwnd,
@@ -189,10 +164,7 @@ impl Win32LayeredSurface {
                 height,
                 alloc_width: width,
                 alloc_height: height,
-                mem_dc,
-                hbitmap,
-                old_hbitmap,
-                bits,
+                target,
                 interactive: false,
                 persistent_capacity: true,
                 force_full: true,
@@ -243,12 +215,12 @@ impl Win32LayeredSurface {
 
     #[inline]
     pub fn hdc(&self) -> HDC {
-        self.mem_dc
+        self.target.dc()
     }
 
     #[inline]
     pub fn bits(&self) -> *mut u8 {
-        self.bits
+        self.target.bits()
     }
 
     /// Whole DIB allocation (`allocated_width * allocated_height * 4` bytes). Equals the visible
@@ -256,13 +228,13 @@ impl Win32LayeredSurface {
     #[inline]
     pub fn buffer(&self) -> &[u8] {
         let len = (self.alloc_width as usize) * (self.alloc_height as usize) * 4;
-        unsafe { std::slice::from_raw_parts(self.bits, len) }
+        unsafe { std::slice::from_raw_parts(self.target.bits(), len) }
     }
 
     #[inline]
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         let len = (self.alloc_width as usize) * (self.alloc_height as usize) * 4;
-        unsafe { std::slice::from_raw_parts_mut(self.bits, len) }
+        unsafe { std::slice::from_raw_parts_mut(self.target.bits(), len) }
     }
 
     /// Enables/disables the persistent-capacity policy (default: enabled). Disabled, the DIB is
@@ -299,17 +271,13 @@ impl Win32LayeredSurface {
     /// Replaces the DIB with a `w`x`h` allocation. The new bitmap is uninitialised, so the next
     /// present repaints the whole visible area.
     fn realloc_dib(&mut self, w: u32, h: u32) -> Result<(), &'static str> {
-        let Some((new_hbitmap, new_bits)) = (unsafe { create_dib(self.mem_dc, w, h) }) else {
+        let Some((new_bitmap, new_bits)) = create_dib_section(self.target.dc(), w, h) else {
             return Err("CreateDIBSection failed during resize");
         };
-        unsafe {
-            SelectObject(self.mem_dc, new_hbitmap);
-            DeleteObject(self.hbitmap);
-        }
+        // Selects the new bitmap (deselecting the old one), then deletes the old one.
+        self.target.replace_selecting(new_bitmap, new_bits);
         self.alloc_width = w;
         self.alloc_height = h;
-        self.hbitmap = new_hbitmap;
-        self.bits = new_bits;
         self.force_full = true;
         self.stats.dib_realloc_count += 1;
         Ok(())
@@ -427,7 +395,7 @@ impl Win32LayeredSurface {
                     copy_bytes,
                 );
                 let dst_row = std::slice::from_raw_parts_mut(
-                    self.bits.add(y * dst_stride + dirty_x * 4),
+                    self.target.bits().add(y * dst_stride + dirty_x * 4),
                     copy_bytes,
                 );
 
@@ -503,13 +471,13 @@ impl Win32LayeredSurface {
             // Fetched per present: a cached screen DC goes stale across display-mode changes,
             // monitor hot-plug, RDP attach/detach and sleep/resume. Released when `screen` drops,
             // after the update below. `NULL` is accepted by `UpdateLayeredWindow` if `GetDC` fails.
-            let screen = ScreenDc::acquire();
+            let screen = WindowDc::screen();
             let mut info: UPDATELAYEREDWINDOWINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32;
-            info.hdcDst = screen.0;
+            info.hdcDst = screen.as_raw();
             info.pptDst = &pt_dst;
             info.psize = &size;
-            info.hdcSrc = self.mem_dc;
+            info.hdcSrc = self.target.dc();
             info.pptSrc = &pt_src;
             info.crKey = 0;
             info.pblend = &blend;
@@ -544,7 +512,7 @@ impl Win32LayeredSurface {
                     ptr::null_mut(),
                     &pt_dst,
                     &size,
-                    self.mem_dc,
+                    self.target.dc(),
                     &pt_src,
                     0,
                     &blend,
@@ -621,25 +589,6 @@ impl Win32LayeredSurface {
     }
 }
 
-/// Creates a top-down 32-bit DIB section of `w`x`h` compatible with `dc`.
-unsafe fn create_dib(dc: HDC, w: u32, h: u32) -> Option<(HBITMAP, *mut u8)> {
-    let mut bmi: BITMAPINFO = std::mem::zeroed();
-    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = w.max(1) as i32;
-    bmi.bmiHeader.biHeight = -(h.max(1) as i32); // Top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    let mut bits: *mut core::ffi::c_void = ptr::null_mut();
-    let hbitmap = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
-    if hbitmap.is_null() || bits.is_null() {
-        None
-    } else {
-        Some((hbitmap, bits as *mut u8))
-    }
-}
-
 impl PlatformSurface for Win32LayeredSurface {
     fn width(&self) -> u32 {
         self.width
@@ -664,39 +613,5 @@ impl PlatformSurface for Win32LayeredSurface {
         dirty: Rect,
     ) -> Result<(), &'static str> {
         self.present_dirty(pixmap, opacity, dirty)
-    }
-}
-
-impl Drop for Win32LayeredSurface {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.mem_dc.is_null() && !self.old_hbitmap.is_null() {
-                SelectObject(self.mem_dc, self.old_hbitmap);
-            }
-            if !self.hbitmap.is_null() {
-                DeleteObject(self.hbitmap);
-            }
-            if !self.mem_dc.is_null() {
-                DeleteDC(self.mem_dc);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::ScreenDc;
-
-    /// A leaked screen DC would exhaust the per-process GDI quota (10 000 handles by default)
-    /// and `GetDC` would start returning NULL.
-    #[test]
-    fn screen_dc_is_released_on_drop() {
-        for i in 0..12_000 {
-            let dc = ScreenDc::acquire();
-            assert!(
-                !dc.0.is_null(),
-                "GetDC(NULL) failed at iteration {i}: DCs leaked"
-            );
-        }
     }
 }

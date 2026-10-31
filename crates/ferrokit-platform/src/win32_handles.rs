@@ -6,8 +6,12 @@
 //! must return it raw) and disarms the guard; call it only after the system accepted ownership.
 
 use std::ffi::c_void;
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL};
-use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HRGN};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HRGN,
+};
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, HMENU};
 
@@ -162,10 +166,219 @@ impl Drop for OwnedMenu {
     }
 }
 
+/// A device context from `GetDC`, released with `ReleaseDC` on the same window.
+///
+/// `hwnd` is null for the screen DC. The handle is never stored beyond one scope: it stops
+/// being valid for `UpdateLayeredWindow` after a display change, so every user acquires its own.
+/// The held handle is null when `GetDC` failed; check `as_raw` where that matters.
+pub(crate) struct WindowDc {
+    hwnd: HWND,
+    hdc: HDC,
+}
+
+impl WindowDc {
+    /// The client DC of `hwnd`.
+    pub(crate) fn acquire(hwnd: HWND) -> Self {
+        // SAFETY: GetDC validates `hwnd` itself (null selects the screen); a null result is kept
+        // and tolerated by Drop.
+        Self {
+            hwnd,
+            hdc: unsafe { GetDC(hwnd) },
+        }
+    }
+
+    /// The screen DC (`GetDC(NULL)`).
+    pub(crate) fn screen() -> Self {
+        Self::acquire(std::ptr::null_mut())
+    }
+
+    /// The raw handle, still owned by the guard; null if `GetDC` failed.
+    pub(crate) fn as_raw(&self) -> HDC {
+        self.hdc
+    }
+}
+
+impl Drop for WindowDc {
+    fn drop(&mut self) {
+        if self.hdc.is_null() {
+            return;
+        }
+        // SAFETY: `self.hdc` came from `GetDC(self.hwnd)` in `acquire` and this guard is its only
+        // owner and never releases it elsewhere; ReleaseDC with the same window is the matching
+        // call. If the window was destroyed meanwhile ReleaseDC just fails.
+        unsafe { ReleaseDC(self.hwnd, self.hdc) };
+    }
+}
+
+/// A memory DC from `CreateCompatibleDC`, deleted with `DeleteDC`.
+pub(crate) struct MemDc(HDC);
+
+impl MemDc {
+    /// A memory DC compatible with `hdc` (null: compatible with the screen); `None` on failure.
+    pub(crate) fn create_compatible(hdc: HDC) -> Option<Self> {
+        // SAFETY: CreateCompatibleDC accepts any DC handle or null and validates it itself.
+        let dc = unsafe { CreateCompatibleDC(hdc) };
+        (!dc.is_null()).then_some(Self(dc))
+    }
+
+    /// The raw handle, still owned by the guard.
+    pub(crate) fn as_raw(&self) -> HDC {
+        self.0
+    }
+}
+
+impl Drop for MemDc {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` is a DC made by CreateCompatibleDC that this guard solely owns, so
+        // DeleteDC is the matching single release. Any bitmap still selected into it is the
+        // concern of `DibTarget`, which restores the previous object before this runs.
+        unsafe { DeleteDC(self.0) };
+    }
+}
+
+/// An owned bitmap (`CreateDIBSection`, `CreateBitmap`), deleted with `DeleteObject`.
+///
+/// A bitmap must not be selected into a DC when it is deleted (`DeleteObject` fails and the
+/// bitmap leaks); a bitmap that is selected belongs in a [`DibTarget`].
+pub(crate) struct OwnedBitmap(HBITMAP);
+
+impl OwnedBitmap {
+    /// Takes ownership of a bitmap the caller just created; `None` when GDI returned null.
+    pub(crate) fn from_raw(bitmap: HBITMAP) -> Option<Self> {
+        (!bitmap.is_null()).then_some(Self(bitmap))
+    }
+
+    /// The raw handle, still owned by the guard.
+    pub(crate) fn as_raw(&self) -> HBITMAP {
+        self.0
+    }
+}
+
+impl Drop for OwnedBitmap {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` is a bitmap created by GDI that this guard solely owns. It is not
+        // selected into any DC here: `DibTarget` is the only holder that selects one and it
+        // restores the previous object before dropping this field.
+        unsafe { DeleteObject(self.0) };
+    }
+}
+
+/// Creates a top-down 32-bit DIB section of `w` x `h` (each at least 1) compatible with `dc`.
+///
+/// The bitmap is wrapped before the pixel pointer is checked, so a bitmap returned without bits
+/// is deleted rather than leaked.
+pub(crate) fn create_dib_section(dc: HDC, w: u32, h: u32) -> Option<(OwnedBitmap, *mut u8)> {
+    // SAFETY: a zeroed BITMAPINFO is a valid all-zero C struct; the header fields are set below.
+    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = w.max(1) as i32;
+    bmi.bmiHeader.biHeight = -(h.max(1) as i32); // Top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    // SAFETY: `bmi` is a fully initialised BITMAPINFO that outlives the call, `bits` is a valid
+    // out pointer, and `dc` is a DC (or null) the caller owns.
+    let hbitmap =
+        unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0) };
+    let bitmap = OwnedBitmap::from_raw(hbitmap)?;
+    (!bits.is_null()).then_some((bitmap, bits.cast::<u8>()))
+}
+
+/// A memory DC with a DIB section selected into it.
+///
+/// Encodes the selection: it remembers the object the bitmap replaced, and its `Drop` restores
+/// that object first, then deletes the bitmap, then deletes the DC (field order: `bitmap`
+/// before `dc`). `bits` points into the DIB section and is valid while the bitmap lives.
+pub(crate) struct DibTarget {
+    bitmap: OwnedBitmap,
+    dc: MemDc,
+    previous: HGDIOBJ,
+    bits: *mut u8,
+}
+
+impl DibTarget {
+    /// Selects `bitmap` (whose pixels are at `bits`) into `dc`.
+    pub(crate) fn select(dc: MemDc, bitmap: OwnedBitmap, bits: *mut u8) -> Self {
+        // SAFETY: both handles are live and owned by the guards being moved into `Self`; the
+        // bitmap is not selected into another DC.
+        let previous = unsafe { SelectObject(dc.as_raw(), bitmap.as_raw()) };
+        Self {
+            bitmap,
+            dc,
+            previous,
+            bits,
+        }
+    }
+
+    /// The memory DC.
+    pub(crate) fn dc(&self) -> HDC {
+        self.dc.as_raw()
+    }
+
+    /// The pixels of the selected DIB section.
+    pub(crate) fn bits(&self) -> *mut u8 {
+        self.bits
+    }
+
+    /// The selected bitmap.
+    #[cfg(test)]
+    pub(crate) fn bitmap(&self) -> HBITMAP {
+        self.bitmap.as_raw()
+    }
+
+    /// Replaces the bitmap, selecting the new one (which deselects the old one) before the old
+    /// one is deleted.
+    pub(crate) fn replace_selecting(&mut self, bitmap: OwnedBitmap, bits: *mut u8) {
+        let old = std::mem::replace(&mut self.bitmap, bitmap);
+        // SAFETY: the DC and the new bitmap are live and owned by `self`; selecting the new
+        // bitmap deselects `old`, which is dropped (deleted) only afterwards.
+        unsafe { SelectObject(self.dc.as_raw(), self.bitmap.as_raw()) };
+        drop(old);
+        self.bits = bits;
+    }
+
+    /// Replaces the bitmap: restores the previous object, deletes the old bitmap, then selects
+    /// the new one.
+    pub(crate) fn replace_deselecting(&mut self, bitmap: OwnedBitmap, bits: *mut u8) {
+        self.restore_previous();
+        let old = std::mem::replace(&mut self.bitmap, bitmap);
+        drop(old);
+        // SAFETY: the DC and the new bitmap are live and owned by `self`; the old bitmap was
+        // deselected above and deleted just now.
+        self.previous = unsafe { SelectObject(self.dc.as_raw(), self.bitmap.as_raw()) };
+        self.bits = bits;
+    }
+
+    fn restore_previous(&self) {
+        if self.previous.is_null() {
+            return;
+        }
+        // SAFETY: `previous` is what SelectObject returned for this DC when the bitmap was
+        // selected, so it is a GDI object valid for this DC; both handles are owned by `self`.
+        unsafe { SelectObject(self.dc.as_raw(), self.previous) };
+    }
+}
+
+impl Drop for DibTarget {
+    fn drop(&mut self) {
+        // The remaining fields drop after this: `bitmap` is deleted, then `dc`.
+        self.restore_previous();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use windows_sys::Win32::Graphics::Gdi::CreateRectRgn;
+    use windows_sys::Win32::Graphics::Gdi::{GetCurrentObject, GetObjectW, BITMAP, OBJ_BITMAP};
     use windows_sys::Win32::System::Memory::GlobalSize;
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
@@ -298,5 +511,101 @@ mod tests {
         let sub_raw = sub.as_raw();
         drop(sub);
         assert!(!is_menu(sub_raw));
+    }
+
+    /// A leaked screen DC would exhaust the per-process GDI quota (10 000 handles by default)
+    /// and `GetDC` would start returning NULL.
+    #[test]
+    fn window_dc_is_released_on_drop() {
+        for i in 0..12_000 {
+            let dc = WindowDc::screen();
+            assert!(
+                !dc.as_raw().is_null(),
+                "GetDC(NULL) failed at iteration {i}: DCs leaked"
+            );
+        }
+    }
+
+    fn new_target(w: u32, h: u32) -> DibTarget {
+        let screen = WindowDc::screen();
+        let dc = MemDc::create_compatible(screen.as_raw()).expect("memory DC");
+        let (bitmap, bits) = create_dib_section(dc.as_raw(), w, h).expect("DIB section");
+        DibTarget::select(dc, bitmap, bits)
+    }
+
+    fn selected_bitmap(dc: HDC) -> HGDIOBJ {
+        // SAFETY: GetCurrentObject only reads the DC's selection.
+        unsafe { GetCurrentObject(dc, OBJ_BITMAP as u32) }
+    }
+
+    /// `GetObjectW` fails (0) for a handle that is not a live bitmap.
+    fn bitmap_is_live(bitmap: HBITMAP) -> bool {
+        let mut info: BITMAP = unsafe { std::mem::zeroed() };
+        // SAFETY: GetObjectW writes at most `size_of::<BITMAP>()` bytes into `info`.
+        unsafe {
+            GetObjectW(
+                bitmap,
+                std::mem::size_of::<BITMAP>() as i32,
+                (&mut info as *mut BITMAP).cast(),
+            ) != 0
+        }
+    }
+
+    #[test]
+    fn dib_target_selects_the_bitmap_and_drop_releases_it() {
+        let target = new_target(8, 4);
+        let bitmap = target.bitmap();
+        assert_eq!(selected_bitmap(target.dc()), bitmap as HGDIOBJ);
+        assert!(bitmap_is_live(bitmap));
+        // The pixels are writable up to w * h * 4 bytes.
+        // SAFETY: the DIB section is 8 * 4 * 4 bytes.
+        unsafe { *target.bits().add(8 * 4 * 4 - 1) = 0xAB };
+        drop(target);
+        assert!(!bitmap_is_live(bitmap), "drop must delete the bitmap");
+    }
+
+    /// `DeleteObject` fails for a bitmap that is still selected into a DC and the bitmap then
+    /// leaks: the object count staying flat proves the previous object is restored before the
+    /// bitmap is deleted.
+    #[test]
+    fn dib_target_drop_restores_the_previous_object_before_deleting() {
+        let before = gdi_objects();
+        let targets: Vec<DibTarget> = (0..BATCH).map(|_| new_target(4, 4)).collect();
+        assert!(gdi_objects() >= before + BATCH, "targets are GDI objects");
+        drop(targets);
+        assert!(
+            gdi_objects() < before + BATCH / 2,
+            "dropping must delete the bitmaps and the DCs"
+        );
+    }
+
+    #[test]
+    fn dib_target_replace_selecting_deletes_the_old_bitmap() {
+        let mut target = new_target(4, 4);
+        let old = target.bitmap();
+        let (bitmap, bits) = create_dib_section(target.dc(), 16, 16).expect("DIB section");
+        let new = bitmap.as_raw();
+        target.replace_selecting(bitmap, bits);
+        assert_eq!(target.bitmap(), new);
+        assert_eq!(selected_bitmap(target.dc()), new as HGDIOBJ);
+        assert_eq!(target.bits(), bits);
+        assert!(!bitmap_is_live(old), "the old bitmap is deleted");
+        assert!(bitmap_is_live(new));
+    }
+
+    #[test]
+    fn dib_target_replace_deselecting_deletes_the_old_bitmap() {
+        let before = gdi_objects();
+        let mut target = new_target(4, 4);
+        let old = target.bitmap();
+        let (bitmap, bits) = create_dib_section(target.dc(), 16, 16).expect("DIB section");
+        let new = bitmap.as_raw();
+        target.replace_deselecting(bitmap, bits);
+        assert_eq!(target.bitmap(), new);
+        assert_eq!(selected_bitmap(target.dc()), new as HGDIOBJ);
+        assert!(!bitmap_is_live(old), "the old bitmap is deleted");
+        drop(target);
+        assert!(!bitmap_is_live(new));
+        assert!(gdi_objects() <= before + 1);
     }
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 #[cfg(windows)]
-use crate::win32_handles::OwnedMenu;
+use crate::win32_handles::{create_dib_section, MemDc, OwnedBitmap, OwnedMenu};
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 #[cfg(windows)]
@@ -16,10 +16,7 @@ use std::sync::{Mutex, Once};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(windows)]
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-};
+use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
@@ -1070,44 +1067,26 @@ impl TrayIcon {
             return Err("invalid pixmap size");
         }
 
+        let src_data = pixmap.data();
+        let pixel_count = (w as usize) * (h as usize);
+        if src_data.len() < pixel_count * 4 {
+            return Err("pixmap data shorter than its size");
+        }
+
+        let Some(hdc) = MemDc::create_compatible(ptr::null_mut()) else {
+            return Err("CreateCompatibleDC failed");
+        };
+        let created = create_dib_section(hdc.as_raw(), w as u32, h as u32);
+        // The bitmap is never selected into the DC, so the DC is not needed any more.
+        drop(hdc);
+        // The guards delete both bitmaps on every path out; `CreateIconIndirect` copies them.
+        let Some((hbm_color, bits_ptr)) = created else {
+            return Err("CreateDIBSection failed");
+        };
+
+        // SAFETY: the DIB section holds `w * h * 4` bytes (`pixel_count * 4`), and `src_data` was
+        // checked above to hold at least as many.
         unsafe {
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = w;
-            bmi.bmiHeader.biHeight = -h;
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-
-            let src_data = pixmap.data();
-            let pixel_count = (w as usize) * (h as usize);
-            if src_data.len() < pixel_count * 4 {
-                return Err("pixmap data shorter than its size");
-            }
-
-            let hdc = CreateCompatibleDC(ptr::null_mut());
-            if hdc.is_null() {
-                return Err("CreateCompatibleDC failed");
-            }
-            let mut bits_ptr: *mut u8 = ptr::null_mut();
-            let hbm_color = CreateDIBSection(
-                hdc,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits_ptr as *mut _ as *mut *mut std::ffi::c_void,
-                ptr::null_mut(),
-                0,
-            );
-
-            DeleteDC(hdc);
-
-            if hbm_color.is_null() || bits_ptr.is_null() {
-                if !hbm_color.is_null() {
-                    DeleteObject(hbm_color);
-                }
-                return Err("CreateDIBSection failed");
-            }
-
             for i in 0..pixel_count {
                 let r = src_data[i * 4];
                 let g = src_data[i * 4 + 1];
@@ -1119,32 +1098,30 @@ impl TrayIcon {
                 *bits_ptr.add(i * 4 + 2) = r;
                 *bits_ptr.add(i * 4 + 3) = a;
             }
-
-            let hbm_mask = CreateBitmap(w, h, 1, 1, ptr::null());
-            if hbm_mask.is_null() {
-                DeleteObject(hbm_color);
-                return Err("CreateBitmap failed");
-            }
-
-            let icon_info = ICONINFO {
-                fIcon: 1,
-                xHotspot: 0,
-                yHotspot: 0,
-                hbmMask: hbm_mask,
-                hbmColor: hbm_color,
-            };
-
-            let hicon = CreateIconIndirect(&icon_info);
-
-            DeleteObject(hbm_color);
-            DeleteObject(hbm_mask);
-
-            if hicon.is_null() {
-                return Err("CreateIconIndirect failed");
-            }
-
-            Ok(hicon)
         }
+
+        // SAFETY: a null bits pointer asks GDI for an uninitialised monochrome bitmap.
+        let Some(hbm_mask) =
+            OwnedBitmap::from_raw(unsafe { CreateBitmap(w, h, 1, 1, ptr::null()) })
+        else {
+            return Err("CreateBitmap failed");
+        };
+
+        let icon_info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: hbm_mask.as_raw(),
+            hbmColor: hbm_color.as_raw(),
+        };
+
+        // SAFETY: `icon_info` points at live bitmaps for the duration of the call.
+        let hicon = unsafe { CreateIconIndirect(&icon_info) };
+        if hicon.is_null() {
+            return Err("CreateIconIndirect failed");
+        }
+
+        Ok(hicon)
     }
 
     // `DestroyIcon` validates the handle and fails for one that is not an icon. Destroying an
@@ -1387,6 +1364,7 @@ mod tests {
     use super::*;
     use crate::menu::PlatformMenu;
     use ferrokit_gui::tiny_skia::Color;
+    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
     #[test]
     fn test_menu_item_constructors() {
         let act = MenuItem::action(1, "Open Main Window");

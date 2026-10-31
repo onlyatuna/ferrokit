@@ -7,16 +7,14 @@
 //! composition bottleneck on high-resolution screens.
 
 use crate::surface::PlatformSurface;
+use crate::win32_handles::{create_dib_section, DibTarget, MemDc};
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
 use std::ffi::c_void;
 use std::ptr;
 use windows_sys::core::{GUID, HRESULT};
 use windows_sys::Win32::Foundation::{HMODULE, HWND, POINT, RECT};
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
-};
+use windows_sys::Win32::Graphics::Gdi::HDC;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 
 #[link(name = "kernel32")]
@@ -215,10 +213,7 @@ pub struct DCompSurface {
     dcomp_visual: *mut c_void,
     swap_chain: *mut c_void,
     // Staging CPU GDI DIB for format blit (allocated size)
-    staging_dc: HDC,
-    staging_bitmap: HBITMAP,
-    staging_old_bitmap: HGDIOBJ,
-    staging_bits: *mut u8,
+    staging: Option<DibTarget>,
     staging_w: u32,
     staging_h: u32,
     /// Back buffers were reallocated: the next present must cover the whole visible area.
@@ -521,37 +516,18 @@ impl DCompSurface {
             let _ = commit_fn(dcomp_device);
 
             // 12. Allocate staging GDI DIB (allocated size) for software pixel translation
-            let staging_dc = CreateCompatibleDC(ptr::null_mut());
-            if staging_dc.is_null() {
+            let Some(staging_dc) = MemDc::create_compatible(ptr::null_mut()) else {
                 cleanup(&[dcomp_clip_visual, dcomp_visual]);
                 return Err("CreateCompatibleDC failed for the staging DIB");
-            }
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = alloc_w.max(1) as i32;
-            bmi.bmiHeader.biHeight = -(alloc_h.max(1) as i32); // Top-down
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-
-            let mut staging_bits: *mut c_void = ptr::null_mut();
-            let staging_bitmap = CreateDIBSection(
-                staging_dc,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut staging_bits,
-                ptr::null_mut(),
-                0,
-            );
-            if staging_bitmap.is_null() || staging_bits.is_null() {
-                if !staging_bitmap.is_null() {
-                    DeleteObject(staging_bitmap as HGDIOBJ);
-                }
-                DeleteDC(staging_dc);
+            };
+            // A failed DIB drops `staging_dc` (DeleteDC) on the way out.
+            let Some((staging_bitmap, staging_bits)) =
+                create_dib_section(staging_dc.as_raw(), alloc_w, alloc_h)
+            else {
                 cleanup(&[dcomp_clip_visual, dcomp_visual]);
                 return Err("CreateDIBSection failed for the staging DIB");
-            }
-            let staging_old_bitmap = SelectObject(staging_dc, staging_bitmap);
+            };
+            let staging = DibTarget::select(staging_dc, staging_bitmap, staging_bits);
 
             Ok(Self {
                 hwnd,
@@ -569,10 +545,7 @@ impl DCompSurface {
                 dcomp_clip_visual,
                 dcomp_visual,
                 swap_chain,
-                staging_dc,
-                staging_bitmap,
-                staging_old_bitmap,
-                staging_bits: staging_bits as *mut u8,
+                staging: Some(staging),
                 staging_w: alloc_w,
                 staging_h: alloc_h,
                 force_full: true,
@@ -607,10 +580,7 @@ impl DCompSurface {
             dcomp_clip_visual: ptr::null_mut(),
             dcomp_visual: ptr::null_mut(),
             swap_chain: ptr::null_mut(),
-            staging_dc: ptr::null_mut(),
-            staging_bitmap: ptr::null_mut(),
-            staging_old_bitmap: ptr::null_mut(),
-            staging_bits: ptr::null_mut(),
+            staging: None,
             staging_w: width,
             staging_h: height,
             force_full: true,
@@ -639,7 +609,19 @@ impl DCompSurface {
         }
         let off = (y as usize * self.staging_w as usize + x as usize) * 4;
         // SAFETY: (x, y) is inside the staging DIB, which is `staging_w * staging_h * 4` bytes.
-        Some(unsafe { *(self.staging_bits.add(off) as *const [u8; 4]) })
+        Some(unsafe { *(self.staging_bits().add(off) as *const [u8; 4]) })
+    }
+
+    /// The staging DC; null for the mock surface, which has no staging DIB.
+    fn staging_dc(&self) -> HDC {
+        self.staging.as_ref().map_or(ptr::null_mut(), DibTarget::dc)
+    }
+
+    /// The staging DIB pixels; null for the mock surface, which has no staging DIB.
+    fn staging_bits(&self) -> *mut u8 {
+        self.staging
+            .as_ref()
+            .map_or(ptr::null_mut(), DibTarget::bits)
     }
 
     /// Allocated swap chain size (>= visible size).
@@ -741,29 +723,10 @@ impl DCompSurface {
             let resize_fn: PfnResizeBuffers = std::mem::transmute(*sc_vtbl.add(13));
             // Allocate the new staging DIB first: if it fails nothing has changed yet (the swap
             // chain keeps its size, the old DIB stays selected).
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = alloc_w.max(1) as i32;
-            bmi.bmiHeader.biHeight = -(alloc_h.max(1) as i32);
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-
-            let mut bits: *mut c_void = ptr::null_mut();
-            let new_bmp = CreateDIBSection(
-                self.staging_dc,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits,
-                ptr::null_mut(),
-                0,
-            );
-            if new_bmp.is_null() || bits.is_null() {
-                if !new_bmp.is_null() {
-                    DeleteObject(new_bmp as HGDIOBJ);
-                }
+            let Some((new_bmp, bits)) = create_dib_section(self.staging_dc(), alloc_w, alloc_h)
+            else {
                 return Err("CreateDIBSection failed for the staging DIB");
-            }
+            };
 
             let hr = resize_fn(
                 self.swap_chain,
@@ -774,7 +737,6 @@ impl DCompSurface {
                 DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE,
             );
             if hr < 0 {
-                DeleteObject(new_bmp as HGDIOBJ);
                 let u_hr = hr as u32;
                 if u_hr == 0x887A0005 || u_hr == 0x887A0007 {
                     return Err("DXGI_ERROR_DEVICE_LOST");
@@ -783,12 +745,11 @@ impl DCompSurface {
             }
             self.stats.resize_buffers_count += 1;
 
-            // Swap the staging DIB.
-            SelectObject(self.staging_dc, self.staging_old_bitmap);
-            DeleteObject(self.staging_bitmap);
-            self.staging_old_bitmap = SelectObject(self.staging_dc, new_bmp);
-            self.staging_bitmap = new_bmp;
-            self.staging_bits = bits as *mut u8;
+            // Swap the staging DIB: restore the previous object, delete the old DIB, select the
+            // new one.
+            if let Some(staging) = &mut self.staging {
+                staging.replace_deselecting(new_bmp, bits);
+            }
             self.staging_w = alloc_w;
             self.staging_h = alloc_h;
             self.alloc_w = alloc_w;
@@ -854,7 +815,7 @@ impl DCompSurface {
                 let src_row =
                     std::slice::from_raw_parts(src_data.as_ptr().add(src_offset), copy_bytes);
                 let dst_row =
-                    std::slice::from_raw_parts_mut(self.staging_bits.add(dst_offset), copy_bytes);
+                    std::slice::from_raw_parts_mut(self.staging_bits().add(dst_offset), copy_bytes);
 
                 convert_rgba_to_staging_bgra(src_row, dst_row, opacity);
             }
@@ -904,7 +865,7 @@ impl DCompSurface {
                 blit.y,
                 blit.width,
                 blit.height,
-                self.staging_dc,
+                self.staging_dc(),
                 blit.x,
                 blit.y,
                 windows_sys::Win32::Graphics::Gdi::SRCCOPY,
@@ -1016,11 +977,6 @@ impl PlatformSurface for DCompSurface {
 impl Drop for DCompSurface {
     fn drop(&mut self) {
         unsafe {
-            if !self.staging_dc.is_null() {
-                SelectObject(self.staging_dc, self.staging_old_bitmap);
-                DeleteObject(self.staging_bitmap);
-                DeleteDC(self.staging_dc);
-            }
             com_release(self.dcomp_clip_visual);
             com_release(self.dcomp_visual);
             com_release(self.dcomp_target);

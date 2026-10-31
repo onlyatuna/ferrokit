@@ -120,15 +120,13 @@ pub trait PlatformCursor: Send + Sync {
 #[cfg(windows)]
 pub mod win32_cursor {
     use super::*;
+    use crate::win32_handles::{create_dib_section, OwnedBitmap};
     use ferrokit_gui::geometry::primitives::Point;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
     use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::{
-        CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS,
-    };
+    use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
     };
@@ -172,58 +170,45 @@ pub mod win32_cursor {
             return std::ptr::null_mut();
         };
         let (width, height) = (image.width as i32, image.height as i32);
+        // The colour and mask bitmaps are owned by guards, so they are deleted on every path out
+        // (`CreateIconIndirect` copies them), including an unwind.
+        let Some((color, bits)) = create_dib_section(
+            std::ptr::null_mut(),
+            image.width as u32,
+            image.height as u32,
+        ) else {
+            return std::ptr::null_mut();
+        };
         // SAFETY: the DIB section is written only inside the `width * height * 4` bytes Windows
-        // allocates for it; every GDI object created here is deleted before returning.
+        // allocates for it.
         unsafe {
-            let mut header: BITMAPINFOHEADER = std::mem::zeroed();
-            header.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            header.biWidth = width;
-            header.biHeight = -height;
-            header.biPlanes = 1;
-            header.biBitCount = 32;
-            header.biCompression = BI_RGB;
-            let info = BITMAPINFO {
-                bmiHeader: header,
-                bmiColors: [std::mem::zeroed()],
-            };
-            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let color = CreateDIBSection(
-                std::ptr::null_mut(),
-                &info,
-                DIB_RGB_COLORS,
-                &mut bits,
-                std::ptr::null_mut(),
-                0,
-            );
-            if color.is_null() || bits.is_null() {
-                return std::ptr::null_mut();
-            }
-            std::ptr::copy_nonoverlapping(image.bgra.as_ptr(), bits as *mut u8, image.bgra.len());
-            // The AND mask: a set bit lets the screen show through.
-            let stride = (image.width.div_ceil(16)) * 2;
-            let mut and_mask = vec![0u8; stride * image.height];
-            for y in 0..image.height {
-                for x in 0..image.width {
-                    if image.pixel(x, y)[3] == 0 {
-                        and_mask[y * stride + x / 8] |= 0x80 >> (x % 8);
-                    }
+            std::ptr::copy_nonoverlapping(image.bgra.as_ptr(), bits, image.bgra.len());
+        }
+        // The AND mask: a set bit lets the screen show through.
+        let stride = (image.width.div_ceil(16)) * 2;
+        let mut and_mask = vec![0u8; stride * image.height];
+        for y in 0..image.height {
+            for x in 0..image.width {
+                if image.pixel(x, y)[3] == 0 {
+                    and_mask[y * stride + x / 8] |= 0x80 >> (x % 8);
                 }
             }
-            let mask = CreateBitmap(width, height, 1, 1, and_mask.as_ptr() as *const _);
-            let icon = ICONINFO {
-                fIcon: 0,
-                xHotspot: image.hot_x.max(0) as u32,
-                yHotspot: image.hot_y.max(0) as u32,
-                hbmMask: mask,
-                hbmColor: color,
-            };
-            let cursor = CreateIconIndirect(&icon);
-            DeleteObject(color);
-            if !mask.is_null() {
-                DeleteObject(mask);
-            }
-            cursor
         }
+        // SAFETY: `and_mask` holds `height` rows of `stride` bytes, the 1-bit layout GDI reads.
+        let mask = OwnedBitmap::from_raw(unsafe {
+            CreateBitmap(width, height, 1, 1, and_mask.as_ptr() as *const _)
+        });
+        let icon = ICONINFO {
+            fIcon: 0,
+            xHotspot: image.hot_x.max(0) as u32,
+            yHotspot: image.hot_y.max(0) as u32,
+            hbmMask: mask
+                .as_ref()
+                .map_or(std::ptr::null_mut(), OwnedBitmap::as_raw),
+            hbmColor: color.as_raw(),
+        };
+        // SAFETY: `icon` points at live bitmaps for the duration of the call.
+        unsafe { CreateIconIndirect(&icon) }
     }
 
     /// The system's handle for `shape` (`QWindowsCursor::createCursorFromShape`); null for
