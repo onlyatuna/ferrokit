@@ -668,8 +668,9 @@ fn the_oracle_file_is_the_generated_one() {
         hash, ORACLE_FNV1A,
         "tests/data/text_layout_oracle.txt changed (FNV-1a {hash:#018x}). Do not edit it by hand: \
          on Windows with PySide6 and fontTools, in tests/data run \
-         `python gen_text_layout_oracle.py > text_layout_oracle.txt`, then set ORACLE_FNV1A to \
-         the new hash (and EXPECTED_LINES if the counts changed)"
+         `python gen_text_layout_oracle.py > text_layout_oracle.txt` from cmd.exe or PowerShell 7 \
+         (Windows PowerShell 5's `>` writes UTF-16), then set ORACLE_FNV1A to the new hash (and \
+         EXPECTED_LINES if the counts changed)"
     );
 }
 

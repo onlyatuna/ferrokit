@@ -4,7 +4,8 @@
 
 The fixture is what PySide6's real QTextLayout / QTextLine measure; the file header records the
 version, platform and font engine. Run it on Windows (the DirectWrite engine the Rust side
-reproduces) with fontTools installed:
+reproduces) with fontTools installed, from cmd.exe or PowerShell 7 (the `>` of Windows
+PowerShell 5 writes UTF-16):
 
     python gen_text_layout_oracle.py > text_layout_oracle.txt
 

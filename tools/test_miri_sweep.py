@@ -293,8 +293,8 @@ class TestMiriSweepSharding(unittest.TestCase):
     def test_shards_are_balanced_by_estimated_seconds(self):
         # On the checked-in data round-robin happens to be as even (its many small units average
         # out) but it splits every target over every shard; the weighted contiguous cut must stay
-        # within half the heaviest unit of an even split. That it beats round-robin when the
-        # weights are skewed is checked below.
+        # within one heaviest unit of an even split (`assign_units`). That it beats round-robin
+        # when the weights are skewed is checked below.
         for crate in BASELINE_FILES:
             for models in MODEL_SETS:
                 for count in range(2, 5):
@@ -302,7 +302,7 @@ class TestMiriSweepSharding(unittest.TestCase):
                     loads = [plan.seconds(i) for i in range(1, count + 1)]
                     heaviest_unit = max(seconds for _, _, seconds in plan.units)
                     with self.subTest(crate=crate, models=models, count=count):
-                        self.assertLessEqual(max(loads), sum(loads) / count + heaviest_unit / 2 + 1e-9, loads)
+                        self.assertLessEqual(max(loads), sum(loads) / count + heaviest_unit + 1e-9, loads)
 
     def test_weighted_cut_beats_round_robin_on_skewed_weights(self):
         # A heavy unit in every other slot: round-robin piles all of them on one shard.

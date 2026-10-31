@@ -438,11 +438,12 @@ fn hide_tip_immediately() {
         let mut taken = TakenTip(Some(tip));
         let placing = PlacingGuard::enter();
         let tip = taken.tip();
+        // Cleared first: a panicking `Hide` handler must not leave `ToolTip::text` stale.
+        tip.text.clear();
+        tip.widget = None;
         if tip.window.is_visible() {
             tip.window.hide();
         }
-        tip.text.clear();
-        tip.widget = None;
         // Leaving the outermost level drops a hide recorded by a re-entrant call: it has
         // nothing left to apply to.
         drop(placing);
@@ -451,8 +452,8 @@ fn hide_tip_immediately() {
 }
 
 /// A tip taken out of the controller's slot while a window operation runs on it. An unwind out
-/// of that work (a panicking `Show` or `Hide` handler caught further up) puts the tip back
-/// instead of dropping its window; the normal path takes it with `release`.
+/// of that work (a panicking `Show` or `Hide` handler caught further up) puts the tip back,
+/// hidden, instead of dropping its window; the normal path takes it with `release`.
 struct TakenTip(Option<Tip>);
 
 impl TakenTip {
@@ -470,13 +471,21 @@ impl TakenTip {
 }
 
 impl Drop for TakenTip {
-    /// Puts the tip back on unwind. When a re-entrant call installed a newer tip meanwhile, the
-    /// newer one stays and this one is dropped without the `hide` that `put_back` runs: a second
-    /// panic from a handler during the unwind would abort.
+    /// On unwind: hides the tip (its show never finished, so no expire timer would take it down)
+    /// with the window event handler detached, since a second panic from it during the unwind
+    /// would abort; clears its text and puts it back. When a re-entrant call installed a newer tip
+    /// meanwhile, the newer one stays and this one is dropped with the slot not borrowed.
     fn drop(&mut self) {
-        let Some(tip) = self.0.take() else {
+        let Some(mut tip) = self.0.take() else {
             return;
         };
+        let handler = tip.window.replace_window_event_handler(None);
+        if tip.window.is_visible() {
+            tip.window.hide();
+        }
+        tip.window.replace_window_event_handler(handler);
+        tip.text.clear();
+        tip.widget = None;
         let rejected = CONTROLLER
             .try_with(|c| match c.tip.try_borrow_mut() {
                 Ok(mut slot) if slot.is_none() => {
@@ -485,15 +494,24 @@ impl Drop for TakenTip {
                 }
                 _ => Some(tip),
             })
-            .ok()
-            .flatten();
-        drop(rejected);
+            .unwrap_or(None);
+        if let Some(tip) = rejected {
+            drop_detached(tip);
+        }
     }
 }
 
+/// Drops a tip that lost its slot. Its window event handler is detached first, so whatever the
+/// backend delivers while the native window is destroyed reaches no handler (on Windows
+/// `Window`'s drop unregisters the event binding before that anyway).
+fn drop_detached(tip: Tip) {
+    tip.window.replace_window_event_handler(None);
+    drop(tip);
+}
+
 /// Puts `tip` into the empty slot. When a re-entrant call installed a newer tip meanwhile, the
-/// newer one stays and `tip`'s window is hidden and dropped with the slot not borrowed (a
-/// `Window`'s drop may dispatch events). Returns whether `tip` went back.
+/// newer one stays and `tip`'s window is hidden (a `Hide` handler may use the tip API, so the
+/// slot is not borrowed) and dropped by `drop_detached`. Returns whether `tip` went back.
 fn put_back(c: &Controller, tip: Tip) -> bool {
     let rejected = {
         let mut slot = c.tip.borrow_mut();
@@ -508,6 +526,7 @@ fn put_back(c: &Controller, tip: Tip) -> bool {
         None => true,
         Some(mut tip) => {
             tip.window.hide();
+            drop_detached(tip);
             false
         }
     }
@@ -565,6 +584,7 @@ fn finish_place(
         // A re-entrant call installed a newer tip while this one was showing; the
         // newer one wins and this window must not stay up on its own.
         tip.window.hide();
+        drop_detached(tip);
         return;
     }
     // `set_palette` / `set_font` skip a tip that is taken out: catch up here.
@@ -1167,13 +1187,39 @@ mod tests {
         }
     }
 
+    type FailingInstalled = (
+        usize,
+        Option<Arc<dyn ferrokit_platform::integration::PlatformIntegration>>,
+    );
+
     /// The platform integration `failing_window_creation` replaced, and how many of its guards
     /// live (tests run on several threads at once): the first guard installs `FailingWindows`,
     /// the last one puts the previous integration back.
-    static FAILING_INSTALLED: Mutex<(
-        usize,
-        Option<Arc<dyn ferrokit_platform::integration::PlatformIntegration>>,
-    )> = Mutex::new((0, None));
+    static FAILING_INSTALLED: Mutex<FailingInstalled> = Mutex::new((0, None));
+
+    fn failing_installed() -> std::sync::MutexGuard<'static, FailingInstalled> {
+        FAILING_INSTALLED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn enter_failing(installed: &mut FailingInstalled) {
+        if installed.0 == 0 {
+            let previous = ferrokit_platform::integration::platform();
+            ferrokit_platform::integration::set_platform_integration(Arc::new(FailingWindows(
+                Arc::clone(&previous),
+            )));
+            installed.1 = Some(previous);
+        }
+        installed.0 += 1;
+    }
+
+    fn leave_failing(installed: &mut FailingInstalled) {
+        installed.0 -= 1;
+        if installed.0 == 0 {
+            if let Some(previous) = installed.1.take() {
+                ferrokit_platform::integration::set_platform_integration(previous);
+            }
+        }
+    }
 
     /// Makes `Window::new` fail on this thread while the returned guard lives.
     fn failing_window_creation() -> impl Drop {
@@ -1182,42 +1228,33 @@ mod tests {
             fn drop(&mut self) {
                 FAIL_WINDOW_CREATION.with(|f| f.set(false));
                 HIDE_DURING_CREATION.with(|f| f.set(false));
-                let mut installed = FAILING_INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
-                installed.0 -= 1;
-                if installed.0 == 0 {
-                    if let Some(previous) = installed.1.take() {
-                        ferrokit_platform::integration::set_platform_integration(previous);
-                    }
-                }
+                leave_failing(&mut failing_installed());
             }
         }
-        {
-            let mut installed = FAILING_INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
-            if installed.0 == 0 {
-                let previous = ferrokit_platform::integration::platform();
-                ferrokit_platform::integration::set_platform_integration(Arc::new(FailingWindows(
-                    Arc::clone(&previous),
-                )));
-                installed.1 = Some(previous);
-            }
-            installed.0 += 1;
-        }
+        enter_failing(&mut failing_installed());
         FAIL_WINDOW_CREATION.with(|f| f.set(true));
         Reset
     }
 
     #[test]
     fn failing_window_creation_restores_the_previous_integration() {
+        // The lock is held throughout, so no other test's guard comes or goes meanwhile.
+        let mut installed = failing_installed();
         let before = ferrokit_platform::integration::platform();
-        drop(failing_window_creation());
-        // Another test's guard may still be alive; once none is, the original is back.
-        let installed = FAILING_INSTALLED.lock().unwrap_or_else(|e| e.into_inner());
-        if installed.0 == 0 {
-            assert!(Arc::ptr_eq(
+        let (count, _) = *installed;
+        enter_failing(&mut installed);
+        if count == 0 {
+            assert!(!Arc::ptr_eq(
                 &ferrokit_platform::integration::platform(),
                 &before
             ));
         }
+        leave_failing(&mut installed);
+        assert_eq!(installed.0, count);
+        assert!(Arc::ptr_eq(
+            &ferrokit_platform::integration::platform(),
+            &before
+        ));
     }
 
     #[test]
@@ -1247,13 +1284,17 @@ mod tests {
     }
 
     /// After a panic out of a window event handler the tip that was taken out of the slot is back
-    /// in it, its window not dropped. Clears the handler, so the tip API can be used again.
+    /// in it, its window not dropped, and hidden with no text: the show never finished, so no
+    /// expire timer would ever take a visible tip down. Clears the handler, so the tip API can be
+    /// used again.
     fn assert_tip_put_back(windows_before: usize) {
         assert!(
             CONTROLLER.with(|c| c.tip.borrow().is_some()),
             "the unwind put the tip back"
         );
         assert_eq!(tip_windows(), windows_before, "the tip window survived");
+        assert!(!ToolTip::is_visible(), "the unwind hid the tip");
+        assert_eq!(ToolTip::text(), "", "the unwind cleared the tip's text");
         on_tip_window_event(|_| {});
     }
 
