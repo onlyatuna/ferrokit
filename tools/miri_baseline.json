@@ -99,8 +99,6 @@
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_a_read_of_the_variable",
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable",
     "test_miri_aliasing_controls::a_registered_child_freed_before_it_is_unregistered_then_the_parent_is_destroyed",
-    "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks",
-    "test_miri_aliasing_controls::register_qobject_then_use_of_the_box_between_callbacks",
     "test_pointer_registration_between_callbacks::control_writing_the_variable_after_registering_it_by_pointer"
   ],
   "isolation_allowlist": {
@@ -509,10 +507,6 @@
     "test_miri_aliasing_controls::a_pointer_made_from_a_reference_then_use_of_the_variable::TB": "UB",
     "test_miri_aliasing_controls::a_registered_child_freed_before_it_is_unregistered_then_the_parent_is_destroyed::SB": "UB",
     "test_miri_aliasing_controls::a_registered_child_freed_before_it_is_unregistered_then_the_parent_is_destroyed::TB": "UB",
-    "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks::SB": "UB",
-    "test_miri_aliasing_controls::register_boxed_qobject_then_use_of_the_box_between_callbacks::TB": "UB",
-    "test_miri_aliasing_controls::register_qobject_then_use_of_the_box_between_callbacks::SB": "UB",
-    "test_miri_aliasing_controls::register_qobject_then_use_of_the_box_between_callbacks::TB": "UB",
     "test_move_to_thread_state::auto_connection_follows_receiver_thread_after_move::SB": "pass",
     "test_move_to_thread_state::auto_connection_follows_receiver_thread_after_move::TB": "pass",
     "test_move_to_thread_state::post_through_stale_handle_is_forwarded_to_the_owner_thread::SB": "pass",

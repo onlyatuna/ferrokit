@@ -6,25 +6,21 @@
 //! use is sound. A control failing under Miri is the expected result, not a failure of the code
 //! under test.
 //!
-//! They show the limits of the registration functions kept for existing callers
-//! (`register_qobject`, `register_boxed_qobject`) and of a pointer made from a reference, and that
-//! a registered child freed before it is unregistered is reported. They are not run on a normal
-//! build, where the undefined behavior would go unnoticed.
+//! They show the limits of a pointer made from a reference, and that a registered child freed
+//! before it is unregistered is reported. They are not run on a normal build, where the undefined
+//! behavior would go unnoticed.
 //!
 //! Every control uses a concrete type. Miri does not check the uniqueness of `&mut` or `Box` to a
 //! `!Unpin` type, and `dyn QObject` is not `Unpin`, so the same misuse through a `Box<dyn QObject>`
 //! goes unreported and cannot serve as a control.
-
-// The controls call the deprecated registration functions on purpose.
-#![allow(deprecated)]
 
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_boxed_qobject, register_qobject, register_qobject_ptr, set_parent_by_id,
-    unregister_qobject, with_object_mut, ObjectData, ObjectId, QObject,
+    register_qobject_ptr, set_parent_by_id, unregister_qobject, with_object_mut, ObjectData,
+    ObjectId, QObject,
 };
 
 struct Node {
@@ -64,53 +60,6 @@ fn touch(id: ObjectId) {
 /// make a two-phase borrow, which Stacked Borrows treats more leniently.
 fn use_directly(o: &mut dyn QObject) {
     o.event(&mut Event::new(EventKind::UpdateRequest));
-}
-
-#[test]
-// Deliberate contract violation (rule 1, `register_qobject(&mut *box)` then direct use of the
-// box): no truthful `SAFETY` comment exists; Miri reports it.
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[cfg_attr(
-    not(miri),
-    ignore = "Miri control: expected to be reported as undefined behavior under Miri"
-)]
-fn register_qobject_then_use_of_the_box_between_callbacks() {
-    let mut node = Box::new(Node::new());
-    let id = node.data.id();
-    // Deliberate violation of rule 1 of the `object` module: `register_qobject(&mut *node)`
-    // registers a pointer derived from a reference, and `use_directly(&mut *node)` below uses the
-    // box directly between callbacks, invalidating it. Miri reports the second `touch` (see the
-    // `allow`).
-    unsafe { register_qobject(&mut *node) };
-    touch(id);
-    use_directly(&mut *node);
-    touch(id);
-    use_directly(&mut *node);
-    // (Miri has already reported the second `touch`: the pointer was invalidated by
-    // `use_directly`.)
-    unsafe { unregister_qobject(id) };
-}
-
-#[test]
-// Deliberate contract violation (rule 1, `register_boxed_qobject` then direct use of the `Box`):
-// no truthful `SAFETY` comment exists; Miri reports it.
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[cfg_attr(
-    not(miri),
-    ignore = "Miri control: expected to be reported as undefined behavior under Miri"
-)]
-fn register_boxed_qobject_then_use_of_the_box_between_callbacks() {
-    // Deliberate violation of rule 1 of the `object` module: `register_boxed_qobject` gives the
-    // registry a pointer derived from the `Box`, and the returned `Box` is then used directly
-    // between callbacks, invalidating it. Miri reports the second `touch` (see the `allow`).
-    let (id, mut node) = unsafe { register_boxed_qobject(Box::new(Node::new())) };
-    touch(id);
-    use_directly(&mut *node);
-    touch(id);
-    use_directly(&mut *node);
-    // (Miri has already reported the second `touch`: the pointer was invalidated by
-    // `use_directly`.)
-    unsafe { unregister_qobject(id) };
 }
 
 #[test]

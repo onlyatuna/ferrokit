@@ -18,9 +18,6 @@
 //! | in a parent's `owned_children` | [`add_owned_child`]; [`reparent_owned_object`] takes it back | use it through the parent (`with_child`, `with_child_mut`), or through the `OwnedObject` that `reparent_owned_object` returns |
 //! | pinned (`!Unpin`) | [`register_pinned_qobject`] | nothing beyond rule 1 below; there is no pointer-based form for pinned objects yet |
 //!
-//! `register_qobject` and `register_boxed_qobject` are deprecated: they build the registry's
-//! pointer from a reference or a `Box`, which is where rule 1 below is broken.
-//!
 //! ## Registering an object on the heap
 //!
 //! ```
@@ -103,11 +100,10 @@
 //! Each of these makes a later callback undefined behavior, whichever function registered the
 //! object, unless the entry says otherwise:
 //!
-//! 1. **Registering through a reference, then using the object directly.** `register_qobject(&mut
-//!    x)`, `register_boxed_qobject(b)` followed by a use of `b`, and a pointer made with `&mut x
-//!    as *mut _`, `NonNull::from(&mut x)` or from a `Box` that is used afterwards all hand the
-//!    registry a pointer that the next direct use of `x` invalidates. Take the pointer with `&raw
-//!    mut x` (and see rule 7), or register through an [`OwnedObject`].
+//! 1. **Registering a pointer made from a reference, then using the object directly.** A pointer
+//!    made with `&mut x as *mut _`, `NonNull::from(&mut x)` or from a `Box` that is used
+//!    afterwards hands the registry a pointer that the next direct use of `x` invalidates. Take
+//!    the pointer with `&raw mut x` (and see rule 7), or register through an [`OwnedObject`].
 //! 2. **Holding a reference across a call that may run a callback.** A `&x`, a `&mut x`, or a
 //!    closure that captures one, held while events are processed, an event is sent, or a signal
 //!    connected to the object is emitted, is still live when the callback writes through the
