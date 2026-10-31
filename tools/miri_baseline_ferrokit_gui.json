@@ -761,13 +761,19 @@
     "lib::text::glyph_layout::tests::only_real_emoji_sequences_need_the_emoji_fallback::TB": "pass",
     "lib::text::font_metrics::tests::advance_keys_match_only_their_own_query::SB": "pass",
     "lib::text::font_metrics::tests::advance_keys_match_only_their_own_query::TB": "pass",
-    "lib::text::font_metrics::tests::zero_width_characters_have_no_heuristic_width::SB": "unsupported",
-    "lib::text::font_metrics::tests::zero_width_characters_have_no_heuristic_width::TB": "unsupported",
     "test_text_system::test_cursor_sticky_x_across_wrapped_lines_and_an_empty_block_as_in_qt::SB": "unsupported",
     "test_text_system::test_cursor_sticky_x_across_wrapped_lines_and_an_empty_block_as_in_qt::TB": "unsupported",
     "test_text_system::test_cursor_set_position_to_the_same_spot_forgets_the_saved_x_as_in_qt::SB": "unsupported",
     "test_text_system::test_cursor_set_position_to_the_same_spot_forgets_the_saved_x_as_in_qt::TB": "unsupported",
     "test_text_system::test_a_paragraph_separator_has_no_width_as_in_qt::SB": "unsupported",
-    "test_text_system::test_a_paragraph_separator_has_no_width_as_in_qt::TB": "unsupported"
+    "test_text_system::test_a_paragraph_separator_has_no_width_as_in_qt::TB": "unsupported",
+    "lib::text::line::tests::a_line_separator_ends_its_bidi_run_where_the_pen_stopped::SB": "unsupported",
+    "lib::text::line::tests::a_line_separator_ends_its_bidi_run_where_the_pen_stopped::TB": "unsupported",
+    "lib::text::font_metrics::tests::zero_width_characters_have_no_width_as_in_qt::SB": "unsupported",
+    "lib::text::font_metrics::tests::zero_width_characters_have_no_width_as_in_qt::TB": "unsupported",
+    "test_text_system::test_a_paragraph_separator_is_not_wrapped_off_as_in_qt::SB": "unsupported",
+    "test_text_system::test_a_paragraph_separator_is_not_wrapped_off_as_in_qt::TB": "unsupported",
+    "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::SB": "unsupported",
+    "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::TB": "unsupported"
   }
 }

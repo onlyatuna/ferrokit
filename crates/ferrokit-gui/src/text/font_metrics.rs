@@ -253,10 +253,21 @@ impl FontMetrics {
                 self.average_char_width * 1.05
             } else {
                 match ch {
-                    // Zero width space, joiners, direction marks, word joiner, invisible
-                    // operators and the byte order mark have no width in any font (shaping
-                    // hides them); text made of them alone shapes to no width and lands here.
-                    '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}' => 0.0,
+                    // Default ignorable characters (zero width space and joiners, direction
+                    // marks, embeddings, overrides and isolates, the Arabic letter mark, word
+                    // joiner, invisible operators, variation selectors, the soft hyphen, the byte
+                    // order mark) and the line and paragraph separators have no width in Qt in
+                    // any font (measured: `QFontMetricsF::horizontalAdvance` of each is 0, and
+                    // `"a" + c + "b"` is as wide as `"ab"`). Text made of them alone shapes to no
+                    // width and lands here.
+                    '\u{ad}'
+                    | '\u{61c}'
+                    | '\u{200b}'..='\u{200f}'
+                    | '\u{2028}'..='\u{202e}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{fe00}'..='\u{fe0f}'
+                    | '\u{feff}' => 0.0,
                     ' ' => self.average_char_width * 0.5,
                     '.' | ',' | ':' | ';' | '!' | '|' | '\'' | '`' => {
                         self.average_char_width * 0.35
@@ -326,6 +337,15 @@ impl FontMetrics {
     }
 
     fn shape_advance(&self, text: &str, font: &Font) -> f32 {
+        // The line and paragraph separators end Qt's shaping items and have no width
+        // (`QTextEngine::itemize` flags them `LineOrParagraphSeparator`); no font shapes them.
+        if text.contains(['\u{2028}', '\u{2029}']) {
+            return text
+                .split(['\u{2028}', '\u{2029}'])
+                .filter(|piece| !piece.is_empty())
+                .map(|piece| self.shape_advance(piece, font))
+                .sum();
+        }
         let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
         if !engines.is_empty() {
             let layout =
@@ -468,28 +488,35 @@ mod tests {
     use super::*;
     use crate::text::font::Font;
 
-    /// Text of zero width characters alone shapes to no width and falls back to the heuristic,
-    /// which must not give them a width (Qt: a label of a lone U+200B is 0 px wide).
+    /// Default ignorable characters and the line and paragraph separators have no width in Qt
+    /// (PySide6 6.11.2, oracle font and Arial: `QFontMetricsF::horizontalAdvance(c)` is 0 and
+    /// `"a" + c + "b"` is as wide as `"ab"` for every character here). Text made of them alone
+    /// shapes to no width and falls back to the heuristic, which must not give them one either.
     #[test]
-    fn zero_width_characters_have_no_heuristic_width() {
+    fn zero_width_characters_have_no_width_as_in_qt() {
         let font = Font::new("FerrokitOracleText", 16.0).with_font_data(
             crate::text::font::SharedFontData::from_vec(
                 include_bytes!("../../tests/data/oracle_text.ttf").to_vec(),
             ),
         );
         let metrics = FontMetrics::from_font(&font);
-        for text in [
-            "\u{200b}",
-            "\u{200d}",
-            "\u{2060}",
-            "\u{feff}",
-            "\u{200b}\u{200b}",
+        let ab = metrics.horizontal_advance_exact("ab", &font);
+        for c in [
+            '\u{2029}', '\u{2028}', '\u{61c}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{fe00}', '\u{fe0f}',
+            '\u{ad}', '\u{200b}', '\u{200d}', '\u{2060}', '\u{feff}',
         ] {
-            assert_eq!(metrics.horizontal_advance(text, &font), 0.0, "{text:?}");
+            let alone = c.to_string();
+            assert_eq!(metrics.horizontal_advance(&alone, &font), 0.0, "{c:?}");
             assert_eq!(
-                metrics.horizontal_advance_exact(text, &font),
+                metrics.horizontal_advance_exact(&alone, &font),
                 0.0,
-                "{text:?}"
+                "{c:?}"
+            );
+            assert_eq!(
+                metrics.horizontal_advance_exact(&format!("a{c}b"), &font),
+                ab,
+                "{c:?}"
             );
         }
         assert!(metrics.horizontal_advance("a", &font) > 0.0);

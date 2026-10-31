@@ -576,14 +576,13 @@ impl GlyphLayout {
     /// all Arial characters): `QTextEngine::itemize` splits emoji sequences off with its emoji
     /// segmenter. Such text needs the fallback fonts loaded. Only real emoji sequences count: a
     /// ZWJ next to a pictograph (a skin tone or variation selector may sit between them), U+FE0F
-    /// after a character that has an emoji form, and a keycap U+20E3 after `0`-`9`, `#` or `*`.
-    /// The ZWJ of Arabic, Persian or Indic text is not one.
+    /// after a character that has an emoji form, a keycap U+20E3 after `0`-`9`, `#` or `*`, a
+    /// pair of regional indicators (a flag) and a pictograph followed by a tag character (the
+    /// subdivision flags, U+1F3F4 and tags U+E0020..U+E007F). The ZWJ of Arabic, Persian or Indic
+    /// text is not one.
     pub(crate) fn has_emoji_sequence(text: &str) -> bool {
-        if !text.contains(['\u{200d}', '\u{fe0f}', '\u{20e3}']) {
-            return false;
-        }
         // The last character that is neither a variation selector nor a skin tone modifier: what
-        // a following selector, keycap or ZWJ attaches to.
+        // a following selector, keycap, tag or ZWJ attaches to.
         let mut base: Option<char> = None;
         let mut chars = text.chars().peekable();
         while let Some(c) = chars.next() {
@@ -594,16 +593,27 @@ impl GlyphLayout {
                 }
                 '\u{fe0f}' => base.is_some_and(Self::is_emoji_base),
                 '\u{20e3}' => base.is_some_and(|b| matches!(b, '0'..='9' | '#' | '*')),
+                '\u{e0020}'..='\u{e007f}' => base.is_some_and(Self::is_pictographic),
+                c if Self::is_regional_indicator(c) => chars
+                    .peek()
+                    .copied()
+                    .is_some_and(Self::is_regional_indicator),
                 _ => false,
             };
             if sequence {
                 return true;
             }
-            if !matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}') {
+            if !matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}')
+            {
                 base = Some(c);
             }
         }
         false
+    }
+
+    /// Whether `c` is a regional indicator letter, two of which make a flag.
+    fn is_regional_indicator(c: char) -> bool {
+        ('\u{1f1e6}'..='\u{1f1ff}').contains(&c)
     }
 
     /// Whether `c` is in the blocks of the `Extended_Pictographic` characters (an approximation
@@ -641,10 +651,10 @@ impl GlyphLayout {
     }
 
     /// Qt shapes an emoji sequence (a ZWJ family, a keycap, a character with the emoji variation
-    /// selector) as one item in an emoji font. A per-character choice would cut it at every
-    /// character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so each
-    /// grapheme cluster that is such a sequence gets the first fallback font with emoji glyphs
-    /// that covers all of it.
+    /// selector, a flag) as one item in an emoji font. A per-character choice would cut it at
+    /// every character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so
+    /// each grapheme cluster that is such a sequence gets the first fallback font with emoji
+    /// glyphs that covers all of it.
     fn keep_emoji_sequences_in_one_font(
         text: &str,
         engines: &[FontEngine],
@@ -655,16 +665,14 @@ impl GlyphLayout {
             return;
         }
         // Characters that need no glyph of their own in the font that shapes the sequence.
-        let joiner = |c: char| c == '\u{200d}' || ('\u{fe00}'..='\u{fe0f}').contains(&c);
+        let joiner =
+            |c: char| matches!(c, '\u{200d}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0020}'..='\u{e007f}');
         let mut at = 0;
         for cluster in text.graphemes(true) {
             let n = cluster.chars().count();
             let chars = &mut resolved[at..at + n];
             at += n;
-            if n < 2
-                || !Self::has_emoji_sequence(cluster)
-                || !cluster.chars().any(Self::is_emoji_base)
-            {
+            if n < 2 || !Self::has_emoji_sequence(cluster) {
                 continue;
             }
             let font = engines.iter().enumerate().skip(1).find(|(_, e)| {
@@ -942,6 +950,8 @@ mod tests {
             "1\u{FE0F}\u{20E3}",                           // keycap
             "#\u{20E3}",                                   // keycap without VS16
             "a \u{2600}\u{FE0F} b",
+            "\u{1F1F9}\u{1F1FC}", // a flag: two regional indicators
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}", // tag sequence
         ] {
             assert!(GlyphLayout::has_emoji_sequence(text), "{text:?}");
         }
@@ -953,6 +963,8 @@ mod tests {
             "a\u{FE0F}",                        // no emoji form
             "x\u{20E3}",                        // not a keycap base
             "\u{1F3FB}\u{200D}a",               // a lone modifier is no pictograph
+            "\u{1F1F9} x",                      // a lone regional indicator
+            "a\u{E0067}\u{E007F}",              // tags after a letter
         ] {
             assert!(!GlyphLayout::has_emoji_sequence(text), "{text:?}");
         }

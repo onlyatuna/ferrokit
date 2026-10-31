@@ -360,7 +360,7 @@ pub(crate) fn visual_runs(levels: &[u8], x_advances: &[f32]) -> Vec<VisualRun> {
     if levels.iter().all(|&l| l == 0) {
         return Vec::new();
     }
-    let at = |i: usize| x_advances.get(i).copied().unwrap_or(0.0);
+    let at = |i: usize| advance_at(x_advances, i);
     let runs = level_runs(levels);
     let run_levels: Vec<u8> = runs.iter().map(|r| r.level).collect();
     let mut left = 0.0;
@@ -376,11 +376,20 @@ pub(crate) fn visual_runs(levels: &[u8], x_advances: &[f32]) -> Vec<VisualRun> {
         .collect()
 }
 
+/// The pen position before the line's grapheme `i`: past the last entry (the separator that ends
+/// a line has none, it has no width) it is where the pen stopped.
+fn advance_at(x_advances: &[f32], i: usize) -> f32 {
+    x_advances
+        .get(i)
+        .or_else(|| x_advances.last())
+        .copied()
+        .unwrap_or(0.0)
+}
+
 impl TextLine {
     /// The advance of the graphemes `start..end` of the line.
     fn advance_between(&self, start: usize, end: usize) -> f32 {
-        let at = |i: usize| self.grapheme_x_advances.get(i).copied().unwrap_or(0.0);
-        at(end) - at(start)
+        advance_at(&self.grapheme_x_advances, end) - advance_at(&self.grapheme_x_advances, start)
     }
 
     /// The left edge, from the line's own left edge, of the visual run holding the line's
@@ -524,5 +533,23 @@ mod tests {
         assert_ne!(line.runs, before);
         let levels = [0, 0, 0, 1, 1, 1, 0, 0, 0];
         assert_eq!(line.runs, visual_runs(&levels, &line.grapheme_x_advances));
+    }
+
+    /// The separator that ends a line has no advance entry; the bidi run holding it ends where
+    /// the pen stopped, so no run is negative and a selection of the whole line covers its text.
+    #[test]
+    fn a_line_separator_ends_its_bidi_run_where_the_pen_stopped() {
+        for text in ["\u{5d0}\u{5d1}\u{2028}x", "ab \u{5d0}\u{5d1}\u{2028}x"] {
+            let layout = mixed_layout(text);
+            let line = layout.line_at(0).unwrap();
+            assert!(!line.runs.is_empty(), "{text:?}");
+            assert!(line.runs.iter().all(|r| r.width >= 0.0), "{text:?}");
+            let total: f32 = line.runs.iter().map(|r| r.width).sum();
+            assert_eq!(total, line.horizontal_advance(), "{text:?}");
+            let spans = line.selection_spans(0, line.text_length());
+            let covered: f32 = spans.iter().map(|&(_, w)| w).sum();
+            assert_eq!(covered, line.horizontal_advance(), "{text:?}");
+            assert!(spans.iter().all(|&(x, w)| x >= 0.0 && w >= 0.0), "{text:?}");
+        }
     }
 }

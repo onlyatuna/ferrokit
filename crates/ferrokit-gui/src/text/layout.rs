@@ -79,6 +79,9 @@ impl std::fmt::Debug for ShapedParagraph {
 /// the line feeds of a label's text with this before laying out.
 const LINE_SEPARATOR: &str = "\u{2028}";
 
+/// `QChar::ParagraphSeparator`: no width and no line end in a `QTextLayout`, a break after it.
+const PARAGRAPH_SEPARATOR: &str = "\u{2029}";
+
 /// The tab stop distance of a `QTextOption` that sets none, in pixels.
 pub const DEFAULT_TAB_STOP_DISTANCE: f32 = 80.0;
 
@@ -105,7 +108,9 @@ fn tab_width(x: f32, distance: f32) -> f32 {
 /// separators `LineOrParagraphSeparator` and gives them no width; unlike U+2028, U+2029 does not
 /// end a line of a `QTextLayout`, it is only a break opportunity).
 fn is_unshaped(grapheme: &str) -> bool {
-    matches!(grapheme, "\n" | "\r" | "\r\n" | "\u{2029}") || grapheme == LINE_SEPARATOR
+    matches!(grapheme, "\n" | "\r" | "\r\n")
+        || grapheme == LINE_SEPARATOR
+        || grapheme == PARAGRAPH_SEPARATOR
 }
 
 /// Whether a grapheme is white space that hangs past the end of a wrapped line instead of
@@ -556,7 +561,11 @@ impl TextLayout {
                 composite.advances[curr_grapheme]
             };
             let is_tab = g == "\t";
-            let is_space = is_hanging_space(g);
+            // The paragraph separator is not a `ScriptAnalysis::Space` in Qt, but in the line
+            // breaking it acts as one: it is added without a width test and is no word, so it
+            // stays on the line before it and a line of separators keeps the word that follows
+            // (measured: `a\u{2029}` at a width of 3 px is one line, `\u{2029}\u{2029}a` too).
+            let is_space = is_hanging_space(g) || g == PARAGRAPH_SEPARATOR;
 
             // `QTextLine::layout_helper` adds the negative right bearing of the glyph that would
             // end the line to the width it tests (`calculateNewWidth`): at the end of a word, and

@@ -47,6 +47,8 @@ fn line_and_paragraph_separators_size_a_label_as_qt_does() {
         ("aaa\u{2029}bbb", (46, 1)),
         ("a \u{2029} b", (24, 1)),
         ("a\u{2029}\u{2029}b", (16, 1)),
+        ("\u{2029}\u{2029}a", (8, 1)),
+        ("ab \u{5d0}\u{5d1}\u{2029}\u{5d2} cd", (63, 1)),
     ] {
         for word_wrap in [false, true] {
             assert_eq!(

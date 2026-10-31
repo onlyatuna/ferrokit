@@ -672,6 +672,116 @@ fn test_a_paragraph_separator_has_no_width_as_in_qt() {
     }
 }
 
+/// The lines of `text` laid out in the oracle font wrapped in `mode` at `width`, as
+/// `(textStart, textLength, naturalTextWidth)`.
+fn oracle_lines(text: &str, mode: WrapMode, width: f32) -> Vec<(usize, usize, f32)> {
+    let font = oracle_document("").default_font().clone();
+    let mut layout = TextLayout::new(text, font);
+    layout.set_wrap_mode(mode);
+    layout.set_wrap_width(Some(width));
+    layout.do_layout();
+    (0..layout.line_count())
+        .map(|i| {
+            let l = layout.line_at(i).unwrap();
+            (l.text_start(), l.text_length(), l.natural_text_width())
+        })
+        .collect()
+}
+
+/// At a width narrower than a glyph the paragraph separator stays on the line before it and a
+/// line of separators keeps the next word, in every wrap mode: Qt does not test it against the
+/// width and does not count it as a word. `QTextLayout` of PySide6 6.11.2, oracle font.
+#[test]
+fn test_a_paragraph_separator_is_not_wrapped_off_as_in_qt() {
+    use WrapMode::{WordWrap, WrapAnywhere, WrapAtWordBoundaryOrAnywhere};
+    type Case = (&'static str, WrapMode, f32, &'static [(usize, usize, f32)]);
+    let cases: [Case; 8] = [
+        ("a\u{2029}", WrapAnywhere, 3.0, &[(0, 2, 7.5)]),
+        (
+            "a\u{2029}",
+            WrapAtWordBoundaryOrAnywhere,
+            0.0,
+            &[(0, 2, 7.5)],
+        ),
+        ("\u{2029}\u{2029}a", WordWrap, 0.0, &[(0, 3, 7.5)]),
+        ("\u{2029}a", WrapAnywhere, 5.0, &[(0, 2, 7.5)]),
+        (
+            "a\u{2029}b",
+            WrapAtWordBoundaryOrAnywhere,
+            3.0,
+            &[(0, 2, 7.5), (2, 1, 7.625)],
+        ),
+        (
+            "aa\u{2029}\u{2029}bb",
+            WordWrap,
+            5.0,
+            &[(0, 4, 15.0), (4, 2, 15.25)],
+        ),
+        (
+            "aa\u{2029}\u{2029}bb",
+            WrapAnywhere,
+            3.0,
+            &[(0, 1, 7.5), (1, 3, 7.5), (4, 1, 7.625), (5, 1, 7.625)],
+        ),
+        (
+            "aa\u{2029}\u{2029}bb",
+            WrapAtWordBoundaryOrAnywhere,
+            10.0,
+            &[(0, 1, 7.5), (1, 3, 7.5), (4, 1, 7.625), (5, 1, 7.625)],
+        ),
+    ];
+    for (text, mode, width, expected) in cases {
+        assert_eq!(
+            oracle_lines(text, mode, width),
+            expected,
+            "{text:?} {mode:?} at {width}"
+        );
+    }
+}
+
+/// A line with right to left text that a line separator ends: the separator has no advance, so
+/// the bidi run holding it must not end at x 0. `cursorToX` of every position and `xToCursor` at
+/// some x of the first line, `QTextLayout` of PySide6 6.11.2, oracle font.
+#[test]
+fn test_right_to_left_text_before_a_line_separator_as_in_qt() {
+    type Case = (&'static str, &'static [f32], &'static [usize]);
+    let probes = [
+        -1.0, 0.0, 3.0, 7.0, 11.0, 15.0, 20.0, 26.0, 31.0, 40.0, 1000.0,
+    ];
+    let cases: [Case; 3] = [
+        (
+            "\u{5d0}\u{5d1}\u{2028}",
+            &[17.25, 8.5, 0.0, 0.0],
+            &[3, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            "\u{5d0}\u{5d1} \u{5d2}\u{2028}cd",
+            &[27.5, 18.75, 10.25, 6.25, 0.0, 0.0],
+            &[5, 5, 4, 3, 2, 1, 1, 0, 0, 0, 0],
+        ),
+        (
+            "ab \u{5d0}\u{5d1}\u{2028}cd",
+            &[0.0, 7.5, 15.125, 19.125, 27.625, 36.375, 36.375],
+            &[0, 0, 0, 1, 1, 2, 5, 4, 4, 5, 5],
+        ),
+    ];
+    for (text, xs, hits) in cases {
+        let font = oracle_document("").default_font().clone();
+        let mut layout = TextLayout::new(text, font);
+        layout.do_layout();
+        let line = layout.line_at(0).unwrap();
+        let got: Vec<f32> = (0..=line.text_length())
+            .map(|i| line.cursor_to_x(i, Edge::Leading))
+            .collect();
+        assert_eq!(got, xs, "{text:?} cursorToX");
+        let got: Vec<usize> = probes
+            .iter()
+            .map(|&x| line.x_to_cursor(x, CursorPosition::CursorBetweenCharacters))
+            .collect();
+        assert_eq!(got, hits, "{text:?} xToCursor");
+    }
+}
+
 /// `Up` and `Down` keep the x coordinate in a document without a text width too, not the grapheme
 /// column. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 (document margin 0), so the
 /// same column is a different x on the lines of `"bbbbbb\n      ab\nbbbbbbbb"`.
