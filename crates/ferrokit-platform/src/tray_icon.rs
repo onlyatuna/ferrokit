@@ -20,6 +20,7 @@ use std::ptr;
 use std::rc::Rc;
 #[cfg(windows)]
 use std::sync::Once;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
