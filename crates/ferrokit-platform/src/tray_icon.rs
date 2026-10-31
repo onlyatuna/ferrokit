@@ -303,6 +303,9 @@ fn lookup_tray(hwnd: HWND) -> Option<Rc<TrayShared>> {
 /// alias a `&mut TrayIcon` that is live further up this thread's stack (a `Shell_NotifyIconW`
 /// call in a `&mut self` method may deliver a message to this window). The `RefCell` rule of
 /// `TrayShared` applies to everything done here.
+///
+/// # Safety
+/// As for [`tray_window_proc`].
 #[cfg(windows)]
 unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if let Some(shared) = lookup_tray(hwnd) {
@@ -393,6 +396,11 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 
 /// Tray window procedure. Unwinding out of an `extern "system"` callback aborts the process, so a
 /// raising handler is contained and the message falls back to the default.
+///
+/// # Safety
+/// Called as a window procedure: `hwnd` is a tray window on the calling thread (the thread that
+/// owns its `TrayIcon` registry entry), and `wparam`/`lparam` carry what Windows documents for
+/// `msg`.
 #[cfg(windows)]
 unsafe extern "system" fn tray_window_proc(
     hwnd: HWND,

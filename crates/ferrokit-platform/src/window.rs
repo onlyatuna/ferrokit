@@ -645,6 +645,10 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
 /// button is down. Every button the application has pressed but that is physically up gets its
 /// release now: through the normal `WM_*BUTTONUP` path when the cursor is inside the window, and
 /// silently (Qt: `NonClientAreaMouseButtonRelease`, which widgets never see) when it is outside.
+///
+/// # Safety
+/// `hwnd` must be a live ferrokit window owned by the calling thread: button-up messages are fed
+/// straight to [`native_window_proc`], whose contract then applies.
 #[cfg(windows)]
 unsafe fn sync_mouse_buttons_after_move_loop(hwnd: HWND) {
     use ferrokit_core::event::MouseButtons;
@@ -1117,6 +1121,11 @@ fn get_y_lparam(lparam: LPARAM) -> i32 {
 
 #[cfg(windows)]
 /// Win32 Window Procedure (wndproc).
+///
+/// # Safety
+/// Called as a window procedure: `hwnd` is a window of the ferrokit class on the calling thread,
+/// and `wparam`/`lparam` carry what Windows documents for `msg` (several messages hand over
+/// pointers that are dereferenced, e.g. `WM_GETMINMAXINFO`, `WM_NCCALCSIZE`, `WM_DPICHANGED`).
 unsafe extern "system" fn native_window_proc(
     hwnd: HWND,
     msg: u32,
@@ -1133,6 +1142,10 @@ unsafe extern "system" fn native_window_proc(
     }
 }
 
+/// The body of [`native_window_proc`], whose panics that function contains.
+///
+/// # Safety
+/// As for [`native_window_proc`].
 #[cfg(windows)]
 unsafe fn native_window_proc_inner(
     hwnd: HWND,
@@ -1288,6 +1301,9 @@ unsafe fn native_window_proc_inner(
             set_interactive_resize_flag(hwnd, false);
             unregister_window_event_binding(hwnd);
             crate::dark_mode::window_destroyed(hwnd);
+            // A window destroyed other than through `close()` (with its parent, or by a foreign
+            // `DestroyWindow`) must give up OLE's drop-target reference while it still exists.
+            crate::drag_drop::win32_ole::revoke_on_destroy(hwnd);
             0
         }
         WM_SIZE => {

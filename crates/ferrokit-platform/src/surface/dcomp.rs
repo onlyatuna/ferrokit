@@ -130,6 +130,11 @@ type PfnDCompositionCreateDevice = unsafe extern "system" fn(
 // COM Helper Utilities
 // -----------------------------------------------------------------------------
 
+/// Releases one reference of a COM object (`IUnknown::Release`, vtable slot 2); null is ignored.
+///
+/// # Safety
+/// `ptr` must be null or a live COM interface pointer whose reference the caller owns and gives
+/// up here; the caller must not use that reference afterwards.
 unsafe fn com_release(ptr: *mut c_void) {
     if !ptr.is_null() {
         let vtbl = *(ptr as *mut *mut usize);
@@ -171,6 +176,9 @@ pub struct DCompStats {
 
 /// `IDCompositionVisual::SetClip(const D2D_RECT_F&)` (vtable slot 14; slot 13 is the
 /// `IDCompositionClip*` overload) with the rect `[0, w) x [0, h)`.
+///
+/// # Safety
+/// `clip_visual` must be a live `IDCompositionVisual*`.
 unsafe fn set_clip_rect(clip_visual: *mut c_void, w: u32, h: u32) -> HRESULT {
     #[repr(C)]
     struct D2dRectF {

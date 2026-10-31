@@ -443,7 +443,9 @@ pub mod cocoa_theme {
     /// registers them from the application's main thread when it gets to run an event (and
     /// without an application, on a thread that is not the OS main thread, not at all: it then
     /// updates only through [`refresh`](PlatformTheme::refresh), and says so on stderr). The
-    /// observers are removed when the theme is dropped.
+    /// observers are removed when the theme is dropped, on the thread that registered them: a
+    /// theme dropped elsewhere posts the removal there (and leaks the observers if that thread's
+    /// loop is gone, rather than messaging AppKit from the wrong thread).
     ///
     /// Like the rest of this crate's AppKit code (`query_color_scheme`) the theme uses
     /// `+[NSApplication sharedApplication]`, which creates `NSApp` if it does not exist yet; Qt
@@ -460,9 +462,14 @@ pub mod cocoa_theme {
     }
 
     /// The KVO and notification observers of one theme (`m_appearanceObserver` and
-    /// `m_systemColorObserver` of `QCocoaTheme`). Removed on drop.
+    /// `m_systemColorObserver` of `QCocoaTheme`). Removed on drop, on the thread that registered
+    /// them (the main thread), whichever thread drops the theme.
     #[cfg(target_os = "macos")]
-    struct AppearanceObserver {
+    struct AppearanceObserver(#[allow(dead_code)] OnThread<Observers>);
+
+    /// What [`AppearanceObserver`] removes; only ever dropped on the registering thread.
+    #[cfg(target_os = "macos")]
+    struct Observers {
         target: crate::objc_runtime::ActionTarget,
         nsapp: crate::objc_runtime::Id,
         center: crate::objc_runtime::Id,
@@ -470,25 +477,92 @@ pub mod cocoa_theme {
         key_path: crate::objc_runtime::Id,
     }
 
-    // SAFETY: the `Id`s are only messaged to remove the observers; AppKit permits removing key-value
-    // and notification observers from another thread [inferred: not checked against Apple's
-    // documentation here]. `NSApp` and the notification center are process-lifetime singletons and
-    // `key_path` is a +1 string released only in `drop`, so all three outlive the observer.
     #[cfg(target_os = "macos")]
-    unsafe impl Send for AppearanceObserver {}
-
-    #[cfg(target_os = "macos")]
-    impl Drop for AppearanceObserver {
+    impl Drop for Observers {
         fn drop(&mut self) {
             use crate::objc_runtime::{ObjcMsg, Sel};
             // SAFETY: `nsapp`, `center` and `key_path` are the objects `register` made the
-            // registrations with and are still live (see the `Send` impl above); `self.target` is
-            // still owned by this struct and is dropped only after this body, so its id stays valid
-            // while it is unregistered; `key_path` is released exactly once, here.
+            // registrations with: `NSApp` and the default center are process-lifetime singletons
+            // and `key_path` is a +1 string released only here, so all three are live. This runs
+            // on the thread that registered (`OnThread`), the main thread AppKit wants. The target
+            // is still owned by this struct and is dropped only after this body, so its id stays
+            // valid while it is unregistered; `key_path` is released exactly once, here.
             unsafe {
                 ObjcMsg::send_remove_key_path_observer(self.nsapp, self.target.id(), self.key_path);
                 ObjcMsg::send_remove_notification_observer(self.center, self.target.id());
                 ObjcMsg::send_0(self.key_path, Sel::register("release"));
+            }
+        }
+    }
+
+    /// A value that is dropped only on the thread that made it. Dropped on another thread, it is
+    /// posted to its thread and dropped there; when it cannot get there (that thread has ended, or
+    /// its queue is discarded) it is leaked instead.
+    #[cfg(any(target_os = "macos", test))]
+    struct OnThread<T: 'static> {
+        thread: ferrokit_core::object::ThreadId,
+        value: Option<T>,
+        /// Whether a drop on another thread forwards the value (the first time) or leaks it (the
+        /// forwarded copy, whose event was dropped unrun).
+        forward: bool,
+    }
+
+    // SAFETY: for any `T`, `Send` is sound because an `OnThread` never lets the value be used off
+    // `thread`: no method exposes it, and off `thread` the only operations on it are moves (out of
+    // `value`, into the forwarded wrapper and the posted closure) and `mem::forget`, none of which
+    // runs code of `T` or reads through it. Its `Drop` (or any other use) runs only on `thread`.
+    // Moving the bytes of a `!Send` value without touching them is what makes this hold, so the
+    // bound needs no `T: Send`. The only users are the theme's `Observers` and, in tests, a
+    // drop recorder.
+    #[cfg(any(target_os = "macos", test))]
+    unsafe impl<T: 'static> Send for OnThread<T> {}
+
+    #[cfg(any(target_os = "macos", test))]
+    impl<T: 'static> OnThread<T> {
+        fn new(value: T) -> Self {
+            Self {
+                thread: ferrokit_core::object::ThreadId::current(),
+                value: Some(value),
+                forward: true,
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    impl<T: 'static> Drop for OnThread<T> {
+        fn drop(&mut self) {
+            use ferrokit_core::event::{Event, EventKind};
+            use ferrokit_core::object::{ObjectId, ThreadId};
+            let Some(value) = self.value.take() else {
+                return;
+            };
+            if ThreadId::current() == self.thread {
+                drop(value);
+            } else if self.forward {
+                let forwarded = OnThread {
+                    thread: self.thread,
+                    value: Some(value),
+                    forward: false,
+                };
+                ferrokit_core::event_loop::post_event_to_thread(
+                    self.thread,
+                    ObjectId(0),
+                    Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                        drop(forwarded)
+                    }))),
+                );
+            } else {
+                // The forwarded value's event was dropped unrun: its thread (or that thread's
+                // loop) is gone, and nothing may run the value's `Drop` elsewhere.
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!(
+                        "ferrokit: the macOS theme's appearance observers outlived their thread's \
+                         event loop and are leaked rather than removed from another thread"
+                    );
+                }
+                std::mem::forget(value);
             }
         }
     }
@@ -607,8 +681,9 @@ pub mod cocoa_theme {
             // SAFETY: `NSApp` and the default notification center are live objects; `target`
             // implements both `-observeValueForKeyPath:ofObject:change:context:` and
             // `-ferrokitPerformAction:`; the registries do not retain the observer, which
-            // `AppearanceObserver::drop` unregisters before the target is released; the
-            // notification name is released here (the center copies it), the key path in `drop`.
+            // `Observers::drop` unregisters (on this thread) before the target is released, or
+            // which stays alive for good if it is leaked; the notification name is released here
+            // (the center copies it), the key path in `drop`.
             unsafe {
                 let nsapp = ObjcMsg::send_class_0(
                     Class::get("NSApplication").unwrap_or(Class::NIL),
@@ -627,12 +702,12 @@ pub mod cocoa_theme {
                     Id::NIL,
                 );
                 ObjcMsg::send_0(notification, Sel::register("release"));
-                Some(AppearanceObserver {
+                Some(AppearanceObserver(OnThread::new(Observers {
                     target,
                     nsapp,
                     center,
                     key_path,
-                })
+                })))
             }
         }
 
@@ -823,6 +898,64 @@ pub mod cocoa_theme {
                 CocoaTheme::observe_plan(None, me, false),
                 ObservePlan::Never
             );
+        }
+
+        /// Records the thread it is dropped on.
+        struct DropsOn(Arc<std::sync::Mutex<Vec<ThreadId>>>);
+
+        impl Drop for DropsOn {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().push(ThreadId::current());
+            }
+        }
+
+        #[test]
+        fn on_thread_drops_at_once_on_its_own_thread() {
+            let drops = Arc::default();
+            drop(OnThread::new(DropsOn(Arc::clone(&drops))));
+            assert_eq!(*drops.lock().unwrap(), vec![ThreadId::current()]);
+        }
+
+        /// The theme's observers are removed by the thread that registered them, not by the
+        /// thread that drops the theme.
+        #[test]
+        fn on_thread_dropped_elsewhere_is_dropped_on_its_thread() {
+            use std::sync::mpsc::channel;
+            let drops: Arc<std::sync::Mutex<Vec<ThreadId>>> = Arc::default();
+            let (value_tx, value_rx) = channel();
+            let (go_tx, go_rx) = channel::<()>();
+            let owner = std::thread::spawn({
+                let drops = Arc::clone(&drops);
+                move || {
+                    let event_loop = ferrokit_core::event_loop::EventLoop::new();
+                    let value = OnThread::new(DropsOn(drops));
+                    value_tx.send((ThreadId::current(), value)).unwrap();
+                    go_rx.recv().unwrap();
+                    event_loop.send_posted_events();
+                }
+            });
+            let (owner_id, value) = value_rx.recv().unwrap();
+            drop(value);
+            assert!(
+                drops.lock().unwrap().is_empty(),
+                "dropped on the wrong thread"
+            );
+            go_tx.send(()).unwrap();
+            owner.join().unwrap();
+            assert_eq!(*drops.lock().unwrap(), vec![owner_id]);
+        }
+
+        #[test]
+        fn on_thread_whose_thread_has_ended_is_leaked() {
+            let drops: Arc<std::sync::Mutex<Vec<ThreadId>>> = Arc::default();
+            let value = std::thread::spawn({
+                let drops = Arc::clone(&drops);
+                move || OnThread::new(DropsOn(drops))
+            })
+            .join()
+            .unwrap();
+            drop(value);
+            assert!(drops.lock().unwrap().is_empty());
         }
     }
 }

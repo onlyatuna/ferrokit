@@ -78,6 +78,8 @@ assert_thread_affine!(
     crate::tray::CocoaStatusItem,
     crate::tray::DbusStatusNotifierItem,
     crate::hotkey::CocoaHotkeyManager,
+    // Messages its CALayer and commits a CATransaction on the window's thread.
+    crate::surface::CocoaLayerSurface,
 );
 
 #[test]
@@ -92,15 +94,9 @@ fn plain_data_back_ends_stay_thread_safe() {
     assert_send_sync::<crate::hotkey::HotkeyError>();
 }
 
-// No raw handles of their own: a menu entry is a label, flags and a signal; the layer surface is a
-// layer id plus a pixel buffer.
+// No raw handles of their own: a menu entry is a label, flags and a signal.
 #[cfg(windows)]
 #[test]
 fn win32_menu_item_stays_thread_safe() {
     assert_send_sync::<crate::menu::Win32MenuItem>();
-}
-
-#[test]
-fn cocoa_layer_surface_stays_thread_safe() {
-    assert_send_sync::<crate::surface::CocoaLayerSurface>();
 }

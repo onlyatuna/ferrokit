@@ -723,6 +723,10 @@ mod win {
         // Each test owns its recording statics: tests run in parallel.
         static MODE_CALLS: AtomicUsize = AtomicUsize::new(0);
         static MODE_LAST: AtomicI32 = AtomicI32::new(i32::MIN);
+        /// Stand-in for `SetPreferredAppMode`.
+        ///
+        /// # Safety
+        /// None: it only records `mode`.
         unsafe extern "system" fn mode_stub(mode: i32) -> i32 {
             MODE_CALLS.fetch_add(1, Ordering::SeqCst);
             MODE_LAST.store(mode, Ordering::SeqCst);
@@ -730,12 +734,20 @@ mod win {
         }
         static ALLOW_CALLS: AtomicUsize = AtomicUsize::new(0);
         static ALLOW_LAST: AtomicI32 = AtomicI32::new(i32::MIN);
+        /// Stand-in for `AllowDarkModeForWindow`.
+        ///
+        /// # Safety
+        /// None: the handle is never used, only `allow` is recorded.
         unsafe extern "system" fn allow_stub(_hwnd: HWND, allow: i32) -> i32 {
             ALLOW_CALLS.fetch_add(1, Ordering::SeqCst);
             ALLOW_LAST.store(allow, Ordering::SeqCst);
             1
         }
         static FLUSH_CALLS: AtomicUsize = AtomicUsize::new(0);
+        /// Stand-in for `FlushMenuThemes`.
+        ///
+        /// # Safety
+        /// None: it only counts the call.
         unsafe extern "system" fn flush_stub() {
             FLUSH_CALLS.fetch_add(1, Ordering::SeqCst);
         }
@@ -770,6 +782,10 @@ mod win {
 
         static APP_CALLS: AtomicUsize = AtomicUsize::new(0);
         static APP_LAST: AtomicI32 = AtomicI32::new(i32::MIN);
+        /// Stand-in for `AllowDarkModeForApp`.
+        ///
+        /// # Safety
+        /// None: it only records `on`.
         unsafe extern "system" fn app_stub(on: i32) -> i32 {
             APP_CALLS.fetch_add(1, Ordering::SeqCst);
             APP_LAST.store(on, Ordering::SeqCst);
@@ -796,9 +812,17 @@ mod win {
         static REENTRANT: std::sync::OnceLock<&'static UxTheme> = std::sync::OnceLock::new();
         static REENTRANT_FLUSHES: AtomicUsize = AtomicUsize::new(0);
         static REENTRANT_RESULT: AtomicI32 = AtomicI32::new(-1);
+        /// Stand-in for `SetPreferredAppMode`.
+        ///
+        /// # Safety
+        /// None: it does nothing.
         unsafe extern "system" fn reentrant_mode_stub(_mode: i32) -> i32 {
             1
         }
+        /// Stand-in for `FlushMenuThemes` that re-enters `apply_app_scheme` once.
+        ///
+        /// # Safety
+        /// None: `REENTRANT` must be set first, which the test does (else it panics).
         unsafe extern "system" fn reentrant_flush_stub() {
             if REENTRANT_FLUSHES.fetch_add(1, Ordering::SeqCst) == 0 {
                 // The same plan is already committed: nothing to do, and no deadlock.
