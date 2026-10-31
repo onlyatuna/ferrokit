@@ -2,9 +2,9 @@
 //! Color Space representation (`QColorSpace` equivalent).
 //!
 //! Encapsulates chromaticity primaries (Red, Green, Blue, White Point),
-//! transfer functions (gamma, sRGB, linear, PQ, HLG), and color transformations.
+//! transfer functions (gamma, sRGB, ProPhoto, linear, PQ, HLG), and color transformations.
 
-use super::color_transform::ColorTransform;
+use super::color_transform::{chromatic_adaptation, ColorTransform};
 use crate::geometry::PointF;
 
 /// Predefined standard color spaces.
@@ -39,6 +39,9 @@ pub enum TransferFunction {
     Linear,
     Gamma(f32),
     Srgb,
+    /// ProPhoto (ROMM) RGB: gamma 1.8 with a linear toe of slope 1/16 below 1/32
+    /// (`QColorTransferFunction::fromProPhotoRgb`).
+    ProPhotoRgb,
     Bt2020,
     St2084, // Perceptual Quantizer (PQ, HDR10)
     Hlg,    // Hybrid Log-Gamma
@@ -120,8 +123,17 @@ pub struct ColorSpace {
     transfer_function: TransferFunction,
     /// Divergent per-channel curves; `None` when one curve serves every channel. When set,
     /// `transfer_function` is [`TransferFunction::Custom`].
-    channel_curves: Option<[TransferFunction; 3]>,
+    channel_curves: Option<ChannelCurves>,
     description: String,
+}
+
+/// Divergent per-channel curves of a [`ColorSpace`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChannelCurves {
+    curves: [TransferFunction; 3],
+    /// D50-adapted luminance (Y) of each channel at full intensity; weights the curves in
+    /// [`ColorSpace::to_linear`].
+    luminance: [f32; 3],
 }
 
 impl Default for ColorSpace {
@@ -241,13 +253,18 @@ impl ColorSpace {
         if curves[0] == curves[1] && curves[1] == curves[2] {
             return Self::from_primary_points(primaries, primary_points, curves[0], description);
         }
-        Self {
+        let mut space = Self {
             primaries,
             primary_points,
             transfer_function: TransferFunction::Custom,
-            channel_curves: Some(curves),
+            channel_curves: None,
             description: description.into(),
-        }
+        };
+        space.channel_curves = Some(ChannelCurves {
+            curves,
+            luminance: space.d50_luminance(),
+        });
+        space
     }
 
     /// Constructs from a named color space.
@@ -260,7 +277,7 @@ impl ColorSpace {
             NamedColorSpace::ProPhotoRgb => Self {
                 primaries: Primaries::ProPhotoRgb,
                 primary_points: PrimaryPoints::from_primaries(Primaries::ProPhotoRgb),
-                transfer_function: TransferFunction::Gamma(1.8),
+                transfer_function: TransferFunction::ProPhotoRgb,
                 channel_curves: None,
                 description: "ProPhoto RGB".to_string(),
             },
@@ -296,6 +313,9 @@ impl ColorSpace {
     }
 
     /// Creates a clone with a modified transfer function (applied to all channels).
+    ///
+    /// [`TransferFunction::Custom`] carries no curve: the result's scalar and per-channel
+    /// conversions are then the identity.
     pub fn with_transfer_function(&self, tf: TransferFunction) -> Self {
         let mut copy = self.clone();
         copy.transfer_function = tf;
@@ -308,37 +328,59 @@ impl ColorSpace {
     /// Equal to `[transfer_function(); 3]` unless the space was built with divergent
     /// per-channel curves (e.g. an ICC profile whose `rTRC`, `gTRC` and `bTRC` differ).
     pub(crate) fn channel_transfer_functions(&self) -> [TransferFunction; 3] {
-        self.channel_curves.unwrap_or([self.transfer_function; 3])
+        self.channel_curves
+            .map_or([self.transfer_function; 3], |c| c.curves)
     }
 
-    /// Decodes an electro-optically encoded non-linear value [0.0, 1.0] to linear light.
+    /// Row Y of the RGB -> XYZ matrix adapted to D50, Qt's profile connection space.
+    fn d50_luminance(&self) -> [f32; 3] {
+        let m = self.rgb_to_xyz_matrix();
+        match chromatic_adaptation(self.primary_points.white_point, PrimaryPoints::D50) {
+            Some(a) => [0, 1, 2].map(|c| a[1][0] * m[0][c] + a[1][1] * m[1][c] + a[1][2] * m[2][c]),
+            None => m[1],
+        }
+    }
+
+    /// Decodes an encoded value [0.0, 1.0] of single-component (grayscale) data in this space to
+    /// linear light, as `QColorTransform` does for grayscale images.
     ///
-    /// For a space with divergent per-channel curves (`transfer_function()` is
-    /// [`TransferFunction::Custom`]) this is the identity; use `to_linear_channel`.
+    /// With one curve for every channel this is that curve. With divergent per-channel curves
+    /// (`transfer_function()` is [`TransferFunction::Custom`]) it is the luminance of the
+    /// neutral `(v, v, v)`: each channel's curve weighted by the channel's D50-adapted
+    /// luminance. A `Custom` transfer function without curves (see
+    /// [`Self::with_transfer_function`]) returns `encoded` unchanged.
     pub fn to_linear(&self, encoded: f32) -> f32 {
-        Self::decode(self.transfer_function, encoded)
+        match &self.channel_curves {
+            None => Self::decode(self.transfer_function, encoded),
+            Some(ch) => (0..3)
+                .map(|c| ch.luminance[c] * Self::decode(ch.curves[c], encoded))
+                .sum(),
+        }
     }
 
-    /// Like [`Self::to_linear`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
+    /// Like [`Self::to_linear`] for one channel's own curve (`channel`: 0 = R, 1 = G, 2 = B).
     pub(crate) fn to_linear_channel(&self, channel: usize, encoded: f32) -> f32 {
         debug_assert!(channel < 3, "colour channel index out of range: {channel}");
         Self::decode(self.channel_transfer_functions()[channel], encoded)
     }
 
-    /// Encodes linear light value to non-linear signal representation.
+    /// Encodes linear light to the signal of single-component (grayscale) data in this space, as
+    /// `QColorTransform` does when writing grayscale images.
     ///
-    /// See [`Self::to_linear`] for the per-channel caveat; use `to_encoded_channel`.
+    /// With divergent per-channel curves Qt encodes through the first (red) channel's curve and
+    /// so does this, so `to_encoded(to_linear(v))` is not `v` for such a space. A `Custom`
+    /// transfer function without curves returns `linear` unchanged.
     pub fn to_encoded(&self, linear: f32) -> f32 {
-        Self::encode(self.transfer_function, linear)
+        Self::encode(self.channel_transfer_functions()[0], linear)
     }
 
-    /// Like [`Self::to_encoded`] but honours per-channel curves (`channel`: 0 = R, 1 = G, 2 = B).
+    /// Like [`Self::to_encoded`] for one channel's own curve (`channel`: 0 = R, 1 = G, 2 = B).
     pub(crate) fn to_encoded_channel(&self, channel: usize, linear: f32) -> f32 {
         debug_assert!(channel < 3, "colour channel index out of range: {channel}");
         Self::encode(self.channel_transfer_functions()[channel], linear)
     }
 
-    fn decode(tf: TransferFunction, encoded: f32) -> f32 {
+    pub(crate) fn decode(tf: TransferFunction, encoded: f32) -> f32 {
         if encoded <= 0.0 {
             return 0.0;
         }
@@ -356,6 +398,13 @@ impl ColorSpace {
                     encoded / 12.92
                 } else {
                     ((encoded + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            TransferFunction::ProPhotoRgb => {
+                if encoded < 1.0 / 32.0 {
+                    encoded / 16.0
+                } else {
+                    encoded.powf(1.8)
                 }
             }
             TransferFunction::Bt2020 => {
@@ -416,6 +465,13 @@ impl ColorSpace {
                     linear * 12.92
                 } else {
                     1.055 * linear.powf(1.0 / 2.4) - 0.055
+                }
+            }
+            TransferFunction::ProPhotoRgb => {
+                if linear < 1.0 / 512.0 {
+                    linear * 16.0
+                } else {
+                    linear.powf(1.0 / 1.8)
                 }
             }
             TransferFunction::Bt2020 => {

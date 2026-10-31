@@ -7,6 +7,7 @@
 
 use super::color_space::ColorSpace;
 use crate::geometry::transform::is_singular;
+use crate::geometry::PointF;
 
 /// Determinant of a 3x3 matrix and the sum of the absolute values of its six terms, evaluated
 /// in `f64`. The sum is the scale reference for [`is_singular`].
@@ -69,6 +70,63 @@ fn mul_3x3(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
     res
 }
 
+/// Bradford chromatic adaptation of XYZ relative to white point `src_wp` to XYZ relative to
+/// `dst_wp` (as `QColorMatrix::chromaticAdaptation`); `None` when the white points are equal.
+pub(crate) fn chromatic_adaptation(src_wp: PointF, dst_wp: PointF) -> Option<[[f32; 3]; 3]> {
+    if (src_wp.x - dst_wp.x).abs() <= 1e-4 && (src_wp.y - dst_wp.y).abs() <= 1e-4 {
+        return None;
+    }
+    let bradford = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ];
+    let inv_bradford = invert_3x3(&bradford).unwrap_or(bradford);
+
+    let src_x = src_wp.x / src_wp.y;
+    let src_z = (1.0 - src_wp.x - src_wp.y) / src_wp.y;
+    let dst_x = dst_wp.x / dst_wp.y;
+    let dst_z = (1.0 - dst_wp.x - dst_wp.y) / dst_wp.y;
+
+    let src_cone = [
+        bradford[0][0] * src_x + bradford[0][1] * 1.0 + bradford[0][2] * src_z,
+        bradford[1][0] * src_x + bradford[1][1] * 1.0 + bradford[1][2] * src_z,
+        bradford[2][0] * src_x + bradford[2][1] * 1.0 + bradford[2][2] * src_z,
+    ];
+
+    let dst_cone = [
+        bradford[0][0] * dst_x + bradford[0][1] * 1.0 + bradford[0][2] * dst_z,
+        bradford[1][0] * dst_x + bradford[1][1] * 1.0 + bradford[1][2] * dst_z,
+        bradford[2][0] * dst_x + bradford[2][1] * 1.0 + bradford[2][2] * dst_z,
+    ];
+
+    let scale = [
+        dst_cone[0] / src_cone[0].max(1e-7),
+        dst_cone[1] / src_cone[1].max(1e-7),
+        dst_cone[2] / src_cone[2].max(1e-7),
+    ];
+
+    let adapt = [
+        [
+            scale[0] * bradford[0][0],
+            scale[0] * bradford[0][1],
+            scale[0] * bradford[0][2],
+        ],
+        [
+            scale[1] * bradford[1][0],
+            scale[1] * bradford[1][1],
+            scale[1] * bradford[1][2],
+        ],
+        [
+            scale[2] * bradford[2][0],
+            scale[2] * bradford[2][1],
+            scale[2] * bradford[2][2],
+        ],
+    ];
+
+    Some(mul_3x3(&inv_bradford, &adapt))
+}
+
 /// Color transformation pipeline between two `ColorSpace` instances (`QColorTransform`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorTransform {
@@ -110,63 +168,15 @@ impl ColorTransform {
         ]);
 
         // Chromatic adaptation (Bradford) if white points differ
-        let src_wp = src.primary_points().white_point;
-        let dst_wp = dst.primary_points().white_point;
-        let matrix = if (src_wp.x - dst_wp.x).abs() > 1e-4 || (src_wp.y - dst_wp.y).abs() > 1e-4 {
-            // Bradford adaptation matrix
-            let bradford = [
-                [0.8951, 0.2664, -0.1614],
-                [-0.7502, 1.7135, 0.0367],
-                [0.0389, -0.0685, 1.0296],
-            ];
-            let inv_bradford = invert_3x3(&bradford).unwrap_or(bradford);
-
-            let src_x = src_wp.x / src_wp.y;
-            let src_z = (1.0 - src_wp.x - src_wp.y) / src_wp.y;
-            let dst_x = dst_wp.x / dst_wp.y;
-            let dst_z = (1.0 - dst_wp.x - dst_wp.y) / dst_wp.y;
-
-            let src_cone = [
-                bradford[0][0] * src_x + bradford[0][1] * 1.0 + bradford[0][2] * src_z,
-                bradford[1][0] * src_x + bradford[1][1] * 1.0 + bradford[1][2] * src_z,
-                bradford[2][0] * src_x + bradford[2][1] * 1.0 + bradford[2][2] * src_z,
-            ];
-
-            let dst_cone = [
-                bradford[0][0] * dst_x + bradford[0][1] * 1.0 + bradford[0][2] * dst_z,
-                bradford[1][0] * dst_x + bradford[1][1] * 1.0 + bradford[1][2] * dst_z,
-                bradford[2][0] * dst_x + bradford[2][1] * 1.0 + bradford[2][2] * dst_z,
-            ];
-
-            let scale = [
-                dst_cone[0] / src_cone[0].max(1e-7),
-                dst_cone[1] / src_cone[1].max(1e-7),
-                dst_cone[2] / src_cone[2].max(1e-7),
-            ];
-
-            let adapt = [
-                [
-                    scale[0] * bradford[0][0],
-                    scale[0] * bradford[0][1],
-                    scale[0] * bradford[0][2],
-                ],
-                [
-                    scale[1] * bradford[1][0],
-                    scale[1] * bradford[1][1],
-                    scale[1] * bradford[1][2],
-                ],
-                [
-                    scale[2] * bradford[2][0],
-                    scale[2] * bradford[2][1],
-                    scale[2] * bradford[2][2],
-                ],
-            ];
-
-            let m_adapt = mul_3x3(&inv_bradford, &adapt);
-            let m_src_adapted = mul_3x3(&m_adapt, &m_src_to_xyz);
-            mul_3x3(&m_xyz_to_dst, &m_src_adapted)
-        } else {
-            mul_3x3(&m_xyz_to_dst, &m_src_to_xyz)
+        let matrix = match chromatic_adaptation(
+            src.primary_points().white_point,
+            dst.primary_points().white_point,
+        ) {
+            Some(m_adapt) => {
+                let m_src_adapted = mul_3x3(&m_adapt, &m_src_to_xyz);
+                mul_3x3(&m_xyz_to_dst, &m_src_adapted)
+            }
+            None => mul_3x3(&m_xyz_to_dst, &m_src_to_xyz),
         };
 
         Self {

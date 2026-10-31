@@ -215,25 +215,33 @@ impl IccProfile {
         })
     }
 
-    /// Maps a sampled curve to linear, sRGB, or a fitted pure gamma; `None` when the curve is
-    /// not finite over [0, 1] or cannot be fitted by a positive gamma.
+    /// Maps a sampled curve to linear, sRGB, ProPhoto, or a fitted pure gamma; `None` when the
+    /// curve is not finite over [0, 1] or cannot be fitted by a positive gamma.
     fn classify_curve(eval: &dyn Fn(f32) -> f32) -> Option<TransferFunction> {
-        let srgb = ColorSpace::srgb();
         let samples = 17;
         if !(0..=samples).all(|i| eval(i as f32 / samples as f32).is_finite()) {
             return None;
         }
-        let close = |f: &dyn Fn(f32) -> f32, tol: f32| {
+        let close = |tf: TransferFunction, tol: f32| {
             (0..=samples).all(|i| {
                 let x = i as f32 / samples as f32;
-                (eval(x) - f(x)).abs() <= tol
+                (eval(x) - ColorSpace::decode(tf, x)).abs() <= tol
             })
         };
-        if close(&|x| x, 0.003) {
+        if close(TransferFunction::Linear, 0.003) {
             return Some(TransferFunction::Linear);
         }
-        if close(&|x| srgb.to_linear(x), 0.005) {
+        if close(TransferFunction::Srgb, 0.005) {
             return Some(TransferFunction::Srgb);
+        }
+        // ProPhoto's linear toe lies below 1/32, between the samples above, so it is checked
+        // on its own: a pure gamma 1.8 stays a gamma, as in Qt.
+        let pro = TransferFunction::ProPhotoRgb;
+        let toe = [1.0 / 128.0, 1.0 / 64.0, 3.0 / 128.0]
+            .iter()
+            .all(|&x| (eval(x) - ColorSpace::decode(pro, x)).abs() <= 1e-4);
+        if toe && close(pro, 0.005) {
+            return Some(pro);
         }
         // Pure gamma fitted at the mid-tone sample.
         let y = eval(0.5).clamp(1e-4, 0.9999);
@@ -277,9 +285,11 @@ impl IccProfile {
     ///
     /// RGB profiles use the `rXYZ`/`gXYZ`/`bXYZ` colorants (D50 PCS-relative, as ICC requires)
     /// and the `rTRC`/`gTRC`/`bTRC` curves, one per channel; a missing or unparsable curve
-    /// borrows the first parsable one (sRGB when none parses). Gray profiles use `kTRC`.
-    /// Well-known gamuts/curves (sRGB, Display P3, Adobe RGB, ProPhoto RGB) map to the named
-    /// spaces. Profiles lacking the required tags fall back to sRGB (RGB) / linear gray.
+    /// borrows the first parsable one (sRGB when none parses). Gray profiles use `kTRC` for
+    /// every channel, as Qt does. Well-known gamuts/curves (sRGB, Display P3, Adobe RGB,
+    /// ProPhoto RGB) map to the named spaces; a ProPhoto profile with a pure gamma 1.8 curve
+    /// keeps that curve (no linear toe), as Qt converts it. Profiles lacking the required tags
+    /// fall back to sRGB (RGB) / linear gray.
     pub fn to_color_space(&self) -> Option<ColorSpace> {
         match self.color_model()? {
             ColorModel::Rgb => Some(self.rgb_color_space().unwrap_or_else(ColorSpace::srgb)),
@@ -373,8 +383,14 @@ impl IccProfile {
                 return Some(ColorSpace::display_p3());
             } else if matches(Primaries::AdobeRgb) && gamma_near(2.2) {
                 return Some(ColorSpace::adobe_rgb());
-            } else if matches(Primaries::ProPhotoRgb) && gamma_near(1.8) {
-                return Some(ColorSpace::from_named(NamedColorSpace::ProPhotoRgb));
+            } else if matches(Primaries::ProPhotoRgb) {
+                let named = ColorSpace::from_named(NamedColorSpace::ProPhotoRgb);
+                if tf == TransferFunction::ProPhotoRgb {
+                    return Some(named);
+                }
+                if gamma_near(1.8) {
+                    return Some(named.with_transfer_function(tf));
+                }
             }
         }
 
@@ -457,44 +473,50 @@ mod tests {
         IccProfile::from_bytes(&data).unwrap()
     }
 
-    /// D50-adapted colorants for a space (Bradford), as stored in ICC profiles.
-    fn rgb_profile_curves(cs: &ColorSpace, trc: [Vec<u8>; 3], wp: PointF) -> IccProfile {
-        // Build the D50 PCS matrix by adapting the space's own D65 matrix.
-        let m = cs.rgb_to_xyz_matrix();
-        let bfd = [
-            [0.8951f32, 0.2664, -0.1614],
-            [-0.7502, 1.7135, 0.0367],
-            [0.0389, -0.0685, 1.0296],
-        ];
-        let inv = [
-            [0.9869929f32, -0.1470543, 0.1599627],
-            [0.4323053, 0.5183603, 0.0492912],
-            [-0.0085287, 0.0400428, 0.9684867],
-        ];
-        let w = |p: PointF| [p.x / p.y, 1.0, (1.0 - p.x - p.y) / p.y];
-        let mulv = |m: &[[f32; 3]; 3], v: [f32; 3]| {
-            [
-                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-            ]
-        };
-        let s = mulv(&bfd, w(cs.primary_points().white_point));
-        let d = mulv(&bfd, w(PrimaryPoints::D50));
-        let col = |c: usize| {
-            let v = mulv(&bfd, [m[0][c], m[1][c], m[2][c]]);
-            mulv(
-                &inv,
-                [v[0] * d[0] / s[0], v[1] * d[1] / s[1], v[2] * d[2] / s[2]],
-            )
-        };
+    /// D50 PCS colorants (`rXYZ`, `gXYZ`, `bXYZ`) read from Qt's own profiles,
+    /// `QColorSpace(QColorSpace.SRgb).iccProfile()` and so on (PySide6 6.11.2). Literals, so
+    /// the profiles do not depend on `ColorSpace::rgb_to_xyz_matrix`.
+    type Colorants = [[f32; 3]; 3];
+    const SRGB_D50: Colorants = [
+        [0.43602, 0.222473, 0.013931],
+        [0.385101, 0.716904, 0.097107],
+        [0.143082, 0.060623, 0.714157],
+    ];
+    const DISPLAY_P3_D50: Colorants = [
+        [0.515091, 0.24118, -0.001053],
+        [0.291977, 0.692245, 0.041885],
+        [0.15715, 0.066574, 0.784348],
+    ];
+    const ADOBE_RGB_D50: Colorants = [
+        [0.609726, 0.311096, 0.01947],
+        [0.205261, 0.625671, 0.060883],
+        [0.149231, 0.063217, 0.744827],
+    ];
+    const PROPHOTO_D50: Colorants = [
+        [0.797668, 0.28804, 0.0],
+        [0.135193, 0.711884, 0.0],
+        [0.031357, 0.000092, 0.825195],
+    ];
+    /// Primaries (0.70, 0.28), (0.20, 0.74), (0.14, 0.05) with a D65 white, from Qt's profile
+    /// for `QColorSpace(white, red, green, blue, Gamma, 1.8)`.
+    const CUSTOM_D50: Colorants = [
+        [0.617371, 0.248734, 0.010681],
+        [0.212448, 0.701324, 0.051712],
+        [0.134384, 0.049942, 0.762787],
+    ];
+
+    fn rgb_profile_curves(colorants: Colorants, trc: [Vec<u8>; 3]) -> IccProfile {
+        let d50 = PrimaryPoints::D50;
         build(
             b"RGB ",
             &[
-                (*b"rXYZ", xyz_tag(col(0))),
-                (*b"gXYZ", xyz_tag(col(1))),
-                (*b"bXYZ", xyz_tag(col(2))),
-                (*b"wtpt", xyz_tag(w(wp))),
+                (*b"rXYZ", xyz_tag(colorants[0])),
+                (*b"gXYZ", xyz_tag(colorants[1])),
+                (*b"bXYZ", xyz_tag(colorants[2])),
+                (
+                    *b"wtpt",
+                    xyz_tag([d50.x / d50.y, 1.0, (1.0 - d50.x - d50.y) / d50.y]),
+                ),
                 (*b"rTRC", trc[0].clone()),
                 (*b"gTRC", trc[1].clone()),
                 (*b"bTRC", trc[2].clone()),
@@ -502,20 +524,19 @@ mod tests {
         )
     }
 
-    fn rgb_profile(cs: &ColorSpace, trc: Vec<u8>, wp: PointF) -> IccProfile {
-        rgb_profile_curves(cs, [trc.clone(), trc.clone(), trc], wp)
+    fn rgb_profile(colorants: Colorants, trc: Vec<u8>) -> IccProfile {
+        rgb_profile_curves(colorants, [trc.clone(), trc.clone(), trc])
     }
 
     #[test]
     fn icc_rgb_profiles_map_to_distinct_color_spaces() {
-        let d50 = PrimaryPoints::D50;
-        let srgb = rgb_profile(&ColorSpace::srgb(), srgb_para_tag(), d50)
+        let srgb = rgb_profile(SRGB_D50, srgb_para_tag())
             .to_color_space()
             .unwrap();
-        let p3 = rgb_profile(&ColorSpace::display_p3(), srgb_para_tag(), d50)
+        let p3 = rgb_profile(DISPLAY_P3_D50, srgb_para_tag())
             .to_color_space()
             .unwrap();
-        let adobe = rgb_profile(&ColorSpace::adobe_rgb(), gamma_tag(2.1992188), d50)
+        let adobe = rgb_profile(ADOBE_RGB_D50, gamma_tag(2.1992188))
             .to_color_space()
             .unwrap();
         assert_eq!(srgb, ColorSpace::srgb());
@@ -540,19 +561,7 @@ mod tests {
 
     #[test]
     fn icc_custom_gamma_and_gray_ktrc() {
-        let mut custom = ColorSpace::srgb();
-        custom = ColorSpace::from_primary_points(
-            Primaries::Custom,
-            PrimaryPoints {
-                white_point: PrimaryPoints::D65,
-                red_point: PointF { x: 0.70, y: 0.28 },
-                green_point: PointF { x: 0.20, y: 0.74 },
-                blue_point: PointF { x: 0.14, y: 0.05 },
-            },
-            TransferFunction::Gamma(1.8),
-            custom.description().to_string(),
-        );
-        let cs = rgb_profile(&custom, gamma_tag(1.8), PrimaryPoints::D50)
+        let cs = rgb_profile(CUSTOM_D50, gamma_tag(1.8))
             .to_color_space()
             .unwrap();
         assert_eq!(cs.primaries(), Primaries::Custom);
@@ -589,8 +598,7 @@ mod tests {
             .is_none());
 
         // rTRC unusable, gTRC valid: the valid curve is used.
-        let p3 = ColorSpace::display_p3();
-        let ok = rgb_profile(&p3, srgb_para_tag(), PrimaryPoints::D50);
+        let ok = rgb_profile(DISPLAY_P3_D50, srgb_para_tag());
         let mut tags = Vec::new();
         for sig in [b"rXYZ", b"gXYZ", b"bXYZ", b"wtpt"] {
             tags.push((*sig, ok.tag(sig).unwrap().to_vec()));
@@ -665,7 +673,7 @@ mod tests {
 
     struct Case {
         name: &'static str,
-        gamut: ColorSpace,
+        colorants: Colorants,
         curve: Vec<u8>,
         /// Exact named space the profile must map to, if it is a standard combination.
         named: Option<ColorSpace>,
@@ -678,7 +686,7 @@ mod tests {
         vec![
             Case {
                 name: "srgb_para",
-                gamut: ColorSpace::srgb(),
+                colorants: SRGB_D50,
                 curve: srgb_para_tag(),
                 named: Some(ColorSpace::srgb()),
                 primaries: Primaries::Srgb,
@@ -686,7 +694,7 @@ mod tests {
             },
             Case {
                 name: "srgb_sampled_table",
-                gamut: ColorSpace::srgb(),
+                colorants: SRGB_D50,
                 curve: srgb_table(),
                 named: Some(ColorSpace::srgb()),
                 primaries: Primaries::Srgb,
@@ -694,7 +702,7 @@ mod tests {
             },
             Case {
                 name: "srgb_linear",
-                gamut: ColorSpace::srgb(),
+                colorants: SRGB_D50,
                 curve: gamma_tag(1.0),
                 named: Some(ColorSpace::linear_srgb()),
                 primaries: Primaries::Srgb,
@@ -702,7 +710,7 @@ mod tests {
             },
             Case {
                 name: "display_p3_srgb_curve",
-                gamut: ColorSpace::display_p3(),
+                colorants: DISPLAY_P3_D50,
                 curve: srgb_para_tag(),
                 named: Some(ColorSpace::display_p3()),
                 primaries: ColorSpace::display_p3().primaries(),
@@ -710,7 +718,7 @@ mod tests {
             },
             Case {
                 name: "display_p3_gamma_2_2",
-                gamut: ColorSpace::display_p3(),
+                colorants: DISPLAY_P3_D50,
                 curve: gamma_tag(2.2),
                 named: None,
                 primaries: ColorSpace::display_p3().primaries(),
@@ -718,7 +726,7 @@ mod tests {
             },
             Case {
                 name: "display_p3_linear",
-                gamut: ColorSpace::display_p3(),
+                colorants: DISPLAY_P3_D50,
                 curve: gamma_tag(1.0),
                 named: None,
                 primaries: ColorSpace::display_p3().primaries(),
@@ -726,7 +734,7 @@ mod tests {
             },
             Case {
                 name: "adobe_rgb_gamma",
-                gamut: ColorSpace::adobe_rgb(),
+                colorants: ADOBE_RGB_D50,
                 curve: gamma_tag(2.1992188),
                 named: Some(ColorSpace::adobe_rgb()),
                 primaries: Primaries::AdobeRgb,
@@ -734,7 +742,7 @@ mod tests {
             },
             Case {
                 name: "adobe_rgb_para_type0",
-                gamut: ColorSpace::adobe_rgb(),
+                colorants: ADOBE_RGB_D50,
                 curve: para_tag(0, &[2.1992188]),
                 named: Some(ColorSpace::adobe_rgb()),
                 primaries: Primaries::AdobeRgb,
@@ -742,31 +750,42 @@ mod tests {
             },
             Case {
                 name: "adobe_rgb_srgb_curve",
-                gamut: ColorSpace::adobe_rgb(),
+                colorants: ADOBE_RGB_D50,
                 curve: srgb_para_tag(),
                 named: None,
                 primaries: Primaries::AdobeRgb,
                 tf: |t| *t == TransferFunction::Srgb,
             },
             Case {
+                // Qt names it ProPhoto RGB but converts with the profile's pure gamma.
                 name: "prophoto_gamma_1_8",
-                gamut: prophoto(),
+                colorants: PROPHOTO_D50,
                 curve: gamma_tag(1.8),
-                named: Some(prophoto()),
+                named: Some(
+                    prophoto().with_transfer_function(TransferFunction::Gamma(461.0 / 256.0)),
+                ),
                 primaries: Primaries::ProPhotoRgb,
                 tf: |t| matches!(t, TransferFunction::Gamma(_)),
             },
             Case {
                 name: "prophoto_romm_para",
-                gamut: prophoto(),
+                colorants: PROPHOTO_D50,
                 curve: romm_para_tag(),
                 named: Some(prophoto()),
                 primaries: Primaries::ProPhotoRgb,
-                tf: |t| matches!(t, TransferFunction::Gamma(_)),
+                tf: |t| *t == TransferFunction::ProPhotoRgb,
+            },
+            Case {
+                name: "prophoto_romm_sampled_table",
+                colorants: PROPHOTO_D50,
+                curve: sampled_curve(|x| prophoto().to_linear(x)),
+                named: Some(prophoto()),
+                primaries: Primaries::ProPhotoRgb,
+                tf: |t| *t == TransferFunction::ProPhotoRgb,
             },
             Case {
                 name: "prophoto_srgb_curve",
-                gamut: prophoto(),
+                colorants: PROPHOTO_D50,
                 curve: srgb_para_tag(),
                 named: None,
                 primaries: Primaries::ProPhotoRgb,
@@ -774,7 +793,7 @@ mod tests {
             },
             Case {
                 name: "prophoto_linear",
-                gamut: prophoto(),
+                colorants: PROPHOTO_D50,
                 curve: gamma_tag(1.0),
                 named: None,
                 primaries: Primaries::ProPhotoRgb,
@@ -786,7 +805,7 @@ mod tests {
     #[test]
     fn icc_standard_profiles_map_to_the_matching_named_space() {
         for c in cases() {
-            let cs = rgb_profile(&c.gamut, c.curve.clone(), PrimaryPoints::D50)
+            let cs = rgb_profile(c.colorants, c.curve.clone())
                 .to_color_space()
                 .unwrap();
             assert_eq!(cs.primaries(), c.primaries, "{}: primaries", c.name);
@@ -816,17 +835,13 @@ mod tests {
     #[test]
     fn icc_named_profiles_are_pairwise_distinct() {
         let all: Vec<ColorSpace> = [
-            (ColorSpace::srgb(), srgb_para_tag()),
-            (ColorSpace::display_p3(), srgb_para_tag()),
-            (ColorSpace::adobe_rgb(), gamma_tag(2.1992188)),
-            (prophoto(), gamma_tag(1.8)),
+            (SRGB_D50, srgb_para_tag()),
+            (DISPLAY_P3_D50, srgb_para_tag()),
+            (ADOBE_RGB_D50, gamma_tag(2.1992188)),
+            (PROPHOTO_D50, gamma_tag(1.8)),
         ]
         .into_iter()
-        .map(|(g, t)| {
-            rgb_profile(&g, t, PrimaryPoints::D50)
-                .to_color_space()
-                .unwrap()
-        })
+        .map(|(g, t)| rgb_profile(g, t).to_color_space().unwrap())
         .collect();
         for i in 0..all.len() {
             for j in 0..all.len() {
@@ -839,7 +854,7 @@ mod tests {
     fn icc_prophoto_keeps_its_d50_white_and_qt_matrix() {
         // ProPhoto RGB is defined relative to D50: the white point must stay D50 (not D65) and
         // the RGB -> XYZ matrix is the published ROMM RGB one.
-        let cs = rgb_profile(&prophoto(), gamma_tag(1.8), PrimaryPoints::D50)
+        let cs = rgb_profile(PROPHOTO_D50, gamma_tag(1.8))
             .to_color_space()
             .unwrap();
         assert_eq!(cs.primary_points().white_point, PrimaryPoints::D50);
@@ -860,7 +875,7 @@ mod tests {
         }
         // The same profile with a non-standard curve keeps D50 colorants rather than being
         // mislabelled through a D65 comparison.
-        let custom = rgb_profile(&prophoto(), gamma_tag(2.2), PrimaryPoints::D50)
+        let custom = rgb_profile(PROPHOTO_D50, gamma_tag(2.2))
             .to_color_space()
             .unwrap();
         assert_eq!(custom.primaries(), Primaries::ProPhotoRgb);
@@ -869,26 +884,18 @@ mod tests {
 
     #[test]
     fn icc_display_p3_matches_color_space_display_p3_exactly() {
-        let cs = rgb_profile(
-            &ColorSpace::display_p3(),
-            srgb_para_tag(),
-            PrimaryPoints::D50,
-        )
-        .to_color_space()
-        .unwrap();
+        let cs = rgb_profile(DISPLAY_P3_D50, srgb_para_tag())
+            .to_color_space()
+            .unwrap();
         let p3 = ColorSpace::display_p3();
         assert_eq!(cs.primaries(), p3.primaries());
         assert_eq!(cs.primary_points(), p3.primary_points());
         assert_eq!(cs.transfer_function(), p3.transfer_function());
         assert_eq!(cs.primary_points().white_point, PrimaryPoints::D65);
         // Same primaries label as a custom-curve P3 profile.
-        let g22 = rgb_profile(
-            &ColorSpace::display_p3(),
-            gamma_tag(2.2),
-            PrimaryPoints::D50,
-        )
-        .to_color_space()
-        .unwrap();
+        let g22 = rgb_profile(DISPLAY_P3_D50, gamma_tag(2.2))
+            .to_color_space()
+            .unwrap();
         assert_eq!(g22.primaries(), p3.primaries());
     }
 
@@ -962,19 +969,10 @@ mod tests {
     #[test]
     fn icc_profiles_convert_like_qt() {
         // Reference values from `QColorTransform::map` (PySide6 6.11.2): (source space,
-        // input, output in sRGB). Qt's ProPhoto curve has a linear toe, so only mid-tones and
-        // saturated colours are compared; tolerance covers Qt's 8-bit LUT rounding.
-        let p3 = rgb_profile(
-            &ColorSpace::display_p3(),
-            srgb_para_tag(),
-            PrimaryPoints::D50,
-        );
-        let adobe = rgb_profile(
-            &ColorSpace::adobe_rgb(),
-            gamma_tag(2.1992188),
-            PrimaryPoints::D50,
-        );
-        let pro = rgb_profile(&prophoto(), gamma_tag(1.8), PrimaryPoints::D50);
+        // input, output in sRGB); tolerance covers Qt's 8-bit LUT rounding.
+        let p3 = rgb_profile(DISPLAY_P3_D50, srgb_para_tag());
+        let adobe = rgb_profile(ADOBE_RGB_D50, gamma_tag(2.1992188));
+        let pro = rgb_profile(PROPHOTO_D50, gamma_tag(1.8));
         type Row<'a> = (&'a IccProfile, (u8, u8, u8), (u8, u8, u8));
         let rows: [Row; 8] = [
             (&p3, (200, 100, 50), (215, 93, 31)),
@@ -983,7 +981,7 @@ mod tests {
             (&adobe, (200, 100, 50), (227, 100, 42)),
             (&adobe, (30, 160, 220), (0, 161, 223)),
             (&adobe, (128, 128, 128), (129, 129, 129)),
-            (&pro, (200, 100, 50), (255, 80, 47)),
+            (&pro, (200, 100, 50), (255, 80, 46)),
             (&pro, (128, 128, 128), (146, 146, 146)),
         ];
         for (profile, input, expect) in rows {
@@ -1003,13 +1001,91 @@ mod tests {
     }
 
     #[test]
+    fn prophoto_dark_tones_convert_like_qt() {
+        // `QColorTransform::map(QColor::fromRgbF(..))` to sRGB (PySide6 6.11.2). Below 1/32 the
+        // named space and a ROMM `para` profile follow the linear toe; a profile whose curve is
+        // a pure gamma 1.8 is named ProPhoto RGB by Qt but converted without the toe.
+        let named = prophoto();
+        let romm = rgb_profile(PROPHOTO_D50, romm_para_tag())
+            .to_color_space()
+            .unwrap();
+        let pure = rgb_profile(PROPHOTO_D50, gamma_tag(1.8))
+            .to_color_space()
+            .unwrap();
+        assert_eq!(romm, named);
+        type Rgb = (f32, f32, f32);
+        let toe: [(Rgb, Rgb); 9] = [
+            ((0.004, 0.004, 0.004), (0.003235, 0.003235, 0.003235)),
+            ((0.01, 0.01, 0.01), (0.008072, 0.008072, 0.008072)),
+            ((0.02, 0.02, 0.02), (0.016159, 0.016159, 0.016159)),
+            ((0.03, 0.03, 0.03), (0.024231, 0.024231, 0.024231)),
+            ((0.035, 0.035, 0.035), (0.030945, 0.030945, 0.030945)),
+            ((0.05, 0.05, 0.05), (0.056565, 0.056565, 0.056565)),
+            ((0.03, 0.02, 0.01), (0.03505, 0.014328, 0.006699)),
+            ((0.02, 0.025, 0.015), (0.014466, 0.021134, 0.010834)),
+            ((0.5, 0.5, 0.5), (0.57232, 0.57232, 0.57232)),
+        ];
+        let gamma: [(Rgb, Rgb); 5] = [
+            ((0.004, 0.004, 0.004), (0.000626, 0.000626, 0.000626)),
+            ((0.01, 0.01, 0.01), (0.003235, 0.003235, 0.003235)),
+            ((0.02, 0.02, 0.02), (0.011276, 0.011276, 0.011276)),
+            ((0.03, 0.02, 0.01), (0.038376, 0.00853, 0.001831)),
+            ((0.5, 0.5, 0.5), (0.572168, 0.572168, 0.572168)),
+        ];
+        let cases = [(&named, &toe[..]), (&romm, &toe[..]), (&pure, &gamma[..])];
+        for (cs, rows) in cases {
+            let t = cs.transformation_to_color_space(&ColorSpace::srgb());
+            for &((r, g, b), want) in rows {
+                let got = t.map_rgb(r, g, b);
+                let ok = |a: f32, w: f32| (a - w).abs() <= 3e-4;
+                assert!(
+                    ok(got.0, want.0) && ok(got.1, want.1) && ok(got.2, want.2),
+                    "{:?} {:?}: got {got:?}, want {want:?}",
+                    cs.transfer_function(),
+                    (r, g, b)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prophoto_scalar_curve_has_qt_linear_toe() {
+        // Neutral greys through `QColorTransform::map` between ProPhoto RGB and linear sRGB
+        // (PySide6 6.11.2); a neutral stays neutral, so each channel is the scalar curve.
+        // `QColor::fromRgbF` stores 16-bit components, so inputs are quantized the same way.
+        let pro = prophoto();
+        let q = |v: f32| (v * 65535.0).round() / 65535.0;
+        for (encoded, linear) in [
+            (0.004, 0.0002441),
+            (0.01, 0.0006256),
+            (0.02, 0.0012512),
+            (0.03, 0.0018769),
+            (0.05, 0.0045472),
+            (0.5, 0.28719),
+        ] {
+            let got = pro.to_linear(q(encoded));
+            assert!((got - linear).abs() <= 2e-5, "to_linear({encoded}) = {got}");
+        }
+        for (linear, encoded) in [
+            (0.0005, 0.0080568),
+            (0.001, 0.0161135),
+            (0.0015, 0.0239261),
+            (0.003, 0.039704),
+            (0.01, 0.077409),
+            (0.2, 0.408957),
+        ] {
+            let got = pro.to_encoded(q(linear));
+            assert!(
+                (got - encoded).abs() <= 2e-5,
+                "to_encoded({linear}) = {got}"
+            );
+        }
+    }
+
+    #[test]
     fn icc_divergent_curves_are_applied_per_channel() {
-        let gamut = ColorSpace::srgb();
-        let profile = rgb_profile_curves(
-            &gamut,
-            [gamma_tag(2.2), gamma_tag(1.0), srgb_para_tag()],
-            PrimaryPoints::D50,
-        );
+        let profile =
+            rgb_profile_curves(SRGB_D50, [gamma_tag(2.2), gamma_tag(1.0), srgb_para_tag()]);
         let cs = profile.to_color_space().unwrap();
         assert_eq!(cs.primaries(), Primaries::Srgb);
         // Like QColorSpace, divergent curves report `Custom`; each channel keeps its own.
@@ -1043,8 +1119,8 @@ mod tests {
         let (_, _, b) = from_lin.map_rgb(0.0, 0.0, 0.25);
         assert!(near(b, ColorSpace::srgb().to_encoded(0.25)), "{b}");
 
-        // The scalar API cannot describe divergent curves: it reports the identity.
-        assert_eq!(cs.to_linear(0.5), 0.5);
+        // Each channel keeps its own curve; the scalar API is the grayscale conversion (see
+        // `icc_divergent_curves_scalar_api_matches_qt_grayscale`).
         assert!((cs.to_linear_channel(0, 0.5) - 0.5f32.powf(2.2)).abs() < 1e-3);
 
         // Reference values from QColorSpace::fromIccProfile + QColorTransform::map (PySide6
@@ -1072,11 +1148,78 @@ mod tests {
     }
 
     #[test]
+    fn icc_divergent_curves_scalar_api_matches_qt_grayscale() {
+        // The scalar API is Qt's grayscale path: a `Format_Grayscale16` image in the divergent
+        // profile converted to linear sRGB (decode) and back (encode), PySide6 6.11.2. Qt decodes
+        // the luminance of (v, v, v) and encodes through the red channel's curve; the
+        // tolerance covers Qt's 16-bit LUTs.
+        let cs = rgb_profile_curves(SRGB_D50, [gamma_tag(2.2), gamma_tag(1.0), srgb_para_tag()])
+            .to_color_space()
+            .unwrap();
+        assert_eq!(cs.transfer_function(), TransferFunction::Custom);
+        for (encoded, linear) in [
+            (0.05, 0.036271),
+            (0.1, 0.073762),
+            (0.25, 0.192889),
+            (0.5, 0.419852),
+            (0.75, 0.687495),
+        ] {
+            let got = cs.to_linear(encoded);
+            assert!((got - linear).abs() <= 1e-3, "to_linear({encoded}) = {got}");
+        }
+        for (linear, encoded) in [(0.05, 0.256092), (0.1, 0.350988), (0.5, 0.729656)] {
+            let got = cs.to_encoded(linear);
+            assert!(
+                (got - encoded).abs() <= 1e-3,
+                "to_encoded({linear}) = {got}"
+            );
+        }
+        // A transfer function replaced by `Custom` has no curve left: the identity.
+        let bare = cs.with_transfer_function(TransferFunction::Custom);
+        assert_eq!(bare.to_linear(0.5), 0.5);
+        assert_eq!(bare.to_encoded(0.5), 0.5);
+    }
+
+    #[test]
+    fn icc_gray_ktrc_converts_like_qt() {
+        // A gray profile's single `kTRC` serves every channel (Qt `parseTRCs` reads it for r, g
+        // and b). Reference: `Format_Grayscale8` image in the gray profile converted to sRGB
+        // (PySide6 6.11.2).
+        let d50 = PrimaryPoints::D50;
+        let wtpt = xyz_tag([d50.x / d50.y, 1.0, (1.0 - d50.x - d50.y) / d50.y]);
+        let input = [0u8, 5, 10, 30, 64, 128, 200, 255];
+        let rows: [(Vec<u8>, [u8; 8]); 4] = [
+            (gamma_tag(2.2), [0, 1, 2, 24, 62, 129, 201, 255]),
+            (srgb_para_tag(), [0, 5, 10, 30, 64, 128, 200, 255]),
+            (gamma_tag(1.0), [0, 38, 56, 96, 137, 188, 229, 255]),
+            (
+                sampled_curve(|x| x.powf(2.2)),
+                [0, 1, 2, 24, 62, 129, 201, 255],
+            ),
+        ];
+        for (ktrc, want) in rows {
+            let gray = build(b"GRAY", &[(*b"kTRC", ktrc), (*b"wtpt", wtpt.clone())])
+                .to_color_space()
+                .unwrap();
+            let t = gray.transformation_to_color_space(&ColorSpace::srgb());
+            for (v, w) in input.into_iter().zip(want) {
+                let (r, g, b, _) = t.map_rgba_u8(v, v, v, 255);
+                assert!(
+                    r == g && g == b && (r as i32 - w as i32).abs() <= 1,
+                    "{:?} {v}: got {:?}, want {w}",
+                    gray.transfer_function(),
+                    (r, g, b)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn icc_nearly_identical_curves_still_map_to_the_named_space() {
         // Three tables that differ in the last digits (not bit-identical, fitted gammas differ
         // by far less than 1e-4 relative) are one curve, not divergent per-channel curves.
         let tables = [2.2f32, 2.20005, 2.2001].map(|g| sampled_curve(|x| x.powf(g)));
-        let profile = rgb_profile_curves(&ColorSpace::adobe_rgb(), tables, PrimaryPoints::D50);
+        let profile = rgb_profile_curves(ADOBE_RGB_D50, tables);
         let fitted = [b"rTRC", b"gTRC", b"bTRC"].map(|s| profile.trc_tag(s).unwrap());
         assert!(
             fitted[0] != fitted[1] || fitted[1] != fitted[2],
@@ -1087,7 +1230,7 @@ mod tests {
 
         // Clearly different gammas remain divergent.
         let tables = [2.2f32, 2.3, 2.4].map(|g| sampled_curve(|x| x.powf(g)));
-        let cs = rgb_profile_curves(&ColorSpace::adobe_rgb(), tables, PrimaryPoints::D50)
+        let cs = rgb_profile_curves(ADOBE_RGB_D50, tables)
             .to_color_space()
             .unwrap();
         assert_eq!(cs.transfer_function(), TransferFunction::Custom);
@@ -1097,13 +1240,9 @@ mod tests {
     fn icc_equal_curves_stay_a_single_transfer_function() {
         // Identical tables on every channel are not "divergent".
         let t = sampled_curve(|x| x.powf(2.2));
-        let cs = rgb_profile_curves(
-            &ColorSpace::srgb(),
-            [t.clone(), t.clone(), t],
-            PrimaryPoints::D50,
-        )
-        .to_color_space()
-        .unwrap();
+        let cs = rgb_profile_curves(SRGB_D50, [t.clone(), t.clone(), t])
+            .to_color_space()
+            .unwrap();
         assert!(
             matches!(cs.transfer_function(), TransferFunction::Gamma(g) if (g - 2.2).abs() < 0.01)
         );
@@ -1143,11 +1282,7 @@ mod tests {
 
     #[test]
     fn icc_malformed_curves_have_a_defined_fallback() {
-        let base = rgb_profile(
-            &ColorSpace::display_p3(),
-            srgb_para_tag(),
-            PrimaryPoints::D50,
-        );
+        let base = rgb_profile(DISPLAY_P3_D50, srgb_para_tag());
         for (name, bad) in malformed_curves() {
             // Directly: an unusable curve parses to nothing instead of panicking.
             let one = build(b"GRAY", &[(*b"kTRC", bad.clone())]);
@@ -1191,7 +1326,7 @@ mod tests {
 
     #[test]
     fn icc_divergent_and_malformed_curves_mix() {
-        let base = rgb_profile(&ColorSpace::srgb(), srgb_para_tag(), PrimaryPoints::D50);
+        let base = rgb_profile(SRGB_D50, srgb_para_tag());
         // r valid, g malformed (borrows r's curve), b a different valid curve.
         let p = with_trcs(
             &base,
@@ -1216,11 +1351,7 @@ mod tests {
 
     #[test]
     fn icc_malformed_colorants_fall_back_to_srgb() {
-        let good = rgb_profile(
-            &ColorSpace::display_p3(),
-            srgb_para_tag(),
-            PrimaryPoints::D50,
-        );
+        let good = rgb_profile(DISPLAY_P3_D50, srgb_para_tag());
         let mut tags: Vec<([u8; 4], Vec<u8>)> = vec![
             (*b"gXYZ", good.tag(b"gXYZ").unwrap().to_vec()),
             (*b"bXYZ", good.tag(b"bXYZ").unwrap().to_vec()),
