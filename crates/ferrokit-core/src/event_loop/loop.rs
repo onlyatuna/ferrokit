@@ -837,12 +837,12 @@ struct RunningLoops {
     /// Set by [`EventLoopHandle::exit`] and by a consumed `WM_QUIT` while loops run: a loop that
     /// starts before they have all returned (a nested loop entered by an event the exiting loop
     /// is still delivering) returns -1 at once instead of running on, as `QEventLoop::exec` does
-    /// while `quitNow` is set (qeventloop.cpp:140-143; set by `QThread::exit`,
-    /// qthread.cpp:775-786, and `QCoreApplication::exit`, qcoreapplication.cpp:1526).
+    /// while `quitNow` is set (qtbase v6.11.2 qeventloop.cpp:142; set by `QThread::exit`,
+    /// qthread.cpp:760, and `QCoreApplication::exit`, qcoreapplication.cpp:1537).
     ///
     /// Deviation from Qt: Qt sets `quitNow` even when no loop runs, and clears it only at the
-    /// start of `QThread::exec` (qthread.cpp:685) and at both ends of `QCoreApplication::exec`
-    /// (qcoreapplication.cpp:1454, 1459, 1475), so after an exit every later `QEventLoop::exec`
+    /// start of `QThread::exec` (qthread.cpp:664) and around `QCoreApplication::exec`
+    /// (qcoreapplication.cpp:1465, 1470, 1486), so after an exit every later `QEventLoop::exec`
     /// on the thread returns -1 until one of those runs. Here the flag is set only while a loop
     /// runs and is cleared when the last running loop returns, so an exit with no loop running is
     /// a no-op and a later `exec` on the thread runs normally.
@@ -1531,7 +1531,7 @@ impl EventLoopHandle {
     /// before they have all returned (it returns -1 at once). With no loop running it does
     /// nothing.
     pub fn exit(&self, return_code: i32) {
-        // qthread.cpp:775-786: QThread::exit sets `quitNow` and ends every loop running on the
+        // qthread.cpp:757-765 (v6.11.2): QThread::exit sets `quitNow` and ends every loop running on the
         // thread, under the lock `QEventLoop::exec` checks `quitNow` with.
         {
             let mut running = self.running.lock();
