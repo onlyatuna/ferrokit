@@ -758,6 +758,8 @@ fn disarm_in_context(ctx: &ThreadTimerContext, receiver: Option<ObjectId>, id: T
             return false;
         }
     }
+    // Only the Windows code below reads the entry (its registered interval).
+    #[cfg_attr(not(windows), allow(unused_variables))]
     let Some(entry) = reg.unregister(id) else {
         return false;
     };
