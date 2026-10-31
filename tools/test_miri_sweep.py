@@ -291,14 +291,28 @@ class TestMiriSweepSharding(unittest.TestCase):
         self.assertEqual(first.units, second.units)
 
     def test_shards_are_balanced_by_estimated_seconds(self):
+        # On the checked-in data round-robin happens to be as even (its many small units average
+        # out) but it splits every target over every shard; the weighted contiguous cut must stay
+        # within half the heaviest unit of an even split. That it beats round-robin when the
+        # weights are skewed is checked below.
         for crate in BASELINE_FILES:
             for models in MODEL_SETS:
                 for count in range(2, 5):
                     _, _, plan = checked_in_plan(crate, models, count)
                     loads = [plan.seconds(i) for i in range(1, count + 1)]
                     heaviest_unit = max(seconds for _, _, seconds in plan.units)
-                    # Cutting at unit midpoints keeps every shard within one unit of an even split.
-                    self.assertLessEqual(max(loads), sum(loads) / count + heaviest_unit, f"{crate} {models}: {loads}")
+                    with self.subTest(crate=crate, models=models, count=count):
+                        self.assertLessEqual(max(loads), sum(loads) / count + heaviest_unit / 2 + 1e-9, loads)
+
+    def test_weighted_cut_beats_round_robin_on_skewed_weights(self):
+        # A heavy unit in every other slot: round-robin piles all of them on one shard.
+        seconds = [100 if i % 2 == 0 else 1 for i in range(8)]
+        shard = assign_units(seconds, 2)
+        loads = [sum(s for s, o in zip(seconds, shard) if o == k) for k in range(2)]
+        round_robin = [sum(seconds[k::2]) for k in range(2)]
+        self.assertEqual(round_robin, [400, 4])
+        self.assertLessEqual(max(loads), sum(seconds) / 2 + max(seconds) / 2)
+        self.assertLess(max(loads), max(round_robin))
 
     def test_a_target_longer_than_a_shard_is_split_and_the_shards_match(self):
         # ferrokit-gui under Tree Borrows: `lib` alone (about 1500 s on CI) is more than half the work.

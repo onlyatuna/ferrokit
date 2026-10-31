@@ -162,7 +162,7 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
         Some(10.5),
     ),
     (
-        "cursor-trailing/syn_liga_fl_caret",
+        "cursor-trailing/syn_liga_fl_even_split",
         "as cursor-trailing/syn_liga_fi",
         Some(6.0),
     ),
@@ -648,6 +648,29 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
         println!("{key}: (x of the first, x of the last position) per line\n  ferrokit {ours:?}\n  Qt       {theirs:?}");
     }
     report.push((key, Outcome::Dev(dev)));
+}
+
+/// FNV-1a (64 bit) of `tests/data/text_layout_oracle.txt`, carriage returns dropped. The line
+/// counts below cannot see an edited value; this can. Update it only together with a rerun of
+/// the generator.
+const ORACLE_FNV1A: u64 = 0xb555_7e5d_2582_14ca;
+
+fn fnv1a(bytes: impl Iterator<Item = u8>) -> u64 {
+    bytes.fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+#[test]
+fn the_oracle_file_is_the_generated_one() {
+    let hash = fnv1a(ORACLE.bytes().filter(|&b| b != b'\r'));
+    assert_eq!(
+        hash, ORACLE_FNV1A,
+        "tests/data/text_layout_oracle.txt changed (FNV-1a {hash:#018x}). Do not edit it by hand: \
+         on Windows with PySide6 and fontTools, in tests/data run \
+         `python gen_text_layout_oracle.py > text_layout_oracle.txt`, then set ORACLE_FNV1A to \
+         the new hash (and EXPECTED_LINES if the counts changed)"
+    );
 }
 
 /// Number of lines of the oracle file per `(kind, font id)`. A generator run that adds, drops
