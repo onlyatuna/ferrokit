@@ -205,6 +205,8 @@ pub mod win32_screen {
     }
 
     impl Win32Screen {
+        // `h_monitor` is passed only to `GetMonitorInfoW`, which fails for an invalid handle.
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub fn from_hmonitor(h_monitor: HMONITOR) -> Option<Self> {
             if h_monitor.is_null() {
                 return None;

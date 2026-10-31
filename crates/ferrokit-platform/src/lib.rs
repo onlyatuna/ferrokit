@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! ferrokit-platform: Platform abstraction and window integration.
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 /// Real user id of this process (the `/run/user/<uid>` runtime directory, D-Bus `AUTH EXTERNAL`).
 #[cfg(target_os = "linux")]

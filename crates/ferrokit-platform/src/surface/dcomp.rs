@@ -267,6 +267,9 @@ pub fn convert_rgba_to_staging_bgra(src: &[u8], dst: &mut [u8], opacity: f32) {
 
 impl DCompSurface {
     /// Creates a hardware accelerated DirectComposition surface for `hwnd`.
+    // `hwnd` is passed only to D3D, DXGI and DirectComposition, which validate it (creation fails
+    // for an invalid window); nothing here dereferences it.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {
             return Err("Width and height must be greater than 0");
