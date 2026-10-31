@@ -6,12 +6,10 @@
 //!   one per missed interval;
 //! - a loop that was not pumped for many intervals sees one callback when it comes back;
 //! - `Timer::single_shot` fires once and not early;
-//! - the timer of an object moved with the deprecated `move_to_thread` is armed on the target and
-//!   released there, like one moved by id.
+//! - the timer of an object moved to another thread is armed on the target and released there.
 //!
 //! Nothing here asserts how late a callback may be: that depends on the machine.
 #![cfg(windows)]
-#![allow(deprecated)]
 
 use std::ptr::NonNull;
 use std::sync::mpsc::channel;
@@ -20,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut, ObjectId,
-    QObject, ThreadId,
+    move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut,
+    ObjectId, QObject, ThreadId,
 };
 use ferrokit_core::timer::precise::native_handle;
 use ferrokit_core::timer::{kill_object_timer, start_object_timer, Timer, TimerType};
@@ -87,7 +85,7 @@ type Ticks = Arc<Mutex<Vec<(Instant, ThreadId)>>>;
 fn register_probe(
     block_at: Option<usize>,
     block_for: Duration,
-) -> (*mut Probe, ObjectId, Ticks, Arc<Mutex<Option<Instant>>>) {
+) -> (ObjectId, Ticks, Arc<Mutex<Option<Instant>>>) {
     let ticks: Ticks = Arc::new(Mutex::new(Vec::new()));
     let block_end = Arc::new(Mutex::new(None));
     let probe: &'static mut Probe = Box::leak(Box::new(Probe {
@@ -104,7 +102,7 @@ fn register_probe(
     // above, and the tests reach the probe only through the registry (callbacks, on this thread)
     // and the `ticks` `Arc`.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(raw)) };
-    (raw, id, ticks, block_end)
+    (id, ticks, block_end)
 }
 
 fn pump_for(el: &EventLoop, duration: Duration) {
@@ -132,7 +130,7 @@ fn a_precise_timer_never_fires_before_its_expiry() {
     const INTERVAL: Duration = Duration::from_millis(20);
     let _serial = serial();
     let el = EventLoop::new();
-    let (_, id, ticks, _) = register_probe(None, Duration::ZERO);
+    let (id, ticks, _) = register_probe(None, Duration::ZERO);
     let start = Instant::now();
     let timer = start_object_timer(id, INTERVAL.as_millis() as u64, TimerType::Precise);
     assert!(timer.is_valid());
@@ -161,7 +159,7 @@ fn a_callback_that_overran_is_followed_by_one_callback_not_one_per_missed_interv
     let _serial = serial();
     let el = EventLoop::new();
     // The third callback blocks for four intervals.
-    let (_, id, ticks, block_end) = register_probe(Some(2), INTERVAL * 4);
+    let (id, ticks, block_end) = register_probe(Some(2), INTERVAL * 4);
     let timer = start_object_timer(id, INTERVAL.as_millis() as u64, TimerType::Precise);
     assert!(timer.is_valid());
     assert!(
@@ -197,7 +195,7 @@ fn a_loop_that_was_not_pumped_for_many_intervals_sees_one_callback_when_it_retur
     const INTERVAL: Duration = Duration::from_millis(50);
     let _serial = serial();
     let el = EventLoop::new();
-    let (_, id, ticks, _) = register_probe(None, Duration::ZERO);
+    let (id, ticks, _) = register_probe(None, Duration::ZERO);
     let timer = start_object_timer(id, INTERVAL.as_millis() as u64, TimerType::Precise);
     assert!(timer.is_valid());
     // Ten intervals pass with no pumping; the native source keeps ticking meanwhile.
@@ -241,11 +239,11 @@ fn a_single_shot_fires_once_and_not_early() {
 }
 
 #[test]
-fn a_timer_moved_with_the_deprecated_move_is_armed_on_the_target_and_released_there() {
+fn a_timer_moved_to_another_thread_is_armed_on_the_target_and_released_there() {
     let _serial = serial();
     let source = ThreadId::current();
     let source_loop = EventLoop::new();
-    let (probe, id, ticks, _) = register_probe(None, Duration::ZERO);
+    let (id, ticks, _) = register_probe(None, Duration::ZERO);
     let timer = start_object_timer(id, 5, TimerType::Precise);
     assert!(timer.is_valid());
     assert!(native_handle(timer).is_some());
@@ -267,22 +265,18 @@ fn a_timer_moved_with_the_deprecated_move_is_armed_on_the_target_and_released_th
                 >= 3
         });
         let while_running = native_handle(timer).is_some();
-        // SAFETY: the object was moved to this thread by the test's `move_to_thread` before the
-        // loop here ran, so this thread is its registration thread; `pump_until` has returned, so
-        // no callback of it runs. The probe is leaked, so the memory stays valid.
+        // SAFETY: the object was moved to this thread by `move_to_thread_by_id` before the loop
+        // here ran, so this thread is its registration thread; `pump_until` has returned, so no
+        // callback of it runs. The probe is leaked, so the memory stays valid.
         unsafe { unregister_qobject(id) };
         report_tx
             .send((ticking, while_running, native_handle(timer).is_some()))
             .unwrap();
     });
     let target = tid_rx.recv_timeout(WATCHDOG).expect("owner reports its id");
-    // NOT DOCUMENTED AS SAFE (reported to the maintainer): this call breaks rule 6 of the `object`
-    // module. The deprecated `move_to_thread` holds `&mut (*probe).data` while it sends
-    // `ThreadChange` to the same object through the registry (`send_event` in `thread.rs`), which
-    // runs a callback that makes a `&mut Probe` from the registered pointer, overlapping that
-    // borrow. The test is `cfg(windows)`, so Miri does not check it.
-    let moved = move_to_thread(unsafe { &mut (*probe).data }, target, source);
-    assert_eq!(moved, Ok(()));
+    // By id: the move reaches the object only through the registry, so the `ThreadChange`
+    // callback borrows it alone (rule 6 of the `object` module).
+    assert_eq!(move_to_thread_by_id(id, target, source), Ok(()));
 
     assert_eq!(
         native_handle(timer),
