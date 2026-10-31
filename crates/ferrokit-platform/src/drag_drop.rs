@@ -205,6 +205,12 @@ pub mod win32_ole {
         a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
     }
 
+    /// `IUnknown::QueryInterface` of [`OleDropTarget`].
+    ///
+    /// # Safety
+    /// `this` must be a live `OleDropTarget` the caller holds a reference to; `riid` must be null
+    /// or point to a GUID and `ppv_object` null or point to a writable pointer slot, as the
+    /// `QueryInterface` contract has it.
     unsafe extern "system" fn query_interface(
         this: *mut c_void,
         riid: *const windows_sys::core::GUID,
@@ -239,6 +245,10 @@ pub mod win32_ole {
         }
     }
 
+    /// `IUnknown::AddRef` of [`OleDropTarget`].
+    ///
+    /// # Safety
+    /// `this` must be a live `OleDropTarget` the caller holds a reference to.
     unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
         let target = this as *mut OleDropTarget;
         // SAFETY: `this` is a live `OleDropTarget` while any reference is outstanding; the caller
@@ -246,6 +256,11 @@ pub mod win32_ole {
         (*target).ref_count.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// `IUnknown::Release` of [`OleDropTarget`]; frees the target with the last reference.
+    ///
+    /// # Safety
+    /// `this` must be a live `OleDropTarget` and the caller must own the reference it gives up;
+    /// it must not use `this` afterwards through that reference.
     unsafe extern "system" fn release(this: *mut c_void) -> u32 {
         let target = this as *mut OleDropTarget;
         // SAFETY: `this` is a live `OleDropTarget` while any reference is outstanding; the caller
@@ -312,6 +327,9 @@ pub mod win32_ole {
     }
 
     /// Whether `data_object` offers `cf` as global memory.
+    ///
+    /// # Safety
+    /// `data_object` must be a live, non-null `IDataObject*`.
     unsafe fn has_format(data_object: *mut c_void, cf: u16) -> bool {
         // SAFETY: `data_object` is a live `IDataObject*` (caller contract), whose first word is
         // its vtable pointer, so reading it as `*const *const IDataObjectVtbl` is a pointer read.
@@ -321,6 +339,9 @@ pub mod win32_ole {
     }
 
     /// The bytes of the `cf` global-memory block of `data_object`.
+    ///
+    /// # Safety
+    /// `data_object` must be a live, non-null `IDataObject*`.
     unsafe fn read_format(data_object: *mut c_void, cf: u16) -> Option<Vec<u8>> {
         // SAFETY: `data_object` is a live `IDataObject*` (caller contract), whose first word is
         // its vtable pointer, so reading it as `*const *const IDataObjectVtbl` is a pointer read.
@@ -426,6 +447,10 @@ pub mod win32_ole {
     }
 
     /// The window-client logical position of a screen point of the drag.
+    ///
+    /// # Safety
+    /// No obligation beyond passing a window handle: `hwnd` reaches only `ScreenToClient` and the
+    /// DPI lookup, which validate it.
     unsafe fn logical_client_pos(hwnd: HWND, pt: POINTL) -> Point {
         let mut native = POINT { x: pt.x, y: pt.y };
         ScreenToClient(hwnd, &mut native);
@@ -435,6 +460,10 @@ pub mod win32_ole {
         )
     }
 
+    /// The effect proposed for `*pdw_effect`'s allowed effects; none without decodable formats.
+    ///
+    /// # Safety
+    /// `pdw_effect` must be null or point to a readable `u32` (the `IDropTarget` `pdwEffect`).
     unsafe fn allowed_effect(pdw_effect: *const u32, has_formats: bool, key_state: u32) -> u32 {
         if pdw_effect.is_null() || !has_formats {
             return DROPEFFECT_NONE;
@@ -444,6 +473,10 @@ pub mod win32_ole {
         proposed_effect(key_state, *pdw_effect)
     }
 
+    /// Writes `effect` to `*pdw_effect` unless it is null.
+    ///
+    /// # Safety
+    /// `pdw_effect` must be null or point to a writable `u32` (the `IDropTarget` `pdwEffect`).
     unsafe fn write_effect(pdw_effect: *mut u32, effect: u32) {
         if !pdw_effect.is_null() {
             // SAFETY: `pdw_effect` is non-null (checked above); per the `IDropTarget` documentation
@@ -466,6 +499,10 @@ pub mod win32_ole {
             .unwrap_or(DROPEFFECT_NONE)
     }
 
+    /// The effects the source allows: `*pdw_effect`, none when it is null.
+    ///
+    /// # Safety
+    /// `pdw_effect` must be null or point to a readable `u32` (the `IDropTarget` `pdwEffect`).
     unsafe fn incoming_effects(pdw_effect: *const u32) -> u32 {
         if pdw_effect.is_null() {
             DROPEFFECT_NONE
@@ -476,6 +513,12 @@ pub mod win32_ole {
         }
     }
 
+    /// `IDropTarget::DragEnter`.
+    ///
+    /// # Safety
+    /// As OLE calls it: `this` must be a live `OleDropTarget` the caller holds a reference to,
+    /// `p_data_obj` null or a live `IDataObject*`, and `pdw_effect` null or a valid `u32` for the
+    /// call.
     unsafe extern "system" fn drag_enter(
         this: *mut c_void,
         p_data_obj: *mut c_void,
@@ -504,6 +547,11 @@ pub mod win32_ole {
         S_OK
     }
 
+    /// `IDropTarget::DragOver`.
+    ///
+    /// # Safety
+    /// As OLE calls it: `this` must be a live `OleDropTarget` the caller holds a reference to,
+    /// and `pdw_effect` null or a valid `u32` for the call.
     unsafe extern "system" fn drag_over(
         this: *mut c_void,
         grf_key_state: u32,
@@ -527,6 +575,10 @@ pub mod win32_ole {
         S_OK
     }
 
+    /// `IDropTarget::DragLeave`.
+    ///
+    /// # Safety
+    /// As OLE calls it: `this` must be a live `OleDropTarget` the caller holds a reference to.
     unsafe extern "system" fn drag_leave(this: *mut c_void) -> HRESULT {
         // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
         // shared reference is formed.
@@ -538,6 +590,12 @@ pub mod win32_ole {
         S_OK
     }
 
+    /// `IDropTarget::Drop`.
+    ///
+    /// # Safety
+    /// As OLE calls it: `this` must be a live `OleDropTarget` the caller holds a reference to,
+    /// `p_data_obj` null or a live `IDataObject*`, and `pdw_effect` null or a valid `u32` for the
+    /// call.
     unsafe extern "system" fn drop(
         this: *mut c_void,
         p_data_obj: *mut c_void,
@@ -582,19 +640,69 @@ pub mod win32_ole {
     /// A drop target registered for a window with `RegisterDragDrop`. Dropping it revokes the
     /// registration (`RevokeDragDrop`, which releases OLE's reference) and releases this side's
     /// reference, so the target is freed once neither OLE nor a running drag holds it.
+    ///
+    /// OLE's reference can only be released through `RevokeDragDrop` on a live window: once the
+    /// window is destroyed the call fails with `DRAGDROP_E_INVALIDHWND` and OLE keeps its
+    /// reference for good. Ferrokit windows therefore also revoke in `WM_DESTROY`
+    /// ([`revoke_on_destroy`]), as MFC's `COleDropTarget` revokes when its window is destroyed, so
+    /// a window destroyed other than through `close()` (for example with its parent) does not leak
+    /// the target.
     pub struct DropTargetRegistration {
         hwnd: HWND,
         target: *mut OleDropTarget,
     }
 
+    /// The windows with a live registration made here, by handle, with the target registered for
+    /// each. `revoke_on_destroy` takes a window out when it revokes, so a later
+    /// `DropTargetRegistration` drop knows not to revoke again: by then the handle may name a new
+    /// window whose own registration must stay. Process-wide (not per thread) because
+    /// `register_drop_target` accepts any window handle.
+    static REGISTERED: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Takes `hwnd` out of [`REGISTERED`] when it is registered with `target` (or with any target,
+    /// for `None`); returns whether it was.
+    fn unregister(hwnd: HWND, target: Option<*mut OleDropTarget>) -> bool {
+        let mut registered = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+        let found = registered.iter().position(|&(h, t)| {
+            h == hwnd as usize && target.is_none_or(|target| t == target as usize)
+        });
+        found.map(|i| registered.swap_remove(i)).is_some()
+    }
+
     impl Drop for DropTargetRegistration {
         fn drop(&mut self) {
+            // Still registered: revoke now. Otherwise `revoke_on_destroy` revoked while the window
+            // existed (OLE released its reference then), and the handle may already name another
+            // window, whose registration a second `RevokeDragDrop` would take away.
+            if unregister(self.hwnd, Some(self.target)) {
+                // A failed revocation is deliberately not answered with a release: OLE then holds
+                // no reference this side may give up. After a destruction without
+                // `revoke_on_destroy` (a foreign window class) the reference belongs to OLE's lost
+                // registration, and releasing it here would free the target while OLE still
+                // points at it.
+                // SAFETY: `RevokeDragDrop` takes any handle value and validates it.
+                unsafe {
+                    RevokeDragDrop(self.hwnd);
+                }
+            }
+            // Only this side's own reference is released, which never frees memory OLE still uses.
             // SAFETY: `target` came from `OleDropTarget::new` in `register_drop_target`, which
-            // handed its one reference to this registration; it is released exactly once, here,
-            // after the registration is revoked. `RevokeDragDrop` takes any handle value.
+            // handed its one reference to this registration; it is released exactly once, here.
             unsafe {
-                RevokeDragDrop(self.hwnd);
                 release(self.target as *mut c_void);
+            }
+        }
+    }
+
+    /// Revokes `hwnd`'s drop-target registration, if it has one made here, while the window still
+    /// exists. Called from `WM_DESTROY`; the later `DropTargetRegistration` drop then skips its
+    /// own revocation.
+    pub(crate) fn revoke_on_destroy(hwnd: HWND) {
+        if unregister(hwnd, None) {
+            // SAFETY: `RevokeDragDrop` takes any handle value and validates it; `hwnd` is the
+            // window being destroyed, which still exists during `WM_DESTROY`.
+            unsafe {
+                RevokeDragDrop(hwnd);
             }
         }
     }
@@ -621,6 +729,13 @@ pub mod win32_ole {
             let target_ptr = OleDropTarget::new(hwnd, callback);
             let hr = RegisterDragDrop(hwnd, target_ptr as *mut _);
             if hr == S_OK {
+                // `RegisterDragDrop` succeeded, so no registration of this handle is live: an
+                // entry left for it belongs to a destroyed window whose handle was reused.
+                {
+                    let mut registered = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+                    registered.retain(|&(h, _)| h != hwnd as usize);
+                    registered.push((hwnd as usize, target_ptr as usize));
+                }
                 Ok(DropTargetRegistration {
                     hwnd,
                     target: target_ptr,

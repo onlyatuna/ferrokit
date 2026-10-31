@@ -1005,6 +1005,11 @@ mod native {
         super_class: *mut c_void,
     }
 
+    /// `objc_msgSendSuper` as the function pointer type `F`.
+    ///
+    /// # Safety
+    /// `F` must be an `unsafe extern "C" fn` pointer type taking `*const ObjcSuper`, the selector,
+    /// then the arguments and return type of the method each call through it sends.
     #[inline]
     unsafe fn super_send_fn<F: Copy>() -> F {
         debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());

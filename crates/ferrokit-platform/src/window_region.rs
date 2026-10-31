@@ -230,6 +230,12 @@ struct OwnedScan<'a> {
     found: Vec<HWND>,
 }
 
+/// `EnumWindows` callback of `release_owned_windows`: collects the windows of `scan.class` that
+/// `scan.owner` owns.
+///
+/// # Safety
+/// `lparam` must be the address of an `OwnedScan` that is live and not otherwise borrowed for
+/// the call (as `EnumWindows` passes it back from `release_owned_windows`).
 unsafe extern "system" fn collect_owned(hwnd: HWND, lparam: LPARAM) -> i32 {
     // SAFETY: `lparam` is the `OwnedScan` that `release_owned_windows` keeps alive across
     // `EnumWindows`, which calls this on the same thread before it returns.

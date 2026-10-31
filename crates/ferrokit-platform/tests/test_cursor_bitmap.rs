@@ -135,6 +135,18 @@ mod win32 {
         );
     }
 
+    /// The custom cursors are made once per process: another thread gets the same handle rather
+    /// than building (and leaking) its own copy.
+    #[test]
+    fn custom_cursors_are_shared_by_all_threads() {
+        let here = Win32Cursor::native_handle(CursorShape::SplitH);
+        let there = std::thread::spawn(|| Win32Cursor::native_handle(CursorShape::SplitH))
+            .join()
+            .unwrap();
+        assert_ne!(here, 0);
+        assert_eq!(here, there);
+    }
+
     #[test]
     fn the_pointer_position_is_queried_from_windows() {
         assert!(Win32Cursor::new().pos().is_some());

@@ -15,7 +15,6 @@ ab_glyph_rasterizer = "0.1"
 rustybuzz = "0.20.1"
 unicode-segmentation = "1.12"
 serde = { version = "1.0", features = ["derive"], optional = true }
-memmap2 = "0.9.11"
 unicode-linebreak = "0.1.5"
 unicode-bidi = "0.3.18"
 
@@ -31,6 +30,7 @@ parking_lot = "0.12"
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite", "Win32_Foundation"] }
+memmap2 = "0.9.11"
 
 [lints]
 workspace = true

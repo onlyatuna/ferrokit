@@ -43,11 +43,17 @@ mod core_graphics {
     }
 }
 
+/// A frame presented into a `CALayer`. Thread-affine (`!Send + !Sync`): `commit_to_layer`
+/// messages the layer, the backing layer of an AppKit view, which belongs to the main thread
+/// (Apple's `CATransaction` reference: implicit transactions are committed when the modifying
+/// thread's run loop next iterates, so other threads need explicit ones and care). The surface
+/// therefore stays on the thread that created it, like its `CocoaNativeWindow`.
 pub struct CocoaLayerSurface {
     layer_id: usize,
     width: u32,
     height: u32,
     pixel_buffer: Vec<u8>,
+    _thread_affine: std::marker::PhantomData<*const ()>,
 }
 
 impl CocoaLayerSurface {
@@ -71,6 +77,7 @@ impl CocoaLayerSurface {
             width,
             height,
             pixel_buffer,
+            _thread_affine: std::marker::PhantomData,
         })
     }
 

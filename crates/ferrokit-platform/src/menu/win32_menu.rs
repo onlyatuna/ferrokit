@@ -177,6 +177,9 @@ impl Win32Menu {
                         // A submenu from another back end (the trait default returns 0) has no
                         // native menu: appending `MF_POPUP` with a null menu would fail, so the
                         // item is skipped and the rest of the menu is still built.
+                        eprintln!(
+                            "ferrokit: submenu {text:?} has no native Win32 menu; it is left out"
+                        );
                         continue;
                     }
                     let sub_hmenu = OwnedMenu::from_raw(raw as HMENU);
@@ -400,16 +403,18 @@ mod tests {
     #[test]
     fn test_win32_menu_skips_a_submenu_without_a_native_menu() {
         use crate::menu::CocoaMenu;
-        use windows_sys::Win32::UI::WindowsAndMessaging::GetMenuItemCount;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetMenuItemCount, GetMenuItemID};
         let mut menu = Win32Menu::new(ptr::null_mut());
         menu.add_action(1, "Before");
         menu.add_submenu("Foreign", Box::new(CocoaMenu::new()));
         menu.add_action(2, "After");
         // SAFETY: the test runs on one thread (`build_hmenu`'s thread requirement); `hmenu` is the
-        // popup just built, destroyed exactly once by `DestroyMenu` after `GetMenuItemCount`.
+        // popup just built, destroyed exactly once by `DestroyMenu` after the queries.
         unsafe {
             let hmenu = menu.build_hmenu().expect("failed to build HMENU");
             assert_eq!(GetMenuItemCount(hmenu), 2);
+            assert_eq!(GetMenuItemID(hmenu, 0), 1);
+            assert_eq!(GetMenuItemID(hmenu, 1), 2);
             assert_ne!(DestroyMenu(hmenu), 0);
         }
     }
