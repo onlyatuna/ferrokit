@@ -364,6 +364,29 @@ fn transient_parent_ignores_foreign_handles_and_ends_with_the_parent() {
     assert_eq!(child.transient_parent(), None);
 }
 
+#[test]
+fn a_transient_parent_that_would_make_a_cycle_is_refused() {
+    let mock = MockObjcRuntime::instance();
+    let mut a = window(WindowFlags::NORMAL);
+    let mut b = window(WindowFlags::TOOL);
+    let mut c = window(WindowFlags::TOOL);
+    b.set_transient_parent(Some(a.native_handle()));
+    c.set_transient_parent(Some(b.native_handle()));
+
+    // `a` above its own grandchild and `b` above its child would be cycles: nothing is sent.
+    mock.clear_calls();
+    a.set_transient_parent(Some(c.native_handle()));
+    b.set_transient_parent(Some(c.native_handle()));
+    assert!(selectors(mock, c.ns_window()).is_empty());
+    assert_eq!(a.transient_parent(), None);
+    assert_eq!(b.transient_parent(), Some(a.native_handle()));
+
+    // A window outside the chain is still accepted.
+    let d = window(WindowFlags::NORMAL);
+    a.set_transient_parent(Some(d.native_handle()));
+    assert_eq!(a.transient_parent(), Some(d.native_handle()));
+}
+
 fn solid(width: u32, height: u32) -> Pixmap {
     let mut pixmap = Pixmap::new(width, height).expect("pixmap");
     pixmap.fill(ferrokit_gui::tiny_skia::Color::from_rgba8(

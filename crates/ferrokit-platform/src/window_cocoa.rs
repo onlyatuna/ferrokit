@@ -837,6 +837,26 @@ impl PlatformWindow for CocoaNativeWindow {
             );
             return;
         }
+        // `addChildWindow:` with a window that is already a descendant of `me` would make a
+        // cycle, which AppKit may answer with an Objective-C exception [inferred]; an exception
+        // unwinding into Rust is undefined behaviour, so such a parent is refused.
+        let mut ancestor = wanted;
+        while !ancestor.is_nil() {
+            if ancestor == me {
+                eprintln!(
+                    "ferrokit: set_transient_parent: {:#x} is a transient child of this window; \
+                     it is ignored",
+                    wanted.0 as usize
+                );
+                return;
+            }
+            // SAFETY: `ancestor` is `wanted` (just checked live) or the `parentWindow` of a
+            // window on this chain; a parent link is only ever made by this method to a live
+            // `CocoaNativeWindow`, and a window's `Drop` detaches its children, so every link is
+            // live. `parentWindow` takes no arguments and returns an object. The chain is
+            // finite: this check keeps it free of cycles.
+            ancestor = unsafe { ObjcMsg::send_id_prop(ancestor, Sel::register("parentWindow")) };
+        }
         // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`. `parentWindow` is nil or
         // a window this method attached `me` to, which was a live `CocoaNativeWindow` then and
         // still is: its `Drop` detaches every child before releasing it. `wanted` is nil or (just
