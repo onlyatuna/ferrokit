@@ -1270,6 +1270,8 @@
     "test_label_separators::line_and_paragraph_separators_size_a_label_as_qt_does::SB": "unsupported",
     "test_label_separators::line_and_paragraph_separators_size_a_label_as_qt_does::TB": "unsupported",
     "test_label_separators::two_line_separators_make_an_empty_line::SB": "unsupported",
-    "test_label_separators::two_line_separators_make_an_empty_line::TB": "unsupported"
+    "test_label_separators::two_line_separators_make_an_empty_line::TB": "unsupported",
+    "test_label_font_metrics_oracle::label_size_hints_differ_between_hint_light_and_hint_full_at_ratio_one::SB": "unsupported",
+    "test_label_font_metrics_oracle::label_size_hints_differ_between_hint_light_and_hint_full_at_ratio_one::TB": "unsupported"
   }
 }
