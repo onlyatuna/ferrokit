@@ -31,7 +31,8 @@
     "test_qregion_shapes",
     "test_font_features",
     "test_text_layout_oracle",
-    "test_text_tabs"
+    "test_text_tabs",
+    "test_font_line_metrics_oracle"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -759,6 +760,18 @@
     "test_text_system::test_cursor_sticky_x_without_wrapping::TB": "unsupported",
     "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::SB": "unsupported",
     "test_text_tabs::a_document_expands_tabs_to_its_tab_stop_distance_as_qt_does::TB": "unsupported",
+    "test_font_line_metrics_oracle::an_engine_without_sub_pixel_positions_rounds_and_moves_the_difference_into_the_leading::SB": "unsupported",
+    "test_font_line_metrics_oracle::an_engine_without_sub_pixel_positions_rounds_and_moves_the_difference_into_the_leading::TB": "unsupported",
+    "test_font_line_metrics_oracle::an_in_memory_font_takes_its_line_metrics_from_its_tables::SB": "unsupported",
+    "test_font_line_metrics_oracle::an_in_memory_font_takes_its_line_metrics_from_its_tables::TB": "unsupported",
+    "test_font_line_metrics_oracle::hhea_typographic_and_windows_metrics_are_chosen_as_qt_chooses_them::SB": "unsupported",
+    "test_font_line_metrics_oracle::hhea_typographic_and_windows_metrics_are_chosen_as_qt_chooses_them::TB": "unsupported",
+    "test_font_line_metrics_oracle::the_average_char_width_of_the_other_engines_is_the_os2_average::SB": "unsupported",
+    "test_font_line_metrics_oracle::the_average_char_width_of_the_other_engines_is_the_os2_average::TB": "unsupported",
+    "test_font_line_metrics_oracle::the_outline_backend_reads_line_metrics_and_average_width_from_the_tables::SB": "pass",
+    "test_font_line_metrics_oracle::the_outline_backend_reads_line_metrics_and_average_width_from_the_tables::TB": "pass",
+    "test_font_line_metrics_oracle::absurd_pixel_sizes_do_not_overflow::SB": "pass",
+    "test_font_line_metrics_oracle::absurd_pixel_sizes_do_not_overflow::TB": "pass",
     "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::SB": "unsupported",
     "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::TB": "unsupported",
     "test_text_layout_oracle::a_negative_wrap_width_lays_out_one_grapheme_per_line::SB": "unsupported",

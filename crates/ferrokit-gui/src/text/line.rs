@@ -39,8 +39,11 @@ pub struct TextLine {
     pub(crate) position: PointF,
     /// Allocated line width.
     pub(crate) width: f32,
-    /// Line total height (`ascent + descent + leading`).
+    /// Line height (`QTextLine::height`: the engine's ascent plus descent, rounded up).
     pub(crate) height: f32,
+    /// Distance from the top of this line to the top of the next one in a plain text, which also
+    /// takes the leading (see `FontMetrics::line_pitch`).
+    pub(crate) pitch: f32,
     /// Font ascent (distance from top to baseline).
     pub(crate) ascent: f32,
     /// Font descent (distance from baseline to bottom).
@@ -83,6 +86,7 @@ impl Default for TextLine {
             position: PointF::new(0.0, 0.0),
             width: 0.0,
             height: 0.0,
+            pitch: 0.0,
             ascent: 0.0,
             descent: 0.0,
             leading: 0.0,
@@ -157,6 +161,14 @@ impl TextLine {
     #[inline]
     pub fn height(&self) -> f32 {
         self.height
+    }
+
+    /// Distance from this line's top to the next line's top (see [`FontMetrics::line_pitch`]).
+    ///
+    /// [`FontMetrics::line_pitch`]: crate::text::FontMetrics::line_pitch
+    #[inline]
+    pub fn pitch(&self) -> f32 {
+        self.pitch
     }
 
     #[inline]
@@ -338,6 +350,18 @@ impl TextLine {
             }
         }
     }
+}
+
+/// The height of lines stacked as `qt_format_text` stacks them (qpainter.cpp:7370-7388): every
+/// line but the last advances by its [`pitch`](TextLine::pitch), the last adds its own height.
+pub(crate) fn stacked_height<'a>(lines: impl IntoIterator<Item = &'a TextLine>) -> f32 {
+    let (mut top, mut advance, mut last_height) = (0.0, 0.0, 0.0);
+    for line in lines {
+        top += advance;
+        advance = line.pitch;
+        last_height = line.height;
+    }
+    top + last_height
 }
 
 /// One run of a line in the order it is shown, with where it sits.

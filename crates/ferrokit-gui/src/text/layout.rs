@@ -459,6 +459,8 @@ impl TextLayout {
         if self.layout_cursor == total_graphemes {
             self.layout_cursor = total_graphemes + 1;
             let metrics = FontMetrics::from_font(&self.font);
+            let line_height = FontMetrics::line_height(&self.font);
+            let pitch = FontMetrics::line_pitch(&self.font);
             let line_idx = self.lines.len();
             let x_pos = if self.alignment.contains(Alignment::RIGHT) {
                 self.position.x + self.wrap_width.unwrap_or(0.0)
@@ -473,12 +475,13 @@ impl TextLayout {
                 text_length: 0,
                 byte_start: composite.text.len(),
                 byte_length: 0,
-                position: PointF::new(x_pos, self.position.y + line_idx as f32 * metrics.height),
+                position: PointF::new(x_pos, self.position.y + line_idx as f32 * pitch),
                 width: self.wrap_width.unwrap_or(0.0),
-                height: metrics.height,
+                height: line_height,
+                pitch,
                 ascent: metrics.ascent,
                 descent: metrics.descent,
-                leading: metrics.leading(),
+                leading: FontMetrics::layout_leading(&self.font),
                 natural_width: 0.0,
                 advance_width: 0.0,
                 right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
@@ -490,6 +493,8 @@ impl TextLayout {
         }
 
         let metrics = FontMetrics::from_font(&self.font);
+        let line_height = FontMetrics::line_height(&self.font);
+        let pitch = FontMetrics::line_pitch(&self.font);
         let wraps = self.wrap_mode != WrapMode::NoWrap;
         let max_width = if wraps {
             self.wrap_width.unwrap_or(f32::MAX)
@@ -702,7 +707,7 @@ impl TextLayout {
         let natural_w = advance_w + bearing;
         let line_idx = self.lines.len();
 
-        let y_pos = self.position.y + (line_idx as f32) * metrics.height;
+        let y_pos = self.position.y + (line_idx as f32) * pitch;
         // `QTextEngine::alignLine` (qtextengine.cpp:3558-3572): Right, else HCenter, else the
         // line starts at the left (Left, Justify, no flag).
         // Justified text of a right to left paragraph is aligned right.
@@ -728,10 +733,11 @@ impl TextLayout {
             byte_length: line_bytes,
             position: PointF::new(x_pos, y_pos),
             width: self.wrap_width.unwrap_or(natural_w),
-            height: metrics.height,
+            height: line_height,
+            pitch,
             ascent: metrics.ascent,
             descent: metrics.descent,
-            leading: metrics.leading(),
+            leading: FontMetrics::layout_leading(&self.font),
             natural_width: natural_w,
             advance_width: advance_w,
             right_limit,
@@ -793,14 +799,12 @@ impl TextLayout {
         }
 
         let mut max_w: f32 = 0.0;
-        let mut total_h: f32 = 0.0;
-
         for line in &self.lines {
             if line.natural_width > max_w {
                 max_w = line.natural_width;
             }
-            total_h += line.height;
         }
+        let total_h = crate::text::line::stacked_height(&self.lines);
 
         RectF::new(self.position.x, self.position.y, max_w, total_h)
     }

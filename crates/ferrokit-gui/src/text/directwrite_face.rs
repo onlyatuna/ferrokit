@@ -24,7 +24,7 @@
 //! reads them straight from the file. Only the coverage bitmap comes from DirectWrite.
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics};
+use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics};
 use crate::text::outline_face::OutlineFace;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
@@ -399,9 +399,17 @@ impl GlyphFace for DirectWriteFace {
         self.base.glyph_index(ch)
     }
 
-    /// DirectWrite's ascent and descent (`DWRITE_FONT_METRICS`).
-    fn vertical_metrics(&self, px: f32) -> Option<(f32, f32)> {
-        Some(self.base.line_metrics(px, true))
+    /// Qt's DirectWrite engine fills its ascent, descent and leading from `DWRITE_FONT_METRICS`
+    /// and then lets `QFontEngine::initializeHeightMetrics` replace them with the values of the
+    /// font's own tables (qwindowsfontenginedirectwrite.cpp:353-363), which are what is read here.
+    fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
+        self.base.line_metrics(px)
+    }
+
+    /// `boundingBox('x').xoff` (the design advance of `x`): Qt's Windows engines do not use the
+    /// OS/2 average width.
+    fn average_char_width(&self, px: f32) -> Option<f32> {
+        self.base.x_advance(px)
     }
 
     fn cap_height(&self, px: f32) -> Option<f32> {

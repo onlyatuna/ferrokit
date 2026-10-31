@@ -170,14 +170,12 @@ impl TextDocument {
     pub fn size(&self) -> SizeF {
         let lines = self.layout_lines();
         let mut max_w: f32 = 0.0;
-        let mut total_h: f32 = 0.0;
         for l in &lines {
             if l.natural_text_width() > max_w {
                 max_w = l.natural_text_width();
             }
-            total_h += l.height();
         }
-        SizeF::new(max_w, total_h)
+        SizeF::new(max_w, crate::text::line::stacked_height(&lines))
     }
 
     /// Sizes the text to its ideal width (`QTextDocument::adjustSize`, qtextdocument.cpp:837-857).
@@ -602,7 +600,7 @@ impl TextDocument {
             layout.draw_with_color(painter, PointF::new(pos.x, curr_y), &[], default_color);
             let block_h: f32 = (0..layout.line_count())
                 .filter_map(|i| layout.line_at(i))
-                .map(|l| l.height())
+                .map(|l| l.pitch())
                 .sum();
             curr_y += block_h;
         }

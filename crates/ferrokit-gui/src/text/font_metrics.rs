@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::geometry::primitives::RectF;
 use crate::text::font::{Font, FontStyle, FontTag, FontWeight};
+use crate::text::glyph_face::LineMetrics;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -84,6 +85,11 @@ thread_local! {
         RefCell::new(LineCache { generation: 0, map: HashMap::new() });
 }
 
+/// `qRound` of a value: halves round up (`QFixed::toInt`), also for negative leadings.
+fn q_round(value: f32) -> f32 {
+    (value + 0.5).floor()
+}
+
 /// Identity of a line-metrics query.
 #[derive(Hash, PartialEq, Eq)]
 struct LineKey {
@@ -95,7 +101,7 @@ struct LineKey {
 
 struct LineCache {
     generation: u64,
-    map: HashMap<LineKey, Option<(f32, f32)>>,
+    map: HashMap<LineKey, (Option<LineMetrics>, Option<f32>)>,
 }
 
 /// Font metrics engine (`QFontMetrics` / `QFontMetricsF` equivalent).
@@ -103,15 +109,17 @@ struct LineCache {
 /// Used for text layout, centering, bounding box measurement, and eliding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontMetrics {
-    /// Distance from baseline to highest point of glyphs.
+    /// `QFontMetrics::ascent`: baseline to the top of a line, whole pixels.
     pub ascent: f32,
-    /// Distance from baseline to lowest point of glyphs.
+    /// `QFontMetrics::descent`: baseline to the bottom of a line, whole pixels.
     pub descent: f32,
-    /// Leading / line gap.
+    /// `QFontMetrics::leading`, the inter-line spacing the font asks for.
     pub line_gap: f32,
-    /// Total line height = ascent + descent + line_gap.
+    /// `QFontMetrics::height` = `ascent + descent` ([`from_font`](Self::from_font)); with
+    /// [`new`](Self::new), which has no engine to ask, it also holds the `line_gap`.
     pub height: f32,
-    /// Average character advance width.
+    /// `QFontMetricsF::averageCharWidth`: the engine's own 26.6 value
+    /// ([`rounded_average_char_width`](Self::rounded_average_char_width) is `QFontMetrics`'s).
     pub average_char_width: f32,
 }
 
@@ -128,19 +136,50 @@ impl FontMetrics {
         }
     }
 
-    /// Derives standard font metrics from a `Font` instance.
+    /// Derives the metrics of `font` as `QFontMetrics` reports them.
+    ///
+    /// The face the font resolves to (its in-memory data, else the installed family) gives the
+    /// numbers, read from the font's tables the way Qt's engine does:
+    /// [`GlyphFace::line_metrics`] and [`GlyphFace::average_char_width`]. `ascent`, `descent` and
+    /// `line_gap` (`leading()`) are those engine values rounded to whole pixels (`qRound`) and
+    /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
+    /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font no
+    /// face resolves for has made-up numbers (0.8, 0.2 and 0.1 of the size, 0.6 for the average
+    /// character width), since there is nothing to measure.
+    ///
+    /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
+    /// [`GlyphFace::average_char_width`]: crate::text::glyph_face::GlyphFace::average_char_width
     pub fn from_font(font: &Font) -> Self {
         let size = font.size;
-        let avg_width = size * 0.6;
-        if let Some((ascent, descent)) = Self::face_line_metrics(font) {
-            // QFontMetrics: the engine's ascent and descent rounded to whole pixels; leading
-            // is not part of `height()`.
-            return Self::new(ascent.round(), descent.round(), 0.0, avg_width);
+        let (line, average) = Self::face_metrics(font);
+        let average_char_width = average.unwrap_or(size * 0.6);
+        if let Some(line) = line {
+            let engine = Self::engine_line_metrics(line);
+            let (ascent, descent) = (q_round(engine.ascent), q_round(engine.descent));
+            return Self {
+                ascent,
+                descent,
+                line_gap: q_round(engine.leading),
+                height: ascent + descent,
+                average_char_width,
+            };
         }
         let ascent = size * 0.8;
         let descent = size * 0.2;
         let line_gap = size * 0.1;
-        Self::new(ascent, descent, line_gap, avg_width)
+        Self::new(ascent, descent, line_gap, average_char_width)
+    }
+
+    /// `QFontMetrics::lineSpacing`: `ascent + descent + leading`, each rounded.
+    #[inline]
+    pub fn line_spacing(&self) -> f32 {
+        self.ascent + self.descent + self.line_gap
+    }
+
+    /// `QFontMetrics::averageCharWidth`, the engine's width rounded to a whole pixel.
+    #[inline]
+    pub fn rounded_average_char_width(&self) -> f32 {
+        q_round(self.average_char_width)
     }
 
     /// `QFontMetricsF::capHeight`: the face's OS/2 cap height as Qt's Windows engines report it,
@@ -155,27 +194,57 @@ impl FontMetrics {
     }
 
     /// Height of one line of text as Qt's text layout measures it (`QFontMetrics::boundingRect`,
-    /// hence `QLabel::sizeHint`), before the final `ceil`.
-    ///
-    /// `QFontMetrics::height` rounds the engine's ascent and descent separately; the layout adds
-    /// them first. Qt's GDI engine reports whole pixels (the two agree); its DirectWrite engine
-    /// reports `DESIGN_TO_LOGICAL` values truncated to 26.6, so Microsoft JhengHei UI at 15px is
-    /// 15.234375 + 3.8125 = 19.046875, a 20px line against `height()`'s 19.
+    /// hence `QLabel::sizeHint`), before the final `ceil`: the engine's ascent plus its descent,
+    /// which are 26.6 values (a 12.5 + 3.5 line is 16 px) where the engine has sub-pixel positions
+    /// and whole pixels where it has not. `QFontMetrics::height` rounds the two separately (13 + 4
+    /// = 17 px for that line), so it can be taller; Microsoft JhengHei UI at 15px under Qt's
+    /// DirectWrite engine is 15.234375 + 3.8125 = 19.046875, a 20px line against `height()`'s 19.
     pub fn layout_height(font: &Font) -> f32 {
-        match Self::face_line_metrics(font) {
-            Some((ascent, descent)) if crate::text::font_database::uses_directwrite_engine() => {
-                ((ascent * 64.0).floor() + (descent * 64.0).floor()) / 64.0
+        match Self::face_metrics(font).0 {
+            Some(line) => {
+                let engine = Self::engine_line_metrics(line);
+                engine.ascent + engine.descent
             }
-            _ => Self::from_font(font).height,
+            None => Self::from_font(font).height,
         }
+    }
+
+    /// The height of a line of text in `font` (`QTextLine::height`, qtextlayout.cpp:1524:
+    /// [`layout_height`](Self::layout_height) rounded up).
+    pub fn line_height(font: &Font) -> f32 {
+        Self::layout_height(font).ceil()
+    }
+
+    /// `QFontMetricsF::ascent`, `descent` and `leading` of `font`: the engine's own 26.6 values
+    /// (`None` for a font no face resolves for).
+    pub fn engine_metrics(font: &Font) -> Option<LineMetrics> {
+        Self::face_metrics(font).0.map(Self::engine_line_metrics)
+    }
+
+    /// `QFontMetricsF::leading`: the engine's own value, a 26.6 number where it has sub-pixel
+    /// positions and a whole one otherwise (negative when rounding the ascent and descent took
+    /// more than rounding the whole line, as for 12.5 + 3.5), 0 for a font no face resolves for.
+    pub fn layout_leading(font: &Font) -> f32 {
+        Self::face_metrics(font)
+            .0
+            .map_or(0.0, |line| Self::engine_line_metrics(line).leading)
+    }
+
+    /// The distance from one line of a plain text to the next, as `qt_format_text` stacks them
+    /// (qpainter.cpp:7370-7388, what `QLabel` and `QFontMetrics::boundingRect` lay a text out
+    /// by): the leading is added between lines and the top of each line rounded up
+    /// (`height = qCeil(height + leading)`), so a text of `n` lines is
+    /// `(n - 1) * line_pitch + line_height` tall.
+    pub fn line_pitch(font: &Font) -> f32 {
+        (Self::layout_height(font) + Self::layout_leading(font)).ceil()
     }
 
     /// Ascent and descent, in pixels, of one line of `text` when it uses fallback font engines,
     /// else `None` (the line is the primary font's own). Qt's line takes the largest ascent and the
     /// largest descent of the engines its text items use, fallback engines included
     /// (`QTextEngine::shapeText`, qtextengine.cpp:1479-1480: the item's ascent becomes the larger of
-    /// its own and the actual engine's, descent likewise). Values are truncated to 26.6 like
-    /// [`layout_height`](Self::layout_height) (the GDI engine, used at DPR 1, reports whole pixels).
+    /// its own and the actual engine's, descent likewise). The values are the engines' own, as
+    /// [`layout_height`](Self::layout_height) takes them.
     pub fn fallback_line_metrics(font: &Font, text: &str) -> Option<(f32, f32)> {
         if font.font_data.is_some() || font.size <= 0.0 || text.is_empty() {
             return None;
@@ -190,14 +259,13 @@ impl FontMetrics {
         }
         let (mut ascent, mut descent) = (0.0f32, 0.0f32);
         for run in &runs {
-            let (a, d) = engines[run.engine_index].face.vertical_metrics(font.size)?;
-            let (a, d) = if crate::text::font_database::uses_directwrite_engine() {
-                ((a * 64.0).floor() / 64.0, (d * 64.0).floor() / 64.0)
-            } else {
-                (a.round(), d.round())
+            // A face with no metrics does not enter the stacking; the others still do.
+            let Some(line) = engines[run.engine_index].face.line_metrics(font.size) else {
+                continue;
             };
-            ascent = ascent.max(a);
-            descent = descent.max(d);
+            let engine = Self::engine_line_metrics(line);
+            ascent = ascent.max(engine.ascent);
+            descent = descent.max(engine.descent);
         }
         Some((ascent, descent))
     }
@@ -211,10 +279,15 @@ impl FontMetrics {
         }
     }
 
-    /// Ascent and descent of the face `font` resolves to, from the font database.
-    fn face_line_metrics(font: &Font) -> Option<(f32, f32)> {
-        if font.font_data.is_some() || font.size <= 0.0 {
-            return None;
+    /// What the face `font` resolves to says about it: its line metrics and average character
+    /// width. System fonts are remembered per family, size, weight and style (until the font set
+    /// changes); in-memory fonts are not (their identity is not part of the key).
+    fn face_metrics(font: &Font) -> (Option<LineMetrics>, Option<f32>) {
+        if font.size <= 0.0 {
+            return (None, None);
+        }
+        if font.font_data.is_some() {
+            return crate::text::font_database::primary_face_metrics(font);
         }
         let generation = crate::text::font_database::font_generation();
         let key = LineKey {
@@ -234,9 +307,20 @@ impl FontMetrics {
         if let Some(found) = hit {
             return found;
         }
-        let found = crate::text::font_database::primary_face_vertical_metrics(font);
+        let found = crate::text::font_database::primary_face_metrics(font);
         LINE_CACHE.with(|c| c.borrow_mut().map.insert(key, found));
         found
+    }
+
+    /// The engine's height metrics as Qt holds them: the face's own values where the engine has
+    /// sub-pixel positions, else rounded to whole pixels with the leading taking up the rounding
+    /// of the line (`QFontEngine::initializeHeightMetrics`).
+    fn engine_line_metrics(line: LineMetrics) -> LineMetrics {
+        if crate::text::font_database::engine_has_subpixel_positions() {
+            line
+        } else {
+            line.rounded()
+        }
     }
     /// Interline leading spacing (`QFontMetrics::leading`).
     #[inline]

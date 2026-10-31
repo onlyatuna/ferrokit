@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::layout::Layout;
+use crate::layout_engine::WIDGET_SIZE_MAX;
 use crate::widget::{Widget, WidgetBase, WidgetRef, WidgetWeak};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::notify_borrowed;
@@ -28,6 +29,10 @@ pub struct Label {
     margin: i32,
     /// The Qt class the style sheet matches this label as: `QLabel`, or `QToolTip` for a tip.
     type_name: &'static str,
+    /// `QLabelPrivate::isTextLabel`: whether `setText` ever changed the text. A label that did
+    /// not (`QLabel()` and `QLabel("")`, whose `setText("")` returns early) is not a text label:
+    /// its size is `averageCharWidth() x lineSpacing()` whatever its font.
+    is_text_label: bool,
 }
 
 /// `QApplication`'s default font family on Windows (`Microsoft JhengHei UI`).
@@ -48,6 +53,7 @@ impl Label {
         // sets no `font-family`, so both its ASCII and CJK labels render with it.
         let font = Font::new(APP_DEFAULT_FAMILY, 13.0);
         let base = WidgetBase::new();
+        let is_text_label = !text_str.is_empty();
         let metrics = FontMetrics::from_font(&font);
         let text_w = metrics.horizontal_advance(&text_str, &font).ceil() as i32 + 10;
         let text_h = metrics.height.ceil() as i32 + 6;
@@ -62,6 +68,7 @@ impl Label {
             word_wrap: false,
             rich: false,
             margin: 0,
+            is_text_label,
             type_name: "QLabel",
         }
     }
@@ -77,6 +84,7 @@ impl Label {
             return;
         }
         self.text = text;
+        self.is_text_label = true;
         self.update_geometry();
         self.update();
     }
@@ -325,24 +333,45 @@ impl Label {
     }
 
     /// Natural size of the text without box, margin or indent (`QLabelPrivate::sizeForWidth`,
-    /// qlabel.cpp:575-625). `hextra` is the horizontal space the box and indent take.
-    fn text_size(&self, font: &Font, metrics: &FontMetrics, hextra: f32) -> (f32, f32) {
+    /// qlabel.cpp:575-625). `hextra` is the horizontal space the box and indent take. `width` is
+    /// the width the label is asked for: `None` is `sizeForWidth(-1)` (a wrapping text takes the
+    /// width it would like), `Some(w)` wraps at `w` (less the box).
+    fn text_size(
+        &self,
+        font: &Font,
+        metrics: &FontMetrics,
+        hextra: f32,
+        width: Option<i32>,
+    ) -> (f32, f32) {
+        if !self.is_text_label {
+            // A label that never had text is not a text label: `QSize(averageCharWidth(),
+            // lineSpacing())` (qlabel.cpp:626-628).
+            return (metrics.rounded_average_char_width(), metrics.line_spacing());
+        }
         if !self.word_wrap {
             if self.rich {
                 return self.document_size(font, None);
             }
-            // Plain and unwrapped: one `layout_height` line per `\n`-separated line.
+            // Plain and unwrapped: the `layout_height` line of each `\n`-separated line, stacked
+            // as `qt_format_text` does: the leading between lines, each line's top rounded up
+            // (qpainter.cpp:7370-7388).
             let text = self.plain_text();
             let lines: Vec<&str> = text.split('\n').collect();
-            let line_h = lines
-                .iter()
-                .map(|line| FontMetrics::layout_height_for_text(font, line).ceil())
-                .fold(0.0, f32::max);
+            let leading = FontMetrics::layout_leading(font);
+            let mut h = -leading;
+            for line in &lines {
+                h = (h + leading).ceil() + FontMetrics::layout_height_for_text(font, line);
+            }
             let w = lines
                 .iter()
                 .map(|line| Self::natural_text_width(line, font))
                 .fold(0.0, f32::max);
-            return (w, line_h * lines.len() as f32);
+            return (w, h);
+        }
+        if let Some(w) = width {
+            // `sizeForWidth(w)`: the text wrapped at `w` less the box, never below 0.
+            let wrap = (w as f32 - hextra).max(0.0);
+            return self.document_size(font, Some(wrap));
         }
         if self.rich {
             // `QTextDocument::adjustSize` gives the ideal width (qlabel.cpp:580).
@@ -351,18 +380,59 @@ impl Label {
             let size = doc.size();
             return (size.width, size.height);
         }
-        // Plain word-wrap: `tryWidth` from 80 average characters, narrowed while the text stays
-        // short (qlabel.cpp:603-613).
-        let line = metrics.height;
-        let w = (metrics.average_char_width * 80.0).min(self.maximum_size().width as f32) - hextra;
-        let mut br = self.document_size(font, Some(w));
-        if br.1 < 4.0 * line && br.0 > w / 2.0 {
-            br = self.document_size(font, Some(w / 2.0));
+        // Plain word-wrap: `tryWidth` from 80 average characters (`QFontMetrics::averageCharWidth`,
+        // a whole number), narrowed while the text stays short of 4 and 2 line spacings; the
+        // rectangle `fm.boundingRect` returns is whole pixels (qlabel.cpp:603-613).
+        let line = metrics.line_spacing();
+        let w = (metrics.rounded_average_char_width() * 80.0).min(self.maximum_size().width as f32)
+            - hextra;
+        let sized = |wrap: f32| {
+            let (bw, bh) = self.document_size(font, Some(wrap));
+            (bw.ceil(), bh.ceil())
+        };
+        let mut br = sized(w);
+        if br.1 < 4.0 * line && br.0 > (w / 2.0).trunc() {
+            br = sized((w / 2.0).trunc());
         }
-        if br.1 < 2.0 * line && br.0 > w / 4.0 {
-            br = self.document_size(font, Some(w / 4.0));
+        if br.1 < 2.0 * line && br.0 > (w / 4.0).trunc() {
+            br = sized((w / 4.0).trunc());
         }
         br
+    }
+
+    /// `QLabelPrivate::sizeForWidth`: the size of the label asked to be `width` wide, or its size
+    /// hint when `None`. The text size plus the box, expanded to `minimumSize()` (qlabel.cpp:620).
+    /// `max-height` is not a hint.
+    fn size_for_width(&self, width: Option<i32>) -> Size {
+        let style = self.resolved_style();
+        // `if (q->minimumWidth() > 0) w = qMax(w, q->minimumWidth())` (qlabel.cpp:536-537): with a
+        // minimum width a size hint is a wrap at that width, never the label's own choice (the
+        // tryWidth of `w == -1`), and the width the narrowest-word probe asks for is the minimum.
+        let minimum_width = self
+            .minimum_size()
+            .width
+            .max(self.widget_base().min_size.get().width);
+        let width = if minimum_width > 0 {
+            Some(width.map_or(minimum_width, |w| w.max(minimum_width)))
+        } else {
+            width
+        };
+        let font = self.styled_font(&style);
+        let metrics = FontMetrics::from_font(&font);
+        let (box_l, box_r, box_t, box_b) = Self::box_insets(&style, self.margin as f32);
+        let indent = Self::indent(&style, &metrics, &font);
+        let (h_indent, v_indent) = Self::indent_extra(indent, self.visual_alignment());
+        let hextra = box_l + box_r + h_indent;
+        let vextra = box_t + box_b + v_indent;
+        let (text_w, text_h) = self.text_size(&font, &metrics, hextra, width);
+        // `expandedTo(q->minimumSize())`: the style sheet's `min-*` and the explicit minimum size.
+        let (style_w, style_h) = style.min_box_size();
+        let explicit = self.widget_base().min_size.get();
+        let (min_w, min_h) = (style_w.max(explicit.width), style_h.max(explicit.height));
+        Size::new(
+            (text_w.ceil() as i32 + hextra.round() as i32).max(min_w),
+            (text_h.ceil() as i32 + vextra.round() as i32).max(min_h),
+        )
     }
 
     /// The label's font with the stylesheet's size, family, weight and letter spacing applied.
@@ -453,22 +523,7 @@ impl Widget for Label {
     }
 
     fn size_hint(&self) -> Size {
-        let style = self.resolved_style();
-        let font = self.styled_font(&style);
-        let metrics = FontMetrics::from_font(&font);
-        let (box_l, box_r, box_t, box_b) = Self::box_insets(&style, self.margin as f32);
-        let indent = Self::indent(&style, &metrics, &font);
-        let (h_indent, v_indent) = Self::indent_extra(indent, self.visual_alignment());
-        let hextra = box_l + box_r + h_indent;
-        let vextra = box_t + box_b + v_indent;
-        let (text_w, text_h) = self.text_size(&font, &metrics, hextra);
-        // `QLabelPrivate::sizeForWidth`: the text size plus the box, expanded to `minimumSize()`
-        // (`qlabel.cpp:620`). `max-height` is not a hint.
-        let (min_w, min_h) = style.min_box_size();
-        Size::new(
-            (text_w.ceil() as i32 + hextra.round() as i32).max(min_w),
-            (text_h.ceil() as i32 + vextra.round() as i32).max(min_h),
-        )
+        self.size_for_width(None)
     }
 
     fn minimum_size(&self) -> Size {
@@ -477,9 +532,18 @@ impl Widget for Label {
         Size::new(w, h)
     }
 
-    /// `QLabel::minimumSizeHint` of a label that does not wrap: the text's own size.
+    /// `QLabel::minimumSizeHint` (qlabel.cpp:809-833): the height of one line (`sizeForWidth` of
+    /// an unbounded width, never above the size hint's) by the width of the widest word
+    /// (`sizeForWidth(0)`). A label that does not wrap is as wide as its text either way, so this
+    /// is its size hint.
     fn minimum_size_hint(&self) -> Size {
-        self.size_hint()
+        let hint = self.size_hint();
+        if !self.is_text_label || !self.word_wrap {
+            return hint;
+        }
+        let one_line = self.size_for_width(Some(WIDGET_SIZE_MAX));
+        let narrowest = self.size_for_width(Some(0));
+        Size::new(narrowest.width, one_line.height.min(hint.height))
     }
 
     fn maximum_size(&self) -> Size {
@@ -673,8 +737,9 @@ impl Widget for Label {
         let text = self.plain_text();
         if text.contains('\n') {
             let lines: Vec<&str> = text.split('\n').collect();
-            let line_height = FontMetrics::layout_height(&font).ceil();
-            let total_text_h = line_height * lines.len() as f32;
+            let line_height = FontMetrics::line_height(&font);
+            let pitch = FontMetrics::line_pitch(&font);
+            let total_text_h = pitch * (lines.len() - 1) as f32 + line_height;
             let top = y_for(total_text_h);
             let line_ws: Vec<f32> = lines
                 .iter()
@@ -691,7 +756,7 @@ impl Widget for Label {
             let mut start_y = top + metrics.ascent;
             for (line, w) in lines.iter().zip(&line_ws) {
                 Self::draw_line(painter, x_for(*w), start_y, line, &font, text_color);
-                start_y += line_height;
+                start_y += pitch;
             }
             if clip {
                 painter.restore();
