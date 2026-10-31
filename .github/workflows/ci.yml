@@ -124,8 +124,8 @@ jobs:
           xvfb-run -a python tools/run_test_binaries.py --timeout 120 --jobs 4
           --package ferrokit-platform --package ferrokit-widgets --test-threads 1
 
-  # Not in the protect-main required checks. Windows and Linux are linted because most of the
-  # code is Windows code and the rest is Linux code; the macOS only code is not covered.
+  # Not in the protect-main required checks. Each OS lints the code only it compiles (the
+  # Windows, Linux and macOS backends are cfg-gated).
   clippy:
     name: Clippy (${{ matrix.os }})
     timeout-minutes: 60
@@ -133,7 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04]
+        os: [windows-latest, ubuntu-22.04, macos-latest]
     steps:
       - uses: actions/checkout@v7
 

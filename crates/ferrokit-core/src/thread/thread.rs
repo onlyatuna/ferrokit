@@ -141,9 +141,13 @@ mod os_priority {
     mod imp {
         use super::ThreadPriority;
 
-        pub(in super::super) type Pending = ();
+        /// Nothing to carry: priorities are not applied on this platform.
+        #[derive(Clone, Copy)]
+        pub(in super::super) struct Pending;
 
-        pub(in super::super) fn resolve(_requested: Option<ThreadPriority>) -> Pending {}
+        pub(in super::super) fn resolve(_requested: Option<ThreadPriority>) -> Pending {
+            Pending
+        }
 
         pub(in super::super) fn apply(_pending: Pending) {}
     }
