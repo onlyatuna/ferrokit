@@ -717,6 +717,11 @@ fn mock_selector_name(sel: Sel) -> String {
         .unwrap_or_default()
 }
 
+/// `objc_msgSend` as the function pointer type `F`.
+///
+/// # Safety
+/// `F` must be an `unsafe extern "C" fn` pointer type whose signature matches the method each
+/// call through it sends (receiver, selector, then the method's arguments and return type).
 #[cfg(target_os = "macos")]
 #[inline]
 unsafe fn msg_send_fn<F: Copy>() -> F {

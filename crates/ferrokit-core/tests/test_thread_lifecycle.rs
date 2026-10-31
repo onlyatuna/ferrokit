@@ -273,6 +273,85 @@ fn exit_ends_nested_event_loops_too() {
     assert_eq!(code.unwrap(), 5);
 }
 
+/// The race behind a flake of `exit_ends_nested_event_loops_too`: `exit` lands after an event
+/// has decided to run a nested loop but before that loop is running, so only the outer loop is
+/// told. The nested loop must not run on (and hold the outer one forever): like `QEventLoop::exec`
+/// while `quitNow` is set (qeventloop.cpp:140-143), it returns -1 at once.
+#[test]
+fn a_nested_loop_entered_after_exit_returns_at_once() {
+    use ferrokit_core::event_loop::EventLoop;
+
+    let (about_to_enter_tx, about_to_enter_rx) = channel::<()>();
+    let (exited_tx, exited_rx) = channel::<()>();
+    let (inner_code_tx, inner_code_rx) = channel::<i32>();
+    let channels = std::sync::Mutex::new((about_to_enter_tx, exited_rx, inner_code_tx));
+    let handle = Thread::spawn_with_event_loop(move |sender| {
+        let task = Box::new(move |_: &mut dyn std::any::Any| {
+            let (about_to_enter, exited, inner_code) = &*channels.lock().unwrap();
+            let inner = EventLoop::new();
+            let _ = about_to_enter.send(());
+            // `exit` is called now, before the nested loop runs.
+            let _ = exited.recv_timeout(Duration::from_secs(10));
+            let _ = inner_code.send(inner.exec());
+        });
+        sender.post_event(ObjectId(0), Event::new(EventKind::MetaCall(task)));
+    });
+    about_to_enter_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the nested loop was not about to start");
+    handle.exit(5);
+    exited_tx.send(()).unwrap();
+    let code = with_watchdog(10, move || handle.join());
+    assert_eq!(code.unwrap(), 5);
+    assert_eq!(inner_code_rx.recv_timeout(Duration::ZERO), Ok(-1));
+}
+
+/// The flag that makes a nested loop return at once after an exit is cleared when the exited
+/// loops have returned: a later `exec` on the same thread delivers events and runs until its own
+/// exit.
+#[test]
+fn a_loop_run_after_the_exited_loops_returned_runs_normally() {
+    use ferrokit_core::event_loop::EventLoop;
+
+    let codes = with_watchdog(10, || {
+        let outer = EventLoop::new();
+        let handle = outer.handle();
+        let nested = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&nested);
+        outer.post_event(
+            ObjectId(0),
+            Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                handle.exit(3);
+                // Entered while the outer loop is being ended: returns at once.
+                *sink.lock().unwrap() = Some(EventLoop::new().exec());
+            }))),
+        );
+        let outer_code = outer.exec();
+
+        // Same thread, after the exited loop returned: runs and delivers its event.
+        let later = EventLoop::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_in_event = Arc::clone(&ran);
+        let later_handle = later.handle();
+        later.post_event(
+            ObjectId(0),
+            Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                ran_in_event.store(true, Ordering::SeqCst);
+                later_handle.exit(8);
+            }))),
+        );
+        let later_code = later.exec();
+        let nested_code = nested.lock().unwrap().take();
+        (
+            outer_code,
+            nested_code,
+            later_code,
+            ran.load(Ordering::SeqCst),
+        )
+    });
+    assert_eq!(codes, (3, Some(-1), 8, true));
+}
+
 mod swallowed_exit {
     use std::cell::RefCell;
 

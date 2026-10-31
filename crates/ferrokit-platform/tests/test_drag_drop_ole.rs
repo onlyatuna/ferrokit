@@ -115,9 +115,17 @@ struct MockData {
     files: Option<&'static [&'static str]>,
 }
 
+/// `QueryInterface` of the mock data object: answers nothing.
+///
+/// # Safety
+/// None: no argument is used.
 unsafe extern "system" fn m_qi(_: *mut c_void, _: *const GUID, _: *mut *mut c_void) -> i32 {
     E_NOTIMPL
 }
+/// `AddRef`/`Release` of the mock data object, which is a static and is never freed.
+///
+/// # Safety
+/// None: no argument is used.
 unsafe extern "system" fn m_ref(_: *mut c_void) -> u32 {
     1
 }
@@ -142,6 +150,10 @@ fn supported(this: &MockData, fmt: &FormatEtc) -> bool {
             || (fmt.cf_format == CF_HDROP && this.files.is_some()))
 }
 
+/// `QueryGetData` of the mock data object.
+///
+/// # Safety
+/// `this` must point to a live `MockData` and `fmt` to a `FormatEtc`.
 unsafe extern "system" fn m_query(this: *mut c_void, fmt: *const FormatEtc) -> i32 {
     if supported(&*(this as *const MockData), &*fmt) {
         S_OK
@@ -150,6 +162,11 @@ unsafe extern "system" fn m_query(this: *mut c_void, fmt: *const FormatEtc) -> i
     }
 }
 
+/// `GetData` of the mock data object: a fresh global block the caller frees.
+///
+/// # Safety
+/// `this` must point to a live `MockData`, `fmt` to a `FormatEtc` and `out` to a writable
+/// `StgMedium`.
 unsafe extern "system" fn m_get(
     this: *mut c_void,
     fmt: *const FormatEtc,

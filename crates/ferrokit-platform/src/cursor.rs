@@ -122,9 +122,8 @@ pub mod win32_cursor {
     use super::*;
     use crate::win32_handles::{create_dib_section, OwnedBitmap};
     use ferrokit_gui::geometry::primitives::Point;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
+    use std::sync::Mutex;
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
     use windows_sys::Win32::System::Registry::{
@@ -147,11 +146,14 @@ pub mod win32_cursor {
     /// put back when the override ends; 0 while none.
     static OVERRIDDEN_CURSOR: AtomicIsize = AtomicIsize::new(0);
 
-    thread_local! {
-        /// Cursors built from [`custom_cursor_image`] by (shape, system cursor width); the UI
-        /// thread owns them for the life of the process, like Qt's `m_standardCursorCache`.
-        static CUSTOM_CURSORS: RefCell<HashMap<(u8, i32), isize>> = RefCell::new(HashMap::new());
-    }
+    /// Cursors built from [`custom_cursor_image`] as (shape, system cursor width, `HCURSOR`),
+    /// created once and never destroyed, like Qt's `m_standardCursorCache`. Process-wide: a cursor
+    /// is a USER object, not owned by a thread, and "handles to user objects are public to all
+    /// processes" (learn.microsoft.com/windows/win32/sysinfo/user-objects), so any thread may show
+    /// a cursor another thread made. A handful of entries (seven shapes per cursor width), so a
+    /// linear search. A handle of 0 records a failed creation, which is not retried for that
+    /// width (`WM_SETCURSOR` would otherwise rebuild the bitmaps under the lock on every move).
+    static CUSTOM_CURSORS: Mutex<Vec<(u8, i32, isize)>> = Mutex::new(Vec::new());
 
     pub struct Win32Cursor {
         current_shape: CursorShape,
@@ -245,22 +247,15 @@ pub mod win32_cursor {
                 // SAFETY: GetSystemMetrics takes only an integer index and has no preconditions.
                 let width = unsafe { GetSystemMetrics(SM_CXCURSOR) };
                 let key = (shape as u8, width);
-                let Ok(cached) = CUSTOM_CURSORS.try_with(|m| m.borrow().get(&key).copied()) else {
-                    // The thread-local cache is gone (thread teardown): a cursor made now could
-                    // never be cached or destroyed and would leak on every call, so fall back to
-                    // the shared system arrow, which belongs to the system and is never destroyed.
-                    // SAFETY: a null instance with an `IDC_*` id is the documented way to load a
-                    // shared system cursor, which belongs to the system and needs no destruction.
-                    return unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) };
-                };
-                if let Some(handle) = cached {
+                // Held while a missing cursor is made, so two threads never both create (and one
+                // leak) the same cursor. The list is only pushed to after the attempt, so a panic
+                // while the lock is held leaves it consistent and poisoning is ignored.
+                let mut cache = CUSTOM_CURSORS.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(&(_, _, handle)) = cache.iter().find(|&&(s, w, _)| (s, w) == key) {
                     return handle as HCURSOR;
                 }
                 let handle = create_custom_cursor(shape, width);
-                if !handle.is_null() {
-                    let _ =
-                        CUSTOM_CURSORS.try_with(|m| m.borrow_mut().insert(key, handle as isize));
-                }
+                cache.push((key.0, key.1, handle as isize));
                 return handle;
             }
         };

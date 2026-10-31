@@ -307,6 +307,21 @@ impl Drop for OwnedBitmap {
 /// The bitmap is wrapped before the pixel pointer is checked, so a bitmap returned without bits
 /// is deleted rather than leaked.
 pub(crate) fn create_dib_section(dc: HDC, w: u32, h: u32) -> Option<(OwnedBitmap, *mut u8)> {
+    dib_section_with(w, h, |bmi, bits| {
+        // SAFETY: `bmi` is a fully initialised BITMAPINFO that outlives the call, `bits` is a
+        // valid out pointer, and `dc` is a DC (or null) the caller owns.
+        unsafe { CreateDIBSection(dc, bmi, DIB_RGB_COLORS, bits, std::ptr::null_mut(), 0) }
+    })
+}
+
+/// `create_dib_section` with the GDI call supplied by `create`, which receives the bitmap
+/// description and the out pointer for the pixels. A bitmap returned without a pixel pointer is
+/// owned first, so rejecting it deletes it instead of leaking it.
+fn dib_section_with(
+    w: u32,
+    h: u32,
+    create: impl FnOnce(&BITMAPINFO, &mut *mut c_void) -> HBITMAP,
+) -> Option<(OwnedBitmap, *mut u8)> {
     // SAFETY: a zeroed BITMAPINFO is a valid all-zero C struct; the header fields are set below.
     let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
     bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -317,16 +332,7 @@ pub(crate) fn create_dib_section(dc: HDC, w: u32, h: u32) -> Option<(OwnedBitmap
     bmi.bmiHeader.biCompression = BI_RGB;
 
     let mut bits: *mut c_void = std::ptr::null_mut();
-    // SAFETY: `bmi` is a fully initialised BITMAPINFO that outlives the call, `bits` is a valid
-    // out pointer, and `dc` is a DC (or null) the caller owns.
-    let hbitmap =
-        unsafe { CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0) };
-    dib_with_bits(OwnedBitmap::from_raw(hbitmap)?, bits)
-}
-
-/// Accepts a created bitmap only when GDI also gave it a pixel pointer. The bitmap is already
-/// owned, so rejecting it deletes it instead of leaking it.
-fn dib_with_bits(bitmap: OwnedBitmap, bits: *mut c_void) -> Option<(OwnedBitmap, *mut u8)> {
+    let bitmap = OwnedBitmap::from_raw(create(&bmi, &mut bits))?;
     (!bits.is_null()).then_some((bitmap, bits.cast::<u8>()))
 }
 
@@ -668,11 +674,18 @@ mod tests {
     #[test]
     fn dib_without_bits_is_rejected_and_the_bitmap_deleted() {
         let screen = WindowDc::screen();
-        // SAFETY: `screen` is a live screen DC owned above; a null result is rejected by `from_raw`.
-        let raw = unsafe { CreateCompatibleBitmap(screen.as_raw(), 4, 4) };
-        let bitmap = OwnedBitmap::from_raw(raw).expect("bitmap");
-        assert!(bitmap_is_live(raw));
-        assert!(dib_with_bits(bitmap, std::ptr::null_mut()).is_none());
+        let mut raw: HBITMAP = std::ptr::null_mut();
+        // GDI returns a bitmap but leaves the pixel pointer null.
+        let created = dib_section_with(4, 4, |bmi, bits| {
+            assert!(bits.is_null());
+            assert_eq!(bmi.bmiHeader.biBitCount, 32);
+            // SAFETY: `screen` is a live screen DC owned above.
+            raw = unsafe { CreateCompatibleBitmap(screen.as_raw(), 4, 4) };
+            assert!(bitmap_is_live(raw));
+            raw
+        });
+        assert!(created.is_none());
+        assert!(!raw.is_null());
         assert!(!bitmap_is_live(raw), "the rejected bitmap must be deleted");
     }
 

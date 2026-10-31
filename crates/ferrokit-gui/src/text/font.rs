@@ -6,10 +6,11 @@ use std::sync::Arc;
 /// Shared binary font data representation supporting zero-copy slicing and deduplication.
 ///
 /// The bytes live behind an `Arc`, so every `FontEngine`/`Font` sharing a file shares one buffer.
-/// The buffer is either heap memory ([`from_vec`](Self::from_vec)) or a read-only mapping of the
-/// font file ([`from_file`](Self::from_file)). A mapping is backed by the file itself: it is not
-/// charged to the process's commit, and only the pages actually read (a few glyph tables out of a
-/// 16 MB CJK collection) become resident. Qt maps system font files the same way.
+/// The buffer is either heap memory ([`from_vec`](Self::from_vec)) or, on Windows, a read-only
+/// mapping of the font file ([`from_file`](Self::from_file)). A mapping is backed by the file
+/// itself: it is not charged to the process's commit, and only the pages actually read (a few
+/// glyph tables out of a 16 MB CJK collection) become resident. Qt maps system font files the
+/// same way.
 #[derive(Clone)]
 pub struct SharedFontData {
     data: Arc<dyn AsRef<[u8]> + Send + Sync>,
@@ -28,19 +29,26 @@ impl SharedFontData {
         Self { data }
     }
 
-    /// Maps the font file at `path` read-only; reads it into memory if it cannot be mapped.
+    /// Loads the font file at `path`: on Windows maps it read-only (reading it into memory if it
+    /// cannot be mapped), elsewhere reads it into memory.
     ///
-    /// As with any file mapping, the file must not be truncated or rewritten while the mapping
-    /// lives. Installed font files are not modified in place, and Windows refuses to delete or
-    /// overwrite a file that is mapped.
+    /// Windows cannot shrink a file while a view of it is mapped (`SetEndOfFile` fails with
+    /// `ERROR_USER_MAPPED_FILE`), so every mapped page stays backed. On Linux and macOS any process
+    /// may truncate a mapped file, after which touching the lost pages raises `SIGBUS`; a safe
+    /// function cannot rule that out, so the bytes are copied there.
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        if file.metadata()?.len() > 0 {
-            // SAFETY: the mapping is read-only and private; see the caveat above.
-            if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
-                return Ok(Self {
-                    data: Arc::new(map),
-                });
+        #[cfg(windows)]
+        {
+            let file = std::fs::File::open(path)?;
+            if file.metadata()?.len() > 0 {
+                // SAFETY: the mapping is read-only and private, and Windows keeps the file from
+                // shrinking under it (see above). Installed font files are not rewritten in
+                // place [inferred], so the mapped bytes do not change while borrowed.
+                if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                    return Ok(Self {
+                        data: Arc::new(map),
+                    });
+                }
             }
         }
         Ok(Self::from_vec(std::fs::read(path)?))

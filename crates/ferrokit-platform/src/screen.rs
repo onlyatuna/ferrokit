@@ -315,6 +315,11 @@ pub mod win32_screen {
             // `lparam` is the address of the local `list` (a `Vec<Win32Screen>`), exclusively borrowed
             // for the call, and the callback casts it back to exactly that type.
             unsafe {
+                /// Adds the screen of `h_monitor` to the list (the primary first).
+                ///
+                /// # Safety
+                /// `lparam` must be the address of a live `Vec<Win32Screen>` that is not
+                /// otherwise borrowed for the call (as `EnumDisplayMonitors` passes it back).
                 unsafe extern "system" fn monitor_enum_proc(
                     h_monitor: HMONITOR,
                     _hdc: HDC,
