@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use crate::win32_handles::OwnedMenu;
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenu,
-    HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_NULL,
+    AppendMenuW, PostMessageW, SetForegroundWindow, TrackPopupMenu, HMENU, MF_CHECKED, MF_GRAYED,
+    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 use super::{PlatformMenu, PlatformMenuItem};
@@ -134,16 +134,13 @@ impl Win32Menu {
     /// The caller must ensure that Win32 API functions can be safely executed on the current thread
     /// and that the returned `HMENU` handle is properly destroyed when no longer needed.
     pub unsafe fn build_hmenu(&self) -> Result<HMENU, &'static str> {
-        let hmenu = CreatePopupMenu();
-        if hmenu.is_null() {
-            return Err("CreatePopupMenu failed");
-        }
+        let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
 
         for entry in &self.entries {
             match entry {
                 MenuEntry::Item(item) => {
                     if item.is_separator() {
-                        AppendMenuW(hmenu, MF_SEPARATOR, 0, ptr::null());
+                        AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
                         continue;
                     }
 
@@ -163,37 +160,45 @@ impl Win32Menu {
                     let wide_text: Vec<u16> =
                         text.encode_utf16().chain(std::iter::once(0)).collect();
 
-                    if AppendMenuW(hmenu, flags, item.id() as usize, wide_text.as_ptr()) == 0 {
-                        DestroyMenu(hmenu);
+                    if AppendMenuW(
+                        hmenu.as_raw(),
+                        flags,
+                        item.id() as usize,
+                        wide_text.as_ptr(),
+                    ) == 0
+                    {
                         return Err("AppendMenuW failed to add item");
                     }
                 }
                 MenuEntry::SubMenu { text, menu } => {
-                    let sub_hmenu = match menu.build_native_menu() {
-                        Ok(h) => h as HMENU,
-                        Err(e) => {
-                            DestroyMenu(hmenu);
-                            return Err(e);
-                        }
-                    };
+                    // A failed build leaves nothing to free here; `hmenu` drops on the way out.
+                    let raw = menu.build_native_menu()?;
+                    if raw == 0 {
+                        // A submenu from another back end (the trait default returns 0) has no
+                        // native menu: appending `MF_POPUP` with a null menu would fail, so the
+                        // item is skipped and the rest of the menu is still built.
+                        continue;
+                    }
+                    let sub_hmenu = OwnedMenu::from_raw(raw as HMENU);
                     let wide_text: Vec<u16> =
                         text.encode_utf16().chain(std::iter::once(0)).collect();
+                    // On failure both guards destroy their menu; on success the parent owns the
+                    // submenu.
                     if AppendMenuW(
-                        hmenu,
+                        hmenu.as_raw(),
                         MF_POPUP | MF_STRING,
-                        sub_hmenu as usize,
+                        sub_hmenu.as_raw() as usize,
                         wide_text.as_ptr(),
                     ) == 0
                     {
-                        DestroyMenu(sub_hmenu);
-                        DestroyMenu(hmenu);
                         return Err("AppendMenuW failed to add submenu");
                     }
+                    let _ = sub_hmenu.into_raw();
                 }
             }
         }
 
-        Ok(hmenu)
+        Ok(hmenu.into_raw())
     }
 
     /// Finds Win32MenuItem by ID (including within submenus).
@@ -248,7 +253,7 @@ impl PlatformMenu for Win32Menu {
     fn exec_popup(&self, screen_pos: Point) -> Option<u32> {
         unsafe {
             let hmenu = match self.build_hmenu() {
-                Ok(m) => m,
+                Ok(m) => OwnedMenu::from_raw(m),
                 Err(_) => return None,
             };
 
@@ -257,7 +262,7 @@ impl PlatformMenu for Win32Menu {
             // `screen_pos` is a logical desktop point; `TrackPopupMenu` takes physical pixels.
             let native_pos = crate::screen::logical_point_to_native(screen_pos);
             let cmd_id = TrackPopupMenu(
-                hmenu,
+                hmenu.as_raw(),
                 TPM_RIGHTBUTTON | TPM_RETURNCMD,
                 native_pos.x,
                 native_pos.y,
@@ -267,7 +272,7 @@ impl PlatformMenu for Win32Menu {
             ) as u32;
 
             PostMessageW(self.hwnd, WM_NULL, 0, 0);
-            DestroyMenu(hmenu);
+            drop(hmenu);
 
             if cmd_id != 0 {
                 if let Some(item) = self.find_item_by_id(cmd_id) {
@@ -298,6 +303,7 @@ impl PlatformMenu for Win32Menu {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyMenu;
 
     #[test]
     fn test_win32_menu_and_item_lifecycle() {
@@ -334,6 +340,51 @@ mod tests {
         unsafe {
             let hmenu = menu.build_hmenu().expect("failed to build HMENU");
             assert!(!hmenu.is_null());
+            assert_ne!(DestroyMenu(hmenu), 0);
+        }
+    }
+
+    /// A built submenu belongs to the parent after `AppendMenuW(MF_POPUP)`; destroying the
+    /// parent destroys it, and the builder must not have destroyed it before.
+    #[test]
+    fn test_win32_menu_submenu_is_owned_by_the_built_parent() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSubMenu, IsMenu};
+        let mut sub = Win32Menu::new(ptr::null_mut());
+        sub.add_action(201, "Inner");
+        let mut menu = Win32Menu::new(ptr::null_mut());
+        menu.add_submenu("Sub", Box::new(sub));
+
+        unsafe {
+            let hmenu = menu.build_hmenu().expect("failed to build HMENU");
+            let sub_hmenu = GetSubMenu(hmenu, 0);
+            assert!(!sub_hmenu.is_null());
+            assert_ne!(
+                IsMenu(sub_hmenu),
+                0,
+                "the builder must keep the submenu alive"
+            );
+            assert_ne!(DestroyMenu(hmenu), 0);
+            assert_eq!(
+                IsMenu(sub_hmenu),
+                0,
+                "the parent owns and destroys the submenu"
+            );
+        }
+    }
+
+    /// A submenu without a native menu (another back end, whose `build_native_menu` returns 0)
+    /// is skipped; the remaining items are still built.
+    #[test]
+    fn test_win32_menu_skips_a_submenu_without_a_native_menu() {
+        use crate::menu::CocoaMenu;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetMenuItemCount;
+        let mut menu = Win32Menu::new(ptr::null_mut());
+        menu.add_action(1, "Before");
+        menu.add_submenu("Foreign", Box::new(CocoaMenu::new()));
+        menu.add_action(2, "After");
+        unsafe {
+            let hmenu = menu.build_hmenu().expect("failed to build HMENU");
+            assert_eq!(GetMenuItemCount(hmenu), 2);
             assert_ne!(DestroyMenu(hmenu), 0);
         }
     }

@@ -2,17 +2,18 @@
 //! Windows window regions (`QWindowsWindow::setMask`) and owner windows
 //! (`QWindowsWindow::updateTransientParent`).
 
+use crate::win32_handles::OwnedRgn;
 #[cfg(test)]
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::geometry::Region;
 use std::ptr;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    ClientToScreen, CreateRectRgn, DeleteObject, ExtCreateRegion, OffsetRgn, SetWindowRgn, HRGN,
-    RDH_RECTANGLES, RGNDATA,
+    ClientToScreen, CreateRectRgn, ExtCreateRegion, OffsetRgn, SetWindowRgn, RDH_RECTANGLES,
+    RGNDATA,
 };
 #[cfg(test)]
-use windows_sys::Win32::Graphics::Gdi::{GetRegionData, GetWindowRgn};
+use windows_sys::Win32::Graphics::Gdi::{GetRegionData, GetWindowRgn, HRGN};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect,
     SetWindowLongPtrW, SetWindowPos, GWLP_HWNDPARENT, GWL_STYLE, GW_OWNER, SWP_FRAMECHANGED,
@@ -23,11 +24,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const HEADER_WORDS: usize = 8;
 
 /// `qRegionToWinRegion`: the GDI region with the rectangles of `region` (`RECT` edges are
-/// exclusive, as `Rect`'s are). An empty region gives an empty GDI region. Null when GDI
-/// refuses. The caller owns the handle.
-pub(crate) fn region_to_hrgn(region: &Region) -> HRGN {
+/// exclusive, as `Rect`'s are). An empty region gives an empty GDI region. `None` when GDI
+/// refuses. The caller owns the region.
+pub(crate) fn region_to_hrgn(region: &Region) -> Option<OwnedRgn> {
     let rects = region.rects();
-    match rects {
+    let rgn = match rects {
         [] => unsafe { CreateRectRgn(0, 0, 0, 0) },
         [r] => unsafe { CreateRectRgn(r.x, r.y, r.right(), r.bottom()) },
         _ => {
@@ -58,7 +59,8 @@ pub(crate) fn region_to_hrgn(region: &Region) -> HRGN {
                 )
             }
         }
-    }
+    };
+    OwnedRgn::from_raw(rgn)
 }
 
 /// The rectangles of a GDI region (`GetRegionData`), or `None` when it cannot be read.
@@ -130,19 +132,19 @@ pub(crate) fn set_window_mask(hwnd: HWND, region: &Region) -> bool {
             0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        let rgn = region_to_hrgn(region);
-        if rgn.is_null() {
+        let Some(rgn) = region_to_hrgn(region) else {
             return false;
-        }
+        };
         let (dx, dy) = client_origin_in_window(hwnd);
         if dx != 0 || dy != 0 {
-            OffsetRgn(rgn, dx, dy);
+            OffsetRgn(rgn.as_raw(), dx, dy);
         }
-        if SetWindowRgn(hwnd, rgn, 1) == 0 {
-            // The system owns the region only when the call succeeds.
-            DeleteObject(rgn);
+        // The system owns the region only when the call succeeds; on failure the guard
+        // deletes it.
+        if SetWindowRgn(hwnd, rgn.as_raw(), 1) == 0 {
             return false;
         }
+        let _ = rgn.into_raw();
         true
     }
 }
@@ -154,14 +156,14 @@ pub(crate) fn window_mask_rects(hwnd: HWND) -> Option<Vec<Rect>> {
         return None;
     }
     unsafe {
-        let probe = CreateRectRgn(0, 0, 0, 0);
-        if probe.is_null() {
-            return None;
-        }
+        let probe = OwnedRgn::from_raw(CreateRectRgn(0, 0, 0, 0))?;
         // GetWindowRgn copies the window region into `probe`; ERROR (0) means there is none.
-        let kind = GetWindowRgn(hwnd, probe);
-        let rects = if kind == 0 { None } else { hrgn_rects(probe) };
-        DeleteObject(probe);
+        let kind = GetWindowRgn(hwnd, probe.as_raw());
+        let rects = if kind == 0 {
+            None
+        } else {
+            hrgn_rects(probe.as_raw())
+        };
         let (dx, dy) = client_origin_in_window(hwnd);
         rects.map(|r| {
             r.into_iter()
@@ -258,8 +260,8 @@ mod tests {
         region = region.united_rect(&Rect::new(1, 1, 8, 1));
         region = region.united_rect(&Rect::new(0, 2, 10, 6));
         assert!(region.rect_count() > 1);
-        let rgn = region_to_hrgn(&region);
-        assert!(!rgn.is_null());
+        let owned = region_to_hrgn(&region).expect("gdi region");
+        let rgn = owned.as_raw();
         for y in -1..10 {
             for x in -1..12 {
                 assert_eq!(
@@ -271,13 +273,13 @@ mod tests {
         }
         let rects = hrgn_rects(rgn).expect("region data");
         assert_eq!(Region::from_rects(&rects), region);
-        unsafe { DeleteObject(rgn) };
     }
 
     #[test]
     fn a_single_rect_region_converts_with_exclusive_edges() {
         let region = Region::from_rect(Rect::new(3, 4, 5, 2));
-        let rgn = region_to_hrgn(&region);
+        let owned = region_to_hrgn(&region).expect("gdi region");
+        let rgn = owned.as_raw();
         assert!(hit(rgn, 3, 4) && hit(rgn, 7, 5));
         assert!(!hit(rgn, 8, 5) && !hit(rgn, 7, 6) && !hit(rgn, 2, 4));
         let probe = RECT {
@@ -287,15 +289,12 @@ mod tests {
             bottom: 6,
         };
         assert_ne!(unsafe { RectInRegion(rgn, &probe) }, 0);
-        unsafe { DeleteObject(rgn) };
     }
 
     #[test]
     fn an_empty_region_converts_to_an_empty_gdi_region() {
-        let rgn = region_to_hrgn(&Region::new());
-        assert!(!rgn.is_null());
-        assert_eq!(hrgn_rects(rgn).map(|r| r.len()), Some(0));
-        unsafe { DeleteObject(rgn) };
+        let rgn = region_to_hrgn(&Region::new()).expect("gdi region");
+        assert_eq!(hrgn_rects(rgn.as_raw()).map(|r| r.len()), Some(0));
     }
 
     // The tests below create hidden native windows (never shown) and run in CI.
