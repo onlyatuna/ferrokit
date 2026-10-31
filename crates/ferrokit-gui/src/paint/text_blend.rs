@@ -43,7 +43,13 @@ fn mul_255(x: u32, a: u32) -> u32 {
 /// `alphargbblend_argb32` with a gamma table: LCD text over an opaque pixel is blended per
 /// channel in linear light; over a pixel that is not opaque it falls back to the grey blend
 /// with the averaged coverage.
-pub(crate) fn blend_lcd(px: &mut [u8], cov: [u8; 3], base_alpha: f32, target: [u32; 3], lut: &TrcLut) {
+pub(crate) fn blend_lcd(
+    px: &mut [u8],
+    cov: [u8; 3],
+    base_alpha: f32,
+    target: [u32; 3],
+    lut: &TrcLut,
+) {
     if cov == [0, 0, 0] {
         return;
     }
@@ -111,7 +117,11 @@ pub(crate) fn composite_masked(
     let shader = match source {
         MaskedSource::Solid(c) => Shader::SolidColor(c),
         MaskedSource::Image(rgba, opacity) => {
-            if (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(4)) != Some(rgba.len()) {
+            if (w as usize)
+                .checked_mul(h as usize)
+                .and_then(|n| n.checked_mul(4))
+                != Some(rgba.len())
+            {
                 return;
             }
             let Some(image) = PixmapRef::from_bytes(rgba, w, h) else {
@@ -145,8 +155,10 @@ pub(crate) fn composite_masked(
         let result_row = &result[row * row_bytes..(row + 1) * row_bytes];
         let out = &mut pix[dst..dst + row_bytes];
         for ((out, new), &c) in out
-            .chunks_exact_mut(4)
-            .zip(result_row.chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(result_row.as_chunks::<4>().0)
             .zip(&cov[cov_start..cov_start + sw as usize])
         {
             for (old, &new) in out.iter_mut().zip(new) {
@@ -188,7 +200,16 @@ mod tests {
         let surface = [10u8, 20, 30, 255, 10, 20, 30, 255];
         let run = |mode| {
             let mut px = surface;
-            composite_masked(&mut px, (2, 1), (0, 0), (2, 1), &[255, 0], src(), mode, &mut Vec::new());
+            composite_masked(
+                &mut px,
+                (2, 1),
+                (0, 0),
+                (2, 1),
+                &[255, 0],
+                src(),
+                mode,
+                &mut Vec::new(),
+            );
             px
         };
         assert_eq!(run(BlendMode::SourceOver)[..4], [200, 100, 50, 255]);
@@ -285,9 +306,29 @@ mod tests {
     fn composite_masked_matches_the_allocating_reference() {
         use crate::paint::composition::CompositionMode::*;
         let modes = [
-            SourceOver, DestinationOver, Clear, Source, Destination, SourceIn, DestinationIn,
-            SourceOut, DestinationOut, SourceAtop, DestinationAtop, Xor, Plus, Multiply, Screen,
-            Overlay, Darken, Lighten, ColorDodge, ColorBurn, HardLight, SoftLight, Difference,
+            SourceOver,
+            DestinationOver,
+            Clear,
+            Source,
+            Destination,
+            SourceIn,
+            DestinationIn,
+            SourceOut,
+            DestinationOut,
+            SourceAtop,
+            DestinationAtop,
+            Xor,
+            Plus,
+            Multiply,
+            Screen,
+            Overlay,
+            Darken,
+            Lighten,
+            ColorDodge,
+            ColorBurn,
+            HardLight,
+            SoftLight,
+            Difference,
             Exclusion,
         ];
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -307,7 +348,12 @@ mod tests {
                 (0..n)
                     .flat_map(|_| {
                         let a = next(256);
-                        [next(a + 1) as u8, next(a + 1) as u8, next(a + 1) as u8, a as u8]
+                        [
+                            next(a + 1) as u8,
+                            next(a + 1) as u8,
+                            next(a + 1) as u8,
+                            a as u8,
+                        ]
                     })
                     .collect()
             };
@@ -320,7 +366,12 @@ mod tests {
                     _ => next(256) as u8,
                 })
                 .collect();
-            let color = Color::from_rgba8(next(256) as u8, next(256) as u8, next(256) as u8, next(256) as u8);
+            let color = Color::from_rgba8(
+                next(256) as u8,
+                next(256) as u8,
+                next(256) as u8,
+                next(256) as u8,
+            );
             let opacity = [1.0, 0.5, 0.0, 0.37][next(4) as usize];
             for mode in modes {
                 let sources = || {
@@ -334,20 +385,29 @@ mod tests {
                     // (wide/u16x16_t.rs) for a solid colour in these two modes, which panics in a
                     // debug build, in the reference and the blit alike. Release wraps; every
                     // other mode and the image source run in both profiles.
-                    if cfg!(debug_assertions)
-                        && index == 0
-                        && matches!(mode, Overlay | HardLight)
-                    {
+                    if cfg!(debug_assertions) && index == 0 && matches!(mode, Overlay | HardLight) {
                         continue;
                     }
                     let mut expected = surface.clone();
                     composite_masked_reference(
-                        &mut expected, (pw, ph), (x0, y0), (w, h), &cov, source, mode.into(),
+                        &mut expected,
+                        (pw, ph),
+                        (x0, y0),
+                        (w, h),
+                        &cov,
+                        source,
+                        mode.into(),
                     );
                     let mut actual = surface.clone();
                     composite_masked(
-                        &mut actual, (pw, ph), (x0, y0), (w, h), &cov,
-                        sources().into_iter().nth(index).unwrap(), mode.into(), &mut scratch,
+                        &mut actual,
+                        (pw, ph),
+                        (x0, y0),
+                        (w, h),
+                        &cov,
+                        sources().into_iter().nth(index).unwrap(),
+                        mode.into(),
+                        &mut scratch,
                     );
                     assert_eq!(
                         actual, expected,
@@ -365,13 +425,40 @@ mod tests {
         let mut scratch = vec![77u8; 100];
         let mut px = surface;
         let solid = MaskedSource::Solid(Color::from_rgba8(1, 2, 3, 255));
-        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 3], solid, BlendMode::Source, &mut scratch);
+        composite_masked(
+            &mut px,
+            (2, 2),
+            (0, 0),
+            (2, 2),
+            &[255; 3],
+            solid,
+            BlendMode::Source,
+            &mut scratch,
+        );
         assert_eq!(px, surface, "coverage shorter than the box");
         let image = MaskedSource::Image(&[255; 15], 1.0);
-        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 4], image, BlendMode::Source, &mut scratch);
+        composite_masked(
+            &mut px,
+            (2, 2),
+            (0, 0),
+            (2, 2),
+            &[255; 4],
+            image,
+            BlendMode::Source,
+            &mut scratch,
+        );
         assert_eq!(px, surface, "image shorter than the box");
         let image = MaskedSource::Image(&[255; 17], 1.0);
-        composite_masked(&mut px, (2, 2), (0, 0), (2, 2), &[255; 4], image, BlendMode::Source, &mut scratch);
+        composite_masked(
+            &mut px,
+            (2, 2),
+            (0, 0),
+            (2, 2),
+            &[255; 4],
+            image,
+            BlendMode::Source,
+            &mut scratch,
+        );
         assert_eq!(px, surface, "image longer than the box");
     }
 }

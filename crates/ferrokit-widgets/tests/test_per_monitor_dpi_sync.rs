@@ -171,7 +171,10 @@ fn test_per_monitor_v2_dpi_drag_propagation() {
     let advance_heuristic = metrics.horizontal_advance(text, &font);
 
     assert!(advance_exact > 0.0, "Exact advance must be positive");
-    assert!(advance_heuristic > 0.0, "Heuristic advance must be positive");
+    assert!(
+        advance_heuristic > 0.0,
+        "Heuristic advance must be positive"
+    );
 
     // 4. Simulate dragging back: 175% (168 DPI) -> 100% (96 DPI)
     let mut dpi_event_100 = Event::new_spontaneous(EventKind::DpiChanged {
@@ -183,5 +186,9 @@ fn test_per_monitor_v2_dpi_drag_propagation() {
 
     assert_eq!(count.load(Ordering::SeqCst), 2);
     let restored_dpr = *last_dpr.lock();
-    assert!((restored_dpr - 1.0).abs() < 1e-4, "DPR must be restored to 1.0, got {}", restored_dpr);
+    assert!(
+        (restored_dpr - 1.0).abs() < 1e-4,
+        "DPR must be restored to 1.0, got {}",
+        restored_dpr
+    );
 }

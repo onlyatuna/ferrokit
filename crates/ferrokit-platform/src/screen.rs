@@ -81,9 +81,25 @@ fn logical_to_native_on(screens: &[(Rect, f32)], logical: Point) -> Point {
 mod logical_to_native_tests {
     use super::*;
 
-    const PRIMARY_100: (Rect, f32) = (Rect { x: 0, y: 0, width: 1920, height: 1080 }, 1.0);
+    const PRIMARY_100: (Rect, f32) = (
+        Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        },
+        1.0,
+    );
     // Native top-left (-2880, 0), logical (-2880, 0, 1920, 1080), ratio 1.5.
-    const LEFT_150: (Rect, f32) = (Rect { x: -2880, y: 0, width: 1920, height: 1080 }, 1.5);
+    const LEFT_150: (Rect, f32) = (
+        Rect {
+            x: -2880,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        },
+        1.5,
+    );
 
     #[test]
     fn a_point_on_a_scaled_secondary_screen_becomes_physical_pixels() {
@@ -97,7 +113,18 @@ mod logical_to_native_tests {
 
     #[test]
     fn a_point_off_every_screen_uses_the_primary_ratio() {
-        let screens = [(Rect { x: 0, y: 0, width: 1920, height: 1080 }, 1.5), LEFT_150];
+        let screens = [
+            (
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                1.5,
+            ),
+            LEFT_150,
+        ];
         assert_eq!(
             logical_to_native_on(&screens, Point::new(-300, -300)),
             Point::new(-450, -450)
@@ -538,8 +565,7 @@ pub mod cocoa_screen {
             let screens_array =
                 unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
             let main_screen = if screens_array.is_nil()
-                || unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) }
-                    == 0
+                || unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) } == 0
             {
                 Id::NIL
             } else {

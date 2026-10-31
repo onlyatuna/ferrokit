@@ -3,7 +3,8 @@
 use ferrokit_gui::text::font::SharedFontData;
 
 fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("ferrokit-font-map-{}-{name}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("ferrokit-font-map-{}-{name}", std::process::id()));
     std::fs::write(&path, bytes).unwrap();
     path
 }

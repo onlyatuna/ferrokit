@@ -44,8 +44,18 @@ fn scaled_smooth_differs_from_fast() {
     let mut img = Image::new(2, 1, ImageFormat::Rgba8888);
     img.set_pixel_color(0, 0, Color::BLACK);
     img.set_pixel_color(1, 0, Color::WHITE);
-    let fast = img.scaled(4, 1, AspectRatioMode::IgnoreAspectRatio, TransformationMode::FastTransformation);
-    let smooth = img.scaled(4, 1, AspectRatioMode::IgnoreAspectRatio, TransformationMode::SmoothTransformation);
+    let fast = img.scaled(
+        4,
+        1,
+        AspectRatioMode::IgnoreAspectRatio,
+        TransformationMode::FastTransformation,
+    );
+    let smooth = img.scaled(
+        4,
+        1,
+        AspectRatioMode::IgnoreAspectRatio,
+        TransformationMode::SmoothTransformation,
+    );
     assert_eq!(fast.pixel_color(1, 0).unwrap().to_color_u8().red(), 0);
     let mid = smooth.pixel_color(1, 0).unwrap().to_color_u8().red();
     assert!(mid > 0 && mid < 255, "got {mid}");

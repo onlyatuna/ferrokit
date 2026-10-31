@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
@@ -17,6 +16,7 @@ use ferrokit_core::object::{
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 use ferrokit_core::variant::Variant;
+use parking_lot::Mutex;
 
 /// Two overloads of `tag`: `tag(QString)` is declared first and `tag(int)` second. An `I64`
 /// argument is accepted only by `tag(int)`.

@@ -49,12 +49,21 @@ fn fixture(finishing: Option<Vec<KeyCombination>>) -> Fixture {
     dispatcher
         .focus_manager_mut()
         .set_focus(&root, Some(id), FocusReason::Tab);
-    Fixture { root, edit, other_log, dispatcher }
+    Fixture {
+        root,
+        edit,
+        other_log,
+        dispatcher,
+    }
 }
 
 impl Fixture {
     fn press(&mut self, key: u32, modifiers: u32) {
-        let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers, is_repeat: false });
+        let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+            key,
+            modifiers,
+            is_repeat: false,
+        });
         self.dispatcher.dispatch_event(&self.root, &mut ev);
     }
 
@@ -76,7 +85,10 @@ fn default_finishing_combinations_are_tab_and_backtab() {
     let edit = KeySequenceEdit::new();
     assert_eq!(
         edit.finishing_key_combinations(),
-        [KeyCombination::new(qt_key::TAB, 0), KeyCombination::new(qt_key::BACKTAB, 0)]
+        [
+            KeyCombination::new(qt_key::TAB, 0),
+            KeyCombination::new(qt_key::BACKTAB, 0)
+        ]
     );
 }
 
@@ -84,8 +96,14 @@ fn default_finishing_combinations_are_tab_and_backtab() {
 fn tab_and_backtab_move_the_focus_off_a_key_sequence_edit_by_default() {
     let mut f = fixture(None);
     f.press(KEY_TAB, 0);
-    assert!(!f.focus_is_edit(), "Tab is a finishing key, so it moves the focus");
-    assert_eq!(f.other_log.borrow().first().map(String::as_str), Some("focus_in"));
+    assert!(
+        !f.focus_is_edit(),
+        "Tab is a finishing key, so it moves the focus"
+    );
+    assert_eq!(
+        f.other_log.borrow().first().map(String::as_str),
+        Some("focus_in")
+    );
 
     let mut f = fixture(None);
     f.press(KEY_BACKTAB, 0);
@@ -112,7 +130,10 @@ fn only_the_listed_tab_key_moves_the_focus() {
     assert!(f.focus_is_edit(), "Tab is not finishing, so it is recorded");
     assert_eq!(f.recorded(), "Tab");
     f.press(KEY_BACKTAB, 0);
-    assert!(!f.focus_is_edit(), "Backtab is finishing, so it moves the focus");
+    assert!(
+        !f.focus_is_edit(),
+        "Backtab is finishing, so it moves the focus"
+    );
 }
 
 #[test]
@@ -130,10 +151,16 @@ fn shift_tab_matches_only_the_default_backtab_entry() {
     assert!(f.focus_is_edit(), "Shift+Tab is not Tab: it is recorded");
     assert_eq!(f.recorded(), "Shift+Tab");
 
-    let mut f = fixture(Some(vec![KeyCombination::new(qt_key::BACKTAB, key_modifier::SHIFT)]));
+    let mut f = fixture(Some(vec![KeyCombination::new(
+        qt_key::BACKTAB,
+        key_modifier::SHIFT,
+    )]));
     f.press(KEY_BACKTAB, key_modifier::SHIFT);
     assert!(!f.focus_is_edit(), "an exact Backtab+Shift entry matches");
-    let mut f = fixture(Some(vec![KeyCombination::new(qt_key::BACKTAB, key_modifier::SHIFT)]));
+    let mut f = fixture(Some(vec![KeyCombination::new(
+        qt_key::BACKTAB,
+        key_modifier::SHIFT,
+    )]));
     f.press(KEY_BACKTAB, 0);
     assert!(f.focus_is_edit(), "Backtab alone is not that entry");
 }

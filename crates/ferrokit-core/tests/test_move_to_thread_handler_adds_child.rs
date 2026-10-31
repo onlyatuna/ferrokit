@@ -7,9 +7,9 @@
 //! parent and its children share one thread.
 
 use std::cell::Cell;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
@@ -156,7 +156,11 @@ fn an_unmovable_child_attached_by_a_handler_stops_the_move() {
         move_to_thread_by_id(root_id, target, source),
         Err(MoveByIdError::NotMovable)
     );
-    assert_eq!(query_object_thread(root_id), Some(source), "the parent moved alone");
+    assert_eq!(
+        query_object_thread(root_id),
+        Some(source),
+        "the parent moved alone"
+    );
     assert_eq!(query_object_thread(late_id), Some(source));
 
     // SAFETY: no callback runs; the root was made by `Box::into_raw` above.

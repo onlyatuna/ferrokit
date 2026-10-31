@@ -327,7 +327,9 @@ fn a_signal_emitted_while_its_owner_is_being_destroyed_reaches_no_slot() {
     let calls = calls();
     let parent = Node::registered();
     let parent_id = OwnedObject::object_id(&parent);
-    let signal = parent.with(|p| p.object_data().object_name_changed().clone()).unwrap();
+    let signal = parent
+        .with(|p| p.object_data().object_name_changed().clone())
+        .unwrap();
     signal.connect(record(&calls, "slot of the parent's signal"));
     let mut child = Node::new();
     let emitter = signal.clone();

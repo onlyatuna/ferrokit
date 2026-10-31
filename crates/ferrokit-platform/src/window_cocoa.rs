@@ -207,7 +207,11 @@ impl CocoaNativeWindow {
         // `mouseMoved:` is delivered to the view's tracking area, but a window that does not
         // accept moved events also drops them for any grab-style handler.
         unsafe {
-            ObjcMsg::send_bool_logged(ns_window, Sel::register("setAcceptsMouseMovedEvents:"), true)
+            ObjcMsg::send_bool_logged(
+                ns_window,
+                Sel::register("setAcceptsMouseMovedEvents:"),
+                true,
+            )
         };
         // Qt: QNSView makes itself layer-backed (qnsview_drawing.mm:57) and the backing store
         // flushes into the view's layer (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
@@ -932,7 +936,11 @@ impl Drop for CocoaNativeWindow {
         input::teardown_view(self.ns_view);
         // `release` below is the only release; stop `close` from releasing the window too.
         unsafe {
-            ObjcMsg::send_bool(self.ns_window, Sel::register("setReleasedWhenClosed:"), false)
+            ObjcMsg::send_bool(
+                self.ns_window,
+                Sel::register("setReleasedWhenClosed:"),
+                false,
+            )
         };
         unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
         unsafe { ObjcMsg::send_0(self.ns_window, Sel::register("close")) };

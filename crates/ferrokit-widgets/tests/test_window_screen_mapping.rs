@@ -422,11 +422,9 @@ fn a_window_moved_to_a_screen_of_another_ratio_takes_that_ratio_and_signals_the_
 
     let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let seen_cb = Arc::clone(&seen);
-    let _ = w
-        .screen_changed()
-        .connect(move |s: &Box<dyn PlatformScreen>| {
-            seen_cb.lock().push((s.geometry(), s.device_pixel_ratio()));
-        });
+    let _ = w.screen_changed().connect(move |s| {
+        seen_cb.lock().push((s.geometry(), s.device_pixel_ratio()));
+    });
 
     w.set_geometry(Rect::new(2000, 100, 400, 300));
     assert_eq!(w.device_pixel_ratio(), 1.5);

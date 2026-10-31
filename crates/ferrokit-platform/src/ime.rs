@@ -26,9 +26,14 @@ pub struct Win32InputContext {
 #[cfg(windows)]
 pub fn set_window_ime_enabled(hwnd: windows_sys::Win32::Foundation::HWND, enabled: bool) {
     use windows_sys::Win32::UI::Input::Ime::{ImmAssociateContextEx, IACE_DEFAULT};
-    let _t = ferrokit_gui::startup_trace::span(|| format!("ImmAssociateContextEx(enabled={enabled})"));
+    let _t =
+        ferrokit_gui::startup_trace::span(|| format!("ImmAssociateContextEx(enabled={enabled})"));
     unsafe {
-        ImmAssociateContextEx(hwnd, std::ptr::null_mut(), if enabled { IACE_DEFAULT } else { 0 });
+        ImmAssociateContextEx(
+            hwnd,
+            std::ptr::null_mut(),
+            if enabled { IACE_DEFAULT } else { 0 },
+        );
     }
 }
 

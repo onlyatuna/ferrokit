@@ -11,9 +11,9 @@
 //! [`Signal::connect_local_to`] and its variants connect against a context object (Qt's
 //! `connect(sender, signal, context, functor, type)`) and also work across threads when
 //! `T: Clone + Send`.
+pub(crate) mod local;
 #[allow(clippy::module_inception)]
 pub mod signal;
-pub(crate) mod local;
 pub use crate::object::SignalBlocker;
 pub use local::{has_pending_local_retires, LocalConnectError};
 pub use signal::*;

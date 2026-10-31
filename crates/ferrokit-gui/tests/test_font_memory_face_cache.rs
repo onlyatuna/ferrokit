@@ -24,7 +24,8 @@ fn test_memory_face_cache_does_not_pin_font_data() {
     let bytes = Arc::new(std::fs::read(path).unwrap());
     let mut db = FontDatabase::new();
     {
-        let font = Font::new("Anything", 14.0).with_font_data(SharedFontData::from_arc(bytes.clone()));
+        let font =
+            Font::new("Anything", 14.0).with_font_data(SharedFontData::from_arc(bytes.clone()));
         let engines = db.resolve_font_engines(&font);
         assert!(!engines.is_empty());
         let again = db.resolve_font_engines(&font);
@@ -46,7 +47,11 @@ fn test_memory_face_cache_does_not_pin_font_data() {
 #[test]
 #[cfg_attr(miri, ignore = "reads a system font file and parses it")]
 fn test_recent_memory_face_is_reused_between_calls() {
-    let path = FONT_FILES.iter().map(Path::new).find(|p| p.exists()).expect("test font");
+    let path = FONT_FILES
+        .iter()
+        .map(Path::new)
+        .find(|p| p.exists())
+        .expect("test font");
     let bytes = Arc::new(std::fs::read(path).unwrap());
     let font = Font::new("Anything", 14.0).with_font_data(SharedFontData::from_arc(bytes));
     let mut db = FontDatabase::new();
@@ -54,5 +59,8 @@ fn test_recent_memory_face_is_reused_between_calls() {
     let a = Arc::downgrade(&first[0].face); // weak: must not itself keep the face alive
     drop(first);
     let second = db.resolve_font_engines(&font);
-    assert!(std::ptr::addr_eq(a.as_ptr(), Arc::as_ptr(&second[0].face)), "face was re-parsed after the engines were dropped");
+    assert!(
+        std::ptr::addr_eq(a.as_ptr(), Arc::as_ptr(&second[0].face)),
+        "face was re-parsed after the engines were dropped"
+    );
 }

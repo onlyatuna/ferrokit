@@ -235,7 +235,7 @@ fn stroker_matches_qt_element_lists() {
         let stroke = stroker.create_stroke(&path);
         if stroke.fill_rule() != FillRule::Winding {
             assert_eq!(stroke.fill_rule(), path.fill_rule());
-            assert!(qt.len() <= 1 && qt.first().map_or(true, |e| e.0 == 0));
+            assert!(qt.len() <= 1 && qt.first().is_none_or(|e| e.0 == 0));
         }
         assert_same_elements(
             &qt_elements(&stroke),
@@ -425,7 +425,13 @@ fn draw_polygon_alpha(
         });
         painter.draw_polygon_points(pts, rule);
     }
-    pixmap.data().chunks_exact(4).map(|px| px[3]).collect()
+    pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|px| px[3])
+        .collect()
 }
 
 #[test]
@@ -559,7 +565,9 @@ fn pie_wedge_built_with_a_start_point_fills_like_a_pie() {
             }
             pixmap
                 .data()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|p| p[3])
                 .collect::<Vec<u8>>()
         })
@@ -573,7 +581,7 @@ fn pie_wedge_built_with_a_start_point_fills_like_a_pie() {
         .max()
         .unwrap();
     assert!(worst <= 56, "worst pixel difference {worst}");
-    assert!(ours.iter().any(|&a| a == 255));
+    assert!(ours.contains(&255));
 }
 
 /// The alpha of `path` filled with a white brush, anti-aliased.
@@ -586,7 +594,13 @@ fn fill_alpha(w: u32, h: u32, path: &PainterPath) -> Vec<u8> {
         painter.set_brush(Brush::Color(Color::WHITE));
         painter.fill_painter_path(path);
     }
-    pixmap.data().chunks_exact(4).map(|p| p[3]).collect()
+    pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[3])
+        .collect()
 }
 
 /// Pixels of `ours` against Qt's: the rasterisers differ at the edges (see

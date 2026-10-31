@@ -565,7 +565,10 @@ mod compose_order_tests {
     use super::*;
 
     fn close(a: PointF, x: f32, y: f32) {
-        assert!((a.x - x).abs() < 1e-4 && (a.y - y).abs() < 1e-4, "{a:?} != ({x}, {y})");
+        assert!(
+            (a.x - x).abs() < 1e-4 && (a.y - y).abs() < 1e-4,
+            "{a:?} != ({x}, {y})"
+        );
     }
 
     // Hand-computed from QTransform semantics: each call pre-multiplies, so the

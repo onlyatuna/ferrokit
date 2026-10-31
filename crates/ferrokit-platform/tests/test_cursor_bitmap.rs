@@ -104,7 +104,10 @@ fn the_drag_cursors_come_from_their_pixmaps_with_the_hot_spot_at_the_corner() {
     assert_eq!(copy.pixel(1, 1), link.pixel(1, 1));
     assert_ne!(copy.bgra, link.bgra);
     // Drag cursors are not scaled with the system cursor.
-    assert_eq!(custom_cursor_image(CursorShape::DragCopy, 64).unwrap(), copy);
+    assert_eq!(
+        custom_cursor_image(CursorShape::DragCopy, 64).unwrap(),
+        copy
+    );
 }
 
 #[cfg(windows)]

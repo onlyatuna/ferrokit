@@ -234,7 +234,11 @@ fn release_and_wheel_propagate_like_press() {
 
     d.dispatch_event(
         &root,
-        &mut Event::new_spontaneous(EventKind::MouseButtonRelease { x: 60, y: 40, button: 1 }),
+        &mut Event::new_spontaneous(EventKind::MouseButtonRelease {
+            x: 60,
+            y: 40,
+            button: 1,
+        }),
     );
     d.dispatch_event(
         &root,
@@ -300,14 +304,23 @@ fn double_click_a_widget_does_not_handle_is_delivered_to_it_as_a_press() {
     // `QWidget::mouseDoubleClickEvent` calls `mousePressEvent` (qwidget.cpp:9636), so a button
     // that only knows presses still sees the second click of a double click.
     let log: Log = Default::default();
-    let root = widget(Probe::new("root", Rect::new(0, 0, 400, 300), Resp::NotHandled, &log));
+    let root = widget(Probe::new(
+        "root",
+        Rect::new(0, 0, 400, 300),
+        Resp::NotHandled,
+        &log,
+    ));
     let only_press = widget(PressOnlyProbe::new("leaf", Rect::new(30, 20, 80, 40), &log));
     root.borrow_mut().add_child(Rc::clone(&only_press));
     let mut d = EventTreeDispatcher::new();
 
     d.dispatch_event(
         &root,
-        &mut Event::new_spontaneous(EventKind::MouseButtonDblClick { x: 40, y: 30, button: 1 }),
+        &mut Event::new_spontaneous(EventKind::MouseButtonDblClick {
+            x: 40,
+            y: 30,
+            button: 1,
+        }),
     );
 
     assert_eq!(*log.borrow(), vec!["leaf:Press(10,10)"]);
@@ -392,7 +405,12 @@ impl Widget for PressOnlyProbe {
 #[test]
 fn right_press_on_a_button_reaches_the_parent() {
     let log: Log = Default::default();
-    let root = widget(Probe::new("root", Rect::new(0, 0, 400, 300), Resp::Accept, &log));
+    let root = widget(Probe::new(
+        "root",
+        Rect::new(0, 0, 400, 300),
+        Resp::Accept,
+        &log,
+    ));
     let button: WidgetRef = Rc::new(RefCell::new(Box::new(Button::new("ok"))));
     button.borrow_mut().set_geometry(Rect::new(50, 50, 120, 36));
     root.borrow_mut().add_child(Rc::clone(&button));
@@ -400,16 +418,28 @@ fn right_press_on_a_button_reaches_the_parent() {
 
     d.dispatch_event(
         &root,
-        &mut Event::new_spontaneous(EventKind::MouseButtonPress { x: 70, y: 70, button: 2 }),
+        &mut Event::new_spontaneous(EventKind::MouseButtonPress {
+            x: 70,
+            y: 70,
+            button: 2,
+        }),
     );
     assert_eq!(*log.borrow(), vec!["root:Press(70,70)"]);
 
     log.borrow_mut().clear();
     d.dispatch_event(
         &root,
-        &mut Event::new_spontaneous(EventKind::MouseButtonPress { x: 70, y: 70, button: 1 }),
+        &mut Event::new_spontaneous(EventKind::MouseButtonPress {
+            x: 70,
+            y: 70,
+            button: 1,
+        }),
     );
-    assert!(log.borrow().is_empty(), "the left press is the button's: {:?}", log.borrow());
+    assert!(
+        log.borrow().is_empty(),
+        "the left press is the button's: {:?}",
+        log.borrow()
+    );
 }
 
 #[test]
@@ -434,7 +464,12 @@ fn wheel_over_a_label_inside_a_scroll_area_scrolls_it() {
     root.borrow_mut().add_child(Rc::clone(&area));
     let mut d = EventTreeDispatcher::new();
     let scroll_y = |area: &WidgetRef| {
-        area.borrow().as_any().downcast_ref::<ScrollArea>().unwrap().scroll_position().y
+        area.borrow()
+            .as_any()
+            .downcast_ref::<ScrollArea>()
+            .unwrap()
+            .scroll_position()
+            .y
     };
     assert_eq!(scroll_y(&area), 0);
 
@@ -455,8 +490,14 @@ fn wheel_over_a_label_inside_a_scroll_area_scrolls_it() {
     d.dispatch_event(&root, &mut wheel(150, 80));
     let after_content = scroll_y(&area);
 
-    assert!(after_label > 0, "wheel over a label must reach the scroll area");
-    assert!(after_content > after_label, "wheel over bare content must reach it too");
+    assert!(
+        after_label > 0,
+        "wheel over a label must reach the scroll area"
+    );
+    assert!(
+        after_content > after_label,
+        "wheel over bare content must reach it too"
+    );
 }
 
 #[cfg(windows)]
@@ -518,7 +559,10 @@ mod window_level {
 
         unsafe { SendMessageW(hwnd(&win), WM_CLOSE, 0, 0) };
 
-        assert!(visible(&win), "an ignored close event must leave the window as it is");
+        assert!(
+            visible(&win),
+            "an ignored close event must leave the window as it is"
+        );
         assert!(
             log.borrow().iter().any(|e| e == "root:Close"),
             "the window widget must be asked: {:?}",
@@ -563,7 +607,10 @@ mod window_level {
 
         log.borrow_mut().clear();
         win.show();
-        assert!(show_hide_only(&log).is_empty(), "showing a visible window sends nothing");
+        assert!(
+            show_hide_only(&log).is_empty(),
+            "showing a visible window sends nothing"
+        );
 
         win.hide();
         assert_eq!(
@@ -574,7 +621,10 @@ mod window_level {
 
         log.borrow_mut().clear();
         win.hide();
-        assert!(show_hide_only(&log).is_empty(), "hiding a hidden window sends nothing");
+        assert!(
+            show_hide_only(&log).is_empty(),
+            "hiding a hidden window sends nothing"
+        );
     }
 
     #[test]
@@ -787,7 +837,8 @@ mod window_level {
         let sink = Rc::clone(&seen);
         win.set_window_event_handler(move |ev: &mut Event| {
             if let EventKind::Move { x, y, old_x, old_y } = &ev.kind {
-                sink.borrow_mut().push(format!("Move({x},{y}) from ({old_x},{old_y})"));
+                sink.borrow_mut()
+                    .push(format!("Move({x},{y}) from ({old_x},{old_y})"));
             }
         });
 
@@ -798,7 +849,11 @@ mod window_level {
         );
 
         assert_eq!(*seen.borrow(), vec!["Move(150,160) from (100,100)"]);
-        assert_eq!(*log.borrow(), vec!["root:Move(150,160)"], "only the window widget is moved");
+        assert_eq!(
+            *log.borrow(),
+            vec!["root:Move(150,160)"],
+            "only the window widget is moved"
+        );
     }
 
     #[test]

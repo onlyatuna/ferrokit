@@ -6,18 +6,18 @@
 
 use crate::geometry::primitives::{PointF, RectF};
 use crate::geometry::transform::Transform2D;
+use crate::geometry::QPolygonF;
 pub use crate::paint::brush::Brush;
 pub use crate::paint::composition::CompositionMode;
 use crate::paint::paint_device::PaintDevice;
-use crate::geometry::QPolygonF;
 use crate::paint::path::{FillRule, PainterPath};
 use crate::paint::pixmap::Pixmap;
-use crate::text::document::TextDocument;
-use crate::text::font::Font;
-use crate::text::font_database::resolve_font_engines_for_text_global;
 use crate::paint::text_blend::{
     blend_grey, blend_lcd, composite_masked, rgb_average, MaskedSource,
 };
+use crate::text::document::TextDocument;
+use crate::text::font::Font;
+use crate::text::font_database::resolve_font_engines_for_text_global;
 use crate::text::glyph_layout::{FontEngine, GlyphLayout, PositionedGlyph};
 use crate::text::smoothing::{gamma_lut, text_smoothing, TextSmoothing, TrcLut};
 use std::sync::Arc;
@@ -193,16 +193,30 @@ fn mul_u8(a: u8, b: u8) -> u8 {
 fn pixel_bounds([l, t, r, b]: [f32; 4], scale: f32, pad: i64, (w, h): (u32, u32)) -> PixelBounds {
     let clamp = |v: f32, floor: bool, max: u32| -> u32 {
         let v = v * scale;
-        let v = if floor { v.floor() as i64 - pad } else { v.ceil() as i64 + pad };
+        let v = if floor {
+            v.floor() as i64 - pad
+        } else {
+            v.ceil() as i64 + pad
+        };
         v.clamp(0, max as i64) as u32
     };
-    (clamp(l, true, w), clamp(t, true, h), clamp(r, false, w), clamp(b, false, h))
+    (
+        clamp(l, true, w),
+        clamp(t, true, h),
+        clamp(r, false, w),
+        clamp(b, false, h),
+    )
 }
 
 /// Zeroes `bounds` of `mask`, clamped to the mask.
 fn zero_mask_region(mask: &mut Mask, bounds: PixelBounds) {
     let (w, h) = (mask.width(), mask.height());
-    let (x0, y0, x1, y1) = (bounds.0.min(w), bounds.1.min(h), bounds.2.min(w), bounds.3.min(h));
+    let (x0, y0, x1, y1) = (
+        bounds.0.min(w),
+        bounds.1.min(h),
+        bounds.2.min(w),
+        bounds.3.min(h),
+    );
     if x0 >= x1 {
         return;
     }
@@ -261,8 +275,7 @@ fn qt_nearest_pattern_transform(
     let Some(painter_inv) = painter_transform.invert() else {
         return origin_ts;
     };
-    let is_translate_only =
-        (combined.sx - 1.0).abs() <= 1e-6 && (combined.sy - 1.0).abs() <= 1e-6;
+    let is_translate_only = (combined.sx - 1.0).abs() <= 1e-6 && (combined.sy - 1.0).abs() <= 1e-6;
     let axis = |scale: f32, trans: f32, tile: u32| -> (f32, f32) {
         let s = f64::from(scale);
         let t = f64::from(trans);
@@ -494,7 +507,6 @@ impl<'a> Painter<'a> {
     pub fn set_brush(&mut self, brush: Brush) {
         self.state.brush = brush;
     }
-
 
     /// Sets the brush origin in logical user coordinates (`QPainter::setBrushOrigin`).
     pub fn set_brush_origin(&mut self, origin: PointF) {
@@ -1302,7 +1314,9 @@ impl<'a> Painter<'a> {
         let clip_cov = if self.state.clip_quads.is_empty() {
             None
         } else {
-            self.cached_mask.as_ref().map(|m| (m.data(), m.width() as usize))
+            self.cached_mask
+                .as_ref()
+                .map(|m| (m.data(), m.width() as usize))
         };
         let mut pixmap = self.device.as_pixmap_mut();
         let pw = pixmap.width();
@@ -1580,7 +1594,9 @@ impl<'a> Painter<'a> {
     ) -> Option<Path> {
         let mut builder = tiny_skia::PathBuilder::new();
         for glyph in glyphs {
-            let engine = engines.get(glyph.font_index as usize).unwrap_or(&engines[0]);
+            let engine = engines
+                .get(glyph.font_index as usize)
+                .unwrap_or(&engines[0]);
             let Some(outline) = engine.face.glyph_outline(glyph.glyph_id, font.size) else {
                 continue;
             };
@@ -1996,7 +2012,10 @@ mod tests {
         p.set_clip_rect(RectF::new(16.0, 16.0, 32.0, 32.0));
         fill(&mut p);
         let second = p.cached_mask.as_ref().unwrap().data().as_ptr();
-        assert_eq!(first, second, "a clip change must reuse the device-sized mask");
+        assert_eq!(
+            first, second,
+            "a clip change must reuse the device-sized mask"
+        );
         // Dropping the clip and setting another still reuses the same buffer.
         p.state_mut().clip_rect = None;
         fill(&mut p);
@@ -2330,7 +2349,9 @@ mod tests {
             create_pie_path(rect, 0.0, 360.0).unwrap().len()
         );
         assert_eq!(
-            create_donut_arc_path(rect, 10.0, 0.0, f32::MAX).unwrap().len(),
+            create_donut_arc_path(rect, 10.0, 0.0, f32::MAX)
+                .unwrap()
+                .len(),
             create_donut_arc_path(rect, 10.0, 0.0, 360.0).unwrap().len()
         );
         assert!(create_arc_path(rect, 0.0, f32::INFINITY).is_none());

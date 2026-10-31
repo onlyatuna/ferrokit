@@ -465,7 +465,7 @@ impl MetaMethod {
             if !variant_accepts_parameter(arg, param) {
                 return Err(InvokeError::TypeMismatch {
                     index,
-                    expected: *param,
+                    expected: param,
                 });
             }
         }

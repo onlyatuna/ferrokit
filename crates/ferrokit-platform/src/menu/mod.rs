@@ -57,7 +57,9 @@ pub trait PlatformMenu {
 pub fn create_platform_menu(_native_handle: isize) -> Box<dyn PlatformMenu> {
     #[cfg(windows)]
     {
-        Box::new(Win32Menu::new(_native_handle as windows_sys::Win32::Foundation::HWND))
+        Box::new(Win32Menu::new(
+            _native_handle as windows_sys::Win32::Foundation::HWND,
+        ))
     }
     #[cfg(target_os = "macos")]
     {

@@ -352,7 +352,13 @@ impl Widget for Button {
         let border_h = (border * 2.0).round() as i32;
         let border_v = (border * 2.0).round() as i32;
 
-        if style.padding.is_none() && style.border_width.is_none() && style.min_width.is_none() && style.max_height.is_none() && style.width.is_none() && style.height.is_none() {
+        if style.padding.is_none()
+            && style.border_width.is_none()
+            && style.min_width.is_none()
+            && style.max_height.is_none()
+            && style.width.is_none()
+            && style.height.is_none()
+        {
             let style_metrics = self.style.metrics();
             let styled = self.style.size_from_contents(
                 Size::new(text_w, text_h),
@@ -494,8 +500,7 @@ impl Widget for Button {
     fn mouse_release_event(&mut self, pos: Point, button: u32, _modifiers: u32) {
         if self.base.is_enabled() && button == 1 && self.state == ButtonState::Pressed {
             let g = self.base.geometry();
-            let in_bounds =
-                Rect::new(0, 0, g.width, g.height).contains(pos);
+            let in_bounds = Rect::new(0, 0, g.width, g.height).contains(pos);
             self.state = if in_bounds {
                 ButtonState::Hovered
             } else {
@@ -587,7 +592,7 @@ impl Widget for Button {
     fn paint_event(&mut self, painter: &mut Painter) {
         let geom = self.base.geometry();
         let style = self.resolved_style();
-        let bg = style.background_color.unwrap_or_else(|| match self.state {
+        let bg = style.background_color.unwrap_or(match self.state {
             ButtonState::Normal => self.normal_bg,
             ButtonState::Hovered => self.hover_bg,
             ButtonState::Pressed => self.press_bg,

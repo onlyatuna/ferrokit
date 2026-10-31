@@ -22,7 +22,7 @@ fn hints(qss: &str, vertical: bool) -> ([i32; 2], [i32; 2]) {
 
 #[test]
 fn test_progress_bar_hint_follows_font_and_box() {
-    let cases: [(&str, &str, ([i32; 2], [i32; 2])); 5] = [
+    let cases = [
         ("P4", "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 12px; }", ([87, 24], [87, 18])),
         ("P5", "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 20px; }", ([107, 35], [107, 29])),
         ("P6", "QProgressBar { font-family: 'Segoe UI'; font-size: 12px; border: 1px solid #888; padding: 2px 3px; }", ([95, 30], [95, 18])),
@@ -76,7 +76,10 @@ fn test_vertical_progress_bar_min_max_are_not_transposed() {
     p.set_style_sheet("QProgressBar { border: none; min-width: 5px; max-width: 5px; }");
     p.set_orientation(Orientation::Vertical);
     let (min, max) = (p.minimum_size(), p.maximum_size());
-    assert_eq!(([min.width, min.height], [max.width, max.height]), ([5, 0], [5, 16777215]));
+    assert_eq!(
+        ([min.width, min.height], [max.width, max.height]),
+        ([5, 0], [5, 16777215])
+    );
 }
 
 /// QSS `width`/`height` are the contents size (`QRenderRule::contentsSize`). They
@@ -88,8 +91,18 @@ fn limits(qss: &str) -> ([i32; 2], [i32; 2], [i32; 2], [i32; 2]) {
     ferrokit_gui::text::font_database::set_application_device_pixel_ratio(1.25);
     let p = ProgressBar::new();
     p.set_style_sheet(qss);
-    let (mn, mx, h, mh) = (p.minimum_size(), p.maximum_size(), p.size_hint(), p.minimum_size_hint());
-    ([mn.width, mn.height], [mx.width, mx.height], [h.width, h.height], [mh.width, mh.height])
+    let (mn, mx, h, mh) = (
+        p.minimum_size(),
+        p.maximum_size(),
+        p.size_hint(),
+        p.minimum_size_hint(),
+    );
+    (
+        [mn.width, mn.height],
+        [mx.width, mx.height],
+        [h.width, h.height],
+        [mh.width, mh.height],
+    )
 }
 
 const NONE: i32 = 16777215;
@@ -112,12 +125,20 @@ fn test_width_and_height_do_not_become_min_and_max() {
 fn test_width_combined_with_min_and_max_follows_qt() {
     let base = "QProgressBar { font-family: 'Segoe UI'; font-size: 12px; ";
     // `width` below `min-width`: the minimum is `min-width`, the hint is still `width`.
-    assert_eq!(limits(&format!("{base}width: 50px; min-width: 80px; }}")), ([80, 0], [NONE, NONE], [50, 24], [50, 18]));
+    assert_eq!(
+        limits(&format!("{base}width: 50px; min-width: 80px; }}")),
+        ([80, 0], [NONE, NONE], [50, 24], [50, 18])
+    );
     // `width` above `max-width`: the maximum is `max-width`, the hint is still `width`.
-    assert_eq!(limits(&format!("{base}width: 120px; max-width: 90px; }}")), ([0, 0], [90, NONE], [120, 24], [120, 18]));
+    assert_eq!(
+        limits(&format!("{base}width: 120px; max-width: 90px; }}")),
+        ([0, 0], [90, NONE], [120, 24], [120, 18])
+    );
     // with both, `width` pins the axis the declaration is on.
     assert_eq!(
-        limits(&format!("{base}width: 120px; min-width: 80px; max-width: 200px; height: 9px; }}")),
+        limits(&format!(
+            "{base}width: 120px; min-width: 80px; max-width: 200px; height: 9px; }}"
+        )),
         ([120, 0], [120, NONE], [120, 9], [120, 18])
     );
 }

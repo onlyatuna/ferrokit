@@ -177,7 +177,9 @@ fn test_image_view_sub_view_one_bit_formats() {
         // Column 10 is not byte aligned: a view cannot start mid-byte, and must not panic.
         assert!(view.sub_view(Rect::new(10, 0, 6, 1)).is_none());
         // Column 8 starts at byte 1.
-        let sub = view.sub_view(Rect::new(8, 0, 8, 1)).expect("aligned sub view");
+        let sub = view
+            .sub_view(Rect::new(8, 0, 8, 1))
+            .expect("aligned sub view");
         assert_eq!(sub.scan_line(0).map(<[u8]>::len), Some(1));
     }
 }
@@ -277,15 +279,27 @@ fn test_icon_multi_resolution_and_states() {
     assert_eq!(actual(&Icon::new(), 20, 20), Size::new(-1, -1));
 
     let mut tall = Icon::new();
-    tall.add_image(Image::new(16, 32, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
+    tall.add_image(
+        Image::new(16, 32, ImageFormat::Rgba8888),
+        IconMode::Normal,
+        IconState::Off,
+    );
     assert_eq!(actual(&tall, 20, 20), Size::new(10, 20));
     assert_eq!(actual(&tall, 40, 10), Size::new(5, 10));
     assert_eq!(actual(&tall, 10, 40), Size::new(10, 20));
     assert_eq!(actual(&tall, 100, 100), Size::new(16, 32));
 
     let mut wide = Icon::new();
-    wide.add_image(Image::new(32, 16, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
-    wide.add_image(Image::new(10, 10, ImageFormat::Rgba8888), IconMode::Normal, IconState::Off);
+    wide.add_image(
+        Image::new(32, 16, ImageFormat::Rgba8888),
+        IconMode::Normal,
+        IconState::Off,
+    );
+    wide.add_image(
+        Image::new(10, 10, ImageFormat::Rgba8888),
+        IconMode::Normal,
+        IconState::Off,
+    );
     assert_eq!(actual(&wide, 20, 20), Size::new(20, 10));
     assert_eq!(actual(&wide, 10, 40), Size::new(10, 5));
     assert_eq!(actual(&wide, 30, 20), Size::new(30, 15));
@@ -467,7 +481,7 @@ fn test_ico_palette_and_32bpp_alpha_frames() {
 fn test_ico_rejects_malformed_data() {
     assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 0, 0]).is_err()); // zero frames
     assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 5, 0]).is_err()); // truncated directory
-    // Frame pointing past the end of the file.
+                                                                          // Frame pointing past the end of the file.
     let mut ico = build_ico(&[(2, 2, vec![0; 4])]);
     ico[6 + 8..6 + 12].copy_from_slice(&1000u32.to_le_bytes());
     assert!(ImageReader::read_from_memory(&ico).is_err());
@@ -492,14 +506,20 @@ fn test_ico_rejects_oversize_dib() {
     // 257x257 is past the ICO format limit; the data is complete, so only the cap rejects it.
     let (w, h) = (257usize, 257usize);
     let mut dib = dib_header_sized(w as i32, (2 * h) as i32, 24);
-    dib.extend_from_slice(&vec![0u8; (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h]);
+    dib.extend_from_slice(&vec![
+        0u8;
+        (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h
+    ]);
     assert!(ImageReader::read_from_memory(&build_ico(&[(0, 0, dib.clone())])).is_err());
     assert!(ImageReader::read_ico_frames(&build_ico(&[(0, 0, dib)])).is_err());
 
     // 256 is the largest accepted extent, in either direction.
     for (w, h) in [(256usize, 2usize), (2, 256)] {
         let mut dib = dib_header_sized(w as i32, (2 * h) as i32, 24);
-        dib.extend_from_slice(&vec![0u8; (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h]);
+        dib.extend_from_slice(&vec![
+            0u8;
+            (w * 3).div_ceil(4) * 4 * h + w.div_ceil(32) * 4 * h
+        ]);
         let img = ImageReader::read_from_memory(&build_ico(&[(0, 0, dib)])).unwrap();
         assert_eq!((img.width(), img.height()), (w as u32, h as u32));
     }

@@ -33,7 +33,11 @@ fn commit_mb() -> f64 {
 #[cfg(not(windows))]
 fn commit_mb() -> f64 {
     let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
-    let pages: f64 = statm.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let pages: f64 = statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
     pages * 4096.0 / 1048576.0
 }
 

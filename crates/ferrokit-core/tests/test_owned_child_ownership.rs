@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::notify_helper;
 use ferrokit_core::object::{
-    add_owned_child, register_owned_qobject, reparent_owned_object, set_parent_by_id, unregister_qobject,
-    with_object, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
+    add_owned_child, register_owned_qobject, reparent_owned_object, set_parent_by_id,
+    unregister_qobject, with_object, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject,
+    ReparentError,
 };
 
 type Hook = Arc<Mutex<Option<Box<dyn FnMut(&mut Event) + Send>>>>;
@@ -168,11 +169,7 @@ fn set_parent_none_on_owned_child_keeps_child_alive() {
         child_alive.load(Ordering::SeqCst),
         "set_parent(None) destroyed an owned child"
     );
-    assert_eq!(
-        parent.owned_len(),
-        1,
-        "parent must still own the child"
-    );
+    assert_eq!(parent.owned_len(), 1, "parent must still own the child");
     assert_eq!(
         parent.children(),
         vec![child_id],
@@ -197,7 +194,9 @@ fn reparent_owned_to_none_returns_the_box_and_child_survives() {
 
     assert!(child_alive.load(Ordering::SeqCst));
     assert_eq!(released.with(|r| r.object_data().parent()).unwrap(), None);
-    assert!(!released.with(|r| r.object_data().is_owned_by_parent()).unwrap());
+    assert!(!released
+        .with(|r| r.object_data().is_owned_by_parent())
+        .unwrap());
     assert!(parent.children().is_empty());
     assert!(parent.owned_len() == 0);
     assert_eq!(

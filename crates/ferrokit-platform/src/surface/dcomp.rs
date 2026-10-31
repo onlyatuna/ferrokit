@@ -690,7 +690,8 @@ impl DCompSurface {
         // One `ResizeBuffers` per capacity change: when either axis leaves its band, both axes get
         // fresh headroom together (otherwise width and height would reallocate at different sizes
         // and double the calls).
-        let outside = |alloc: u32, visible: u32| visible > alloc || alloc > visible.saturating_mul(2);
+        let outside =
+            |alloc: u32, visible: u32| visible > alloc || alloc > visible.saturating_mul(2);
         let (new_alloc_w, new_alloc_h) =
             if outside(self.alloc_w, width) || outside(self.alloc_h, height) {
                 (capacity_for(width), capacity_for(height))

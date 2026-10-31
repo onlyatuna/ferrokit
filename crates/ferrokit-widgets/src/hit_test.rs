@@ -283,7 +283,7 @@ impl EventTreeDispatcher {
                         old_pos: *old_pos,
                         modifiers: *modifiers,
                     });
-                    return notify_widget(&old_widget, &mut local_event);
+                    return notify_widget(old_widget, &mut local_event);
                 }
                 false
             }
@@ -737,7 +737,9 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
             let w = cur.widget.borrow();
             // Children are clipped to the clip rect (a scroll area's viewport): a point outside
             // it belongs to the widget itself, e.g. to its scroll bars.
-            if w.children_clip_rect().is_some_and(|clip| !clip.contains(cur.pos)) {
+            if w.children_clip_rect()
+                .is_some_and(|clip| !clip.contains(cur.pos))
+            {
                 None
             } else {
                 Some((w.children(), cur.pos, cur.enabled))

@@ -87,8 +87,19 @@ fn main() {
     }
     let shape = t.elapsed().as_secs_f64() * 1e3 / n as f64;
 
-    println!("lines {}, glyphs {}, unique (font,glyph) {}", LINES.len(), total_glyphs, unique.len());
+    println!(
+        "lines {}, glyphs {}, unique (font,glyph) {}",
+        LINES.len(),
+        total_glyphs,
+        unique.len()
+    );
     println!("draw_text, whole frame      : {per_frame:.3} ms");
-    println!("  of which rasterise_indexed: {raster:.3} ms ({:.0}%)", raster / per_frame * 100.0);
-    println!("  shaping (resolve+shape)   : {shape:.3} ms ({:.0}%)", shape / per_frame * 100.0);
+    println!(
+        "  of which rasterise_indexed: {raster:.3} ms ({:.0}%)",
+        raster / per_frame * 100.0
+    );
+    println!(
+        "  shaping (resolve+shape)   : {shape:.3} ms ({:.0}%)",
+        shape / per_frame * 100.0
+    );
 }

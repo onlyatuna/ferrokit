@@ -34,6 +34,8 @@ struct MetricCountingProbe {
 }
 
 impl MetricCountingProbe {
+    // Returns the probe's query counters alongside it, so not `Self`.
+    #[allow(clippy::new_ret_no_self)]
     fn new(
         w: i32,
         h: i32,

@@ -1560,7 +1560,10 @@ mod tests {
         stream.extend_from_slice(&[b'x'; 32]);
         bus.push_to_client(&stream);
         let got = conn.read_incoming().unwrap();
-        assert_eq!(got, vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]);
+        assert_eq!(
+            got,
+            vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]
+        );
         assert!(!conn.is_live_socket());
         assert!(conn.read_incoming().is_err());
     }
@@ -1572,7 +1575,10 @@ mod tests {
         bus.push_to_client(&first.to_bytes());
         bus.close_after_queued();
         let got = conn.read_incoming().unwrap();
-        assert_eq!(got, vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]);
+        assert_eq!(
+            got,
+            vec![DbusMessage::from_bytes(&first.to_bytes()).unwrap()]
+        );
         assert!(!conn.is_live_socket());
         assert!(conn.read_incoming().is_err());
     }

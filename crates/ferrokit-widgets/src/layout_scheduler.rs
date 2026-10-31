@@ -136,9 +136,8 @@ impl LayoutScheduler {
         let _activating = ActivatingGuard;
 
         while DIRTY_LAYOUTS.with(|q| !q.borrow().is_empty()) {
-            let items: Vec<(ObjectId, WidgetWeak)> = DIRTY_LAYOUTS.with(|q| {
-                std::mem::take(&mut *q.borrow_mut())
-            });
+            let items: Vec<(ObjectId, WidgetWeak)> =
+                DIRTY_LAYOUTS.with(|q| std::mem::take(&mut *q.borrow_mut()));
 
             for (_id, weak) in items {
                 if let Some(widget_ref) = weak.upgrade() {

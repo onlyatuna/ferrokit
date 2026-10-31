@@ -21,13 +21,9 @@ fn menu_update_posts_to_menu_affinity_thread_when_it_has_no_window() {
     menu.update();
 
     assert_eq!(affinity, ThreadId::current());
-    assert!(event_loop
-        .queue()
-        .lock()
-        .unwrap()
-        .events()
-        .iter()
-        .any(|posted| posted.receiver == id && matches!(posted.event.kind, EventKind::UpdateRequest)));
+    assert!(event_loop.queue().lock().unwrap().events().iter().any(
+        |posted| posted.receiver == id && matches!(posted.event.kind, EventKind::UpdateRequest)
+    ));
 }
 
 #[test]

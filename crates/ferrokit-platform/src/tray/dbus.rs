@@ -21,7 +21,10 @@ impl DbusImage {
     /// The pixmap as ARGB32 with straight (not premultiplied) alpha, letterboxed on a transparent
     /// square when it is not square (`iconToQXdgDBusImageVector`).
     pub fn from_pixmap(pixmap: &Pixmap) -> Self {
-        let (w, h) = (pixmap.physical_width() as usize, pixmap.physical_height() as usize);
+        let (w, h) = (
+            pixmap.physical_width() as usize,
+            pixmap.physical_height() as usize,
+        );
         let side = w.max(h);
         let (ox, oy) = ((side - w) / 2, (side - h) / 2);
         let mut data = vec![0u8; side * side * 4];

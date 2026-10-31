@@ -40,10 +40,19 @@ fn dcomp_staging_pixels_are_scaled_by_the_window_opacity() {
     convert_rgba_to_staging_bgra(&src, &mut dst, 0.5);
     let (b, g, r, a) = (dst[0], dst[1], dst[2], dst[3]);
     assert_eq!(a, 128, "an opaque pixel at 50 % has alpha 128");
-    assert!((r as i32 - 100).abs() <= 1 && (g as i32 - 50).abs() <= 1 && (b as i32 - 25).abs() <= 1,
-        "colour halves with alpha, got r={r} g={g} b={b}");
-    assert!(r <= a && g <= a && b <= a, "premultiplied colour never exceeds alpha");
-    assert!((dst[7] as i32 - 64).abs() <= 1, "half-transparent pixel at 50 % has alpha ~64, got {}", dst[7]);
+    assert!(
+        (r as i32 - 100).abs() <= 1 && (g as i32 - 50).abs() <= 1 && (b as i32 - 25).abs() <= 1,
+        "colour halves with alpha, got r={r} g={g} b={b}"
+    );
+    assert!(
+        r <= a && g <= a && b <= a,
+        "premultiplied colour never exceeds alpha"
+    );
+    assert!(
+        (dst[7] as i32 - 64).abs() <= 1,
+        "half-transparent pixel at 50 % has alpha ~64, got {}",
+        dst[7]
+    );
 
     // 0 %: nothing is visible.
     convert_rgba_to_staging_bgra(&src, &mut dst, 0.0);
@@ -52,19 +61,29 @@ fn dcomp_staging_pixels_are_scaled_by_the_window_opacity() {
 
 #[test]
 fn a_standard_window_becomes_translucent_through_the_trait() {
-    let mut win = NativeWindow::new("opacity", Rect::new(50, 50, 120, 80), WindowFlags::FRAMELESS)
-        .expect("native window");
+    let mut win = NativeWindow::new(
+        "opacity",
+        Rect::new(50, 50, 120, 80),
+        WindowFlags::FRAMELESS,
+    )
+    .expect("native window");
     let hwnd = win.hwnd() as isize;
     assert!(!is_layered(hwnd));
 
     // The window is reached through `dyn PlatformWindow`, as `ferrokit_widgets::Window` does.
     let dynamic: &mut dyn PlatformWindow = &mut win;
     dynamic.set_opacity(0.5);
-    assert!(is_layered(hwnd), "a translucent standard window must be layered");
+    assert!(
+        is_layered(hwnd),
+        "a translucent standard window must be layered"
+    );
     assert_eq!(layered_alpha(hwnd), Some(128));
 
     dynamic.set_opacity(1.0);
-    assert!(!is_layered(hwnd), "an opaque standard window drops the layered style again");
+    assert!(
+        !is_layered(hwnd),
+        "an opaque standard window drops the layered style again"
+    );
 }
 
 /// `WindowTransparentForInput` keeps a window layered whatever its opacity (`setWindowLayered`,
@@ -72,23 +91,37 @@ fn a_standard_window_becomes_translucent_through_the_trait() {
 /// layered window is given an opaque alpha rather than left without layered attributes.
 #[test]
 fn an_opacity_round_trip_keeps_a_click_through_window_layered() {
-    let mut win = NativeWindow::new("click-through", Rect::new(50, 50, 120, 80), WindowFlags::FRAMELESS)
-        .expect("native window");
+    let mut win = NativeWindow::new(
+        "click-through",
+        Rect::new(50, 50, 120, 80),
+        WindowFlags::FRAMELESS,
+    )
+    .expect("native window");
     let hwnd = win.hwnd() as isize;
     let dynamic: &mut dyn PlatformWindow = &mut win;
 
     dynamic.set_click_through(true);
     assert!(is_layered(hwnd), "click-through needs WS_EX_LAYERED");
-    assert_eq!(layered_alpha(hwnd), Some(255), "an opaque click-through window has alpha 255");
+    assert_eq!(
+        layered_alpha(hwnd),
+        Some(255),
+        "an opaque click-through window has alpha 255"
+    );
 
     dynamic.set_opacity(0.5);
     assert_eq!(layered_alpha(hwnd), Some(128));
     dynamic.set_opacity(1.0);
-    assert!(is_layered(hwnd), "opacity 1.0 must keep a click-through window layered");
+    assert!(
+        is_layered(hwnd),
+        "opacity 1.0 must keep a click-through window layered"
+    );
     assert_eq!(layered_alpha(hwnd), Some(255));
 
     dynamic.set_click_through(false);
-    assert!(!is_layered(hwnd), "an opaque window that stops being click-through is not layered");
+    assert!(
+        !is_layered(hwnd),
+        "an opaque window that stops being click-through is not layered"
+    );
 }
 
 /// A window created click-through is layered from the start (`setWindowLayered`).
@@ -132,6 +165,8 @@ fn dcomp_window_presents_with_the_window_opacity() {
     win.set_opacity(1.0);
     let corner = Region::from_coords(100, 60, 10, 10);
     win.present_region(&pm, &corner).expect("present");
-    let WindowsPresenter::DirectComposition(dcomp) = win.presenter().unwrap() else { unreachable!() };
+    let WindowsPresenter::DirectComposition(dcomp) = win.presenter().unwrap() else {
+        unreachable!()
+    };
     assert_eq!(dcomp.staged_pixel(10, 10).unwrap()[3], 255);
 }

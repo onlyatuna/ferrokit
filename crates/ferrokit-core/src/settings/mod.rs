@@ -274,8 +274,7 @@ impl Settings {
         // Write to a uniquely named temporary file first for atomic commit.
         let (tmp_path, mut file) = loop {
             let sequence = SYNC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let tmp_path =
-                path.with_extension(format!("tmp_{}_{}", std::process::id(), sequence));
+            let tmp_path = path.with_extension(format!("tmp_{}_{}", std::process::id(), sequence));
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -310,7 +309,10 @@ impl Settings {
     }
 
     /// Serializes entries into INI format grouped by section.
-    fn write_ini_entries<W: Write>(entries: &HashMap<String, Variant>, w: &mut W) -> std::io::Result<()> {
+    fn write_ini_entries<W: Write>(
+        entries: &HashMap<String, Variant>,
+        w: &mut W,
+    ) -> std::io::Result<()> {
         // Partition entries into root section and named sections
         let mut root_entries = BTreeMap::new();
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
@@ -403,7 +405,11 @@ fn read_ini_file(path: &Path, entries: &mut HashMap<String, Variant>) -> std::io
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             let section_name = &trimmed[1..trimmed.len() - 1];
             let name = section_name.trim();
-            current_section = Some(if escaped { unescape_text(name) } else { name.to_string() });
+            current_section = Some(if escaped {
+                unescape_text(name)
+            } else {
+                name.to_string()
+            });
             continue;
         }
 
@@ -413,7 +419,11 @@ fn read_ini_file(path: &Path, entries: &mut HashMap<String, Variant>) -> std::io
             trimmed.split_once('=')
         };
         if let Some((key, val)) = pair {
-            let key = if escaped { unescape_text(key.trim()) } else { key.trim().to_string() };
+            let key = if escaped {
+                unescape_text(key.trim())
+            } else {
+                key.trim().to_string()
+            };
             let key = key.as_str();
             let val = val.trim();
             let full_key = match &current_section {
@@ -430,11 +440,7 @@ fn read_ini_file(path: &Path, entries: &mut HashMap<String, Variant>) -> std::io
 
 /// Writes the diagnostic for a `sync` that failed while its [`Settings`] was dropped. `Drop`
 /// cannot return the error, so the unsaved changes would otherwise be lost silently.
-fn report_failed_sync_on_drop(
-    out: &mut impl Write,
-    path: Option<&Path>,
-    error: &std::io::Error,
-) {
+fn report_failed_sync_on_drop(out: &mut impl Write, path: Option<&Path>, error: &std::io::Error) {
     let path = path.map_or_else(String::new, |p| format!(" `{}`", p.display()));
     // A closed stderr must not turn a failed save into a panic inside `drop`.
     let _ = writeln!(
@@ -508,7 +514,9 @@ fn unescape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < s.len() {
-        let Some(c) = s[i..].chars().next() else { break };
+        let Some(c) = s[i..].chars().next() else {
+            break;
+        };
         if c != '\\' {
             out.push(c);
             i += c.len_utf8();
@@ -611,11 +619,16 @@ fn serialize_variant_value(v: &Variant) -> String {
 }
 
 fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
-    if let Some(encoded) = raw.strip_prefix("@Variant(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(encoded) = raw
+        .strip_prefix("@Variant(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         if encoded.len() % 2 == 0 {
             let bytes = encoded.as_bytes();
             let decoded = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     let high = (pair[0] as char).to_digit(16)?;
                     let low = (pair[1] as char).to_digit(16)?;
@@ -667,7 +680,11 @@ fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
     }
 
     // Default to String
-    Variant::String(if escaped { unescape_text(raw) } else { raw.to_string() })
+    Variant::String(if escaped {
+        unescape_text(raw)
+    } else {
+        raw.to_string()
+    })
 }
 
 /// Resolves standard platform config directory.

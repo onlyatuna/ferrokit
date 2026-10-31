@@ -130,12 +130,8 @@ mod tests {
             | WindowFlags::LAYERED
             | WindowFlags::TOOL
             | WindowFlags::STAYS_ON_TOP;
-        let window = NativeWindow::new(
-            "Flags Test",
-            Rect::new(100, 100, 450, 350),
-            flags,
-        )
-        .expect("failed to create native window");
+        let window = NativeWindow::new("Flags Test", Rect::new(100, 100, 450, 350), flags)
+            .expect("failed to create native window");
         window.show();
 
         let mut surface =
@@ -197,7 +193,12 @@ mod tests {
         for i in 0..10 {
             let dirty = Rect::new(i * 5, i * 5, 30, 30);
             let res = window.present_dirty(&mut pixmap, 0.95, dirty);
-            assert!(res.is_ok(), "Frame {} present_dirty failed: {:?}", i, res.err());
+            assert!(
+                res.is_ok(),
+                "Frame {} present_dirty failed: {:?}",
+                i,
+                res.err()
+            );
         }
 
         // Test geometry change triggers surface resize
@@ -205,6 +206,10 @@ mod tests {
         let mut resized_pixmap = Pixmap::new(160, 120).expect("resized pixmap");
         resized_pixmap.fill(Color::from_rgba8(100, 150, 200, 255));
         let res = window.present_dirty(&mut resized_pixmap, 1.0, Rect::new(0, 0, 160, 120));
-        assert!(res.is_ok(), "Resized window present_dirty failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Resized window present_dirty failed: {:?}",
+            res.err()
+        );
     }
 }

@@ -92,7 +92,10 @@ impl Widget for Probe {
 }
 
 fn probe(w: i32, h: i32, policy: Policy) -> WidgetRef {
-    let p = Probe { base: WidgetBase::new(), hint: Size::new(w, h) };
+    let p = Probe {
+        base: WidgetBase::new(),
+        hint: Size::new(w, h),
+    };
     p.base.set_size_policy(QSizePolicy::new(policy, policy));
     Rc::new(RefCell::new(Box::new(p)))
 }
@@ -107,7 +110,9 @@ fn lay_out(layout: Box<dyn Layout>, width: i32, height: i32) -> WidgetRef {
         Rect::new(0, 0, width, height),
     ))));
     container.borrow_mut().set_layout(layout);
-    container.borrow_mut().set_geometry(Rect::new(0, 0, width, height));
+    container
+        .borrow_mut()
+        .set_geometry(Rect::new(0, 0, width, height));
     container.borrow().update_layout();
     container
 }
@@ -121,8 +126,16 @@ fn table_like_grid(aligned: bool) -> (WidgetRef, [WidgetRef; 4]) {
         probe(71, 20, Policy::Preferred),
         probe(50, 30, Policy::Preferred),
     ];
-    let left_v_center = if aligned { Alignment::LEFT | Alignment::V_CENTER } else { Alignment::NONE };
-    let h_center = if aligned { Alignment::H_CENTER } else { Alignment::NONE };
+    let left_v_center = if aligned {
+        Alignment::LEFT | Alignment::V_CENTER
+    } else {
+        Alignment::NONE
+    };
+    let h_center = if aligned {
+        Alignment::H_CENTER
+    } else {
+        Alignment::NONE
+    };
     let mut grid = GridLayout::new();
     grid.set_margins(Margins::new(0, 0, 0, 0));
     grid.set_horizontal_spacing(4);
@@ -139,10 +152,26 @@ fn table_like_grid(aligned: bool) -> (WidgetRef, [WidgetRef; 4]) {
 #[test]
 fn grid_item_alignment_does_not_fill_cell() {
     let (_container, items) = table_like_grid(true);
-    assert_eq!(rect_of(&items[0]), (0, 1, 60, 18), "AlignVCenter|AlignLeft: hint size, centred");
-    assert_eq!(rect_of(&items[1]), (0, 57, 80, 70), "a tall row does not stretch the legend");
-    assert_eq!(rect_of(&items[2]), (156, 0, 71, 20), "AlignHCenter: hint width, centred in the column");
-    assert_eq!(rect_of(&items[3]), (84, 24, 216, 136), "an item without alignment still fills");
+    assert_eq!(
+        rect_of(&items[0]),
+        (0, 1, 60, 18),
+        "AlignVCenter|AlignLeft: hint size, centred"
+    );
+    assert_eq!(
+        rect_of(&items[1]),
+        (0, 57, 80, 70),
+        "a tall row does not stretch the legend"
+    );
+    assert_eq!(
+        rect_of(&items[2]),
+        (156, 0, 71, 20),
+        "AlignHCenter: hint width, centred in the column"
+    );
+    assert_eq!(
+        rect_of(&items[3]),
+        (84, 24, 216, 136),
+        "an item without alignment still fills"
+    );
 }
 
 #[test]
@@ -165,7 +194,11 @@ fn box_item_alignment_places_item_inside_the_cell() {
     h.add_widget_aligned(b.clone(), 1, Alignment::H_CENTER);
     let _c = lay_out(Box::new(h), 300, 100);
     assert_eq!(rect_of(&a), (0, 80, 60, 20));
-    assert_eq!(rect_of(&b), (157, 0, 50, 100), "only the aligned axis shrinks");
+    assert_eq!(
+        rect_of(&b),
+        (157, 0, 50, 100),
+        "only the aligned axis shrinks"
+    );
 
     let a = probe(60, 20, Policy::Preferred);
     let b = probe(50, 30, Policy::Preferred);
@@ -225,7 +258,11 @@ fn set_alignment_applies_to_an_existing_item_and_reports_unknown_widgets() {
         assert!(!layout.set_alignment(&stranger, Alignment::CENTER));
     }
 
-    assert_eq!(rect_of(&w), (120, 40, 60, 20), "set_alignment must re-lay the layout out");
+    assert_eq!(
+        rect_of(&w),
+        (120, 40, 60, 20),
+        "set_alignment must re-lay the layout out"
+    );
 }
 
 #[test]

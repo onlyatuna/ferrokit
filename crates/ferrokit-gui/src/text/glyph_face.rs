@@ -104,7 +104,43 @@ pub(crate) const MAX_GLYPH_PIXELS: usize = 16 * 1024 * 1024;
 
 /// Whether a `width` x `height` glyph bitmap is too large to allocate.
 pub(crate) fn exceeds_glyph_budget(width: usize, height: usize) -> bool {
-    width.checked_mul(height).map_or(true, |n| n > MAX_GLYPH_PIXELS)
+    width
+        .checked_mul(height)
+        .is_none_or(|n| n > MAX_GLYPH_PIXELS)
+}
+
+/// Shared handle to a face (Qt's ref-counted `QFontEngine*`).
+pub type SharedGlyphFace = Arc<dyn GlyphFace>;
+
+/// Which rasterizer backend [`parse_face`] uses (Qt's per-platform font engine choice).
+///
+/// Windows uses DirectWrite, like Qt; every other platform, and Windows without DirectWrite, uses
+/// [`OutlineFace`] (Qt's FreeType role). `FERROKIT_FONT_ENGINE=outline` forces the generic backend
+/// (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
+#[cfg(windows)]
+fn use_directwrite() -> bool {
+    static CHOICE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        let forced_generic =
+            std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"));
+        !forced_generic && crate::text::directwrite_face::is_available()
+    });
+    *CHOICE
+}
+
+/// Builds the glyph face for face `face_index` of the font file `data`.
+///
+/// This is the only place that selects a rasterizer backend.
+pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphFace, String> {
+    #[cfg(windows)]
+    if use_directwrite() {
+        // A font DirectWrite cannot open is still drawn by the generic backend.
+        if let Ok(face) =
+            crate::text::directwrite_face::DirectWriteFace::new(data.clone(), face_index)
+        {
+            return Ok(Arc::new(face));
+        }
+    }
+    OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
 }
 
 #[cfg(test)]
@@ -127,36 +163,4 @@ mod budget_tests {
         assert!(exceeds_glyph_budget(span, 1));
         assert!(exceeds_glyph_budget(span, span));
     }
-}
-
-/// Shared handle to a face (Qt's ref-counted `QFontEngine*`).
-pub type SharedGlyphFace = Arc<dyn GlyphFace>;
-
-/// Which rasterizer backend [`parse_face`] uses (Qt's per-platform font engine choice).
-///
-/// Windows uses DirectWrite, like Qt; every other platform, and Windows without DirectWrite, uses
-/// [`OutlineFace`] (Qt's FreeType role). `FERROKIT_FONT_ENGINE=outline` forces the generic backend
-/// (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
-#[cfg(windows)]
-fn use_directwrite() -> bool {
-    static CHOICE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-        let forced_generic = std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"));
-        !forced_generic && crate::text::directwrite_face::is_available()
-    });
-    *CHOICE
-}
-
-/// Builds the glyph face for face `face_index` of the font file `data`.
-///
-/// This is the only place that selects a rasterizer backend.
-pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphFace, String> {
-    #[cfg(windows)]
-    if use_directwrite() {
-        match crate::text::directwrite_face::DirectWriteFace::new(data.clone(), face_index) {
-            Ok(face) => return Ok(Arc::new(face)),
-            // A font DirectWrite cannot open is still drawn by the generic backend.
-            Err(_) => {}
-        }
-    }
-    OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
 }

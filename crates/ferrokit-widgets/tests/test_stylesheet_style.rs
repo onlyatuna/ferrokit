@@ -142,11 +142,8 @@ fn test_stylesheet_style_cascaded_resolution() {
         sub_control: None,
         attributes: &[],
     };
-    let res = QStyleSheetStyle::resolve_cascaded(
-        Some(&local_style),
-        Some(&global_style),
-        &ctx_groove,
-    );
+    let res =
+        QStyleSheetStyle::resolve_cascaded(Some(&local_style), Some(&global_style), &ctx_groove);
     assert_eq!(res.min_height, Some(6));
     assert_eq!(res.max_height, Some(6));
     assert_eq!(
@@ -161,11 +158,8 @@ fn test_stylesheet_style_cascaded_resolution() {
         sub_control: Some("chunk"),
         attributes: &[],
     };
-    let res_chunk = QStyleSheetStyle::resolve_cascaded(
-        Some(&local_style),
-        Some(&global_style),
-        &ctx_chunk,
-    );
+    let res_chunk =
+        QStyleSheetStyle::resolve_cascaded(Some(&local_style), Some(&global_style), &ctx_chunk);
     assert_eq!(
         res_chunk.background_color,
         Some(Color::from_rgba8(239, 68, 68, 255))
@@ -201,7 +195,10 @@ fn test_stylesheet_style_pseudo_states_hover() {
     let res_normal = style.resolve(&ctx_normal);
     assert_eq!(res_normal.min_width, Some(18));
     assert_eq!(res_normal.max_height, Some(18));
-    assert_eq!(res_normal.color, Some(Color::from_rgba8(136, 153, 170, 255)));
+    assert_eq!(
+        res_normal.color,
+        Some(Color::from_rgba8(136, 153, 170, 255))
+    );
 
     // Hover state
     let ctx_hover = WidgetStyleContext {

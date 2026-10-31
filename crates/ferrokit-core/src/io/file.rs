@@ -482,8 +482,8 @@ mod save_file_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!("ferrokit-savefile-{}-{id}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("ferrokit-savefile-{}-{id}", std::process::id()));
         fs::create_dir(&path).unwrap();
         path
     }

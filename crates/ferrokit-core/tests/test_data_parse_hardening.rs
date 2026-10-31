@@ -184,7 +184,11 @@ fn variant_f64_to_integer_rounds_half_away_from_zero() {
         (-0.5, -1),
         (2.5, 3),
     ] {
-        assert_eq!(Variant::F64(input).to_int(), Some(expected), "to_int({input})");
+        assert_eq!(
+            Variant::F64(input).to_int(),
+            Some(expected),
+            "to_int({input})"
+        );
     }
     assert_eq!(Variant::F64(1.5).to_uint(), Some(2));
     assert_eq!(Variant::F64(1.7).to_uint(), Some(2));
@@ -224,7 +228,12 @@ fn temporal_extremes_saturate() {
     assert!(t.add_msecs(i64::MIN).is_valid());
     assert_eq!(t.msecs_to(&Time::default()), -(u32::MAX as i64));
     // True wrap-around: one hour before midnight plus two hours is 01:00.
-    let late = Time { hour: 23, minute: 0, second: 0, millisecond: 0 };
+    let late = Time {
+        hour: 23,
+        minute: 0,
+        second: 0,
+        millisecond: 0,
+    };
     assert_eq!(late.add_msecs(2 * 3_600_000).hour, 1);
     let max = DateTime::from_timestamp_ms(i64::MAX);
     let min = DateTime::from_timestamp_ms(i64::MIN);

@@ -187,7 +187,8 @@ pub trait PlatformWindow: 'static {
         None
     }
     fn is_within_set_geometry(&self) -> bool {
-        self.state_flags().contains(crate::window::PlatformWindowStateFlags::WITHIN_SET_GEOMETRY)
+        self.state_flags()
+            .contains(crate::window::PlatformWindowStateFlags::WITHIN_SET_GEOMETRY)
     }
 }
 use crate::window::WindowFlags;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 #![cfg(windows)]
 
-use parking_lot::Mutex;
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_widgets::{Action, Menu, Widget};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -70,7 +70,10 @@ fn test_popup_exits_on_kill_focus() {
         }
     });
 
-    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
+    let chosen = Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(100, 100),
+    );
     finished_clone.store(true, Ordering::SeqCst);
     assert!(chosen.is_none());
 
@@ -94,7 +97,10 @@ fn test_popup_exits_on_activateapp_deactivated() {
         }
     });
 
-    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
+    let chosen = Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(100, 100),
+    );
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -116,7 +122,10 @@ fn test_popup_exits_on_capture_changed() {
         }
     });
 
-    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
+    let chosen = Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(100, 100),
+    );
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -137,7 +146,10 @@ fn test_popup_exits_on_cancel_mode() {
         }
     });
 
-    let chosen = Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100));
+    let chosen = Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(100, 100),
+    );
     assert!(chosen.is_none());
 
     bg.join().expect("Background thread failed");
@@ -149,7 +161,8 @@ fn test_submenu_flips_left_when_near_right_screen_edge() {
     let mut sub = Menu::new("SubMenu");
     sub.add_action(Action::new_ref("SubItem 1"));
     let act = Action::new_ref("HasSub");
-    act.borrow_mut().set_menu(Some(std::rc::Rc::new(std::cell::RefCell::new(sub))));
+    act.borrow_mut()
+        .set_menu(Some(std::rc::Rc::new(std::cell::RefCell::new(sub))));
     menu.add_action(act);
 
     // Root menu placed near right edge of 1920 screen (e.g. at x = 1700)
@@ -166,24 +179,32 @@ fn test_submenu_flips_left_when_near_right_screen_edge() {
     let sub_geom = sub_ref.borrow().geometry();
 
     // Since 1700 + root_w + sub_w > 1920, the submenu must flip to the LEFT of the root menu (negative x)
-    assert!(sub_geom.x < 0, "Submenu must open to the left (negative x) when near right screen edge, got x={}", sub_geom.x);
+    assert!(
+        sub_geom.x < 0,
+        "Submenu must open to the left (negative x) when near right screen edge, got x={}",
+        sub_geom.x
+    );
 
     // The covered_rect() must include the left-expanded bounds
     let covered = menu.covered_rect();
-    assert!(covered.x < 0, "Covered rect x must be negative to cover left submenu");
+    assert!(
+        covered.x < 0,
+        "Covered rect x must be negative to cover left submenu"
+    );
 }
 
 #[test]
 fn test_window_present_custom_at_updates_geometry_and_backing_store() {
-    use ferrokit_widgets::window::Window;
-    use ferrokit_platform::WindowFlags;
     use ferrokit_gui::geometry::primitives::Rect;
     use ferrokit_gui::paint::PaintDevice;
+    use ferrokit_platform::WindowFlags;
+    use ferrokit_widgets::window::Window;
     let mut win = Window::new(
         "TestPopup",
         Rect::new(100, 100, 200, 300),
         WindowFlags::FRAMELESS | WindowFlags::TOOL | WindowFlags::LAYERED,
-    ).expect("Window created");
+    )
+    .expect("Window created");
 
     assert_eq!(win.geometry(), Rect::new(100, 100, 200, 300));
 

@@ -61,7 +61,9 @@ fn node() -> OwnedObject<Node> {
 fn disconnect_drops_the_subscriber_outside_the_lock() {
     assert!(finishes(|| {
         let signal: Signal<()> = Signal::new();
-        let guard = UsesSignalOnDrop { signal: signal.clone() };
+        let guard = UsesSignalOnDrop {
+            signal: signal.clone(),
+        };
         let id = signal.connect(move |_| {
             let _ = &guard;
         });
@@ -73,7 +75,9 @@ fn disconnect_drops_the_subscriber_outside_the_lock() {
 fn disconnect_all_drops_the_subscribers_outside_the_lock() {
     assert!(finishes(|| {
         let signal: Signal<()> = Signal::new();
-        let guard = UsesSignalOnDrop { signal: signal.clone() };
+        let guard = UsesSignalOnDrop {
+            signal: signal.clone(),
+        };
         signal.connect(move |_| {
             let _ = &guard;
         });
@@ -88,7 +92,9 @@ fn unregistering_a_receiver_drops_its_subscribers_outside_the_lock() {
         let receiver = node();
         let receiver_id = OwnedObject::object_id(&receiver);
         let signal: Signal<()> = Signal::new();
-        let guard = UsesSignalOnDrop { signal: signal.clone() };
+        let guard = UsesSignalOnDrop {
+            signal: signal.clone(),
+        };
         receiver
             .with(|r| {
                 signal.connect_direct_to(r, move |_| {
@@ -108,7 +114,9 @@ fn unregistering_from_a_later_slot_of_the_emission_does_not_hang() {
         let receiver = node();
         let receiver_id = OwnedObject::object_id(&receiver);
         let signal: Signal<()> = Signal::new();
-        let guard = UsesSignalOnDrop { signal: signal.clone() };
+        let guard = UsesSignalOnDrop {
+            signal: signal.clone(),
+        };
         receiver
             .with(|r| {
                 signal.connect_direct_to(r, move |_| {

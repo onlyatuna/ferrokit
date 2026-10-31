@@ -227,7 +227,7 @@ fn test_sibling_mutation_without_borrow_mut() {
             TEST3_SIBLING.with(|s| {
                 if let Some(b2) = s.borrow().as_ref() {
                     b2.borrow().set_geometry(Rect::new(100, 100, 80, 40));
-                    set_widget_enabled(&b2, false);
+                    set_widget_enabled(b2, false);
                     b2.borrow().update();
                 }
             });

@@ -4,14 +4,14 @@
 //! Provides external process launching, environment and working directory configuration,
 //! asynchronous/synchronous lifecycle management, and stream I/O via stdin/stdout/stderr pipes.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long, after the child has exited, the pipe readers get to reach the end of their pipes
@@ -86,7 +86,13 @@ fn wake_channel() -> io::Result<(Waiter, Stopper)> {
     #[cfg(unix)]
     {
         let (rx, tx) = io::pipe()?;
-        Ok((Waiter { bell: rx, bell_open: true }, Stopper { bell: tx }))
+        Ok((
+            Waiter {
+                bell: rx,
+                bell_open: true,
+            },
+            Stopper { bell: tx },
+        ))
     }
     #[cfg(windows)]
     {
@@ -110,10 +116,18 @@ impl Waiter {
                 return false;
             }
             let mut fds = [
-                libc::pollfd { fd: source.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd {
+                    fd: source.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
                 libc::pollfd {
                     // A negative descriptor is ignored by `poll`.
-                    fd: if self.bell_open { self.bell.as_raw_fd() } else { -1 },
+                    fd: if self.bell_open {
+                        self.bell.as_raw_fd()
+                    } else {
+                        -1
+                    },
                     events: libc::POLLIN,
                     revents: 0,
                 },
@@ -500,9 +514,9 @@ impl Process {
             Some(reader) => Some(PipeSource::Merged(reader)),
             None => child.stdout.take().map(PipeSource::Stdout),
         };
-        self.stdout_reader = stdout_source.zip(stdout_wake).map(|(source, wake)| {
-            spawn_reader(source, wake, &self.stdout_buf, &self.reader_stop)
-        });
+        self.stdout_reader = stdout_source
+            .zip(stdout_wake)
+            .map(|(source, wake)| spawn_reader(source, wake, &self.stdout_buf, &self.reader_stop));
         self.stderr_reader = child
             .stderr
             .take()
@@ -668,7 +682,7 @@ impl Process {
         proc.wait_for_finished(None);
         Ok(proc.exit_code().unwrap_or(-1))
     }
- 
+
     /// Starts a detached process without retaining a handle.
     pub fn start_detached(program: &str, args: &[&str]) -> io::Result<u32> {
         let mut cmd = Command::new(program);
@@ -711,9 +725,7 @@ mod tests {
         }
     }
 
-    fn reader_of(
-        reader: io::PipeReader,
-    ) -> (ReaderThread, Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+    fn reader_of(reader: io::PipeReader) -> (ReaderThread, Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
         let output = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let channel = wake_channel().unwrap();
@@ -745,7 +757,10 @@ mod tests {
 
         writer.write_all(b"hello").unwrap();
         wait_until("the written bytes", || output.lock().len() == 5);
-        assert!(!handle.is_finished(), "the writer is open: the reader keeps waiting");
+        assert!(
+            !handle.is_finished(),
+            "the writer is open: the reader keeps waiting"
+        );
 
         stop.store(true, Ordering::Release);
         stop_within_the_deadline(handle);
@@ -765,7 +780,12 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let (waiter, stopper) = wake_channel().unwrap();
         let leaked = stopper.bell.try_clone().unwrap();
-        let handle = spawn_reader(PipeSource::Merged(reader), (waiter, stopper), &output, &stop);
+        let handle = spawn_reader(
+            PipeSource::Merged(reader),
+            (waiter, stopper),
+            &output,
+            &stop,
+        );
 
         writer.write_all(b"hi").unwrap();
         wait_until("the written bytes", || output.lock().len() == 2);
@@ -792,7 +812,10 @@ mod tests {
             }
             stop.store(true, Ordering::Release);
             stop_within_the_deadline(handle);
-            assert!(writer.write_all(b"y").is_err(), "round {round}: the read end is closed");
+            assert!(
+                writer.write_all(b"y").is_err(),
+                "round {round}: the read end is closed"
+            );
         }
     }
 

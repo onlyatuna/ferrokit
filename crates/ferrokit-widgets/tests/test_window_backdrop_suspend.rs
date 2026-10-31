@@ -35,7 +35,10 @@ struct FakeWindow {
 
 impl FakeWindow {
     fn apply(&self) {
-        APPLIED.with(|a| a.borrow_mut().push((self.state.effective(), self.state.dark_mode())));
+        APPLIED.with(|a| {
+            a.borrow_mut()
+                .push((self.state.effective(), self.state.dark_mode()))
+        });
     }
 }
 
@@ -223,7 +226,12 @@ fn install(plain: bool) -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn new_window() -> Window {
-    Window::new("backdrop", Rect::new(0, 0, 200, 100), WindowFlags::FRAMELESS).unwrap()
+    Window::new(
+        "backdrop",
+        Rect::new(0, 0, 200, 100),
+        WindowFlags::FRAMELESS,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -268,7 +276,10 @@ fn a_new_request_while_suspended_drops_the_suspension_unless_acrylic() {
     assert!(win.suspend_backdrop());
     win.set_backdrop(BackdropType::Acrylic, false);
     win.set_backdrop(BackdropType::Mica, false);
-    assert!(!win.resume_backdrop(), "the Mica request ended the suspension");
+    assert!(
+        !win.resume_backdrop(),
+        "the Mica request ended the suspension"
+    );
 
     assert_eq!(
         applied(),

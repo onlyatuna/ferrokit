@@ -531,9 +531,11 @@ impl Win32LayeredSurface {
                 let dbg_fb = crate::resize_debug::start();
                 // Runs every frame while the window is minimized or occluded: counted in the stats
                 // and traced on demand, never printed.
-                crate::resize_debug::note(|| format!(
+                crate::resize_debug::note(|| {
+                    format!(
                     "UpdateLayeredWindowIndirect failed (GetLastError = {err}), falling back to UpdateLayeredWindow"
-                ));
+                )
+                });
                 self.stats.ulw_fallback_count += 1;
                 let fallback_res = UpdateLayeredWindow(
                     self.hwnd,
@@ -550,9 +552,9 @@ impl Win32LayeredSurface {
                 dbg_fallback_ok = Some(fallback_res != 0);
                 if fallback_res == 0 {
                     let err2 = windows_sys::Win32::Foundation::GetLastError();
-                    crate::resize_debug::note(|| format!(
-                        "fallback UpdateLayeredWindow failed, GetLastError = {err2}"
-                    ));
+                    crate::resize_debug::note(|| {
+                        format!("fallback UpdateLayeredWindow failed, GetLastError = {err2}")
+                    });
                     outcome = Err(
                         "UpdateLayeredWindowIndirect and fallback UpdateLayeredWindow both failed",
                     );
@@ -689,7 +691,10 @@ mod tests {
     fn screen_dc_is_released_on_drop() {
         for i in 0..12_000 {
             let dc = ScreenDc::acquire();
-            assert!(!dc.0.is_null(), "GetDC(NULL) failed at iteration {i}: DCs leaked");
+            assert!(
+                !dc.0.is_null(),
+                "GetDC(NULL) failed at iteration {i}: DCs leaked"
+            );
         }
     }
 }

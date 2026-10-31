@@ -64,7 +64,12 @@ mod harness {
     const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
     /// `CocoaPlatformIntegration::is_headless` (integration.rs) turns windows and tray icons into
     /// Generic stand-ins when any of these is set, and CI sets the first two.
-    const HEADLESS_VARS: [&str; 4] = ["CI", "GITHUB_ACTIONS", "QT_QPA_PLATFORM", "FERROKIT_HEADLESS"];
+    const HEADLESS_VARS: [&str; 4] = [
+        "CI",
+        "GITHUB_ACTIONS",
+        "QT_QPA_PLATFORM",
+        "FERROKIT_HEADLESS",
+    ];
 
     fn classify(status: Option<ExitStatus>) -> (&'static str, String) {
         let Some(status) = status else {
@@ -721,7 +726,10 @@ mod checks {
         let win = window("macOS HUD Panel", geometry, flags);
         t.eq("ferrokit title()", win.title(), "macOS HUD Panel");
         t.eq("ferrokit geometry()", win.geometry(), geometry);
-        t.expect(!win.is_visible(), "ferrokit is_visible() is false before show");
+        t.expect(
+            !win.is_visible(),
+            "ferrokit is_visible() is false before show",
+        );
 
         let w = win.ns_window();
         t.expect(
@@ -854,7 +862,10 @@ mod checks {
         t.expect(win.is_visible(), "ferrokit is_visible() after show");
         t.expect(yes(w, "isVisible"), "[window isVisible] after show");
         win.hide();
-        t.expect(!win.is_visible(), "ferrokit is_visible() is false after hide");
+        t.expect(
+            !win.is_visible(),
+            "ferrokit is_visible() is false after hide",
+        );
         t.expect(!yes(w, "isVisible"), "[window isVisible] is NO after hide");
     }
 
@@ -935,7 +946,11 @@ mod checks {
             WindowFlags::empty(),
         );
         let w = win.ns_window();
-        t.eq("ferrokit minimum_size() initially", win.minimum_size(), (0, 0));
+        t.eq(
+            "ferrokit minimum_size() initially",
+            win.minimum_size(),
+            (0, 0),
+        );
         win.set_minimum_size(200, 150);
         t.eq("ferrokit minimum_size()", win.minimum_size(), (200, 150));
         // Qt: window.contentMinSize (qcocoawindow.mm:1185).
@@ -1502,8 +1517,11 @@ mod checks {
 
         let button: Id = send(native, "button");
         t.expect(
-            item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap(18, Color::from_rgba8(255, 255, 255, 255))))
-                .is_ok(),
+            item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap(
+                18,
+                Color::from_rgba8(255, 255, 255, 255),
+            )))
+            .is_ok(),
             "set_icon returns Ok",
         );
         // Qt: button.image (qcocoasystemtrayicon.mm:162).
@@ -1571,7 +1589,11 @@ mod checks {
         let click_through = menu.add_checkable(2, "Click Through", false);
         menu.add_separator();
         let _quit = menu.add_action(3, "Quit");
-        t.eq("ferrokit action text", open.text(), "Open Monitor".to_string());
+        t.eq(
+            "ferrokit action text",
+            open.text(),
+            "Open Monitor".to_string(),
+        );
         t.expect(!click_through.is_checked(), "checkable starts unchecked");
         menu.trigger_item(2);
         t.expect(
@@ -1666,7 +1688,10 @@ mod checks {
         );
 
         menu.show_popup(Point::new(120, 240));
-        t.expect(menu.is_popped_up(), "ferrokit is_popped_up() after show_popup");
+        t.expect(
+            menu.is_popped_up(),
+            "ferrokit is_popped_up() after show_popup",
+        );
         t.eq(
             "ferrokit popup_pos()",
             menu.popup_pos(),
@@ -1851,7 +1876,10 @@ mod checks {
         let mut tray = integration
             .create_tray_icon(
                 "Factory Tray",
-                &ferrokit_gui::image::Icon::from_pixmap(&pixmap(16, Color::from_rgba8(20, 120, 220, 255))),
+                &ferrokit_gui::image::Icon::from_pixmap(&pixmap(
+                    16,
+                    Color::from_rgba8(20, 120, 220, 255),
+                )),
             )
             .expect("create_tray_icon");
         t.expect(tray.show().is_ok(), "tray show returns Ok");
@@ -1965,7 +1993,10 @@ mod checks {
             let inherited: usize = send1(class("NSView"), "instanceMethodForSelector:", sel);
             t.expect(own != inherited, &format!("QNSView implements {selector}"));
         }
-        t.expect(yes(view, "acceptsFirstResponder"), "[view acceptsFirstResponder]");
+        t.expect(
+            yes(view, "acceptsFirstResponder"),
+            "[view acceptsFirstResponder]",
+        );
         t.eq(
             "[window firstResponder] is the content view",
             send::<Id>(w, "firstResponder"),
@@ -2069,25 +2100,39 @@ mod checks {
         let titled = || send::<usize>(w, "styleMask") & 0xF == 0xF;
         t.expect(titled(), "a normal window has the title bar controls");
         win.set_window_flag(WindowFlags::FRAMELESS, true);
-        t.eq("[window styleMask] frameless", send::<usize>(w, "styleMask"), 0);
+        t.eq(
+            "[window styleMask] frameless",
+            send::<usize>(w, "styleMask"),
+            0,
+        );
         win.set_window_flag(WindowFlags::FRAMELESS, false);
         t.expect(titled(), "the title bar controls come back");
         win.set_window_flag(WindowFlags::TOOL, true);
-        t.eq("[window level] of a tool window", send::<isize>(w, "level"), 3);
-        t.expect(yes(w, "hidesOnDeactivate"), "[window hidesOnDeactivate] for Tool");
+        t.eq(
+            "[window level] of a tool window",
+            send::<isize>(w, "level"),
+            3,
+        );
+        t.expect(
+            yes(w, "hidesOnDeactivate"),
+            "[window hidesOnDeactivate] for Tool",
+        );
         win.set_window_flag(WindowFlags::STAYS_ON_TOP, true);
         t.eq("[window level] stays on top", send::<isize>(w, "level"), 8);
         win.set_window_flag(WindowFlags::STAYS_ON_TOP, false);
         win.set_window_flag(WindowFlags::TOOL, false);
-        t.eq("[window level] back to normal", send::<isize>(w, "level"), 0);
-        t.expect(!yes(w, "hidesOnDeactivate"), "[window hidesOnDeactivate] off again");
+        t.eq(
+            "[window level] back to normal",
+            send::<isize>(w, "level"),
+            0,
+        );
+        t.expect(
+            !yes(w, "hidesOnDeactivate"),
+            "[window hidesOnDeactivate] off again",
+        );
         win.set_window_flag(WindowFlags::CLICK_THROUGH, true);
         t.expect(yes(w, "ignoresMouseEvents"), "[window ignoresMouseEvents]");
-        t.eq(
-            "flags()",
-            win.flags(),
-            WindowFlags::CLICK_THROUGH,
-        );
+        t.eq("flags()", win.flags(), WindowFlags::CLICK_THROUGH);
     }
 
     fn window_transient_parent_native(t: &mut Recorder) {
@@ -2120,7 +2165,11 @@ mod checks {
     }
 
     fn window_mask_native(t: &mut Recorder) {
-        let mut win = window("mask", Rect::new(100, 100, 300, 200), WindowFlags::FRAMELESS);
+        let mut win = window(
+            "mask",
+            Rect::new(100, 100, 300, 200),
+            WindowFlags::FRAMELESS,
+        );
         let w = win.ns_window();
         let layer: Id = send(win.ns_view(), "layer");
         let was_opaque = yes(w, "isOpaque");
@@ -2132,7 +2181,10 @@ mod checks {
         );
         t.expect(!yes(w, "isOpaque"), "the masked window is see-through");
         win.set_mask(&Region::from_rects(&[]));
-        t.expect(send::<Id>(layer, "mask").is_nil(), "[layer mask] is nil again");
+        t.expect(
+            send::<Id>(layer, "mask").is_nil(),
+            "[layer mask] is nil again",
+        );
         t.eq("[window isOpaque] restored", yes(w, "isOpaque"), was_opaque);
     }
 
@@ -2142,20 +2194,37 @@ mod checks {
             Rect::new(50, 50, 600, 400),
             WindowFlags::FRAMELESS,
         );
-        t.expect(win.set_backdrop(BackdropType::Acrylic, true), "Acrylic applied");
+        t.expect(
+            win.set_backdrop(BackdropType::Acrylic, true),
+            "Acrylic applied",
+        );
         let views = effect_views(win.ns_window());
         t.eq("effect views", views.len(), 1);
         let Some(&view) = views.first() else {
             return;
         };
-        t.expect(win.suspend_backdrop(), "suspend_backdrop() changes the backdrop");
-        t.eq("[effectView state] while suspended (Inactive)", send::<isize>(view, "state"), 2);
+        t.expect(
+            win.suspend_backdrop(),
+            "suspend_backdrop() changes the backdrop",
+        );
+        t.eq(
+            "[effectView state] while suspended (Inactive)",
+            send::<isize>(view, "state"),
+            2,
+        );
         t.eq(
             "effect views while suspended",
             effect_views(win.ns_window()).len(),
             1,
         );
-        t.expect(win.resume_backdrop(), "resume_backdrop() changes the backdrop");
-        t.eq("[effectView state] after resuming (Active)", send::<isize>(view, "state"), 1);
+        t.expect(
+            win.resume_backdrop(),
+            "resume_backdrop() changes the backdrop",
+        );
+        t.eq(
+            "[effectView state] after resuming (Active)",
+            send::<isize>(view, "state"),
+            1,
+        );
     }
 }

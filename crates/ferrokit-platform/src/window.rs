@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+// On Windows `HWND` is a pointer; elsewhere it is already an `isize`.
+#![cfg_attr(not(windows), allow(clippy::unnecessary_cast))]
 #[allow(unused_imports)]
 use crate::presenter::SurfacePresenter;
 #[allow(unused_imports)]
@@ -173,6 +175,8 @@ pub fn register_window_event_binding(hwnd: HWND, handle: EventLoopHandle, receiv
         .insert(hwnd as isize, (handle, receiver));
 }
 
+// Only the Windows window procedure (and its test) calls this.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[inline]
 fn wheel_deltas(horizontal: bool, wheel_delta: i32) -> (i32, i32) {
     // Qt negates `WM_MOUSEHWHEEL`: its positive horizontal delta scrolls left, Win32's scrolls right.
@@ -276,11 +280,14 @@ static WINDOW_SYSTEM_EVENT_QUEUE: Mutex<Option<Vec<(isize, WindowSystemEvent)>>>
 /// (`QWindowSystemInterface::flushWindowSystemEvents` is driven by the event dispatcher in Qt).
 /// `PostMessageW` is thread-safe and the message is also dispatched by nested (modal) loops.
 #[cfg(windows)]
-const WM_FLUSH_WINDOW_SYSTEM_EVENTS: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x1F;
+const WM_FLUSH_WINDOW_SYSTEM_EVENTS: u32 =
+    windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x1F;
 
 pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
     {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if queue.is_none() {
             *queue = Some(Vec::new());
         }
@@ -339,7 +346,9 @@ fn owned_by_other_thread(hwnd: isize) -> bool {
 /// for their own thread.
 pub fn flush_window_system_events() -> bool {
     let events: Vec<(isize, WindowSystemEvent)> = {
-        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = WINDOW_SYSTEM_EVENT_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(q) = queue.as_mut() else {
             return false;
         };
@@ -481,8 +490,8 @@ fn track_button_press(msg: u32) {
 #[cfg(windows)]
 fn track_button_release(msg: u32) {
     let bit = button_of_message(msg);
-    let _ =
-        APP_MOUSE_BUTTONS.try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
+    let _ = APP_MOUSE_BUTTONS
+        .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
 }
 
 // `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
@@ -797,7 +806,12 @@ pub fn send_window_system_event_accepted(hwnd: HWND, event: WindowSystemEvent) -
         0
     };
     while let Some(ev) = ACTIVE_DISPATCH
-        .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
+        .try_with(|active| {
+            active
+                .borrow_mut()
+                .get_mut(&key)
+                .and_then(|q| q.pop_front())
+        })
         .unwrap_or(None)
     {
         run_handler(key, ev);
@@ -828,7 +842,12 @@ pub fn send_window_system_event_immediately(hwnd: HWND, event: WindowSystemEvent
     loop {
         run_handler(key, event);
         let next = ACTIVE_DISPATCH
-            .try_with(|active| active.borrow_mut().get_mut(&key).and_then(|q| q.pop_front()))
+            .try_with(|active| {
+                active
+                    .borrow_mut()
+                    .get_mut(&key)
+                    .and_then(|q| q.pop_front())
+            })
             .unwrap_or(None);
         match next {
             Some(ev) => event = ev,
@@ -1312,7 +1331,10 @@ unsafe fn native_window_proc_inner(
             let mut r: RECT = unsafe { std::mem::zeroed() };
             let (w, h) = if unsafe { GetWindowRect(hwnd, &mut r) } != 0 {
                 let logical_size = crate::high_dpi::from_native_size(
-                    ferrokit_gui::geometry::primitives::Size::new(r.right - r.left, r.bottom - r.top),
+                    ferrokit_gui::geometry::primitives::Size::new(
+                        r.right - r.left,
+                        r.bottom - r.top,
+                    ),
                     dpr,
                 );
                 (logical_size.width, logical_size.height)
@@ -1683,7 +1705,8 @@ unsafe fn native_window_proc_inner(
         WM_CANCELMODE => {
             // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
             // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
-            let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            let _ = APP_MOUSE_BUTTONS
+                .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_CAPTURECHANGED => {
@@ -2760,7 +2783,8 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                     }));
                 }
             }
-            let full = ferrokit_gui::geometry::Region::from_coords(0, 0, width as i32, height as i32);
+            let full =
+                ferrokit_gui::geometry::Region::from_coords(0, 0, width as i32, height as i32);
             let r = p.present(pixmap, &full);
             if r.is_ok() {
                 if let Some(pos) = target_pos {
@@ -3390,11 +3414,21 @@ mod tests {
             let n = needs(opacity, true, false, false);
             ex = n.layered_ex_style(ex);
             assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
-            assert_ne!(ex & WS_EX_TRANSPARENT as isize, 0, "transparent bit untouched");
-            assert!(n.wants_alpha_attributes(ex), "click-through draws via LWA_ALPHA");
+            assert_ne!(
+                ex & WS_EX_TRANSPARENT as isize,
+                0,
+                "transparent bit untouched"
+            );
+            assert!(
+                n.wants_alpha_attributes(ex),
+                "click-through draws via LWA_ALPHA"
+            );
         }
         // Turning click-through off at opacity 1.0 releases the style again.
-        assert_eq!(needs(1.0, false, false, false).layered_ex_style(ex) & LAYERED_BIT, 0);
+        assert_eq!(
+            needs(1.0, false, false, false).layered_ex_style(ex) & LAYERED_BIT,
+            0
+        );
     }
 
     /// A per-pixel window never loses the style, whatever opacity / click-through do, and never
@@ -3402,11 +3436,21 @@ mod tests {
     #[test]
     fn per_pixel_window_keeps_layered_and_skips_alpha_attributes() {
         let mut ex = LAYERED_BIT;
-        let steps = [(0.5, false), (1.0, false), (1.0, true), (0.5, true), (1.0, false)];
+        let steps = [
+            (0.5, false),
+            (1.0, false),
+            (1.0, true),
+            (0.5, true),
+            (1.0, false),
+        ];
         for (opacity, click_through) in steps {
             let n = needs(opacity, click_through, true, false);
             ex = n.layered_ex_style(ex);
-            assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}, click_through {click_through}");
+            assert_ne!(
+                ex & LAYERED_BIT,
+                0,
+                "opacity {opacity}, click_through {click_through}"
+            );
             assert!(!n.wants_alpha_attributes(ex));
         }
     }
@@ -3418,7 +3462,10 @@ mod tests {
         assert_ne!(n.layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
         assert_eq!(n.layered_ex_style(0) & LAYERED_BIT, 0);
         // Without the backdrop the same state strips it.
-        assert_eq!(needs(1.0, false, false, false).layered_ex_style(LAYERED_BIT) & LAYERED_BIT, 0);
+        assert_eq!(
+            needs(1.0, false, false, false).layered_ex_style(LAYERED_BIT) & LAYERED_BIT,
+            0
+        );
     }
 
     /// 0.5 -> 1.0 with a backdrop: the style stays, so alpha must be written again (255), or the
@@ -3430,7 +3477,10 @@ mod tests {
             let n = needs(opacity, false, false, true);
             ex = n.layered_ex_style(ex);
             assert_ne!(ex & LAYERED_BIT, 0, "opacity {opacity}");
-            assert!(n.wants_alpha_attributes(ex), "opacity {opacity}: alpha must be applied");
+            assert!(
+                n.wants_alpha_attributes(ex),
+                "opacity {opacity}: alpha must be applied"
+            );
         }
         // Not layered (backdrop never added the style): nothing to write.
         assert!(!needs(1.0, false, false, true).wants_alpha_attributes(0));
@@ -3449,8 +3499,14 @@ mod tests {
         )
         .expect("failed to create window");
 
-        assert!(!win.suspend_backdrop(), "nothing to suspend without a backdrop");
-        assert!(!win.resume_backdrop(), "nothing to resume without a suspension");
+        assert!(
+            !win.suspend_backdrop(),
+            "nothing to suspend without a backdrop"
+        );
+        assert!(
+            !win.resume_backdrop(),
+            "nothing to resume without a suspension"
+        );
 
         win.set_backdrop(BackdropType::Acrylic, true);
         assert!(win.backdrop_active);

@@ -51,7 +51,6 @@ mod macos {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use parking_lot::Mutex;
     use ferrokit_core::application::CoreApplication;
     use ferrokit_core::event::{Event, EventKind, NativeEventFilter, NativeMessage};
     use ferrokit_core::event_loop::{
@@ -60,6 +59,7 @@ mod macos {
     use ferrokit_core::object::{ObjectId, ThreadId};
     use ferrokit_core::timer::Timer;
     use ferrokit_gui::application::GuiApplication;
+    use parking_lot::Mutex;
 
     use super::appkit::{self, Id};
 

@@ -52,8 +52,12 @@ fn two_slots_with_equal_code_are_both_connected() {
 
     let key_a = SlotId::next();
     let key_b = SlotId::next();
-    let first = rcv.with(|r| signal.connect_unique_with_key(r, key_a, slot_a)).unwrap();
-    let second = rcv.with(|r| signal.connect_unique_with_key(r, key_b, slot_b)).unwrap();
+    let first = rcv
+        .with(|r| signal.connect_unique_with_key(r, key_a, slot_a))
+        .unwrap();
+    let second = rcv
+        .with(|r| signal.connect_unique_with_key(r, key_b, slot_b))
+        .unwrap();
 
     assert!(first.is_some(), "the first connection is made");
     assert!(

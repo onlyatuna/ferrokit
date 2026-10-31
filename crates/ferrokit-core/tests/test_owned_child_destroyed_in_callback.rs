@@ -483,7 +483,11 @@ fn a_child_attached_inside_a_callback_that_destroys_its_parent_is_not_listed_in_
         let parent = Rc::clone(&parent);
         let attached = Rc::clone(&attached);
         child.on_user = Some(Box::new(move |me: &mut Child| {
-            set_parent_by_id(OwnedObject::object_id(&attached.borrow()), Some(me.data.id())).unwrap();
+            set_parent_by_id(
+                OwnedObject::object_id(&attached.borrow()),
+                Some(me.data.id()),
+            )
+            .unwrap();
             drop(parent.borrow_mut().take());
         }));
     }

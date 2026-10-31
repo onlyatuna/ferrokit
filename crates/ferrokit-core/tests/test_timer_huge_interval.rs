@@ -60,20 +60,14 @@ const HUGE_INTERVALS: [u64; 6] = [
 
 /// Starts a timer of `ty` with `interval_ms` and returns it, failing the test with a message when
 /// starting it panics.
-fn start_timer(
-    ty: TimerType,
-    interval_ms: u64,
-    fired: &Arc<AtomicU32>,
-) -> Timer {
+fn start_timer(ty: TimerType, interval_ms: u64, fired: &Arc<AtomicU32>) -> Timer {
     let timer = Timer::new();
     timer.set_timer_type(ty);
     let counter = Arc::clone(fired);
     timer.timeout.connect(move |()| {
         counter.fetch_add(1, Ordering::SeqCst);
     });
-    let started = catch_unwind(AssertUnwindSafe(|| {
-        timer.start_with_interval(interval_ms)
-    }));
+    let started = catch_unwind(AssertUnwindSafe(|| timer.start_with_interval(interval_ms)));
     if started.is_err() {
         // Dropping a timer whose start panicked could panic again while unwinding.
         std::mem::forget(timer);

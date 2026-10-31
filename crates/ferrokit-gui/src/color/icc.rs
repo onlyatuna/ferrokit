@@ -6,8 +6,8 @@
 //! and connection space.
 
 use super::color_space::{ColorSpace, NamedColorSpace, Primaries, PrimaryPoints, TransferFunction};
-use crate::geometry::PointF;
 use super::pixel_format::ColorModel;
+use crate::geometry::PointF;
 
 /// Parsed ICC Profile header metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,9 +132,8 @@ impl IccProfile {
         if t.len() < 20 || &t[0..4] != b"XYZ " {
             return None;
         }
-        let f = |o: usize| {
-            i32::from_be_bytes([t[o], t[o + 1], t[o + 2], t[o + 3]]) as f32 / 65536.0
-        };
+        let f =
+            |o: usize| i32::from_be_bytes([t[o], t[o + 1], t[o + 2], t[o + 3]]) as f32 / 65536.0;
         Some([f(8), f(12), f(16)])
     }
 
@@ -156,7 +155,9 @@ impl IccProfile {
                 _ => {
                     let body = t.get(12..12usize.checked_add(n.checked_mul(2)?)?)?;
                     let table: Vec<f32> = body
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|c| u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0)
                         .collect();
                     Box::new(move |x| {
@@ -482,7 +483,10 @@ mod tests {
         let d = mulv(&bfd, w(PrimaryPoints::D50));
         let col = |c: usize| {
             let v = mulv(&bfd, [m[0][c], m[1][c], m[2][c]]);
-            mulv(&inv, [v[0] * d[0] / s[0], v[1] * d[1] / s[1], v[2] * d[2] / s[2]])
+            mulv(
+                &inv,
+                [v[0] * d[0] / s[0], v[1] * d[1] / s[1], v[2] * d[2] / s[2]],
+            )
         };
         build(
             b"RGB ",
@@ -511,7 +515,7 @@ mod tests {
         let p3 = rgb_profile(&ColorSpace::display_p3(), srgb_para_tag(), d50)
             .to_color_space()
             .unwrap();
-        let adobe = rgb_profile(&ColorSpace::adobe_rgb(), gamma_tag(2.19921875), d50)
+        let adobe = rgb_profile(&ColorSpace::adobe_rgb(), gamma_tag(2.1992188), d50)
             .to_color_space()
             .unwrap();
         assert_eq!(srgb, ColorSpace::srgb());
@@ -520,11 +524,17 @@ mod tests {
 
         // P3 / Adobe green lie outside sRGB (negative red/blue, clamped to 0 on output),
         // while sRGB -> sRGB is the identity: the transforms must differ.
-        let (r, _, b) = p3.transformation_to_color_space(&srgb).map_rgb(0.0, 1.0, 0.0);
+        let (r, _, b) = p3
+            .transformation_to_color_space(&srgb)
+            .map_rgb(0.0, 1.0, 0.0);
         assert!(r == 0.0 && b == 0.0);
-        let (r, _, _) = adobe.transformation_to_color_space(&srgb).map_rgb(0.0, 1.0, 0.0);
+        let (r, _, _) = adobe
+            .transformation_to_color_space(&srgb)
+            .map_rgb(0.0, 1.0, 0.0);
         assert!(r == 0.0);
-        assert!(srgb.transformation_to_color_space(&ColorSpace::srgb()).is_identity());
+        assert!(srgb
+            .transformation_to_color_space(&ColorSpace::srgb())
+            .is_identity());
         assert_ne!(p3, adobe);
     }
 
@@ -554,11 +564,15 @@ mod tests {
         let (r, g, b) = to_srgb.map_rgb(1.0, 0.0, 0.0);
         assert!(r > 1.0 && g < 0.01 && b < 0.2, "got {r} {g} {b}");
 
-        let gray = build(b"GRAY", &[(*b"kTRC", gamma_tag(2.2))]).to_color_space().unwrap();
+        let gray = build(b"GRAY", &[(*b"kTRC", gamma_tag(2.2))])
+            .to_color_space()
+            .unwrap();
         assert!(
             matches!(gray.transfer_function(), TransferFunction::Gamma(g) if (g - 2.2).abs() < 0.01)
         );
-        let lin = build(b"GRAY", &[(*b"kTRC", gamma_tag(1.0))]).to_color_space().unwrap();
+        let lin = build(b"GRAY", &[(*b"kTRC", gamma_tag(1.0))])
+            .to_color_space()
+            .unwrap();
         assert!(lin.is_linear());
     }
 
@@ -570,7 +584,9 @@ mod tests {
         for v in [2.4, 0.0, 0.055, 1.0 / 12.92, 0.04045] {
             bad.extend_from_slice(&s15(v));
         }
-        assert!(build(b"GRAY", &[(*b"kTRC", bad.clone())]).trc_tag(b"kTRC").is_none());
+        assert!(build(b"GRAY", &[(*b"kTRC", bad.clone())])
+            .trc_tag(b"kTRC")
+            .is_none());
 
         // rTRC unusable, gTRC valid: the valid curve is used.
         let p3 = ColorSpace::display_p3();
@@ -581,7 +597,10 @@ mod tests {
         }
         tags.push((*b"rTRC", bad.clone()));
         tags.push((*b"gTRC", srgb_para_tag()));
-        assert_eq!(build(b"RGB ", &tags).to_color_space().unwrap(), ColorSpace::display_p3());
+        assert_eq!(
+            build(b"RGB ", &tags).to_color_space().unwrap(),
+            ColorSpace::display_p3()
+        );
 
         // No usable curve at all: still P3 primaries (sRGB-style curve), not plain sRGB.
         tags.pop();
@@ -708,7 +727,7 @@ mod tests {
             Case {
                 name: "adobe_rgb_gamma",
                 gamut: ColorSpace::adobe_rgb(),
-                curve: gamma_tag(2.19921875),
+                curve: gamma_tag(2.1992188),
                 named: Some(ColorSpace::adobe_rgb()),
                 primaries: Primaries::AdobeRgb,
                 tf: |t| matches!(t, TransferFunction::Gamma(_)),
@@ -716,7 +735,7 @@ mod tests {
             Case {
                 name: "adobe_rgb_para_type0",
                 gamut: ColorSpace::adobe_rgb(),
-                curve: para_tag(0, &[2.19921875]),
+                curve: para_tag(0, &[2.1992188]),
                 named: Some(ColorSpace::adobe_rgb()),
                 primaries: Primaries::AdobeRgb,
                 tf: |t| matches!(t, TransferFunction::Gamma(_)),
@@ -799,7 +818,7 @@ mod tests {
         let all: Vec<ColorSpace> = [
             (ColorSpace::srgb(), srgb_para_tag()),
             (ColorSpace::display_p3(), srgb_para_tag()),
-            (ColorSpace::adobe_rgb(), gamma_tag(2.19921875)),
+            (ColorSpace::adobe_rgb(), gamma_tag(2.1992188)),
             (prophoto(), gamma_tag(1.8)),
         ]
         .into_iter()
@@ -913,9 +932,9 @@ mod tests {
             let m = cs.rgb_to_xyz_matrix();
             let sum = |r: usize| m[r][0] + m[r][1] + m[r][2];
             let w = [white.x / white.y, 1.0, (1.0 - white.x - white.y) / white.y];
-            for r in 0..3 {
+            for (r, &want) in w.iter().enumerate() {
                 assert!(
-                    (sum(r) - w[r]).abs() < 1e-4,
+                    (sum(r) - want).abs() < 1e-4,
                     "{} row {r}: {}",
                     cs.description(),
                     sum(r)
@@ -952,11 +971,12 @@ mod tests {
         );
         let adobe = rgb_profile(
             &ColorSpace::adobe_rgb(),
-            gamma_tag(2.19921875),
+            gamma_tag(2.1992188),
             PrimaryPoints::D50,
         );
         let pro = rgb_profile(&prophoto(), gamma_tag(1.8), PrimaryPoints::D50);
-        let rows: [(&IccProfile, (u8, u8, u8), (u8, u8, u8)); 8] = [
+        type Row<'a> = (&'a IccProfile, (u8, u8, u8), (u8, u8, u8));
+        let rows: [Row; 8] = [
             (&p3, (200, 100, 50), (215, 93, 31)),
             (&p3, (30, 160, 220), (0, 163, 226)),
             (&p3, (128, 128, 128), (128, 128, 128)),
@@ -1058,7 +1078,10 @@ mod tests {
         let tables = [2.2f32, 2.20005, 2.2001].map(|g| sampled_curve(|x| x.powf(g)));
         let profile = rgb_profile_curves(&ColorSpace::adobe_rgb(), tables, PrimaryPoints::D50);
         let fitted = [b"rTRC", b"gTRC", b"bTRC"].map(|s| profile.trc_tag(s).unwrap());
-        assert!(fitted[0] != fitted[1] || fitted[1] != fitted[2], "{fitted:?}");
+        assert!(
+            fitted[0] != fitted[1] || fitted[1] != fitted[2],
+            "{fitted:?}"
+        );
         let cs = profile.to_color_space().unwrap();
         assert_eq!(cs, ColorSpace::adobe_rgb());
 

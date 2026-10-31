@@ -467,4 +467,3 @@ fn drawing_text_far_to_the_right_of_the_target_does_not_overflow() {
     painter.set_clip_rect(RectF::new(0.0, 0.0, 40.0, 20.0));
     layout.draw(&mut painter, PointF::new(0.0, 16.0), &[]);
 }
-

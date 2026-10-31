@@ -206,10 +206,11 @@ struct SideReport {
 
 /// One turn of the handoff: if the object is here, send it to the other thread.
 fn hand_off(id: ObjectId, me: ThreadId, other: ThreadId, moves: &AtomicUsize, limit: usize) {
-    if moves.load(Ordering::SeqCst) < limit && query_object_thread(id) == Some(me) {
-        if move_to_thread_by_id(id, other, me).is_ok() {
-            moves.fetch_add(1, Ordering::SeqCst);
-        }
+    if moves.load(Ordering::SeqCst) < limit
+        && query_object_thread(id) == Some(me)
+        && move_to_thread_by_id(id, other, me).is_ok()
+    {
+        moves.fetch_add(1, Ordering::SeqCst);
     }
 }
 

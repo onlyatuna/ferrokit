@@ -59,6 +59,8 @@ fn widget_attribute_get_and_set() {
     assert!(!w.is_enabled());
 }
 
+type DropLog = Arc<Mutex<Vec<(&'static str, &'static str, Point)>>>;
+
 struct DropTargetWidget {
     base: WidgetBase,
     name: &'static str,
@@ -67,7 +69,7 @@ struct DropTargetWidget {
     action: Option<u32>,
     /// `false`: `event` does not handle `DragMove` at all (it only implements enter and drop).
     handles_move: bool,
-    log: Arc<Mutex<Vec<(&'static str, &'static str, Point)>>>,
+    log: DropLog,
 }
 
 impl QObject for DropTargetWidget {
@@ -308,12 +310,7 @@ fn drag_and_drop_propagates_to_accepting_widget_in_local_coordinates_and_tracks_
     );
 }
 
-fn drop_widget(
-    rect: Rect,
-    action: Option<u32>,
-    handles_move: bool,
-    log: &Arc<Mutex<Vec<(&'static str, &'static str, Point)>>>,
-) -> WidgetRef {
+fn drop_widget(rect: Rect, action: Option<u32>, handles_move: bool, log: &DropLog) -> WidgetRef {
     let w: WidgetRef = Rc::new(RefCell::new(Box::new(DropTargetWidget {
         base: WidgetBase::with_geometry(rect),
         name: "w",

@@ -116,7 +116,14 @@ pub fn q_max_exp_calc(
 
 /// `qGeomCalc`: portions out `space` pixels starting at `pos` among the `count` entries of `chain`
 /// that begin at `start`. `spacer` is the uniform spacing, or -1 to use each entry's own.
-pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: i32, space: i32, spacer: i32) {
+pub fn q_geom_calc(
+    chain: &mut [LayoutStruct],
+    start: usize,
+    count: usize,
+    pos: i32,
+    space: i32,
+    spacer: i32,
+) {
     let mut spacer = spacer;
     let mut c_hint = 0i32;
     let mut c_min = 0i32;
@@ -128,8 +135,7 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
     let mut pending_spacing = -1i32;
     let mut spacer_count = 0i32;
 
-    for i in start..start + count {
-        let data = &mut chain[i];
+    for data in &mut chain[start..start + count] {
         data.done = false;
         c_hint += data.smart_size_hint();
         c_min += data.minimum_size;
@@ -145,7 +151,8 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
         if data.expansive {
             expanding_count += 1;
         }
-        all_empty_nonstretch = all_empty_nonstretch && data.empty && !data.expansive && data.stretch <= 0;
+        all_empty_nonstretch =
+            all_empty_nonstretch && data.empty && !data.expansive && data.stretch <= 0;
     }
 
     let mut extraspace = 0i32;
@@ -156,11 +163,17 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
 
         // Shrink the spacers proportionally.
         if spacer >= 0 {
-            spacer = if min_size > 0 { spacer * space / min_size } else { 0 };
+            spacer = if min_size > 0 {
+                spacer * space / min_size
+            } else {
+                0
+            };
             sum_spacing = spacer * spacer_count;
         }
 
-        let mut minimum_sizes: Vec<i32> = (start..start + count).map(|i| chain[i].minimum_size).collect();
+        let mut minimum_sizes: Vec<i32> = (start..start + count)
+            .map(|i| chain[i].minimum_size)
+            .collect();
         minimum_sizes.sort_unstable();
 
         let space_left = space - sum_spacing;
@@ -218,13 +231,12 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
             let fp_over = to_fixed(overdraft);
             let mut fp_w: Fixed64 = 0;
 
-            for i in start..start + count {
-                if chain[i].done {
+            for data in &mut chain[start..start + count] {
+                if data.done {
                     continue;
                 }
                 fp_w += fp_over / n as Fixed64;
                 let w = f_round(fp_w);
-                let data = &mut chain[i];
                 data.size = data.smart_size_hint() - w;
                 fp_w -= to_fixed(w);
                 if data.size < data.minimum_size {
@@ -247,7 +259,10 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
         for data in &mut chain[start..start + count] {
             if !data.done
                 && (data.maximum_size <= data.smart_size_hint()
-                    || (!all_empty_nonstretch && data.empty && !data.expansive && data.stretch == 0))
+                    || (!all_empty_nonstretch
+                        && data.empty
+                        && !data.expansive
+                        && data.stretch == 0))
             {
                 data.size = data.smart_size_hint();
                 data.done = true;
@@ -272,16 +287,16 @@ pub fn q_geom_calc(chain: &mut [LayoutStruct], start: usize, count: usize, pos: 
             deficit = 0;
             let fp_space = to_fixed(space_left);
             let mut fp_w: Fixed64 = 0;
-            for i in start..start + count {
-                if chain[i].done {
+            for data in &mut chain[start..start + count] {
+                if data.done {
                     continue;
                 }
                 extraspace = 0;
-                let data = &mut chain[i];
                 if sum_stretch > 0 {
                     fp_w += (fp_space * data.stretch as Fixed64) / sum_stretch as Fixed64;
                 } else if expanding_count > 0 {
-                    fp_w += (fp_space * if data.expansive { 1 } else { 0 }) / expanding_count as Fixed64;
+                    fp_w += (fp_space * if data.expansive { 1 } else { 0 })
+                        / expanding_count as Fixed64;
                 } else {
                     fp_w += fp_space / n as Fixed64;
                 }
@@ -426,7 +441,10 @@ pub fn smart_max_size(widget: &dyn Widget, align: Alignment) -> Size {
     let min = effective_minimum_size(widget);
     let policy = widget.size_policy();
     let mut s = effective_maximum_size(widget);
-    let hint = Size::new(hint.width.max(min_hint.width).max(min.width), hint.height.max(min_hint.height).max(min.height));
+    let hint = Size::new(
+        hint.width.max(min_hint.width).max(min.width),
+        hint.height.max(min_hint.height).max(min.height),
+    );
     if s.width == WIDGET_SIZE_MAX && !align.horizontal() && !policy.horizontal.can_grow() {
         s.width = hint.width;
     }
@@ -508,7 +526,11 @@ pub fn item_size_hint(widget: &dyn Widget) -> Size {
     let max = effective_maximum_size(widget);
     let policy = widget.size_policy();
     let mut w = hint.width.max(min_hint.width).min(max.width).max(min.width);
-    let mut h = hint.height.max(min_hint.height).min(max.height).max(min.height);
+    let mut h = hint
+        .height
+        .max(min_hint.height)
+        .min(max.height)
+        .max(min.height);
     if policy.horizontal == Policy::Ignored {
         w = 0;
     }
@@ -577,7 +599,10 @@ pub fn item_expanding(widget: &dyn Widget, align: Alignment) -> (bool, bool) {
             vertical = true;
         }
     }
-    (horizontal && !align.horizontal(), vertical && !align.vertical())
+    (
+        horizontal && !align.horizontal(),
+        vertical && !align.vertical(),
+    )
 }
 
 /// `QWidgetItem::setGeometry` (qlayoutitem.cpp:408-474) for a left-to-right layout.
@@ -689,17 +714,34 @@ pub fn item_set_geometry_with(
         y = 0;
     }
     // `QWidget::setGeometry` keeps the size within the widget's own minimum and maximum size.
-    let width = width.min(limits.widget_max.width).max(limits.widget_min.width);
-    let height = height.min(limits.widget_max.height).max(limits.widget_min.height);
+    let width = width
+        .min(limits.widget_max.width)
+        .max(limits.widget_min.width);
+    let height = height
+        .min(limits.widget_max.height)
+        .max(limits.widget_min.height);
     widget.set_geometry(Rect::new(x, y, width, height));
 }
 
 /// `QGridLayoutPrivate::findSize`: the sum of one field of every row and of every column, each
 /// with the spacing that follows it.
-pub fn find_size(rows: &[LayoutStruct], cols: &[LayoutStruct], field: impl Fn(&LayoutStruct) -> i32) -> Size {
-    let h: i64 = rows.iter().map(|r| field(r) as i64 + r.spacing as i64).sum();
-    let w: i64 = cols.iter().map(|c| field(c) as i64 + c.spacing as i64).sum();
-    Size::new(w.min(LAYOUT_SIZE_MAX as i64) as i32, h.min(LAYOUT_SIZE_MAX as i64) as i32)
+pub fn find_size(
+    rows: &[LayoutStruct],
+    cols: &[LayoutStruct],
+    field: impl Fn(&LayoutStruct) -> i32,
+) -> Size {
+    let h: i64 = rows
+        .iter()
+        .map(|r| field(r) as i64 + r.spacing as i64)
+        .sum();
+    let w: i64 = cols
+        .iter()
+        .map(|c| field(c) as i64 + c.spacing as i64)
+        .sum();
+    Size::new(
+        w.min(LAYOUT_SIZE_MAX as i64) as i32,
+        h.min(LAYOUT_SIZE_MAX as i64) as i32,
+    )
 }
 
 /// `initEmptyMultiBox`.
@@ -727,8 +769,7 @@ pub fn distribute_multi_box(
     let mut wh = 0i32;
     let mut max = 0i32;
 
-    for i in start..=end {
-        let data = &mut chain[i];
+    for (i, data) in chain.iter_mut().enumerate().take(end + 1).skip(start) {
         w += data.minimum_size;
         wh += data.size_hint;
         max = max.saturating_add(data.maximum_size);
@@ -795,7 +836,11 @@ pub fn setup_spacings(
     empty_of: &dyn Fn(usize) -> bool,
 ) {
     let num_rows = chain.len();
-    let num_columns = if horizontal { grid.len() / cc.max(1) } else { cc };
+    let num_columns = if horizontal {
+        grid.len() / cc.max(1)
+    } else {
+        cc
+    };
     for c in 0..num_columns {
         let mut previous_box: Option<usize> = None;
         let mut previous_row: Option<usize> = None;

@@ -277,13 +277,21 @@ mod tests {
         let out = pm.to_image();
 
         let transparent = out.pixel_color(0, 0).unwrap().to_color_u8();
-        assert_eq!(transparent.alpha(), 0, "transparent background must stay transparent");
+        assert_eq!(
+            transparent.alpha(),
+            0,
+            "transparent background must stay transparent"
+        );
 
         let opaque = out.pixel_color(1, 0).unwrap().to_color_u8();
         assert_eq!(opaque.alpha(), 127, "alpha is halved: 255 / 2");
         assert_eq!(opaque.red(), opaque.green());
         assert_eq!(opaque.green(), opaque.blue());
         // qGray(200, 100, 50) = (200 * 11 + 100 * 16 + 50 * 5) / 32 = 126
-        assert!((opaque.red() as i32 - 126).abs() <= 2, "red = {}", opaque.red());
+        assert!(
+            (opaque.red() as i32 - 126).abs() <= 2,
+            "red = {}",
+            opaque.red()
+        );
     }
 }

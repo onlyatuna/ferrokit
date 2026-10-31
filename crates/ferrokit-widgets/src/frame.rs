@@ -143,7 +143,10 @@ impl FrameStyle {
             frame_rect.x.saturating_add(fw),
             frame_rect.y.saturating_add(fw),
             frame_rect.width.saturating_sub(fw.saturating_mul(2)).max(0),
-            frame_rect.height.saturating_sub(fw.saturating_mul(2)).max(0),
+            frame_rect
+                .height
+                .saturating_sub(fw.saturating_mul(2))
+                .max(0),
         )
     }
 
@@ -442,8 +445,14 @@ impl Frame {
 
     /// Rectangle the frame is drawn in (`QFrame::frameRect`), in local coordinates.
     pub fn frame_rect(&self) -> Rect {
-        self.frame_rect
-            .unwrap_or_else(|| Rect::new(0, 0, self.base.geometry().width, self.base.geometry().height))
+        self.frame_rect.unwrap_or_else(|| {
+            Rect::new(
+                0,
+                0,
+                self.base.geometry().width,
+                self.base.geometry().height,
+            )
+        })
     }
 
     /// Overrides the frame rectangle; `None` restores the whole-widget default.
@@ -719,16 +728,17 @@ impl Widget for Frame {
         let bg = style.background_color.or(self.background);
         if let Some(color) = bg {
             let c = self.base.geometry();
-            painter.fill_rect(
-                RectF::new(0.0, 0.0, c.width as f32, c.height as f32),
-                color,
-            );
+            painter.fill_rect(RectF::new(0.0, 0.0, c.width as f32, c.height as f32), color);
         }
-        let no_border = style.border_width == Some(0.0)
-            || style.border_style.as_deref() == Some("none");
+        let no_border =
+            style.border_width == Some(0.0) || style.border_style.as_deref() == Some("none");
         if !no_border {
-            self.style
-                .paint(painter, self.frame_rect(), &self.palette, self.base.is_enabled());
+            self.style.paint(
+                painter,
+                self.frame_rect(),
+                &self.palette,
+                self.base.is_enabled(),
+            );
         }
     }
 

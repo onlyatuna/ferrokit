@@ -493,7 +493,7 @@ mod close_quit {
             }
         });
         win.show();
-        ferrokit_core::timer::Timer::single_shot(10, || Application::quit());
+        ferrokit_core::timer::Timer::single_shot(10, Application::quit);
         ferrokit_core::timer::Timer::single_shot(500, || Application::exit(7)); // watchdog
         let code = app.exec();
         GuiApplication::set_quit_on_last_window_closed(true);
@@ -515,7 +515,7 @@ mod close_quit {
         let mut win =
             Window::new("w", Rect::new(0, 0, 100, 100), WindowFlags::NORMAL).expect("window");
         win.show();
-        ferrokit_core::timer::Timer::single_shot(10, || Application::quit());
+        ferrokit_core::timer::Timer::single_shot(10, Application::quit);
         ferrokit_core::timer::Timer::single_shot(500, || Application::exit(9)); // watchdog
         let code = app.exec();
         GuiApplication::set_quit_on_last_window_closed(true);
@@ -573,7 +573,7 @@ mod close_quit {
         });
         win.show();
         ferrokit_core::timer::Timer::single_shot(10, || {
-            std::thread::spawn(|| Application::quit())
+            std::thread::spawn(Application::quit)
                 .join()
                 .expect("worker thread");
         });

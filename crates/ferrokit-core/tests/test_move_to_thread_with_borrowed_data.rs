@@ -91,7 +91,10 @@ fn an_owned_object_moved_to_another_thread() {
         move_to_thread_by_id(id, target, ThreadId::current()),
         Ok(())
     );
-    assert!(probe.with(|p| p.data.id()).is_none(), "owner refuses access off-thread");
+    assert!(
+        probe.with(|p| p.data.id()).is_none(),
+        "owner refuses access off-thread"
+    );
 
     go_tx.send(id).unwrap();
     let (thread_changes, thread) = result_rx

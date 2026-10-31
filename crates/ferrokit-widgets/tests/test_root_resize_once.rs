@@ -17,7 +17,10 @@ fn watch_root(win: &Window) -> Rc<RefCell<Vec<(Size, Size)>>> {
     let log = Rc::clone(&seen);
     let root = win.root_widget();
     let b = root.borrow();
-    let empty = b.as_any().downcast_ref::<EmptyWidget>().expect("the default root is an EmptyWidget");
+    let empty = b
+        .as_any()
+        .downcast_ref::<EmptyWidget>()
+        .expect("the default root is an EmptyWidget");
     empty.set_resize_handler(move |new, old| log.borrow_mut().push((new, old)));
     seen
 }
@@ -29,7 +32,12 @@ fn a_native_resize_calls_the_root_resize_handler_once() {
     let idx = headless::last_handler();
     let seen = watch_root(&win);
 
-    headless::send(idx, WindowSystemEvent::Resize { size: Size::new(300, 150) });
+    headless::send(
+        idx,
+        WindowSystemEvent::Resize {
+            size: Size::new(300, 150),
+        },
+    );
 
     assert_eq!(*seen.borrow(), [(Size::new(300, 150), Size::new(200, 100))]);
 }

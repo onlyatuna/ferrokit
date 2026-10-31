@@ -54,7 +54,9 @@ pub mod payload {
         let mut paths = Vec::new();
         if wide {
             let units: Vec<u16> = list
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             for name in units.split(|&u| u == 0) {
@@ -111,7 +113,9 @@ pub mod payload {
     /// UTF-8 text from a `CF_UNICODETEXT` block (NUL terminated UTF-16).
     pub fn unicode_text(bytes: &[u8]) -> String {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&u| u != 0)
             .collect();
@@ -143,13 +147,11 @@ pub mod win32_ole {
     const MK_CONTROL: u32 = 0x0008;
     const MK_ALT: u32 = 0x0020;
     /// `IID_IUnknown`
-    pub const IID_IUNKNOWN: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(
-        0x00000000_0000_0000_c000_000000000046,
-    );
+    pub const IID_IUNKNOWN: windows_sys::core::GUID =
+        windows_sys::core::GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
     /// `IID_IDropTarget`
-    pub const IID_IDROPTARGET: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(
-        0x00000122_0000_0000_c000_000000000046,
-    );
+    pub const IID_IDROPTARGET: windows_sys::core::GUID =
+        windows_sys::core::GUID::from_u128(0x00000122_0000_0000_c000_000000000046);
 
     #[repr(C)]
     pub struct IDropTargetVtbl {
@@ -604,13 +606,19 @@ mod tests {
 
     #[test]
     fn file_uris_percent_encode_non_ascii_and_reserved_bytes() {
-        assert_eq!(file_uri("C:\\a b\\é#.txt"), "file:///C:/a%20b/%C3%A9%23.txt");
+        assert_eq!(
+            file_uri("C:\\a b\\é#.txt"),
+            "file:///C:/a%20b/%C3%A9%23.txt"
+        );
         assert_eq!(file_uri("\\\\srv\\share\\f"), "file://srv/share/f");
     }
 
     #[test]
     fn unicode_text_stops_at_the_terminator() {
-        let bytes: Vec<u8> = "hi\0junk".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let bytes: Vec<u8> = "hi\0junk"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         assert_eq!(unicode_text(&bytes), "hi");
     }
 }

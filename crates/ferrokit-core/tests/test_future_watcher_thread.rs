@@ -73,6 +73,8 @@ fn future_watcher_result_ready_carries_value_on_watcher_thread() {
     );
 }
 
+type RangeLog = Arc<Mutex<Vec<(ThreadId, (i32, i32))>>>;
+
 /// Qt: progressValueChanged and progressRangeChanged are queued to the watcher's loop
 /// (qfuturewatcher.cpp:540-550).
 #[test]
@@ -89,7 +91,7 @@ fn future_watcher_progress_runs_on_watcher_thread() {
         slot_values.lock().unwrap().push((ThreadId::current(), *v));
     });
 
-    let range_log: Arc<Mutex<Vec<(ThreadId, (i32, i32))>>> = Arc::new(Mutex::new(Vec::new()));
+    let range_log: RangeLog = Arc::new(Mutex::new(Vec::new()));
     let slot_range = Arc::clone(&range_log);
     watcher
         .progress_range_changed()

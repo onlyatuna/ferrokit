@@ -2,9 +2,9 @@
 //! An `OwnedObject` dropped on a thread other than its registration thread forwards the
 //! destruction to the registration thread (like `deleteLater`).
 
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,8 +96,14 @@ fn the_destruction_runs_on_the_registration_thread_when_its_loop_turns() {
     dropped_tx.send(()).unwrap();
     let (alive_before, gone, worker_thread) = seen_rx.recv_timeout(WAIT).unwrap();
     worker.join().unwrap();
-    assert!(alive_before, "the object is alive until the forwarded call runs");
-    assert!(gone, "the object is unregistered once the forwarded call ran");
+    assert!(
+        alive_before,
+        "the object is alive until the forwarded call runs"
+    );
+    assert!(
+        gone,
+        "the object is unregistered once the forwarded call ran"
+    );
     assert_eq!(*dropped_on.lock(), Some(worker_thread));
 }
 
@@ -208,9 +214,16 @@ fn a_registration_thread_without_a_loop_keeps_the_object_until_it_ends() {
     drop(owner);
     assert!(dropped_on.lock().is_none());
     dropped_tx.send(()).unwrap();
-    assert!(alive_rx.recv_timeout(WAIT).unwrap(), "no loop ran the call: the object stays");
+    assert!(
+        alive_rx.recv_timeout(WAIT).unwrap(),
+        "no loop ran the call: the object stays"
+    );
     let worker_thread = worker.join().unwrap();
-    assert_eq!(*dropped_on.lock(), Some(worker_thread), "destroyed on its own thread as it ended");
+    assert_eq!(
+        *dropped_on.lock(),
+        Some(worker_thread),
+        "destroyed on its own thread as it ended"
+    );
     assert_eq!(query_object_thread(id), None);
 }
 
@@ -242,8 +255,15 @@ fn events_moved_with_an_object_to_an_ended_thread_are_dropped_not_held() {
     let id = OwnedObject::object_id(&owner);
 
     let payload_dropped = Arc::new(AtomicBool::new(false));
-    post_event_to_thread(here, id, event_holding(DropFlag(Arc::clone(&payload_dropped))));
-    assert!(!payload_dropped.load(Ordering::SeqCst), "the event is queued here");
+    post_event_to_thread(
+        here,
+        id,
+        event_holding(DropFlag(Arc::clone(&payload_dropped))),
+    );
+    assert!(
+        !payload_dropped.load(Ordering::SeqCst),
+        "the event is queued here"
+    );
 
     let there = std::thread::spawn(ThreadId::current).join().unwrap();
     assert_eq!(move_to_thread_by_id(id, there, here), Ok(()));

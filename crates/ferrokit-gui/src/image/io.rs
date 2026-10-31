@@ -90,7 +90,7 @@ impl IcoDib {
         let field = height_field as usize;
         let mut candidates = [(0usize, false); 3];
         let mut n = 0;
-        if field >= 2 && field % 2 == 0 {
+        if field >= 2 && field.is_multiple_of(2) {
             candidates[n] = (field / 2, true);
             n += 1;
             if bpp == 32 {
@@ -283,7 +283,7 @@ impl ImageReader {
 
         // 32-bpp frames carry alpha themselves; without any non-zero alpha (old-style icons)
         // the AND mask decides transparency, as Windows does (opaque when there is no mask).
-        let use_alpha = bpp == 32 && xor.chunks_exact(4).any(|p| p[3] != 0);
+        let use_alpha = bpp == 32 && xor.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
 
         let mut image = Image::new(w as u32, h as u32, ImageFormat::Rgba8888);
         for y in 0..h {
@@ -505,7 +505,10 @@ impl ImageReader {
             .checked_mul(height as u64)
             .and_then(|p| p.checked_mul(3))
             .ok_or("PPM dimensions overflow")?;
-        if samples.checked_mul(2).is_none_or(|n| n > bytes.len() as u64 + 1) {
+        if samples
+            .checked_mul(2)
+            .is_none_or(|n| n > bytes.len() as u64 + 1)
+        {
             return Err("PPM data shorter than its header declares".to_string());
         }
         let mut image = Image::new(width, height, ImageFormat::Rgba8888);
@@ -690,8 +693,18 @@ mod codec_tests {
     #[test]
     fn png_16_bit_rgb_keeps_high_bytes() {
         // 2x1: (0x1234, 0x5678, 0x9ABC) and (0xFFFF, 0, 0x8000).
-        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xFF, 0xFF, 0, 0, 0x80, 0];
-        let png = encode(2, 1, png::ColorType::Rgb, png::BitDepth::Sixteen, None, None, &data);
+        let data = [
+            0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xFF, 0xFF, 0, 0, 0x80, 0,
+        ];
+        let png = encode(
+            2,
+            1,
+            png::ColorType::Rgb,
+            png::BitDepth::Sixteen,
+            None,
+            None,
+            &data,
+        );
         let img = ImageReader::read_from_memory(&png).unwrap();
         assert_eq!((img.width(), img.height()), (2, 1));
         assert_eq!(rgba(&img, 0, 0), [0x12, 0x56, 0x9A, 255]);
@@ -701,7 +714,15 @@ mod codec_tests {
     #[test]
     fn png_2_bit_gray_is_scaled_to_8_bit() {
         // One row of four pixels: values 0,1,2,3 packed MSB first.
-        let png = encode(4, 1, png::ColorType::Grayscale, png::BitDepth::Two, None, None, &[0b00_01_10_11]);
+        let png = encode(
+            4,
+            1,
+            png::ColorType::Grayscale,
+            png::BitDepth::Two,
+            None,
+            None,
+            &[0b00_01_10_11],
+        );
         let img = ImageReader::read_from_memory(&png).unwrap();
         let got: Vec<u8> = (0..4).map(|x| rgba(&img, x, 0)[0]).collect();
         assert_eq!(got, vec![0, 85, 170, 255]);
@@ -710,7 +731,15 @@ mod codec_tests {
     #[test]
     fn png_indexed_with_transparency_decodes() {
         let pal = vec![255, 0, 0, 0, 255, 0];
-        let png = encode(2, 1, png::ColorType::Indexed, png::BitDepth::Eight, Some(pal), Some(vec![128]), &[0, 1]);
+        let png = encode(
+            2,
+            1,
+            png::ColorType::Indexed,
+            png::BitDepth::Eight,
+            Some(pal),
+            Some(vec![128]),
+            &[0, 1],
+        );
         let img = ImageReader::read_from_memory(&png).unwrap();
         assert_eq!(rgba(&img, 0, 0)[..3], [255, 0, 0]);
         assert!((rgba(&img, 0, 0)[3] as i32 - 128).abs() <= 1);
@@ -719,7 +748,15 @@ mod codec_tests {
 
     #[test]
     fn png_gray_alpha_decodes() {
-        let png = encode(1, 1, png::ColorType::GrayscaleAlpha, png::BitDepth::Eight, None, None, &[100, 200]);
+        let png = encode(
+            1,
+            1,
+            png::ColorType::GrayscaleAlpha,
+            png::BitDepth::Eight,
+            None,
+            None,
+            &[100, 200],
+        );
         let img = ImageReader::read_from_memory(&png).unwrap();
         let p = rgba(&img, 0, 0);
         assert_eq!(p[..3], [100, 100, 100]);

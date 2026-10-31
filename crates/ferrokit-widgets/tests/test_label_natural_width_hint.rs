@@ -78,22 +78,10 @@ fn a_plain_label_is_as_wide_as_the_natural_width_of_its_text() {
 
 #[test]
 fn a_word_wrapped_label_of_one_word_is_as_wide_as_its_natural_width() {
-    check(
-        &[
-            ("if", 9),
-            ("def", 23),
-            ("ref", 20),
-        ],
-        true,
-        false,
-    );
+    check(&[("if", 9), ("def", 23), ("ref", 20)], true, false);
 }
 
 #[test]
 fn a_rich_label_is_as_wide_as_the_natural_width_of_its_text() {
-    check(
-        &[("if", 9), ("ref", 20), ("off", 19)],
-        false,
-        true,
-    );
+    check(&[("if", 9), ("ref", 20), ("off", 19)], false, true);
 }

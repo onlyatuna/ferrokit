@@ -408,7 +408,7 @@ impl PainterPath {
         // Qt's `cubicTo` drops a curve whose points all equal the last element; that last element
         // is the arc's start (or, after a dropped line, equal to it) in `double`.
         let mut last = start;
-        for c in curves.chunks_exact(3) {
+        for c in curves.as_chunks::<3>().0 {
             if point_eq(last, c[0]) && point_eq(c[0], c[1]) && point_eq(c[1], c[2]) {
                 continue;
             }
@@ -541,7 +541,7 @@ impl PainterPath {
                 }
                 PathElement::Close => {
                     // `QPainterPath::closeSubpath` does nothing on an empty path.
-                    if out.len() <= 1 && out.first().map_or(true, |f| f.kind == MoveTo) {
+                    if out.len() <= 1 && out.first().is_none_or(|f| f.kind == MoveTo) {
                         continue;
                     }
                     require_move_to = true;

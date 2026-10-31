@@ -4,9 +4,9 @@
 //! its own slots, unregisters it. These tests use the public API with no `unsafe` at the call site.
 
 use ferrokit_core::event_loop::EventLoop;
-use std::cell::RefCell;
 use ferrokit_core::object::with_object;
 use ferrokit_core::timer::Timer;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -87,7 +87,10 @@ fn dropping_the_timer_from_its_own_slot_stops_further_ticks() {
         1,
         "a timer dropped by its own slot must not tick again"
     );
-    assert!(with_object(id, |_| ()).is_none(), "the dropped timer is still registered");
+    assert!(
+        with_object(id, |_| ()).is_none(),
+        "the dropped timer is still registered"
+    );
     assert_eq!(
         el.timer_registry().lock().unwrap().len(),
         0,

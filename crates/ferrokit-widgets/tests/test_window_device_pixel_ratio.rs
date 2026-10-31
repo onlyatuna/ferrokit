@@ -74,7 +74,11 @@ impl PlatformWindow for FakeWindow {
         WINDOW_SCREEN_DPR
     }
     fn present(&mut self, pixmap: &mut Pixmap, _opacity: f32) -> Result<(), &'static str> {
-        self.log.lock().unwrap().presented_widths.push(pixmap.physical_width());
+        self.log
+            .lock()
+            .unwrap()
+            .presented_widths
+            .push(pixmap.physical_width());
         Ok(())
     }
     fn set_event_handler(&mut self, _handler: Box<dyn WindowSystemEventHandler>) {}
@@ -143,7 +147,9 @@ impl PlatformIntegration for FakePlatform {
 /// The platform integration is process-global: tests take turns.
 static PLATFORM_LOCK: Mutex<()> = Mutex::new(());
 
-fn window_on_second_screen(rect: Rect) -> (Window, Arc<Mutex<Log>>, std::sync::MutexGuard<'static, ()>) {
+fn window_on_second_screen(
+    rect: Rect,
+) -> (Window, Arc<Mutex<Log>>, std::sync::MutexGuard<'static, ()>) {
     let guard = PLATFORM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let log = Arc::new(Mutex::new(Log::default()));
     set_platform_integration(Arc::new(FakePlatform {
@@ -151,7 +157,9 @@ fn window_on_second_screen(rect: Rect) -> (Window, Arc<Mutex<Log>>, std::sync::M
         log: Arc::clone(&log),
     }));
     assert_eq!(
-        ferrokit_platform::platform().primary_screen().device_pixel_ratio(),
+        ferrokit_platform::platform()
+            .primary_screen()
+            .device_pixel_ratio(),
         1.0,
         "the fake primary screen must differ from the window's screen"
     );
@@ -160,7 +168,10 @@ fn window_on_second_screen(rect: Rect) -> (Window, Arc<Mutex<Log>>, std::sync::M
 }
 
 fn dpi_changed(window: &mut Window, dpi: u32) {
-    let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x: dpi, dpi_y: dpi });
+    let mut ev = Event::new_spontaneous(EventKind::DpiChanged {
+        dpi_x: dpi,
+        dpi_y: dpi,
+    });
     assert!(window.event(&mut ev));
 }
 
@@ -210,5 +221,8 @@ fn custom_presentation_uses_the_window_ratio() {
 
     dpi_changed(&mut window, 168);
     window.present_custom(|_| {});
-    assert_eq!(*log.lock().unwrap().presented_widths.last().unwrap(), 100 * 175 / 100);
+    assert_eq!(
+        *log.lock().unwrap().presented_widths.last().unwrap(),
+        100 * 175 / 100
+    );
 }

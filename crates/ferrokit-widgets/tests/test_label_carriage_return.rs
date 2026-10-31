@@ -24,7 +24,12 @@ fn hint(text: &str, word_wrap: bool) -> (i32, i32) {
     let mut one = Label::new("a");
     one.set_font(l.font().clone());
     let line = one.size_hint().height;
-    assert_eq!(s.height % line, 0, "{text:?}: height {} is not whole lines of {line}", s.height);
+    assert_eq!(
+        s.height % line,
+        0,
+        "{text:?}: height {} is not whole lines of {line}",
+        s.height
+    );
     (s.width, s.height / line)
 }
 
@@ -45,7 +50,11 @@ fn carriage_returns_size_a_label_as_qt_does() {
         ("a\n\r", (8, 2)),
     ] {
         for word_wrap in [false, true] {
-            assert_eq!(hint(text, word_wrap), expected, "{text:?} word_wrap={word_wrap}");
+            assert_eq!(
+                hint(text, word_wrap),
+                expected,
+                "{text:?} word_wrap={word_wrap}"
+            );
         }
     }
 }

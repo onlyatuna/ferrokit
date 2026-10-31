@@ -245,7 +245,7 @@ fn hidden_non_retained_item_preserves_geometry() {
     h.add_widget_aligned(a.clone(), 0, Alignment::NONE);
     h.add_widget_aligned(b.clone(), 0, Alignment::NONE);
     h.add_stretch(1);
-    let container = lay_out(Box::new(h), 300, 100);
+    let _container = lay_out(Box::new(h), 300, 100);
     assert_eq!(rect_of(&b), (64, 35, 50, 30));
 
     hide(&b);

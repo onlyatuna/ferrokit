@@ -39,5 +39,8 @@ fn waiting_for_a_coarse_timer_does_not_spin() {
     }
     // A turn is one wake: a message, or the 1 ms the wait takes once the deadline has passed.
     // Five fires take a few dozen turns; the spin took about 50,000 per fire.
-    assert!(turns < 2_000, "the loop took {turns} turns for five timer fires");
+    assert!(
+        turns < 2_000,
+        "the loop took {turns} turns for five timer fires"
+    );
 }

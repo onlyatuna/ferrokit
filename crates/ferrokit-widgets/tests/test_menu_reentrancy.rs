@@ -15,7 +15,11 @@ thread_local! {
 }
 
 fn key(menu: &MenuRef, key: u32) {
-    let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false });
+    let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+        key,
+        modifiers: 0,
+        is_repeat: false,
+    });
     menu.borrow_mut().event(&mut ev);
 }
 
@@ -29,7 +33,11 @@ fn a_submenu_can_be_filled_from_its_about_to_show_slot() {
     SUB.with(|s| *s.borrow_mut() = Some(sub.clone()));
     sub.borrow().about_to_show.connect(|_| {
         SUB.with(|s| {
-            s.borrow().as_ref().unwrap().borrow_mut().add_action(Action::new_ref("filled"));
+            s.borrow()
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .add_action(Action::new_ref("filled"));
         });
     });
 
@@ -51,7 +59,9 @@ fn a_submenu_about_to_hide_slot_can_read_the_submenu() {
     let log = Arc::clone(&titles);
     sub.borrow().about_to_hide.connect(move |_| {
         SUB.with(|s| {
-            log.lock().unwrap().push(s.borrow().as_ref().unwrap().borrow().title().to_owned());
+            log.lock()
+                .unwrap()
+                .push(s.borrow().as_ref().unwrap().borrow().title().to_owned());
         });
     });
 
@@ -91,7 +101,9 @@ fn a_borrowed_submenu_emits_about_to_hide_once() {
     sub.borrow_mut().add_new_action("x");
     let count = Arc::new(Mutex::new(0));
     let c = Arc::clone(&count);
-    sub.borrow().about_to_hide.connect(move |_| *c.lock().unwrap() += 1);
+    sub.borrow()
+        .about_to_hide
+        .connect(move |_| *c.lock().unwrap() += 1);
     Menu::popup(&top, Point::new(0, 0));
     key(&top, VK_DOWN);
     key(&top, VK_RIGHT);

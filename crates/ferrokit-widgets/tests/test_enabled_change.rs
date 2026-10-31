@@ -11,7 +11,7 @@
 //! - `x` disabled first: `c` off -> `a:EC:off`, `c:EC:off`; `c` on -> `a:EC:on`, `c:EC:on`;
 //! - `a` focused, `c.setEnabled(False)` -> `x:EC:off`, `a:Out`, `a:EC:off`, `c:EC:off`;
 //! - `a` focused, `a.setEnabled(False)` -> `a:Out`, `b:In`, `a:EC:off`, focus widget `b`.
-//! `on`/`off` is `isEnabled()` inside the handler. All of it is read right after `setEnabled`.
+//!   `on`/`off` is `isEnabled()` inside the handler. All of it is read right after `setEnabled`.
 
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};

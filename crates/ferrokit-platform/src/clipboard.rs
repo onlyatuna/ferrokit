@@ -472,7 +472,10 @@ mod tests {
         assert_eq!(actual.text().as_deref(), Some("plain \u{1f680}"));
         assert_eq!(actual.html().as_deref(), Some("<strong>rich</strong>"));
         assert_eq!(actual.data("image/png"), Some(&[0, 1, 2, 255][..]));
-        assert_eq!(actual.data("application/x-ferrokit-test"), Some(&[9, 0, 8][..]));
+        assert_eq!(
+            actual.data("application/x-ferrokit-test"),
+            Some(&[9, 0, 8][..])
+        );
 
         Win32Clipboard::clear().expect("failed to clear");
         assert!(clipboard.mime_data().unwrap().formats().next().is_none());
@@ -504,7 +507,11 @@ mod tests {
         // Windows may force a terminator into the last unit, so 7 or 8 units
         // come back; anything longer means the read ran past the allocation.
         let bounded = |text: &str| matches!(text, "AAAAAAA" | "AAAAAAAA");
-        assert!(bounded(data.text().as_deref().unwrap_or("")), "{:?}", data.text());
+        assert!(
+            bounded(data.text().as_deref().unwrap_or("")),
+            "{:?}",
+            data.text()
+        );
         let text = Win32Clipboard::text_static().unwrap();
         assert!(bounded(&text), "{text:?}");
         Win32Clipboard::clear().unwrap();

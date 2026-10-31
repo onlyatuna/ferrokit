@@ -106,7 +106,10 @@ fn a_non_waiting_pass_reports_ready_descriptors() {
         .expect("Linux polls descriptors");
     pipe.put();
 
-    assert_eq!(dispatcher.process_events(false, None), DispatchResult::Normal);
+    assert_eq!(
+        dispatcher.process_events(false, None),
+        DispatchResult::Normal
+    );
     assert_eq!(count.load(Ordering::SeqCst), 1);
     dispatcher.unregister_socket_notifier(&notifier);
 }
@@ -157,7 +160,10 @@ fn read_and_exception_notifiers_of_one_descriptor_are_independent() {
     dispatcher.unregister_socket_notifier(&exception);
 
     pipe.put();
-    assert_eq!(dispatcher.process_events(false, None), DispatchResult::Normal);
+    assert_eq!(
+        dispatcher.process_events(false, None),
+        DispatchResult::Normal
+    );
     assert_eq!(read_count.load(Ordering::SeqCst), 1);
 
     dispatcher.unregister_socket_notifier(&read);

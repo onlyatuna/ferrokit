@@ -152,4 +152,3 @@ fn test_custom_widget_paint_handler_closure() {
     widget.paint_event(&mut painter);
     assert!(executed.load(Ordering::SeqCst), "自訂繪製閉包應被觸發");
 }
-

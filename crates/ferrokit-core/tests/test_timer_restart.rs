@@ -86,11 +86,9 @@ fn restart_postpones_the_deadline() {
 
     timer.start();
     let first = Instant::now();
-    assert!(
-        !pump_until(&mut el, Duration::from_millis(70), || count
-            .load(Ordering::SeqCst)
-            >= 1)
-    );
+    assert!(!pump_until(&mut el, Duration::from_millis(70), || count
+        .load(Ordering::SeqCst)
+        >= 1));
     timer.start();
     let restarted = Instant::now();
 
@@ -190,7 +188,9 @@ fn start_timer_fires_timer_event() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     assert!(id.is_valid());
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || ticks
@@ -211,7 +211,9 @@ fn kill_timer_stops_firing() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || ticks
         .load(Ordering::SeqCst)
         >= 1));
@@ -238,7 +240,9 @@ fn zero_interval_object_timer_fires_repeatedly() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
 
-    let id = obj.with_mut(|o| o.start_timer(0, TimerType::Coarse)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(0, TimerType::Coarse))
+        .unwrap();
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || ticks
             .load(Ordering::SeqCst)
@@ -339,7 +343,9 @@ fn timer_event_passes_event_filter() {
     obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
         .unwrap();
 
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || ticks
         .load(Ordering::SeqCst)
         >= 1));
@@ -366,7 +372,9 @@ fn timer_event_reaches_event_override() {
     // touches the object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(EventSpy::new(Arc::clone(&timers))) };
 
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     assert!(pump_until(&mut el, Duration::from_secs(2), || timers
         .load(Ordering::SeqCst)
         >= 1));
@@ -396,7 +404,9 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
     obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
         .unwrap();
 
-    let id = obj.with_mut(|o| o.start_timer(0, TimerType::Coarse)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(0, TimerType::Coarse))
+        .unwrap();
     assert!(
         pump_until(&mut el, Duration::from_secs(2), || seen.load(Ordering::SeqCst)
             >= 5),

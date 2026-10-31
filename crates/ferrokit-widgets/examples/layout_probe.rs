@@ -4,7 +4,6 @@
 //! a script. The line grammar and the layout
 //! construction live in `tests/support/layout_probe.rs`, shared with the in-process oracle test.
 
-#[allow(dead_code)]
 #[path = "../tests/support/layout_probe.rs"]
 mod layout_probe;
 

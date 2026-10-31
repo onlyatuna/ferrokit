@@ -21,8 +21,9 @@ const KEY_TAB: u32 = 0x0100_0001;
 const KEY_BACKTAB: u32 = 0x0100_0002;
 
 fn tree(probes: &[&WidgetRef]) -> WidgetRef {
-    let root: WidgetRef =
-        Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(Rect::new(0, 0, 200, 200)))));
+    let root: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
+        Rect::new(0, 0, 200, 200),
+    ))));
     for p in probes {
         p.borrow().set_parent_widget(Some(Rc::downgrade(&root)));
         root.borrow_mut().add_child(Rc::clone(p));
@@ -31,11 +32,17 @@ fn tree(probes: &[&WidgetRef]) -> WidgetRef {
 }
 
 fn strong(log: &Log) -> WidgetRef {
-    ProbeWidget::new(log).with_focus(FocusPolicy::StrongFocus).into_ref()
+    ProbeWidget::new(log)
+        .with_focus(FocusPolicy::StrongFocus)
+        .into_ref()
 }
 
 fn key(dispatcher: &mut EventTreeDispatcher, root: &WidgetRef, key: u32, modifiers: u32) {
-    let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers, is_repeat: false });
+    let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+        key,
+        modifiers,
+        is_repeat: false,
+    });
     dispatcher.dispatch_event(root, &mut ev);
 }
 
@@ -65,14 +72,26 @@ fn ctrl_or_alt_tab_does_not_move_the_focus_but_tab_and_backtab_do() {
 
     key(&mut d, &root, KEY_TAB, MOD_CTRL);
     assert!(lb.borrow().is_empty(), "Ctrl+Tab left the focus alone");
-    assert_eq!(*la.borrow(), ["focus_in", "key 0x1000001"], "and the widget saw the key");
+    assert_eq!(
+        *la.borrow(),
+        ["focus_in", "key 0x1000001"],
+        "and the widget saw the key"
+    );
 
     key(&mut d, &root, KEY_TAB, 0);
     assert_eq!(*lb.borrow(), ["focus_in"]);
     key(&mut d, &root, KEY_BACKTAB, 0);
-    assert_eq!(la.borrow().last().map(String::as_str), Some("focus_in"), "Backtab went back");
+    assert_eq!(
+        la.borrow().last().map(String::as_str),
+        Some("focus_in"),
+        "Backtab went back"
+    );
     key(&mut d, &root, KEY_TAB, MOD_SHIFT);
-    assert_eq!(lb.borrow().last().map(String::as_str), Some("focus_in"), "Shift+Tab wrapped");
+    assert_eq!(
+        lb.borrow().last().map(String::as_str),
+        Some("focus_in"),
+        "Shift+Tab wrapped"
+    );
 }
 
 #[test]

@@ -7,7 +7,9 @@ use std::ptr::NonNull;
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{clear_application_event_filters, install_application_event_filter};
+use ferrokit_core::event_loop::{
+    clear_application_event_filters, install_application_event_filter,
+};
 use ferrokit_core::object::{
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
 };
@@ -71,7 +73,7 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
     // QCoreApplication::quit on the application thread is sendEvent (qcoreapplication.cpp:2153-2155).
-    Timer::single_shot(10, || CoreApplication::quit());
+    Timer::single_shot(10, CoreApplication::quit);
     Timer::single_shot(500, || CoreApplication::exit(7)); // watchdog
     let code = app.exec();
     clear_application_event_filters();

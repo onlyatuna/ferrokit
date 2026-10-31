@@ -15,7 +15,10 @@ fn faces(file: &str) -> Option<(DirectWriteFace, OutlineFace)> {
         return None;
     }
     let data = SharedFontData::from_vec(std::fs::read(format!("C:/Windows/Fonts/{file}")).ok()?);
-    Some((DirectWriteFace::new(data.clone(), 0).ok()?, OutlineFace::new(data, 0).ok()?))
+    Some((
+        DirectWriteFace::new(data.clone(), 0).ok()?,
+        OutlineFace::new(data, 0).ok()?,
+    ))
 }
 
 fn ink(bitmap: &[u8]) -> u64 {
@@ -24,8 +27,13 @@ fn ink(bitmap: &[u8]) -> u64 {
 
 #[test]
 fn directwrite_bitmaps_are_placed_like_the_outline_backends() {
-    for (file, text) in [("segoeui.ttf", "Claude HUD 5h 42% gjpQ@"), ("msjh.ttc", "重設於立即新整理")] {
-        let Some((dw, outline)) = faces(file) else { return };
+    for (file, text) in [
+        ("segoeui.ttf", "Claude HUD 5h 42% gjpQ@"),
+        ("msjh.ttc", "重設於立即新整理"),
+    ] {
+        let Some((dw, outline)) = faces(file) else {
+            return;
+        };
         for ch in text.chars().filter(|c| !c.is_whitespace()) {
             let gid = outline.glyph_index(ch);
             assert_eq!(dw.glyph_index(ch), gid, "{file}: glyph index of {ch:?}");
@@ -33,7 +41,11 @@ fn directwrite_bitmaps_are_placed_like_the_outline_backends() {
                 let ctx = format!("{file}: {ch:?} {size}px x{scale}");
                 let (dm, db) = dw.rasterize_scaled(gid, size, scale);
                 let (om, ob) = outline.rasterize_scaled(gid, size, scale);
-                assert_eq!(db.len(), dm.width * dm.height, "{ctx}: bitmap length matches its metrics");
+                assert_eq!(
+                    db.len(),
+                    dm.width * dm.height,
+                    "{ctx}: bitmap length matches its metrics"
+                );
                 // Hinting may move an edge by a pixel, never more; the baseline convention must agree.
                 for (name, a, b) in [
                     ("xmin", dm.xmin, om.xmin),
@@ -51,7 +63,10 @@ fn directwrite_bitmaps_are_placed_like_the_outline_backends() {
                     (0.6 * oi..=1.6 * oi).contains(&di),
                     "{ctx}: ink {di} vs outline {oi} is outside 0.6x-1.6x"
                 );
-                assert_eq!(dm.advance_width, om.advance_width, "{ctx}: advance comes from the font file");
+                assert_eq!(
+                    dm.advance_width, om.advance_width,
+                    "{ctx}: advance comes from the font file"
+                );
             }
         }
     }
@@ -59,9 +74,14 @@ fn directwrite_bitmaps_are_placed_like_the_outline_backends() {
 
 #[test]
 fn directwrite_blank_glyphs_have_no_bitmap() {
-    let Some((dw, outline)) = faces("segoeui.ttf") else { return };
+    let Some((dw, outline)) = faces("segoeui.ttf") else {
+        return;
+    };
     let space = outline.glyph_index(' ');
     let (m, bitmap) = dw.rasterize_scaled(space, 12.0, 1.25);
-    assert!(bitmap.is_empty() && m.width == 0 && m.height == 0, "a space draws nothing");
+    assert!(
+        bitmap.is_empty() && m.width == 0 && m.height == 0,
+        "a space draws nothing"
+    );
     assert!(m.advance_width > 0.0, "but still advances the pen");
 }

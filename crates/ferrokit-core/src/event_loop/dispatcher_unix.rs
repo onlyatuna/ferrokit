@@ -178,7 +178,12 @@ mod linux_epoll {
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; 64];
             // SAFETY: `events` has room for the 64 entries passed as the maximum.
             let count = unsafe {
-                libc::epoll_wait(self.epoll_fd, events.as_mut_ptr(), events.len() as c_int, timeout_ms)
+                libc::epoll_wait(
+                    self.epoll_fd,
+                    events.as_mut_ptr(),
+                    events.len() as c_int,
+                    timeout_ms,
+                )
             };
             let mut woken = false;
             let mut ready = Vec::new();
@@ -571,7 +576,6 @@ impl EventDispatcher for UnixEventDispatcher {
         can_wait: bool,
         next_timer_timeout: Option<Duration>,
     ) -> DispatchResult {
-
         let timeout = if can_wait {
             next_timer_timeout
         } else {
@@ -610,9 +614,7 @@ impl EventDispatcher for UnixEventDispatcher {
         if !triggered_sockets.is_empty() {
             return DispatchResult::Normal;
         }
-        if can_wait && next_timer_timeout.is_some() {
-            DispatchResult::Timeout
-        } else if !can_wait {
+        if !can_wait || next_timer_timeout.is_some() {
             DispatchResult::Timeout
         } else {
             DispatchResult::Normal
@@ -777,13 +779,16 @@ mod tests {
         let live = Arc::new(SocketNotifier::new(fd, SocketEvent::Read));
         let hits = Arc::new(Mutex::new(0));
         let sink = Arc::clone(&hits);
-        live.activated().connect(move |_| *sink.lock().unwrap() += 1);
+        live.activated()
+            .connect(move |_| *sink.lock().unwrap() += 1);
 
         dispatcher.reactor.register_socket_notifier(&stale);
         dispatcher.reactor.register_socket_notifier(&live);
         dispatcher.unregister_socket_notifier(&stale);
 
-        dispatcher.reactor.trigger_socket_event(fd, SocketEvent::Read);
+        dispatcher
+            .reactor
+            .trigger_socket_event(fd, SocketEvent::Read);
         dispatcher.process_events(false, None);
         assert_eq!(*hits.lock().unwrap(), 1, "the live notifier was removed");
         dispatcher.unregister_socket_notifier(&live);
@@ -808,7 +813,12 @@ mod tests {
                 }
             );
             assert!(
-                dispatcher.reactor.socket_notifiers.lock().unwrap().is_empty(),
+                dispatcher
+                    .reactor
+                    .socket_notifiers
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
                 "a refused notifier is not kept"
             );
         }

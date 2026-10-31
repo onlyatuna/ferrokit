@@ -116,25 +116,30 @@ impl IODevice for TemporaryFile {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let count = self.file.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
-        })?.read(buf)?;
+        let count = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed"))?
+            .read(buf)?;
         self.pos += count as u64;
         Ok(count)
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        let count = self.file.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
-        })?.write(data)?;
+        let count = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed"))?
+            .write(data)?;
         self.pos += count as u64;
         Ok(count)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed")
-        })?.flush()
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "temporary file is closed"))?
+            .flush()
     }
 
     fn close(&mut self) {

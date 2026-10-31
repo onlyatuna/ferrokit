@@ -1384,7 +1384,7 @@ fn a_timer_still_fires_after_it_is_moved_following_connect() {
     });
     // Move it twice: into a heap box, then into a vector slot and back out.
     let boxed = Box::new(timer);
-    let mut slots = vec![None, None];
+    let mut slots = [None, None];
     slots[1] = Some(boxed);
     let timer = *slots[1].take().unwrap();
     timer.start_with_interval(1);
@@ -1394,7 +1394,10 @@ fn a_timer_still_fires_after_it_is_moved_following_connect() {
             == 1),
         "the moved timer never fired"
     );
-    assert!(!timer.is_active(), "a single-shot timer stays active after firing");
+    assert!(
+        !timer.is_active(),
+        "a single-shot timer stays active after firing"
+    );
 }
 
 fn drive_controller_timers_from_the_handler() {

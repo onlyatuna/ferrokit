@@ -185,7 +185,10 @@ fn dead_receiver_queued_calls_are_not_run_and_report_false() {
             no_target_ran.fetch_add(1, Ordering::SeqCst);
         }))),
     );
-    assert!(!handled, "MetaCallNoTarget to a destroyed receiver must report not run");
+    assert!(
+        !handled,
+        "MetaCallNoTarget to a destroyed receiver must report not run"
+    );
 
     let target_ran = Arc::clone(&ran);
     let handled = notify_helper(
@@ -196,8 +199,15 @@ fn dead_receiver_queued_calls_are_not_run_and_report_false() {
             },
         ))),
     );
-    assert!(!handled, "MetaCall to a destroyed receiver must report not run");
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "no call may run for a destroyed receiver");
+    assert!(
+        !handled,
+        "MetaCall to a destroyed receiver must report not run"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "no call may run for a destroyed receiver"
+    );
 }
 
 /// A queued `connect_object` slot whose receiver is destroyed between emit and `process_events`
@@ -343,7 +353,11 @@ fn blocking_queued_emit_returns_when_receiver_dropped_before_delivery() {
         .expect("blocking queued emit did not return after its receiver was destroyed");
     emitter.join().expect("emitter thread must not panic");
 
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "the slot of a destroyed receiver must not run");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the slot of a destroyed receiver must not run"
+    );
     remote.finish().expect("receiver thread must not panic");
 }
 
@@ -363,7 +377,11 @@ fn blocking_queued_emit_returns_when_slot_panics() {
 
     emit_and_wait(&signal);
 
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "the slot must have run on the receiver thread");
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the slot must have run on the receiver thread"
+    );
     assert!(
         remote.finish().is_ok(),
         "the receiver's event loop must contain the slot panic, not die with it"

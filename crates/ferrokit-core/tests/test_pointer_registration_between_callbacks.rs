@@ -91,7 +91,10 @@ fn writing_through_the_registered_pointer_between_callbacks_leaves_it_usable() {
 /// Expected: undefined behavior under Stacked Borrows (the write below invalidates the registered
 /// pointer; the next callback uses it), a pass under Tree Borrows.
 #[test]
-#[cfg_attr(not(miri), ignore = "undefined behavior under Stacked Borrows; run under Miri")]
+#[cfg_attr(
+    not(miri),
+    ignore = "undefined behavior under Stacked Borrows; run under Miri"
+)]
 fn control_writing_the_variable_after_registering_it_by_pointer() {
     let mut node = Node::new();
     let id = node.data.id();

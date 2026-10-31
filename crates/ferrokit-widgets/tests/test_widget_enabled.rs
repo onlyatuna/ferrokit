@@ -11,7 +11,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 fn widget() -> WidgetRef {
-    Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(Rect::new(0, 0, 50, 20)))))
+    Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
+        Rect::new(0, 0, 50, 20),
+    ))))
 }
 
 /// A parent with two children in a layout, linked upwards as layout activation does.
@@ -26,7 +28,11 @@ fn tree() -> (WidgetRef, WidgetRef, WidgetRef) {
 }
 
 fn state(p: &WidgetRef, a: &WidgetRef, b: &WidgetRef) -> (bool, bool, bool) {
-    (p.borrow().is_enabled(), a.borrow().is_enabled(), b.borrow().is_enabled())
+    (
+        p.borrow().is_enabled(),
+        a.borrow().is_enabled(),
+        b.borrow().is_enabled(),
+    )
 }
 
 #[test]

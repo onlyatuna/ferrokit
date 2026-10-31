@@ -181,9 +181,7 @@ impl BackingStore {
     /// Returns `true` if static contents are defined and non-empty.
     #[inline]
     pub fn has_static_contents(&self) -> bool {
-        self.static_contents
-            .as_ref()
-            .is_some_and(|r| !r.is_empty())
+        self.static_contents.as_ref().is_some_and(|r| !r.is_empty())
     }
 
     /// Scrolls the specified area by `(dx, dy)` (`QBackingStore::scroll()`).
@@ -212,8 +210,12 @@ impl BackingStore {
 
         let left = (src_rect.x as i64).max(0).max(-phys_dx);
         let top = (src_rect.y as i64).max(0).max(-phys_dy);
-        let right = (src_rect.x as i64 + src_rect.width as i64).min(w).min(w - phys_dx);
-        let bottom = (src_rect.y as i64 + src_rect.height as i64).min(h).min(h - phys_dy);
+        let right = (src_rect.x as i64 + src_rect.width as i64)
+            .min(w)
+            .min(w - phys_dx);
+        let bottom = (src_rect.y as i64 + src_rect.height as i64)
+            .min(h)
+            .min(h - phys_dy);
         if left >= right || top >= bottom {
             return false;
         }
@@ -222,8 +224,14 @@ impl BackingStore {
         let dst_x = left + phys_dx;
         let dst_y = top + phys_dy;
         let (w, phys_dy) = (w as i32, phys_dy as i32);
-        let (left, top, width, height, dst_x, dst_y) =
-            (left as i32, top as i32, width as i32, height as i32, dst_x as i32, dst_y as i32);
+        let (left, top, width, height, dst_x, dst_y) = (
+            left as i32,
+            top as i32,
+            width as i32,
+            height as i32,
+            dst_x as i32,
+            dst_y as i32,
+        );
         let dst_slice = self.pixmap.data_mut();
         let bpp = 4;
         let stride = w as usize * bpp;
@@ -285,7 +293,8 @@ mod tests {
 
     #[test]
     fn test_backing_store_creation_and_dpr() {
-        let bs = BackingStore::new(Size::new(200, 100), 2.0).expect("failed to create BackingStore");
+        let bs =
+            BackingStore::new(Size::new(200, 100), 2.0).expect("failed to create BackingStore");
         assert_eq!(bs.size(), Size::new(200, 100));
         assert_eq!(bs.device_pixel_ratio(), 2.0);
         assert_eq!(bs.physical_width(), 400);
@@ -358,10 +367,13 @@ mod tests {
 
     /// Pixel (x, y) holds [x, y, 0, 255], so every source pixel is unique.
     fn coordinate_store(w: u32, h: u32, dpr: f32) -> BackingStore {
-        let mut bs =
-            BackingStore::new(Size::new((w as f32 / dpr) as i32, (h as f32 / dpr) as i32), dpr).unwrap();
+        let mut bs = BackingStore::new(
+            Size::new((w as f32 / dpr) as i32, (h as f32 / dpr) as i32),
+            dpr,
+        )
+        .unwrap();
         let stride = bs.physical_width() as usize * 4;
-        for (i, px) in bs.data_mut().chunks_exact_mut(4).enumerate() {
+        for (i, px) in bs.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px.copy_from_slice(&[(i % (stride / 4)) as u8, (i / (stride / 4)) as u8, 0, 255]);
         }
         bs
@@ -373,13 +385,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_right_moves_pixels_and_leaves_the_rest() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 50, 50)), 10, 0));
         for y in 0..50 {
             for x in 10..60 {
-                assert_eq!(px(&bs, x, y), [(x - 10) as u8, y as u8, 0, 255], "({x},{y})");
+                assert_eq!(
+                    px(&bs, x, y),
+                    [(x - 10) as u8, y as u8, 0, 255],
+                    "({x},{y})"
+                );
             }
             // Vacated strip and everything outside the destination keep their old content.
             assert_eq!(px(&bs, 5, y), [5, y as u8, 0, 255]);
@@ -389,7 +408,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_down_overlapping_copies_from_the_original() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 20, 50)), 0, 3));
@@ -399,19 +421,29 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_up_and_left_overlapping_copies_from_the_original() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(10, 10, 40, 40)), -4, -3));
         for y in 7..47 {
             for x in 6..46 {
-                assert_eq!(px(&bs, x, y), [(x + 4) as u8, (y + 3) as u8, 0, 255], "({x},{y})");
+                assert_eq!(
+                    px(&bs, x, y),
+                    [(x + 4) as u8, (y + 3) as u8, 0, 255],
+                    "({x},{y})"
+                );
             }
         }
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_with_negative_source_clips_to_the_buffer() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(-10, 0, 50, 50)), 20, 0));
@@ -422,13 +454,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_with_source_past_right_edge_clips_to_the_buffer() {
         let mut bs = coordinate_store(100, 100, 1.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(80, 0, 50, 10)), -40, 0));
         for y in 0..10 {
             for x in 40..60 {
-                assert_eq!(px(&bs, x, y), [(x + 40) as u8, y as u8, 0, 255], "({x},{y})");
+                assert_eq!(
+                    px(&bs, x, y),
+                    [(x + 40) as u8, y as u8, 0, 255],
+                    "({x},{y})"
+                );
             }
         }
         // The next row's start must not have been pulled into the last row.
@@ -436,7 +475,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_scales_logical_offsets_by_dpr() {
         let mut bs = coordinate_store(200, 200, 2.0);
         assert!(bs.scroll(&Region::from_rect(Rect::new(0, 0, 25, 25)), 5, 0));
@@ -447,7 +489,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only")]
+    #[cfg_attr(
+        miri,
+        ignore = "per-pixel loops over a full buffer take minutes under Miri; safe arithmetic only"
+    )]
     fn scroll_entirely_outside_is_a_no_op() {
         let mut bs = coordinate_store(100, 100, 1.0);
         // Nothing survives clipping, so no pixels moved: report false.

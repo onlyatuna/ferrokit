@@ -256,15 +256,19 @@ mod singularity_tests {
         let s = 1e-4f32;
         let m = [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]];
         let inv = invert_3x3(&m).expect("well-conditioned at a small scale");
-        for i in 0..3 {
-            assert!((inv[i][i] - 1.0 / s).abs() / (1.0 / s) < 1e-4);
+        for (i, row) in inv.iter().enumerate() {
+            assert!((row[i] - 1.0 / s).abs() / (1.0 / s) < 1e-4);
         }
     }
 
     #[test]
     fn rank_deficient_matrix_is_rejected_at_any_scale() {
         for s in [1e-4f32, 1.0, 1e4] {
-            let m = [[s, 2.0 * s, 3.0 * s], [2.0 * s, 4.0 * s, 6.0 * s], [s, 0.0, s]];
+            let m = [
+                [s, 2.0 * s, 3.0 * s],
+                [2.0 * s, 4.0 * s, 6.0 * s],
+                [s, 0.0, s],
+            ];
             assert!(invert_3x3(&m).is_none(), "scale {s}");
         }
     }

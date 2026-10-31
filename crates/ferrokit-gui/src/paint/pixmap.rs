@@ -3,8 +3,8 @@
 //!
 //! Provides pixel storage and offscreen rasterization backed by `tiny_skia::Pixmap`.
 
-use crate::paint::paint_device::PaintDevice;
 use crate::geometry::primitives::Rect;
+use crate::paint::paint_device::PaintDevice;
 use std::path::Path;
 
 /// Offscreen raster surface supporting HiDPI scaling and pixel buffer operations.

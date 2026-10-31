@@ -197,9 +197,11 @@ impl ProgressBar {
             return;
         }
         self.orientation = orientation;
-        self.base.set_size_policy(transposed_policy(self.base.size_policy()));
+        self.base
+            .set_size_policy(transposed_policy(self.base.size_policy()));
         let g = self.base.geometry();
-        self.base.set_geometry(Rect::new(g.x, g.y, g.height, g.width));
+        self.base
+            .set_geometry(Rect::new(g.x, g.y, g.height, g.width));
         self.update();
     }
 
@@ -428,7 +430,10 @@ impl Widget for ProgressBar {
         let metrics = FontMetrics::from_font(&font);
         let chunk = self.resolved_chunk_style().width.unwrap_or(0).max(9);
         let zero = metrics.horizontal_advance_exact("0", &font).round() as i32;
-        let (mut w, mut h) = (chunk * 7 + zero * 4, FontMetrics::layout_height(&font).ceil() as i32 + 8);
+        let (mut w, mut h) = (
+            chunk * 7 + zero * 4,
+            FontMetrics::layout_height(&font).ceil() as i32 + 8,
+        );
         if self.orientation == Orientation::Vertical {
             std::mem::swap(&mut w, &mut h);
         }
@@ -492,7 +497,10 @@ impl Widget for ProgressBar {
             if bw <= 0.0 || groove_style.border_style.as_deref() == Some("none") {
                 None
             } else {
-                Some(Pen::new(groove_style.border_color.unwrap_or(self.border_color), bw))
+                Some(Pen::new(
+                    groove_style.border_color.unwrap_or(self.border_color),
+                    bw,
+                ))
             }
         } else {
             Some(Pen::new(self.border_color, 1.0))

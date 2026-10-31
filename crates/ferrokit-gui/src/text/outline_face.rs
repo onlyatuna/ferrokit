@@ -37,7 +37,8 @@ impl OutlineFace {
         // keeps one alive for as long as `face` does. `face` is declared before `_data`, so it
         // is dropped first, and it is never handed out with the extended lifetime.
         let bytes: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(bytes) };
-        let face = Face::parse(bytes, face_index).map_err(|e| format!("Failed to parse font: {e}"))?;
+        let face =
+            Face::parse(bytes, face_index).map_err(|e| format!("Failed to parse font: {e}"))?;
         let units_per_em = face.units_per_em() as f32;
         if units_per_em <= 0.0 {
             return Err("Font has no units-per-em".to_string());
@@ -129,7 +130,12 @@ impl GlyphFace for OutlineFace {
     }
 
     fn cap_height(&self, px: f32) -> Option<f32> {
-        let cap = self.face.tables().os2?.capital_height().filter(|c| *c > 0)?;
+        let cap = self
+            .face
+            .tables()
+            .os2?
+            .capital_height()
+            .filter(|c| *c > 0)?;
         Some(cap as f32 * px / self.units_per_em)
     }
 
@@ -141,7 +147,9 @@ impl GlyphFace for OutlineFace {
         let scale = px / self.units_per_em;
         sink.builder
             .finish()?
-            .transform(tiny_skia::Transform::from_row(scale, 0.0, 0.0, -scale, 0.0, 0.0))
+            .transform(tiny_skia::Transform::from_row(
+                scale, 0.0, 0.0, -scale, 0.0, 0.0,
+            ))
     }
 
     /// `rightSideBearing` of DirectWrite's `GetDesignGlyphMetrics` (advance minus the `hmtx` left
@@ -203,7 +211,11 @@ impl GlyphFace for OutlineFace {
             start: point(0.0, 0.0),
             current: point(0.0, 0.0),
         };
-        if self.face.outline_glyph(GlyphId(glyph_id), &mut sink).is_none() {
+        if self
+            .face
+            .outline_glyph(GlyphId(glyph_id), &mut sink)
+            .is_none()
+        {
             return (m, vec![0; m.width * m.height]);
         }
 
@@ -229,7 +241,10 @@ impl CoverageSink {
     /// Font units (y up) -> bitmap pixels (y down).
     #[inline]
     fn map(&self, x: f32, y: f32) -> Point {
-        point(x * self.scale + self.origin_x, self.origin_y - y * self.scale)
+        point(
+            x * self.scale + self.origin_x,
+            self.origin_y - y * self.scale,
+        )
     }
 }
 

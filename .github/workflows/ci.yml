@@ -124,6 +124,45 @@ jobs:
           xvfb-run -a python tools/run_test_binaries.py --timeout 120 --jobs 4
           --package ferrokit-platform --package ferrokit-widgets --test-threads 1
 
+  # Not in the protect-main required checks. Windows and Linux are linted because most of the
+  # code is Windows code and the rest is Linux code; the macOS only code is not covered.
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    timeout-minutes: 60
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libx11-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxinerama-dev \
+            libgl1-mesa-dev libgles2-mesa-dev pkg-config
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # Not in the protect-main required checks.
+  fmt:
+    name: Rustfmt check
+    timeout-minutes: 10
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
   tools:
     name: Tools unit tests and Miri baseline coverage
     runs-on: ubuntu-22.04

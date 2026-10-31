@@ -64,7 +64,11 @@ impl StackedLayout {
 
     /// `insert_widget` without the visibility changes, which the caller applies with
     /// `apply_visibility` once no borrow of the layout is held (they send `Show`/`Hide`).
-    pub(crate) fn insert_state(&mut self, index: usize, widget: WidgetRef) -> Vec<(WidgetRef, bool)> {
+    pub(crate) fn insert_state(
+        &mut self,
+        index: usize,
+        widget: WidgetRef,
+    ) -> Vec<(WidgetRef, bool)> {
         let clamped = index.min(self.widgets.len());
         let first = self.widgets.is_empty();
         self.widgets.insert(clamped, widget.clone());
@@ -82,7 +86,10 @@ impl StackedLayout {
 
     /// `remove_widget` without the visibility changes (see `insert_state`), in Qt's order: the new
     /// current page is shown before the removed one is hidden.
-    pub(crate) fn remove_state(&mut self, index: usize) -> (Option<WidgetRef>, Vec<(WidgetRef, bool)>) {
+    pub(crate) fn remove_state(
+        &mut self,
+        index: usize,
+    ) -> (Option<WidgetRef>, Vec<(WidgetRef, bool)>) {
         if index >= self.widgets.len() {
             return (None, Vec::new());
         }
@@ -106,7 +113,10 @@ impl StackedLayout {
     /// `set_current_index` without the page switch (see `insert_state`): the old and the new
     /// page, for `switch_page`. `None` when `index` is out of range or already current
     /// (qstackedlayout.cpp:295-297).
-    pub(crate) fn set_current_state(&mut self, index: usize) -> Option<(Option<WidgetRef>, WidgetRef)> {
+    pub(crate) fn set_current_state(
+        &mut self,
+        index: usize,
+    ) -> Option<(Option<WidgetRef>, WidgetRef)> {
         if index >= self.widgets.len() || index == self.current_index {
             return None;
         }
@@ -130,7 +140,10 @@ impl StackedLayout {
         };
         let width = self.geometry.width.min(max.width).max(min.width);
         let height = self.geometry.height.min(max.height).max(min.height);
-        Some((widget, Rect::new(self.geometry.x, self.geometry.y, width, height)))
+        Some((
+            widget,
+            Rect::new(self.geometry.x, self.geometry.y, width, height),
+        ))
     }
 
     /// Returns the number of widgets in the stack.
@@ -201,7 +214,9 @@ impl Layout for StackedLayout {
     /// `widget->setGeometry(rect)` and never consults the item's alignment
     /// (qstackedlayout.cpp:453-467).
     fn set_alignment(&mut self, widget: &WidgetRef, _alignment: crate::layout::Alignment) -> bool {
-        self.widgets.iter().any(|page| std::rc::Rc::ptr_eq(page, widget))
+        self.widgets
+            .iter()
+            .any(|page| std::rc::Rc::ptr_eq(page, widget))
     }
 
     fn set_margins(&mut self, margins: Margins) {
@@ -238,8 +253,16 @@ impl Layout for StackedLayout {
             let w = widget.borrow();
             let hint = w.size_hint();
             let policy = w.size_policy();
-            let width = if policy.horizontal == crate::size_policy::Policy::Ignored { 0 } else { hint.width };
-            let height = if policy.vertical == crate::size_policy::Policy::Ignored { 0 } else { hint.height };
+            let width = if policy.horizontal == crate::size_policy::Policy::Ignored {
+                0
+            } else {
+                hint.width
+            };
+            let height = if policy.vertical == crate::size_policy::Policy::Ignored {
+                0
+            } else {
+                hint.height
+            };
             page = Size::new(page.width.max(width), page.height.max(height));
         }
         page
@@ -258,7 +281,12 @@ impl Layout for StackedLayout {
 
     fn expanding_directions(&self) -> (bool, bool) {
         self.current_widget()
-            .map(|curr| crate::layout_engine::item_expanding(&**curr.borrow(), crate::layout::Alignment::NONE))
+            .map(|curr| {
+                crate::layout_engine::item_expanding(
+                    &**curr.borrow(),
+                    crate::layout::Alignment::NONE,
+                )
+            })
             .unwrap_or((false, false))
     }
 

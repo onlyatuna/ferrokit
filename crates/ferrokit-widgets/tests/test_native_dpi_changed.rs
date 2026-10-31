@@ -21,9 +21,20 @@ fn native_dpi_change_updates_ratio_and_notifies_the_root_once() {
     let log = Log::default();
     win.set_root_widget(ProbeWidget::new(&log).into_ref());
 
-    headless::send(idx, WindowSystemEvent::DpiChanged { dpi_x: 144, dpi_y: 144 });
+    headless::send(
+        idx,
+        WindowSystemEvent::DpiChanged {
+            dpi_x: 144,
+            dpi_y: 144,
+        },
+    );
 
     assert_eq!(win.device_pixel_ratio(), 1.5);
-    let dpi: Vec<String> = log.borrow().iter().filter(|l| l.starts_with("dpi")).cloned().collect();
+    let dpi: Vec<String> = log
+        .borrow()
+        .iter()
+        .filter(|l| l.starts_with("dpi"))
+        .cloned()
+        .collect();
     assert_eq!(dpi, ["dpi 1->1.5"]);
 }

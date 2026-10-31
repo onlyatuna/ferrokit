@@ -282,7 +282,9 @@ fn an_emission_started_inside_a_slot_on_a_dropped_owner_ends_there_and_the_outer
     let (second_runs, second) = counter();
     {
         let gone_handle = gone_handle.clone();
-        outer.with(|o| o.changed.connect(move |_| gone_handle.emit(&2))).unwrap();
+        outer
+            .with(|o| o.changed.connect(move |_| gone_handle.emit(&2)))
+            .unwrap();
     }
     outer.with(|o| o.changed.connect(second)).unwrap();
 
@@ -477,7 +479,9 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
     let (second_runs, second) = counter();
     {
         let handle = retired.changed.clone();
-        outer.with(|o| o.changed.connect(move |_| handle.emit(&2))).unwrap();
+        outer
+            .with(|o| o.changed.connect(move |_| handle.emit(&2)))
+            .unwrap();
     }
     outer.with(|o| o.changed.connect(second)).unwrap();
 

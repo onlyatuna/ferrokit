@@ -282,6 +282,8 @@ impl Default for CocoaMenu {
     }
 }
 
+// The `PlatformMenuItem` trait hands out `Arc`s; the items are only used from the GUI thread.
+#[allow(clippy::arc_with_non_send_sync)]
 impl PlatformMenu for CocoaMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(CocoaMenuItem::new_action(id, text));

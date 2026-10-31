@@ -20,7 +20,7 @@ fn byte_mul(x: u32, a: u32) -> u32 {
 /// A 256 x 3 pixmap whose column `v` is the premultiplied grey `(v, v, v, v)`.
 fn grey_ramp() -> Pixmap {
     let mut pm = Pixmap::new(256, 3).unwrap();
-    for (i, px) in pm.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, px) in pm.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v = (i % 256) as u8;
         px.copy_from_slice(&[v, v, v, v]);
     }

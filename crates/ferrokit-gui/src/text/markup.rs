@@ -77,13 +77,10 @@ pub fn might_be_rich_text(text: &str) -> bool {
     if open < n && chars[open] == '<' {
         if let Some(close) = (open..n).find(|&i| chars[i] == '>') {
             let mut tag = String::new();
-            for i in open + 1..close {
-                let c = chars[i];
+            for (i, &c) in chars.iter().enumerate().take(close).skip(open + 1) {
                 if c.is_numeric() || c.is_alphabetic() {
                     tag.extend(c.to_lowercase());
-                } else if !tag.is_empty() && c.is_whitespace() {
-                    break;
-                } else if !tag.is_empty() && c == '/' && i + 1 == close {
+                } else if !tag.is_empty() && (c.is_whitespace() || (c == '/' && i + 1 == close)) {
                     break;
                 } else if !c.is_whitespace() && (!tag.is_empty() || c != '!') {
                     return false;

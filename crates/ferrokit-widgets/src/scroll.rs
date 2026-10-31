@@ -160,7 +160,7 @@ impl ScrollBar {
 
         let total_steps = range as f32 + self.page_step.get() as f32;
         let thumb_len =
-            ((track_len as f32 * self.page_step.get() as f32) / total_steps as f32).round() as i32;
+            ((track_len as f32 * self.page_step.get() as f32) / total_steps).round() as i32;
         let thumb_len = thumb_len.clamp(16, track_len.max(16));
 
         let available_track = (track_len - thumb_len).max(0);
@@ -215,9 +215,7 @@ impl QObject for ScrollBar {
                 self.mouse_move_event(Point::new(*x, *y));
                 true
             }
-            EventKind::Wheel { angle_delta_y, .. } => {
-                self.scroll_by_wheel(*angle_delta_y)
-            }
+            EventKind::Wheel { angle_delta_y, .. } => self.scroll_by_wheel(*angle_delta_y),
             _ => false,
         }
     }
@@ -523,7 +521,12 @@ impl ScrollArea {
         if let Some(w) = &self.widget {
             let b = w.borrow();
             let g = b.geometry();
-            b.set_geometry(Rect::new(-self.scroll_x.get(), -self.scroll_y.get(), g.width, g.height));
+            b.set_geometry(Rect::new(
+                -self.scroll_x.get(),
+                -self.scroll_y.get(),
+                g.width,
+                g.height,
+            ));
         }
         self.update();
     }
@@ -571,7 +574,12 @@ impl ScrollArea {
         if let Some(w) = &self.widget {
             let b = w.borrow();
             let g = b.geometry();
-            b.set_geometry(Rect::new(-self.scroll_x.get(), -self.scroll_y.get(), g.width, g.height));
+            b.set_geometry(Rect::new(
+                -self.scroll_x.get(),
+                -self.scroll_y.get(),
+                g.width,
+                g.height,
+            ));
         }
         self.update();
     }
@@ -582,7 +590,10 @@ impl ScrollArea {
         let is_shift = (modifiers & 0x02000000 != 0) || (modifiers & 1 != 0);
         let horizontal = is_shift || (angle_x != 0 && angle_y == 0);
         let (bar, delta) = if horizontal {
-            (&self.h_scrollbar, if angle_x != 0 { angle_x } else { angle_y })
+            (
+                &self.h_scrollbar,
+                if angle_x != 0 { angle_x } else { angle_y },
+            )
         } else {
             (&self.v_scrollbar, angle_y)
         };
@@ -661,7 +672,8 @@ impl ScrollArea {
             self.v_scrollbar.set_page_step(view_h);
         } else if self.v_policy == ScrollBarPolicy::AlwaysOff {
             // Qt keeps the range of a bar that is switched off; the wheel still scrolls.
-            self.v_scrollbar.set_range(0, content_size.height.saturating_sub(view_h).max(0));
+            self.v_scrollbar
+                .set_range(0, content_size.height.saturating_sub(view_h).max(0));
             self.v_scrollbar.set_page_step(view_h);
         } else {
             self.v_scrollbar.set_range(0, 0);
@@ -675,7 +687,8 @@ impl ScrollArea {
             self.h_scrollbar.set_range(0, max_h);
             self.h_scrollbar.set_page_step(view_w);
         } else if self.h_policy == ScrollBarPolicy::AlwaysOff {
-            self.h_scrollbar.set_range(0, content_size.width.saturating_sub(view_w).max(0));
+            self.h_scrollbar
+                .set_range(0, content_size.width.saturating_sub(view_w).max(0));
             self.h_scrollbar.set_page_step(view_w);
         } else {
             self.h_scrollbar.set_range(0, 0);

@@ -368,11 +368,7 @@ fn parse_value(property: &QCssProperty, val_str: &str) -> QCssValue {
     }
 
     // Check padding / margin multi-values
-    if matches!(
-        property,
-        QCssProperty::Padding
-            | QCssProperty::Margin
-    ) {
+    if matches!(property, QCssProperty::Padding | QCssProperty::Margin) {
         if let Some(edges) = parse_edges(val_str) {
             return QCssValue::Edges(edges);
         }
@@ -381,9 +377,7 @@ fn parse_value(property: &QCssProperty, val_str: &str) -> QCssValue {
     // Try color
     if matches!(
         property,
-        QCssProperty::BackgroundColor
-            | QCssProperty::Color
-            | QCssProperty::BorderColor
+        QCssProperty::BackgroundColor | QCssProperty::Color | QCssProperty::BorderColor
     ) {
         if let Some(c) = parse_color(val_str) {
             return QCssValue::Color(c);
@@ -596,7 +590,13 @@ mod hardening_tests {
 
     #[test]
     fn parse_lone_quote_as_identifier_without_panicking() {
-        assert_eq!(parse_value(&QCssProperty::Color, "'"), QCssValue::Identifier("'".into()));
-        assert_eq!(parse_value(&QCssProperty::Color, "\""), QCssValue::Identifier("\"".into()));
+        assert_eq!(
+            parse_value(&QCssProperty::Color, "'"),
+            QCssValue::Identifier("'".into())
+        );
+        assert_eq!(
+            parse_value(&QCssProperty::Color, "\""),
+            QCssValue::Identifier("\"".into())
+        );
     }
 }

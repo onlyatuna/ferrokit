@@ -56,5 +56,9 @@ fn invalidation_during_binding_is_not_lost() {
     go_tx.send(()).unwrap();
     let _ = t.join().unwrap();
 
-    assert_eq!(b.get(), 5, "invalidation that arrived during compute was lost");
+    assert_eq!(
+        b.get(),
+        5,
+        "invalidation that arrived during compute was lost"
+    );
 }

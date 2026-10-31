@@ -91,7 +91,13 @@ impl Widget for Probe {
     }
 }
 
-fn page(hint: (i32, i32), min_hint: (i32, i32), min: (i32, i32), h: Policy, v: Policy) -> WidgetRef {
+fn page(
+    hint: (i32, i32),
+    min_hint: (i32, i32),
+    min: (i32, i32),
+    h: Policy,
+    v: Policy,
+) -> WidgetRef {
     let p = Probe {
         base: WidgetBase::new(),
         hint: Size::new(hint.0, hint.1),
@@ -141,8 +147,20 @@ fn minimum_is_the_maximum_of_the_pages_smart_minimum() {
     // Case B: explicit minimums (30,10) and (20,40) -> (30,40) while page 0 is current.
     let s = stack(
         vec![
-            page((100, 50), (0, 0), (30, 10), Policy::Preferred, Policy::Preferred),
-            page((60, 80), (0, 0), (20, 40), Policy::Preferred, Policy::Preferred),
+            page(
+                (100, 50),
+                (0, 0),
+                (30, 10),
+                Policy::Preferred,
+                Policy::Preferred,
+            ),
+            page(
+                (60, 80),
+                (0, 0),
+                (20, 40),
+                Policy::Preferred,
+                Policy::Preferred,
+            ),
         ],
         0,
     );
@@ -153,7 +171,13 @@ fn minimum_is_the_maximum_of_the_pages_smart_minimum() {
     let s = stack(
         vec![
             page((100, 50), (70, 30), (0, 0), Policy::Fixed, Policy::Fixed),
-            page((60, 80), (10, 10), (0, 0), Policy::Preferred, Policy::Preferred),
+            page(
+                (60, 80),
+                (10, 10),
+                (0, 0),
+                Policy::Preferred,
+                Policy::Preferred,
+            ),
         ],
         1,
     );
@@ -165,7 +189,13 @@ fn an_ignored_axis_counts_as_zero() {
     // Case D: page 0 is Ignored horizontally -> its 100 width is dropped, hint (60,50).
     let s = stack(
         vec![
-            page((100, 50), (0, 0), (0, 0), Policy::Ignored, Policy::Preferred),
+            page(
+                (100, 50),
+                (0, 0),
+                (0, 0),
+                Policy::Ignored,
+                Policy::Preferred,
+            ),
             plain((60, 30)),
         ],
         0,
@@ -176,8 +206,20 @@ fn an_ignored_axis_counts_as_zero() {
     // explicit minimum (5,5) -> hint (60,30), min (5,5).
     let s = stack(
         vec![
-            page((100, 50), (40, 40), (0, 0), Policy::Ignored, Policy::Ignored),
-            page((60, 30), (0, 0), (5, 5), Policy::Preferred, Policy::Preferred),
+            page(
+                (100, 50),
+                (40, 40),
+                (0, 0),
+                Policy::Ignored,
+                Policy::Ignored,
+            ),
+            page(
+                (60, 30),
+                (0, 0),
+                (5, 5),
+                Policy::Preferred,
+                Policy::Preferred,
+            ),
         ],
         1,
     );

@@ -97,8 +97,7 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
         let data = boxed.object_data();
         let id = data.id();
         let borrow_state = Arc::clone(&data.borrow_state);
-        // SAFETY: `Box::into_raw` never returns null.
-        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        let ptr = Box::into_non_null(boxed);
         Self {
             ptr,
             id,

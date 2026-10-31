@@ -28,11 +28,23 @@ fn test_button_min_max_include_padding_and_border() {
 
 #[test]
 fn test_label_min_max_include_padding_and_border() {
-    let cases: [(&str, ([i32; 2], [i32; 2])); 4] = [
-        ("padding: 1px 4px; border: 1px solid #888; min-width: 30px; font-size: 9px;", ([40, 0], [MAX, MAX])),
-        ("padding: 2px; border: 1px solid #888; max-height: 15px; font-size: 9px;", ([0, 0], [MAX, 21])),
-        ("padding: 2px 3px; border: 1px solid #888; min-height: 20px; font-size: 9px;", ([0, 26], [MAX, MAX])),
-        ("padding: 3px; min-height: 12px; max-height: 30px; font-size: 9px;", ([0, 18], [MAX, 36])),
+    let cases = [
+        (
+            "padding: 1px 4px; border: 1px solid #888; min-width: 30px; font-size: 9px;",
+            ([40, 0], [MAX, MAX]),
+        ),
+        (
+            "padding: 2px; border: 1px solid #888; max-height: 15px; font-size: 9px;",
+            ([0, 0], [MAX, 21]),
+        ),
+        (
+            "padding: 2px 3px; border: 1px solid #888; min-height: 20px; font-size: 9px;",
+            ([0, 26], [MAX, MAX]),
+        ),
+        (
+            "padding: 3px; min-height: 12px; max-height: 30px; font-size: 9px;",
+            ([0, 18], [MAX, 36]),
+        ),
     ];
     for (qss, expected) in cases {
         let l = Label::new("AB");
@@ -48,9 +60,24 @@ fn test_label_size_hint_is_expanded_to_minimum_size_and_ignores_max_height() {
     // the box; L1's width and every height come from `min-*`.
     let text_width_matches_oracle = cfg!(windows);
     for (qss, w, h, w_from_text) in [
-        ("padding: 1px 4px; border: 1px solid #888; min-width: 30px; font-size: 9px;", Some(40), None, false),
-        ("padding: 2px 3px; border: 1px solid #888; min-height: 20px; font-size: 9px;", Some(24), Some(26), true),
-        ("padding: 3px; min-height: 12px; max-height: 30px; font-size: 9px;", Some(22), Some(18), true),
+        (
+            "padding: 1px 4px; border: 1px solid #888; min-width: 30px; font-size: 9px;",
+            Some(40),
+            None,
+            false,
+        ),
+        (
+            "padding: 2px 3px; border: 1px solid #888; min-height: 20px; font-size: 9px;",
+            Some(24),
+            Some(26),
+            true,
+        ),
+        (
+            "padding: 3px; min-height: 12px; max-height: 30px; font-size: 9px;",
+            Some(22),
+            Some(18),
+            true,
+        ),
     ] {
         let l = Label::new("AB");
         l.set_style_sheet(&format!("QLabel {{ {qss} }}"));
@@ -79,7 +106,9 @@ fn test_frame_min_max_include_padding_and_border() {
 #[test]
 fn test_progress_bar_min_max_include_padding_and_border() {
     let p = ProgressBar::new();
-    p.set_style_sheet("QProgressBar { border: 1px solid #888; padding: 2px; min-height: 5px; max-height: 5px; }");
+    p.set_style_sheet(
+        "QProgressBar { border: 1px solid #888; padding: 2px; min-height: 5px; max-height: 5px; }",
+    );
     assert_eq!(sizes(&p), ([0, 11], [MAX, 11]), "PySide6 P2");
 
     let p = ProgressBar::new();

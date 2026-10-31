@@ -405,7 +405,8 @@ fn a_timer_in_the_subtree_refuses_the_whole_move_before_any_event() {
             ("last", &last),
         ] {
             assert_eq!(
-                node.with(|n| n.thread_changes).unwrap(), 0,
+                node.with(|n| n.thread_changes).unwrap(),
+                0,
                 "{layout}: {name} got a ThreadChange"
             );
             assert_eq!(
@@ -464,7 +465,10 @@ fn a_subtree_without_a_refusing_object_still_moves_as_a_whole() {
     let target = host.tid;
     let root = probe(true);
     let child = probe(true);
-    let (root_id, child_id) = (OwnedObject::object_id(&root), OwnedObject::object_id(&child));
+    let (root_id, child_id) = (
+        OwnedObject::object_id(&root),
+        OwnedObject::object_id(&child),
+    );
     set_parent_by_id(child_id, Some(root_id)).unwrap();
 
     assert_eq!(move_to_thread_by_id(root_id, target, here), Ok(()));
@@ -524,7 +528,7 @@ fn a_timer_works_on_its_own_thread_after_a_refused_move() {
         "an active timer is restarted with the new interval"
     );
     let restarted_at = ticks.load(Ordering::SeqCst);
-    assert!(pump_until(&el, || ticks.load(Ordering::SeqCst) >= restarted_at + 1));
+    assert!(pump_until(&el, || ticks.load(Ordering::SeqCst) > restarted_at));
 
     let drops = Arc::new(AtomicU32::new(0));
     let counted = Arc::clone(&drops);
@@ -674,7 +678,8 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
         .with(|slot| slot.borrow_mut().take())
         .expect("root must still be present");
     assert_eq!(
-        root.changes(), 0,
+        root.changes(),
+        0,
         "no ThreadChange may be sent before the refusal"
     );
     assert_eq!(root.thread_id(), here);

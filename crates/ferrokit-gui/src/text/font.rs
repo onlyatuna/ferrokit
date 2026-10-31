@@ -38,7 +38,9 @@ impl SharedFontData {
         if file.metadata()?.len() > 0 {
             // SAFETY: the mapping is read-only and private; see the caveat above.
             if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
-                return Ok(Self { data: Arc::new(map) });
+                return Ok(Self {
+                    data: Arc::new(map),
+                });
             }
         }
         Ok(Self::from_vec(std::fs::read(path)?))
@@ -78,7 +80,9 @@ impl SharedFontData {
 
 impl std::fmt::Debug for SharedFontData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedFontData").field("len", &self.len()).finish()
+        f.debug_struct("SharedFontData")
+            .field("len", &self.len())
+            .finish()
     }
 }
 
@@ -208,7 +212,9 @@ impl std::fmt::Display for FontTag {
     /// The bytes as Latin-1 characters, like `toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use std::fmt::Write;
-        self.to_bytes().iter().try_for_each(|&b| f.write_char(char::from(b)))
+        self.to_bytes()
+            .iter()
+            .try_for_each(|&b| f.write_char(char::from(b)))
     }
 }
 
@@ -351,7 +357,9 @@ impl Font {
     /// Whether pair kerning is on: Qt's default, unless `kern` was set to 0
     /// (`QTextEngine::shapeTextWithHarfbuzzNG` lets an explicit `kern` win over `kerning()`).
     pub(crate) fn kerning_enabled(&self) -> bool {
-        self.features.get(&FontTag::KERN).is_none_or(|&value| value != 0)
+        self.features
+            .get(&FontTag::KERN)
+            .is_none_or(|&value| value != 0)
     }
 
     /// Sets the absolute letter spacing in logical pixels.

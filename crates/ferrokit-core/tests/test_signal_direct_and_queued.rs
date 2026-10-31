@@ -4,8 +4,8 @@ use ferrokit_core::object::{
     register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
 };
 use ferrokit_core::signal::{ConnectionId, ConnectionType, QueuedSignal, Signal};
-use std::ptr::NonNull;
 use std::cell::RefCell;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};

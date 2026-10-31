@@ -3,12 +3,12 @@
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::Rect;
+use ferrokit_platform::dispatch_window_system_event;
 use ferrokit_platform::integration::platform;
 use ferrokit_platform::window::WindowFlags;
 use ferrokit_platform::window_system_interface::{
     ClosureWindowEventHandler, Delivery, WindowSystemEvent,
 };
-use ferrokit_platform::dispatch_window_system_event;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::HWND;
@@ -38,7 +38,10 @@ fn events_posted_from_another_thread_are_delivered_by_the_message_pump() {
     })
     .join()
     .unwrap();
-    assert!(seen.lock().is_empty(), "queued, not run on the posting thread");
+    assert!(
+        seen.lock().is_empty(),
+        "queued, not run on the posting thread"
+    );
 
     // The message was posted to the window before `join` returned: drain it without waiting.
     unsafe {
@@ -84,11 +87,23 @@ fn each_window_keeps_its_own_cursor_and_blank_hides_it() {
     let (ha, hb) = (a.native_handle() as HWND, b.native_handle() as HWND);
     unsafe {
         set_cursor_message(ha);
-        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_IBEAM), "window A");
+        assert_eq!(
+            GetCursor(),
+            LoadCursorW(std::ptr::null_mut(), IDC_IBEAM),
+            "window A"
+        );
         set_cursor_message(hb);
-        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_CROSS), "window B");
+        assert_eq!(
+            GetCursor(),
+            LoadCursorW(std::ptr::null_mut(), IDC_CROSS),
+            "window B"
+        );
         set_cursor_message(ha);
-        assert_eq!(GetCursor(), LoadCursorW(std::ptr::null_mut(), IDC_IBEAM), "A again");
+        assert_eq!(
+            GetCursor(),
+            LoadCursorW(std::ptr::null_mut(), IDC_IBEAM),
+            "A again"
+        );
 
         a.set_cursor(CursorShape::Blank);
         set_cursor_message(ha);
@@ -136,8 +151,14 @@ fn an_alt_key_combination_reaches_the_handler() {
         SendMessageW(hwnd, WM_SYSKEYUP, 0x46, 0xE000_0001u32 as isize);
     }
     let seen = seen.lock();
-    assert!(matches!(seen[0], WindowSystemEvent::KeyPress { key: 0x46, .. }), "{seen:?}");
-    assert!(matches!(seen[1], WindowSystemEvent::KeyRelease { key: 0x46, .. }), "{seen:?}");
+    assert!(
+        matches!(seen[0], WindowSystemEvent::KeyPress { key: 0x46, .. }),
+        "{seen:?}"
+    );
+    assert!(
+        matches!(seen[1], WindowSystemEvent::KeyRelease { key: 0x46, .. }),
+        "{seen:?}"
+    );
 }
 
 #[test]
@@ -154,7 +175,11 @@ fn a_cancelled_mouse_mode_forgets_the_pressed_buttons() {
         SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
         SendMessageW(hwnd, WM_RBUTTONDOWN, 2, 0x0010_0010);
         SendMessageW(hwnd, WM_RBUTTONUP, 0, 0x0010_0010);
-        assert_ne!(GetCapture(), hwnd, "no button is held: the capture is released");
+        assert_ne!(
+            GetCapture(),
+            hwnd,
+            "no button is held: the capture is released"
+        );
     }
 }
 
@@ -166,24 +191,30 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
         GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WM_LBUTTONDOWN,
     };
     const WM_EXITSIZEMOVE: u32 = 0x0232;
-    let win = NativeWindow::new(
-        "SystemMove",
-        Rect::new(0, 0, 200, 200),
-        WindowFlags::NORMAL,
-    )
-    .expect("native window");
+    let win = NativeWindow::new("SystemMove", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
     let hwnd = win.hwnd();
     let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
     let sink = Arc::clone(&seen);
     ferrokit_platform::window::set_window_event_handler(
         hwnd,
-        Box::new(ClosureWindowEventHandler::new(move |ev| sink.lock().push(ev))),
+        Box::new(ClosureWindowEventHandler::new(move |ev| {
+            sink.lock().push(ev)
+        })),
     );
     // Put the window under the cursor so the loop end sees the release inside it.
     unsafe {
         let mut cursor = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor);
-        SetWindowPos(hwnd, std::ptr::null_mut(), cursor.x - 50, cursor.y - 50, 200, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            cursor.x - 50,
+            cursor.y - 50,
+            200,
+            200,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
         SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
     }
     // `ReleaseCapture` for the native loop must not make the window forget the press.
@@ -229,7 +260,11 @@ fn ending_an_ime_composition_clears_the_preedit() {
         SendMessageW(hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
         SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
     }
-    assert_eq!(count(), 1, "a started composition ends with one empty event");
+    assert_eq!(
+        count(),
+        1,
+        "a started composition ends with one empty event"
+    );
     assert!(seen.lock().iter().any(|e| matches!(
         e,
         WindowSystemEvent::InputMethod { commit_string, preedit_string, .. }

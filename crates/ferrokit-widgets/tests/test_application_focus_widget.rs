@@ -22,7 +22,9 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 type Changes = Arc<Mutex<Vec<(Option<ObjectId>, Option<ObjectId>)>>>;
 
 fn strong(log: &Log) -> WidgetRef {
-    ProbeWidget::new(log).with_focus(FocusPolicy::StrongFocus).into_ref()
+    ProbeWidget::new(log)
+        .with_focus(FocusPolicy::StrongFocus)
+        .into_ref()
 }
 
 fn window(children: &[&WidgetRef]) -> WidgetRef {
@@ -42,7 +44,8 @@ fn setup() -> (Application, Changes) {
     let app = Application::new(vec!["t".to_string()]);
     let changes: Changes = Arc::default();
     let sink = Arc::clone(&changes);
-    app.focus_changed().connect(move |c| sink.lock().unwrap().push(*c));
+    app.focus_changed()
+        .connect(move |c| sink.lock().unwrap().push(*c));
     (app, changes)
 }
 
@@ -58,9 +61,15 @@ fn focus_manager_updates_the_focus_widget_and_emits_focus_changed() {
 
     assert!(Application::focus_widget().is_none());
     fm.set_focus(&root, Some(ia), FocusReason::Tab);
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ia));
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ia)
+    );
     fm.set_focus(&root, Some(ib), FocusReason::Tab);
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ib));
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ib)
+    );
     fm.clear_focus(&root, FocusReason::Other);
     assert!(Application::focus_widget().is_none());
 
@@ -84,7 +93,10 @@ fn the_focus_widget_does_not_keep_a_dropped_window_alive() {
     let weak = Rc::downgrade(&a);
     drop(a);
     drop(root);
-    assert!(weak.upgrade().is_none(), "the application kept the widget alive");
+    assert!(
+        weak.upgrade().is_none(),
+        "the application kept the widget alive"
+    );
 
     drop(fm);
     assert!(Application::focus_widget().is_none());
@@ -120,7 +132,8 @@ fn the_focus_widget_is_current_while_focus_in_runs_and_focus_changed_follows_in_
             changes_hook.lock().unwrap().len(),
         ));
         // A nested focus change in another window while this `FocusIn` runs.
-        fm2.borrow_mut().set_focus(&root2, Some(ic), FocusReason::Other);
+        fm2.borrow_mut()
+            .set_focus(&root2, Some(ic), FocusReason::Other);
     }));
     let a = probe.into_ref();
     let root = window(&[&a]);
@@ -130,8 +143,14 @@ fn the_focus_widget_is_current_while_focus_in_runs_and_focus_changed_follows_in_
     // While `FocusIn` ran, `a` was the focus widget (it is borrowed by the handler) and no
     // `focus_changed` had fired yet.
     assert_eq!(*seen.borrow(), [(Some(true), 0)]);
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ic));
-    assert_eq!(*changes.lock().unwrap(), [(None, Some(ia)), (Some(ia), Some(ic))]);
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ic)
+    );
+    assert_eq!(
+        *changes.lock().unwrap(),
+        [(None, Some(ia)), (Some(ia), Some(ic))]
+    );
 }
 
 #[test]
@@ -148,21 +167,37 @@ fn only_the_active_windows_focus_is_the_application_focus_widget() {
 
     fm1.set_focus(&root1, Some(ia), FocusReason::Tab);
     fm2.set_focus(&root2, Some(ib), FocusReason::Tab);
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ia));
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ia)
+    );
     fm2.clear_focus(&root2, FocusReason::Other);
     fm2.set_focus(&root2, Some(ib), FocusReason::Tab);
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ia));
-    assert_eq!(*changes.lock().unwrap(), [(None, Some(ia))], "inactive windows are silent");
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ia)
+    );
+    assert_eq!(
+        *changes.lock().unwrap(),
+        [(None, Some(ia))],
+        "inactive windows are silent"
+    );
 
     Application::set_active_window(Some(w2));
-    assert_eq!(Application::focus_widget().map(|w| w.borrow().id()), Some(ib));
+    assert_eq!(
+        Application::focus_widget().map(|w| w.borrow().id()),
+        Some(ib)
+    );
     drop(fm1);
     assert_eq!(
         Application::focus_widget().map(|w| w.borrow().id()),
         Some(ib),
         "an inactive window dropping leaves the focus widget alone"
     );
-    assert_eq!(*changes.lock().unwrap(), [(None, Some(ia)), (Some(ia), Some(ib))]);
+    assert_eq!(
+        *changes.lock().unwrap(),
+        [(None, Some(ia)), (Some(ia), Some(ib))]
+    );
     drop(root1);
     drop(fm2);
 }

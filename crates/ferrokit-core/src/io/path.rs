@@ -169,7 +169,9 @@ pub fn file_name(path: impl AsRef<Path>) -> String {
 /// Returns the base name without the last extension (e.g. "archive.tar" from "archive.tar.gz").
 pub fn base_name(path: impl AsRef<Path>) -> String {
     let name = file_name(path);
-    name.find('.').map_or(name.as_str(), |idx| &name[..idx]).to_string()
+    name.find('.')
+        .map_or(name.as_str(), |idx| &name[..idx])
+        .to_string()
 }
 
 /// Returns the complete base name without the last extension.

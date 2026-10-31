@@ -70,7 +70,10 @@ impl QObject for Node {
             if self.panic_on_child_removed {
                 panic!("child-removed filter panic");
             }
-            self.log.lock().unwrap().push(format!("{}:filter", self.tag));
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("{}:filter", self.tag));
         }
         false
     }
@@ -159,10 +162,19 @@ fn panicking_drop(filter_panics: bool) {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         drop(Box::from_raw(child));
     }));
-    assert!(outcome.is_err(), "the handler panic is resumed after teardown");
+    assert!(
+        outcome.is_err(),
+        "the handler panic is resumed after teardown"
+    );
     assert!(!grand_alive.load(Ordering::SeqCst), "children deleted");
-    assert!(query_object_thread(child_id).is_none(), "child unregistered");
-    assert!(query_object_thread(grand_id).is_none(), "grandchild unregistered");
+    assert!(
+        query_object_thread(child_id).is_none(),
+        "child unregistered"
+    );
+    assert!(
+        query_object_thread(grand_id).is_none(),
+        "grandchild unregistered"
+    );
     unsafe {
         for p in [parent, pfilter] {
             let id = (*p).data.id();

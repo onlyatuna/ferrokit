@@ -28,7 +28,11 @@ struct PostWhenDropped {
 impl Drop for PostWhenDropped {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::SeqCst);
-        post_event_to_thread(self.thread, ObjectId(7), Event::new(EventKind::UpdateRequest));
+        post_event_to_thread(
+            self.thread,
+            ObjectId(7),
+            Event::new(EventKind::UpdateRequest),
+        );
     }
 }
 
@@ -46,7 +50,9 @@ fn finishes_within(limit: Duration, body: impl FnOnce() + Send + 'static) {
         let _ = done.send(());
     });
     if wait.recv_timeout(limit).is_err() {
-        panic!("did not finish within {limit:?}: an event is dropped while a lock of the post is held");
+        panic!(
+            "did not finish within {limit:?}: an event is dropped while a lock of the post is held"
+        );
     }
     thread.join().unwrap();
 }
@@ -64,7 +70,10 @@ fn a_merged_event_is_dropped_after_the_registry_lock_is_released() {
         post_event_to_thread(
             thread,
             ObjectId(7),
-            payload_event(PostWhenDropped { thread, drops: Arc::clone(&drops) }),
+            payload_event(PostWhenDropped {
+                thread,
+                drops: Arc::clone(&drops),
+            }),
         );
 
         assert_eq!(drops.load(Ordering::SeqCst), 1);
@@ -81,7 +90,13 @@ fn a_merged_event_is_dropped_after_the_queue_lock_of_the_loop_is_released() {
         let drops = Arc::new(AtomicUsize::new(0));
 
         el.post_event(ObjectId(7), Event::new(EventKind::UpdateRequest));
-        el.post_event(ObjectId(7), payload_event(PostWhenDropped { thread, drops: Arc::clone(&drops) }));
+        el.post_event(
+            ObjectId(7),
+            payload_event(PostWhenDropped {
+                thread,
+                drops: Arc::clone(&drops),
+            }),
+        );
 
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(el);
@@ -103,7 +118,11 @@ impl EventCompressor for PostsWhenDropped {
 impl Drop for PostsWhenDropped {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::SeqCst);
-        post_event_to_thread(self.thread, ObjectId(7), Event::new(EventKind::UpdateRequest));
+        post_event_to_thread(
+            self.thread,
+            ObjectId(7),
+            Event::new(EventKind::UpdateRequest),
+        );
     }
 }
 
@@ -114,7 +133,10 @@ fn a_replaced_compressor_is_dropped_after_the_queue_lock_is_released() {
         let thread = ThreadId::current();
         let drops = Arc::new(AtomicUsize::new(0));
 
-        el.set_compressor(Arc::new(PostsWhenDropped { thread, drops: Arc::clone(&drops) }));
+        el.set_compressor(Arc::new(PostsWhenDropped {
+            thread,
+            drops: Arc::clone(&drops),
+        }));
         el.set_compressor(Arc::new(MergeAll));
 
         assert_eq!(drops.load(Ordering::SeqCst), 1);

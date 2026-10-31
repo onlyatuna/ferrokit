@@ -7,7 +7,12 @@ use ferrokit_gui::text::glyph_face::parse_face;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let (file, size, dpr, chars) = (&a[1], a[2].parse::<f32>().unwrap(), a[3].parse::<f32>().unwrap(), &a[4]);
+    let (file, size, dpr, chars) = (
+        &a[1],
+        a[2].parse::<f32>().unwrap(),
+        a[3].parse::<f32>().unwrap(),
+        &a[4],
+    );
     let data = SharedFontData::from_vec(std::fs::read(file).expect("font file"));
     let face = parse_face(&data, 0).expect("face");
     for ch in chars.chars() {

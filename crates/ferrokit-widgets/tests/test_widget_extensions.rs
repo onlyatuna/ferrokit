@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 /// `Menu::popup` needs a shared menu (`aboutToShow` runs with it free); these tests drive an
 /// owned one, so hand it over for the popup and take it back.
-fn popped(menu: ferrokit_widgets::Menu, pos: ferrokit_gui::geometry::primitives::Point) -> ferrokit_widgets::Menu {
+fn popped(
+    menu: ferrokit_widgets::Menu,
+    pos: ferrokit_gui::geometry::primitives::Point,
+) -> ferrokit_widgets::Menu {
     let shared = std::rc::Rc::new(std::cell::RefCell::new(menu));
     ferrokit_widgets::Menu::popup(&shared, pos);
     match std::rc::Rc::try_unwrap(shared) {
@@ -24,7 +27,11 @@ fn test_stacked_widget_page_switching() {
     let page0: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
     let page1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::new())));
     let read = |f: &dyn Fn(&StackedWidget) -> usize| {
-        f(stack.borrow().as_any().downcast_ref::<StackedWidget>().unwrap())
+        f(stack
+            .borrow()
+            .as_any()
+            .downcast_ref::<StackedWidget>()
+            .unwrap())
     };
 
     let idx0 = StackedWidget::add_widget(&stack, page0.clone());
@@ -102,10 +109,10 @@ fn test_window_opacity_and_minimum_size() {
 
 #[test]
 fn test_menu_high_dpi_hit_testing() {
+    use ferrokit_gui::geometry::primitives::Point;
+    use ferrokit_platform::high_dpi::from_native_point;
     use ferrokit_widgets::action::Action;
     use ferrokit_widgets::menu::Menu;
-    use ferrokit_platform::high_dpi::from_native_point;
-    use ferrokit_gui::geometry::primitives::Point;
 
     let mut menu = Menu::new("TestMenu");
     let act_refresh = Action::new_ref("Refresh All");
@@ -121,7 +128,9 @@ fn test_menu_high_dpi_hit_testing() {
 
     let menu = popped(menu, Point::new(0, 0));
 
-    let exit_geo = menu.action_geometry(&act_exit).expect("Exit action geometry exists");
+    let exit_geo = menu
+        .action_geometry(&act_exit)
+        .expect("Exit action geometry exists");
     let target_logical_pt = Point::new(exit_geo.center().x, exit_geo.center().y);
 
     // Test across typical Windows DPI scaling factors: 1.0 (100%), 1.25 (125%), 1.5 (150%), 2.0 (200%)
@@ -161,9 +170,9 @@ fn test_window_present_custom_physical_backing_store_parity() {
 }
 #[test]
 fn test_submenu_hover_and_signature_propagation() {
+    use ferrokit_gui::geometry::primitives::Point;
     use ferrokit_widgets::action::Action;
     use ferrokit_widgets::menu::Menu;
-    use ferrokit_gui::geometry::primitives::Point;
 
     let mut root = Menu::new("RootMenu");
     let sub_ref = root.add_menu("Layout");
@@ -176,20 +185,28 @@ fn test_submenu_hover_and_signature_propagation() {
     let mut root = popped(root, Point::new(0, 0));
 
     // Move to root item 0 (Layout) -> opens submenu
-    let layout_geo = root.action_geometry(&act_layout).expect("Layout action geometry");
+    let layout_geo = root
+        .action_geometry(&act_layout)
+        .expect("Layout action geometry");
     root.handle_mouse_move_at(layout_geo.center());
 
     assert!(root.active_action().is_some(), "Root item should be active");
     assert!(root.open_submenu().is_some(), "Submenu should be open");
 
     let sub_rc = root.open_submenu().unwrap();
-    assert!(sub_rc.borrow().active_action().is_none(), "Initially submenu has no active item");
+    assert!(
+        sub_rc.borrow().active_action().is_none(),
+        "Initially submenu has no active item"
+    );
 
     let sig_before = root.hover_signature();
 
     // Calculate coordinates inside the submenu item
     let sub_origin = sub_rc.borrow().geometry();
-    let triple_local = sub_rc.borrow().action_geometry(&act_triple).expect("Triple action geo");
+    let triple_local = sub_rc
+        .borrow()
+        .action_geometry(&act_triple)
+        .expect("Triple action geo");
     let root_coords_for_triple = Point::new(
         sub_origin.x + triple_local.center().x,
         sub_origin.y + triple_local.center().y,
@@ -199,7 +216,10 @@ fn test_submenu_hover_and_signature_propagation() {
     root.handle_mouse_move_at(root_coords_for_triple);
 
     assert_eq!(
-        sub_rc.borrow().active_action().map(|a| a.borrow().text().to_string()),
+        sub_rc
+            .borrow()
+            .active_action()
+            .map(|a| a.borrow().text().to_string()),
         Some("Horizontal Triple".to_string()),
         "Submenu item 0 should be active after hover"
     );
@@ -257,17 +277,29 @@ fn test_hover_moving_straight_down_past_open_submenu_selects_rows_below() {
     let opacity = root.actions()[0].clone();
     let opacity_c = root.action_geometry(&opacity).unwrap().center();
     root.handle_mouse_move_at(opacity_c);
-    assert!(root.open_submenu().is_some(), "hovering Opacity opens its submenu");
+    assert!(
+        root.open_submenu().is_some(),
+        "hovering Opacity opens its submenu"
+    );
 
     // Rows below "Opacity" are inside the submenu's vertical extent; the pointer is not heading
     // for the submenu, so they must take the hover.
     let interval_c = root.action_geometry(&interval).unwrap().center();
-    root.handle_mouse_move_at(ferrokit_gui::geometry::primitives::Point::new(opacity_c.x, interval_c.y));
+    root.handle_mouse_move_at(ferrokit_gui::geometry::primitives::Point::new(
+        opacity_c.x,
+        interval_c.y,
+    ));
     assert_eq!(active_text(&root).as_deref(), Some("Interval"));
-    assert!(root.open_submenu().is_none(), "moving to a plain item closes the submenu");
+    assert!(
+        root.open_submenu().is_none(),
+        "moving to a plain item closes the submenu"
+    );
 
     let autostart_c = root.action_geometry(&autostart).unwrap().center();
-    root.handle_mouse_move_at(ferrokit_gui::geometry::primitives::Point::new(opacity_c.x, autostart_c.y));
+    root.handle_mouse_move_at(ferrokit_gui::geometry::primitives::Point::new(
+        opacity_c.x,
+        autostart_c.y,
+    ));
     assert_eq!(active_text(&root).as_deref(), Some("Autostart"));
 }
 
@@ -298,11 +330,17 @@ fn test_hover_diagonal_towards_open_submenu_keeps_item_until_it_is_reached() {
                 Some("Opacity"),
                 "diagonal travel at {p:?} must not hop to the rows it crosses"
             );
-            assert!(root.open_submenu().is_some(), "submenu must stay open at {p:?}");
+            assert!(
+                root.open_submenu().is_some(),
+                "submenu must stay open at {p:?}"
+            );
         }
     }
     assert_eq!(
-        sub.borrow().active_action().map(|a| a.borrow().text().to_string()).as_deref(),
+        sub.borrow()
+            .active_action()
+            .map(|a| a.borrow().text().to_string())
+            .as_deref(),
         Some("30%"),
         "pointer ends on the submenu's last row"
     );
@@ -315,8 +353,12 @@ fn test_window_system_resize_event_and_backing_store_update() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let mut win = Window::new("Resize Test", Rect::new(0, 0, 400, 300), WindowFlags::empty())
-        .expect("create window");
+    let mut win = Window::new(
+        "Resize Test",
+        Rect::new(0, 0, 400, 300),
+        WindowFlags::empty(),
+    )
+    .expect("create window");
 
     assert_eq!(win.geometry().width, 400);
     assert_eq!(win.geometry().height, 300);
@@ -341,7 +383,10 @@ fn test_window_system_resize_event_and_backing_store_update() {
         old_height: 300,
     });
 
-    assert!(win.event(&mut resize_event), "Window must handle EventKind::Resize");
+    assert!(
+        win.event(&mut resize_event),
+        "Window must handle EventKind::Resize"
+    );
 
     // Verify window geometry is updated
     assert_eq!(win.geometry().width, 600);
@@ -361,8 +406,12 @@ fn test_window_system_event_handler_resize() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let mut win = Window::new("Handler Resize Test", Rect::new(0, 0, 300, 200), WindowFlags::empty())
-        .expect("create window");
+    let mut win = Window::new(
+        "Handler Resize Test",
+        Rect::new(0, 0, 300, 200),
+        WindowFlags::empty(),
+    )
+    .expect("create window");
 
     let initial_store_w = win.backing_store().physical_width();
     let initial_store_h = win.backing_store().physical_height();
@@ -389,13 +438,17 @@ fn test_window_system_event_handler_resize() {
 #[test]
 fn test_geometry_change_event_delivery() {
     use ferrokit_gui::geometry::primitives::Size;
-    use ferrokit_platform::window_system_interface::Delivery;
     use ferrokit_platform::handle_geometry_change;
+    use ferrokit_platform::window_system_interface::Delivery;
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let mut win = Window::new("Geometry Change Test", Rect::new(0, 0, 320, 240), WindowFlags::empty())
-        .expect("create window");
+    let mut win = Window::new(
+        "Geometry Change Test",
+        Rect::new(0, 0, 320, 240),
+        WindowFlags::empty(),
+    )
+    .expect("create window");
 
     let initial_store_w = win.backing_store().physical_width();
     let initial_store_h = win.backing_store().physical_height();
@@ -432,8 +485,12 @@ fn test_lazy_backing_store_resize_observable_ordering() {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
-    let mut win = Window::new("Lazy Resize Ordering Test", Rect::new(0, 0, 300, 200), WindowFlags::empty())
-        .expect("create window");
+    let mut win = Window::new(
+        "Lazy Resize Ordering Test",
+        Rect::new(0, 0, 300, 200),
+        WindowFlags::empty(),
+    )
+    .expect("create window");
 
     let initial_store_w = win.backing_store().physical_width();
     let initial_store_h = win.backing_store().physical_height();
@@ -480,7 +537,6 @@ fn test_lazy_backing_store_resize_observable_ordering() {
     );
 }
 
-
 #[cfg(windows)]
 #[test]
 fn test_resize_event_observable_ordering_before_layout_activation() {
@@ -490,8 +546,12 @@ fn test_resize_event_observable_ordering_before_layout_activation() {
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
 
-    let mut win = Window::new("Layout Lifecycle Test", Rect::new(0, 0, 300, 200), WindowFlags::empty())
-        .expect("create window");
+    let mut win = Window::new(
+        "Layout Lifecycle Test",
+        Rect::new(0, 0, 300, 200),
+        WindowFlags::empty(),
+    )
+    .expect("create window");
 
     let counter = Arc::new(AtomicI32::new(0));
     let child_resize_order = Arc::new(AtomicI32::new(-1));

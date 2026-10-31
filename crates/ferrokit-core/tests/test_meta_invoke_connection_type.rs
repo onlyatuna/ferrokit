@@ -293,7 +293,9 @@ fn cross_thread_queued_returns_at_once_and_applies_on_owner_loop() {
         .expect("watchdog: queued invoke must return without waiting for the owner loop");
     worker.join().expect("worker thread must not panic");
     let width_before_loop = w.width;
-    pump_until(&el, "cross-thread queued invoke", || width_of(id) == Some(6));
+    pump_until(&el, "cross-thread queued invoke", || {
+        width_of(id) == Some(6)
+    });
     let width_after = w.width;
 
     // SAFETY: `w` was registered above and is still alive.

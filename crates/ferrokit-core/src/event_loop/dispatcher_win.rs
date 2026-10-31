@@ -236,9 +236,7 @@ fn dispatch_thread_timer_impl(
         return Some(elapse);
     }
 
-    let Some(receiver) = receiver_opt else {
-        return None;
-    };
+    let receiver = receiver_opt?;
     let rearmed_elapse = Cell::new(None);
     {
         let _in_timer = InTimerGuard {
@@ -830,7 +828,10 @@ mod tests {
         let result = dispatcher.process_events(true, Some(std::time::Duration::from_secs(30)));
 
         assert_eq!(result, DispatchResult::Awoken);
-        assert!(woken.load(Ordering::SeqCst), "returned before the wake-up was requested");
+        assert!(
+            woken.load(Ordering::SeqCst),
+            "returned before the wake-up was requested"
+        );
         worker.join().unwrap();
     }
 
@@ -902,8 +903,8 @@ mod tests {
             }
 
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn timer_event(&mut self, timer_id: u64) {
                 self.hits.lock().unwrap().push(timer_id);
             }
@@ -1036,7 +1037,14 @@ mod tests {
         let mut last = None;
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
-            while PeekMessageW(&mut msg, hwnd, WM_FERROKIT_WAKEUP, WM_FERROKIT_WAKEUP, PM_REMOVE) != 0 {
+            while PeekMessageW(
+                &mut msg,
+                hwnd,
+                WM_FERROKIT_WAKEUP,
+                WM_FERROKIT_WAKEUP,
+                PM_REMOVE,
+            ) != 0
+            {
                 count += 1;
                 last = Some(msg);
             }
@@ -1638,7 +1646,10 @@ mod tests {
             el.dispatcher()
                 .send_timer_events_at(&registry, deadline, deadline)
         }));
-        assert!(result.is_ok(), "the panic escaped from send_timer_events_at");
+        assert!(
+            result.is_ok(),
+            "the panic escaped from send_timer_events_at"
+        );
         assert!(
             !registry.lock().unwrap().get(id).unwrap().in_timer_event,
             "a raising slot must not leave in_timer_event set"

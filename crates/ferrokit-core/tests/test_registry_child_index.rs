@@ -39,7 +39,9 @@ struct Node {
 
 impl Node {
     fn with_id(id: ObjectId) -> Self {
-        Self { data: movable_data(id) }
+        Self {
+            data: movable_data(id),
+        }
     }
 
     fn new() -> Self {
@@ -152,7 +154,11 @@ fn a_child_linked_before_registration_and_before_its_parent_is_found_through_the
     assert_eq!(move_to_thread_by_id(parent_id, there, here), Ok(()));
     check();
     assert_eq!(query_object_thread(parent_id), Some(there));
-    assert_eq!(query_object_thread(child_id), Some(there), "the child was left behind");
+    assert_eq!(
+        query_object_thread(child_id),
+        Some(there),
+        "the child was left behind"
+    );
 
     // The owners are dropped away from the registration thread: the worker destroys the objects.
     drop(parent);
@@ -174,16 +180,22 @@ fn owned_children_moved_between_parents_are_indexed_under_the_new_parent() {
     let second = registered();
     let (first_id, second_id) = (id_of(&first), id_of(&second));
     // SAFETY: the child is not used through the `Box` afterwards, and stays on this thread.
-    let child_id = unsafe { add_owned_child(first_id, Box::new(Node::new())) }.ok().unwrap();
+    let child_id = unsafe { add_owned_child(first_id, Box::new(Node::new())) }
+        .ok()
+        .unwrap();
     check();
     assert_eq!(query_object_parent(child_id), Some(Some(first_id)));
 
-    assert!(reparent_owned_object(child_id, Some(second_id)).unwrap().is_none());
+    assert!(reparent_owned_object(child_id, Some(second_id))
+        .unwrap()
+        .is_none());
     check();
     assert_eq!(query_object_parent(child_id), Some(Some(second_id)));
 
     // Released from every parent: the caller gets the owner, and the child stays registered.
-    let released = reparent_owned_object(child_id, None).unwrap().expect("an owner");
+    let released = reparent_owned_object(child_id, None)
+        .unwrap()
+        .expect("an owner");
     check();
     assert_eq!(query_object_parent(child_id), Some(None));
 
@@ -322,7 +334,10 @@ fn spawn_pumping_worker(
 fn wait_until_gone(id: ObjectId) {
     let start = Instant::now();
     while query_object_parent(id).is_some() {
-        assert!(start.elapsed() < WAIT, "{id:?} was not destroyed by the worker");
+        assert!(
+            start.elapsed() < WAIT,
+            "{id:?} was not destroyed by the worker"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -363,7 +378,12 @@ fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
             let before = child_index_entries_read();
             assert_eq!(move_to_thread_by_id(root_id, there, here), Ok(()));
             entries_read += child_index_entries_read() - before;
-            ids.extend([root_id, id_of(&child_a), id_of(&child_b), id_of(&grandchild)]);
+            ids.extend([
+                root_id,
+                id_of(&child_a),
+                id_of(&child_b),
+                id_of(&grandchild),
+            ]);
             owners.extend([root, child_a, child_b, grandchild]);
         }
         let elapsed = start.elapsed();
@@ -391,7 +411,10 @@ fn moving_a_small_subtree_does_not_depend_on_how_many_objects_are_registered() {
     stop.store(true, Ordering::Release);
     worker.join().unwrap();
 
-    assert!(alone > 0, "the counter saw no read: the move no longer goes through the index");
+    assert!(
+        alone > 0,
+        "the counter saw no read: the move no longer goes through the index"
+    );
     assert_eq!(
         alone, crowded,
         "the unrelated registered objects changed what the moves inspected"

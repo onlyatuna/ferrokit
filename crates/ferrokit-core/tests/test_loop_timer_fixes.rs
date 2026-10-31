@@ -93,7 +93,9 @@ fn live_zero_timer_still_ticks_until_killed() {
     let el = EventLoop::new();
     let (_owner, id, ticks) = ticker(false);
     let timer = start_object_timer(id, 0, TimerType::Coarse);
-    pump_until(&el, "two zero timer ticks", || ticks.load(Ordering::SeqCst) >= 2);
+    pump_until(&el, "two zero timer ticks", || {
+        ticks.load(Ordering::SeqCst) >= 2
+    });
     assert!(kill_object_timer(timer));
     el.process_events(false);
     let seen = ticks.load(Ordering::SeqCst);
@@ -123,7 +125,10 @@ fn posted_quit_to_a_plain_receiver_does_not_emit_about_to_quit() {
     drop(app);
 }
 
-fn due_registry(receiver: ObjectId, intervals: &[u64]) -> (Mutex<TimerRegistry>, Vec<ferrokit_core::timer::TimerId>) {
+fn due_registry(
+    receiver: ObjectId,
+    intervals: &[u64],
+) -> (Mutex<TimerRegistry>, Vec<ferrokit_core::timer::TimerId>) {
     let mut registry = TimerRegistry::new();
     let ids = intervals
         .iter()
@@ -174,9 +179,16 @@ fn panicking_timer_slot_is_contained_by_the_unix_dispatcher() {
     let result = catch_unwind(AssertUnwindSafe(|| dispatcher.send_timer_events(&registry)));
     assert!(result.is_ok(), "the panic escaped from send_timer_events");
     assert_eq!(bad_ticks.load(Ordering::SeqCst), 1);
-    assert_eq!(good_ticks.load(Ordering::SeqCst), 1, "the rest of the batch still ran");
+    assert_eq!(
+        good_ticks.load(Ordering::SeqCst),
+        1,
+        "the rest of the batch still ran"
+    );
     let reg = registry.lock().unwrap();
-    assert!(!reg.get(bad_timer).unwrap().in_timer_event, "stuck in delivery");
+    assert!(
+        !reg.get(bad_timer).unwrap().in_timer_event,
+        "stuck in delivery"
+    );
     assert!(!reg.get(good_timer).unwrap().in_timer_event);
     drop((bad, good));
 }
@@ -245,8 +257,13 @@ fn single_shot_callback_runs_when_a_filter_consumes_the_tick() {
     let ran = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&ran);
     Timer::single_shot(1, move || flag.store(true, Ordering::SeqCst));
-    pump_until(&el, "the single-shot callback", || ran.load(Ordering::SeqCst));
-    assert!(seen.load(Ordering::SeqCst) >= 1, "the filter never saw the tick");
+    pump_until(&el, "the single-shot callback", || {
+        ran.load(Ordering::SeqCst)
+    });
+    assert!(
+        seen.load(Ordering::SeqCst) >= 1,
+        "the filter never saw the tick"
+    );
     remove_application_event_filter(filter_id);
 }
 

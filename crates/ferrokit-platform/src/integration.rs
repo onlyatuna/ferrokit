@@ -648,8 +648,8 @@ pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
 mod unreachable_display_tests {
     use super::unix::{DisplayServerKind, UnixPlatformIntegration};
     use super::PlatformIntegration;
-    use ferrokit_gui::geometry::primitives::Rect;
     use crate::window::WindowFlags;
+    use ferrokit_gui::geometry::primitives::Rect;
 
     #[test]
     fn bogus_display_falls_back_to_a_working_window() {

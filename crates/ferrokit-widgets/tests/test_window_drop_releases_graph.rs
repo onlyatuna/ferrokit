@@ -54,6 +54,12 @@ fn dropping_a_shown_window_releases_the_whole_widget_tree() {
 
     drop(win);
 
-    assert!(root_weak.upgrade().is_none(), "the root widget outlived the window");
-    assert!(child_weak.upgrade().is_none(), "a child outlived its window");
+    assert!(
+        root_weak.upgrade().is_none(),
+        "the root widget outlived the window"
+    );
+    assert!(
+        child_weak.upgrade().is_none(),
+        "a child outlived its window"
+    );
 }

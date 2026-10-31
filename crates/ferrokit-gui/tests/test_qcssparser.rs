@@ -79,7 +79,10 @@ fn test_qcss_parser_progress_bar_and_sub_control() {
     assert_eq!(sheet.rules.len(), 2);
 
     let pb_rule = &sheet.rules[0];
-    assert_eq!(pb_rule.selectors[0].element_name, Some("QProgressBar".to_string()));
+    assert_eq!(
+        pb_rule.selectors[0].element_name,
+        Some("QProgressBar".to_string())
+    );
     assert_eq!(pb_rule.selectors[0].sub_control, None);
 
     let mut min_h = None;
@@ -95,10 +98,19 @@ fn test_qcss_parser_progress_bar_and_sub_control() {
     assert_eq!(max_h, Some(&QCssValue::Length(6.0)));
 
     let chunk_rule = &sheet.rules[1];
-    assert_eq!(chunk_rule.selectors[0].element_name, Some("QProgressBar".to_string()));
-    assert_eq!(chunk_rule.selectors[0].sub_control, Some("chunk".to_string()));
+    assert_eq!(
+        chunk_rule.selectors[0].element_name,
+        Some("QProgressBar".to_string())
+    );
+    assert_eq!(
+        chunk_rule.selectors[0].sub_control,
+        Some("chunk".to_string())
+    );
     assert_eq!(chunk_rule.declarations.len(), 2);
-    assert_eq!(chunk_rule.declarations[1].property, QCssProperty::BackgroundColor);
+    assert_eq!(
+        chunk_rule.declarations[1].property,
+        QCssProperty::BackgroundColor
+    );
     assert_eq!(
         chunk_rule.declarations[1].value,
         QCssValue::Color(Color::from_rgba8(34, 187, 119, 255))
@@ -122,13 +134,22 @@ fn test_qcss_parser_pseudo_states_and_attributes() {
     assert_eq!(sheet.rules.len(), 2);
 
     let btn_hover = &sheet.rules[0];
-    assert_eq!(btn_hover.selectors[0].element_name, Some("QPushButton".to_string()));
+    assert_eq!(
+        btn_hover.selectors[0].element_name,
+        Some("QPushButton".to_string())
+    );
     assert_eq!(btn_hover.selectors[0].id, Some("ToggleBtn".to_string()));
-    assert_eq!(btn_hover.selectors[0].pseudo_states, vec!["hover".to_string()]);
+    assert_eq!(
+        btn_hover.selectors[0].pseudo_states,
+        vec!["hover".to_string()]
+    );
     assert_eq!(btn_hover.selectors[0].specificity(), 111); // 100(id) + 10(pseudo) + 1(type)
 
     let attr_rule = &sheet.rules[1];
-    assert_eq!(attr_rule.selectors[0].element_name, Some("QLabel".to_string()));
+    assert_eq!(
+        attr_rule.selectors[0].element_name,
+        Some("QLabel".to_string())
+    );
     assert_eq!(
         attr_rule.selectors[0].attributes,
         vec![("state".to_string(), "muted".to_string())]
@@ -153,10 +174,16 @@ fn test_qcss_parser_multi_selectors_and_edges() {
     assert_eq!(rule.selectors[1].id, Some("RowLabel".to_string()));
 
     assert_eq!(rule.declarations[0].property, QCssProperty::Padding);
-    assert_eq!(rule.declarations[0].value, QCssValue::Edges([1.0, 4.0, 1.0, 4.0]));
+    assert_eq!(
+        rule.declarations[0].value,
+        QCssValue::Edges([1.0, 4.0, 1.0, 4.0])
+    );
 
     assert_eq!(rule.declarations[1].property, QCssProperty::Margin);
-    assert_eq!(rule.declarations[1].value, QCssValue::Edges([5.0, 10.0, 5.0, 10.0]));
+    assert_eq!(
+        rule.declarations[1].value,
+        QCssValue::Edges([5.0, 10.0, 5.0, 10.0])
+    );
 }
 #[test]
 fn test_qcss_8_digit_hex_color_is_argb() {

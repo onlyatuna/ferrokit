@@ -96,7 +96,7 @@ fn spin_until(flag: &AtomicBool) {
     let mut n = 0u32;
     while !flag.load(Ordering::Acquire) {
         n += 1;
-        if n % 4096 == 0 {
+        if n.is_multiple_of(4096) {
             assert!(start.elapsed() < WAIT, "timed out waiting for a flag");
         }
         std::hint::spin_loop();

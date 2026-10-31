@@ -151,7 +151,6 @@ mod imp {
 mod imp {
     use super::*;
     use std::collections::{HashMap, VecDeque};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Mutex, MutexGuard};
     use std::thread::{self, JoinHandle, ThreadId};
     use windows_sys::Win32::Foundation::GetLastError;
@@ -179,7 +178,6 @@ mod imp {
     }
 
     struct Request {
-        seq: u64,
         op: Op,
         reply: mpsc::Sender<Result<(), HotkeyError>>,
     }
@@ -345,7 +343,6 @@ mod imp {
         thread_id: u32,
         worker_thread: ThreadId,
         worker: Option<JoinHandle<()>>,
-        next_seq: AtomicU64,
     }
 
     impl Manager {
@@ -368,7 +365,6 @@ mod imp {
                 thread_id,
                 worker_thread: handle.thread().id(),
                 worker: Some(handle),
-                next_seq: AtomicU64::new(0),
             })
         }
 
@@ -379,7 +375,6 @@ mod imp {
                 return run_op(&self.shared, op);
             }
             let (reply, answer) = mpsc::channel();
-            let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             {
                 // Queued and woken under one lock: the worker takes this lock (setting `closed`)
                 // before it can finish, so while `closed` is unset `thread_id` still names our
@@ -389,7 +384,7 @@ mod imp {
                 if queue.closed {
                     return Err(HotkeyError::Stopped);
                 }
-                queue.requests.push_back(Request { seq, op, reply });
+                queue.requests.push_back(Request { op, reply });
                 // SAFETY: plain FFI call to our live worker thread, whose queue exists (created
                 // before start-up ended).
                 if unsafe { PostThreadMessageW(self.thread_id, WM_WAKE, 0, 0) } == 0 {

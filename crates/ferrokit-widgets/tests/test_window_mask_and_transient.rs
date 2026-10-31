@@ -117,11 +117,19 @@ impl PlatformWindow for FakeWindow {
         self.handle
     }
     fn set_mask(&mut self, region: &Region) {
-        self.log.lock().unwrap().masks.push((self.handle, region.clone()));
+        self.log
+            .lock()
+            .unwrap()
+            .masks
+            .push((self.handle, region.clone()));
     }
     fn set_transient_parent(&mut self, parent: Option<isize>) {
         self.transient_parent = parent;
-        self.log.lock().unwrap().transient.push((self.handle, parent));
+        self.log
+            .lock()
+            .unwrap()
+            .transient
+            .push((self.handle, parent));
     }
     fn transient_parent(&self) -> Option<isize> {
         self.transient_parent
@@ -237,7 +245,11 @@ fn a_window_mask_is_handed_to_the_platform_window_as_its_region() {
 
     assert_eq!(win.mask(), mask, "QWidget::mask returns what setMask set");
     assert_eq!(log.lock().unwrap().masks_of(handle), vec![mask.clone()]);
-    assert_eq!(win.root_widget().borrow().mask(), mask, "the window widget holds the mask");
+    assert_eq!(
+        win.root_widget().borrow().mask(),
+        mask,
+        "the window widget holds the mask"
+    );
 }
 
 #[test]
@@ -247,7 +259,10 @@ fn clear_mask_removes_the_window_region_and_is_a_noop_without_a_mask() {
     let handle = win.native_handle();
 
     win.clear_mask();
-    assert!(log.lock().unwrap().masks_of(handle).is_empty(), "no mask, nothing to clear");
+    assert!(
+        log.lock().unwrap().masks_of(handle).is_empty(),
+        "no mask, nothing to clear"
+    );
 
     win.set_mask(&Region::from_rect(Rect::new(0, 0, 50, 50)));
     win.clear_mask();
@@ -255,7 +270,10 @@ fn clear_mask_removes_the_window_region_and_is_a_noop_without_a_mask() {
     assert!(win.mask().is_empty());
     let masks = log.lock().unwrap().masks_of(handle);
     assert_eq!(masks.len(), 2);
-    assert!(masks[1].is_empty(), "an empty region is how the platform window drops its mask");
+    assert!(
+        masks[1].is_empty(),
+        "an empty region is how the platform window drops its mask"
+    );
 }
 
 #[test]
@@ -265,7 +283,10 @@ fn setting_an_equal_mask_again_does_nothing() {
     let handle = win.native_handle();
     // Same area, different decomposition: `QRegion::operator==` compares the area.
     win.set_mask(&Region::from_rects(&[Rect::new(0, 0, 50, 50)]));
-    win.set_mask(&Region::from_rects(&[Rect::new(0, 0, 25, 50), Rect::new(25, 0, 25, 50)]));
+    win.set_mask(&Region::from_rects(&[
+        Rect::new(0, 0, 25, 50),
+        Rect::new(25, 0, 25, 50),
+    ]));
 
     assert_eq!(log.lock().unwrap().masks_of(handle).len(), 1);
 }
@@ -291,7 +312,10 @@ fn the_window_region_follows_a_ratio_change() {
     win.show();
     win.set_mask(&Region::from_rect(Rect::new(0, 0, 40, 40)));
 
-    let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x: 144, dpi_y: 144 }); // 1.5
+    let mut ev = Event::new_spontaneous(EventKind::DpiChanged {
+        dpi_x: 144,
+        dpi_y: 144,
+    }); // 1.5
     assert!(win.event(&mut ev));
     win.render_and_present();
 
@@ -342,7 +366,10 @@ fn a_new_root_widget_does_not_keep_the_old_roots_region() {
 
     assert!(win.mask().is_empty());
     let masks = log.lock().unwrap().masks_of(handle);
-    assert!(masks.last().unwrap().is_empty(), "the platform window is released from the old mask");
+    assert!(
+        masks.last().unwrap().is_empty(),
+        "the platform window is released from the old mask"
+    );
 }
 
 #[test]
@@ -354,11 +381,19 @@ fn a_window_is_not_painted_outside_its_mask() {
     win.show();
 
     assert_eq!(alpha_at(&win, 10, 10), 255, "inside the mask");
-    assert_eq!(alpha_at(&win, 30, 10), 0, "outside the mask nothing is drawn");
+    assert_eq!(
+        alpha_at(&win, 30, 10),
+        0,
+        "outside the mask nothing is drawn"
+    );
 
     win.clear_mask();
     win.render_and_present();
-    assert_eq!(alpha_at(&win, 30, 10), 255, "the area the mask uncovered is repainted");
+    assert_eq!(
+        alpha_at(&win, 30, 10),
+        255,
+        "the area the mask uncovered is repainted"
+    );
 }
 
 // ---- QWidget::setMask on a child widget ------------------------------------------------------
@@ -369,19 +404,35 @@ fn a_child_is_painted_only_inside_its_mask_and_repainted_when_it_changes() {
     let mut win = window(Rect::new(0, 0, 100, 100), WindowFlags::FRAMELESS);
     let child = colored(Rect::new(10, 10, 60, 60), red());
     win.root_widget().borrow_mut().add_child(child.clone());
-    child.borrow().set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
+    child
+        .borrow()
+        .set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
     win.show();
 
     assert_eq!(alpha_at(&win, 20, 20), 255, "inside the child's mask");
-    assert_eq!(alpha_at(&win, 50, 20), 0, "inside the child's rect but outside its mask");
+    assert_eq!(
+        alpha_at(&win, 50, 20),
+        0,
+        "inside the child's rect but outside its mask"
+    );
 
     child.borrow().clear_mask();
     win.render_and_present();
-    assert_eq!(alpha_at(&win, 50, 20), 255, "clearing the mask repaints the exposed area");
+    assert_eq!(
+        alpha_at(&win, 50, 20),
+        255,
+        "clearing the mask repaints the exposed area"
+    );
 
-    child.borrow().set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
+    child
+        .borrow()
+        .set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
     win.render_and_present();
-    assert_eq!(alpha_at(&win, 50, 20), 0, "the area a new mask leaves out is repainted by the parent");
+    assert_eq!(
+        alpha_at(&win, 50, 20),
+        0,
+        "the area a new mask leaves out is repainted by the parent"
+    );
 }
 
 #[test]
@@ -391,21 +442,29 @@ fn a_masked_child_receives_the_mouse_only_inside_its_mask() {
     let child = colored(Rect::new(10, 10, 60, 60), red());
     let root = win.root_widget();
     root.borrow_mut().add_child(child.clone());
-    child.borrow().set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
+    child
+        .borrow()
+        .set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
     let child_id = child.borrow().id();
     let root_id = root.borrow().id();
 
     let hit = |x, y| {
-        let (widget, _) =
-            ferrokit_widgets::hit_test::hit_test(&root, Point::new(x, y)).expect("inside the window");
+        let (widget, _) = ferrokit_widgets::hit_test::hit_test(&root, Point::new(x, y))
+            .expect("inside the window");
         let id = widget.borrow().id();
         id
     };
     assert_eq!(hit(20, 20), child_id, "inside the mask");
-    assert_eq!(hit(60, 20), root_id, "inside the child's rect, outside its mask: the parent");
+    assert_eq!(
+        hit(60, 20),
+        root_id,
+        "inside the child's rect, outside its mask: the parent"
+    );
 
     // WA_MouseNoMask: the whole rect takes the mouse again.
-    child.borrow().set_attribute(WidgetAttribute::MouseNoMask, true);
+    child
+        .borrow()
+        .set_attribute(WidgetAttribute::MouseNoMask, true);
     assert_eq!(hit(60, 20), child_id);
     assert!(child.borrow().test_attribute(WidgetAttribute::MouseNoMask));
 }
@@ -419,14 +478,23 @@ fn a_child_mask_is_not_a_window_region() {
     win.root_widget().borrow_mut().add_child(child.clone());
     ferrokit_widgets::adopt_tree(&win.root_widget());
 
-    child.borrow().set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
+    child
+        .borrow()
+        .set_mask(&Region::from_rect(Rect::new(0, 0, 30, 60)));
 
     assert!(log.lock().unwrap().masks_of(handle).is_empty());
-    assert_eq!(child.borrow().mask(), Region::from_rect(Rect::new(0, 0, 30, 60)));
+    assert_eq!(
+        child.borrow().mask(),
+        Region::from_rect(Rect::new(0, 0, 30, 60))
+    );
 }
 
 fn channels_at(window: &Window, x: u32, y: u32) -> (u8, u8, u8, u8) {
-    let p = window.backing_store().pixmap().pixel(x, y).expect("pixel inside the store");
+    let p = window
+        .backing_store()
+        .pixmap()
+        .pixel(x, y)
+        .expect("pixel inside the store");
     (p.red(), p.green(), p.blue(), p.alpha())
 }
 
@@ -437,7 +505,10 @@ fn a_scanline_mask_paints_the_child_once_and_keeps_the_parent_beneath() {
     use ferrokit_gui::geometry::primitives::RectF;
     let (_log, _g) = install(1.0);
     let mut win = window(Rect::new(0, 0, 100, 100), WindowFlags::FRAMELESS);
-    win.set_root_widget(colored(Rect::new(0, 0, 100, 100), Color::from_rgba8(0, 255, 0, 255)));
+    win.set_root_widget(colored(
+        Rect::new(0, 0, 100, 100),
+        Color::from_rgba8(0, 255, 0, 255),
+    ));
     let paints = Rc::new(std::cell::Cell::new(0u32));
     let counter = Rc::clone(&paints);
     let child: WidgetRef = Rc::new(RefCell::new(Box::new(
@@ -457,8 +528,16 @@ fn a_scanline_mask_paints_the_child_once_and_keeps_the_parent_beneath() {
     child.borrow().set_mask(&mask);
     win.show();
 
-    assert_eq!(paints.get(), 1, "one paint event per frame, not one per mask rectangle");
-    assert_eq!(channels_at(&win, 40, 40), (255, 0, 0, 255), "the child inside its mask");
+    assert_eq!(
+        paints.get(),
+        1,
+        "one paint event per frame, not one per mask rectangle"
+    );
+    assert_eq!(
+        channels_at(&win, 40, 40),
+        (255, 0, 0, 255),
+        "the child inside its mask"
+    );
     assert_eq!(
         channels_at(&win, 10, 10),
         (0, 255, 0, 255),
@@ -480,7 +559,11 @@ fn a_window_mask_that_grows_repaints_the_area_it_uncovers() {
     win.set_mask(&Region::from_rect(Rect::new(0, 0, 40, 40)));
     win.render_and_present();
 
-    assert_eq!(alpha_at(&win, 30, 10), 255, "no blank band where the mask grew");
+    assert_eq!(
+        alpha_at(&win, 30, 10),
+        255,
+        "no blank band where the mask grew"
+    );
 }
 
 /// Rects of a mask that share an edge in device-independent pixels share it in native pixels:
@@ -499,7 +582,12 @@ fn the_native_region_has_no_gaps_at_a_fractional_ratio() {
 
     win.set_mask(&mask);
 
-    let native = log.lock().unwrap().masks_of(handle).pop().expect("a native region");
+    let native = log
+        .lock()
+        .unwrap()
+        .masks_of(handle)
+        .pop()
+        .expect("a native region");
     // Logical rows 0..4 are native rows 0..5; columns 4..9 are inside every band.
     for y in 0..5 {
         assert!(
@@ -524,9 +612,17 @@ fn a_tool_window_with_a_parent_is_its_own_native_window_owned_by_the_parent() {
     let tool = Window::with_parent(&parent, "flyout", Rect::new(20, 20, 120, 80), tool_flags())
         .expect("tool window");
 
-    assert_ne!(tool.native_handle(), parent.native_handle(), "its own native window");
+    assert_ne!(
+        tool.native_handle(),
+        parent.native_handle(),
+        "its own native window"
+    );
     let log = log.lock().unwrap();
-    assert_eq!(log.created.last().copied(), Some(tool_flags()), "created with the tool flags");
+    assert_eq!(
+        log.created.last().copied(),
+        Some(tool_flags()),
+        "created with the tool flags"
+    );
     assert_eq!(
         log.transient,
         vec![(tool.native_handle(), Some(parent.native_handle()))],
@@ -572,7 +668,11 @@ fn a_transient_cycle_is_refused() {
 
     assert_eq!(a.transient_parent(), None);
     assert_eq!(b.transient_parent(), Some(a.id()));
-    assert_eq!(log.lock().unwrap().transient.len(), 1, "the platform window was not touched");
+    assert_eq!(
+        log.lock().unwrap().transient.len(),
+        1,
+        "the platform window was not touched"
+    );
 }
 
 #[test]
@@ -584,7 +684,10 @@ fn dropping_the_parent_ends_the_relationship_and_leaves_the_tool_window() {
     drop(parent);
 
     assert_eq!(tool.transient_parent(), None, "the parent is gone");
-    assert!(Application::top_level_windows().contains(&tool.id()), "the tool window lives on");
+    assert!(
+        Application::top_level_windows().contains(&tool.id()),
+        "the tool window lives on"
+    );
 }
 
 /// A window with a transient parent is a secondary window (`participatesInLastWindowClosed`):
@@ -597,12 +700,16 @@ fn a_window_with_a_transient_parent_does_not_take_part_in_last_window_closed() {
     ferrokit_gui::application::GuiApplication::set_quit_on_last_window_closed(false);
     let emitted = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&emitted);
-    let _conn = app.gui_application().last_window_closed().connect(move |()| {
-        counter.fetch_add(1, Ordering::SeqCst);
-    });
+    let _conn = app
+        .gui_application()
+        .last_window_closed()
+        .connect(move |()| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
 
     let mut parent = window(Rect::new(0, 0, 300, 200), WindowFlags::NORMAL);
-    let mut tool = Window::with_parent(&parent, "t", Rect::new(0, 0, 50, 50), tool_flags()).unwrap();
+    let mut tool =
+        Window::with_parent(&parent, "t", Rect::new(0, 0, 50, 50), tool_flags()).unwrap();
     parent.show();
     tool.show();
 
@@ -628,16 +735,23 @@ fn a_tool_window_without_a_parent_is_a_primary_window() {
     ferrokit_gui::application::GuiApplication::set_quit_on_last_window_closed(false);
     let emitted = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&emitted);
-    let _conn = app.gui_application().last_window_closed().connect(move |()| {
-        counter.fetch_add(1, Ordering::SeqCst);
-    });
+    let _conn = app
+        .gui_application()
+        .last_window_closed()
+        .connect(move |()| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
 
     let mut a = window(Rect::new(0, 0, 100, 100), WindowFlags::NORMAL);
     let mut tool = window(Rect::new(0, 0, 50, 50), tool_flags());
     a.show();
     tool.show();
     a.close();
-    assert_eq!(emitted.load(Ordering::SeqCst), 0, "the parentless tool window is still open");
+    assert_eq!(
+        emitted.load(Ordering::SeqCst),
+        0,
+        "the parentless tool window is still open"
+    );
     tool.close();
     assert_eq!(emitted.load(Ordering::SeqCst), 1);
 }

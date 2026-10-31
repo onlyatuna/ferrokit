@@ -272,7 +272,11 @@ fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
 
             let mut menu = Menu::new("PostedEventsTest");
             menu.add_action(Action::new_ref("First"));
-            assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(100, 100)).is_none());
+            assert!(Menu::exec_popup(
+                &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+                Point::new(100, 100)
+            )
+            .is_none());
             menu_closed.store(true, Ordering::SeqCst);
             log.lock().unwrap().push("menu closed");
         });

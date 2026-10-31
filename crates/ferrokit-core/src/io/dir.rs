@@ -448,10 +448,18 @@ impl Directory {
                 .collect();
             items.sort_by(|a, b| {
                 if sort.contains(SortFlag::DIRS_FIRST) && a.1 != b.1 {
-                    return if a.1 { Ordering::Less } else { Ordering::Greater };
+                    return if a.1 {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    };
                 }
                 if sort.contains(SortFlag::DIRS_LAST) && a.1 != b.1 {
-                    return if a.1 { Ordering::Greater } else { Ordering::Less };
+                    return if a.1 {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
                 }
 
                 let order = if sort.contains(SortFlag::TIME) {

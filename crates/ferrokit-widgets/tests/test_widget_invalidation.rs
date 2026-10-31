@@ -33,7 +33,9 @@ fn every_widget_type() -> Vec<(&'static str, Box<dyn Widget>)> {
         ("ScrollArea", Box::new(ScrollArea::new())),
         (
             "ScrollBar",
-            Box::new(ScrollBar::new(ferrokit_widgets::scroll::Orientation::Vertical)),
+            Box::new(ScrollBar::new(
+                ferrokit_widgets::scroll::Orientation::Vertical,
+            )),
         ),
         ("StackedWidget", Box::new(StackedWidget::new())),
     ]
@@ -44,7 +46,11 @@ fn set_size_policy_on_every_widget_type_is_not_silently_dropped() {
     let policy = QSizePolicy::new(Policy::Fixed, Policy::Expanding);
     for (name, widget) in every_widget_type() {
         widget.set_size_policy(policy);
-        assert_eq!(widget.size_policy(), policy, "{name} dropped set_size_policy");
+        assert_eq!(
+            widget.size_policy(),
+            policy,
+            "{name} dropped set_size_policy"
+        );
     }
 }
 
@@ -52,7 +58,10 @@ fn set_size_policy_on_every_widget_type_is_not_silently_dropped() {
 fn set_style_sheet_on_every_widget_type_is_not_silently_dropped() {
     for (name, widget) in every_widget_type() {
         widget.set_style_sheet("color: red;");
-        assert!(widget.style_sheet().is_some(), "{name} dropped set_style_sheet");
+        assert!(
+            widget.style_sheet().is_some(),
+            "{name} dropped set_style_sheet"
+        );
     }
 }
 
@@ -162,22 +171,47 @@ fn label_and_button_set_text_with_unchanged_text_requests_nothing() {
     button.clear_dirty();
     WidgetCommandQueue::clear();
     label.set_text("12天 3時 4分");
-    assert_eq!(WidgetCommandQueue::pending_count(), 0, "Label::set_text with unchanged text requested a layout");
-    assert!(label.dirty_rect().is_none(), "Label::set_text with unchanged text repainted");
+    assert_eq!(
+        WidgetCommandQueue::pending_count(),
+        0,
+        "Label::set_text with unchanged text requested a layout"
+    );
+    assert!(
+        label.dirty_rect().is_none(),
+        "Label::set_text with unchanged text repainted"
+    );
     button.set_text("go");
-    assert_eq!(WidgetCommandQueue::pending_count(), 0, "Button::set_text with unchanged text requested a layout");
-    assert!(button.dirty_rect().is_none(), "Button::set_text with unchanged text repainted");
+    assert_eq!(
+        WidgetCommandQueue::pending_count(),
+        0,
+        "Button::set_text with unchanged text requested a layout"
+    );
+    assert!(
+        button.dirty_rect().is_none(),
+        "Button::set_text with unchanged text repainted"
+    );
 
     label.set_text("13天 3時 4分");
-    assert!(WidgetCommandQueue::pending_count() > 0, "Label::set_text with new text did not request a layout");
-    assert!(label.dirty_rect().is_some(), "Label::set_text with new text did not repaint");
+    assert!(
+        WidgetCommandQueue::pending_count() > 0,
+        "Label::set_text with new text did not request a layout"
+    );
+    assert!(
+        label.dirty_rect().is_some(),
+        "Label::set_text with new text did not repaint"
+    );
     WidgetCommandQueue::clear();
     button.set_text("stop");
-    assert!(WidgetCommandQueue::pending_count() > 0, "Button::set_text with new text did not request a layout");
-    assert!(button.dirty_rect().is_some(), "Button::set_text with new text did not repaint");
+    assert!(
+        WidgetCommandQueue::pending_count() > 0,
+        "Button::set_text with new text did not request a layout"
+    );
+    assert!(
+        button.dirty_rect().is_some(),
+        "Button::set_text with new text did not repaint"
+    );
     WidgetCommandQueue::clear();
 }
-
 
 #[test]
 fn set_visible_on_every_widget_type_requests_a_parent_layout_only_when_it_changes() {
@@ -193,12 +227,22 @@ fn set_visible_on_every_widget_type_requests_a_parent_layout_only_when_it_change
         widget.set_parent_widget(Some(Rc::downgrade(&parent)));
         WidgetCommandQueue::clear();
         widget.set_visible(true);
-        assert_eq!(WidgetCommandQueue::pending_count(), 0, "{name}: setVisible(true) on a visible widget");
+        assert_eq!(
+            WidgetCommandQueue::pending_count(),
+            0,
+            "{name}: setVisible(true) on a visible widget"
+        );
         widget.set_visible(false);
-        assert!(WidgetCommandQueue::pending_count() > 0, "{name}: hide did not request a layout");
+        assert!(
+            WidgetCommandQueue::pending_count() > 0,
+            "{name}: hide did not request a layout"
+        );
         WidgetCommandQueue::clear();
         widget.set_visible(true);
-        assert!(WidgetCommandQueue::pending_count() > 0, "{name}: show did not request a layout");
+        assert!(
+            WidgetCommandQueue::pending_count() > 0,
+            "{name}: show did not request a layout"
+        );
         WidgetCommandQueue::clear();
     }
 }
@@ -221,7 +265,11 @@ fn update_under_a_hidden_parent_marks_nothing_until_the_parent_is_shown() {
         widget.set_parent_widget(Some(Rc::downgrade(&parent)));
         widget.clear_dirty();
         widget.update();
-        assert_eq!(widget.dirty_rect(), None, "{name}: update() under a hidden parent");
+        assert_eq!(
+            widget.dirty_rect(),
+            None,
+            "{name}: update() under a hidden parent"
+        );
     }
     parent.borrow().set_visible(true);
     let child = Label::new("c");
@@ -317,7 +365,13 @@ mod pumped {
         container.borrow_mut().set_layout(Box::new(layout));
         win.set_root_widget(container);
 
-        let mut fx = Fixture { el, win, first, second, spacing: 6 };
+        let mut fx = Fixture {
+            el,
+            win,
+            first,
+            second,
+            spacing: 6,
+        };
         // Settle the initial layout and paint.
         fx.win.render_and_present();
         pump_idle(&mut fx);
@@ -365,13 +419,20 @@ mod pumped {
         let turns = pump_idle(&mut fx);
 
         let hint = fx.first.borrow().size_hint();
-        assert!(hint.width > hint_before, "a 28px font must be wider than the 12pt label was");
+        assert!(
+            hint.width > hint_before,
+            "a 28px font must be wider than the 12pt label was"
+        );
         assert_eq!(
             fx.first.borrow().geometry().width,
             hint.width,
             "the label did not take its new size hint (no relayout after {turns} pump turns)"
         );
-        assert_eq!(left_of_second(&fx), hint.width + fx.spacing, "the sibling did not move");
+        assert_eq!(
+            left_of_second(&fx),
+            hint.width + fx.spacing,
+            "the sibling did not move"
+        );
         assert!(
             fx.win.render_stats().render_count > renders_before,
             "a style change must schedule a repaint"
@@ -428,7 +489,11 @@ mod pumped {
 
         let hint = fx.first.borrow().size_hint().width;
         assert!(hint > before);
-        assert_eq!(fx.first.borrow().geometry().width, hint, "label kept its old width");
+        assert_eq!(
+            fx.first.borrow().geometry().width,
+            hint,
+            "label kept its old width"
+        );
         assert_eq!(left_of_second(&fx), hint + fx.spacing);
     }
 
@@ -450,7 +515,11 @@ mod pumped {
 
         let hint = fx.first.borrow().size_hint().width;
         assert!(hint > before);
-        assert_eq!(fx.first.borrow().geometry().width, hint, "button kept its old width");
+        assert_eq!(
+            fx.first.borrow().geometry().width,
+            hint,
+            "button kept its old width"
+        );
         assert_eq!(left_of_second(&fx), hint + fx.spacing);
     }
 
@@ -481,8 +550,16 @@ mod pumped {
 
         let hint = fx.first.borrow().size_hint().width;
         assert!(hint > before);
-        assert_eq!(fx.first.borrow().geometry().width, hint, "the wrapper kept its old width");
-        assert_eq!(left_of_second(&fx), hint + fx.spacing, "the sibling did not move");
+        assert_eq!(
+            fx.first.borrow().geometry().width,
+            hint,
+            "the wrapper kept its old width"
+        );
+        assert_eq!(
+            left_of_second(&fx),
+            hint + fx.spacing,
+            "the sibling did not move"
+        );
     }
 
     /// `QWidget::setVisible` on a child runs `QLayout::invalidate` on the parent
@@ -495,11 +572,19 @@ mod pumped {
 
         fx.first.borrow().set_visible(false);
         pump_idle(&mut fx);
-        assert_eq!(left_of_second(&fx), 0, "the sibling did not move into the freed space");
+        assert_eq!(
+            left_of_second(&fx),
+            0,
+            "the sibling did not move into the freed space"
+        );
 
         fx.first.borrow().set_visible(true);
         pump_idle(&mut fx);
-        assert_eq!(left_of_second(&fx), shown_x, "showing did not restore the layout");
+        assert_eq!(
+            left_of_second(&fx),
+            shown_x,
+            "showing did not restore the layout"
+        );
     }
 
     #[test]
@@ -508,9 +593,9 @@ mod pumped {
         fx.first
             .borrow()
             .set_size_policy(QSizePolicy::new(Policy::Fixed, Policy::Preferred));
-        fx.first
-            .borrow()
-            .set_style_sheet("QLabel { font-size: 12px; } QLabel[state=\"big\"] { font-size: 30px; }");
+        fx.first.borrow().set_style_sheet(
+            "QLabel { font-size: 12px; } QLabel[state=\"big\"] { font-size: 30px; }",
+        );
         pump_idle(&mut fx);
         let before = fx.first.borrow().geometry().width;
 

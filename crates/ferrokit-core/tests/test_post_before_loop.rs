@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
-use ferrokit_core::object::{ObjectData, ObjectId, QObject, ThreadId};
 use ferrokit_core::object::{register_qobject_ptr, unregister_qobject};
+use ferrokit_core::object::{ObjectData, ObjectId, QObject, ThreadId};
 use ferrokit_core::signal::{ConnectionType, Signal};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;
@@ -59,7 +59,8 @@ fn post_before_loop_exists_is_delivered_when_loop_starts() {
     // The worker has no loop yet.
     post_event_to_thread(tid, ObjectId(0), push(&log, "posted-before-loop"));
     go.send(()).unwrap();
-    join.join().expect("event posted before the loop existed must be delivered");
+    join.join()
+        .expect("event posted before the loop existed must be delivered");
 }
 
 #[test]
@@ -68,7 +69,10 @@ fn events_posted_before_loop_keep_priority_and_fifo_order() {
     let log = log();
     let seen = Arc::clone(&log);
     let (tid, go, join) = worker_with_late_loop(move || {
-        assert_eq!(*seen.lock().unwrap(), vec!["high", "normal-1", "normal-2", "low"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["high", "normal-1", "normal-2", "low"]
+        );
     });
 
     post_event_to_thread_with_priority(tid, ObjectId(0), push(&log, "low"), -10);
@@ -76,7 +80,8 @@ fn events_posted_before_loop_keep_priority_and_fifo_order() {
     post_event_to_thread_with_priority(tid, ObjectId(0), push(&log, "normal-2"), 0);
     post_event_to_thread_with_priority(tid, ObjectId(0), push(&log, "high"), 10);
     go.send(()).unwrap();
-    join.join().expect("buffered events must be delivered by priority, FIFO within a priority");
+    join.join()
+        .expect("buffered events must be delivered by priority, FIFO within a priority");
 }
 
 #[test]
@@ -103,7 +108,8 @@ fn events_posted_after_loop_exists_follow_the_buffered_ones() {
     ready_rx.recv().unwrap();
     post_event_to_thread(tid, ObjectId(0), push(&log, "after-loop"));
     pump_tx.send(()).unwrap();
-    join.join().expect("buffered events must precede events posted once the loop exists");
+    join.join()
+        .expect("buffered events must precede events posted once the loop exists");
 }
 
 #[test]
@@ -121,9 +127,13 @@ fn queued_signal_emitted_before_target_loop_exists_is_delivered() {
     });
     signal.emit(&7);
 
-    assert!(hits.lock().unwrap().is_empty(), "a queued slot must not run on the emitter");
+    assert!(
+        hits.lock().unwrap().is_empty(),
+        "a queued slot must not run on the emitter"
+    );
     go.send(()).unwrap();
-    join.join().expect("queued slot emitted before the target loop existed must run later");
+    join.join()
+        .expect("queued slot emitted before the target loop existed must run later");
 }
 
 #[test]
@@ -153,7 +163,8 @@ fn single_shot_zero_before_loop_runs_after_earlier_posted_events() {
     posted_tx.send(()).unwrap();
     // Give the worker no chance to run ahead: it only creates its loop after `go`.
     go_tx.send(()).unwrap();
-    join.join().expect("single_shot(0) before the loop must run after earlier posted events");
+    join.join()
+        .expect("single_shot(0) before the loop must run after earlier posted events");
 }
 
 struct Receiver1 {
@@ -188,7 +199,10 @@ fn core_application_post_event_before_receiver_thread_has_loop_is_delivered() {
     let join = std::thread::spawn(move || {
         id_tx.send(ThreadId::current()).unwrap();
         let id = ObjectId::next();
-        let mut rcv = Receiver1 { data: ObjectData::new(id), got: got_w };
+        let mut rcv = Receiver1 {
+            data: ObjectData::new(id),
+            got: got_w,
+        };
         // SAFETY: `rcv` stays on this thread and alive until unregistered below.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
         reg_tx.send(id).unwrap();
@@ -197,13 +211,17 @@ fn core_application_post_event_before_receiver_thread_has_loop_is_delivered() {
         el.process_events(false);
         let delivered = rcv.got.load(Ordering::SeqCst);
         unsafe { unregister_qobject(id) };
-        assert!(delivered, "UpdateRequest posted before the loop existed must be delivered");
+        assert!(
+            delivered,
+            "UpdateRequest posted before the loop existed must be delivered"
+        );
     });
     let _tid = id_rx.recv().unwrap();
     let rid = reg_rx.recv().unwrap();
 
     CoreApplication::post_event(rid, Event::new(EventKind::UpdateRequest));
     go_tx.send(()).unwrap();
-    join.join().expect("CoreApplication::post_event before the loop existed must deliver");
+    join.join()
+        .expect("CoreApplication::post_event before the loop existed must deliver");
     assert!(got.load(Ordering::SeqCst));
 }
