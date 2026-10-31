@@ -125,7 +125,11 @@ mod tests {
         for gamma in [1.0f32, 1.2, 1.4] {
             let lut = TrcLut::from_gamma(gamma);
             for c in 0..=255u8 {
-                assert_eq!(lut.from_linear(lut.to_linear(c)), c, "gamma {gamma} channel {c}");
+                assert_eq!(
+                    lut.from_linear(lut.to_linear(c)),
+                    c,
+                    "gamma {gamma} channel {c}"
+                );
             }
         }
         // Higher gammas (such as the 2.31 used for Windows A8 text) compress the darkest values
@@ -133,7 +137,10 @@ mod tests {
         let lut = TrcLut::from_gamma(2.31);
         for c in 0..=255u8 {
             let got = lut.from_linear(lut.to_linear(c));
-            assert!((got as i32 - c as i32).abs() <= 6, "gamma 2.31 channel {c}: {got}");
+            assert!(
+                (got as i32 - c as i32).abs() <= 6,
+                "gamma 2.31 channel {c}: {got}"
+            );
         }
     }
 

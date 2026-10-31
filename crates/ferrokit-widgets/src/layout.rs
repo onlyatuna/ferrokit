@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use std::cell::{Cell, RefCell};
 use crate::layout_engine::{
     alignment_rect, distribute_multi_box, find_size, init_empty_multi_box, item_expanding,
     item_has_height_for_width, item_height_for_width, item_is_empty, item_minimum_size,
@@ -10,6 +9,7 @@ use crate::size_policy::Policy;
 use crate::widget::{EmptyWidget, Widget, WidgetRef};
 use ferrokit_gui::application::GuiApplication;
 use ferrokit_gui::geometry::primitives::{Margins, Rect, Size};
+use std::cell::{Cell, RefCell};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -55,7 +55,12 @@ pub struct SpacerItem {
 
 impl SpacerItem {
     pub const fn new(width: i32, height: i32, horizontal: Policy, vertical: Policy) -> Self {
-        Self { width, height, horizontal, vertical }
+        Self {
+            width,
+            height,
+            horizontal,
+            vertical,
+        }
     }
 
     /// `QSpacerItem::sizeHint`: the given size, whatever the policy (qlayoutitem.cpp:651-653).
@@ -66,13 +71,19 @@ impl SpacerItem {
     /// `QSpacerItem::minimumSize`: 0 where the policy may shrink (qlayoutitem.cpp:607-610).
     pub fn minimum_size(&self) -> Size {
         let min = |len: i32, p: Policy| if p.can_shrink() { 0 } else { len };
-        Size::new(min(self.width, self.horizontal), min(self.height, self.vertical))
+        Size::new(
+            min(self.width, self.horizontal),
+            min(self.height, self.vertical),
+        )
     }
 
     /// `QSpacerItem::maximumSize`: unbounded where the policy may grow (qlayoutitem.cpp:628-631).
     pub fn maximum_size(&self) -> Size {
         let max = |len: i32, p: Policy| if p.can_grow() { LAYOUT_SIZE_MAX } else { len };
-        Size::new(max(self.width, self.horizontal), max(self.height, self.vertical))
+        Size::new(
+            max(self.width, self.horizontal),
+            max(self.height, self.vertical),
+        )
     }
 
     /// `QSpacerItem::expandingDirections`: the policies carrying `ExpandFlag`
@@ -304,12 +315,30 @@ impl BoxLayout {
     }
 
     pub fn insert_widget(&mut self, index: usize, widget: WidgetRef, stretch: u32) {
-        self.insert_item(index, LayoutItem { widget, stretch, alignment: Alignment::NONE, spacer: None, nested: false });
+        self.insert_item(
+            index,
+            LayoutItem {
+                widget,
+                stretch,
+                alignment: Alignment::NONE,
+                spacer: None,
+                nested: false,
+            },
+        );
     }
 
     /// `QBoxLayout::addWidget(widget, stretch, alignment)`.
     pub fn add_widget_aligned(&mut self, widget: WidgetRef, stretch: u32, alignment: Alignment) {
-        self.insert_item(usize::MAX, LayoutItem { widget, stretch, alignment, spacer: None, nested: false });
+        self.insert_item(
+            usize::MAX,
+            LayoutItem {
+                widget,
+                stretch,
+                alignment,
+                spacer: None,
+                nested: false,
+            },
+        );
     }
 
     pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
@@ -453,7 +482,16 @@ impl BoxLayout {
     fn insert_spacer(&mut self, index: usize, spacer: SpacerItem, stretch: u32) {
         let widget = crate::widget::EmptyWidget::with_geometry(Rect::new(0, 0, 0, 0));
         let widget: WidgetRef = std::rc::Rc::new(std::cell::RefCell::new(Box::new(widget)));
-        self.insert_item(index, LayoutItem { widget, stretch, alignment: Alignment::NONE, spacer: Some(spacer), nested: false });
+        self.insert_item(
+            index,
+            LayoutItem {
+                widget,
+                stretch,
+                alignment: Alignment::NONE,
+                spacer: Some(spacer),
+                nested: false,
+            },
+        );
     }
 
     /// `QBoxLayout::setStretchFactor(QWidget*, int)`: sets the stretch of the item holding
@@ -705,7 +743,11 @@ impl Layout for BoxLayout {
             placed.width - self.margins.left - self.margins.right,
             placed.height - self.margins.top - self.margins.bottom,
         );
-        let (pos, space) = if horz { (s.x, s.width) } else { (s.y, s.height) };
+        let (pos, space) = if horz {
+            (s.x, s.width)
+        } else {
+            (s.y, s.height)
+        };
         let n = chain.len();
         // qboxlayout.cpp:752-766: a vertical box gives each height-for-width item the height it
         // wants at the width it gets, as both its size hint and its minimum.
@@ -812,7 +854,7 @@ fn entry_is_empty(widget: &WidgetRef, nested: bool) -> bool {
         widget
             .borrow()
             .layout_ref_mut()
-            .map_or(true, |inner| inner.is_empty())
+            .is_none_or(|inner| inner.is_empty())
     } else {
         item_is_empty(&**widget.borrow())
     }
@@ -867,37 +909,50 @@ impl BoxLayout {
 
         for (i, item) in self.items.iter().enumerate() {
             // Everything below is (main axis, cross axis).
-            let (max, min, hint, exp, empty, is_widget, policy_stretch, item_limits) = if let Some(spacer) = item.spacer {
-                // Everything a `QSpacerItem` reports, transposed for a vertical layout.
-                let swap = |s: Size| if horz { (s.width, s.height) } else { (s.height, s.width) };
-                let exp = spacer.expanding_directions();
-                (
-                    swap(spacer.maximum_size()),
-                    swap(spacer.minimum_size()),
-                    swap(spacer.size_hint()),
-                    if horz { exp } else { (exp.1, exp.0) },
-                    true,
-                    false,
-                    0,
-                    ItemLimits {
-                        item_max: spacer.maximum_size(),
-                        widget_min: Size::new(0, 0),
-                        widget_max: spacer.maximum_size(),
-                        aligned_pref: Size::new(0, 0),
-                    },
-                )
-            } else {
-                let w = item.widget.borrow();
-                let policy = w.size_policy();
-                let swap = |s: Size| if horz { (s.width, s.height) } else { (s.height, s.width) };
-                let exp = item_expanding(&**w, item.alignment);
-                let mut item_limits = ItemLimits::of(&**w, item.alignment);
-                if item.nested {
-                    // `QLayoutItem::maximumSize` of a `QLayout` is that layout's own maximumSize.
-                    if let Some(inner) = w.layout_ref_mut() {
-                        item_limits.item_max = inner.maximum_size();
+            let (max, min, hint, exp, empty, is_widget, policy_stretch, item_limits) =
+                if let Some(spacer) = item.spacer {
+                    // Everything a `QSpacerItem` reports, transposed for a vertical layout.
+                    let swap = |s: Size| {
+                        if horz {
+                            (s.width, s.height)
+                        } else {
+                            (s.height, s.width)
+                        }
+                    };
+                    let exp = spacer.expanding_directions();
+                    (
+                        swap(spacer.maximum_size()),
+                        swap(spacer.minimum_size()),
+                        swap(spacer.size_hint()),
+                        if horz { exp } else { (exp.1, exp.0) },
+                        true,
+                        false,
+                        0,
+                        ItemLimits {
+                            item_max: spacer.maximum_size(),
+                            widget_min: Size::new(0, 0),
+                            widget_max: spacer.maximum_size(),
+                            aligned_pref: Size::new(0, 0),
+                        },
+                    )
+                } else {
+                    let w = item.widget.borrow();
+                    let policy = w.size_policy();
+                    let swap = |s: Size| {
+                        if horz {
+                            (s.width, s.height)
+                        } else {
+                            (s.height, s.width)
+                        }
+                    };
+                    let exp = item_expanding(&**w, item.alignment);
+                    let mut item_limits = ItemLimits::of(&**w, item.alignment);
+                    if item.nested {
+                        // `QLayoutItem::maximumSize` of a `QLayout` is that layout's own maximumSize.
+                        if let Some(inner) = w.layout_ref_mut() {
+                            item_limits.item_max = inner.maximum_size();
+                        }
                     }
-                }
                     (
                         swap(item_limits.item_max),
                         swap(item_minimum_size(&**w)),
@@ -935,7 +990,14 @@ impl BoxLayout {
             if !(empty && is_widget) {
                 // hidden widgets are ignored
                 let mut dummy = true;
-                q_max_exp_calc(&mut max_cross, &mut cross_exp, &mut dummy, max.1, exp.1, empty);
+                q_max_exp_calc(
+                    &mut max_cross,
+                    &mut cross_exp,
+                    &mut dummy,
+                    max.1,
+                    exp.1,
+                    empty,
+                );
             }
             min_cross = min_cross.max(min.1);
             hint_cross = hint_cross.max(hint.1);
@@ -944,7 +1006,11 @@ impl BoxLayout {
             chain[i].maximum_size = max.0;
             chain[i].minimum_size = min.0;
             chain[i].expansive = expand;
-            chain[i].stretch = if item.stretch > 0 { item.stretch as i32 } else { policy_stretch };
+            chain[i].stretch = if item.stretch > 0 {
+                item.stretch as i32
+            } else {
+                policy_stretch
+            };
             chain[i].empty = empty;
             limits.push(item_limits);
             chain[i].spacing = 0; // may be set non-zero by a later non-empty item
@@ -953,9 +1019,20 @@ impl BoxLayout {
             }
         }
 
-        let extra = Size::new(self.margins.left + self.margins.right, self.margins.top + self.margins.bottom);
-        let (min_w, min_h) = if horz { (min_main, min_cross) } else { (min_cross, min_main) };
-        let (hint_w, hint_h) = if horz { (hint_main, hint_cross) } else { (hint_cross, hint_main) };
+        let extra = Size::new(
+            self.margins.left + self.margins.right,
+            self.margins.top + self.margins.bottom,
+        );
+        let (min_w, min_h) = if horz {
+            (min_main, min_cross)
+        } else {
+            (min_cross, min_main)
+        };
+        let (hint_w, hint_h) = if horz {
+            (hint_main, hint_cross)
+        } else {
+            (hint_cross, hint_main)
+        };
         let (max_w, max_h) = if horz {
             (max_main, max_cross as i64)
         } else {
@@ -974,13 +1051,20 @@ impl BoxLayout {
         BoxGeom {
             chain,
             limits,
-            max: Size::new(max_bounded(max_w, min_w, extra.width), max_bounded(max_h, min_h, extra.height)),
+            max: Size::new(
+                max_bounded(max_w, min_w, extra.width),
+                max_bounded(max_h, min_h, extra.height),
+            ),
             min: Size::new(min_w + extra.width, min_h + extra.height),
             hint: Size::new(
                 bounded(hint_w, min_w, max_w) + extra.width,
                 bounded(hint_h, min_h, max_h) + extra.height,
             ),
-            expanding: if horz { (main_exp, cross_exp) } else { (cross_exp, main_exp) },
+            expanding: if horz {
+                (main_exp, cross_exp)
+            } else {
+                (cross_exp, main_exp)
+            },
             has_hfw,
         }
     }
@@ -1404,7 +1488,6 @@ impl GridLayout {
     }
 }
 
-
 impl Default for GridLayout {
     fn default() -> Self {
         Self::new()
@@ -1664,7 +1747,10 @@ impl Layout for GridLayout {
         let rtl = GuiApplication::is_right_to_left();
 
         for (i, item) in self.items.iter().enumerate() {
-            let (r2, c2) = (item.row + item.row_span - 1, item.column + item.col_span - 1);
+            let (r2, c2) = (
+                item.row + item.row_span - 1,
+                item.column + item.col_span - 1,
+            );
             let left = cols[item.column].pos;
             let top = rows[item.row].pos;
             let w = cols[c2].pos + cols[c2].size - left;
@@ -1729,12 +1815,18 @@ impl GridLayout {
         let mut rows = vec![LayoutStruct::default(); rr];
         let mut cols = vec![LayoutStruct::default(); cc];
         for (i, row) in rows.iter_mut().enumerate() {
-            let (stretch, min) = (stretch_of(&self.row_stretches, i), min_of(&self.row_min_heights, i));
+            let (stretch, min) = (
+                stretch_of(&self.row_stretches, i),
+                min_of(&self.row_min_heights, i),
+            );
             row.init(stretch, min);
             row.maximum_size = if stretch != 0 { LAYOUT_SIZE_MAX } else { min };
         }
         for (i, col) in cols.iter_mut().enumerate() {
-            let (stretch, min) = (stretch_of(&self.col_stretches, i), min_of(&self.col_min_widths, i));
+            let (stretch, min) = (
+                stretch_of(&self.col_stretches, i),
+                min_of(&self.col_min_widths, i),
+            );
             col.init(stretch, min);
             col.maximum_size = if stretch != 0 { LAYOUT_SIZE_MAX } else { min };
         }
@@ -1780,7 +1872,10 @@ impl GridLayout {
         let mut has_multi = false;
         for (i, item) in self.items.iter().enumerate() {
             let b = &boxes[i];
-            let (to_row, to_col) = (item.row + item.row_span - 1, item.column + item.col_span - 1);
+            let (to_row, to_col) = (
+                item.row + item.row_span - 1,
+                item.column + item.col_span - 1,
+            );
 
             if item.row == to_row {
                 if !b.empty {
@@ -1790,7 +1885,14 @@ impl GridLayout {
                     }
                     data.size_hint = data.size_hint.max(b.hint.height);
                     data.minimum_size = data.minimum_size.max(b.min.height);
-                    q_max_exp_calc(&mut data.maximum_size, &mut data.expansive, &mut data.empty, b.max.height, b.expanding.1, b.empty);
+                    q_max_exp_calc(
+                        &mut data.maximum_size,
+                        &mut data.expansive,
+                        &mut data.empty,
+                        b.max.height,
+                        b.expanding.1,
+                        b.empty,
+                    );
                 }
             } else {
                 init_empty_multi_box(&mut rows, item.row, to_row);
@@ -1805,7 +1907,14 @@ impl GridLayout {
                     }
                     data.size_hint = data.size_hint.max(b.hint.width);
                     data.minimum_size = data.minimum_size.max(b.min.width);
-                    q_max_exp_calc(&mut data.maximum_size, &mut data.expansive, &mut data.empty, b.max.width, b.expanding.0, b.empty);
+                    q_max_exp_calc(
+                        &mut data.maximum_size,
+                        &mut data.expansive,
+                        &mut data.empty,
+                        b.max.width,
+                        b.expanding.0,
+                        b.empty,
+                    );
                 }
             } else {
                 init_empty_multi_box(&mut cols, item.column, to_col);
@@ -1827,12 +1936,31 @@ impl GridLayout {
         if has_multi {
             for (i, item) in self.items.iter().enumerate() {
                 let b = &boxes[i];
-                let (to_row, to_col) = (item.row + item.row_span - 1, item.column + item.col_span - 1);
+                let (to_row, to_col) = (
+                    item.row + item.row_span - 1,
+                    item.column + item.col_span - 1,
+                );
                 if item.row != to_row {
-                    distribute_multi_box(&mut rows, item.row, to_row, b.min.height, b.hint.height, &self.row_stretches, b.v_stretch);
+                    distribute_multi_box(
+                        &mut rows,
+                        item.row,
+                        to_row,
+                        b.min.height,
+                        b.hint.height,
+                        &self.row_stretches,
+                        b.v_stretch,
+                    );
                 }
                 if item.column != to_col {
-                    distribute_multi_box(&mut cols, item.column, to_col, b.min.width, b.hint.width, &self.col_stretches, b.h_stretch);
+                    distribute_multi_box(
+                        &mut cols,
+                        item.column,
+                        to_col,
+                        b.min.width,
+                        b.hint.width,
+                        &self.col_stretches,
+                        b.h_stretch,
+                    );
                 }
             }
         }

@@ -101,11 +101,13 @@ pub trait NativeEventFilter: Send + Sync + 'static {
     ) -> bool;
 }
 
+type SharedNativeFilter = Arc<Mutex<Box<dyn NativeEventFilter>>>;
+
 #[derive(Default)]
 pub struct NativeEventFilterChain {
     /// Shared (`&self` access) so a dispatcher can run filters while a nested loop on the same
     /// thread re-enters `process_events`. The list lock is never held across a filter call.
-    filters: Mutex<Vec<Arc<Mutex<Box<dyn NativeEventFilter>>>>>,
+    filters: Mutex<Vec<SharedNativeFilter>>,
 }
 
 impl std::fmt::Debug for NativeEventFilterChain {

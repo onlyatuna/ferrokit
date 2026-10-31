@@ -299,7 +299,12 @@ pub mod win32_theme {
             let mut on: i32 = 0;
             // SAFETY: the query writes one `BOOL` through the pointer.
             let ok = unsafe {
-                SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &mut on as *mut _ as *mut _, 0)
+                SystemParametersInfoW(
+                    SPI_GETCLIENTAREAANIMATION,
+                    0,
+                    &mut on as *mut _ as *mut _,
+                    0,
+                )
             };
             if ok != 0 && on != 0 {
                 MotionPreference::NoPreference
@@ -534,8 +539,11 @@ pub mod cocoa_theme {
             use ferrokit_core::object::{ObjectId, ThreadContext, ThreadId};
             // SAFETY: `pthread_main_np` takes no arguments and only reads the calling thread.
             let os_main = unsafe { pthread_main_np() } != 0;
-            match Self::observe_plan(ThreadContext::main_thread_id(), ThreadId::current(), os_main)
-            {
+            match Self::observe_plan(
+                ThreadContext::main_thread_id(),
+                ThreadId::current(),
+                os_main,
+            ) {
                 ObservePlan::Now => {
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Self::register(core);
                 }
@@ -773,7 +781,10 @@ pub mod cocoa_theme {
         fn without_an_application_only_the_os_main_thread_registers() {
             let me = ThreadId::current();
             assert_eq!(CocoaTheme::observe_plan(None, me, true), ObservePlan::Now);
-            assert_eq!(CocoaTheme::observe_plan(None, me, false), ObservePlan::Never);
+            assert_eq!(
+                CocoaTheme::observe_plan(None, me, false),
+                ObservePlan::Never
+            );
         }
     }
 }
@@ -1115,7 +1126,10 @@ pub mod unix_theme {
             });
             let (scheme, took) = timed_read(&theme);
             assert_eq!(scheme, answer);
-            assert!(took < PROMPT, "the read waited {took:?} for an answer already in");
+            assert!(
+                took < PROMPT,
+                "the read waited {took:?} for an answer already in"
+            );
             sender.join().unwrap();
             listener.join().unwrap();
         }
@@ -1226,7 +1240,10 @@ pub mod unix_theme {
                 "the slot on the listener thread used up the wait"
             );
             assert_eq!(scheme, answer, "the slot already sees the new scheme");
-            assert!(took < Duration::from_secs(2), "the listener stalled for {took:?}");
+            assert!(
+                took < Duration::from_secs(2),
+                "the listener stalled for {took:?}"
+            );
             // The slot did not use up the one wait: the first outside read still gets the answer
             // at once.
             let (scheme, took) = timed_read(&theme);

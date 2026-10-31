@@ -20,16 +20,28 @@ fn set_visible_false_closes_the_submenu_and_clears_the_active_action() {
 
     Menu::popup(&top, Point::new(10, 10));
     for key in [VK_DOWN, VK_RIGHT] {
-        let mut ev =
-            Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false });
+        let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+            key,
+            modifiers: 0,
+            is_repeat: false,
+        });
         top.borrow_mut().event(&mut ev);
     }
-    assert!(sub.borrow().is_visible(), "precondition: the sub-menu is open");
-    assert!(top.borrow().active_action().is_some(), "precondition: an item is highlighted");
+    assert!(
+        sub.borrow().is_visible(),
+        "precondition: the sub-menu is open"
+    );
+    assert!(
+        top.borrow().active_action().is_some(),
+        "precondition: an item is highlighted"
+    );
 
     top.borrow().set_visible(false);
 
-    assert!(!sub.borrow().is_visible(), "the sub-menu closes with its parent");
+    assert!(
+        !sub.borrow().is_visible(),
+        "the sub-menu closes with its parent"
+    );
     assert!(top.borrow().open_submenu().is_none());
     assert!(top.borrow().active_action().is_none());
 

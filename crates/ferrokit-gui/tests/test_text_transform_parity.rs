@@ -15,7 +15,7 @@ fn ink_extent(pm: &Pixmap) -> (u32, u32, u32, u32) {
     let w = pm.width() as u32;
     let data = pm.data();
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-    for (i, px) in data.chunks_exact(4).enumerate() {
+    for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
         if px[0] | px[1] | px[2] != 0 {
             let x = i as u32 % w;
             let y = i as u32 / w;

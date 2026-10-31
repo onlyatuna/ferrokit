@@ -26,8 +26,13 @@ pub struct PositionedGlyph {
 /// A single font engine instance combining the glyph source (metrics, coverage bitmaps and
 /// character mapping, see [`GlyphFace`]) and optional raw binary data for OpenType layout
 /// (`rustybuzz`). Mirrors Qt's `QFontEngine`.
-type ColorGlyphCache = Arc<std::sync::Mutex<std::collections::HashMap<(u16, u32), Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)>>>>;
-type MonoGlyphCache = Arc<std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), (GlyphMetrics, Arc<[u8]>)>>>;
+type ColorGlyphCache = Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<(u16, u32), Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)>>,
+    >,
+>;
+type MonoGlyphCache =
+    Arc<std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), (GlyphMetrics, Arc<[u8]>)>>>;
 type LcdGlyphCache = Arc<
     std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), Option<(GlyphMetrics, Arc<[u8]>)>>>,
 >;
@@ -68,7 +73,10 @@ impl ShapingFace {
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
         face.set_pixels_per_em(Some((ppem, ppem)));
-        Some(Self { face, _data: data.clone() })
+        Some(Self {
+            face,
+            _data: data.clone(),
+        })
     }
 
     pub fn face(&self) -> &rustybuzz::Face<'_> {
@@ -136,7 +144,12 @@ impl FontEngine {
     /// Checks whether `glyph_id` is an OpenType color glyph with COLRv0 layers.
     pub fn is_color_glyph(&self, glyph_id: u16) -> bool {
         if let Some(raw) = &self.raw_data {
-            crate::text::color_glyph::parse_colr_v0_layers(raw.as_slice(), self.face_index, glyph_id).is_some()
+            crate::text::color_glyph::parse_colr_v0_layers(
+                raw.as_slice(),
+                self.face_index,
+                glyph_id,
+            )
+            .is_some()
         } else {
             false
         }
@@ -164,7 +177,8 @@ impl FontEngine {
             glyph_id,
             self.face.as_ref(),
             px_size,
-        ).map(|(m, p)| (m, Arc::new(p)));
+        )
+        .map(|(m, p)| (m, Arc::new(p)));
 
         if let Ok(mut guard) = self.color_cache.lock() {
             guard.insert(key, rendered.clone());
@@ -179,7 +193,12 @@ impl FontEngine {
     /// Mirrors Qt's `QFontEngineGlyphCache`: a glyph is rasterized once per size and then reused by
     /// every later paint. The bitmap is identical to the face's own `rasterize_scaled`.
     /// The cache is shared by every clone of this engine.
-    pub fn rasterize_glyph(&self, glyph_id: u16, size: f32, scale: f32) -> (GlyphMetrics, Arc<[u8]>) {
+    pub fn rasterize_glyph(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+    ) -> (GlyphMetrics, Arc<[u8]>) {
         let key = (glyph_id, size.to_bits(), scale.to_bits());
         if let Ok(guard) = self.mono_cache.lock() {
             if let Some((metrics, bitmap)) = guard.get(&key) {
@@ -276,12 +295,19 @@ fn hb_scale_font_units(units: i64, mult: i64) -> i64 {
 /// A HarfBuzz feature switching `tag` to `value` over the whole run (`HB_FEATURE_GLOBAL_START`
 /// to `HB_FEATURE_GLOBAL_END`, as `QTextEngine::shapeTextWithHarfbuzzNG` builds them).
 fn feature(tag: FontTag, value: u32) -> rustybuzz::Feature {
-    rustybuzz::Feature::new(rustybuzz::ttf_parser::Tag::from_bytes(&tag.to_bytes()), value, ..)
+    rustybuzz::Feature::new(
+        rustybuzz::ttf_parser::Tag::from_bytes(&tag.to_bytes()),
+        value,
+        ..,
+    )
 }
 
 /// The features `QFont::setFeature` set, in tag order.
 fn user_features(font: &Font) -> Vec<rustybuzz::Feature> {
-    font.features().iter().map(|(&tag, &value)| feature(tag, value)).collect()
+    font.features()
+        .iter()
+        .map(|(&tag, &value)| feature(tag, value))
+        .collect()
 }
 
 /// The features Qt hands HarfBuzz for `font` (`QTextEngine::shapeTextWithHarfbuzzNG`): the
@@ -322,7 +348,11 @@ fn legacy_kern_table<'a>(face: &'a rustybuzz::Face<'a>) -> Option<Vec<ttf_kern::
         return None;
     }
     let kern_tag = rustybuzz::ttf_parser::Tag::from_bytes(b"kern");
-    if tables.gpos.is_some_and(|gpos| gpos.features.into_iter().any(|feature| feature.tag == kern_tag)) {
+    if tables.gpos.is_some_and(|gpos| {
+        gpos.features
+            .into_iter()
+            .any(|feature| feature.tag == kern_tag)
+    }) {
         return None;
     }
     let mut subtables = Vec::new();
@@ -555,7 +585,10 @@ impl GlyphLayout {
         let cp = c as u32;
         cp >= 0x1F000
             || (0x2190..=0x2BFF).contains(&cp)
-            || matches!(cp, 0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x3030 | 0x303D | 0x3297 | 0x3299)
+            || matches!(
+                cp,
+                0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x3030 | 0x303D | 0x3297 | 0x3299
+            )
             || matches!(c, '0'..='9' | '#' | '*')
     }
 
@@ -564,7 +597,11 @@ impl GlyphLayout {
     /// character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so each
     /// grapheme cluster that is such a sequence gets the first fallback font with emoji glyphs
     /// that covers all of it.
-    fn keep_emoji_sequences_in_one_font(text: &str, engines: &[FontEngine], resolved: &mut [(char, usize)]) {
+    fn keep_emoji_sequences_in_one_font(
+        text: &str,
+        engines: &[FontEngine],
+        resolved: &mut [(char, usize)],
+    ) {
         use unicode_segmentation::UnicodeSegmentation;
         if engines.len() < 2 || !Self::has_emoji_sequence(text) {
             return;
@@ -576,12 +613,17 @@ impl GlyphLayout {
             let n = cluster.chars().count();
             let chars = &mut resolved[at..at + n];
             at += n;
-            if n < 2 || !Self::has_emoji_sequence(cluster) || !cluster.chars().any(Self::is_emoji_base) {
+            if n < 2
+                || !Self::has_emoji_sequence(cluster)
+                || !cluster.chars().any(Self::is_emoji_base)
+            {
                 continue;
             }
             let font = engines.iter().enumerate().skip(1).find(|(_, e)| {
                 e.face.glyph_index('\u{1F600}') != 0
-                    && cluster.chars().all(|c| joiner(c) || e.face.glyph_index(c) != 0)
+                    && cluster
+                        .chars()
+                        .all(|c| joiner(c) || e.face.glyph_index(c) != 0)
             });
             if let Some((index, _)) = font {
                 for entry in chars {
@@ -748,14 +790,20 @@ impl GlyphLayout {
                     // font engine advance HarfBuzz's design values stand.
                     let (adv, x_offset) = match &engine_metrics {
                         Some(m) => (m[i].0 as f32 / 64.0, m[i].1 as f32 / 64.0),
-                        None => ((pos.x_advance as f32) * scale, (pos.x_offset as f32) * scale),
+                        None => (
+                            (pos.x_advance as f32) * scale,
+                            (pos.x_offset as f32) * scale,
+                        ),
                     };
                     let x = current_x + x_offset;
                     let y = current_y + (pos.y_offset as f32) * scale;
                     let mut advance = adv;
                     current_x += adv;
                     // `QTextEngine::shapeText`: spacing goes after the last glyph of every cluster.
-                    if infos.get(i + 1).is_none_or(|next| next.cluster != info.cluster) {
+                    if infos
+                        .get(i + 1)
+                        .is_none_or(|next| next.cluster != info.cluster)
+                    {
                         let spacing = qt_letter_spacing(font.letter_spacing);
                         current_x += spacing;
                         advance += spacing;
@@ -820,8 +868,8 @@ impl GlyphLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::text::glyph_face::parse_face;
+    use std::sync::Arc;
 
     /// Arial's regular face, looked up through the font database so every platform finds it
     /// where it is installed.
@@ -931,7 +979,10 @@ mod tests {
             let emoji_font = parse_face(&SharedFontData::from_vec(emoji_data), 0).unwrap();
             let fonts = vec![font_face, emoji_font];
             let layout = GlyphLayout::shape_with_faces("🔄 立即", &font, &fonts);
-            assert_eq!(layout.glyphs[0].font_index, 1, "Emoji should resolve to fallback engine 1");
+            assert_eq!(
+                layout.glyphs[0].font_index, 1,
+                "Emoji should resolve to fallback engine 1"
+            );
             let (metrics, bitmap) = fonts[1].rasterize_indexed(layout.glyphs[0].glyph_id, 16.0);
             assert!(metrics.width > 0);
             assert!(metrics.height > 0);
@@ -960,10 +1011,7 @@ mod tests {
         if emoji_path.exists() {
             let emoji_data = std::fs::read(emoji_path).unwrap();
             let emoji_font = parse_face(&SharedFontData::from_vec(emoji_data), 0).unwrap();
-            let engines = vec![
-                FontEngine::new(font_face),
-                FontEngine::new(emoji_font),
-            ];
+            let engines = vec![FontEngine::new(font_face), FontEngine::new(emoji_font)];
 
             // "OK 🔄 OK" -> Run 0: "OK ", Run 1: "🔄", Run 2: " OK"
             let runs = GlyphLayout::partition_into_runs("OK 🔄 OK", &engines);
@@ -984,14 +1032,16 @@ mod tests {
     fn right_to_left_font_runs_are_laid_out_from_the_right() {
         let font = Font::new("Arial", 16.0);
         let text = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{1F600} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
-        let engines =
-            crate::text::font_database::resolve_font_engines_for_text_global(&font, text);
+        let engines = crate::text::font_database::resolve_font_engines_for_text_global(&font, text);
         assert!(
             engines.len() >= 2,
             "the test needs Arial and a fallback font with the emoji"
         );
         let layout = GlyphLayout::shape_with_engines_directed(text, &font, &engines, Some(true));
-        assert!(layout.glyphs.iter().any(|g| g.font_index > 0), "the emoji comes from a fallback");
+        assert!(
+            layout.glyphs.iter().any(|g| g.font_index > 0),
+            "the emoji comes from a fallback"
+        );
         for pair in layout.glyphs.windows(2) {
             assert!(pair[0].x <= pair[1].x, "glyphs go left to right: {pair:?}");
             assert!(
@@ -1020,12 +1070,18 @@ mod tests {
 
             // Verify that glyph coordinates advance monotonically
             for w in layout.glyphs.windows(2) {
-                assert!(w[1].x >= w[0].x, "Glyph coordinates must advance monotonically");
+                assert!(
+                    w[1].x >= w[0].x,
+                    "Glyph coordinates must advance monotonically"
+                );
             }
 
             // Locate the emoji glyph and verify it has engine_index = 1
             let emoji_glyph = layout.glyphs.iter().find(|g| g.font_index == 1);
-            assert!(emoji_glyph.is_some(), "Emoji should have been shaped with engine 1");
+            assert!(
+                emoji_glyph.is_some(),
+                "Emoji should have been shaped with engine 1"
+            );
         }
     }
 }

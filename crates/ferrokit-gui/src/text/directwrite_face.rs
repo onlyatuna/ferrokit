@@ -103,14 +103,24 @@ impl DirectWriteFace {
             let mut file_type = DWRITE_FONT_FILE_TYPE_UNKNOWN;
             let mut face_type = DWRITE_FONT_FACE_TYPE_UNKNOWN;
             let mut faces = 0u32;
-            file.Analyze(&mut supported, &mut file_type, Some(&mut face_type), &mut faces)
-                .map_err(|e| format!("IDWriteFontFile::Analyze: {e}"))?;
+            file.Analyze(
+                &mut supported,
+                &mut file_type,
+                Some(&mut face_type),
+                &mut faces,
+            )
+            .map_err(|e| format!("IDWriteFontFile::Analyze: {e}"))?;
             if !supported.as_bool() || face_index >= faces {
                 return Err("DirectWrite does not support this font".to_string());
             }
             factory
                 .base
-                .CreateFontFace(face_type, &[Some(file)], face_index, DWRITE_FONT_SIMULATIONS_NONE)
+                .CreateFontFace(
+                    face_type,
+                    &[Some(file)],
+                    face_index,
+                    DWRITE_FONT_SIMULATIONS_NONE,
+                )
                 .map_err(|e| format!("CreateFontFace: {e}"))?
         };
         let mut fm = DWRITE_FONT_METRICS::default();
@@ -131,15 +141,26 @@ impl DirectWriteFace {
         let scaled = (scale - 1.0).abs() > f32::EPSILON;
         match (scaled, size > 16.0) {
             (true, false) => (DWRITE_RENDERING_MODE_NATURAL, DWRITE_MEASURING_MODE_NATURAL),
-            (_, true) => (DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_MEASURING_MODE_NATURAL),
-            (false, false) => (DWRITE_RENDERING_MODE_GDI_CLASSIC, DWRITE_MEASURING_MODE_GDI_CLASSIC),
+            (_, true) => (
+                DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+                DWRITE_MEASURING_MODE_NATURAL,
+            ),
+            (false, false) => (
+                DWRITE_RENDERING_MODE_GDI_CLASSIC,
+                DWRITE_MEASURING_MODE_GDI_CLASSIC,
+            ),
         }
     }
 
     /// Qt's `imageForGlyph`: the ClearType 3x1 texture, three coverages (red, green, blue sub-pixel,
     /// swapped for a BGR panel as in `renderGlyphRun`) per pixel. `None` when DirectWrite fails for
     /// this glyph.
-    fn rasterize_texture(&self, glyph_id: u16, size: f32, scale: f32) -> Option<(GlyphMetrics, Vec<u8>)> {
+    fn rasterize_texture(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+    ) -> Option<(GlyphMetrics, Vec<u8>)> {
         let factory = FACTORY.as_ref()?;
         let advance = self.base.metrics_indexed(glyph_id, size * scale);
         let blank = GlyphMetrics {
@@ -186,17 +207,23 @@ impl DirectWriteFace {
         drop(unsafe { ManuallyDrop::take(&mut run.fontFace) });
         let analysis = analysis.ok()?;
 
-        let bounds = unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }.ok()?;
-        let (width, height) = ((bounds.right - bounds.left).max(0) as usize, (bounds.bottom - bounds.top).max(0) as usize);
-        if width == 0 || height == 0 || crate::text::glyph_face::exceeds_glyph_budget(width, height) {
+        let bounds =
+            unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }.ok()?;
+        let (width, height) = (
+            (bounds.right - bounds.left).max(0) as usize,
+            (bounds.bottom - bounds.top).max(0) as usize,
+        );
+        if width == 0 || height == 0 || crate::text::glyph_face::exceeds_glyph_budget(width, height)
+        {
             return Some((blank, Vec::new()));
         }
 
         let mut texture = vec![0u8; width * height * 3];
-        unsafe { analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut texture) }.ok()?;
+        unsafe { analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut texture) }
+            .ok()?;
 
         if factory.bgr {
-            for px in texture.chunks_exact_mut(3) {
+            for px in texture.as_chunks_mut::<3>().0 {
                 px.swap(0, 2);
             }
         }
@@ -223,18 +250,36 @@ impl DirectWriteFace {
     ///   converts with `DESIGN_TO_LOGICAL`: `QFixed::fromReal(design / unitsPerEm * pixelSize)`, a
     ///   26.6 value truncated toward zero. The device pixel ratio does not enter, so 125%, 150% and
     ///   200% share these advances.
-    pub fn layout_advance_width(&self, glyph_id: u16, size: f32, direct_write: bool) -> Option<f32> {
+    pub fn layout_advance_width(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        direct_write: bool,
+    ) -> Option<f32> {
         if self.upem <= 0.0 {
             return None;
         }
         let mut metric = DWRITE_GLYPH_METRICS::default();
         if direct_write {
-            unsafe { self.face.GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false) }.ok()?;
+            unsafe {
+                self.face
+                    .GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false)
+            }
+            .ok()?;
             let pixels = f64::from(metric.advanceWidth) / f64::from(self.upem) * f64::from(size);
             return Some(((pixels * 64.0).trunc() / 64.0) as f32);
         }
         unsafe {
-            self.face.GetGdiCompatibleGlyphMetrics(size, 1.0, None, false, &glyph_id, 1, &mut metric, false)
+            self.face.GetGdiCompatibleGlyphMetrics(
+                size,
+                1.0,
+                None,
+                false,
+                &glyph_id,
+                1,
+                &mut metric,
+                false,
+            )
         }
         .ok()?;
         Some(((metric.advanceWidth as f32 * size / self.upem) + 0.5).floor())
@@ -277,7 +322,9 @@ impl GlyphFace for DirectWriteFace {
         match self.rasterize_texture(glyph_id, size, scale) {
             Some((metrics, texture)) => {
                 let grey = texture
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|p| ((p[0] as u32 * 11 + p[1] as u32 * 16 + p[2] as u32 * 5) / 32) as u8)
                     .collect();
                 (metrics, grey)
@@ -287,7 +334,12 @@ impl GlyphFace for DirectWriteFace {
     }
 
     /// Qt's `alphaRGBMapForGlyph`: the texture itself.
-    fn rasterize_lcd_scaled(&self, glyph_id: u16, size: f32, scale: f32) -> Option<(GlyphMetrics, Vec<u8>)> {
+    fn rasterize_lcd_scaled(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+    ) -> Option<(GlyphMetrics, Vec<u8>)> {
         if size <= 0.0 || scale <= 0.0 {
             return None;
         }
@@ -325,11 +377,17 @@ mod tests {
             let bytes = std::fs::read(format!("C:/Windows/Fonts/{file}"))
                 .unwrap_or_else(|e| panic!("the test needs C:/Windows/Fonts/{file}: {e}"));
             let face = DirectWriteFace::new(SharedFontData::from_vec(bytes), 0).expect(file);
-            for ch in ('!'..='~').chain('\u{a1}'..='\u{ff}').filter(|&c| c != '\u{ad}') {
+            for ch in ('!'..='~')
+                .chain('\u{a1}'..='\u{ff}')
+                .filter(|&c| c != '\u{ad}')
+            {
                 let glyph = face.glyph_index(ch);
                 let mut metric = DWRITE_GLYPH_METRICS::default();
-                unsafe { face.face.GetDesignGlyphMetrics(&glyph, 1, &mut metric, false) }
-                    .expect("metrics");
+                unsafe {
+                    face.face
+                        .GetDesignGlyphMetrics(&glyph, 1, &mut metric, false)
+                }
+                .expect("metrics");
                 for size in [11.0f32, 13.0, 16.0, 24.0, 31.0] {
                     let design = f64::from(metric.rightSideBearing);
                     let pixels = design / f64::from(face.upem) * f64::from(size);

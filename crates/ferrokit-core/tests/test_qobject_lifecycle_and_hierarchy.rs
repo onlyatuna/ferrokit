@@ -3,9 +3,8 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject,
-    with_object,
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
-    QObjectExt, QPointer, SignalBlocker, ThreadId,
+    register_qobject_ptr, unregister_qobject, with_object, ObjectData, ObjectId, OwnedObject,
+    QObject, QObjectExt, QPointer, SignalBlocker, ThreadId,
 };
 use ferrokit_core::signal::Signal;
 use std::ptr::NonNull;
@@ -360,7 +359,12 @@ fn test_qobject_hierarchy_accessors() {
     child.object_data_mut().set_parent(Some(parent_id)).unwrap();
     assert_eq!(child.parent(), Some(parent_id));
     assert_eq!(parent.with(|p| p.children_ids()).unwrap(), vec![child_id]);
-    assert_eq!(parent.with(|p| p.object_data().children().to_vec()).unwrap(), vec![child_id]);
+    assert_eq!(
+        parent
+            .with(|p| p.object_data().children().to_vec())
+            .unwrap(),
+        vec![child_id]
+    );
     assert_eq!(parent.with(|p| p.thread()).unwrap(), ThreadId::current());
 }
 
@@ -503,7 +507,7 @@ fn test_qpointer_and_generational_liveness() {
     let registered = unsafe { register_owned_qobject(MockButton::new("guarded_btn", "Submit")) };
     let id = OwnedObject::object_id(&registered);
 
-    let qptr: QPointer<MockButton> = registered.with(|r| QPointer::new(r)).unwrap();
+    let qptr: QPointer<MockButton> = registered.with(QPointer::new).unwrap();
     assert!(!qptr.is_null());
     assert!(qptr.is_valid());
     assert_eq!(qptr.id(), Some(id));
@@ -531,10 +535,9 @@ fn test_qpointer_and_generational_liveness() {
 #[test]
 fn test_double_register_keeps_object_reachable() {
     // SAFETY: the owner stays on this thread; no callback of the widget runs in this test.
-    let registered =
-        unsafe { register_owned_qobject(MockButton::new("double_reg_btn", "Again")) };
+    let registered = unsafe { register_owned_qobject(MockButton::new("double_reg_btn", "Again")) };
     let id = OwnedObject::object_id(&registered);
-    let qptr: QPointer<MockButton> = registered.with(|r| QPointer::new(r)).unwrap();
+    let qptr: QPointer<MockButton> = registered.with(QPointer::new).unwrap();
 
     // SAFETY: the object stays at this address while `registered` lives, and the pointer is the
     // owner's own, the one the first registration used.

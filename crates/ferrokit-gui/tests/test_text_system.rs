@@ -299,7 +299,10 @@ fn test_syntax_highlighter() {
     // The highlight is an overlay (`QTextLayout::additionalFormats`): the document fragments keep
     // their user formats, and `effective_fragments` merges the overlay in.
     let block0 = doc.block_at(0).unwrap();
-    assert!(block0.fragments().iter().all(|f| f.char_format().foreground.is_none()));
+    assert!(block0
+        .fragments()
+        .iter()
+        .all(|f| f.char_format().foreground.is_none()));
     assert!(block0
         .effective_fragments()
         .iter()
@@ -327,7 +330,11 @@ fn test_rehighlight_preserves_user_character_formatting() {
         TextCharFormat::default().with_foreground(Color::from_rgba8(200, 0, 100, 255)),
     );
     highlighter.rehighlight(&mut doc);
-    assert_eq!(doc.block_at(0).unwrap().fragments(), &before[..], "fragments untouched");
+    assert_eq!(
+        doc.block_at(0).unwrap().fragments(),
+        &before[..],
+        "fragments untouched"
+    );
     let fn_color = |doc: &TextDocument| {
         doc.block_at(0)
             .unwrap()
@@ -409,7 +416,11 @@ fn test_cursor_visual_line_navigation_in_wrapped_blocks() {
     assert_eq!(step(&doc, 1, MoveOperation::EndOfLine), 2);
     assert_eq!(step(&doc, 0, MoveOperation::Down), 1);
     assert_eq!(step(&doc, 1, MoveOperation::Down), 2);
-    assert_eq!(step(&doc, 3, MoveOperation::Down), 4, "crosses into the next block's first line");
+    assert_eq!(
+        step(&doc, 3, MoveOperation::Down),
+        4,
+        "crosses into the next block's first line"
+    );
     assert_eq!(
         step(&doc, 4, MoveOperation::Up),
         2,
@@ -435,30 +446,62 @@ fn test_cursor_sticky_x_with_wrapping() {
     doc.set_text_width(10_000.0);
     // Blocks start at 0, 9, 12, 21.
     let mut c = TextCursor::at_position(6);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "short line clamps");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18, "x restored across blocks");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "repeated press keeps x");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        11,
+        "short line clamps"
+    );
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        18,
+        "x restored across blocks"
+    );
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        27,
+        "repeated press keeps x"
+    );
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "original x on the first line");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Up),
+        6,
+        "original x on the first line"
+    );
 
     // A failed Down at the last line / Up at the first keeps the x.
     let mut c = TextCursor::at_position(6);
     assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11);
     assert_eq!(press(&mut c, &doc, MoveOperation::Down), 18);
     assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 27, "last line: no move");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        27,
+        "last line: no move"
+    );
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18);
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 11);
     assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 6, "first line: no move");
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "x still sticky");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Up),
+        6,
+        "first line: no move"
+    );
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        11,
+        "x still sticky"
+    );
     let mut c = TextCursor::at_position(6);
     press(&mut c, &doc, MoveOperation::Down);
     press(&mut c, &doc, MoveOperation::Down);
     press(&mut c, &doc, MoveOperation::Down);
     press(&mut c, &doc, MoveOperation::Down);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 18, "x survived the failed Down");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Up),
+        18,
+        "x survived the failed Down"
+    );
 
     // Selecting with Shift+Down keeps the column too.
     let mut c = TextCursor::at_position(6);
@@ -536,7 +579,11 @@ fn test_cursor_move_position_zero_count_is_a_no_op_as_in_qt() {
         assert_eq!((c.anchor(), c.position()), (to, to), "{op:?} moves once");
         let mut c = selected();
         assert!(c.move_position(&doc, op, MoveMode::KeepAnchor, 0), "{op:?}");
-        assert_eq!((c.anchor(), c.position()), (5, to), "{op:?} keeps the anchor");
+        assert_eq!(
+            (c.anchor(), c.position()),
+            (5, to),
+            "{op:?} keeps the anchor"
+        );
     }
 }
 
@@ -576,11 +623,21 @@ fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
     // (text, start, moves: true is Down, positions after each move)
     let cases: [(&str, usize, &[bool], &[usize]); 10] = [
         ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true], &[14, 20]),
-        ("bbbbbb\n      ab\nbbbbbbbb", 4, &[true, true, false, false], &[14, 20, 14, 4]),
+        (
+            "bbbbbb\n      ab\nbbbbbbbb",
+            4,
+            &[true, true, false, false],
+            &[14, 20, 14, 4],
+        ),
         ("bbbbbb\n  ab\nbbbbbbbb", 5, &[true, true], &[11, 17]),
         ("      ab\nbbbbbb", 5, &[true], &[12]),
         ("bbbbbb\n      ab", 6, &[true], &[15]),
-        ("bbbbbb\n      ab\nbb", 3, &[true, true, false, false], &[13, 18, 13, 3]),
+        (
+            "bbbbbb\n      ab\nbb",
+            3,
+            &[true, true, false, false],
+            &[13, 18, 13, 3],
+        ),
         ("ab\n\nbbbbbb", 2, &[true, true], &[3, 6]),
         // the first line has nothing above it and the last nothing below: the cursor stays
         ("abc\ndef", 2, &[false], &[2]),
@@ -592,7 +649,15 @@ fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
         let mut cursor = TextCursor::at_position(start);
         let mut got = Vec::new();
         for &down in moves {
-            got.push(press(&mut cursor, &doc, if down { MoveOperation::Down } else { MoveOperation::Up }));
+            got.push(press(
+                &mut cursor,
+                &doc,
+                if down {
+                    MoveOperation::Down
+                } else {
+                    MoveOperation::Up
+                },
+            ));
         }
         assert_eq!(got, expected, "{text:?} from {start}");
     }
@@ -604,10 +669,18 @@ fn test_cursor_up_down_keep_x_in_an_unwrapped_document_as_in_qt() {
 fn test_cursor_sticky_x_without_wrapping() {
     let doc = oracle_document("bbbbbb\n  ab\nbbbbbbbb\nbbbbbb");
     let mut c = TextCursor::at_position(5);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11, "clamped into the short line");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Down),
+        11,
+        "clamped into the short line"
+    );
     // A zero-count move does not reset it.
     c.move_position(&doc, MoveOperation::Left, MoveMode::MoveAnchor, 0);
-    assert_eq!(press(&mut c, &doc, MoveOperation::Up), 5, "back at the original x");
+    assert_eq!(
+        press(&mut c, &doc, MoveOperation::Up),
+        5,
+        "back at the original x"
+    );
     press(&mut c, &doc, MoveOperation::Down);
 
     // Cloned cursors carry it along.
@@ -645,4 +718,3 @@ fn test_cursor_sticky_x_without_wrapping() {
         press(&mut fresh, &doc2, MoveOperation::Down)
     );
 }
-

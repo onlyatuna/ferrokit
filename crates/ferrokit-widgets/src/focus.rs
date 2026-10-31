@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use crate::application::{Application, FocusTicket};
 use crate::widget::{WidgetRef, WidgetWeak};
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::ObjectId;
 use std::cell::{Cell, RefCell};
-use crate::application::{Application, FocusTicket};
 use std::rc::Rc;
 
 /// Focus policy defining how a widget accepts keyboard focus (`Qt::FocusPolicy`).
@@ -168,7 +168,12 @@ impl FocusState {
 
     /// `lose` for a focus widget `id` that stops being shown because its ancestor `anchor` (or
     /// itself) was hidden: `focusNextChild()` runs from `anchor` (`hide_helper`, qwidget.cpp:8276-8283).
-    pub(crate) fn lose_via(self: &Rc<Self>, id: ObjectId, anchor: ObjectId, parent_enabled: bool) -> bool {
+    pub(crate) fn lose_via(
+        self: &Rc<Self>,
+        id: ObjectId,
+        anchor: ObjectId,
+        parent_enabled: bool,
+    ) -> bool {
         if self.focused.get() != Some(id) {
             return false;
         }
@@ -214,7 +219,13 @@ fn record_focus_child(widget: &WidgetRef) {
 /// `QWidget::focusWidget()` of `container`: the descendant that last had focus, if it is still
 /// below `container`.
 fn focus_widget_of(container: &WidgetRef) -> Option<WidgetRef> {
-    let child = container.try_borrow().ok()?.widget_base().focus_child.borrow().upgrade()?;
+    let child = container
+        .try_borrow()
+        .ok()?
+        .widget_base()
+        .focus_child
+        .borrow()
+        .upgrade()?;
     let id = child.try_borrow().ok()?.id();
     find_widget_by_id(container, id).filter(|w| !Rc::ptr_eq(w, container))
 }
@@ -255,7 +266,10 @@ pub(crate) fn take_page_focus(page: &WidgetRef) -> Option<PageFocus> {
 /// else `next` itself.
 pub(crate) fn give_page_focus(focus: PageFocus, next: &WidgetRef) {
     let target = focus_widget_of(next)
-        .filter(|w| w.try_borrow().is_ok_and(|w| w.is_visible() && w.is_enabled()))
+        .filter(|w| {
+            w.try_borrow()
+                .is_ok_and(|w| w.is_visible() && w.is_enabled())
+        })
         .or_else(|| {
             let mut chain = Vec::new();
             collect_tab_chain(next, None, &mut chain).ok()?;
@@ -475,7 +489,12 @@ impl FocusManager {
         while let Some(widget) = current {
             let (id, enabled, accepts_click, parent) = {
                 let w = widget.borrow();
-                (w.id(), w.is_enabled(), w.focus_policy().accepts_click(), w.parent_widget())
+                (
+                    w.id(),
+                    w.is_enabled(),
+                    w.focus_policy().accepts_click(),
+                    w.parent_widget(),
+                )
             };
             if enabled && accepts_click {
                 return self.set_focus(root, Some(id), FocusReason::Mouse);

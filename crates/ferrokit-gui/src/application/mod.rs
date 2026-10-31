@@ -474,7 +474,10 @@ mod hardening_tests {
         let observed = Arc::new(AtomicBool::new(false));
         let observed_in_slot = Arc::clone(&observed);
         app.application_state_changed().connect(move |state| {
-            observed_in_slot.store(GuiApplication::application_state() == *state, Ordering::SeqCst);
+            observed_in_slot.store(
+                GuiApplication::application_state() == *state,
+                Ordering::SeqCst,
+            );
         });
         let next = if GuiApplication::application_state() == ApplicationState::ApplicationActive {
             ApplicationState::ApplicationInactive

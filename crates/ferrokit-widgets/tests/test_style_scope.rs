@@ -73,7 +73,12 @@ fn fixture(title: &str) -> Fx {
     );
     win.set_root_widget(Rc::clone(&root));
 
-    let mut fx = Fx { el: EventLoop::new(), win, label, root };
+    let mut fx = Fx {
+        el: EventLoop::new(),
+        win,
+        label,
+        root,
+    };
     fx.win.render_and_present();
     pump_idle(&mut fx);
     fx
@@ -108,8 +113,15 @@ fn application_sheet_reaches_existing_widgets_after_one_pump() {
     Application::set_style_sheet(BIG);
     pump_idle(&mut fx);
 
-    assert!(label_hint(&fx) > before, "a 28px font must be wider than the 12pt label was");
-    assert_eq!(label_width(&fx), label_hint(&fx), "the existing label kept its old geometry");
+    assert!(
+        label_hint(&fx) > before,
+        "a 28px font must be wider than the 12pt label was"
+    );
+    assert_eq!(
+        label_width(&fx),
+        label_hint(&fx),
+        "the existing label kept its old geometry"
+    );
 }
 
 #[test]
@@ -139,7 +151,11 @@ fn window_set_style_sheet_reaches_its_existing_widgets_after_one_pump() {
     pump_idle(&mut fx);
 
     assert!(label_hint(&fx) > before);
-    assert_eq!(label_width(&fx), label_hint(&fx), "the existing label kept its old geometry");
+    assert_eq!(
+        label_width(&fx),
+        label_hint(&fx),
+        "the existing label kept its old geometry"
+    );
 }
 
 #[test]
@@ -155,7 +171,11 @@ fn window_set_style_sheet_does_not_reach_another_window() {
     pump_idle(&mut b);
 
     assert!(label_hint(&a) > b_before, "A's own label must have changed");
-    assert_eq!(label_hint(&b), b_before, "A's window sheet changed B's label");
+    assert_eq!(
+        label_hint(&b),
+        b_before,
+        "A's window sheet changed B's label"
+    );
     assert_eq!(label_width(&b), b_before);
     assert!(
         Application::style_sheet().is_none(),
@@ -203,7 +223,11 @@ fn a_sheet_on_a_nested_container_reaches_widgets_below_it() {
     pump_idle(&mut fx);
 
     assert!(label_hint(&fx) > before);
-    assert_eq!(label_width(&fx), label_hint(&fx), "a descendant two levels down kept its geometry");
+    assert_eq!(
+        label_width(&fx),
+        label_hint(&fx),
+        "a descendant two levels down kept its geometry"
+    );
 }
 
 fn qmenu_ctx() -> WidgetStyleContext<'static> {
@@ -232,9 +256,21 @@ fn a_menu_takes_the_sheet_of_the_window_it_hangs_under_and_not_another() {
     menu_b.set_parent_widget(Some(Rc::downgrade(&b.win.root_widget())));
     let orphan = Menu::new("c");
 
-    assert!(menu_a.widget_base().resolve_style(&qmenu_ctx()).background_color.is_some());
-    assert!(menu_b.widget_base().resolve_style(&qmenu_ctx()).background_color.is_none());
-    assert!(orphan.widget_base().resolve_style(&qmenu_ctx()).background_color.is_none());
+    assert!(menu_a
+        .widget_base()
+        .resolve_style(&qmenu_ctx())
+        .background_color
+        .is_some());
+    assert!(menu_b
+        .widget_base()
+        .resolve_style(&qmenu_ctx())
+        .background_color
+        .is_none());
+    assert!(orphan
+        .widget_base()
+        .resolve_style(&qmenu_ctx())
+        .background_color
+        .is_none());
 }
 
 fn two_item_menu(parent: Option<&WidgetRef>) -> Menu {

@@ -12,8 +12,8 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CONTEXTMENU,
-    WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
+    GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
 };
 
 fn icon() -> ferrokit_gui::image::Icon {
@@ -60,10 +60,16 @@ fn raw_button_up_messages_do_not_activate_the_icon() {
 
     send(tray.hwnd(), WM_LBUTTONUP);
     send(tray.hwnd(), WM_RBUTTONUP);
-    assert!(seen.lock().is_empty(), "button-up messages alone activate nothing");
+    assert!(
+        seen.lock().is_empty(),
+        "button-up messages alone activate nothing"
+    );
     send(tray.hwnd(), NIN_SELECT);
     send(tray.hwnd(), WM_CONTEXTMENU);
-    assert_eq!(*seen.lock(), vec![TrayActivation::Trigger, TrayActivation::Context]);
+    assert_eq!(
+        *seen.lock(),
+        vec![TrayActivation::Trigger, TrayActivation::Context]
+    );
 }
 
 #[test]
@@ -86,7 +92,11 @@ fn a_slot_may_drop_the_tray_icon_while_it_is_being_signalled() {
     send(hwnd, WM_CONTEXTMENU);
 
     assert_eq!(*address.lock(), 0, "the slot ran and dropped the icon");
-    assert_eq!(unsafe { IsWindow(hwnd) }, 0, "the tray window died with the icon");
+    assert_eq!(
+        unsafe { IsWindow(hwnd) },
+        0,
+        "the tray window died with the icon"
+    );
 }
 
 #[test]
@@ -106,7 +116,10 @@ fn a_tray_releases_the_icon_it_made() {
         }
         ok
     };
-    assert!(icons.iter().all(|&i| alive(i)), "icons exist while the trays do");
+    assert!(
+        icons.iter().all(|&i| alive(i)),
+        "icons exist while the trays do"
+    );
     drop(trays);
     for icon in icons {
         assert!(!alive(icon), "the tray destroyed the icon it created");
@@ -153,18 +166,26 @@ fn the_context_menu_is_requested_where_the_shell_says() {
     let tray = TrayIcon::from_icon("t", &icon()).expect("tray");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    tray.on_context_menu_requested.connect(move |p| sink.lock().push(*p));
+    tray.on_context_menu_requested
+        .connect(move |p| sink.lock().push(*p));
 
     for (x, y) in [(123, 456), (-5, -7)] {
         let packed = ((x as u16 as usize) | ((y as u16 as usize) << 16)) as isize;
         unsafe {
-            SendMessageW(tray.hwnd(), WM_TRAY_CALLBACK, packed as usize, WM_CONTEXTMENU as isize);
+            SendMessageW(
+                tray.hwnd(),
+                WM_TRAY_CALLBACK,
+                packed as usize,
+                WM_CONTEXTMENU as isize,
+            );
         }
     }
     let expected: Vec<_> = [(123, 456), (-5, -7)]
         .iter()
         .map(|&(x, y)| {
-            ferrokit_platform::screen::native_cursor_to_logical(ferrokit_gui::geometry::primitives::Point::new(x, y))
+            ferrokit_platform::screen::native_cursor_to_logical(
+                ferrokit_gui::geometry::primitives::Point::new(x, y),
+            )
         })
         .collect();
     assert_eq!(*seen.lock(), expected);
@@ -206,7 +227,9 @@ fn closing_the_tray_window_quits_the_application() {
     let hwnd = tray.hwnd() as usize;
     let about_to_quit = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&about_to_quit);
-    let _conn = app.about_to_quit().connect(move |_| flag.store(true, Ordering::SeqCst));
+    let _conn = app
+        .about_to_quit()
+        .connect(move |_| flag.store(true, Ordering::SeqCst));
     Timer::single_shot(10, move || unsafe {
         SendMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
     });
@@ -235,7 +258,11 @@ fn icon_width(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -> i32 {
     assert!(unsafe { GetIconInfo(icon, &mut info) } != 0);
     let mut bm: BITMAP = unsafe { std::mem::zeroed() };
     unsafe {
-        GetObjectW(info.hbmColor, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut _);
+        GetObjectW(
+            info.hbmColor,
+            std::mem::size_of::<BITMAP>() as i32,
+            &mut bm as *mut _ as *mut _,
+        );
         DeleteObject(info.hbmColor);
         DeleteObject(info.hbmMask);
     }
@@ -283,7 +310,10 @@ fn a_new_taskbar_builds_the_icon_again_from_the_kept_icon() {
     unsafe { SendMessageW(kept.hwnd(), msg, 0, 0) };
     assert_ne!(kept.icon(), first, "a new icon was made");
     assert!(icon_alive(kept.icon()));
-    assert!(!icon_alive(first), "the old icon, which the tray made, is destroyed");
+    assert!(
+        !icon_alive(first),
+        "the old icon, which the tray made, is destroyed"
+    );
 
     // A raw `HICON` given by the caller has no source to build from: it stays, and is not
     // destroyed.
@@ -302,8 +332,7 @@ fn the_tray_window_lets_taskbar_created_through_the_message_filter() {
     // MSGFLT_ALLOW)`, so a tray in an elevated process still hears the restarted Explorer. Asking
     // again reports whether the message was already allowed for this window.
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, RegisterWindowMessageW, CHANGEFILTERSTRUCT,
-        MSGFLT_ALLOW,
+        ChangeWindowMessageFilterEx, RegisterWindowMessageW, CHANGEFILTERSTRUCT, MSGFLT_ALLOW,
     };
     // MSGFLTINFO_NONE is 0 (the message was not allowed before this call).
     const MSGFLTINFO_ALREADYALLOWED_FORWINDOW: u32 = 1;

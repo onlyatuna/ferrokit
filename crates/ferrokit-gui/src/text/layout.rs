@@ -130,7 +130,7 @@ fn is_hanging_space(grapheme: &str) -> bool {
                             | '\u{202f}'
                     ))
         })
-    }
+}
 
 /// Whether a grapheme is white space for the right bearing of a line: a hanging space, a line feed
 /// or the line separator (the characters Qt's `QCharAttributes::whiteSpace` is set for that this
@@ -181,9 +181,7 @@ impl CompositeText {
     /// Whether a word ends in grapheme `g`, for the line breaking of `layout_helper`: the next
     /// grapheme is white space, a place where UAX #14 allows a break, or there is none.
     fn ends_chunk(&self, g: usize) -> bool {
-        g + 1 >= self.grapheme_count()
-            || self.break_before[g + 1]
-            || is_blank(self.grapheme(g + 1))
+        g + 1 >= self.grapheme_count() || self.break_before[g + 1] || is_blank(self.grapheme(g + 1))
     }
 
     /// The bearing `layout_helper` ends a line with when its last word ends in grapheme `g`:
@@ -228,7 +226,11 @@ impl CompositeText {
                 let grapheme = self.grapheme(g);
                 is_blank(grapheme) && grapheme != LINE_SEPARATOR
             });
-        let bearing = if rest_is_space { 0.0 } else { self.end_bearing(end) };
+        let bearing = if rest_is_space {
+            0.0
+        } else {
+            self.end_bearing(end)
+        };
         pen + bearing > width
     }
 
@@ -482,7 +484,11 @@ impl TextLayout {
 
         let metrics = FontMetrics::from_font(&self.font);
         let wraps = self.wrap_mode != WrapMode::NoWrap;
-        let max_width = if wraps { self.wrap_width.unwrap_or(f32::MAX) } else { f32::MAX };
+        let max_width = if wraps {
+            self.wrap_width.unwrap_or(f32::MAX)
+        } else {
+            f32::MAX
+        };
         let right_limit = if wraps {
             self.position.x + self.wrap_width.unwrap_or(f32::INFINITY)
         } else {
@@ -566,7 +572,11 @@ impl TextLayout {
                     }
                     _ => composite.ends_chunk(curr_grapheme),
                 };
-            let bearing = if tests_bearing { composite.bearings[curr_grapheme] } else { 0.0 };
+            let bearing = if tests_bearing {
+                composite.bearings[curr_grapheme]
+            } else {
+                0.0
+            };
 
             // `QTextLine::layout_helper`: a space is added to the line without testing the width
             // (it hangs past the line end when it does not fit); a word is added only if it fits
@@ -661,8 +671,8 @@ impl TextLayout {
         // of the line go by the advances alone). The one exception: a line that is the end of the
         // text and ends in white space has no bearing, whether its spaces fit or hang.
         let line_end = line_start_grapheme + content_len;
-        let ends_in_blank = line_end > line_start_grapheme
-            && is_blank(composite.grapheme(line_end - 1));
+        let ends_in_blank =
+            line_end > line_start_grapheme && is_blank(composite.grapheme(line_end - 1));
         let at_text_end = curr_grapheme >= total_graphemes && !ended_by_separator;
         let bearing = if at_text_end && ends_in_blank {
             0.0
@@ -818,7 +828,8 @@ impl TextLayout {
                         .background
                         .unwrap_or(Color::from_rgba8(0, 120, 215, 80));
                     for (x, width) in line.selection_spans(overlap_start, overlap_end) {
-                        let sel_rect = RectF::new(pos.x + x, pos.y + line.position.y, width, line.height);
+                        let sel_rect =
+                            RectF::new(pos.x + x, pos.y + line.position.y, width, line.height);
                         painter.fill_rect(sel_rect, bg_color);
                     }
                 }
@@ -836,11 +847,25 @@ impl TextLayout {
                         let span = g_idx..span_end;
                         if span.clone().any(|g| composite.grapheme(g) == "\t") {
                             self.draw_span_around_tabs(
-                                painter, pos, line, line_y, composite, paragraph, span, default_color,
+                                painter,
+                                pos,
+                                line,
+                                line_y,
+                                composite,
+                                paragraph,
+                                span,
+                                default_color,
                             );
                         } else {
                             self.draw_shaped_span(
-                                painter, pos, line, line_y, composite, paragraph, span, default_color,
+                                painter,
+                                pos,
+                                line,
+                                line_y,
+                                composite,
+                                paragraph,
+                                span,
+                                default_color,
                             );
                         }
                         g_idx = span_end;
@@ -936,11 +961,22 @@ impl TextLayout {
                 end += 1;
             }
             let left = (start..end)
-                .flat_map(|g| [line.cursor_to_x(g, Edge::Leading), line.cursor_to_x(g, Edge::Trailing)])
+                .flat_map(|g| {
+                    [
+                        line.cursor_to_x(g, Edge::Leading),
+                        line.cursor_to_x(g, Edge::Trailing),
+                    ]
+                })
                 .fold(f32::INFINITY, f32::min);
             let origin = PointF::new(pos.x + left, line_y);
             for (color, glyphs) in self.span_runs(composite, paragraph, start..end, default_color) {
-                painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
+                painter.draw_glyph_run_colored(
+                    origin,
+                    &glyphs,
+                    &paragraph.engines,
+                    &self.font,
+                    color,
+                );
             }
             start = end;
         }
@@ -1069,7 +1105,8 @@ impl TextLayout {
             if end > first {
                 let base = starts[first];
                 let local: Vec<usize> = starts[first..=end].iter().map(|s| s - base).collect();
-                let paragraph_levels = bidi::grapheme_levels(&text[base..starts[end]], &local, base_rtl);
+                let paragraph_levels =
+                    bidi::grapheme_levels(&text[base..starts[end]], &local, base_rtl);
                 if paragraph_levels.is_empty() {
                     self.shape_run(
                         text,
@@ -1113,6 +1150,7 @@ impl TextLayout {
 
     /// Shapes the graphemes `range` of `text` as one run (`right_to_left` fixes its direction)
     /// and records their advances and, when a font shapes it, the shaped glyphs.
+    #[allow(clippy::too_many_arguments)] // each argument is a distinct borrow of the caller's shaping state
     fn shape_run(
         &self,
         text: &str,
@@ -1154,11 +1192,8 @@ impl TextLayout {
                 });
             }
             None => {
-                let heuristic = FontMetrics::from_font(&self.font).heuristic_grapheme_advances(
-                    run_text,
-                    &local,
-                    &self.font,
-                );
+                let heuristic = FontMetrics::from_font(&self.font)
+                    .heuristic_grapheme_advances(run_text, &local, &self.font);
                 advances[first..end].copy_from_slice(&heuristic);
             }
         }
@@ -1192,7 +1227,11 @@ impl TextLayout {
     fn glyph_bearing(&self, engines: &[FontEngine], glyph: &PositionedGlyph) -> f32 {
         engines
             .get(usize::from(glyph.font_index))
-            .and_then(|engine| engine.face.right_side_bearing(glyph.glyph_id, self.font.size))
+            .and_then(|engine| {
+                engine
+                    .face
+                    .right_side_bearing(glyph.glyph_id, self.font.size)
+            })
             .map_or(0.0, |rb| (-rb).max(0.0))
     }
 
@@ -1207,7 +1246,9 @@ impl TextLayout {
         out: &mut [f32],
     ) {
         for (slot, index) in out.iter_mut().zip(Self::glyph_of_graphemes(local, layout)) {
-            *slot = index.map_or(0.0, |index| self.glyph_bearing(engines, &layout.glyphs[index]));
+            *slot = index.map_or(0.0, |index| {
+                self.glyph_bearing(engines, &layout.glyphs[index])
+            });
         }
     }
 
@@ -1288,12 +1329,19 @@ mod tests {
 
     #[test]
     fn do_layout_builds_the_composite_text_once() {
-        let mut layout = TextLayout::new("one\u{2028}two\u{2028}three\u{2028}four\u{2028}five", Font::new("Segoe UI", 12.0));
+        let mut layout = TextLayout::new(
+            "one\u{2028}two\u{2028}three\u{2028}four\u{2028}five",
+            Font::new("Segoe UI", 12.0),
+        );
         layout.set_preedit_area(3, "ime");
         COMPOSITE_BUILDS.with(|c| c.set(0));
         layout.do_layout();
         assert_eq!(layout.line_count(), 5);
-        assert_eq!(COMPOSITE_BUILDS.with(Cell::get), 1, "one composite per layout, not per line");
+        assert_eq!(
+            COMPOSITE_BUILDS.with(Cell::get),
+            1,
+            "one composite per layout, not per line"
+        );
     }
 
     #[test]
@@ -1307,7 +1355,11 @@ mod tests {
         layout.set_preedit_area(2, "X\u{2028}Y");
         layout.do_layout();
         assert_eq!(layout.line_count(), 4);
-        assert_eq!(layout.line_at(1).map(|l| l.text_length), Some(2), "second line is \"Y\u{2028}\"");
+        assert_eq!(
+            layout.line_at(1).map(|l| l.text_length),
+            Some(2),
+            "second line is \"Y\u{2028}\""
+        );
     }
 
     #[test]
@@ -1319,7 +1371,10 @@ mod tests {
         assert_eq!((last.text_start(), last.text_length()), (3, 0));
         assert!(last.y() > layout.line_at(0).unwrap().y());
         // The caret after the separator sits on the empty line.
-        assert_eq!(layout.line_for_text_position(3).map(|l| l.line_number()), Some(1));
+        assert_eq!(
+            layout.line_for_text_position(3).map(|l| l.line_number()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1858,7 +1913,10 @@ mod tests {
         );
         // Three Hebrew letters of two bytes, shaped right to left: the glyphs come last
         // character first, and the last character in reading order has the first glyph.
-        assert_eq!(of(&[0, 2, 4, 6], &[4, 2, 0]), vec![Some(2), Some(1), Some(0)]);
+        assert_eq!(
+            of(&[0, 2, 4, 6], &[4, 2, 0]),
+            vec![Some(2), Some(1), Some(0)]
+        );
         // "e" and a combining acute (two bytes) share a cluster: the base glyph, the first.
         assert_eq!(of(&[0, 3, 4], &[0, 0, 3]), vec![Some(0), Some(2)]);
     }
@@ -1913,13 +1971,23 @@ mod tests {
         assert!(!words.first_word_overflows(0, 6.0, 14.5));
         // The text ends after the word and its spaces: the line ends in white space, which has no
         // bearing, so only the advances count.
-        let spaces =
-            bearing_composite("ab  ", &[4.0, 4.0, 3.0, 3.0], &[0.0, 0.5, 0.0, 0.0], Vec::new(), &[]);
+        let spaces = bearing_composite(
+            "ab  ",
+            &[4.0, 4.0, 3.0, 3.0],
+            &[0.0, 0.5, 0.0, 0.0],
+            Vec::new(),
+            &[],
+        );
         assert!(!spaces.first_word_overflows(0, 0.0, 8.0));
         assert!(spaces.first_word_overflows(0, 0.0, 7.75));
         // A line separator after the word ends the line with the bearing of the word.
-        let separated =
-            bearing_composite("ab\u{2028}", &[4.0, 4.0, 0.0], &[0.0, 0.5, 0.0], Vec::new(), &[]);
+        let separated = bearing_composite(
+            "ab\u{2028}",
+            &[4.0, 4.0, 0.0],
+            &[0.0, 0.5, 0.0],
+            Vec::new(),
+            &[],
+        );
         assert!(separated.first_word_overflows(0, 0.0, 8.25));
         // The word ends the text: its bearing counts.
         let ending = bearing_composite("ab", &[4.0, 4.0], &[0.0, 0.5], Vec::new(), &[]);
@@ -1963,7 +2031,10 @@ mod tests {
             layout.set_wrap_width(Some(100.0));
             FIRST_WORD_SCANNED.with(|s| s.set(0));
             layout.do_layout();
-            assert!(layout.line_count() > n / 30, "the word is cut into many lines");
+            assert!(
+                layout.line_count() > n / 30,
+                "the word is cut into many lines"
+            );
             FIRST_WORD_SCANNED.with(Cell::get)
         };
         let (small, large) = (count(4_000), count(16_000));

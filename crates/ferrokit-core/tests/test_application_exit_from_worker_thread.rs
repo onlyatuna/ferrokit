@@ -81,11 +81,15 @@ fn exit_from_worker_thread_emits_about_to_quit() {
     let mut app = CoreApplication::new(vec!["test".to_string()]);
     let emitted = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&emitted);
-    app.about_to_quit().connect(move |_| flag.store(true, Ordering::SeqCst));
+    app.about_to_quit()
+        .connect(move |_| flag.store(true, Ordering::SeqCst));
 
     Timer::single_shot(0, || {
         std::thread::spawn(|| CoreApplication::exit(3));
     });
     assert_eq!(app.exec(), 3);
-    assert!(emitted.load(Ordering::SeqCst), "aboutToQuit must be emitted for exit() from a worker");
+    assert!(
+        emitted.load(Ordering::SeqCst),
+        "aboutToQuit must be emitted for exit() from a worker"
+    );
 }

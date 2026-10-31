@@ -28,7 +28,7 @@ thread_local! {
     static ACTIVE_WINDOW_ID: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
     static FOCUS_ENTRIES: RefCell<Vec<FocusEntry>> = const { RefCell::new(Vec::new()) };
     static FOCUS_SEQ: Cell<u64> = const { Cell::new(0) };
-    static FOCUS_QUEUE: RefCell<Vec<Option<(Option<ObjectId>, Option<ObjectId>)>>> = const { RefCell::new(Vec::new()) };
+    static FOCUS_QUEUE: RefCell<Vec<FocusQueueEntry>> = const { RefCell::new(Vec::new()) };
     static FOCUS_CHANGED: RefCell<Option<FocusChangedSignal>> = const { RefCell::new(None) };
     static QUITTING: Cell<bool> = const { Cell::new(false) };
     /// The platform showed the active override cursor itself (`QPlatformCursor::OverrideCursor`).
@@ -36,6 +36,7 @@ thread_local! {
     static OVERRIDE_CURSORS: RefCell<Vec<ferrokit_platform::cursor::CursorShape>> = const { RefCell::new(Vec::new()) };
 }
 
+type FocusQueueEntry = Option<(Option<ObjectId>, Option<ObjectId>)>;
 type FocusChangedSignal = Signal<(Option<ObjectId>, Option<ObjectId>)>;
 
 /// The focus widget of one window's focus state, held weakly so a dropped window is not kept
@@ -113,7 +114,9 @@ impl Application {
         // `QGuiApplication::devicePixelRatio()`: the highest ratio of any screen. Qt's Windows font
         // database picks its font engine, and with it the advances text is laid out with, from it.
         // Refreshed on every screen change, as Qt does when screens are added or removed.
-        ferrokit_gui::text::font_database::set_application_device_pixel_ratio(max_device_pixel_ratio());
+        ferrokit_gui::text::font_database::set_application_device_pixel_ratio(
+            max_device_pixel_ratio(),
+        );
         ferrokit_platform::platform()
             .screen_changed()
             .connect(|_: &()| {
@@ -267,8 +270,11 @@ impl Application {
             .flatten();
         drop(removed);
         let _ = VISIBLE_WINDOWS.try_with(|vis| vis.borrow_mut().retain(|&id| id != window_id));
-        let _ = TRANSIENT_PARENTS
-            .try_with(|links| links.borrow_mut().retain(|&(w, p)| w != window_id && p != window_id));
+        let _ = TRANSIENT_PARENTS.try_with(|links| {
+            links
+                .borrow_mut()
+                .retain(|&(w, p)| w != window_id && p != window_id)
+        });
         let _ = ACTIVE_WINDOW_ID.try_with(|act| {
             let mut curr = act.borrow_mut();
             if *curr == Some(window_id) {
@@ -386,7 +392,11 @@ impl Application {
             .unwrap_or(false);
         if changed {
             GuiApplication::emit_focus_window_changed(window_id);
-            let ticket = FocusTicket { slot: Self::reserve_focus_slot(), old: before, new: Self::visible_focus_id() };
+            let ticket = FocusTicket {
+                slot: Self::reserve_focus_slot(),
+                old: before,
+                new: Self::visible_focus_id(),
+            };
             Self::finish_focus_publish(ticket);
         }
     }
@@ -454,13 +464,22 @@ impl Application {
             .unwrap_or(0);
         let _ = FOCUS_ENTRIES.try_with(|entries| {
             let mut entries = entries.borrow_mut();
-            let entry = FocusEntry { owner, window, focus: new, seq };
+            let entry = FocusEntry {
+                owner,
+                window,
+                focus: new,
+                seq,
+            };
             match entries.iter_mut().find(|e| e.owner == owner) {
                 Some(slot) => *slot = entry,
                 None => entries.push(entry),
             }
         });
-        FocusTicket { slot: Self::reserve_focus_slot(), old, new: Self::visible_focus_id() }
+        FocusTicket {
+            slot: Self::reserve_focus_slot(),
+            old,
+            new: Self::visible_focus_id(),
+        }
     }
 
     /// The window whose focus state is `owner` is gone: its focus widget is cleared.
@@ -475,7 +494,11 @@ impl Application {
             })
             .unwrap_or(false);
         if removed {
-            let ticket = FocusTicket { slot: Self::reserve_focus_slot(), old, new: Self::visible_focus_id() };
+            let ticket = FocusTicket {
+                slot: Self::reserve_focus_slot(),
+                old,
+                new: Self::visible_focus_id(),
+            };
             Self::finish_focus_publish(ticket);
         }
     }
@@ -667,9 +690,12 @@ impl Application {
         *GLOBAL_STYLESHEET.write().unwrap() = None;
         // The native override (`QWindowsCursor::m_overrideCursor` / `m_overriddenCursor`) lives
         // in the platform, so clearing the stack alone would leave it behind.
-        let had_override = OVERRIDE_CURSORS.with(|s| !std::mem::take(&mut *s.borrow_mut()).is_empty());
+        let had_override =
+            OVERRIDE_CURSORS.with(|s| !std::mem::take(&mut *s.borrow_mut()).is_empty());
         if had_override {
-            ferrokit_platform::platform().cursor().clear_override_cursor();
+            ferrokit_platform::platform()
+                .cursor()
+                .clear_override_cursor();
         }
         OVERRIDE_NATIVE.with(|n| n.set(false));
         crate::widget::forget_mouse_grab();

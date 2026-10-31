@@ -11,7 +11,7 @@ use ferrokit_core::event::{ContextMenuReason, Event, EventKind, MouseButtons};
 use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_widgets::hit_test::EventTreeDispatcher;
-use ferrokit_widgets::widget::{EmptyWidget, Widget, WidgetRef};
+use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -56,16 +56,15 @@ impl QObject for Spy {
         if kind == "other" {
             return false;
         }
-        self.log.lock().unwrap().push(format!("{}:{}", self.label, kind));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", self.label, kind));
         self.consume.contains(&kind)
     }
 }
 
-fn spy(
-    label: &'static str,
-    log: &Log,
-    consume: &[&'static str],
-) -> (ObjectId, OwnedObject<Spy>) {
+fn spy(label: &'static str, log: &Log, consume: &[&'static str]) -> (ObjectId, OwnedObject<Spy>) {
     let s = Spy {
         data: ObjectData::with_auto_id(),
         label,
@@ -91,14 +90,15 @@ fn tree() -> (WidgetRef, WidgetRef) {
     child.borrow().set_geometry(Rect::new(10, 10, 100, 100));
     child.borrow().widget_base().set_mouse_tracking(true);
     root.borrow_mut().add_child(child.clone());
-    child
-        .borrow()
-        .set_parent_widget(Some(Rc::downgrade(&root)));
+    child.borrow().set_parent_widget(Some(Rc::downgrade(&root)));
     (root, child)
 }
 
 fn install(widget: &WidgetRef, filter: ObjectId) {
-    widget.borrow_mut().object_data_mut().install_event_filter(filter);
+    widget
+        .borrow_mut()
+        .object_data_mut()
+        .install_event_filter(filter);
 }
 
 fn take(log: &Log) -> Vec<String> {
@@ -173,7 +173,12 @@ fn filters_see_context_menu_press_and_tracking_move() {
             button: 1,
         }),
     );
-    d.dispatch_mouse_move(&root, Point::new(30, 30), Point::new(30, 30), MouseButtons(0));
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(30, 30),
+        Point::new(30, 30),
+        MouseButtons(0),
+    );
 
     let seen = take(&log);
     assert!(seen.contains(&"f:ContextMenu".to_string()), "{seen:?}");
@@ -209,10 +214,23 @@ fn enter_and_leave_reach_filters_and_under_mouse_follows_the_cursor() {
 
     let mut d = EventTreeDispatcher::new();
     assert!(!child.borrow().under_mouse());
-    d.dispatch_mouse_move(&root, Point::new(20, 20), Point::new(20, 20), MouseButtons(0));
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(20, 20),
+        Point::new(20, 20),
+        MouseButtons(0),
+    );
     assert!(child.borrow().under_mouse());
-    assert!(root.borrow().under_mouse(), "the whole chain is under the mouse");
-    d.dispatch_mouse_move(&root, Point::new(150, 150), Point::new(150, 150), MouseButtons(0));
+    assert!(
+        root.borrow().under_mouse(),
+        "the whole chain is under the mouse"
+    );
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(150, 150),
+        Point::new(150, 150),
+        MouseButtons(0),
+    );
     assert!(!child.borrow().under_mouse());
     assert!(root.borrow().under_mouse());
     d.handle_mouse_leave();
@@ -232,7 +250,12 @@ fn an_application_filter_that_consumes_enter_keeps_under_mouse_unset() {
     CoreApplication::install_event_filter(app_id);
 
     let mut d = EventTreeDispatcher::new();
-    d.dispatch_mouse_move(&root, Point::new(20, 20), Point::new(20, 20), MouseButtons(0));
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(20, 20),
+        Point::new(20, 20),
+        MouseButtons(0),
+    );
     CoreApplication::remove_event_filter(app_id);
 
     // `QApplicationPrivate::notify_helper` returns after the application filters, before it
@@ -253,8 +276,11 @@ fn key_press_goes_through_the_focus_widget_filters() {
 
     let mut d = EventTreeDispatcher::new();
     let child_id = child.borrow().id();
-    d.focus_manager_mut()
-        .set_focus(&root, Some(child_id), ferrokit_core::event::FocusReason::Other);
+    d.focus_manager_mut().set_focus(
+        &root,
+        Some(child_id),
+        ferrokit_core::event::FocusReason::Other,
+    );
     let mut ev = Event::new_spontaneous(EventKind::KeyPress {
         key: 0x41,
         modifiers: 0,

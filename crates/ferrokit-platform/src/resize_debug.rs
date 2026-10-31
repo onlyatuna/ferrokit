@@ -99,9 +99,15 @@ const COUNTS: [(Count, &str); 12] = [
     (Count::SkipReentrant, "render skipped: already rendering"),
     (Count::SkipNotDirty, "render skipped: not dirty"),
     (Count::SkipBorrowConflict, "render skipped: borrow conflict"),
-    (Count::NoDirtyRegion, "render: empty dirty region (no present)"),
+    (
+        Count::NoDirtyRegion,
+        "render: empty dirty region (no present)",
+    ),
     (Count::BackingStoreResized, "backing store reallocated"),
-    (Count::PresentError, "present_region error (full re-present)"),
+    (
+        Count::PresentError,
+        "present_region error (full re-present)",
+    ),
     (Count::WmPaint, "WM_PAINT"),
     (Count::NcCalcSize, "WM_NCCALCSIZE"),
 ];
@@ -160,7 +166,14 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(kind: Kind, depth: u32, at_us: u64, gap_us: u64, client: (i32, i32), hwnd: (i32, i32, i32, i32)) -> Self {
+    fn new(
+        kind: Kind,
+        depth: u32,
+        at_us: u64,
+        gap_us: u64,
+        client: (i32, i32),
+        hwnd: (i32, i32, i32, i32),
+    ) -> Self {
         Frame {
             kind,
             depth,
@@ -237,13 +250,16 @@ fn frame_begin(kind: Kind, hwnd: isize, client: (i32, i32)) {
         let now = Instant::now();
         let at = s.started.map(|t| (now - t).as_micros() as u64).unwrap_or(0);
         let idx = kind as usize;
-        let gap = s.last_end[idx].map(|t| (now - t).as_micros() as u64).unwrap_or(0);
+        let gap = s.last_end[idx]
+            .map(|t| (now - t).as_micros() as u64)
+            .unwrap_or(0);
         let depth = s.stack.len() as u32;
         s.max_depth = s.max_depth.max(depth + 1);
         if let Some(parent) = s.stack.last_mut() {
             parent.nested_frames += 1;
         }
-        s.stack.push(Frame::new(kind, depth, at, gap, client, hwnd_rect(hwnd)));
+        s.stack
+            .push(Frame::new(kind, depth, at, gap, client, hwnd_rect(hwnd)));
     });
 }
 
@@ -356,7 +372,10 @@ pub fn ulw(sample: UlwSample) {
         if !s.active {
             return;
         }
-        let at = s.started.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+        let at = s
+            .started
+            .map(|t| t.elapsed().as_micros() as u64)
+            .unwrap_or(0);
         match s.stack.last_mut() {
             Some(f) => f.ulws.push(sample),
             None => s.outside_ulw.push((at, sample)),
@@ -375,7 +394,10 @@ pub fn note(text: impl FnOnce() -> String) {
         if !s.active {
             return;
         }
-        let at = s.started.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+        let at = s
+            .started
+            .map(|t| t.elapsed().as_micros() as u64)
+            .unwrap_or(0);
         let t = text();
         match s.stack.last_mut() {
             Some(f) => f.notes.push((at, t)),
@@ -400,8 +422,13 @@ fn sz(r: (i32, i32, i32, i32)) -> (i32, i32) {
     (r.2 - r.0, r.3 - r.1)
 }
 
-fn stat3(v: &mut Vec<u64>) -> String {
-    format!("p50={} p90={} max={}", ms(pct(v, 0.5)), ms(pct(v, 0.9)), ms(pct(v, 1.0)))
+fn stat3(v: &mut [u64]) -> String {
+    format!(
+        "p50={} p90={} max={}",
+        ms(pct(v, 0.5)),
+        ms(pct(v, 0.9)),
+        ms(pct(v, 1.0))
+    )
 }
 
 fn frame_line(i: usize, f: &Frame) -> String {
@@ -433,9 +460,15 @@ fn frame_line(i: usize, f: &Frame) -> String {
     }
     let (bw, bh) = sz(f.hwnd_at_begin);
     let (ew, eh) = sz(f.hwnd_at_end);
-    s.push_str(&format!(" hwnd {}x{}@({},{})", bw, bh, f.hwnd_at_begin.0, f.hwnd_at_begin.1));
+    s.push_str(&format!(
+        " hwnd {}x{}@({},{})",
+        bw, bh, f.hwnd_at_begin.0, f.hwnd_at_begin.1
+    ));
     if f.hwnd_at_begin != f.hwnd_at_end {
-        s.push_str(&format!("->{}x{}@({},{})", ew, eh, f.hwnd_at_end.0, f.hwnd_at_end.1));
+        s.push_str(&format!(
+            "->{}x{}@({},{})",
+            ew, eh, f.hwnd_at_end.0, f.hwnd_at_end.1
+        ));
     }
     for u in &f.ulws {
         let (b, a) = (sz(u.hwnd_before), sz(u.hwnd_after));
@@ -483,8 +516,16 @@ fn ulw_line(u: &UlwSample) -> String {
         a.0,
         a.1,
         if u.no_resize_flag { " NORESIZE" } else { "" },
-        if u.indirect_error.is_some() { " FAIL" } else { "" },
-        if u.hwnd_before != u.hwnd_after { " HWND-CHANGED-BY-ULW" } else { "" },
+        if u.indirect_error.is_some() {
+            " FAIL"
+        } else {
+            ""
+        },
+        if u.hwnd_before != u.hwnd_after {
+            " HWND-CHANGED-BY-ULW"
+        } else {
+            ""
+        },
     )
 }
 
@@ -511,14 +552,21 @@ fn build_report(s: &mut Session) -> String {
         stat3(&mut gaps)
     ));
     if secs > 0.0 {
-        out.push_str(&format!("  WM_SIZE rate: {:.1}/s\n", sizes.len() as f64 / secs));
+        out.push_str(&format!(
+            "  WM_SIZE rate: {:.1}/s\n",
+            sizes.len() as f64 / secs
+        ));
     }
 
     // --- Phase breakdown over WM_SIZE frames ----------------------------------------------
     out.push_str("  per-phase ms across WM_SIZE frames (frames where the phase ran): n, p50 / p90 / max, share of handler time\n");
     let total_all: u64 = sizes.iter().map(|f| f.total_us).sum();
     for (k, (_, name)) in PHASES.iter().enumerate() {
-        let mut v: Vec<u64> = sizes.iter().map(|f| f.phase_us[k]).filter(|&x| x > 0).collect();
+        let mut v: Vec<u64> = sizes
+            .iter()
+            .map(|f| f.phase_us[k])
+            .filter(|&x| x > 0)
+            .collect();
         if v.is_empty() {
             continue;
         }
@@ -528,12 +576,18 @@ fn build_report(s: &mut Session) -> String {
             name,
             v.len(),
             stat3(&mut v),
-            if total_all == 0 { 0.0 } else { sum as f64 * 100.0 / total_all as f64 }
+            if total_all == 0 {
+                0.0
+            } else {
+                sum as f64 * 100.0 / total_all as f64
+            }
         ));
     }
     let outside_total: u64 = s.outside_us.iter().sum();
     if outside_total > 0 {
-        out.push_str("    phases that ran outside any WM_SIZE/WM_MOVE (deferred render, etc.), total ms:");
+        out.push_str(
+            "    phases that ran outside any WM_SIZE/WM_MOVE (deferred render, etc.), total ms:",
+        );
         for (k, (_, name)) in PHASES.iter().enumerate() {
             if s.outside_us[k] > 0 {
                 out.push_str(&format!(" {name}={}", ms(s.outside_us[k])));
@@ -565,7 +619,10 @@ fn build_report(s: &mut Session) -> String {
         .map(|(i, _)| i)
         .collect();
     if !no_render.is_empty() {
-        out.push_str(&format!("  WM_SIZE frames with NO render: {:?}\n", &no_render[..no_render.len().min(30)]));
+        out.push_str(&format!(
+            "  WM_SIZE frames with NO render: {:?}\n",
+            &no_render[..no_render.len().min(30)]
+        ));
     }
     for (k, (_, name)) in COUNTS.iter().enumerate() {
         if s.counts[k] > 0 {
@@ -574,15 +631,36 @@ fn build_report(s: &mut Session) -> String {
     }
 
     // --- Geometry consistency -------------------------------------------------------------
-    let mut ulw_us: Vec<u64> = all_ulw.iter().map(|u| u.duration.as_micros() as u64).collect();
-    let psize_vs_before = all_ulw.iter().filter(|u| (sz(u.hwnd_before).0 as u32, sz(u.hwnd_before).1 as u32) != u.psize).count();
-    let psize_vs_after = all_ulw.iter().filter(|u| (sz(u.hwnd_after).0 as u32, sz(u.hwnd_after).1 as u32) != u.psize).count();
-    let pos_mismatch = all_ulw.iter().filter(|u| (u.hwnd_before.0, u.hwnd_before.1) != u.pt_dst).count();
-    let changed = all_ulw.iter().filter(|u| u.hwnd_before != u.hwnd_after).count();
+    let mut ulw_us: Vec<u64> = all_ulw
+        .iter()
+        .map(|u| u.duration.as_micros() as u64)
+        .collect();
+    let psize_vs_before = all_ulw
+        .iter()
+        .filter(|u| (sz(u.hwnd_before).0 as u32, sz(u.hwnd_before).1 as u32) != u.psize)
+        .count();
+    let psize_vs_after = all_ulw
+        .iter()
+        .filter(|u| (sz(u.hwnd_after).0 as u32, sz(u.hwnd_after).1 as u32) != u.psize)
+        .count();
+    let pos_mismatch = all_ulw
+        .iter()
+        .filter(|u| (u.hwnd_before.0, u.hwnd_before.1) != u.pt_dst)
+        .count();
+    let changed = all_ulw
+        .iter()
+        .filter(|u| u.hwnd_before != u.hwnd_after)
+        .count();
     let pix_vs_psize = all_ulw.iter().filter(|u| u.pixmap != u.psize).count();
     let norz = all_ulw.iter().filter(|u| u.no_resize_flag).count();
-    let fails = all_ulw.iter().filter(|u| u.indirect_error.is_some()).count();
-    let fb_fail = all_ulw.iter().filter(|u| u.fallback_ok == Some(false)).count();
+    let fails = all_ulw
+        .iter()
+        .filter(|u| u.indirect_error.is_some())
+        .count();
+    let fb_fail = all_ulw
+        .iter()
+        .filter(|u| u.fallback_ok == Some(false))
+        .count();
     let full = all_ulw.iter().filter(|u| u.force_full).count();
     let resized = all_ulw.iter().filter(|u| u.resized).count();
     out.push_str(&format!(
@@ -604,7 +682,10 @@ fn build_report(s: &mut Session) -> String {
         .iter()
         .filter(|f| sz(f.hwnd_at_begin) != f.client)
         .count();
-    let hwnd_moved = sizes.iter().filter(|f| f.hwnd_at_begin != f.hwnd_at_end).count();
+    let hwnd_moved = sizes
+        .iter()
+        .filter(|f| f.hwnd_at_begin != f.hwnd_at_end)
+        .count();
     out.push_str(&format!(
         "  WM_SIZE client size != HWND size at entry: {}   HWND rect changed during handler: {}\n",
         cl_vs_hwnd, hwnd_moved
@@ -634,14 +715,22 @@ fn build_report(s: &mut Session) -> String {
             .outside_ulw
             .iter()
             .map(|(t, u)| (*t, format!("ULW {}", ulw_line(u))))
-            .chain(s.outside_notes.iter().map(|(t, n)| (*t, format!("note: {n}"))))
+            .chain(
+                s.outside_notes
+                    .iter()
+                    .map(|(t, n)| (*t, format!("note: {n}"))),
+            )
             .collect();
         ev.sort_by_key(|(t, _)| *t);
         for (t, l) in ev {
             out.push_str(&format!("    +{}ms {l}\n", ms(t)));
         }
     }
-    let mut slow: Vec<(usize, &Frame)> = frames.iter().enumerate().filter(|(_, f)| f.kind == Kind::Size).collect();
+    let mut slow: Vec<(usize, &Frame)> = frames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.kind == Kind::Size)
+        .collect();
     slow.sort_by_key(|(_, f)| std::cmp::Reverse(f.total_us));
     if n > head {
         out.push_str("  slowest WM_SIZE frames:\n");
@@ -707,7 +796,11 @@ pub fn exit_size_move() {
         Ok(v) if v != "1" => std::path::PathBuf::from(v),
         _ => std::env::temp_dir().join("ferrokit_resize_debug.log"),
     };
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = f.write_all(text.as_bytes());
         let _ = f.write_all(b"\n");

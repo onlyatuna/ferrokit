@@ -7,8 +7,7 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject, sender,
     unregister_qobject, MoveByIdError, ObjectData, ObjectId, OwnedObject, QObject, ScopeLevelGuard,
-    ThreadContext,
-    ThreadId,
+    ThreadContext, ThreadId,
 };
 use ferrokit_core::property::Property;
 use ferrokit_core::signal::Signal;
@@ -88,17 +87,14 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     let current_thread = ThreadId::current();
     let (tid_tx, tid_rx) = std::sync::mpsc::channel();
     let (go_tx, go_rx) = std::sync::mpsc::channel::<(ObjectId, ObjectId)>();
-    let (result_tx, result_rx) =
-        std::sync::mpsc::channel::<(Option<ThreadId>, Option<ThreadId>)>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(Option<ThreadId>, Option<ThreadId>)>();
     let worker = std::thread::spawn(move || {
         tid_tx.send(ThreadId::current()).unwrap();
         let (parent_id, child_id) = go_rx.recv().unwrap();
-        let parent_thread = ferrokit_core::object::with_object(parent_id, |o| {
-            o.object_data().thread_id()
-        });
-        let child_thread = ferrokit_core::object::with_object(child_id, |o| {
-            o.object_data().thread_id()
-        });
+        let parent_thread =
+            ferrokit_core::object::with_object(parent_id, |o| o.object_data().thread_id());
+        let child_thread =
+            ferrokit_core::object::with_object(child_id, |o| o.object_data().thread_id());
         result_tx.send((parent_thread, child_thread)).unwrap();
     });
     let target_thread = tid_rx.recv().unwrap();
@@ -219,17 +215,23 @@ fn test_qobject_start_and_kill_timer() {
     let mut widget = unsafe { register_owned_qobject(TestWidget::new("timer_widget")) };
 
     // Initialize thread timer context
-    let registry = Arc::new(std::sync::Mutex::new(ferrokit_core::timer::TimerRegistry::new()));
+    let registry = Arc::new(std::sync::Mutex::new(
+        ferrokit_core::timer::TimerRegistry::new(),
+    ));
     #[cfg(windows)]
     ferrokit_core::timer::register_thread_timer_context(registry.clone(), std::ptr::null_mut());
     #[cfg(not(windows))]
     ferrokit_core::timer::register_thread_timer_context(registry.clone());
 
-    let t1 = widget.with_mut(|w| w.start_timer(100, TimerType::Coarse)).unwrap();
+    let t1 = widget
+        .with_mut(|w| w.start_timer(100, TimerType::Coarse))
+        .unwrap();
     assert!(t1.is_valid());
     assert_eq!(widget.with(|w| w.data.timers().len()).unwrap(), 1);
 
-    let t2 = widget.with_mut(|w| w.start_timer(200, TimerType::Precise)).unwrap();
+    let t2 = widget
+        .with_mut(|w| w.start_timer(200, TimerType::Precise))
+        .unwrap();
     assert!(t2.is_valid());
     assert_eq!(widget.with(|w| w.data.timers().len()).unwrap(), 2);
 
@@ -393,7 +395,9 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
         .with_mut(|a| ferrokit_core::object::install_event_filter(&mut a.data, b_id))
         .unwrap();
     assert!(ok);
-    assert!(obj_a.with(|a| a.data.event_filters().contains(b_id)).unwrap());
+    assert!(obj_a
+        .with(|a| a.data.event_filters().contains(b_id))
+        .unwrap());
 
     // 3. Qt allows mutual event filters (qobject.cpp:2407-2423)
     let cycle = obj_b

@@ -5,7 +5,7 @@
 //! - `HLine`: `QSize(-1, 3)`
 //! - `VLine`: `QSize(3, -1)`
 //! - other: `QWidget::sizeHint()` (`qwidget.cpp:8884`), returning layout totalSizeHint or `QSize(-1, -1)`.
-//! `minimumSizeHint()` (`qwidget.cpp:8911`): returns layout totalMinimumSize or `QSize(-1, -1)`.
+//!   `minimumSizeHint()` (`qwidget.cpp:8911`): returns layout totalMinimumSize or `QSize(-1, -1)`.
 
 use ferrokit_gui::geometry::primitives::Size;
 use ferrokit_widgets::frame::{Frame, FrameShape};

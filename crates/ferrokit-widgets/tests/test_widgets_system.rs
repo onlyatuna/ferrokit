@@ -150,7 +150,9 @@ fn test_asynchronous_update_request_and_event_loop_compression() {
     // window while a callback of it runs.
     let boxed_win = unsafe { register_owned_qobject(win) };
 
-    let root = boxed_win.with(|w| w.root_widget()).expect("the window is not in a callback");
+    let root = boxed_win
+        .with(|w| w.root_widget())
+        .expect("the window is not in a callback");
     let child1: WidgetRef = Rc::new(RefCell::new(Box::new(EmptyWidget::with_geometry(
         Rect::new(10, 10, 80, 40),
     ))));
@@ -174,7 +176,7 @@ fn test_asynchronous_update_request_and_event_loop_compression() {
     // UpdateRequest now feeds the window's deferred-render gate: the render itself runs on the
     // next turn. It must settle (no ping-pong) within a couple of turns.
     for _ in 0..4 {
-        if el.queue().lock().unwrap().len() == 0 {
+        if el.queue().lock().unwrap().is_empty() {
             break;
         }
         el.process_events(false);
@@ -308,7 +310,10 @@ impl Widget for HoverButton {
     }
 
     fn remove_child(&mut self, child_id: ferrokit_core::object::ObjectId) {
-        self.base.children.borrow_mut().retain(|c| c.borrow().id() != child_id);
+        self.base
+            .children
+            .borrow_mut()
+            .retain(|c| c.borrow().id() != child_id);
     }
 
     fn paint_event(&mut self, _painter: &mut ferrokit_gui::paint::Painter) {}
@@ -463,45 +468,78 @@ fn test_dirty_region_culling_skips_non_intersecting_widgets() {
             &self.base.object_data
         }
         fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
-        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
-    }
+            ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
+        }
     }
     impl Widget for TestWidget {
         fn widget_base(&self) -> &ferrokit_widgets::widget::WidgetBase {
             &self.base
         }
 
-        fn id(&self) -> ferrokit_core::object::ObjectId { self.base.object_data.id() }
-        fn is_visible(&self) -> bool { self.base.is_visible() }
-        fn set_visible(&self, v: bool) { self.base.set_visible(v); }
-        fn is_enabled(&self) -> bool { true }
-        fn geometry(&self) -> Rect { self.base.geometry() }
-        fn set_geometry(&self, r: Rect) { self.base.set_geometry(r); }
-        fn update(&self) { self.base.update(); }
-        fn dirty_rect(&self) -> Option<Rect> { self.base.dirty_rect() }
-        fn clear_dirty(&self) { self.base.clear_dirty(); }
-        fn layout(&self) -> Option<&dyn Layout> { None }
-        fn layout_mut(&mut self) -> Option<&mut Box<dyn Layout>> { None }
+        fn id(&self) -> ferrokit_core::object::ObjectId {
+            self.base.object_data.id()
+        }
+        fn is_visible(&self) -> bool {
+            self.base.is_visible()
+        }
+        fn set_visible(&self, v: bool) {
+            self.base.set_visible(v);
+        }
+        fn is_enabled(&self) -> bool {
+            true
+        }
+        fn geometry(&self) -> Rect {
+            self.base.geometry()
+        }
+        fn set_geometry(&self, r: Rect) {
+            self.base.set_geometry(r);
+        }
+        fn update(&self) {
+            self.base.update();
+        }
+        fn dirty_rect(&self) -> Option<Rect> {
+            self.base.dirty_rect()
+        }
+        fn clear_dirty(&self) {
+            self.base.clear_dirty();
+        }
+        fn layout(&self) -> Option<&dyn Layout> {
+            None
+        }
+        fn layout_mut(&mut self) -> Option<&mut Box<dyn Layout>> {
+            None
+        }
         fn set_layout(&mut self, _: Box<dyn Layout>) {}
-        fn parent_widget(&self) -> Option<WidgetWeak> { None }
+        fn parent_widget(&self) -> Option<WidgetWeak> {
+            None
+        }
         fn set_parent_widget(&self, _: Option<WidgetWeak>) {}
-        fn window_id(&self) -> Option<ferrokit_core::object::ObjectId> { None }
+        fn window_id(&self) -> Option<ferrokit_core::object::ObjectId> {
+            None
+        }
         fn set_window_id(&self, _: Option<ferrokit_core::object::ObjectId>) {}
-        fn children(&self) -> Vec<WidgetRef> { Vec::new() }
+        fn children(&self) -> Vec<WidgetRef> {
+            Vec::new()
+        }
         fn add_child(&mut self, _: WidgetRef) {}
         fn remove_child(&mut self, _: ferrokit_core::object::ObjectId) {}
         fn paint_event(&mut self, _: &mut ferrokit_gui::paint::Painter) {
             self.painted.store(true, Ordering::SeqCst);
         }
-        fn as_any(&self) -> &dyn std::any::Any { self }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
     let mut win = Window::new(
         "Dirty Culling Test",
         Rect::new(0, 0, 400, 200),
         ferrokit_platform::WindowFlags::FRAMELESS,
-    ).unwrap();
+    )
+    .unwrap();
 
     let root = win.root_widget();
     let painted1 = Arc::new(AtomicBool::new(false));
@@ -536,5 +574,8 @@ fn test_dirty_region_culling_skips_non_intersecting_widgets() {
 
     // w1 MUST be repainted, w2 MUST BE SKIPPED!
     assert!(painted1.load(Ordering::SeqCst), "w1 should be repainted");
-    assert!(!painted2.load(Ordering::SeqCst), "w2 should NOT be repainted (culled)");
+    assert!(
+        !painted2.load(Ordering::SeqCst),
+        "w2 should NOT be repainted (culled)"
+    );
 }

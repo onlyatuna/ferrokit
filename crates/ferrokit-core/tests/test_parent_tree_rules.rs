@@ -80,7 +80,10 @@ fn an_object_cannot_be_its_own_parent() {
     let mut a = Node::registered();
     let id = id_of(&a);
 
-    assert_eq!(reparent(&mut a, Some(id)), Err(ReparentError::InvalidParent));
+    assert_eq!(
+        reparent(&mut a, Some(id)),
+        Err(ReparentError::InvalidParent)
+    );
 
     assert_eq!(parent_of(&a), None);
     assert!(a.with(|n| n.data.children().is_empty()).unwrap());
@@ -103,8 +106,14 @@ fn a_descendant_cannot_become_the_parent() {
     let events_before = (seen_len(&a), seen_len(&b), seen_len(&c));
 
     // a -> b -> c: neither the child nor the grandchild may become a's parent.
-    assert_eq!(reparent(&mut a, Some(bid)), Err(ReparentError::InvalidParent));
-    assert_eq!(reparent(&mut a, Some(cid)), Err(ReparentError::InvalidParent));
+    assert_eq!(
+        reparent(&mut a, Some(bid)),
+        Err(ReparentError::InvalidParent)
+    );
+    assert_eq!(
+        reparent(&mut a, Some(cid)),
+        Err(ReparentError::InvalidParent)
+    );
 
     assert_eq!(parent_of(&a), None);
     assert_eq!(parent_of(&b), Some(aid));
@@ -120,7 +129,10 @@ fn the_cycle_check_follows_the_tree_as_it_is_now() {
     let mut b = Node::registered();
     let (aid, bid) = (id_of(&a), id_of(&b));
     reparent(&mut b, Some(aid)).unwrap();
-    assert_eq!(reparent(&mut a, Some(bid)), Err(ReparentError::InvalidParent));
+    assert_eq!(
+        reparent(&mut a, Some(bid)),
+        Err(ReparentError::InvalidParent)
+    );
 
     // Once b is detached it is not a's descendant any more, so the same call is allowed.
     reparent(&mut b, None).unwrap();
@@ -247,7 +259,11 @@ fn a_former_child_is_not_refused_a_thread_move_for_still_having_a_parent() {
     let (child, _) = child_that_drops_its_parent();
     let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
 
-    let moved = move_to_thread_by_id(OwnedObject::object_id(&child), elsewhere, ThreadId::current());
+    let moved = move_to_thread_by_id(
+        OwnedObject::object_id(&child),
+        elsewhere,
+        ThreadId::current(),
+    );
 
     assert_ne!(moved, Err(MoveByIdError::HasParent));
 }

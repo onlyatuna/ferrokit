@@ -3,10 +3,10 @@
 //! bevel painter loop once per pixel of the width (Qt's own `int` math is undefined there).
 
 use ferrokit_gui::geometry::primitives::{Rect, Size};
+use ferrokit_gui::paint::palette::Palette;
 use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::paint::Painter;
 use ferrokit_widgets::frame::{Frame, FrameShadow, FrameShape, FrameStyle};
-use ferrokit_gui::paint::palette::Palette;
 use ferrokit_widgets::widget::Widget;
 
 #[test]

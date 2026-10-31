@@ -282,6 +282,8 @@ fn a_registered_parent_dropped_in_its_childs_callback_frees_the_child_afterwards
     assert!(gone(rid) && gone(pid));
 }
 
+type SeenFlags = (bool, bool, bool, bool);
+
 /// Drops its own [`OwnedObject`] (either a released `OwnedObject<dyn QObject>` from
 /// [`reparent_owned_object`] or a concrete `OwnedObject<SelfDropper>` from
 /// [`register_owned_qobject`]) from inside its callback, then writes to `&mut self` and records
@@ -294,7 +296,7 @@ struct SelfDropper {
     descendant_id: Option<ObjectId>,
     /// `(self.data.is_alive(), gone(self_id), gone(descendant_id), self.freed.get())` right after
     /// the owner handle is dropped inside `event`.
-    seen: Rc<Cell<Option<(bool, bool, bool, bool)>>>,
+    seen: Rc<Cell<Option<SeenFlags>>>,
     post_drop_writes: u32,
 }
 
@@ -315,7 +317,7 @@ impl QObject for SelfDropper {
         drop(self.released_self.take());
         drop(self.typed_self.take());
         self.post_drop_writes += 1;
-        let desc_gone = self.descendant_id.map_or(true, gone);
+        let desc_gone = self.descendant_id.is_none_or(gone);
         self.seen.set(Some((
             self.data.is_alive(),
             gone(self.data.id()),
@@ -490,7 +492,9 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
     let cid = OwnedObject::object_id(&child);
     set_parent_by_id(cid, Some(pid)).unwrap();
     assert_eq!(
-        non_owning_parent.with(|p| p.data.children().to_vec()).unwrap(),
+        non_owning_parent
+            .with(|p| p.data.children().to_vec())
+            .unwrap(),
         [cid]
     );
     self_slot.set(Some(child));
@@ -604,7 +608,11 @@ fn the_owner_cannot_be_used_while_the_objects_callback_runs() {
         &mut Event::new(EventKind::UpdateRequest)
     ));
 
-    assert_eq!(seen.get(), Some((true, true)), "no access during the callback");
+    assert_eq!(
+        seen.get(),
+        Some((true, true)),
+        "no access during the callback"
+    );
     assert!(!OwnedObject::is_borrowed(&owner));
     assert_eq!(owner.with(|_| 1), Some(1));
     assert_eq!(owner.with_mut(|_| 2), Some(2));

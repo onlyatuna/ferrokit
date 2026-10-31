@@ -45,7 +45,10 @@ fn write_value(value: &JsonValue, format: JsonFormat, depth: usize, out: &mut St
         JsonValue::Number(n) => {
             if n.is_nan() || n.is_infinite() {
                 out.push_str("null");
-            } else if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < super::I64_EXCLUSIVE_UPPER_F64 {
+            } else if n.fract() == 0.0
+                && *n >= (i64::MIN as f64)
+                && *n < super::I64_EXCLUSIVE_UPPER_F64
+            {
                 out.push_str(&format!("{}", *n as i64));
             } else {
                 out.push_str(&format!("{n}"));

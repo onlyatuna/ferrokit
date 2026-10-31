@@ -22,8 +22,8 @@ mod win32 {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowLongW, IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE,
-        GWL_STYLE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_POPUP,
+        GWL_STYLE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_POPUP,
     };
 
     fn ex_style(w: &NativeWindow) -> u32 {
@@ -40,7 +40,11 @@ mod win32 {
         let ex = ex_style(&tip);
         assert_ne!(ex & WS_EX_NOACTIVATE, 0, "WS_EX_NOACTIVATE");
         assert_ne!(ex & WS_EX_TOPMOST, 0, "WS_EX_TOPMOST");
-        assert_ne!(ex & WS_EX_TOOLWINDOW, 0, "WS_EX_TOOLWINDOW (no taskbar button)");
+        assert_ne!(
+            ex & WS_EX_TOOLWINDOW,
+            0,
+            "WS_EX_TOOLWINDOW (no taskbar button)"
+        );
         assert_eq!(ex & WS_EX_APPWINDOW, 0);
         let style = unsafe { GetWindowLongW(tip.hwnd(), GWL_STYLE) as u32 };
         assert_ne!(style & WS_POPUP, 0);
@@ -80,7 +84,11 @@ mod win32 {
 
         let tip = NativeWindow::new("tip", rect(), WindowFlags::TOOLTIP).unwrap();
         PlatformWindow::show(&tip);
-        assert_ne!(unsafe { IsWindowVisible(tip.hwnd()) }, 0, "the tip is visible");
+        assert_ne!(
+            unsafe { IsWindowVisible(tip.hwnd()) },
+            0,
+            "the tip is visible"
+        );
         assert_eq!(
             foreground(),
             owner.hwnd() as isize,
@@ -93,7 +101,11 @@ mod win32 {
         // foreground, so the assertions above are not vacuous.
         let ordinary = NativeWindow::new("ordinary", rect(), WindowFlags::FRAMELESS).unwrap();
         PlatformWindow::show(&ordinary);
-        assert_eq!(foreground(), ordinary.hwnd() as isize, "control: show() activates");
+        assert_eq!(
+            foreground(),
+            ordinary.hwnd() as isize,
+            "control: show() activates"
+        );
         assert!(PlatformWindow::is_active(&ordinary));
         assert!(!PlatformWindow::is_active(&owner));
     }
@@ -293,16 +305,24 @@ fn cocoa_window_is_active_only_when_it_is_the_key_window() {
     let normal = CocoaNativeWindow::new("n", rect(), WindowFlags::NORMAL).unwrap();
     assert!(!normal.is_active(), "not shown yet");
     normal.show();
-    assert!(normal.is_active(), "makeKeyAndOrderFront: makes it the key window");
+    assert!(
+        normal.is_active(),
+        "makeKeyAndOrderFront: makes it the key window"
+    );
     normal.hide();
     assert!(!normal.is_active(), "orderOut: resigns key");
 
     // A tooltip is ordered front but never becomes key.
     let tip = CocoaNativeWindow::new("t", rect(), WindowFlags::TOOLTIP).unwrap();
     tip.show();
-    let data = MockObjcRuntime::instance().get_object_data(tip.ns_window()).unwrap();
+    let data = MockObjcRuntime::instance()
+        .get_object_data(tip.ns_window())
+        .unwrap();
     assert!(data.is_visible, "the tip is on screen");
-    assert!(!tip.is_active(), "showing a tooltip must not take key status");
+    assert!(
+        !tip.is_active(),
+        "showing a tooltip must not take key status"
+    );
     assert_eq!(
         data.level,
         ferrokit_platform::NS_SCREEN_SAVER_WINDOW_LEVEL,
@@ -336,5 +356,8 @@ fn a_backend_without_a_window_system_ignores_raise_and_activation_requests() {
     g.request_activate_window();
     g.poll_events();
     assert!(g.is_visible());
-    assert!(!g.is_active(), "activation arrives as a focus event, never from the request itself");
+    assert!(
+        !g.is_active(),
+        "activation arrives as a focus event, never from the request itself"
+    );
 }

@@ -2,6 +2,7 @@
 //! Windows window regions (`QWindowsWindow::setMask`) and owner windows
 //! (`QWindowsWindow::updateTransientParent`).
 
+#[cfg(test)]
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::geometry::Region;
 use std::ptr;
@@ -279,7 +280,12 @@ mod tests {
         let rgn = region_to_hrgn(&region);
         assert!(hit(rgn, 3, 4) && hit(rgn, 7, 5));
         assert!(!hit(rgn, 8, 5) && !hit(rgn, 7, 6) && !hit(rgn, 2, 4));
-        let probe = RECT { left: 3, top: 4, right: 8, bottom: 6 };
+        let probe = RECT {
+            left: 3,
+            top: 4,
+            right: 8,
+            bottom: 6,
+        };
         assert_ne!(unsafe { RectInRegion(rgn, &probe) }, 0);
         unsafe { DeleteObject(rgn) };
     }
@@ -297,8 +303,7 @@ mod tests {
     use crate::platform_window::PlatformWindow;
     use crate::window::{NativeWindow, WindowFlags};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, IsWindow, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST,
+        GetWindowLongPtrW, IsWindow, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
 
     fn rounded_region() -> Region {
@@ -327,7 +332,11 @@ mod tests {
             assert_eq!(Region::from_rects(&rects), region, "flags {flags:?}");
 
             PlatformWindow::set_mask(&mut win, &Region::new());
-            assert_eq!(window_mask_rects(hwnd), None, "an empty mask removes the region");
+            assert_eq!(
+                window_mask_rects(hwnd),
+                None,
+                "an empty mask removes the region"
+            );
         }
     }
 

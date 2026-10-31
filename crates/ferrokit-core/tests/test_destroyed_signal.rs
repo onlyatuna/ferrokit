@@ -5,9 +5,9 @@
 //! are deleted, even when signals of the object are blocked. The receivers get the id of an object
 //! that is already dead: no registry access reaches it.
 
-use std::sync::mpsc::channel;
 use parking_lot::Mutex;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,8 +15,7 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
     add_owned_child, move_to_thread_by_id, register_owned_qobject, set_parent_by_id, with_object,
-    with_object_mut,
-    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    with_object_mut, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 
@@ -110,13 +109,19 @@ fn direct_receivers_get_the_id_once_and_the_object_is_out_of_reach() {
             let log = Arc::clone(&log);
             let alive = Arc::clone(&alive);
             move |_| {
-                assert!(!alive.load(Ordering::Acquire), "the liveness token QPointer reads is false in the slot");
+                assert!(
+                    !alive.load(Ordering::Acquire),
+                    "the liveness token QPointer reads is false in the slot"
+                );
                 log.lock().push("token dead".to_string());
             }
         },
     );
 
-    assert!(entries(&log).is_empty(), "nothing is emitted while the object lives");
+    assert!(
+        entries(&log).is_empty(),
+        "nothing is emitted while the object lives"
+    );
     drop(owner);
 
     assert_eq!(
@@ -140,7 +145,9 @@ fn destroyed_is_emitted_when_signals_are_blocked() {
     let log = new_log();
     let mut owner = owned("a", &log);
     let id = OwnedObject::object_id(&owner);
-    owner.with(|p| p.destroyed().connect(log_id(&log, "destroyed"))).unwrap();
+    owner
+        .with(|p| p.destroyed().connect(log_id(&log, "destroyed")))
+        .unwrap();
     owner.with_mut(|p| p.block_signals(true)).unwrap();
     drop(owner);
     assert_eq!(
@@ -201,7 +208,11 @@ fn a_connection_whose_receiver_is_the_dying_object_runs_and_is_cut_afterwards() 
         0,
         "a connection that has the dying object as receiver is cut"
     );
-    assert_eq!(own_signal.subscriber_count(), 0, "so is one the dying object sent");
+    assert_eq!(
+        own_signal.subscriber_count(),
+        0,
+        "so is one the dying object sent"
+    );
 }
 
 #[test]
@@ -246,7 +257,9 @@ fn destroyed_goes_out_when_the_owner_is_dropped_in_a_callback_of_the_object() {
     let log = new_log();
     let owner = owned("busy", &log);
     let id = OwnedObject::object_id(&owner);
-    owner.with(|p| p.destroyed().connect(log_id(&log, "destroyed"))).unwrap();
+    owner
+        .with(|p| p.destroyed().connect(log_id(&log, "destroyed")))
+        .unwrap();
 
     let log_in_callback = Arc::clone(&log);
     with_object_mut(id, move |_object| {
@@ -271,10 +284,15 @@ fn delete_later_emits_destroyed_when_the_deferred_delete_is_delivered() {
     let el = EventLoop::new();
     let owner = owned("late", &log);
     let id = OwnedObject::object_id(&owner);
-    owner.with(|p| p.destroyed().connect(log_id(&log, "destroyed"))).unwrap();
+    owner
+        .with(|p| p.destroyed().connect(log_id(&log, "destroyed")))
+        .unwrap();
 
     owner.with(|p| p.delete_later()).unwrap();
-    assert!(entries(&log).is_empty(), "deleteLater does not destroy at once");
+    assert!(
+        entries(&log).is_empty(),
+        "deleteLater does not destroy at once"
+    );
     assert_eq!(el.flush_deferred_deletes(), 1);
     assert_eq!(entries(&log), vec![format!("destroyed {}", id.0)]);
 
@@ -316,9 +334,11 @@ fn a_queued_receiver_on_another_thread_gets_the_id_after_destruction() {
         ConnectionType::Queued,
         move |dead: &ObjectId| {
             assert!(with_object(*dead, |_| ()).is_none());
-            slot_log
-                .lock()
-                .push(format!("queued {} on {:?}", dead.0, std::thread::current().id()));
+            slot_log.lock().push(format!(
+                "queued {} on {:?}",
+                dead.0,
+                std::thread::current().id()
+            ));
         },
     );
 
@@ -364,9 +384,11 @@ fn a_destruction_forwarded_to_the_registration_thread_emits_there() {
         here,
         ConnectionType::Queued,
         move |dead: &ObjectId| {
-            slot_log
-                .lock()
-                .push(format!("home got {} on {:?}", dead.0, std::thread::current().id()));
+            slot_log.lock().push(format!(
+                "home got {} on {:?}",
+                dead.0,
+                std::thread::current().id()
+            ));
         },
     );
 
@@ -392,7 +414,11 @@ fn a_destruction_forwarded_to_the_registration_thread_emits_there() {
     );
     dropped_tx.send(()).unwrap();
     let worker_thread = worker.join().unwrap();
-    assert_eq!(*emitted_on.lock(), vec![worker_thread], "emitted once, there");
+    assert_eq!(
+        *emitted_on.lock(),
+        vec![worker_thread],
+        "emitted once, there"
+    );
 
     // The queued receiver is posted to this thread and runs here.
     assert_eq!(entries(&log), vec!["moved dropped".to_string()]);
@@ -429,7 +455,9 @@ fn a_parked_parent_emits_before_its_descendants() {
             log.lock().push(format!("child destroyed {}", id.0));
         }
     });
-    parent.with(|p| p.destroyed().connect(log_id(&log, "parent destroyed"))).unwrap();
+    parent
+        .with(|p| p.destroyed().connect(log_id(&log, "parent destroyed")))
+        .unwrap();
     // SAFETY: the child is not used again outside the registry.
     let added = unsafe { add_owned_child(parent_id, Box::new(child)) };
     assert_eq!(added.map_err(|(e, _)| e), Ok(child_id));
@@ -460,7 +488,8 @@ fn a_panicking_slot_is_contained_and_the_teardown_completes() {
     let id = OwnedObject::object_id(&owner);
     owner
         .with(|p| {
-            p.destroyed().connect(|_| panic!("destroyed slot panics on purpose"));
+            p.destroyed()
+                .connect(|_| panic!("destroyed slot panics on purpose"));
             p.destroyed().connect(log_id(&log, "after the panic"));
         })
         .unwrap();
@@ -512,7 +541,10 @@ fn a_slot_acting_on_the_dying_id_has_no_effect() {
 
     assert_eq!(
         entries(&log),
-        vec!["reparent refused true true true".to_string(), "a dropped".to_string()],
+        vec![
+            "reparent refused true true true".to_string(),
+            "a dropped".to_string()
+        ],
         "the slot connected during the emission does not run in it"
     );
     assert_eq!(
@@ -530,7 +562,9 @@ fn unregistering_a_live_object_emits_destroyed_once() {
     let log = new_log();
     let mut owner = owned("a", &log);
     let id = OwnedObject::object_id(&owner);
-    owner.with(|p| p.destroyed().connect(log_id(&log, "destroyed"))).unwrap();
+    owner
+        .with(|p| p.destroyed().connect(log_id(&log, "destroyed")))
+        .unwrap();
     // SAFETY: no callback of the object runs.
     owner.with_mut(|p| unsafe { p.data.unregister() }).unwrap();
     assert_eq!(entries(&log), vec![format!("destroyed {}", id.0)]);
@@ -555,12 +589,17 @@ fn an_object_held_by_a_thread_local_emits_destroyed_at_thread_exit() {
     let thread = std::thread::spawn(move || {
         let owner = owned("tls", &worker_log);
         owner
-            .with(|p| p.destroyed().connect(|_| assert_eq!(ferrokit_core::signal::sender(), None)))
+            .with(|p| {
+                p.destroyed()
+                    .connect(|_| assert_eq!(ferrokit_core::signal::sender(), None))
+            })
             .unwrap();
         // The holder registers its destructor first, the sender stack second.
         HELD.with(|held| *held.borrow_mut() = Some(owner));
         let _ = ferrokit_core::signal::sender();
     });
-    thread.join().expect("the thread's locals were destroyed without a panic");
+    thread
+        .join()
+        .expect("the thread's locals were destroyed without a panic");
     assert_eq!(entries(&log), vec!["tls dropped".to_string()]);
 }

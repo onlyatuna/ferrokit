@@ -147,8 +147,7 @@ impl WaylandNativeWindow {
                 .unwrap_or_else(|_| format!("/run/user/{}", crate::current_uid()));
             // An absolute WAYLAND_DISPLAY is the socket path itself (`Path::join` replaces).
             let socket_path = std::path::Path::new(&runtime_dir).join(&display_name);
-            let stream = UnixStream::connect(socket_path)
-                .map_err(|_| WAYLAND_CONNECT_FAILED)?;
+            let stream = UnixStream::connect(socket_path).map_err(|_| WAYLAND_CONNECT_FAILED)?;
             let _ = stream.set_nonblocking(true);
             Self::build(title, rect, flags, display_name, Some(stream))
         }

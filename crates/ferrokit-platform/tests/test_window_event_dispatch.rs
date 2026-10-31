@@ -7,9 +7,7 @@ use ferrokit_platform::window::{
     flush_window_system_events, post_window_system_event, send_window_system_event_immediately,
     set_window_event_handler, unregister_window_event_binding,
 };
-use ferrokit_platform::window_system_interface::{
-    ClosureWindowEventHandler, WindowSystemEvent,
-};
+use ferrokit_platform::window_system_interface::{ClosureWindowEventHandler, WindowSystemEvent};
 use std::cell::RefCell;
 use std::rc::Rc;
 use windows_sys::Win32::Foundation::HWND;
@@ -198,7 +196,11 @@ fn a_replaced_then_unregistered_handler_does_not_come_back() {
     );
     send_window_system_event_immediately(fake(0x1091), WindowSystemEvent::FocusIn);
     send_window_system_event_immediately(fake(0x1091), WindowSystemEvent::FocusOut);
-    assert_eq!(*log.borrow(), vec![(90, "old handler ran")], "only the first event is handled");
+    assert_eq!(
+        *log.borrow(),
+        vec![(90, "old handler ran")],
+        "only the first event is handled"
+    );
 }
 
 #[test]

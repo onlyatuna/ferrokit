@@ -3,10 +3,10 @@
 
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
+use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_widgets::*;
 use std::cell::RefCell;
-use ferrokit_gui::geometry::primitives::Point;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -132,7 +132,6 @@ impl Widget for Probe {
     }
 }
 
-
 fn probe(name: &'static str, policy: FocusPolicy, log: &Log) -> WidgetRef {
     let base = WidgetBase::with_geometry(Rect::new(0, 0, 10, 10));
     base.set_focus_policy(policy);
@@ -155,11 +154,19 @@ fn stack() -> WidgetRef {
 }
 
 fn count(s: &WidgetRef) -> usize {
-    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap().count()
+    s.borrow()
+        .as_any()
+        .downcast_ref::<StackedWidget>()
+        .unwrap()
+        .count()
 }
 
 fn current(s: &WidgetRef) -> usize {
-    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap().current_index()
+    s.borrow()
+        .as_any()
+        .downcast_ref::<StackedWidget>()
+        .unwrap()
+        .current_index()
 }
 
 fn add(s: &WidgetRef, page: &WidgetRef) {
@@ -175,7 +182,10 @@ fn add(s: &WidgetRef, page: &WidgetRef) {
 fn set_geometry_does_not_change_visibility_and_holds_no_layout_borrow() {
     let log = Log::default();
     let s = stack();
-    let (p0, p1) = (probe("p0", FocusPolicy::NoFocus, &log), probe("p1", FocusPolicy::NoFocus, &log));
+    let (p0, p1) = (
+        probe("p0", FocusPolicy::NoFocus, &log),
+        probe("p1", FocusPolicy::NoFocus, &log),
+    );
     add(&s, &p0);
     add(&s, &p1);
     let reads = Rc::new(std::cell::Cell::new(0));
@@ -191,8 +201,14 @@ fn set_geometry_does_not_change_visibility_and_holds_no_layout_borrow() {
     log.borrow_mut().clear();
     s.borrow().set_geometry(Rect::new(0, 0, 100, 80));
 
-    assert!(!p0.borrow().is_visible(), "a resize must not show the current page");
-    assert!(p1.borrow().is_visible(), "a resize must not hide the other page");
+    assert!(
+        !p0.borrow().is_visible(),
+        "a resize must not show the current page"
+    );
+    assert!(
+        p1.borrow().is_visible(),
+        "a resize must not hide the other page"
+    );
     assert!(log.borrow().is_empty(), "no Show/Hide: {:?}", log.borrow());
 }
 
@@ -203,7 +219,10 @@ fn set_geometry_does_not_change_visibility_and_holds_no_layout_borrow() {
 fn insert_and_remove_adjust_the_current_index_and_hide_the_removed_page() {
     let log = Log::default();
     let mut l = StackedLayout::new();
-    let pages: Vec<_> = ["a", "b", "c"].iter().map(|n| probe(n, FocusPolicy::NoFocus, &log)).collect();
+    let pages: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|n| probe(n, FocusPolicy::NoFocus, &log))
+        .collect();
     for p in &pages {
         l.add_widget(p.clone());
     }
@@ -215,7 +234,10 @@ fn insert_and_remove_adjust_the_current_index_and_hide_the_removed_page() {
     l.insert_widget(0, new.clone());
     assert_eq!(l.current_index(), 3, "the current page stays the same page");
     assert!(Rc::ptr_eq(&l.current_widget().unwrap(), &pages[2]));
-    assert!(!new.borrow().is_visible(), "an inserted non-current page is hidden");
+    assert!(
+        !new.borrow().is_visible(),
+        "an inserted non-current page is hidden"
+    );
     assert!(pages[2].borrow().is_visible());
 
     let removed = l.remove_widget(0).unwrap();
@@ -237,7 +259,10 @@ fn insert_and_remove_adjust_the_current_index_and_hide_the_removed_page() {
 fn stacked_widget_insert_and_remove_follow_the_layout() {
     let log = Log::default();
     let s = stack();
-    let pages: Vec<_> = ["a", "b"].iter().map(|n| probe(n, FocusPolicy::NoFocus, &log)).collect();
+    let pages: Vec<_> = ["a", "b"]
+        .iter()
+        .map(|n| probe(n, FocusPolicy::NoFocus, &log))
+        .collect();
     for p in &pages {
         add(&s, p);
     }
@@ -248,12 +273,25 @@ fn stacked_widget_insert_and_remove_follow_the_layout() {
     assert!(Rc::ptr_eq(&removed, &pages[0]));
     assert!(!removed.borrow().is_visible());
     assert_eq!(count(&s), 2);
-    assert!(s.borrow().children().iter().any(|c| Rc::ptr_eq(c, &removed)), "Qt keeps the parent");
+    assert!(
+        s.borrow()
+            .children()
+            .iter()
+            .any(|c| Rc::ptr_eq(c, &removed)),
+        "Qt keeps the parent"
+    );
 }
 
 /// `QWidgetPrivate::hide_helper` moves the focus on when the focus widget, or an ancestor of it,
 /// is hidden (qwidget.cpp:8276-8283).
-fn focus_tree() -> (WidgetRef, WidgetRef, WidgetRef, WidgetRef, EventTreeDispatcher, Log) {
+fn focus_tree() -> (
+    WidgetRef,
+    WidgetRef,
+    WidgetRef,
+    WidgetRef,
+    EventTreeDispatcher,
+    Log,
+) {
     let log = Log::default();
     let root = probe("root", FocusPolicy::NoFocus, &log);
     let a = probe("a", FocusPolicy::StrongFocus, &log);
@@ -265,7 +303,9 @@ fn focus_tree() -> (WidgetRef, WidgetRef, WidgetRef, WidgetRef, EventTreeDispatc
     adopt_tree(&root);
     let mut d = EventTreeDispatcher::new();
     let id = a.borrow().id();
-    assert!(d.focus_manager_mut().set_focus(&root, Some(id), FocusReason::Other));
+    assert!(d
+        .focus_manager_mut()
+        .set_focus(&root, Some(id), FocusReason::Other));
     (root, a, b, c, d, log)
 }
 
@@ -290,7 +330,11 @@ fn hiding_an_ancestor_of_the_focus_widget_moves_the_focus() {
 fn hiding_the_only_focus_widget_clears_the_focus() {
     let (_root, a, b, _c, d, _log) = focus_tree();
     set_widget_visible(&b, false);
-    assert_eq!(d.focus_manager().focused_widget_id(), Some(a.borrow().id()), "an unrelated hide keeps it");
+    assert_eq!(
+        d.focus_manager().focused_widget_id(),
+        Some(a.borrow().id()),
+        "an unrelated hide keeps it"
+    );
     set_widget_visible(&a, false);
     assert_eq!(d.focus_manager().focused_widget_id(), None);
     assert!(!a.borrow().has_focus());
@@ -298,17 +342,30 @@ fn hiding_the_only_focus_widget_clears_the_focus() {
 
 /// A window holding a stack (page 0: `a0`, `a1`; page 1: `x` with no focus, then `b1`) and,
 /// after it, a widget `o` outside the stack. `focus` gets the focus.
-fn stack_window(focus: &str) -> (WidgetRef, WidgetRef, Vec<WidgetRef>, EventTreeDispatcher, Log) {
+fn stack_window(
+    focus: &str,
+) -> (
+    WidgetRef,
+    WidgetRef,
+    Vec<WidgetRef>,
+    EventTreeDispatcher,
+    Log,
+) {
     let log = Log::default();
     let root = probe("root", FocusPolicy::NoFocus, &log);
     let s = stack();
     let page0 = probe("p0", FocusPolicy::NoFocus, &log);
     let page1 = probe("p1", FocusPolicy::NoFocus, &log);
-    let ws: Vec<_> = [("a0", FocusPolicy::StrongFocus), ("a1", FocusPolicy::StrongFocus),
-        ("x", FocusPolicy::NoFocus), ("b1", FocusPolicy::StrongFocus), ("o", FocusPolicy::StrongFocus)]
-        .into_iter()
-        .map(|(n, p)| probe(n, p, &log))
-        .collect();
+    let ws: Vec<_> = [
+        ("a0", FocusPolicy::StrongFocus),
+        ("a1", FocusPolicy::StrongFocus),
+        ("x", FocusPolicy::NoFocus),
+        ("b1", FocusPolicy::StrongFocus),
+        ("o", FocusPolicy::StrongFocus),
+    ]
+    .into_iter()
+    .map(|(n, p)| probe(n, p, &log))
+    .collect();
     page0.borrow_mut().add_child(ws[0].clone());
     page0.borrow_mut().add_child(ws[1].clone());
     page1.borrow_mut().add_child(ws[2].clone());
@@ -319,8 +376,15 @@ fn stack_window(focus: &str) -> (WidgetRef, WidgetRef, Vec<WidgetRef>, EventTree
     root.borrow_mut().add_child(ws[4].clone());
     adopt_tree(&root);
     let mut d = EventTreeDispatcher::new();
-    let target = ws.iter().find(|w| probe_name(w) == focus).unwrap().borrow().id();
-    assert!(d.focus_manager_mut().set_focus(&root, Some(target), FocusReason::Other));
+    let target = ws
+        .iter()
+        .find(|w| probe_name(w) == focus)
+        .unwrap()
+        .borrow()
+        .id();
+    assert!(d
+        .focus_manager_mut()
+        .set_focus(&root, Some(target), FocusReason::Other));
     log.borrow_mut().clear();
     let mut all = vec![page0, page1];
     all.extend(ws);
@@ -337,7 +401,11 @@ fn focused(d: &EventTreeDispatcher, ws: &[WidgetRef]) -> Option<&'static str> {
 }
 
 fn focus_log(log: &Log) -> Vec<String> {
-    log.borrow().iter().filter(|e| e.contains(":In:") || e.contains(":Out:")).cloned().collect()
+    log.borrow()
+        .iter()
+        .filter(|e| e.contains(":In:") || e.contains(":Out:"))
+        .cloned()
+        .collect()
 }
 
 /// `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:291-336): `prev->clearFocus()` does not
@@ -349,7 +417,10 @@ fn a_page_switch_moves_focus_below_the_old_page_out_then_into_the_new_page() {
     let (_root, s, ws, d, log) = stack_window("a0");
     StackedWidget::set_current_index(&s, 1);
     assert_eq!(focused(&d, &ws), Some("b1"));
-    assert_eq!(focus_log(&log), ["a0:Out:Tab", "o:In:Tab", "o:Out:Other", "b1:In:Other"]);
+    assert_eq!(
+        focus_log(&log),
+        ["a0:Out:Tab", "o:In:Tab", "o:Out:Other", "b1:In:Other"]
+    );
     assert!(!ws[6].borrow().has_focus(), "o does not keep the focus");
 }
 
@@ -371,7 +442,9 @@ fn a_page_switch_with_no_widget_outside_the_stack_still_focuses_the_new_page() {
 fn focus_on_the_page_itself_moves_into_the_new_page() {
     let (root, s, ws, mut d, log) = stack_window("a0");
     let page0 = ws[0].borrow().id();
-    assert!(d.focus_manager_mut().set_focus(&root, Some(page0), FocusReason::Other));
+    assert!(d
+        .focus_manager_mut()
+        .set_focus(&root, Some(page0), FocusReason::Other));
     log.borrow_mut().clear();
     StackedWidget::set_current_index(&s, 1);
     assert_eq!(focused(&d, &ws), Some("b1"));
@@ -421,8 +494,12 @@ fn setting_the_current_index_again_is_a_no_op() {
     set_widget_visible(&page, false);
     let fired = Arc::new(Mutex::new(Vec::<i64>::new()));
     let f = fired.clone();
-    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap()
-        .current_changed.connect(move |i| f.lock().unwrap().push(*i as i64));
+    s.borrow()
+        .as_any()
+        .downcast_ref::<StackedWidget>()
+        .unwrap()
+        .current_changed
+        .connect(move |i| f.lock().unwrap().push(*i as i64));
     StackedWidget::set_current_index(&s, 0);
     assert!(!page.borrow().is_visible());
     assert!(fired.lock().unwrap().is_empty());
@@ -435,17 +512,26 @@ fn setting_the_current_index_again_is_a_no_op() {
 fn removing_pages_announces_the_new_current_then_hides() {
     let log = Log::default();
     let s = stack();
-    let (a, b) = (probe("a", FocusPolicy::NoFocus, &log), probe("b", FocusPolicy::NoFocus, &log));
+    let (a, b) = (
+        probe("a", FocusPolicy::NoFocus, &log),
+        probe("b", FocusPolicy::NoFocus, &log),
+    );
     add(&s, &a);
     add(&s, &b);
     let fired = Arc::new(Mutex::new(Vec::<i64>::new()));
     let f = fired.clone();
-    s.borrow().as_any().downcast_ref::<StackedWidget>().unwrap()
-        .current_changed.connect(move |i| f.lock().unwrap().push(*i as i64));
+    s.borrow()
+        .as_any()
+        .downcast_ref::<StackedWidget>()
+        .unwrap()
+        .current_changed
+        .connect(move |i| f.lock().unwrap().push(*i as i64));
     // Each page's handler logs the signals emitted before it ran.
     for w in [&a, &b] {
         let (l, f) = (log.clone(), fired.clone());
-        set_hook(w, move || l.borrow_mut().push(format!("seen:{:?}", f.lock().unwrap())));
+        set_hook(w, move || {
+            l.borrow_mut().push(format!("seen:{:?}", f.lock().unwrap()))
+        });
     }
     log.borrow_mut().clear();
     StackedWidget::remove_widget(&s, 0);
@@ -480,7 +566,10 @@ fn disabling_a_container_from_a_childs_handler_still_disables_the_child() {
     }
     WidgetCommandQueue::flush();
     assert!(!form.borrow().is_enabled());
-    assert!(!child.borrow().is_enabled(), "the borrowed child is disabled too");
+    assert!(
+        !child.borrow().is_enabled(),
+        "the borrowed child is disabled too"
+    );
 }
 
 /// Enabling again before the retry runs leaves the child enabled.
@@ -520,7 +609,10 @@ fn about_to_show_and_hide_slots_can_borrow_the_menu_through_set_widget_visible()
             MENU.with(|m| {
                 let w = m.borrow();
                 let mut g = w.as_ref().unwrap().borrow_mut();
-                g.as_any_mut().downcast_mut::<Menu>().unwrap().add_action(Action::new_ref("filled"));
+                g.as_any_mut()
+                    .downcast_mut::<Menu>()
+                    .unwrap()
+                    .add_action(Action::new_ref("filled"));
             });
         });
         let h = Arc::clone(&hidden);
@@ -536,7 +628,10 @@ fn about_to_show_and_hide_slots_can_borrow_the_menu_through_set_widget_visible()
     set_widget_visible(&menu, false);
     assert_eq!(*hidden.lock().unwrap(), 1, "emitted once");
     let g = menu.borrow();
-    assert_eq!(g.as_any().downcast_ref::<Menu>().unwrap().actions().len(), 1);
+    assert_eq!(
+        g.as_any().downcast_ref::<Menu>().unwrap().actions().len(),
+        1
+    );
     MENU.with(|m| *m.borrow_mut() = None);
 }
 
@@ -548,7 +643,11 @@ fn popup_emits_about_to_show_with_the_menu_free() {
     SHARED.with(|s| *s.borrow_mut() = Some(menu.clone()));
     menu.borrow().about_to_show.connect(|_| {
         SHARED.with(|s| {
-            s.borrow().as_ref().unwrap().borrow_mut().add_action(Action::new_ref("filled"));
+            s.borrow()
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .add_action(Action::new_ref("filled"));
         });
     });
     Menu::popup_at(&menu, Point::new(5, 5), None);
@@ -566,7 +665,11 @@ fn popup_emits_about_to_show_with_the_menu_free() {
 }
 
 fn click_outside() -> Event {
-    Event::new_spontaneous(EventKind::MouseButtonPress { x: 900, y: 900, button: 1 })
+    Event::new_spontaneous(EventKind::MouseButtonPress {
+        x: 900,
+        y: 900,
+        button: 1,
+    })
 }
 
 fn menu_with_hide_slot() -> (MenuRef, Arc<Mutex<u32>>) {
@@ -620,7 +723,11 @@ fn touch_chain() {
 }
 
 fn key_event(key: u32) -> Event {
-    Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false })
+    Event::new_spontaneous(EventKind::KeyPress {
+        key,
+        modifiers: 0,
+        is_repeat: false,
+    })
 }
 
 const VK_RETURN: u32 = 0x0D;
@@ -659,7 +766,13 @@ fn open_chain() -> (MenuRef, MenuRef, Signals) {
     (top, sub, log)
 }
 
-const ACTIVATION: [&str; 5] = ["sub hide", "top hide", "item triggered", "sub triggered", "top triggered"];
+const ACTIVATION: [&str; 5] = [
+    "sub hide",
+    "top hide",
+    "item triggered",
+    "sub triggered",
+    "top triggered",
+];
 
 /// Choosing an item of a sub-menu hides the chain deepest first and then triggers the action
 /// (`QMenuPrivate::activateAction`: `hideUpToMenuBar`, then `activate`), all with no menu borrowed.
@@ -679,7 +792,10 @@ fn activating_through_event_announces_the_chain_at_the_next_flush() {
     let (top, sub, log) = open_chain();
     top.borrow_mut().event(&mut key_event(VK_RETURN));
     assert!(!top.borrow().is_visible() && !sub.borrow().is_visible());
-    assert!(log.lock().unwrap().is_empty(), "nothing is emitted under the borrow");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "nothing is emitted under the borrow"
+    );
     WidgetCommandQueue::flush();
     assert_eq!(*log.lock().unwrap(), ACTIVATION);
     CHAIN.with(|c| c.borrow_mut().clear());
@@ -715,8 +831,13 @@ fn hiding_an_unadopted_container_moves_the_focus() {
     root.borrow_mut().add_child(c.clone());
     let mut d = EventTreeDispatcher::new();
     let id = a.borrow().id();
-    assert!(d.focus_manager_mut().set_focus(&root, Some(id), FocusReason::Other));
-    assert!(c.borrow().parent_widget().is_none(), "precondition: c is not adopted");
+    assert!(d
+        .focus_manager_mut()
+        .set_focus(&root, Some(id), FocusReason::Other));
+    assert!(
+        c.borrow().parent_widget().is_none(),
+        "precondition: c is not adopted"
+    );
 
     set_widget_visible(&c, false);
 

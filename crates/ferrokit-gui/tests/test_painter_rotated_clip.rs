@@ -33,13 +33,37 @@ fn rotated_set_clip_rect_clips_to_the_rotated_rectangle() {
         p.reset_transform();
         p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), red());
     }
-    assert_eq!(red_at(&pm, 50, 50), 255, "diamond centre is inside the clip");
-    assert_eq!(red_at(&pm, 70, 50), 255, "(20,0) from the centre is inside the diamond");
-    assert_eq!(red_at(&pm, 50, 30), 255, "(0,-20) from the centre is inside the diamond");
+    assert_eq!(
+        red_at(&pm, 50, 50),
+        255,
+        "diamond centre is inside the clip"
+    );
+    assert_eq!(
+        red_at(&pm, 70, 50),
+        255,
+        "(20,0) from the centre is inside the diamond"
+    );
+    assert_eq!(
+        red_at(&pm, 50, 30),
+        255,
+        "(0,-20) from the centre is inside the diamond"
+    );
     // Inside the bounding box (+-28.3) but outside the diamond (|dx|+|dy| = 40 > 28.3).
-    assert_eq!(red_at(&pm, 70, 70), 0, "bbox corner must stay clipped by the rotated clip");
-    assert_eq!(red_at(&pm, 30, 30), 0, "bbox corner must stay clipped by the rotated clip");
-    assert_eq!(red_at(&pm, 70, 30), 0, "bbox corner must stay clipped by the rotated clip");
+    assert_eq!(
+        red_at(&pm, 70, 70),
+        0,
+        "bbox corner must stay clipped by the rotated clip"
+    );
+    assert_eq!(
+        red_at(&pm, 30, 30),
+        0,
+        "bbox corner must stay clipped by the rotated clip"
+    );
+    assert_eq!(
+        red_at(&pm, 70, 30),
+        0,
+        "bbox corner must stay clipped by the rotated clip"
+    );
 }
 
 #[test]
@@ -54,9 +78,21 @@ fn rotated_clip_to_rect_intersects_with_the_existing_clip() {
         p.reset_transform();
         p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), red());
     }
-    assert_eq!(red_at(&pm, 50, 40), 255, "inside both the rect and the diamond");
-    assert_eq!(red_at(&pm, 50, 60), 0, "inside the diamond but below the axis-aligned clip");
-    assert_eq!(red_at(&pm, 70, 40), 0, "inside the bbox and the rect but outside the diamond");
+    assert_eq!(
+        red_at(&pm, 50, 40),
+        255,
+        "inside both the rect and the diamond"
+    );
+    assert_eq!(
+        red_at(&pm, 50, 60),
+        0,
+        "inside the diamond but below the axis-aligned clip"
+    );
+    assert_eq!(
+        red_at(&pm, 70, 40),
+        0,
+        "inside the bbox and the rect but outside the diamond"
+    );
 }
 
 #[test]
@@ -71,9 +107,21 @@ fn two_rotated_clips_intersect_exactly() {
         p.clip_to_rect(RectF::new(50.0, 50.0, 40.0, 40.0));
         p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), red());
     }
-    assert_eq!(red_at(&pm, 60, 60), 255, "inside diamond and upright square");
-    assert_eq!(red_at(&pm, 45, 45), 0, "inside the diamond but outside the upright square");
-    assert_eq!(red_at(&pm, 75, 75), 0, "inside the upright square but outside the diamond");
+    assert_eq!(
+        red_at(&pm, 60, 60),
+        255,
+        "inside diamond and upright square"
+    );
+    assert_eq!(
+        red_at(&pm, 45, 45),
+        0,
+        "inside the diamond but outside the upright square"
+    );
+    assert_eq!(
+        red_at(&pm, 75, 75),
+        0,
+        "inside the upright square but outside the diamond"
+    );
 }
 
 #[test]
@@ -82,19 +130,29 @@ fn changing_clip_clears_the_previous_clip_coverage() {
     {
         let mut p = Painter::begin(&mut pm);
         p.set_clip_rect(RectF::new(0.0, 0.0, 100.0, 100.0));
-        p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(0, 0, 255, 255));
+        p.fill_rect(
+            RectF::new(0.0, 0.0, 100.0, 100.0),
+            Color::from_rgba8(0, 0, 255, 255),
+        );
         p.set_clip_rect(RectF::new(10.0, 10.0, 10.0, 10.0));
         p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), red());
         // A clip replaced by an empty one clips everything, whatever the mask held before.
         p.set_clip_rect(RectF::new(0.0, 0.0, 0.0, 0.0));
-        p.fill_rect(RectF::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(0, 255, 0, 255));
+        p.fill_rect(
+            RectF::new(0.0, 0.0, 100.0, 100.0),
+            Color::from_rgba8(0, 255, 0, 255),
+        );
     }
     let px = |x: u32, y: u32| {
         let i = ((y * SIZE + x) * 4) as usize;
         (pm.data()[i], pm.data()[i + 1], pm.data()[i + 2])
     };
     assert_eq!(px(15, 15), (255, 0, 0), "small clip repainted red");
-    assert_eq!(px(50, 50), (0, 0, 255), "outside the small clip keeps the first fill");
+    assert_eq!(
+        px(50, 50),
+        (0, 0, 255),
+        "outside the small clip keeps the first fill"
+    );
     assert_eq!(px(5, 5), (0, 0, 255), "empty clip paints nothing");
 }
 
@@ -131,5 +189,8 @@ fn text_under_a_rotated_clip_stays_inside_the_diamond() {
             }
         }
     }
-    assert!(ink > 0, "some of the text must be visible inside the diamond");
+    assert!(
+        ink > 0,
+        "some of the text must be visible inside the diamond"
+    );
 }

@@ -23,8 +23,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP,
-    NIF_TIP, NOTIFYICONIDENTIFIER, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_SELECT,
-    NOTIFYICONDATAW,
+    NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -125,7 +124,6 @@ impl Menu {
         self
     }
 
-
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -160,13 +158,7 @@ impl Menu {
                 if !item.enabled {
                     sub_flags |= MF_GRAYED | MF_DISABLED;
                 }
-                if AppendMenuW(
-                    hmenu,
-                    sub_flags,
-                    sub_hmenu as usize,
-                    wide_text.as_ptr(),
-                ) == 0
-                {
+                if AppendMenuW(hmenu, sub_flags, sub_hmenu as usize, wide_text.as_ptr()) == 0 {
                     DestroyMenu(sub_hmenu);
                     DestroyMenu(hmenu);
                     return Err("AppendMenuW failed to add submenu");
@@ -609,7 +601,9 @@ impl TrayIcon {
             // Without version 4 the shell sends callbacks in the old layout, which the window
             // procedure would misread, so the icon is taken off again and the add fails
             // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
-            if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) } == 0 {
+            if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) }
+                == 0
+            {
                 unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
                 return Err("Shell_NotifyIconW (NIM_SETVERSION) failed");
             }
@@ -702,11 +696,14 @@ impl TrayIcon {
     fn hicon_for_small_icon(icon: &ferrokit_gui::image::Icon) -> Result<HICON, &'static str> {
         use ferrokit_gui::geometry::primitives::Size;
         use ferrokit_gui::image::{IconMode, IconState};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON, SM_CYSMICON};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSMICON, SM_CYSMICON,
+        };
         if icon.is_null() {
             return Err("null icon");
         }
-        let requested = unsafe { Size::new(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+        let requested =
+            unsafe { Size::new(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
         let size = icon.actual_size(requested, IconMode::Normal, IconState::Off);
         Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
     }
@@ -716,7 +713,9 @@ impl TrayIcon {
     /// added to the new taskbar. Without a kept icon the `HICON` stays as it is.
     fn rebuild_icon_from_source(&self) {
         let Some(icon) = &self.source else { return };
-        let Ok(new) = Self::hicon_for_small_icon(icon) else { return };
+        let Ok(new) = Self::hicon_for_small_icon(icon) else {
+            return;
+        };
         let old = self.hicon.replace(new);
         let old_owned = self.owns_icon.replace(true);
         if old_owned && old != new {
@@ -754,7 +753,12 @@ impl TrayIcon {
         id.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
         id.hWnd = self.hwnd;
         id.uID = 1;
-        let mut rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut rect = windows_sys::Win32::Foundation::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         let hr = unsafe { Shell_NotifyIconGetRect(&id, &mut rect) };
         if hr != 0 {
             return None;
@@ -837,8 +841,7 @@ impl TrayIcon {
             .into_iter()
             .find(|&s| i64::from(s) * i64::from(s) >= 256 * 256)
             .unwrap_or(8 * large)
-            .min(256)
-            .max(1) as u32
+            .clamp(1, 256) as u32
     }
 
     /// `QSystemTrayIcon::showMessage(title, msg, MessageIcon, msecs)` hands the platform the
@@ -866,7 +869,12 @@ impl TrayIcon {
             TrayMessageIcon::Critical => (SIID_ERROR, IDI_ERROR),
         };
         let owned_stock = Self::stock_icon(siid).map(|hicon| BalloonIcon { hicon, owned: true });
-        let shared = || Self::system_icon(idi).map(|hicon| BalloonIcon { hicon, owned: false });
+        let shared = || {
+            Self::system_icon(idi).map(|hicon| BalloonIcon {
+                hicon,
+                owned: false,
+            })
+        };
         match owned_stock.or_else(shared) {
             Some(balloon) => (NIIF_USER | NIIF_LARGE_ICON, Some(balloon)),
             None => (NIIF_INFO, None),
@@ -879,7 +887,9 @@ impl TrayIcon {
         use windows_sys::Win32::UI::Shell::{
             SHDefExtractIconW, SHGetStockIconInfo, SHGSI_ICONLOCATION, SHSTOCKICONINFO,
         };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXICON, SM_CXSMICON};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXICON, SM_CXSMICON,
+        };
         let mut info: SHSTOCKICONINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<SHSTOCKICONINFO>() as u32;
         if unsafe { SHGetStockIconInfo(siid, SHGSI_ICONLOCATION, &mut info) } < 0 {
@@ -890,7 +900,14 @@ impl TrayIcon {
         };
         let mut hicon: HICON = ptr::null_mut();
         let hr = unsafe {
-            SHDefExtractIconW(info.szPath.as_ptr(), info.iIcon, 0, &mut hicon, ptr::null_mut(), size)
+            SHDefExtractIconW(
+                info.szPath.as_ptr(),
+                info.iIcon,
+                0,
+                &mut hicon,
+                ptr::null_mut(),
+                size,
+            )
         };
         (hr >= 0 && !hicon.is_null()).then_some(hicon)
     }
@@ -898,7 +915,8 @@ impl TrayIcon {
     /// A system icon (`LoadIcon(nullptr, idi)`), at the size the system chooses. It is a shared
     /// handle owned by the system: it must never be passed to `DestroyIcon`.
     fn system_icon(idi: windows_sys::core::PCWSTR) -> Option<HICON> {
-        let hicon = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(ptr::null_mut(), idi) };
+        let hicon =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(ptr::null_mut(), idi) };
         (!hicon.is_null()).then_some(hicon)
     }
 
@@ -929,9 +947,17 @@ impl TrayIcon {
         // The previous message's icon is freed before this one is made.
         self.set_balloon_icon(None);
         let hballoon = Self::hicon_for_balloon(icon)?;
-        let result =
-            self.notify_balloon(title, msg, NIIF_USER | NIIF_LARGE_ICON, hballoon, duration_ms);
-        self.set_balloon_icon(Some(BalloonIcon { hicon: hballoon, owned: true }));
+        let result = self.notify_balloon(
+            title,
+            msg,
+            NIIF_USER | NIIF_LARGE_ICON,
+            hballoon,
+            duration_ms,
+        );
+        self.set_balloon_icon(Some(BalloonIcon {
+            hicon: hballoon,
+            owned: true,
+        }));
         result
     }
 
@@ -976,7 +1002,11 @@ impl TrayIcon {
         nid.uFlags = NIF_INFO | NIF_SHOWTIP;
 
         // A message that is empty next to a title still shows (qwindowssystemtrayicon.cpp).
-        let msg = if msg.is_empty() && !title.is_empty() { " " } else { msg };
+        let msg = if msg.is_empty() && !title.is_empty() {
+            " "
+        } else {
+            msg
+        };
         let wide_msg: Vec<u16> = msg.encode_utf16().collect();
         let msg_len = wide_msg.len().min(255);
         nid.szInfo[..msg_len].copy_from_slice(&wide_msg[..msg_len]);
@@ -1013,7 +1043,9 @@ impl TrayIcon {
         unsafe {
             GetCursorPos(&mut pt);
         }
-        self.show_context_menu_at(crate::screen::native_cursor_to_logical(Point::new(pt.x, pt.y)));
+        self.show_context_menu_at(crate::screen::native_cursor_to_logical(Point::new(
+            pt.x, pt.y,
+        )));
     }
 
     pub fn show_context_menu_at(&self, screen_pos: Point) {
@@ -1340,7 +1372,8 @@ impl TrayIcon {
         if !self.visible {
             return Ok(());
         }
-        self.inner.show_message_with_icon(title, msg, icon, duration_ms)
+        self.inner
+            .show_message_with_icon(title, msg, icon, duration_ms)
     }
 }
 #[cfg(all(test, windows))]
@@ -1404,9 +1437,13 @@ mod tests {
         let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");
         pixmap.fill(Color::from_rgba8(1, 2, 3, 255));
         let tray = Win32PlatformIntegration::default()
-            .create_tray_icon("Router Test", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .create_tray_icon(
+                "Router Test",
+                &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+            )
             .expect("create_tray_icon");
-        let addr = &*tray as *const dyn crate::platform_tray::PlatformTrayIcon as *const () as usize;
+        let addr =
+            &*tray as *const dyn crate::platform_tray::PlatformTrayIcon as *const () as usize;
         {
             let guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
             assert!(
@@ -1435,15 +1472,17 @@ mod tests {
             ok
         };
         let pixmap = Pixmap::new(16, 16).unwrap();
-        let mut tray = TrayIcon::from_icon("balloon", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
-            .expect("tray");
+        let mut tray =
+            TrayIcon::from_icon("balloon", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+                .expect("tray");
         if !tray.supports_messages() {
             return;
         }
         // `QSystemTrayIcon::showMessage` does nothing while the icon is hidden (`d->visible`):
         // no notification, no icon kept.
         assert!(!tray.is_visible());
-        tray.show_message(" ", "Hidden", TrayMessageIcon::Information, 1000).unwrap();
+        tray.show_message(" ", "Hidden", TrayMessageIcon::Information, 1000)
+            .unwrap();
         tray.show_message_with_icon(
             " ",
             "Hidden",
@@ -1454,9 +1493,13 @@ mod tests {
         assert!(tray.balloon_icon.is_none());
 
         tray.show().expect("show");
-        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000).unwrap();
+        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000)
+            .unwrap();
         let first = tray.balloon_icon.as_ref().expect("kept after the message");
-        assert!(first.owned && alive(first.hicon), "still alive after the call");
+        assert!(
+            first.owned && alive(first.hicon),
+            "still alive after the call"
+        );
         // A small image is scaled up to the large icon size, which the shell accepts.
         tray.show_message_with_icon(
             " ",
@@ -1465,14 +1508,19 @@ mod tests {
             1000,
         )
         .unwrap();
-        let second = tray.balloon_icon.as_ref().expect("replaced by the next message");
+        let second = tray
+            .balloon_icon
+            .as_ref()
+            .expect("replaced by the next message");
         assert!(second.owned && alive(second.hicon));
         let handle = second.hicon;
         // A message without an icon frees the previous one and keeps none.
-        tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000).unwrap();
+        tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000)
+            .unwrap();
         assert!(tray.balloon_icon.is_none());
         assert!(!alive(handle), "freed by the next message");
-        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000).unwrap();
+        tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000)
+            .unwrap();
         let handle = tray.balloon_icon.as_ref().expect("kept").hicon;
         tray.hide().unwrap();
         assert!(tray.balloon_icon.is_none());
@@ -1483,10 +1531,26 @@ mod tests {
     fn the_stock_icon_size_follows_the_style_icon_sizes_of_the_theme() {
         // Sizes `SM_CXSMICON`, `SM_CXICON`, 1.5 x and 8 x `SM_CXICON`; the first whose area is at
         // least 256 x 256, else the largest, never above 256 px.
-        assert_eq!(TrayIcon::stock_icon_size(16, 32), 256, "100%: 16, 32, 48, 256");
-        assert_eq!(TrayIcon::stock_icon_size(20, 40), 256, "125%: 20, 40, 60, 320 -> 256");
-        assert_eq!(TrayIcon::stock_icon_size(16, 16), 128, "16, 16, 24, 128: the largest");
-        assert_eq!(TrayIcon::stock_icon_size(32, 40), 256, "32, 40, 60, 320 -> 256");
+        assert_eq!(
+            TrayIcon::stock_icon_size(16, 32),
+            256,
+            "100%: 16, 32, 48, 256"
+        );
+        assert_eq!(
+            TrayIcon::stock_icon_size(20, 40),
+            256,
+            "125%: 20, 40, 60, 320 -> 256"
+        );
+        assert_eq!(
+            TrayIcon::stock_icon_size(16, 16),
+            128,
+            "16, 16, 24, 128: the largest"
+        );
+        assert_eq!(
+            TrayIcon::stock_icon_size(32, 40),
+            256,
+            "32, 40, 60, 320 -> 256"
+        );
     }
 
     #[test]
@@ -1504,15 +1568,31 @@ mod tests {
             assert_ne!(unsafe { GetIconInfo(icon, &mut info) }, 0);
             let mut bm: BITMAP = unsafe { std::mem::zeroed() };
             unsafe {
-                GetObjectW(info.hbmColor, std::mem::size_of_val(&bm) as i32, &mut bm as *mut _ as *mut _);
+                GetObjectW(
+                    info.hbmColor,
+                    std::mem::size_of_val(&bm) as i32,
+                    &mut bm as *mut _ as *mut _,
+                );
                 DeleteObject(info.hbmColor);
                 DeleteObject(info.hbmMask);
             }
-            assert!(bm.bmWidth >= 16 && bm.bmWidth == bm.bmHeight, "square: {}", bm.bmWidth);
+            assert!(
+                bm.bmWidth >= 16 && bm.bmWidth == bm.bmHeight,
+                "square: {}",
+                bm.bmWidth
+            );
             // A shared system icon is not destroyed: it still works after `release`.
-            BalloonIcon { hicon: icon, owned: false }.release();
+            BalloonIcon {
+                hicon: icon,
+                owned: false,
+            }
+            .release();
             let mut again: ICONINFO = unsafe { std::mem::zeroed() };
-            assert_ne!(unsafe { GetIconInfo(icon, &mut again) }, 0, "the shared icon survives");
+            assert_ne!(
+                unsafe { GetIconInfo(icon, &mut again) },
+                0,
+                "the shared icon survives"
+            );
             unsafe {
                 DeleteObject(again.hbmColor);
                 DeleteObject(again.hbmMask);
@@ -1543,7 +1623,12 @@ mod tests {
             assert!(!icon.is_null());
             // Extracted at 256 px, the largest size the balloon asks the style icon for.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
-            assert_ne!(unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(icon, &mut info) }, 0);
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(icon, &mut info)
+                },
+                0
+            );
             let mut bm: windows_sys::Win32::Graphics::Gdi::BITMAP = unsafe { std::mem::zeroed() };
             unsafe {
                 windows_sys::Win32::Graphics::Gdi::GetObjectW(
@@ -1558,7 +1643,10 @@ mod tests {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
                     GetSystemMetrics, SM_CXICON, SM_CXSMICON,
                 };
-                TrayIcon::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
+                TrayIcon::stock_icon_size(
+                    GetSystemMetrics(SM_CXSMICON),
+                    GetSystemMetrics(SM_CXICON),
+                )
             };
             assert_eq!(bm.bmWidth, expected as i32, "{kind:?}");
             // An owned icon is destroyed by `release`.
@@ -1567,7 +1655,9 @@ mod tests {
             balloon.release();
             let mut gone: ICONINFO = unsafe { std::mem::zeroed() };
             assert_eq!(
-                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(hicon, &mut gone) },
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(hicon, &mut gone)
+                },
                 0,
                 "{kind:?}: destroyed"
             );
@@ -1591,22 +1681,38 @@ mod tests {
             assert_ne!(unsafe { GetIconInfo(hicon, &mut info) }, 0);
             let mut bm: BITMAP = unsafe { std::mem::zeroed() };
             unsafe {
-                GetObjectW(info.hbmColor, std::mem::size_of::<BITMAP>() as i32, &mut bm as *mut _ as *mut _);
+                GetObjectW(
+                    info.hbmColor,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    &mut bm as *mut _ as *mut _,
+                );
                 DeleteObject(info.hbmColor);
                 DeleteObject(info.hbmMask);
             }
             TrayIcon::destroy_hicon(hicon);
             bm.bmWidth
         };
-        assert_eq!(width_of(&[16, 128]), 128, "the image that fits, not a fixed 32 px");
+        assert_eq!(
+            width_of(&[16, 128]),
+            128,
+            "the image that fits, not a fixed 32 px"
+        );
         assert_eq!(width_of(&[16, 512]), 256, "scaled down to fit 256 px");
         let large = unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
                 windows_sys::Win32::UI::WindowsAndMessaging::SM_CXICON,
             )
         };
-        assert_eq!(width_of(&[16]), large, "a smaller image is scaled up to SM_CXICON");
-        assert_eq!(width_of(&[large as u32 + 8]), large + 8, "a larger one is not touched");
+        assert_eq!(
+            width_of(&[16]),
+            large,
+            "a smaller image is scaled up to SM_CXICON"
+        );
+        assert_eq!(
+            width_of(&[large as u32 + 8]),
+            large + 8,
+            "a larger one is not touched"
+        );
     }
 
     #[test]
@@ -1619,8 +1725,14 @@ mod tests {
         assert_eq!(TrayIcon::balloon_icon_size(Size::new(31, 40), large), large);
         assert_eq!(TrayIcon::balloon_icon_size(Size::new(40, 20), large), large);
         assert_eq!(TrayIcon::balloon_icon_size(Size::new(32, 32), large), large);
-        assert_eq!(TrayIcon::balloon_icon_size(Size::new(48, 48), large), Size::new(48, 48));
-        assert_eq!(TrayIcon::balloon_icon_size(Size::new(40, 33), Size::new(40, 40)), Size::new(40, 40));
+        assert_eq!(
+            TrayIcon::balloon_icon_size(Size::new(48, 48), large),
+            Size::new(48, 48)
+        );
+        assert_eq!(
+            TrayIcon::balloon_icon_size(Size::new(40, 33), Size::new(40, 40)),
+            Size::new(40, 40)
+        );
     }
 
     #[test]

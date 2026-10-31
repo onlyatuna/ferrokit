@@ -20,5 +20,9 @@ fn set_property_keeps_pending_dirt() {
     w.clear_dirty();
     w.widget_base().update_rect(Rect::new(0, 0, 10, 10));
     w.set_property("state", "on");
-    assert_eq!(w.dirty_rect(), Some(Rect::new(0, 0, 10, 10)), "only what update() added");
+    assert_eq!(
+        w.dirty_rect(),
+        Some(Rect::new(0, 0, 10, 10)),
+        "only what update() added"
+    );
 }

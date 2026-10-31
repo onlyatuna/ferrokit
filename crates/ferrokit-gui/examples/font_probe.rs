@@ -22,13 +22,41 @@ use ferrokit_gui::text::font_metrics::FontMetrics;
 /// but not reported as missing. An application's own requests come from its `Font::new` calls and the
 /// style sheets' `font-family`; the fallbacks are the per-OS slots of `append_fallback_engines`.
 const REQUESTED: &[(&str, &str, &str)] = &[
-    ("Microsoft JhengHei UI", "all", "ferrokit-widgets APP_DEFAULT_FAMILY (label default; Qt's default on a zh-TW Windows)"),
-    ("Segoe UI", "all", "application Font::new calls, style sheets, the database's own fallback"),
-    ("Consolas", "all", "application Font::new calls (monospace text)"),
-    ("Courier New", "all", "style sheet font-family list after Consolas"),
-    ("SF Pro Display", "macos", "style sheet font-family list (macOS first choice)"),
-    ("Microsoft JhengHei", "windows", "style sheet list; Windows CJK fallback slot"),
-    ("Segoe UI Emoji", "windows", "Windows emoji fallback slot; style sheet font lists"),
+    (
+        "Microsoft JhengHei UI",
+        "all",
+        "ferrokit-widgets APP_DEFAULT_FAMILY (label default; Qt's default on a zh-TW Windows)",
+    ),
+    (
+        "Segoe UI",
+        "all",
+        "application Font::new calls, style sheets, the database's own fallback",
+    ),
+    (
+        "Consolas",
+        "all",
+        "application Font::new calls (monospace text)",
+    ),
+    (
+        "Courier New",
+        "all",
+        "style sheet font-family list after Consolas",
+    ),
+    (
+        "SF Pro Display",
+        "macos",
+        "style sheet font-family list (macOS first choice)",
+    ),
+    (
+        "Microsoft JhengHei",
+        "windows",
+        "style sheet list; Windows CJK fallback slot",
+    ),
+    (
+        "Segoe UI Emoji",
+        "windows",
+        "Windows emoji fallback slot; style sheet font lists",
+    ),
     ("Segoe UI Symbol", "windows", "Windows symbol fallback slot"),
     ("Segoe Fluent Icons", "windows", "icon font (Windows 11)"),
     ("Segoe MDL2 Assets", "windows", "icon font (Windows 10)"),
@@ -74,11 +102,12 @@ fn font_files(dir: &std::path::Path) -> Option<usize> {
         let path = entry.path();
         if path.is_dir() {
             n += font_files(&path).unwrap_or(0);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc"))
-        {
+        } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "otc"
+            )
+        }) {
             n += 1;
         }
     }
@@ -87,7 +116,11 @@ fn font_files(dir: &std::path::Path) -> Option<usize> {
 
 fn main() {
     let ci = std::env::var_os("GITHUB_ACTIONS").is_some();
-    println!("os={} arch={}", std::env::consts::OS, std::env::consts::ARCH);
+    println!(
+        "os={} arch={}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     set_application_device_pixel_ratio(1.0);
 
     // The directories `FontDatabase::new` scans are fixed (font_database.rs:200-212): `%WINDIR%\Fonts`
@@ -96,7 +129,10 @@ fn main() {
     println!("--- font directories (searched by the database: *) ---");
     let home = std::env::var("HOME").unwrap_or_default();
     let dirs: Vec<(String, bool)> = vec![
-        (format!("{}\\Fonts", std::env::var("WINDIR").unwrap_or_default()), cfg!(windows)),
+        (
+            format!("{}\\Fonts", std::env::var("WINDIR").unwrap_or_default()),
+            cfg!(windows),
+        ),
         ("/usr/share/fonts".into(), !cfg!(windows)),
         ("/System/Library/Fonts".into(), !cfg!(windows)),
         ("/System/Library/Fonts/Supplemental".into(), false),
@@ -164,10 +200,17 @@ fn main() {
         println!("every requested family is installed");
     }
     for (family, who, s) in &absent {
-        let kind = if *s == Status::Substituted { "substituted by Segoe UI/Arial" } else { "missing, no substitute" };
+        let kind = if *s == Status::Substituted {
+            "substituted by Segoe UI/Arial"
+        } else {
+            "missing, no substitute"
+        };
         println!("NOT INSTALLED: {family} ({kind}) <- {who}");
         if ci {
-            println!("::notice title=font not installed ({})::{family}: {kind}. Needed by: {who}", std::env::consts::OS);
+            println!(
+                "::notice title=font not installed ({})::{family}: {kind}. Needed by: {who}",
+                std::env::consts::OS
+            );
         }
     }
 }

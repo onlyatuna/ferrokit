@@ -17,14 +17,19 @@ struct Sink {
 }
 
 static SINK: LazyLock<Option<Mutex<Sink>>> = LazyLock::new(|| {
-    let v = std::env::var("FERROKIT_STARTUP_TRACE").ok().filter(|v| !v.is_empty() && v != "0")?;
+    let v = std::env::var("FERROKIT_STARTUP_TRACE")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0")?;
     let path = if v == "1" {
         std::env::temp_dir().join("ferrokit_startup_trace.log")
     } else {
         std::path::PathBuf::from(v)
     };
     let file = File::create(path).ok();
-    Some(Mutex::new(Sink { file, t0: Instant::now() }))
+    Some(Mutex::new(Sink {
+        file,
+        t0: Instant::now(),
+    }))
 });
 
 thread_local! {
@@ -39,7 +44,10 @@ pub fn enabled() -> bool {
 fn write_line(label: &str, dur_ms: Option<f64>, depth: usize) {
     let Some(sink) = SINK.as_ref() else { return };
     let Ok(mut s) = sink.lock() else { return };
-    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let rel = s.t0.elapsed().as_secs_f64() * 1000.0;
     let thread = std::thread::current();
     let name = thread.name().unwrap_or("?").to_owned();
@@ -76,7 +84,9 @@ pub fn span_min(min_ms: f64, label: impl FnOnce() -> String) -> Span {
         return Span { start: None };
     }
     DEPTH.with(|d| d.set(d.get() + 1));
-    Span { start: Some((Instant::now(), label(), min_ms)) }
+    Span {
+        start: Some((Instant::now(), label(), min_ms)),
+    }
 }
 
 impl Drop for Span {

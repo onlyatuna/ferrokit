@@ -32,14 +32,26 @@ fn text_stream_does_not_pad_text_already_as_wide_as_the_field() {
 fn variant_to_i32_fails_outside_the_i32_range() {
     let too_big = i64::from(i32::MAX) + 1;
     assert_eq!(Variant::I64(too_big).to_value::<i32>(), None);
-    assert_eq!(Variant::I64(i64::from(i32::MIN) - 1).to_value::<i32>(), None);
-    assert_eq!(Variant::I64(i64::from(i32::MAX)).to_value::<i32>(), Some(i32::MAX));
-    assert_eq!(Variant::I64(i64::from(i32::MIN)).to_value::<i32>(), Some(i32::MIN));
+    assert_eq!(
+        Variant::I64(i64::from(i32::MIN) - 1).to_value::<i32>(),
+        None
+    );
+    assert_eq!(
+        Variant::I64(i64::from(i32::MAX)).to_value::<i32>(),
+        Some(i32::MAX)
+    );
+    assert_eq!(
+        Variant::I64(i64::from(i32::MIN)).to_value::<i32>(),
+        Some(i32::MIN)
+    );
 }
 
 #[test]
 fn variant_to_u32_fails_outside_the_u32_range() {
     let too_big = u64::from(u32::MAX) + 1;
     assert_eq!(Variant::U64(too_big).to_value::<u32>(), None);
-    assert_eq!(Variant::U64(u64::from(u32::MAX)).to_value::<u32>(), Some(u32::MAX));
+    assert_eq!(
+        Variant::U64(u64::from(u32::MAX)).to_value::<u32>(),
+        Some(u32::MAX)
+    );
 }

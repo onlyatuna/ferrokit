@@ -25,7 +25,10 @@ fn area(area_w: i32, area_h: i32, content_w: i32, content_h: i32) -> (WidgetRef,
 }
 
 fn with_area<R>(a: &WidgetRef, f: impl FnOnce(&mut ScrollArea) -> R) -> R {
-    f(a.borrow_mut().as_any_mut().downcast_mut::<ScrollArea>().unwrap())
+    f(a.borrow_mut()
+        .as_any_mut()
+        .downcast_mut::<ScrollArea>()
+        .unwrap())
 }
 
 fn wheel(a: &WidgetRef, angle_x: i32, angle_y: i32) -> bool {
@@ -57,9 +60,18 @@ fn content_returns_to_the_origin_when_the_bar_is_no_longer_needed() {
 fn an_always_off_bar_keeps_its_range_and_the_wheel_still_scrolls() {
     let (a, content) = area(110, 100, 100, 300);
     with_area(&a, |s| s.set_scroll_position(0, 50));
-    with_area(&a, |s| s.set_vertical_scrollbar_policy(ScrollBarPolicy::AlwaysOff));
-    assert_eq!(content.borrow().geometry().y, -50, "the position survives hiding the bar");
-    assert!(wheel(&a, 0, -120), "QScrollArea with a hidden bar still scrolls by wheel");
+    with_area(&a, |s| {
+        s.set_vertical_scrollbar_policy(ScrollBarPolicy::AlwaysOff)
+    });
+    assert_eq!(
+        content.borrow().geometry().y,
+        -50,
+        "the position survives hiding the bar"
+    );
+    assert!(
+        wheel(&a, 0, -120),
+        "QScrollArea with a hidden bar still scrolls by wheel"
+    );
     assert_eq!(with_area(&a, |s| s.scroll_position()).y, 53);
 }
 
@@ -67,7 +79,10 @@ fn an_always_off_bar_keeps_its_range_and_the_wheel_still_scrolls() {
 fn a_wheel_that_moves_nothing_is_not_handled() {
     let (a, _content) = area(110, 100, 100, 300);
     assert!(!wheel(&a, 0, 0), "a zero delta scrolls nothing");
-    assert!(!wheel(&a, 0, 120), "already at the top: scrolling up moves nothing");
+    assert!(
+        !wheel(&a, 0, 120),
+        "already at the top: scrolling up moves nothing"
+    );
     assert!(wheel(&a, 0, -120));
     assert_eq!(with_area(&a, |s| s.scroll_position()).y, 3);
 }
@@ -90,11 +105,19 @@ fn a_click_on_the_scroll_bar_reaches_the_bar_not_the_content() {
     assert_eq!(path.len(), 1, "the hit stops at the scroll area");
 
     let mut d = EventTreeDispatcher::new();
-    let mut press = Event::new_spontaneous(EventKind::MouseButtonPress { x: 105, y: 90, button: 1 });
+    let mut press = Event::new_spontaneous(EventKind::MouseButtonPress {
+        x: 105,
+        y: 90,
+        button: 1,
+    });
     d.dispatch_event(&a, &mut press);
     assert_eq!(with_area(&a, |s| s.scroll_position()).y, 100, "page down");
     assert_eq!(content.borrow().geometry().y, -100);
-    let mut release = Event::new_spontaneous(EventKind::MouseButtonRelease { x: 105, y: 90, button: 1 });
+    let mut release = Event::new_spontaneous(EventKind::MouseButtonRelease {
+        x: 105,
+        y: 90,
+        button: 1,
+    });
     d.dispatch_event(&a, &mut release);
 }
 
@@ -102,9 +125,18 @@ fn a_click_on_the_scroll_bar_reaches_the_bar_not_the_content() {
 fn dragging_the_thumb_scrolls_the_content() {
     let (a, content) = area(110, 100, 100, 300);
     let mut d = EventTreeDispatcher::new();
-    let mut press = Event::new_spontaneous(EventKind::MouseButtonPress { x: 105, y: 5, button: 1 });
+    let mut press = Event::new_spontaneous(EventKind::MouseButtonPress {
+        x: 105,
+        y: 5,
+        button: 1,
+    });
     d.dispatch_event(&a, &mut press);
-    d.dispatch_mouse_move(&a, Point::new(105, 38), Point::new(105, 38), MouseButtons(1));
+    d.dispatch_mouse_move(
+        &a,
+        Point::new(105, 38),
+        Point::new(105, 38),
+        MouseButtons(1),
+    );
     let y = with_area(&a, |s| s.scroll_position()).y;
     assert!(y > 0, "the thumb moved the content: {y}");
     assert_eq!(content.borrow().geometry().y, -y);
@@ -118,9 +150,15 @@ fn the_scroll_range_follows_the_content_widget_when_it_resizes() {
 
     content.borrow().set_geometry(Rect::new(0, 0, 100, 500));
 
-    assert!(with_area(&a, |s| s.vertical_scroll_bar().is_visible()), "the content overflows");
+    assert!(
+        with_area(&a, |s| s.vertical_scroll_bar().is_visible()),
+        "the content overflows"
+    );
     assert_eq!(with_area(&a, |s| s.vertical_scroll_bar().maximum()), 400);
 
     content.borrow().set_geometry(Rect::new(0, 0, 100, 100));
-    assert!(!with_area(&a, |s| s.vertical_scroll_bar().is_visible()), "and fits again");
+    assert!(
+        !with_area(&a, |s| s.vertical_scroll_bar().is_visible()),
+        "and fits again"
+    );
 }

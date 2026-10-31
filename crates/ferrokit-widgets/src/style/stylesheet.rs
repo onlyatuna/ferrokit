@@ -54,7 +54,10 @@ impl ResolvedStyle {
     pub fn box_extra(&self) -> (i32, i32) {
         let border = self.border_width.unwrap_or(0.0).max(0.0);
         let [pt, pr, pb, pl] = self.padding.unwrap_or([0.0; 4]);
-        (((2.0 * border) + pl + pr).round() as i32, ((2.0 * border) + pt + pb).round() as i32)
+        (
+            ((2.0 * border) + pl + pr).round() as i32,
+            ((2.0 * border) + pt + pb).round() as i32,
+        )
     }
 
     /// `QWidget::minimumSize()` set by `QStyleSheetStyle::setGeometry`: `min-width`/`min-height`
@@ -64,8 +67,10 @@ impl ResolvedStyle {
         let (ex, ey) = self.box_extra();
         // `width`/`height` only raise the minimum of an axis that also has a `min-*` declaration.
         (
-            self.min_width.map_or(0, |m| m.max(self.width.unwrap_or(-1)) + ex),
-            self.min_height.map_or(0, |m| m.max(self.height.unwrap_or(-1)) + ey),
+            self.min_width
+                .map_or(0, |m| m.max(self.width.unwrap_or(-1)) + ex),
+            self.min_height
+                .map_or(0, |m| m.max(self.height.unwrap_or(-1)) + ey),
         )
     }
 
@@ -76,8 +81,10 @@ impl ResolvedStyle {
         let (ex, ey) = self.box_extra();
         // `width`/`height` only lower the maximum of an axis that also has a `max-*` declaration.
         (
-            self.max_width.map_or(16777215, |m| m.min(self.width.unwrap_or(16777215)) + ex),
-            self.max_height.map_or(16777215, |m| m.min(self.height.unwrap_or(16777215)) + ey),
+            self.max_width
+                .map_or(16777215, |m| m.min(self.width.unwrap_or(16777215)) + ex),
+            self.max_height
+                .map_or(16777215, |m| m.min(self.height.unwrap_or(16777215)) + ey),
         )
     }
 
@@ -92,10 +99,12 @@ impl ResolvedStyle {
         if let Some(max) = self.max_height {
             h = h.min(max);
         }
-        (w.max(self.min_width.unwrap_or(-1)), h.max(self.min_height.unwrap_or(-1)))
+        (
+            w.max(self.min_width.unwrap_or(-1)),
+            h.max(self.min_height.unwrap_or(-1)),
+        )
     }
 }
-
 
 /// Context information for querying matching stylesheet rules.
 #[derive(Debug, Clone, Default)]
@@ -279,7 +288,7 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
             }
         }
         QCssProperty::BorderStyle => {
-        if let QCssValue::Identifier(s) = &decl.value {
+            if let QCssValue::Identifier(s) = &decl.value {
                 style.border_style = Some(s.clone());
             }
         }
@@ -338,12 +347,11 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
             }
             _ => {}
         },
-        QCssProperty::FontFamily => match &decl.value {
-            QCssValue::FontFamilies(list) => {
+        QCssProperty::FontFamily => {
+            if let QCssValue::FontFamilies(list) = &decl.value {
                 style.font_families = Some(list.clone());
             }
-            _ => {}
-        },
+        }
         QCssProperty::LetterSpacing => {
             if let QCssValue::Length(ls) = decl.value {
                 style.letter_spacing = Some(ls);
@@ -390,7 +398,7 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
             }
         }
         QCssProperty::TextAlign => {
-        if let QCssValue::Identifier(s) = &decl.value {
+            if let QCssValue::Identifier(s) = &decl.value {
                 style.text_align = Some(s.clone());
             }
         }

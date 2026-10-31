@@ -37,13 +37,19 @@ thread_local! {
 
 /// Consumes the redirect of `receiver`'s timer `old` (a `Timer` handle adopts the new id once).
 fn take_reidentified(receiver: ObjectId, old: TimerId) -> Option<TimerId> {
-    REIDENTIFIED.try_with(|map| map.borrow_mut().remove(&(receiver, old))).ok().flatten()
+    REIDENTIFIED
+        .try_with(|map| map.borrow_mut().remove(&(receiver, old)))
+        .ok()
+        .flatten()
 }
 
 /// The id `receiver`'s timer `old` was given on adoption, leaving the redirect in place: the
 /// owner of an `Object::start_timer` id may still hold `old` until it kills the timer.
 pub(crate) fn reidentified_as(receiver: ObjectId, old: TimerId) -> Option<TimerId> {
-    REIDENTIFIED.try_with(|map| map.borrow().get(&(receiver, old)).copied()).ok().flatten()
+    REIDENTIFIED
+        .try_with(|map| map.borrow().get(&(receiver, old)).copied())
+        .ok()
+        .flatten()
 }
 
 /// Drops the redirect that starts at `old`: a timer registered under `old` supersedes it.
@@ -369,7 +375,7 @@ thread_local! {
     static THREAD_TIMER_CONTEXT: RefCell<Option<ThreadTimerContext>> = const { RefCell::new(None) };
     static SINGLE_SHOT_CALLBACKS: RefCell<HashMap<ObjectId, Box<dyn FnOnce() + Send>>> =
         RefCell::new(HashMap::new());
-    static PENDING_SINGLE_SHOTS: RefCell<Vec<(ObjectId, u64)>> = RefCell::new(Vec::new());
+    static PENDING_SINGLE_SHOTS: RefCell<Vec<(ObjectId, u64)>> = const { RefCell::new(Vec::new()) };
     /// Context-bound single shots of this thread.
     static SINGLE_SHOT_CONTEXTS: RefCell<ContextShots> = RefCell::new(ContextShots::default());
 }
@@ -1104,6 +1110,12 @@ pub struct Timer {
     pub timeout: Signal<()>,
 }
 
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Timer {
     /// Creates a timer and registers its object (`new QTimer`). Nothing is scheduled until
     /// [`Timer::start`].
@@ -1275,13 +1287,15 @@ impl Timer {
             crate::event_loop::post_event_to_thread(
                 thread_id,
                 context,
-                crate::event::Event::new(crate::event::EventKind::MetaCallNoTarget(Box::new(move || {
-                    if interval_ms == 0 {
-                        callback();
-                    } else {
-                        Self::arm_context_single_shot(interval_ms, context, callback);
-                    }
-                }))),
+                crate::event::Event::new(crate::event::EventKind::MetaCallNoTarget(Box::new(
+                    move || {
+                        if interval_ms == 0 {
+                            callback();
+                        } else {
+                            Self::arm_context_single_shot(interval_ms, context, callback);
+                        }
+                    },
+                ))),
             );
         } else {
             Self::arm_context_single_shot(interval_ms, context, callback);
@@ -1371,7 +1385,8 @@ pub(crate) fn begin_timer_delivery(
     }
     if now_ms < entry.next_fire_ms {
         if precise
-            && classify_early_tick(now_ms, entry.next_fire_ms, entry.interval_ms) == EarlyTick::Defer
+            && classify_early_tick(now_ms, entry.next_fire_ms, entry.interval_ms)
+                == EarlyTick::Defer
         {
             defer_source(id.0);
         }
@@ -2203,15 +2218,42 @@ mod tests {
 
         assert!(matches!(deliver(id, timer_id), TimerDelivery::Delivered));
 
-        assert_eq!(in_slot_drops.load(Ordering::SeqCst), 0, "object destroyed inside its callback");
-        assert_eq!(in_slot_registered.load(Ordering::SeqCst), 0, "still registered after the drop");
-        assert_eq!(in_slot_timers.load(Ordering::SeqCst), 0, "timer still scheduled after the drop");
-        assert_eq!(second.load(Ordering::SeqCst), 0, "a slot ran for a destroyed owner");
-        assert_eq!(core_drops(), 1, "object not freed once the callback returned");
+        assert_eq!(
+            in_slot_drops.load(Ordering::SeqCst),
+            0,
+            "object destroyed inside its callback"
+        );
+        assert_eq!(
+            in_slot_registered.load(Ordering::SeqCst),
+            0,
+            "still registered after the drop"
+        );
+        assert_eq!(
+            in_slot_timers.load(Ordering::SeqCst),
+            0,
+            "timer still scheduled after the drop"
+        );
+        assert_eq!(
+            second.load(Ordering::SeqCst),
+            0,
+            "a slot ran for a destroyed owner"
+        );
+        assert_eq!(
+            core_drops(),
+            1,
+            "object not freed once the callback returned"
+        );
         assert!(!registered_on_current_thread(id));
-        assert!(matches!(deliver(id, timer_id), TimerDelivery::NotDeliverable));
+        assert!(matches!(
+            deliver(id, timer_id),
+            TimerDelivery::NotDeliverable
+        ));
         retained.emit(&());
-        assert_eq!(second.load(Ordering::SeqCst), 0, "a retained signal still reaches slots");
+        assert_eq!(
+            second.load(Ordering::SeqCst),
+            0,
+            "a retained signal still reaches slots"
+        );
         assert_eq!(registry.lock().unwrap().len(), 0);
         unregister_thread_timer_context();
     }
@@ -2280,7 +2322,11 @@ mod tests {
         assert!(matches!(deliver(id, first), TimerDelivery::Delivered));
         let second_id = HOLD.with(|h| h.borrow().as_ref().expect("held").timer_id());
         assert!(second_id.is_valid() && second_id != first);
-        assert_eq!(registry.lock().unwrap().len(), 1, "single-shot stop ran before the slot");
+        assert_eq!(
+            registry.lock().unwrap().len(),
+            1,
+            "single-shot stop ran before the slot"
+        );
         assert_eq!(core_drops(), 0);
 
         assert!(matches!(deliver(id, second_id), TimerDelivery::Delivered));
@@ -2327,7 +2373,11 @@ mod tests {
             timer.stop();
         });
         assert!(!timer.is_active());
-        assert_eq!(registry.lock().unwrap().len(), 1, "the blocked stop must not reach the registry");
+        assert_eq!(
+            registry.lock().unwrap().len(),
+            1,
+            "the blocked stop must not reach the registry"
+        );
 
         drop(timer);
         assert_eq!(core_drops(), 1);
@@ -2370,10 +2420,11 @@ mod tests {
         assert_eq!(win32_timer_elapse(u64::MAX), 0x7FFF_FFFF);
 
         let registry = Mutex::new(TimerRegistry::new());
-        let id = registry
-            .lock()
-            .unwrap()
-            .register(ObjectId(99), u64::MAX, TimerType::Precise, true);
+        let id =
+            registry
+                .lock()
+                .unwrap()
+                .register(ObjectId(99), u64::MAX, TimerType::Precise, true);
         let deadline = registry.lock().unwrap().get(id).unwrap().next_fire_ms;
         assert_eq!(deadline, u64::MAX);
 
@@ -2455,7 +2506,10 @@ mod receiver_index_tests {
             TimerType::Coarse,
             false
         ));
-        adopt_entries(vec![MovedTimer { entry, aliases: Vec::new() }]);
+        adopt_entries(vec![MovedTimer {
+            entry,
+            aliases: Vec::new(),
+        }]);
         let fresh = {
             let reg = registry.lock().unwrap();
             assert_eq!(reg.len(), 2, "the moved timer was dropped");
@@ -2541,49 +2595,90 @@ mod receiver_index_tests {
         let mut owner = unsafe { crate::object::register_owned_qobject(TimerOwner { data }) };
 
         // Killed through the id `start_timer` returned, which the re-id made stale.
-        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let started = owner
+            .with_mut(|o| o.start_timer(50, TimerType::Coarse))
+            .unwrap();
         assert!(started.is_valid());
         let fresh = reidentify_object_timer(&registry, receiver, started, &held);
-        assert_eq!(owner_timers(&owner), vec![fresh], "stale id left in the object's list");
+        assert_eq!(
+            owner_timers(&owner),
+            vec![fresh],
+            "stale id left in the object's list"
+        );
         assert_eq!(reidentified_as(receiver, started), Some(fresh));
         assert!(owner.with_mut(|o| o.kill_timer(started)).unwrap());
         assert!(owner_timers(&owner).is_empty());
-        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        assert_eq!(
+            reidentified_as(receiver, started),
+            None,
+            "redirect outlived the timer"
+        );
         {
             let reg = registry.lock().unwrap();
             assert!(reg.get(fresh).is_none());
             assert_eq!(reg.len(), 1, "an unrelated timer was killed");
         }
-        assert!(!owner.with_mut(|o| o.kill_timer(started)).unwrap(), "killed twice");
+        assert!(
+            !owner.with_mut(|o| o.kill_timer(started)).unwrap(),
+            "killed twice"
+        );
 
         // Killed through the new id: the redirect goes with the timer.
-        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let started = owner
+            .with_mut(|o| o.start_timer(50, TimerType::Coarse))
+            .unwrap();
         let fresh = reidentify_object_timer(&registry, receiver, started, &held);
         assert!(owner.with_mut(|o| o.kill_timer(fresh)).unwrap());
-        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        assert_eq!(
+            reidentified_as(receiver, started),
+            None,
+            "redirect outlived the timer"
+        );
         assert!(owner_timers(&owner).is_empty());
 
         // The redirect follows the timer through a second move and is dropped with the timer
         // when the object's timers are removed (as on its destruction).
-        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let started = owner
+            .with_mut(|o| o.start_timer(50, TimerType::Coarse))
+            .unwrap();
         let fresh = reidentify_object_timer(&registry, receiver, started, &held);
         let moved = detach_registered_timers(&[receiver]);
-        assert_eq!(reidentified_as(receiver, started), None, "redirect stayed on the old thread");
+        assert_eq!(
+            reidentified_as(receiver, started),
+            None,
+            "redirect stayed on the old thread"
+        );
         adopt_entries(moved);
         assert_eq!(owner_timers(&owner), vec![fresh]);
         assert_eq!(reidentified_as(receiver, started), Some(fresh));
         assert_eq!(stop_timers_for_object(receiver), 1);
-        assert_eq!(reidentified_as(receiver, started), None, "redirect outlived the timer");
+        assert_eq!(
+            reidentified_as(receiver, started),
+            None,
+            "redirect outlived the timer"
+        );
         // The object's list is dropped with the object; here it is emptied to go on.
-        assert!(!owner.with_mut(|o| o.kill_timer(fresh)).unwrap(), "already unregistered");
+        assert!(
+            !owner.with_mut(|o| o.kill_timer(fresh)).unwrap(),
+            "already unregistered"
+        );
 
         // A thread without a timer context schedules nothing, so the object keeps no id.
-        let started = owner.with_mut(|o| o.start_timer(50, TimerType::Coarse)).unwrap();
+        let started = owner
+            .with_mut(|o| o.start_timer(50, TimerType::Coarse))
+            .unwrap();
         let moved = detach_registered_timers(&[receiver]);
         unregister_thread_timer_context();
         adopt_entries(moved);
-        assert!(owner_timers(&owner).is_empty(), "{started} left in the list");
-        assert!(registry.lock().unwrap().ids_for_receiver(receiver).is_empty());
+        assert!(
+            owner_timers(&owner).is_empty(),
+            "{started} left in the list"
+        );
+        assert!(registry
+            .lock()
+            .unwrap()
+            .ids_for_receiver(receiver)
+            .is_empty());
         drop(held);
         drop(owner);
     }
@@ -2652,7 +2747,9 @@ mod single_shot_source_tests {
 
 #[cfg(all(test, windows))]
 mod precise_delivery_tests {
-    use super::{begin_timer_delivery, lock_unpoisoned, start_object_timer, with_thread_timer_context};
+    use super::{
+        begin_timer_delivery, lock_unpoisoned, start_object_timer, with_thread_timer_context,
+    };
     use super::{ObjectId, TimerType};
     use crate::event_loop::EventLoop;
 

@@ -47,7 +47,11 @@ fn exec_popup_triggers_the_action_it_returns() {
 
     let chosen = chosen.expect("Return chose the first item");
     assert!(std::rc::Rc::ptr_eq(&chosen, &action));
-    assert_eq!(triggered.load(Ordering::SeqCst), 11, "action and menu `triggered` both fired");
+    assert_eq!(
+        triggered.load(Ordering::SeqCst),
+        11,
+        "action and menu `triggered` both fired"
+    );
     assert!(action.borrow().is_checked(), "a checkable action toggled");
 }
 

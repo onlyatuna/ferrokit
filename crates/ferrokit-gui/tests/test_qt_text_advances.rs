@@ -36,10 +36,26 @@ fn widths_match_qt_at_every_device_pixel_ratio() {
     // DirectWrite engine; the ratio itself does not matter.
     for dpr in [1.25, 1.5, 2.0] {
         set_application_device_pixel_ratio(dpr);
-        assert_eq!(width("Claude Code", 14.0, FontWeight::SemiBold), 85.765625, "x{dpr}");
-        assert_eq!(width("AV", 16.0, FontWeight::Normal), 20.765625, "AV x{dpr}");
-        assert_eq!(width("To", 16.0, FontWeight::Normal), 17.296875, "To x{dpr}");
-        assert_eq!(width("Wa", 16.0, FontWeight::Normal), 24.171875, "Wa x{dpr}");
+        assert_eq!(
+            width("Claude Code", 14.0, FontWeight::SemiBold),
+            85.765625,
+            "x{dpr}"
+        );
+        assert_eq!(
+            width("AV", 16.0, FontWeight::Normal),
+            20.765625,
+            "AV x{dpr}"
+        );
+        assert_eq!(
+            width("To", 16.0, FontWeight::Normal),
+            17.296875,
+            "To x{dpr}"
+        );
+        assert_eq!(
+            width("Wa", 16.0, FontWeight::Normal),
+            24.171875,
+            "Wa x{dpr}"
+        );
     }
     set_application_device_pixel_ratio(1.0);
 }

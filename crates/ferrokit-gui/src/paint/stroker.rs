@@ -574,7 +574,7 @@ impl Stroker {
                 -sweep_length,
             );
 
-            for c in curves.chunks_exact(3) {
+            for c in curves.as_chunks::<3>().0 {
                 self.emit_cubic_to(c[0], c[1], c[2]);
             }
 
@@ -754,9 +754,13 @@ impl<'a> DashStroker<'a> {
         let stroke_width = self.stroker.stroke_width;
 
         let mut sum_length = 0.0;
-        for i in 0..dash_count_all {
-            dashes[i] = self.dash_pattern[i].max(0.0) * stroke_width;
-            sum_length += dashes[i];
+        for (dash, &pattern) in dashes
+            .iter_mut()
+            .zip(self.dash_pattern)
+            .take(dash_count_all)
+        {
+            *dash = pattern.max(0.0) * stroke_width;
+            sum_length += *dash;
         }
 
         if fuzzy_is_null(sum_length) {
@@ -1185,11 +1189,12 @@ impl PainterPathStroker {
     pub const MAX_ELEMENTS: usize = MAX_STROKE_ELEMENTS;
 
     /// The elements `createStroke` produces for the elements of a non-empty path, in `f64`.
+    #[cfg(test)]
     pub(crate) fn stroke_elements(&self, input: &[PathElementPoint]) -> Vec<PathElementPoint> {
         self.stroke_elements_limited(input, MAX_STROKE_ELEMENTS).0
     }
 
-    /// [`stroke_elements`](Self::stroke_elements) with at most `max_elements` elements.
+    /// `stroke_elements` with at most `max_elements` elements.
     pub(crate) fn stroke_elements_limited(
         &self,
         input: &[PathElementPoint],
@@ -1240,7 +1245,7 @@ mod tests {
             .filter(|l| l.starts_with("stroke "))
             .enumerate()
         {
-            if n % STRIDE != 0 {
+            if !n.is_multiple_of(STRIDE) {
                 continue;
             }
             let t: Vec<&str> = line.split(' ').skip(1).collect();

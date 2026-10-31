@@ -239,8 +239,9 @@ fn test_cross_platform_backdrop_and_click_through() {
     x11_win.set_click_through(false);
 
     // Wayland window
-    let mut wayland_win = WaylandNativeWindow::new_offscreen("WaylandHUD", rect, WindowFlags::FRAMELESS)
-        .expect("Wayland window creation should succeed");
+    let mut wayland_win =
+        WaylandNativeWindow::new_offscreen("WaylandHUD", rect, WindowFlags::FRAMELESS)
+            .expect("Wayland window creation should succeed");
     assert!(wayland_win.set_backdrop(BackdropType::Acrylic, true));
     assert!(wayland_win.set_backdrop(BackdropType::None, false));
     wayland_win.set_click_through(true);
@@ -444,7 +445,8 @@ fn test_platform_window_move_resize_opacity_minsize() {
 
     // X11NativeWindow tests
     let mut x11_win =
-        X11NativeWindow::new_offscreen("X11 Test", Rect::new(0, 0, 640, 480), WindowFlags::empty()).unwrap();
+        X11NativeWindow::new_offscreen("X11 Test", Rect::new(0, 0, 640, 480), WindowFlags::empty())
+            .unwrap();
     assert_eq!(x11_win.minimum_size(), (0, 0));
     x11_win.set_minimum_size(100, 100);
     assert_eq!(x11_win.minimum_size(), (100, 100));
@@ -501,7 +503,8 @@ fn test_platform_tray_messages() {
 
     // 2. GenericTrayIcon
     let pm = Pixmap::new(16, 16).unwrap();
-    let mut generic_tray = GenericTrayIcon::new("Generic Tray", &ferrokit_gui::image::Icon::from_pixmap(&pm));
+    let mut generic_tray =
+        GenericTrayIcon::new("Generic Tray", &ferrokit_gui::image::Icon::from_pixmap(&pm));
     assert!(generic_tray.supports_messages());
     assert_eq!(generic_tray.last_message(), None);
     assert!(generic_tray
@@ -683,7 +686,11 @@ fn test_event_delivery_policies() {
 
         let p = platform();
         let mut win = p
-            .create_window("Delivery Test Window", Rect::new(50, 50, 300, 200), WindowFlags::NORMAL)
+            .create_window(
+                "Delivery Test Window",
+                Rect::new(50, 50, 300, 200),
+                WindowFlags::NORMAL,
+            )
             .expect("create window");
         let hwnd = win.native_handle() as windows_sys::Win32::Foundation::HWND;
 
@@ -694,34 +701,28 @@ fn test_event_delivery_policies() {
         })));
 
         // 1. Synchronous delivery: dispatched immediately
-        dispatch_window_system_event(
-            Delivery::Synchronous,
-            hwnd,
-            WindowSystemEvent::FocusIn,
-        );
+        dispatch_window_system_event(Delivery::Synchronous, hwnd, WindowSystemEvent::FocusIn);
         assert_eq!(events.lock().unwrap().len(), 1);
-        assert!(matches!(events.lock().unwrap()[0], WindowSystemEvent::FocusIn));
+        assert!(matches!(
+            events.lock().unwrap()[0],
+            WindowSystemEvent::FocusIn
+        ));
 
         // 2. Asynchronous delivery: queued in WINDOW_SYSTEM_EVENT_QUEUE until flush
-        dispatch_window_system_event(
-            Delivery::Asynchronous,
-            hwnd,
-            WindowSystemEvent::FocusOut,
-        );
+        dispatch_window_system_event(Delivery::Asynchronous, hwnd, WindowSystemEvent::FocusOut);
         // Not delivered immediately
         assert_eq!(events.lock().unwrap().len(), 1);
         // Flush queue
         let flushed = flush_window_system_events();
         assert!(flushed);
         assert_eq!(events.lock().unwrap().len(), 2);
-        assert!(matches!(events.lock().unwrap()[1], WindowSystemEvent::FocusOut));
+        assert!(matches!(
+            events.lock().unwrap()[1],
+            WindowSystemEvent::FocusOut
+        ));
 
         // 3. handle_geometry_change with Delivery::Default on window thread: delivers immediately
-        handle_geometry_change(
-            Delivery::Default,
-            hwnd,
-            Rect::new(60, 70, 400, 300),
-        );
+        handle_geometry_change(Delivery::Default, hwnd, Rect::new(60, 70, 400, 300));
         let current_events = events.lock().unwrap().clone();
         assert!(current_events.iter().any(|e| matches!(e, WindowSystemEvent::GeometryChange { geometry } if geometry.width == 400 && geometry.height == 300)));
         assert!(current_events.iter().any(|e| matches!(e, WindowSystemEvent::Resize { size } if size.width == 400 && size.height == 300)));
@@ -744,7 +745,10 @@ fn test_event_delivery_policies() {
         let flushed_bg = flush_window_system_events();
         assert!(flushed_bg);
         assert_eq!(events.lock().unwrap().len(), events_len_before + 1);
-        assert!(matches!(events.lock().unwrap().last().unwrap(), WindowSystemEvent::CloseRequest));
+        assert!(matches!(
+            events.lock().unwrap().last().unwrap(),
+            WindowSystemEvent::CloseRequest
+        ));
     }
 }
 
@@ -756,7 +760,9 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         use ferrokit_gui::geometry::Region;
         use ferrokit_gui::paint::Pixmap;
         use ferrokit_gui::tiny_skia::Color;
-        use ferrokit_platform::presenter::{SurfacePresenter, Win32DcPresenter, Win32LayeredPresenter};
+        use ferrokit_platform::presenter::{
+            SurfacePresenter, Win32DcPresenter, Win32LayeredPresenter,
+        };
         use ferrokit_platform::window::{NativeWindow, WindowFlags};
         use ferrokit_platform::PlatformWindow;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -796,10 +802,14 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         );
 
         // 2. Direct Win32DcPresenter test
-        let mut dc_presenter = Win32DcPresenter::new(hwnd_normal, 200, 150)
-            .expect("create Win32DcPresenter");
+        let mut dc_presenter =
+            Win32DcPresenter::new(hwnd_normal, 200, 150).expect("create Win32DcPresenter");
         let dc_res = dc_presenter.present(&pixmap, &dirty_region);
-        assert!(dc_res.is_ok(), "Win32DcPresenter.present failed: {:?}", dc_res);
+        assert!(
+            dc_res.is_ok(),
+            "Win32DcPresenter.present failed: {:?}",
+            dc_res
+        );
 
         // 3. Test Layered Presenter:
         // Window HAS WS_EX_LAYERED and uses UpdateLayeredWindowIndirect
@@ -871,24 +881,44 @@ fn test_platform_tray_message_with_custom_icon() {
 
     // The generic back end keeps the custom icon and shows no standard icon.
     let mut generic = GenericTrayIcon::new("Generic", &icon);
-    assert_eq!(generic.icon().available_sizes(ferrokit_gui::image::IconMode::Normal, ferrokit_gui::image::IconState::Off), icon.available_sizes(ferrokit_gui::image::IconMode::Normal, ferrokit_gui::image::IconState::Off));
+    assert_eq!(
+        generic.icon().available_sizes(
+            ferrokit_gui::image::IconMode::Normal,
+            ferrokit_gui::image::IconState::Off
+        ),
+        icon.available_sizes(
+            ferrokit_gui::image::IconMode::Normal,
+            ferrokit_gui::image::IconState::Off
+        )
+    );
     generic.set_icon(&Icon::new()).unwrap();
     assert!(generic.icon().is_null());
     generic.set_icon(&icon).unwrap();
     assert!(generic.last_message_icon().is_none());
     generic.show_message_with_icon("T", "B", &icon, 0).unwrap();
-    assert_eq!(generic.last_message(), Some(("T", "B", TrayMessageIcon::NoIcon, 10000)));
+    assert_eq!(
+        generic.last_message(),
+        Some(("T", "B", TrayMessageIcon::NoIcon, 10000))
+    );
     assert!(generic.last_message_icon().is_some());
     // A later standard-icon message drops it again, and a null icon never counts as custom.
-    generic.show_message("T2", "B2", TrayMessageIcon::Warning, 1000).unwrap();
+    generic
+        .show_message("T2", "B2", TrayMessageIcon::Warning, 1000)
+        .unwrap();
     assert!(generic.last_message_icon().is_none());
-    generic.show_message_with_icon("T3", "B3", &Icon::new(), 1000).unwrap();
+    generic
+        .show_message_with_icon("T3", "B3", &Icon::new(), 1000)
+        .unwrap();
     assert!(generic.last_message_icon().is_none());
 
     // Back ends that cannot show an arbitrary image fall back to NoIcon.
     let mut dbus = DbusStatusNotifierItem::new("claude-hud", "ClaudeHUD");
-    dbus.show_message_with_icon("Alert", "Body", &icon, 2000).unwrap();
-    assert_eq!(dbus.last_message(), Some(("Alert", "Body", TrayMessageIcon::NoIcon, 2000)));
+    dbus.show_message_with_icon("Alert", "Body", &icon, 2000)
+        .unwrap();
+    assert_eq!(
+        dbus.last_message(),
+        Some(("Alert", "Body", TrayMessageIcon::NoIcon, 2000))
+    );
 }
 
 #[cfg(not(windows))]
@@ -942,8 +972,10 @@ fn a_hidden_tray_icon_forwards_no_message() {
     let seen = Rc::new(Cell::new(0));
     let mut tray = TrayIcon::with_backend(Box::new(Spy(seen.clone())));
     let send = |tray: &mut TrayIcon| {
-        tray.show_message("T", "B", TrayMessageIcon::Information, 0).unwrap();
-        tray.show_message_with_icon("T", "B", &Icon::new(), 0).unwrap();
+        tray.show_message("T", "B", TrayMessageIcon::Information, 0)
+            .unwrap();
+        tray.show_message_with_icon("T", "B", &Icon::new(), 0)
+            .unwrap();
     };
     send(&mut tray);
     assert_eq!(seen.get(), 0, "hidden: nothing is forwarded");

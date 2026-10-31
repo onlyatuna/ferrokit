@@ -19,7 +19,9 @@ fn label(text: &str, qss: &str) -> Label {
 fn a_label_without_a_box_is_exactly_as_wide_as_its_text() {
     let l = label("Plan: Free", "font-size: 9px;");
     let font = Font::new("Consolas", 9.0);
-    let text_w = FontMetrics::from_font(&font).horizontal_advance_exact("Plan: Free", &font).ceil() as i32;
+    let text_w = FontMetrics::from_font(&font)
+        .horizontal_advance_exact("Plan: Free", &font)
+        .ceil() as i32;
     assert_eq!(l.size_hint().width, text_w);
 }
 
@@ -33,7 +35,9 @@ fn padding_and_border_add_their_size_and_the_x_indent() {
     .size_hint();
 
     let font = Font::new("Consolas", 9.0);
-    let x_indent = FontMetrics::from_font(&font).horizontal_advance_exact("x", &font).round() as i32;
+    let x_indent = FontMetrics::from_font(&font)
+        .horizontal_advance_exact("x", &font)
+        .round() as i32;
     assert_eq!(boxed.width - plain.width, 4 + 4 + 1 + 1 + x_indent);
     assert_eq!(boxed.height - plain.height, 1 + 1 + 1 + 1);
 }

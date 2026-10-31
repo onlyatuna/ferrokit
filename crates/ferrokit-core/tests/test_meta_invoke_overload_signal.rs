@@ -3,13 +3,13 @@ use std::any::Any;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use parking_lot::Mutex;
 use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{ObjectData, QObject};
 use ferrokit_core::signal::Signal;
 use ferrokit_core::variant::Variant;
+use parking_lot::Mutex;
 
 #[derive(ferrokit_core::QObject)]
 #[qobject(class_name = "InvokeProbe")]

@@ -35,7 +35,11 @@ fn wm_quit_in_a_nested_loop_ends_the_outer_loop_too() {
     });
 
     let outer_code = outer.exec();
-    assert_eq!(inner_code.load(Ordering::SeqCst), 7, "the inner loop ends with the code");
+    assert_eq!(
+        inner_code.load(Ordering::SeqCst),
+        7,
+        "the inner loop ends with the code"
+    );
     assert_eq!(outer_code, 7, "the outer loop ends with it too");
     drop(watchdog);
 }

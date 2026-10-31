@@ -336,7 +336,9 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
         if accepted {
             return true;
         }
-        let Ok(held) = widget.try_borrow() else { return false };
+        let Ok(held) = widget.try_borrow() else {
+            return false;
+        };
         let parent = held.parent_widget().and_then(|p| p.upgrade());
         let g = held.geometry();
         drop(held);
@@ -617,7 +619,9 @@ impl ToolTip {
         CONTROLLER.with(|c| {
             *c.custom_palette.borrow_mut() = Some(palette.clone());
             let Some(label) = tip_label(c) else { return };
-            let Ok(mut label) = label.try_borrow_mut() else { return };
+            let Ok(mut label) = label.try_borrow_mut() else {
+                return;
+            };
             if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                 lbl.set_background_color(Some(
                     palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
@@ -642,7 +646,9 @@ impl ToolTip {
         CONTROLLER.with(|c| {
             *c.custom_font.borrow_mut() = Some(font.clone());
             let Some(label) = tip_label(c) else { return };
-            let Ok(mut label) = label.try_borrow_mut() else { return };
+            let Ok(mut label) = label.try_borrow_mut() else {
+                return;
+            };
             if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
                 lbl.set_font(font);
             }
@@ -768,10 +774,10 @@ impl ToolTip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
     use crate::widget::EmptyWidget;
     use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, QObject};
     use std::cell::RefCell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
@@ -802,7 +808,10 @@ mod tests {
 
     fn filtered_widget() -> (WidgetRef, Arc<Mutex<Vec<ObjectId>>>, impl Sized) {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let spy = ToolTipSpy { data: ObjectData::with_auto_id(), seen: Arc::clone(&seen) };
+        let spy = ToolTipSpy {
+            data: ObjectData::with_auto_id(),
+            seen: Arc::clone(&seen),
+        };
         // SAFETY: test-only; the owner stays on this thread for the whole test and nothing
         // touches the spy while a callback of it runs.
         let owner = unsafe { register_owned_qobject(spy) };
@@ -875,7 +884,10 @@ mod tests {
         });
         ToolTip::show_text(Point::new(10, 10), "again", None, -1);
         assert_eq!(during.get(), Some((1, PendingHide::Now)));
-        assert!(!ToolTip::is_visible(), "the re-entrant hide wins over the show");
+        assert!(
+            !ToolTip::is_visible(),
+            "the re-entrant hide wins over the show"
+        );
         assert_eq!(ToolTip::text(), "");
         CONTROLLER.with(|c| {
             assert!(!timer_active(&c.expire));
@@ -1100,7 +1112,8 @@ mod tests {
         }
         fn create_hotkey_manager(
             &self,
-        ) -> Result<Box<dyn ferrokit_platform::hotkey::PlatformHotkeyManager>, &'static str> {
+        ) -> Result<Box<dyn ferrokit_platform::hotkey::PlatformHotkeyManager>, &'static str>
+        {
             self.0.create_hotkey_manager()
         }
         fn cursor(&self) -> Box<dyn ferrokit_platform::PlatformCursor> {
@@ -1134,7 +1147,10 @@ mod tests {
         HIDE_DURING_CREATION.with(|f| f.set(true));
         ToolTip::show_text(Point::new(10, 10), "first", None, -1);
         drop(reset);
-        assert!(!ToolTip::is_visible(), "the hide that came in during creation applies");
+        assert!(
+            !ToolTip::is_visible(),
+            "the hide that came in during creation applies"
+        );
         assert_eq!(counters(), (0, PendingHide::None));
         hide_tip_immediately();
     }
@@ -1161,7 +1177,11 @@ mod tests {
             ToolTip::show_text(Point::new(10, 10), "again", None, -1);
         }));
         assert!(unwound.is_err());
-        assert_eq!(counters(), (0, PendingHide::None), "the unwind released `placing`");
+        assert_eq!(
+            counters(),
+            (0, PendingHide::None),
+            "the unwind released `placing`"
+        );
         // A hide now reaches the idle controller instead of being recorded for a tip that is
         // not on its way.
         hide_tip();
@@ -1187,7 +1207,11 @@ mod tests {
         });
         let unwound = catch_unwind(AssertUnwindSafe(hide_tip_immediately));
         assert!(unwound.is_err());
-        assert_eq!(counters(), (0, PendingHide::None), "the unwind released `placing`");
+        assert_eq!(
+            counters(),
+            (0, PendingHide::None),
+            "the unwind released `placing`"
+        );
         hide_tip();
         assert_eq!(counters(), (0, PendingHide::None));
         ToolTip::show_text(Point::new(10, 10), "after", None, -1);
@@ -1269,7 +1293,11 @@ mod tests {
                 hide_tip_immediately();
                 let _fail = failing_window_creation();
                 ToolTip::show_text(Point::new(20, 20), "nested", None, -1);
-                assert_eq!(counters(), (1, PendingHide::Now), "the failed show left the hide");
+                assert_eq!(
+                    counters(),
+                    (1, PendingHide::Now),
+                    "the failed show left the hide"
+                );
             }
         });
         ToolTip::show_text(Point::new(10, 10), "outer", None, -1);

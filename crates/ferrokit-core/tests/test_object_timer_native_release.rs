@@ -143,7 +143,9 @@ fn native_timer_existed(id: TimerId) -> bool {
 #[test]
 fn a_started_object_timer_exists_natively() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     f.wait_until_running(&[id]);
 
     assert!(
@@ -156,7 +158,9 @@ fn a_started_object_timer_exists_natively() {
 #[test]
 fn kill_timer_releases_the_native_timer() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     f.wait_until_running(&[id]);
 
     assert!(obj.with_mut(|o| o.kill_timer(id)).unwrap());
@@ -170,8 +174,10 @@ fn kill_timer_releases_the_native_timer() {
 fn unregistering_an_object_releases_its_native_timers() {
     let (f, mut obj) = Fixture::new();
     let ids = [
-        obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap(),
-        obj.with_mut(|o| o.start_timer(25, TimerType::Precise)).unwrap(),
+        obj.with_mut(|o| o.start_timer(20, TimerType::Precise))
+            .unwrap(),
+        obj.with_mut(|o| o.start_timer(25, TimerType::Precise))
+            .unwrap(),
     ];
     f.wait_until_running(&ids);
     let ticks_before = f.ticks.load(Ordering::SeqCst);
@@ -199,7 +205,9 @@ fn unregistering_an_object_releases_its_native_timers() {
 #[test]
 fn dropping_the_owner_releases_its_native_timers() {
     let (f, mut obj) = Fixture::new();
-    let id = obj.with_mut(|o| o.start_timer(20, TimerType::Precise)).unwrap();
+    let id = obj
+        .with_mut(|o| o.start_timer(20, TimerType::Precise))
+        .unwrap();
     f.wait_until_running(&[id]);
 
     drop(obj);

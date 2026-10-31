@@ -110,7 +110,10 @@ impl IODevice for Buffer {
             ));
         }
         if pos > isize::MAX as u64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek position is too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek position is too large",
+            ));
         }
         self.pos = pos;
         Ok(())
@@ -145,11 +148,15 @@ impl IODevice for Buffer {
             self.pos = self.data.len() as u64;
         }
 
-        let current_pos = usize::try_from(self.pos)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "seek position is too large"))?;
-        let end = current_pos.checked_add(data.len())
+        let current_pos = usize::try_from(self.pos).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "seek position is too large")
+        })?;
+        let end = current_pos
+            .checked_add(data.len())
             .filter(|&end| end <= isize::MAX as usize)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "buffer write is too large"))?;
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "buffer write is too large")
+            })?;
 
         if end > self.data.len() {
             self.data.resize(end, 0);

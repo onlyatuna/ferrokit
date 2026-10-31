@@ -1612,7 +1612,8 @@ const ELLIPSES: &[(i32, i32, i32, i32, Rects)] = &[
 ];
 
 // (name, points, winding, qt rects)
-const POLYGONS: &[(&str, &[(i32, i32)], bool, Rects)] = &[
+type PolygonCase = (&'static str, &'static [(i32, i32)], bool, Rects);
+const POLYGONS: &[PolygonCase] = &[
     (
         "tri",
         &[(0, 0), (20, 5), (8, 30)],

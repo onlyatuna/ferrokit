@@ -622,8 +622,7 @@ impl<T> Signal<T> {
     fn emit_impl(&self, value: &T, honor_owner_state: bool) {
         if honor_owner_state {
             if let Some(emitter) = &self.emitter {
-                if emitter.blocked.load(Ordering::Acquire)
-                    || !emitter.alive.load(Ordering::Acquire)
+                if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire)
                 {
                     return;
                 }
@@ -1262,8 +1261,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
         }
         let mut receiver = Receiver {
             data: crate::object::ObjectData::new(ObjectId::next()),
@@ -1309,7 +1308,10 @@ mod tests {
         let a = signal.connect_direct_object(receiver_id, |_| {});
         assert!(registered(a));
         assert_eq!(signal.disconnect_receiver(receiver_id), 1);
-        assert!(!registered(a), "disconnect_receiver leaked the registry entry");
+        assert!(
+            !registered(a),
+            "disconnect_receiver leaked the registry entry"
+        );
 
         let b = signal.connect_direct_object(receiver_id, |_| {});
         signal.disconnect_all();

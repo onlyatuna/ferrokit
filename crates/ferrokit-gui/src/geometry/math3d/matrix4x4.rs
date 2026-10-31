@@ -284,8 +284,12 @@ impl Matrix4x4 {
                     max_row = k;
                 }
             }
-            // Written as a negated `>` so NaN pivots are rejected as well.
-            if !(a[max_row][i].abs() > SINGULAR_REL_EPS * col_scale[i]) {
+            // Written so NaN pivots are rejected as well (`a > b` is false for NaN).
+            if a[max_row][i]
+                .abs()
+                .partial_cmp(&(SINGULAR_REL_EPS * col_scale[i]))
+                != Some(std::cmp::Ordering::Greater)
+            {
                 return None;
             }
             a.swap(i, max_row);

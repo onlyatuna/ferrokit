@@ -508,7 +508,8 @@ impl Image {
                         .iter()
                         .enumerate()
                         .min_by_key(|(_, candidate)| {
-                            let dr = ((argb >> 16) & 255) as i32 - ((*candidate >> 16) & 255) as i32;
+                            let dr =
+                                ((argb >> 16) & 255) as i32 - ((*candidate >> 16) & 255) as i32;
                             let dg = ((argb >> 8) & 255) as i32 - ((*candidate >> 8) & 255) as i32;
                             let db = (argb & 255) as i32 - (*candidate & 255) as i32;
                             dr * dr + dg * dg + db * db
@@ -585,7 +586,8 @@ impl Image {
 
         // Qt `QImage::copy(rect)` keeps the requested size; areas outside the
         // source are zero-filled.
-        let mut dest = Image::with_dpr(rect.width as u32, rect.height as u32, self.format, self.dpr);
+        let mut dest =
+            Image::with_dpr(rect.width as u32, rect.height as u32, self.format, self.dpr);
         if dest.is_null() {
             return dest;
         }

@@ -258,8 +258,7 @@ impl PlatformTrayIcon for CocoaStatusItem {
                 // Give the image its pixels: an NSBitmapImageRep holding the pixmap's
                 // premultiplied RGBA bytes (without a representation the button draws nothing).
                 let rep_class = Class::get("NSBitmapImageRep").unwrap_or(Class::NIL);
-                let rep_alloc =
-                    unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };
+                let rep_alloc = unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };
                 let rep = unsafe {
                     ObjcMsg::send_bitmap_rep_init(
                         rep_alloc,
@@ -419,8 +418,9 @@ const NS_EVENT_OTHER_MOUSE_DRAGGED: isize = 27;
 /// `NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown`, the
 /// events Qt asks the status item button to send its action on
 /// (`qcocoasystemtrayicon.mm`, `QCocoaSystemTrayIcon::init`).
-const NS_EVENT_MASK_ACTIVATION: isize =
-    (1 << NS_EVENT_LEFT_MOUSE_DOWN) | (1 << NS_EVENT_RIGHT_MOUSE_DOWN) | (1 << NS_EVENT_OTHER_MOUSE_DOWN);
+const NS_EVENT_MASK_ACTIVATION: isize = (1 << NS_EVENT_LEFT_MOUSE_DOWN)
+    | (1 << NS_EVENT_RIGHT_MOUSE_DOWN)
+    | (1 << NS_EVENT_OTHER_MOUSE_DOWN);
 
 /// The notification `NSMenu` posts when it starts tracking; Qt observes it on a status item's
 /// menu because a status item with a menu never sends its button action.
@@ -522,7 +522,10 @@ mod tests {
         assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_DOWN, 1, 1), Context);
         // A right mouse event wins even when the (Wacom) button number says 0.
         assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_DOWN, 1, 0), Context);
-        assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 1, 2), MiddleClick);
+        assert_eq!(
+            activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 1, 2),
+            MiddleClick
+        );
         // Extra buttons (3 and up) are plain triggers, as `cocoaButton2QtButton` maps them to
         // buttons Qt does not single out.
         assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 1, 3), Trigger);
@@ -531,14 +534,26 @@ mod tests {
         assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_UP, 1, 2), Context);
         // Mouse-move class events have no button.
         assert_eq!(activation_reason(NS_EVENT_MOUSE_MOVED, 1, 2), Trigger);
-        assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DRAGGED, 1, 1), Trigger);
+        assert_eq!(
+            activation_reason(NS_EVENT_OTHER_MOUSE_DRAGGED, 1, 1),
+            Trigger
+        );
     }
 
     #[test]
     fn click_count_two_is_a_double_click_whatever_the_button() {
-        assert_eq!(activation_reason(NS_EVENT_LEFT_MOUSE_DOWN, 2, 0), DoubleClick);
-        assert_eq!(activation_reason(NS_EVENT_RIGHT_MOUSE_DOWN, 2, 1), DoubleClick);
-        assert_eq!(activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 2, 2), DoubleClick);
+        assert_eq!(
+            activation_reason(NS_EVENT_LEFT_MOUSE_DOWN, 2, 0),
+            DoubleClick
+        );
+        assert_eq!(
+            activation_reason(NS_EVENT_RIGHT_MOUSE_DOWN, 2, 1),
+            DoubleClick
+        );
+        assert_eq!(
+            activation_reason(NS_EVENT_OTHER_MOUSE_DOWN, 2, 2),
+            DoubleClick
+        );
         // Only exactly 2, as Qt tests `clickCount == 2`.
         assert_eq!(activation_reason(NS_EVENT_LEFT_MOUSE_DOWN, 3, 0), Trigger);
     }

@@ -13,7 +13,12 @@ fn primary(font: &Font, text: &str) -> FontEngine {
 }
 
 fn file_len(engine: &FontEngine) -> usize {
-    engine.raw_data.as_ref().expect("raw font data").as_slice().len()
+    engine
+        .raw_data
+        .as_ref()
+        .expect("raw font data")
+        .as_slice()
+        .len()
 }
 
 fn width(font: &Font, text: &str) -> f32 {
@@ -25,8 +30,14 @@ fn width(font: &Font, text: &str) -> f32 {
 fn bold_weights_load_the_bold_face_and_lighter_weights_the_regular_one() {
     let regular = Font::new("Segoe UI", 16.0);
     let regular_len = file_len(&primary(&regular, "SESSION"));
-    let bold_len = file_len(&primary(&regular.clone().with_weight(FontWeight::Bold), "SESSION"));
-    assert_ne!(regular_len, bold_len, "Bold must not be served from the regular file");
+    let bold_len = file_len(&primary(
+        &regular.clone().with_weight(FontWeight::Bold),
+        "SESSION",
+    ));
+    assert_ne!(
+        regular_len, bold_len,
+        "Bold must not be served from the regular file"
+    );
 
     // Qt picks the nearest of the faces a family has: Segoe UI ships regular and bold only.
     for (weight, want_bold) in [
@@ -48,7 +59,10 @@ fn bold_weights_load_the_bold_face_and_lighter_weights_the_regular_one() {
 fn italic_loads_the_italic_face() {
     let regular = Font::new("Segoe UI", 16.0);
     let italic = regular.clone().with_style(FontStyle::Italic);
-    assert_ne!(file_len(&primary(&regular, "abc")), file_len(&primary(&italic, "abc")));
+    assert_ne!(
+        file_len(&primary(&regular, "abc")),
+        file_len(&primary(&italic, "abc"))
+    );
 }
 
 #[test]
@@ -59,7 +73,10 @@ fn bold_text_falls_back_to_the_bold_cjk_face() {
     let cjk = "重設於";
     let bold_engines = resolve_font_engines_for_text_global(&bold, cjk);
     let regular_engines = resolve_font_engines_for_text_global(&regular, cjk);
-    assert!(bold_engines.len() >= 2 && regular_engines.len() >= 2, "CJK fallback must resolve");
+    assert!(
+        bold_engines.len() >= 2 && regular_engines.len() >= 2,
+        "CJK fallback must resolve"
+    );
     assert_ne!(file_len(&bold_engines[1]), file_len(&regular_engines[1]));
 }
 
@@ -68,7 +85,10 @@ fn family_without_a_bold_face_yields_its_regular_face() {
     // Segoe UI Emoji has a single face; asking for bold must still give text, not nothing.
     let bold = Font::new("Segoe UI Emoji", 16.0).with_weight(FontWeight::Bold);
     let regular = Font::new("Segoe UI Emoji", 16.0);
-    assert_eq!(file_len(&primary(&bold, "😀")), file_len(&primary(&regular, "😀")));
+    assert_eq!(
+        file_len(&primary(&bold, "😀")),
+        file_len(&primary(&regular, "😀"))
+    );
 }
 
 #[test]
@@ -83,6 +103,9 @@ fn letter_spacing_is_added_after_every_glyph_including_the_last() {
     let a = GlyphLayout::shape_with_engines(text, &plain, &engines);
     let b = GlyphLayout::shape_with_engines(text, &spaced, &engines);
     for (i, (ga, gb)) in a.glyphs.iter().zip(&b.glyphs).enumerate() {
-        assert!((gb.x - (ga.x + 1.5 * i as f32)).abs() < 1e-3, "glyph {i} offset");
+        assert!(
+            (gb.x - (ga.x + 1.5 * i as f32)).abs() < 1e-3,
+            "glyph {i} offset"
+        );
     }
 }

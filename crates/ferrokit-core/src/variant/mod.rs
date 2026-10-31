@@ -453,7 +453,7 @@ impl Variant {
             Variant::F64(f) => {
                 let r = f.round();
                 // -2^63 and 2^63 are exactly representable; NaN fails both comparisons.
-                if r >= -9_223_372_036_854_775_808.0 && r < 9_223_372_036_854_775_808.0 {
+                if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&r) {
                     Some(r as i64)
                 } else {
                     None
@@ -481,7 +481,7 @@ impl Variant {
             Variant::F64(f) => {
                 let r = f.round();
                 // 2^64 is exactly representable; NaN fails both comparisons.
-                if r >= 0.0 && r < 18_446_744_073_709_551_616.0 {
+                if (0.0..18_446_744_073_709_551_616.0).contains(&r) {
                     Some(r as u64)
                 } else {
                     None
@@ -996,7 +996,10 @@ impl Variant {
             JsonValue::Null | JsonValue::Undefined => Variant::Invalid,
             JsonValue::Bool(b) => Variant::Bool(*b),
             JsonValue::Number(n) => {
-                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n < crate::json::I64_EXCLUSIVE_UPPER_F64 {
+                if n.fract() == 0.0
+                    && *n >= (i64::MIN as f64)
+                    && *n < crate::json::I64_EXCLUSIVE_UPPER_F64
+                {
                     Variant::I64(*n as i64)
                 } else {
                     Variant::F64(*n)

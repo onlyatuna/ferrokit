@@ -9,7 +9,6 @@
 //! whole device px, so the parent never moves by a fractional device amount.
 #![cfg(windows)]
 
-use parking_lot::Mutex;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
@@ -21,6 +20,7 @@ use ferrokit_platform::{
     set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
 };
 use ferrokit_widgets::{Action, Menu, Widget};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_RIGHT};
@@ -240,7 +240,11 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
         }
         PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0);
     }
-    assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), Point::new(1900, 100)).is_none());
+    assert!(Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(1900, 100)
+    )
+    .is_none());
 
     let log = log.lock();
     (log.frames.clone(), log.created[0])

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::accessibility::{AccessibleAction, AccessibleRole};
-use crate::style::stylesheet::QStyleSheetStyle;
 use crate::focus::FocusPolicy;
 use crate::layout::Layout;
 use crate::layout_engine::{owner_layout_margin, WIDGET_LAYOUT_SPACING, WIDGET_SIZE_MAX};
 pub use crate::size_policy::{Policy, QSizePolicy};
+use crate::style::stylesheet::QStyleSheetStyle;
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::event_loop::{filters_consume, notify_borrowed, post_event_to_thread};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
-use ferrokit_platform::cursor::CursorShape;
 use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Painter;
+use ferrokit_platform::cursor::CursorShape;
 use std::cell::{Cell, RefCell, RefMut};
 use std::rc::{Rc, Weak};
 
@@ -83,7 +83,11 @@ fn defer_enabled(child: &WidgetRef, enable: bool) {
                     }
                 }
             }
-            let skip = if enable { base.force_disabled.get() } else { !base.enabled.get() };
+            let skip = if enable {
+                base.force_disabled.get()
+            } else {
+                !base.enabled.get()
+            };
             !skip && base.set_enabled_helper(enable, &mut notices)
         };
         if changed {
@@ -936,7 +940,9 @@ pub trait Widget: QObject + 'static {
             }
         }
         if let Some(parent) = self.parent_widget().and_then(|p| p.upgrade()) {
-            let mut ev = Event::new(EventKind::ChildPolished { child_id: self.id() });
+            let mut ev = Event::new(EventKind::ChildPolished {
+                child_id: self.id(),
+            });
             if let Ok(mut p) = parent.try_borrow_mut() {
                 notify_borrowed(&mut **p, &mut ev);
             } else if let Ok(p) = parent.try_borrow() {
@@ -1064,7 +1070,10 @@ pub trait Widget: QObject + 'static {
 
 /// The `pos`, `size` and `geometry` properties `QPropertyAnimation` drives (`QWidget::pos`,
 /// `size`, `geometry`), as a `QObject::property` would read them.
-pub fn widget_property<W: Widget + ?Sized>(w: &W, name: &str) -> Option<ferrokit_core::variant::Variant> {
+pub fn widget_property<W: Widget + ?Sized>(
+    w: &W,
+    name: &str,
+) -> Option<ferrokit_core::variant::Variant> {
     use ferrokit_core::variant::Variant;
     let g = w.geometry();
     match name {
@@ -1130,7 +1139,10 @@ impl dyn Widget {
     }
 
     /// `with_layout_as` for a `QBoxLayout` (`insertWidget`, `setDirection`, `takeAt`, ...).
-    pub fn with_box_layout<R>(&self, f: impl FnOnce(&mut crate::layout::BoxLayout) -> R) -> Option<R> {
+    pub fn with_box_layout<R>(
+        &self,
+        f: impl FnOnce(&mut crate::layout::BoxLayout) -> R,
+    ) -> Option<R> {
         self.with_layout_as(f)
     }
 }
@@ -1502,11 +1514,11 @@ impl WidgetBase {
         self.object_data.id()
     }
 
-
     pub fn with_geometry(geometry: Rect) -> Self {
         let base = Self::new();
         base.geometry.set(geometry);
-        base.dirty.set(Some(Rect::new(0, 0, geometry.width, geometry.height)));
+        base.dirty
+            .set(Some(Rect::new(0, 0, geometry.width, geometry.height)));
         base
     }
 
@@ -1727,9 +1739,12 @@ impl WidgetBase {
                 if let Ok(parent) = parent.try_borrow() {
                     let uncovered = Region::from_rect(rect).subtracted(region);
                     for r in uncovered.rects() {
-                        parent
-                            .widget_base()
-                            .update_rect(Rect::new(g.x + r.x, g.y + r.y, r.width, r.height));
+                        parent.widget_base().update_rect(Rect::new(
+                            g.x + r.x,
+                            g.y + r.y,
+                            r.width,
+                            r.height,
+                        ));
                     }
                 }
             }
@@ -1873,7 +1888,11 @@ impl WidgetBase {
             };
             let base = child.widget_base();
             // Enabling skips explicitly disabled children; disabling skips disabled ones.
-            let skip = if enable { base.force_disabled.get() } else { !base.enabled.get() };
+            let skip = if enable {
+                base.force_disabled.get()
+            } else {
+                !base.enabled.get()
+            };
             if !skip && base.set_enabled_helper(enable, notices) {
                 notices.push(EnabledNotice::Changed(child_ref.clone()));
             }
@@ -2006,7 +2025,8 @@ impl WidgetBase {
         } else if qss.contains('{') {
             *self.style_sheet.borrow_mut() = Some(QStyleSheetStyle::parse(qss));
         } else {
-            *self.style_sheet.borrow_mut() = Some(QStyleSheetStyle::parse(&format!("* {{ {qss} }}")));
+            *self.style_sheet.borrow_mut() =
+                Some(QStyleSheetStyle::parse(&format!("* {{ {qss} }}")));
         }
         self.style_changed();
     }
@@ -2493,7 +2513,10 @@ impl Widget for EmptyWidget {
     }
 
     fn add_child(&mut self, child: WidgetRef) {
-        self.base.children.get_mut().retain(|c| !Rc::ptr_eq(c, &child));
+        self.base
+            .children
+            .get_mut()
+            .retain(|c| !Rc::ptr_eq(c, &child));
         if let Some(win_id) = self.base.window_id.get() {
             child.borrow().set_window_id(Some(win_id));
         }
@@ -2539,7 +2562,9 @@ impl Widget for EmptyWidget {
             .filter(|bw| *bw > 0.0 && style.border_style.as_deref() != Some("none"))
             .map(|width| ferrokit_gui::paint::qss_box::QssBorder {
                 width,
-                color: style.border_color.unwrap_or(ferrokit_gui::tiny_skia::Color::TRANSPARENT),
+                color: style
+                    .border_color
+                    .unwrap_or(ferrokit_gui::tiny_skia::Color::TRANSPARENT),
             });
         let g = self.base.geometry.get();
         let rect_f = RectF::new(0.0, 0.0, g.width as f32, g.height as f32);

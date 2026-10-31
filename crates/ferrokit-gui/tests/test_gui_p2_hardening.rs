@@ -22,7 +22,8 @@ fn ppm_zero_width_with_huge_height_is_rejected_fast() {
 
 #[test]
 fn html_raw_text_elements_close_case_insensitively() {
-    let doc = TextDocument::from_html("<STYLE>p { color: red }</Style><p>after</p><TITLE>t</TITLE>x");
+    let doc =
+        TextDocument::from_html("<STYLE>p { color: red }</Style><p>after</p><TITLE>t</TITLE>x");
     let text = doc.to_plain_text();
     assert!(text.contains("after"), "{text:?}");
     assert!(!text.contains("color"), "{text:?}");
@@ -31,7 +32,10 @@ fn html_raw_text_elements_close_case_insensitively() {
 #[test]
 fn html_eight_digit_hex_is_aarrggbb() {
     let doc = TextDocument::from_html("<span style=\"color:#80ff0000\">x</span>");
-    let c = doc.first_block().fragments()[0].char_format().foreground.expect("color");
+    let c = doc.first_block().fragments()[0]
+        .char_format()
+        .foreground
+        .expect("color");
     let u = c.to_color_u8();
     assert_eq!((u.red(), u.green(), u.blue(), u.alpha()), (255, 0, 0, 128));
 }
@@ -41,7 +45,12 @@ fn scroll_with_i32_min_offsets_does_not_overflow() {
     let mut bs = BackingStore::new(Size::new(10, 10), 1.0).unwrap();
     let area = Region::from_rect(Rect::new(0, 0, 10, 10));
     assert!(!bs.scroll(&area, i32::MIN, i32::MIN));
-    let wide = Region::from_rect(Rect::new(-1_000_000_000, -1_000_000_000, 2_000_000_000, 2_000_000_000));
+    let wide = Region::from_rect(Rect::new(
+        -1_000_000_000,
+        -1_000_000_000,
+        2_000_000_000,
+        2_000_000_000,
+    ));
     assert!(!bs.scroll(&wide, i32::MAX, -1));
 }
 
@@ -58,7 +67,10 @@ fn clear_rect_with_huge_extent_does_not_overflow() {
 fn icon_sizing_with_huge_target_does_not_overflow() {
     let icon = Icon::from_image(Image::new(4, 4, ImageFormat::Rgba8888Premultiplied));
     let big = Size::new(100_000, 100_000);
-    assert_eq!(icon.actual_size(big, IconMode::Normal, IconState::Off), Size::new(4, 4));
+    assert_eq!(
+        icon.actual_size(big, IconMode::Normal, IconState::Off),
+        Size::new(4, 4)
+    );
     let _ = icon.available_sizes(IconMode::Normal, IconState::Off);
 }
 
@@ -68,7 +80,12 @@ fn cursor_insert_merging_with_following_cluster_lands_after_it() {
     doc.set_plain_text("a\u{0301}b");
     // "á" is one cluster; delete "a" leaves a lone combining mark cluster, then insert "e" before it.
     let mut c = TextCursor::at_position(0);
-    c.move_position(&doc, ferrokit_gui::text::cursor::MoveOperation::NextCharacter, ferrokit_gui::text::cursor::MoveMode::KeepAnchor, 1);
+    c.move_position(
+        &doc,
+        ferrokit_gui::text::cursor::MoveOperation::NextCharacter,
+        ferrokit_gui::text::cursor::MoveMode::KeepAnchor,
+        1,
+    );
     c.remove_selected_text(&mut doc);
     assert_eq!(doc.to_plain_text(), "b");
     let mut doc = TextDocument::new();

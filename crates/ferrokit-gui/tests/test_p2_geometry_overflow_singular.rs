@@ -53,7 +53,10 @@ const N: i32 = 24;
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self, m: i32) -> i32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 33) as i32).rem_euclid(m)
     }
 }
@@ -109,7 +112,8 @@ fn region_ops_match_bitmap_reference() {
         assert_eq!(region_bitmap(&a), ba);
         assert_disjoint_and_inside(&a);
 
-        let cases: [(&str, Region, Box<dyn Fn(bool, bool) -> bool>); 4] = [
+        type Case = (&'static str, Region, Box<dyn Fn(bool, bool) -> bool>);
+        let cases: [Case; 4] = [
             ("or", &a | &b, Box::new(|p, q| p || q)),
             ("and", &a & &b, Box::new(|p, q| p && q)),
             ("sub", &a - &b, Box::new(|p, q| p && !q)),
@@ -122,7 +126,11 @@ fn region_ops_match_bitmap_reference() {
         }
         let any = ba.iter().zip(&bb).any(|(&p, &q)| p && q);
         let grid = Rect::new(0, 0, N, N);
-        assert_eq!(a.intersected_rect(&grid).intersects(&b.intersected_rect(&grid)), any);
+        assert_eq!(
+            a.intersected_rect(&grid)
+                .intersects(&b.intersected_rect(&grid)),
+            any
+        );
     }
 }
 
@@ -131,7 +139,9 @@ const GRID: i32 = if cfg!(miri) { 6 } else { 60 };
 #[test]
 fn region_coalesces_a_large_grid_to_one_rect() {
     // 60x60 unit cells united one by one: must collapse to a single rect.
-    let cells: Vec<Rect> = (0..GRID).flat_map(|y| (0..GRID).map(move |x| Rect::new(x, y, 1, 1))).collect();
+    let cells: Vec<Rect> = (0..GRID)
+        .flat_map(|y| (0..GRID).map(move |x| Rect::new(x, y, 1, 1)))
+        .collect();
     let r = Region::from_rects(&cells);
     assert_eq!(r.rects(), &[Rect::new(0, 0, GRID, GRID)]);
     // Removing the whole thing in strips leaves nothing.
@@ -149,7 +159,10 @@ fn transform2d_tiny_scale_is_invertible() {
     let t = Transform2D::from_scale(1e-4, 2e-4);
     let inv = t.inverted().expect("tiny but invertible");
     let p = inv.map_point(PointF::new(1e-4, 2e-4));
-    assert!((p.x - 1.0).abs() < 1e-3 && (p.y - 1.0).abs() < 1e-3, "{p:?}");
+    assert!(
+        (p.x - 1.0).abs() < 1e-3 && (p.y - 1.0).abs() < 1e-3,
+        "{p:?}"
+    );
     let tiny = Transform2D::from_scale(1e-9, 1e-9);
     assert!(tiny.inverted().is_some());
 }
@@ -157,8 +170,14 @@ fn transform2d_tiny_scale_is_invertible() {
 #[test]
 fn transform2d_singular_still_rejected() {
     assert!(Transform2D::from_scale(0.0, 1.0).inverted().is_none());
-    assert!(Transform2D::from_row_matrix(1.0, 2.0, 2.0, 4.0, 0.0, 0.0).inverted().is_none());
-    assert!(Transform2D::from_row_matrix(1e-5, 2e-5, 2e-5, 4e-5, 0.0, 0.0).inverted().is_none());
+    assert!(Transform2D::from_row_matrix(1.0, 2.0, 2.0, 4.0, 0.0, 0.0)
+        .inverted()
+        .is_none());
+    assert!(
+        Transform2D::from_row_matrix(1e-5, 2e-5, 2e-5, 4e-5, 0.0, 0.0)
+            .inverted()
+            .is_none()
+    );
     assert!(Transform2D::from_scale(f32::NAN, 1.0).inverted().is_none());
 }
 
@@ -168,7 +187,10 @@ fn transform_tiny_scale_is_invertible() {
     t.scale(1e-5, 1e-5);
     let inv = t.inverted().expect("tiny but invertible");
     let p = inv.map_point(PointF::new(1e-5, 1e-5));
-    assert!((p.x - 1.0).abs() < 1e-3 && (p.y - 1.0).abs() < 1e-3, "{p:?}");
+    assert!(
+        (p.x - 1.0).abs() < 1e-3 && (p.y - 1.0).abs() < 1e-3,
+        "{p:?}"
+    );
 }
 
 #[test]
@@ -177,7 +199,13 @@ fn transform_singular_still_rejected() {
     t.scale(0.0, 1.0);
     assert!(t.inverted().is_none());
     let rank1 = Transform::identity();
-    let mut rank1 = Transform { m11: 1.0, m12: 2.0, m21: 2.0, m22: 4.0, ..rank1 };
+    let mut rank1 = Transform {
+        m11: 1.0,
+        m12: 2.0,
+        m21: 2.0,
+        m22: 4.0,
+        ..rank1
+    };
     assert!(rank1.inverted().is_none());
     rank1.m11 = 1e-5;
     rank1.m12 = 2e-5;
@@ -236,8 +264,16 @@ fn matrix4x4_singular_still_rejected() {
 #[test]
 fn f32_rounded_singular_matrices_are_rejected() {
     // Rank 1 in exact arithmetic; the f32 roundings of 0.1/0.2/0.3/0.6 leave ~1e-8 relative noise.
-    assert!(Transform2D::from_row_matrix(0.1, 0.2, 0.3, 0.6, 0.0, 0.0).inverted().is_none());
-    let t = Transform { m11: 0.1, m12: 0.2, m21: 0.3, m22: 0.6, ..Transform::identity() };
+    assert!(Transform2D::from_row_matrix(0.1, 0.2, 0.3, 0.6, 0.0, 0.0)
+        .inverted()
+        .is_none());
+    let t = Transform {
+        m11: 0.1,
+        m12: 0.2,
+        m21: 0.3,
+        m22: 0.6,
+        ..Transform::identity()
+    };
     assert!(t.inverted().is_none());
 }
 
@@ -248,7 +284,12 @@ fn rect_adjust_translate_and_margins_saturate() {
     let _ = r.adjusted(i32::MAX, i32::MIN, i32::MAX, i32::MAX);
     assert_eq!(r.translated(i32::MAX, i32::MIN).x, i32::MAX);
     assert_eq!(r.translated(i32::MAX, i32::MIN).y, i32::MIN);
-    let m = Margins { left: i32::MAX, top: i32::MIN, right: i32::MAX, bottom: i32::MAX };
+    let m = Margins {
+        left: i32::MAX,
+        top: i32::MIN,
+        right: i32::MAX,
+        bottom: i32::MAX,
+    };
     let _ = r.margins_added(m);
     let _ = r.margins_removed(m);
 }

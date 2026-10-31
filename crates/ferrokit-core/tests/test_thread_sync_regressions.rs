@@ -699,8 +699,12 @@ fn panicking_waker_does_not_starve_other_wakers() {
     let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
     let bad = Waker::from(Arc::new(PanicWaker));
     let good = Waker::from(Arc::clone(&flag));
-    assert!(Pin::new(&mut handle).poll(&mut Context::from_waker(&bad)).is_pending());
-    assert!(Pin::new(&mut handle).poll(&mut Context::from_waker(&good)).is_pending());
+    assert!(Pin::new(&mut handle)
+        .poll(&mut Context::from_waker(&bad))
+        .is_pending());
+    assert!(Pin::new(&mut handle)
+        .poll(&mut Context::from_waker(&good))
+        .is_pending());
     release_tx.send(()).unwrap();
     assert!(pool.wait_for_done_timeout(GUARD));
     assert!(flag.0.load(Ordering::SeqCst));

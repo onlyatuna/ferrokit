@@ -416,7 +416,7 @@ fn post_through_stale_handle_is_forwarded_to_the_owner_thread() {
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut plain)) };
 
     let watched = Arc::clone(&ran);
-    let owner = Owner::spawn(vec![id], 5, move || watched.lock().unwrap().len() >= 1);
+    let owner = Owner::spawn(vec![id], 5, move || !watched.lock().unwrap().is_empty());
     let owner_tid = owner.tid;
     assert_eq!(move_to_thread_by_id(id, owner_tid, source), Ok(()));
 

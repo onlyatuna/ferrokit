@@ -22,7 +22,10 @@ pub struct FaceStyle {
 }
 
 impl FaceStyle {
-    pub const REGULAR: Self = Self { weight: 400, italic: false };
+    pub const REGULAR: Self = Self {
+        weight: 400,
+        italic: false,
+    };
 
     /// The style `font` asks for.
     pub fn of(font: &Font) -> Self {
@@ -68,8 +71,12 @@ fn known_styled_filenames(family_key: &str, style: FaceStyle) -> Option<&'static
         ("tahoma", true, _) => &["tahomabd.ttf"],
         ("microsoft jhenghei" | "msjh", true, _) => &["msjhbd.ttc"],
         ("microsoft yahei" | "msyh", true, _) => &["msyhbd.ttc"],
-        ("segoe ui" | "arial" | "consolas" | "tahoma" | "microsoft jhenghei" | "msjh"
-            | "microsoft yahei" | "msyh" | "segoe ui symbol" | "segoe ui emoji" | "ms gothic", _, _) => &[],
+        (
+            "segoe ui" | "arial" | "consolas" | "tahoma" | "microsoft jhenghei" | "msjh"
+            | "microsoft yahei" | "msyh" | "segoe ui symbol" | "segoe ui emoji" | "ms gothic",
+            _,
+            _,
+        ) => &[],
         _ => return None,
     })
 }
@@ -118,7 +125,10 @@ pub struct FontDatabase {
     /// held strongly ([`RECENT_MEMORY_FACES`], most recent last) to avoid re-parsing (and, on Windows,
     /// re-registering with DirectWrite) on each draw.
     recent_memory_faces: Vec<SharedGlyphFace>,
-    memory_faces: Vec<((usize, usize), std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>)>,
+    memory_faces: Vec<(
+        (usize, usize),
+        std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
+    )>,
 }
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
@@ -189,10 +199,11 @@ pub fn primary_face_vertical_metrics(font: &Font) -> Option<(f32, f32)> {
 /// [`GlyphFace::cap_height`]: crate::text::glyph_face::GlyphFace::cap_height
 pub fn primary_face_cap_height(font: &Font) -> Option<f32> {
     with_global_font_database(|db| {
-        db.load_font_styled(&font.family, FaceStyle::of(font)).and_then(|face| {
-            face.cap_height(font.size)
-                .or_else(|| Some(face.metrics('H', font.size).height as f32))
-        })
+        db.load_font_styled(&font.family, FaceStyle::of(font))
+            .and_then(|face| {
+                face.cap_height(font.size)
+                    .or_else(|| Some(face.metrics('H', font.size).height as f32))
+            })
     })
 }
 
@@ -275,13 +286,14 @@ impl FontDatabase {
         data: impl Into<SharedFontData>,
     ) -> Result<SharedGlyphFace, String> {
         let shared = data.into();
-        let font_arc = parse_face(&shared, 0)
-            .map_err(|e| format!("Failed to parse font from memory: {e}"))?;
+        let font_arc =
+            parse_face(&shared, 0).map_err(|e| format!("Failed to parse font from memory: {e}"))?;
         let key = family.to_ascii_lowercase();
-        let (fixed_pitch, weight, italic) = read_faces(&mut std::io::Cursor::new(shared.as_slice()))
-            .first()
-            .map(|face| (face.fixed_pitch, face.weight, face.italic))
-            .unwrap_or((false, 400, false));
+        let (fixed_pitch, weight, italic) =
+            read_faces(&mut std::io::Cursor::new(shared.as_slice()))
+                .first()
+                .map(|face| (face.fixed_pitch, face.weight, face.italic))
+                .unwrap_or((false, 400, false));
         self.application_faces
             .retain(|face| !face.family.eq_ignore_ascii_case(family));
         self.application_faces.push(FontFamilyInfo {
@@ -425,7 +437,11 @@ impl FontDatabase {
     }
 
     /// Returns the raw binary font data of the face [`load_font_styled`](Self::load_font_styled) picks.
-    pub fn get_raw_font_data_styled(&mut self, family: &str, style: FaceStyle) -> Option<SharedFontData> {
+    pub fn get_raw_font_data_styled(
+        &mut self,
+        family: &str,
+        style: FaceStyle,
+    ) -> Option<SharedFontData> {
         let key = style.cache_key(&family.to_ascii_lowercase());
         if let Some(data) = self.raw_cache.get(&key) {
             return Some(data.clone());
@@ -440,7 +456,9 @@ impl FontDatabase {
     /// 2. CJK / Multilingual script fallback fonts
     /// 3. Symbol and Emoji fallback fonts
     pub fn resolve_font_engines(&mut self, font: &Font) -> Vec<FontEngine> {
-        let _t = crate::startup_trace::span_min(0.5, || format!("resolve_font_engines({:?})", font.family));
+        let _t = crate::startup_trace::span_min(0.5, || {
+            format!("resolve_font_engines({:?})", font.family)
+        });
         let mut engines = self.resolve_primary_engine(font);
         self.append_fallback_engines(&mut engines, None, FaceStyle::of(font));
         engines
@@ -452,7 +470,9 @@ impl FontDatabase {
     /// The result is a prefix of the full chain, and `GlyphLayout::partition_into_runs` only
     /// consults a fallback for characters the earlier engines lack, so shaping is unchanged.
     pub fn resolve_font_engines_for_text(&mut self, font: &Font, text: &str) -> Vec<FontEngine> {
-        let _t = crate::startup_trace::span_min(0.5, || format!("resolve_font_engines_for_text({:?})", font.family));
+        let _t = crate::startup_trace::span_min(0.5, || {
+            format!("resolve_font_engines_for_text({:?})", font.family)
+        });
         let mut engines = self.resolve_primary_engine(font);
         self.append_fallback_engines(&mut engines, Some(text), FaceStyle::of(font));
         engines
@@ -466,7 +486,11 @@ impl FontDatabase {
         if let Some(shared) = &font.font_data {
             self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
             let key = (shared.as_slice().as_ptr() as usize, shared.len());
-            let cached = self.memory_faces.iter().find(|(k, _)| *k == key).and_then(|(_, f)| f.upgrade());
+            let cached = self
+                .memory_faces
+                .iter()
+                .find(|(k, _)| *k == key)
+                .and_then(|(_, f)| f.upgrade());
             let face = match cached {
                 Some(face) => Some(face),
                 None => parse_face(shared, 0).ok().inspect(|face| {
@@ -497,7 +521,12 @@ impl FontDatabase {
 
     /// Appends the platform's fallback fonts in priority order: CJK first, then emoji/symbols.
     /// With `needed_for`, stops as soon as every character of that text has a glyph in `engines`.
-    fn append_fallback_engines(&mut self, engines: &mut Vec<FontEngine>, needed_for: Option<&str>, style: FaceStyle) {
+    fn append_fallback_engines(
+        &mut self,
+        engines: &mut Vec<FontEngine>,
+        needed_for: Option<&str>,
+        style: FaceStyle,
+    ) {
         #[cfg(target_os = "windows")]
         const SLOTS: &[&[&str]] = &[
             &["Microsoft JhengHei", "Microsoft YaHei"],
@@ -510,7 +539,11 @@ impl FontDatabase {
         ];
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         const SLOTS: &[&[&str]] = &[
-            &["Noto Sans CJK TC", "Noto Sans CJK SC", "WenQuanYi Micro Hei"],
+            &[
+                "Noto Sans CJK TC",
+                "Noto Sans CJK SC",
+                "WenQuanYi Micro Hei",
+            ],
             &["Noto Color Emoji", "DejaVu Sans"],
         ];
 
@@ -534,7 +567,12 @@ impl FontDatabase {
         }
     }
 
-    fn try_add_engine(&mut self, engines: &mut Vec<FontEngine>, fam: &str, style: FaceStyle) -> bool {
+    fn try_add_engine(
+        &mut self,
+        engines: &mut Vec<FontEngine>,
+        fam: &str,
+        style: FaceStyle,
+    ) -> bool {
         if let Some(font_face) = self.load_font_styled(fam, style) {
             if engines.iter().any(|e| Arc::ptr_eq(&e.face, &font_face)) {
                 return false;
@@ -546,7 +584,11 @@ impl FontDatabase {
             // (face metrics vs rustybuzz). A replaced font has a new Arc, so a stale entry is
             // never matched.
             let engine_key = style.cache_key(fam);
-            if let Some(engine) = self.engines.get(&engine_key).filter(|e| Arc::ptr_eq(&e.face, &font_face)) {
+            if let Some(engine) = self
+                .engines
+                .get(&engine_key)
+                .filter(|e| Arc::ptr_eq(&e.face, &font_face))
+            {
                 engines.push(engine.clone());
                 return true;
             }
@@ -679,16 +721,25 @@ impl FontDatabase {
             for filename in &candidate_filenames {
                 let file_path = dir.join(filename);
                 if file_path.is_file() {
-                    let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+                    let canonical = file_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| file_path.clone());
                     if let Some(shared) = self.file_cache.get(&canonical) {
                         if let Ok(face) = parse_face(shared, 0) {
                             return Some((shared.clone(), face));
                         }
                     }
-                    let read = crate::startup_trace::span(|| format!("map {}", canonical.display()));
+                    let read =
+                        crate::startup_trace::span(|| format!("map {}", canonical.display()));
                     if let Ok(shared) = SharedFontData::from_file(&canonical) {
                         drop(read);
-                        let _p = crate::startup_trace::span(|| format!("parse_face {} ({} KB)", canonical.display(), shared.len() / 1024));
+                        let _p = crate::startup_trace::span(|| {
+                            format!(
+                                "parse_face {} ({} KB)",
+                                canonical.display(),
+                                shared.len() / 1024
+                            )
+                        });
                         if let Ok(face) = parse_face(&shared, 0) {
                             self.file_cache.insert(canonical, shared.clone());
                             return Some((shared, face));
@@ -700,7 +751,9 @@ impl FontDatabase {
 
         // Fall back to the family index (file names rarely match family names, e.g. "Times New Roman" -> times.ttf).
         if self.system_faces.is_none() {
-            let _t = crate::startup_trace::span(|| format!("scan_font_directories (needed by {family_key:?})"));
+            let _t = crate::startup_trace::span(|| {
+                format!("scan_font_directories (needed by {family_key:?})")
+            });
             self.system_faces = Some(scan_font_directories(&self.search_paths));
         }
         let (face_path, face_index) = {
@@ -715,14 +768,18 @@ impl FontDatabase {
             (face.path.as_ref()?.clone(), face.face_index)
         };
 
-        let canonical = face_path.canonicalize().unwrap_or_else(|_| face_path.clone());
+        let canonical = face_path
+            .canonicalize()
+            .unwrap_or_else(|_| face_path.clone());
 
         if let Some(shared) = self.file_cache.get(&canonical) {
             let face = parse_face(shared, face_index).ok()?;
             return Some((shared.clone(), face));
         }
 
-        let _t = crate::startup_trace::span(|| format!("map+parse (family index) {}", canonical.display()));
+        let _t = crate::startup_trace::span(|| {
+            format!("map+parse (family index) {}", canonical.display())
+        });
         let shared = SharedFontData::from_file(&canonical).ok()?;
         let face = parse_face(&shared, face_index).ok()?;
         self.file_cache.insert(canonical, shared.clone());
@@ -973,7 +1030,9 @@ mod tests {
 
     #[test]
     fn in_memory_font_face_is_built_once_per_font_data() {
-        let Some(bytes) = any_font_bytes() else { return };
+        let Some(bytes) = any_font_bytes() else {
+            return;
+        };
         let mut db = FontDatabase::new();
         let font = Font::new("NoSuchFamily", 12.0).with_font_data(SharedFontData::from_vec(bytes));
         let a = db.resolve_font_engines(&font);

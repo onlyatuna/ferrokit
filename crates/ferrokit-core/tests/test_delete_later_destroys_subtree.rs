@@ -106,18 +106,30 @@ fn deferred_delete_of_an_owned_child_frees_it_and_unlists_it_from_the_parent() {
     assert_eq!(el.flush_deferred_deletes(), 1);
 
     let seen = entries(&log);
-    assert!(seen.contains(&"child dropped".to_string()), "child freed: {seen:?}");
-    assert!(seen.contains(&"grand dropped".to_string()), "subtree freed: {seen:?}");
+    assert!(
+        seen.contains(&"child dropped".to_string()),
+        "child freed: {seen:?}"
+    );
+    assert!(
+        seen.contains(&"grand dropped".to_string()),
+        "subtree freed: {seen:?}"
+    );
     assert!(
         seen.contains(&format!("parent saw removed {}", child_id.0)),
         "parent told: {seen:?}"
     );
-    assert!(children_of(&parent).is_empty(), "parent's list forgot the child");
+    assert!(
+        children_of(&parent).is_empty(),
+        "parent's list forgot the child"
+    );
     assert!(with_object(child_id, |_| ()).is_none());
     assert!(with_object(grand_id, |_| ()).is_none());
     drop(parent);
     assert_eq!(
-        entries(&log).iter().filter(|e| e.ends_with("dropped")).count(),
+        entries(&log)
+            .iter()
+            .filter(|e| e.ends_with("dropped"))
+            .count(),
         3,
         "nothing is freed twice: {:?}",
         entries(&log)
@@ -158,8 +170,14 @@ fn deferred_delete_of_an_unowned_object_unregisters_its_subtree() {
     assert_eq!(el.flush_deferred_deletes(), 1);
 
     assert!(with_object(top_id, |_| ()).is_none());
-    assert!(with_object(kid_id, |_| ()).is_none(), "child of a deleted object is gone");
-    assert!(with_object(grandkid_id, |_| ()).is_none(), "and so is its child");
+    assert!(
+        with_object(kid_id, |_| ()).is_none(),
+        "child of a deleted object is gone"
+    );
+    assert!(
+        with_object(grandkid_id, |_| ()).is_none(),
+        "and so is its child"
+    );
 }
 
 #[test]
@@ -176,7 +194,10 @@ fn deferred_delete_of_a_non_owned_child_unlists_it_from_the_parent() {
     delete_later(kid_id);
     assert_eq!(el.flush_deferred_deletes(), 1);
 
-    assert!(children_of(&parent).is_empty(), "parent forgot the deleted child");
+    assert!(
+        children_of(&parent).is_empty(),
+        "parent forgot the deleted child"
+    );
 }
 
 #[test]
@@ -199,7 +220,11 @@ fn deferred_delete_with_the_parent_borrowed_finishes_when_the_parent_is_released
         .expect("parent reachable");
 
     assert!(children_of(&parent).is_empty());
-    assert!(entries(&log).contains(&"child dropped".to_string()), "{:?}", entries(&log));
+    assert!(
+        entries(&log).contains(&"child dropped".to_string()),
+        "{:?}",
+        entries(&log)
+    );
 }
 
 // ---- stale registry lists must not orphan a child that belongs to another parent ----
@@ -216,7 +241,11 @@ fn stale_list_setup(log: &Log) -> (OwnedObject<Probe>, OwnedObject<Probe>, Owned
     reparent(&mut kid.data, None, None);
     let kid = unsafe { register_owned_qobject(kid) };
     let real = owned("real", log);
-    set_parent_by_id(OwnedObject::object_id(&kid), Some(OwnedObject::object_id(&real))).unwrap();
+    set_parent_by_id(
+        OwnedObject::object_id(&kid),
+        Some(OwnedObject::object_id(&real)),
+    )
+    .unwrap();
     (stale, kid, real)
 }
 
@@ -255,7 +284,10 @@ fn releasing_a_borrowed_child_of_another_parent_leaves_it_alone() {
     })
     .unwrap();
     assert_eq!(query_object_parent(kid_id), Some(Some(real_id)));
-    assert!(OwnedObject::with(&kid, |_| ()).is_some(), "kid is still registered");
+    assert!(
+        OwnedObject::with(&kid, |_| ()).is_some(),
+        "kid is still registered"
+    );
 }
 
 // ---- findChild covers every child, owned or not (Qt qt_qFindChild_helper) ----
@@ -271,14 +303,19 @@ fn find_child_sees_children_attached_without_ownership() {
     set_parent_by_id(kid_id, Some(parent_id)).unwrap();
     let probe = std::any::TypeId::of::<Probe>();
 
-    assert_eq!(parent.with(|p| p.find_child_id("kid", probe)).unwrap(), Some(kid_id));
+    assert_eq!(
+        parent.with(|p| p.find_child_id("kid", probe)).unwrap(),
+        Some(kid_id)
+    );
     let mut seen = 0;
     assert!(parent
         .with(|p| p.find_child_any("kid", probe, &mut |_| seen += 1))
         .unwrap());
     assert_eq!(seen, 1);
     let mut all = 0;
-    parent.with(|p| p.find_children_any(Some("kid"), probe, &mut |_| all += 1)).unwrap();
+    parent
+        .with(|p| p.find_children_any(Some("kid"), probe, &mut |_| all += 1))
+        .unwrap();
     assert_eq!(all, 1);
 }
 
@@ -287,7 +324,8 @@ fn find_child_sees_children_attached_without_ownership() {
 fn log_destroyed(id: ObjectId, label: &'static str, log: &Log) {
     let log = Arc::clone(log);
     with_object(id, |o| {
-        o.destroyed().connect(move |_: &ObjectId| log.lock().push(format!("destroyed {label}")));
+        o.destroyed()
+            .connect(move |_: &ObjectId| log.lock().push(format!("destroyed {label}")));
     })
     .expect("registered");
 }
@@ -307,7 +345,10 @@ fn deferred_delete_of_an_unowned_object_emits_destroyed_parent_first() {
     delete_later(top_id);
     el.flush_deferred_deletes();
 
-    let seen: Vec<_> = entries(&log).into_iter().filter(|e| e.starts_with("destroyed")).collect();
+    let seen: Vec<_> = entries(&log)
+        .into_iter()
+        .filter(|e| e.starts_with("destroyed"))
+        .collect();
     assert_eq!(seen, vec!["destroyed top", "destroyed kid"]);
 }
 
@@ -325,6 +366,9 @@ fn deferred_delete_with_the_parent_borrowed_emits_destroyed_parent_first() {
 
     parent.with_mut(|_| el.flush_deferred_deletes()).unwrap();
 
-    let seen: Vec<_> = entries(&log).into_iter().filter(|e| e.starts_with("destroyed")).collect();
+    let seen: Vec<_> = entries(&log)
+        .into_iter()
+        .filter(|e| e.starts_with("destroyed"))
+        .collect();
     assert_eq!(seen, vec!["destroyed child", "destroyed grand"]);
 }

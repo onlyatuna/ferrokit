@@ -819,7 +819,8 @@ fn lighter_and_darker_match_qt_for_every_spec_and_huge_factors() {
 #[test]
 fn qcolor_ops_match_qt_rgba_for_huge_factors() {
     // PySide6 6.11.2: QColor(200, 100, 50, 14).lighter(f) / .darker(f).getRgb()
-    let rows: &[(i32, (i32, i32, i32, i32), (i32, i32, i32, i32))] = &[
+    type Rgba = (i32, i32, i32, i32);
+    let rows: &[(i32, Rgba, Rgba)] = &[
         (-3, (200, 100, 50, 14), (200, 100, 50, 14)),
         (0, (200, 100, 50, 14), (200, 100, 50, 14)),
         (1, (2, 1, 1, 14), (255, 255, 255, 14)),

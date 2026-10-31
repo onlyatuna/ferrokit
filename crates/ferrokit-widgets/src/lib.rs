@@ -43,7 +43,6 @@ pub use popup::*;
 pub mod application;
 pub use application::*;
 
-
 #[macro_use]
 pub(crate) mod input_common;
 

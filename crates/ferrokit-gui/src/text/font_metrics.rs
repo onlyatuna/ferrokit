@@ -125,10 +125,7 @@ impl FontMetrics {
     /// its own and the actual engine's, descent likewise). Values are truncated to 26.6 like
     /// [`layout_height`](Self::layout_height) (the GDI engine, used at DPR 1, reports whole pixels).
     pub fn fallback_line_metrics(font: &Font, text: &str) -> Option<(f32, f32)> {
-        if font.font_data.is_some()
-            || font.size <= 0.0
-            || text.is_empty()
-        {
+        if font.font_data.is_some() || font.size <= 0.0 || text.is_empty() {
             return None;
         }
         let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
@@ -237,7 +234,11 @@ impl FontMetrics {
             size_bits: font.size.to_bits(),
             weight: font.weight,
             style: font.style,
-            features: font.features().iter().map(|(tag, value)| (tag.value(), *value)).collect(),
+            features: font
+                .features()
+                .iter()
+                .map(|(tag, value)| (tag.value(), *value))
+                .collect(),
             letter_spacing_bits: font.letter_spacing.to_bits(),
         };
         let hit = ADVANCE_CACHE.with(|c| {
@@ -253,7 +254,10 @@ impl FontMetrics {
         }
         let w = {
             let _t = crate::startup_trace::span_min(0.5, || {
-                format!("shape_advance miss {:?} {:?} {}px", text, font.family, font.size)
+                format!(
+                    "shape_advance miss {:?} {:?} {}px",
+                    text, font.family, font.size
+                )
             });
             self.shape_advance(text, font)
         };
@@ -270,11 +274,8 @@ impl FontMetrics {
     fn shape_advance(&self, text: &str, font: &Font) -> f32 {
         let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
         if !engines.is_empty() {
-            let layout = crate::text::glyph_layout::GlyphLayout::shape_with_engines(
-                text,
-                font,
-                &engines,
-            );
+            let layout =
+                crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
             if layout.width > 0.0 {
                 return layout.width;
             }

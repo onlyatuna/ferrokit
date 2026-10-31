@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object, set_parent_by_id,
-    with_object, ObjectData, ObjectId, OwnedObject, QObject,
+    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object,
+    set_parent_by_id, with_object, ObjectData, ObjectId, OwnedObject, QObject,
 };
 
 struct Node {
@@ -169,10 +169,7 @@ fn moving_a_sibling_from_the_childs_callback_does_not_read_the_child() {
         0,
         "the running child was read while a sibling moved"
     );
-    assert_eq!(
-        parent.with(|p| p.data.owned_children().len()).unwrap(),
-        1
-    );
+    assert_eq!(parent.with(|p| p.data.owned_children().len()).unwrap(), 1);
     assert_eq!(
         other
             .with(|o| OwnedObject::object_id(&o.data.owned_children()[0]))
@@ -206,10 +203,7 @@ fn reparenting_a_sibling_to_its_own_parent_from_the_childs_callback_does_not_rea
         0,
         "the running child was read while its parent was searched"
     );
-    assert_eq!(
-        parent.with(|p| p.data.owned_children().len()).unwrap(),
-        2
-    );
+    assert_eq!(parent.with(|p| p.data.owned_children().len()).unwrap(), 2);
 }
 
 #[test]

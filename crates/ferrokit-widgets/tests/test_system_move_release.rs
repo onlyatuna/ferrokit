@@ -38,8 +38,12 @@ struct Fixture {
 fn fixture() -> Fixture {
     let el = EventLoop::new();
     let mut win = Box::new(
-        Window::new("System Move Release", Rect::new(0, 0, 200, 200), WindowFlags::empty())
-            .expect("create window"),
+        Window::new(
+            "System Move Release",
+            Rect::new(0, 0, 200, 200),
+            WindowFlags::empty(),
+        )
+        .expect("create window"),
     );
     let hwnd = win.native_handle() as HWND;
     ferrokit_platform::window::register_window_event_binding(hwnd, el.handle(), win.id());
@@ -51,7 +55,12 @@ fn fixture() -> Fixture {
         }
     });
     win.render_and_present();
-    Fixture { el, _win: win, hwnd, releases }
+    Fixture {
+        el,
+        _win: win,
+        hwnd,
+        releases,
+    }
 }
 
 fn cursor() -> POINT {
@@ -65,7 +74,15 @@ fn cursor() -> POINT {
 fn place(fx: &Fixture, x: i32, y: i32) {
     // SAFETY: valid HWND owned by this thread.
     let ok = unsafe {
-        SetWindowPos(fx.hwnd, null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        SetWindowPos(
+            fx.hwnd,
+            null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
     };
     assert_ne!(ok, 0, "SetWindowPos failed");
 }
@@ -126,7 +143,10 @@ fn releases_for_a_real_up() -> u32 {
 #[test]
 fn move_loop_end_releases_a_button_the_loop_swallowed_the_release_of() {
     let expected = releases_for_a_real_up();
-    assert!(expected >= 1, "a real WM_LBUTTONUP must reach the window event handler");
+    assert!(
+        expected >= 1,
+        "a real WM_LBUTTONUP must reach the window event handler"
+    );
 
     let mut fx = fixture();
     place_under_cursor(&fx);
@@ -169,7 +189,11 @@ fn move_loop_end_with_the_cursor_outside_is_a_non_client_release_and_clears_the_
     press(&fx);
     place_away_from_cursor(&fx);
     move_loop(&mut fx);
-    assert_eq!(fx.releases.get(), 0, "outside the window Qt sends NonClientAreaMouseButtonRelease");
+    assert_eq!(
+        fx.releases.get(),
+        0,
+        "outside the window Qt sends NonClientAreaMouseButtonRelease"
+    );
 
     // The application's button state was synchronized: a later move-loop end releases nothing.
     place_under_cursor(&fx);

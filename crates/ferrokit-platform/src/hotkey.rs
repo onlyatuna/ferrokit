@@ -402,10 +402,12 @@ pub mod cocoa_hotkey {
     static NEXT_SLOT: AtomicU32 = AtomicU32::new(1);
     static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+    type Handler = Rc<dyn Fn(u32)>;
+
     thread_local! {
         /// Handlers of the managers owned by this thread, by instance. The handler is not
         /// `Send`: it is only ever reached from the owner thread's event loop.
-        static HANDLERS: RefCell<HashMap<u64, Rc<dyn Fn(u32)>>> = RefCell::new(HashMap::new());
+        static HANDLERS: RefCell<HashMap<u64, Handler>> = RefCell::new(HashMap::new());
     }
 
     fn routes() -> MutexGuard<'static, HashMap<u32, Route>> {

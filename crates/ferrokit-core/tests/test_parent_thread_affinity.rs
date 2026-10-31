@@ -14,10 +14,11 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
+#[allow(deprecated)] // the test exercises the deprecated `move_to_thread`
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, move_to_thread_by_id, query_object_parent, register_owned_qobject,
-    reparent_owned_object, set_parent, set_parent_by_id, ObjectData, ObjectId, OwnedObject,
-    QObject, ReparentError, ThreadId,
+    add_owned_child, move_to_thread, move_to_thread_by_id, query_object_parent,
+    register_owned_qobject, reparent_owned_object, set_parent, set_parent_by_id, ObjectData,
+    ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -229,6 +230,7 @@ fn the_check_compares_the_current_affinities_not_the_creating_threads() {
         "the parent moved away from the thread it was created in"
     );
 
+    #[allow(deprecated)] // exercises the deprecated `move_to_thread` on purpose
     move_to_thread(&mut child.data, elsewhere, here).unwrap();
     assert_eq!(set_parent(&mut child.data, Some(parent_id)), Ok(()));
 }
@@ -246,7 +248,10 @@ fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
     let result = reparent_owned_object(child_id, Some(remote.id));
 
     assert_eq!(result.err(), Some(ReparentError::DifferentThread));
-    assert_eq!(owner.with(|o| o.data.children().to_vec()).unwrap(), vec![child_id]);
+    assert_eq!(
+        owner.with(|o| o.data.children().to_vec()).unwrap(),
+        vec![child_id]
+    );
     owner
         .with(|o| {
             assert_eq!(
@@ -301,7 +306,10 @@ fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
         moved.err()
     );
     assert!(owner.with(|o| o.data.children().is_empty()).unwrap());
-    assert_eq!(other.with(|o| o.data.children().to_vec()).unwrap(), vec![child_id]);
+    assert_eq!(
+        other.with(|o| o.data.children().to_vec()).unwrap(),
+        vec![child_id]
+    );
     remote.finish();
 }
 

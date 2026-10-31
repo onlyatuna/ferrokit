@@ -6,10 +6,10 @@
 // Qt C++ `doActivate` / `QCoreApplication::sendPostedEvents` do not contain exceptions, so
 // this containment is a deliberate, Python-faithful Rust decision.
 
-use parking_lot::Mutex;
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::ThreadId;
 use ferrokit_core::signal::{QueuedSignal, Signal};
+use parking_lot::Mutex;
 use std::sync::Arc;
 
 #[test]

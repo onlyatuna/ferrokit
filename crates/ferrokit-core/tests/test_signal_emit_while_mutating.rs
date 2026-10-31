@@ -180,7 +180,11 @@ fn slot_connected_during_emit_does_not_run_in_that_emit() {
     }
 
     signal.emit(&1);
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "not part of the running emission");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "not part of the running emission"
+    );
 
     signal.emit(&2);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "part of the next emission");
@@ -211,6 +215,14 @@ fn slot_disconnecting_itself_still_finishes_and_later_slots_run() {
     signal.emit(&1);
     signal.emit(&2);
 
-    assert_eq!(self_calls.load(Ordering::SeqCst), 1, "disconnected after its first run");
-    assert_eq!(later_calls.load(Ordering::SeqCst), 2, "unrelated slot unaffected");
+    assert_eq!(
+        self_calls.load(Ordering::SeqCst),
+        1,
+        "disconnected after its first run"
+    );
+    assert_eq!(
+        later_calls.load(Ordering::SeqCst),
+        2,
+        "unrelated slot unaffected"
+    );
 }

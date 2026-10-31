@@ -407,7 +407,7 @@ fn icon_pixmap_is_width_height_and_argb_bytes() {
     let reply = reply_to(&bus, 90);
     let mut expected = vec![7, b'a', b'(', b'i', b'i', b'a', b'y', b')', 0];
     expected.extend_from_slice(&[0; 3]); // up to the 4-aligned array length
-    // Two elements of 4 + 4 + 4 + bytes each; the second starts 8-aligned, after 4 padding bytes.
+                                         // Two elements of 4 + 4 + 4 + bytes each; the second starts 8-aligned, after 4 padding bytes.
     let first = 12 + 2 * 2 * 4;
     let second = 12 + 24 * 24 * 4;
     expected.extend_from_slice(&((first + 4 + second) as u32).to_le_bytes());
@@ -419,7 +419,7 @@ fn icon_pixmap_is_width_height_and_argb_bytes() {
         for _ in 0..side * side {
             expected.extend_from_slice(&[255, 10, 20, 30]);
         }
-        expected.extend(std::iter::repeat(0).take(pad));
+        expected.extend(std::iter::repeat_n(0, pad));
     }
     assert_eq!(reply.body, expected);
 }

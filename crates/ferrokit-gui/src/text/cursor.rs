@@ -337,8 +337,8 @@ impl TextCursor {
                     let x = sticky.x_at(new_pos);
                     // Every block has a line, so the step only fails for a position outside the
                     // document: the cursor stays where it is.
-                    let (next, x) =
-                        visual_line_step(doc, new_pos, up, x).unwrap_or((new_pos, x.unwrap_or(0.0)));
+                    let (next, x) = visual_line_step(doc, new_pos, up, x)
+                        .unwrap_or((new_pos, x.unwrap_or(0.0)));
                     sticky = StickyColumn(Some((next, x)));
                     next
                 }
@@ -456,6 +456,9 @@ impl TextCursor {
     }
 }
 
+/// Canonical Qt alias.
+pub type QTextCursor = TextCursor;
+
 #[cfg(test)]
 mod line_move_tests {
     use super::*;
@@ -490,6 +493,3 @@ mod line_move_tests {
         assert_eq!(mv(&d, 1, MoveOperation::EndOfLine), 2);
     }
 }
-
-/// Canonical Qt alias.
-pub type QTextCursor = TextCursor;

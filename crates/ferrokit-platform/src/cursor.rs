@@ -264,7 +264,8 @@ pub mod win32_cursor {
                 }
                 let handle = create_custom_cursor(shape, width);
                 if !handle.is_null() {
-                    let _ = CUSTOM_CURSORS.try_with(|m| m.borrow_mut().insert(key, handle as isize));
+                    let _ =
+                        CUSTOM_CURSORS.try_with(|m| m.borrow_mut().insert(key, handle as isize));
                 }
                 return handle;
             }

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget};
 
@@ -96,7 +96,7 @@ fn worker_thread_calling_unregistered_widget_update_posts_to_widget_affinity_thr
     let el = EventLoop::new();
 
     // An unregistered widget created on the main thread has object_data.thread_id() = main_thread
-    let mut widget = EmptyWidget::new();
+    let widget = EmptyWidget::new();
     widget.set_visible(true);
     let widget_id = widget.id();
 

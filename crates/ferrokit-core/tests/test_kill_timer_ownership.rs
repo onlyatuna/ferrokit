@@ -36,10 +36,24 @@ fn kill_timer_refuses_a_timer_of_another_object() {
     let _el = EventLoop::new();
     let mut owner = node();
     let mut other = node();
-    let id = owner.with_mut(|o| o.start_timer(1000, TimerType::Coarse)).unwrap();
+    let id = owner
+        .with_mut(|o| o.start_timer(1000, TimerType::Coarse))
+        .unwrap();
     assert!(id.is_valid());
 
-    assert_eq!(other.with_mut(|o| o.kill_timer(id)), Some(false), "not its timer");
-    assert_eq!(owner.with_mut(|o| o.kill_timer(id)), Some(true), "the timer was still there");
-    assert_eq!(owner.with_mut(|o| o.kill_timer(id)), Some(false), "and is gone now");
+    assert_eq!(
+        other.with_mut(|o| o.kill_timer(id)),
+        Some(false),
+        "not its timer"
+    );
+    assert_eq!(
+        owner.with_mut(|o| o.kill_timer(id)),
+        Some(true),
+        "the timer was still there"
+    );
+    assert_eq!(
+        owner.with_mut(|o| o.kill_timer(id)),
+        Some(false),
+        "and is gone now"
+    );
 }

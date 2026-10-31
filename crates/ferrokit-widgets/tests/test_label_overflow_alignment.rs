@@ -43,8 +43,10 @@ fn paint_into(w: i32, h: i32, paint: impl FnOnce(&mut Painter<'_>)) -> Pixmap {
 fn first_diff_column(a: &Pixmap, b: &Pixmap) -> Option<usize> {
     let w = a.width() as usize;
     a.data()
-        .chunks_exact(4)
-        .zip(b.data().chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data().as_chunks::<4>().0)
         .enumerate()
         .find(|(_, (p, q))| p != q)
         .map(|(i, _)| i % w)

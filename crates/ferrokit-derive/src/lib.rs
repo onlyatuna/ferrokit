@@ -192,8 +192,10 @@ pub fn derive_qobject(input: TokenStream) -> TokenStream {
         .unwrap_or_else(|| Ident::new("data", name.span()));
     for (f_ident, f_type, _prop_name, is_readonly, notify) in &properties {
         let is_writable = !*is_readonly;
-        let getter_fn_ident = Ident::new(&format!("__ferrokit_get_{}_{}", name, f_ident), name.span());
-        let setter_fn_ident = Ident::new(&format!("__ferrokit_set_{}_{}", name, f_ident), name.span());
+        let getter_fn_ident =
+            Ident::new(&format!("__ferrokit_get_{}_{}", name, f_ident), name.span());
+        let setter_fn_ident =
+            Ident::new(&format!("__ferrokit_set_{}_{}", name, f_ident), name.span());
         let notify_ident = notify
             .as_ref()
             .map(|lit| Ident::new(&lit.value(), lit.span()));

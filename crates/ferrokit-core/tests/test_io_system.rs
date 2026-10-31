@@ -249,12 +249,18 @@ fn test_directory_symlinks_are_filtered_and_not_recursed() {
     symlink(root.join("child"), root.join("linked_child")).unwrap();
 
     let no_links = Directory::new(&root)
-        .entry_info_list(DirFilter::ALL_ENTRIES | DirFilter::NO_SYM_LINKS, SortFlag::NAME)
+        .entry_info_list(
+            DirFilter::ALL_ENTRIES | DirFilter::NO_SYM_LINKS,
+            SortFlag::NAME,
+        )
         .unwrap();
     assert!(no_links.iter().all(|entry| !entry.is_symlink()));
 
     let paths: Vec<_> = DirIterator::new(&root, DirFilter::ALL_ENTRIES, true).collect();
-    assert!(paths.len() < 10, "symlinked directory caused recursive traversal");
+    assert!(
+        paths.len() < 10,
+        "symlinked directory caused recursive traversal"
+    );
     let filtered: Vec<_> = DirIterator::new(
         &root,
         DirFilter::ALL_ENTRIES | DirFilter::NO_SYM_LINKS,
@@ -411,7 +417,10 @@ fn test_process_lifecycle_and_execution() {
     #[cfg(not(windows))]
     {
         proc.set_program("sh");
-        proc.set_arguments(vec!["-c".to_string(), "echo FERROKIT_PROCESS_OK".to_string()]);
+        proc.set_arguments(vec![
+            "-c".to_string(),
+            "echo FERROKIT_PROCESS_OK".to_string(),
+        ]);
     }
 
     proc.start().expect("start process");
@@ -481,7 +490,14 @@ fn test_temporary_paths_are_distinct_and_exclusive() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(first.file_path()).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(first.file_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     let first_dir = TemporaryDir::with_prefix("ferrokit_exclusive_dir").unwrap();
@@ -492,7 +508,10 @@ fn test_temporary_paths_are_distinct_and_exclusive() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(first_dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(first_dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 }
 
@@ -750,7 +769,10 @@ fn save_file_new_target_uses_default_permissions() {
     save.open(OpenMode::WRITE_ONLY).unwrap();
     save.write(b"x").unwrap();
     save.commit().unwrap();
-    assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o7777, expected);
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        expected
+    );
 }
 
 #[test]
@@ -809,7 +831,10 @@ fn settings_roundtrip_plain_strings_and_escapes() {
     assert_eq!(text.lines().filter(|l| l.contains("=v")).count(), 1);
     let s = Settings::new(&path);
     assert_eq!(s.value("name"), Some(Variant::String("hello world".into())));
-    assert_eq!(s.value("multi"), Some(Variant::String("a\nb=c\r\nd".into())));
+    assert_eq!(
+        s.value("multi"),
+        Some(Variant::String("a\nb=c\r\nd".into()))
+    );
     assert_eq!(s.value("looks_num"), Some(Variant::String("123".into())));
     assert_eq!(s.value("padded"), Some(Variant::String("  x  ".into())));
     assert_eq!(s.value("we=ird\nkey"), Some(Variant::String("v".into())));
@@ -826,13 +851,19 @@ fn settings_legacy_unmarked_file_loads_verbatim_and_section_backslash_survives()
     {
         let mut s = Settings::new(&path);
         assert_eq!(s.value("p"), Some(Variant::String("C:\\new\\temp".into())));
-        assert_eq!(s.value("unc"), Some(Variant::String("\\\\server\\share".into())));
+        assert_eq!(
+            s.value("unc"),
+            Some(Variant::String("\\\\server\\share".into()))
+        );
         s.set_value("x", "1 ");
         s.sync().unwrap();
     }
     let s = Settings::new(&path);
     assert_eq!(s.value("p"), Some(Variant::String("C:\\new\\temp".into())));
-    assert_eq!(s.value("unc"), Some(Variant::String("\\\\server\\share".into())));
+    assert_eq!(
+        s.value("unc"),
+        Some(Variant::String("\\\\server\\share".into()))
+    );
 
     let path2 = dir.path().join("new.ini");
     {
@@ -938,7 +969,10 @@ fn settings_sync_merges_changes_from_other_instances() {
     assert_eq!(check.value("only_a"), Some(Variant::String("1".into())));
     assert_eq!(check.value("only_b"), Some(Variant::String("2".into())));
     assert_eq!(check.value("keep"), Some(Variant::String("k".into())));
-    assert_eq!(check.value("contested"), Some(Variant::String("from_b".into())));
+    assert_eq!(
+        check.value("contested"),
+        Some(Variant::String("from_b".into()))
+    );
     assert!(!check.contains("drop"));
     // The syncing instance also picks up what others wrote.
     assert_eq!(b.value("only_a"), Some(Variant::String("1".into())));
@@ -998,11 +1032,17 @@ fn lock_file_is_not_created_while_a_live_reclaim_guard_is_held() {
 
     let mut lock = LockFile::new(&path);
     assert_eq!(lock.try_lock_now(), Err(LockError::LockFailedError));
-    assert!(!path.exists(), "the lock was created behind the reclaimer's back");
+    assert!(
+        !path.exists(),
+        "the lock was created behind the reclaimer's back"
+    );
 
     fs::remove_file(&guard).unwrap();
     assert_eq!(lock.try_lock_now(), Ok(true));
-    assert!(!PathBuf::from(&guard).exists(), "the guard outlived the acquisition");
+    assert!(
+        !PathBuf::from(&guard).exists(),
+        "the guard outlived the acquisition"
+    );
 }
 
 #[test]
@@ -1026,7 +1066,11 @@ fn process_wait_with_zero_timeout_returns_the_output_written_before_exit() {
         std::thread::yield_now();
     }
     let output = String::from_utf8_lossy(&proc.read_all_stdout()).into_owned();
-    assert_eq!(output.lines().count(), LINES, "the tail of the output was lost");
+    assert_eq!(
+        output.lines().count(),
+        LINES,
+        "the tail of the output was lost"
+    );
 }
 
 #[test]

@@ -10,7 +10,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn press(menu: &mut Menu, key: u32) -> bool {
-    let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false });
+    let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+        key,
+        modifiers: 0,
+        is_repeat: false,
+    });
     menu.event(&mut ev)
 }
 
@@ -62,7 +66,11 @@ fn submenu_keys_are_normalized_once() {
     subsub.borrow_mut().add_new_action("leaf");
     Menu::popup(&top, Point::new(0, 0));
     let send = |key: u32| {
-        let mut ev = Event::new_spontaneous(EventKind::KeyPress { key, modifiers: 0, is_repeat: false });
+        let mut ev = Event::new_spontaneous(EventKind::KeyPress {
+            key,
+            modifiers: 0,
+            is_repeat: false,
+        });
         top.borrow_mut().event(&mut ev)
     };
     send(0x28); // Down selects the sub-menu item
@@ -70,5 +78,8 @@ fn submenu_keys_are_normalized_once() {
     for key in [0xDE, 0xBD, 0xBE] {
         assert!(!send(key), "printable key {key:#x} is ignored");
     }
-    assert!(!ferrokit_widgets::Widget::is_visible(&*subsub.borrow()), "apostrophe did not act as Right");
+    assert!(
+        !ferrokit_widgets::Widget::is_visible(&*subsub.borrow()),
+        "apostrophe did not act as Right"
+    );
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use crate::hit_test::EventTreeDispatcher;
 use crate::widget::{hide_children, show_children_first, EmptyWidget, WidgetRef};
 use ferrokit_core::event::{ContextMenuReason, Event, EventKind};
 use ferrokit_core::event_loop::filters_consume;
@@ -10,9 +11,10 @@ use ferrokit_platform::size_limits::{clamp_size_limit, SizeLimits, WINDOW_SIZE_M
 use ferrokit_platform::{
     platform, PlatformWindow, WindowFlags, WindowSystemEvent, WindowSystemEventHandler,
 };
-use crate::hit_test::EventTreeDispatcher;
 type ContextMenuCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Point)>>>>;
-type MousePressCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Point, ferrokit_platform::MouseButton) -> bool>>>>;
+type MousePressCallback = std::rc::Rc<
+    std::cell::RefCell<Option<Box<dyn Fn(Point, ferrokit_platform::MouseButton) -> bool>>>,
+>;
 type MouseMoveCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Point)>>>>;
 type ResizeCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Size)>>>>;
 type WindowEventCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&mut Event)>>>>;
@@ -151,9 +153,7 @@ impl WindowCore {
         self.hide();
         // A window with a transient parent is not a primary window and does not end the
         // application when it closes (`QWindowPrivate::participatesInLastWindowClosed`).
-        if was_visible
-            && crate::application::Application::transient_parent_of(self.id).is_none()
-        {
+        if was_visible && crate::application::Application::transient_parent_of(self.id).is_none() {
             crate::application::Application::maybe_last_window_closed();
         }
         true
@@ -245,7 +245,8 @@ struct RenderState {
     /// per desktop layout, stands in for it.
     screen_origin: std::cell::Cell<Point>,
     /// `QWindow::screenChanged`: emitted after the window's ratio is updated for its new screen.
-    screen_changed: ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>>,
+    screen_changed:
+        ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>>,
     stats: std::cell::Cell<RenderStats>,
     /// The widget the pointer is over, whose cursor the window shows (`qt_qpa_set_cursor`'s
     /// `lastUnderMouse`, qwidget.cpp:5043-5050); empty while the pointer is outside the window.
@@ -284,7 +285,9 @@ pub(crate) fn window_shows_tool_tips(top_level: &WidgetRef) -> bool {
 
 /// The window state of the top-level window `widget` is in (`QWidget::windowHandle` of its
 /// native parent), if it is in a `Window`.
-fn render_state_of<W: crate::widget::Widget + ?Sized>(widget: &W) -> Option<std::rc::Rc<RenderState>> {
+fn render_state_of<W: crate::widget::Widget + ?Sized>(
+    widget: &W,
+) -> Option<std::rc::Rc<RenderState>> {
     let mut id = widget.window_id();
     let mut parent = widget.parent_widget();
     while id.is_none() {
@@ -541,7 +544,8 @@ impl RenderState {
 
     /// Remembers the widget the pointer is over (none: it left the window) and shows its cursor.
     fn set_cursor_target(&self, target: Option<WidgetRef>) {
-        *self.cursor_target.borrow_mut() = target.map_or_else(std::rc::Weak::new, |t| std::rc::Rc::downgrade(&t));
+        *self.cursor_target.borrow_mut() =
+            target.map_or_else(std::rc::Weak::new, |t| std::rc::Rc::downgrade(&t));
         if !self.refresh_cursor(false) {
             retry_cursor_refresh(self.window_id, false);
         }
@@ -552,7 +556,9 @@ impl RenderState {
     /// climb to the first one with a cursor of its own (or the window). That widget's cursor
     /// shows when it is enabled; a disabled one clears the window's cursor. `Some(None)` is "no
     /// widget cursor"; `None` is a widget of the chain that is borrowed and could not be read.
-    fn widget_cursor_for(target: &WidgetRef) -> Option<Option<ferrokit_platform::cursor::CursorShape>> {
+    fn widget_cursor_for(
+        target: &WidgetRef,
+    ) -> Option<Option<ferrokit_platform::cursor::CursorShape>> {
         use ferrokit_platform::cursor::CursorShape;
         struct Info {
             parent: Option<WidgetRef>,
@@ -672,7 +678,9 @@ impl RenderState {
 
     /// Marks the window dirty and queues at most one deferred render.
     fn request_render(&self) {
-        ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::RenderRequested);
+        ferrokit_platform::resize_debug::count(
+            ferrokit_platform::resize_debug::Count::RenderRequested,
+        );
         self.dirty.set(true);
         self.retry_used.set(false);
         if self.render_pending.get() || self.currently_rendering.get() {
@@ -689,7 +697,9 @@ impl RenderState {
     /// (`insertion_offset`), so this never re-dispatches within the current pump.
     fn queue_render(&self) -> bool {
         self.render_pending.set(true);
-        ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::RenderQueuedDeferred);
+        ferrokit_platform::resize_debug::count(
+            ferrokit_platform::resize_debug::Count::RenderQueuedDeferred,
+        );
         let id = self.window_id;
         let thread = ferrokit_core::object::ThreadId::current();
         // post_event_to_thread holds events for a thread without a loop instead of dropping
@@ -699,7 +709,9 @@ impl RenderState {
             ferrokit_core::event_loop::post_event_to_thread(
                 thread,
                 ObjectId(0),
-                Event::new(EventKind::MetaCall(Box::new(move |_| run_deferred_render(id)))),
+                Event::new(EventKind::MetaCall(Box::new(move |_| {
+                    run_deferred_render(id)
+                }))),
             );
             self.bump(|s| s.deferred_render_schedule_count += 1);
         } else {
@@ -728,7 +740,9 @@ impl RenderState {
 
     /// A borrow was held elsewhere: keep `dirty`, queue at most one next-turn retry.
     fn on_borrow_conflict(&self) {
-        ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::SkipBorrowConflict);
+        ferrokit_platform::resize_debug::count(
+            ferrokit_platform::resize_debug::Count::SkipBorrowConflict,
+        );
         ferrokit_platform::resize_debug::note(|| "render skipped: borrow conflict".to_string());
         self.bump(|s| s.borrow_skipped_count += 1);
         if self.retry_used.get() || self.render_pending.get() {
@@ -763,20 +777,26 @@ impl RenderState {
         self.rearm_if_parked();
     }
 
-
     /// Layout activation + paint + present, using the latest geometry.
     fn render_phase(&self) {
         if self.currently_rendering.get() {
-            ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::SkipReentrant);
-            ferrokit_platform::resize_debug::note(|| "render_phase skipped: already rendering".to_string());
+            ferrokit_platform::resize_debug::count(
+                ferrokit_platform::resize_debug::Count::SkipReentrant,
+            );
+            ferrokit_platform::resize_debug::note(|| {
+                "render_phase skipped: already rendering".to_string()
+            });
             return;
         }
         if !self.dirty.get() {
-            ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::SkipNotDirty);
+            ferrokit_platform::resize_debug::count(
+                ferrokit_platform::resize_debug::Count::SkipNotDirty,
+            );
             ferrokit_platform::resize_debug::note(|| "render_phase skipped: not dirty".to_string());
             return;
         }
-        let (Some(pw_rc), Some(bs_rc)) = (self.platform_window.upgrade(), self.backing_store.upgrade())
+        let (Some(pw_rc), Some(bs_rc)) =
+            (self.platform_window.upgrade(), self.backing_store.upgrade())
         else {
             return;
         };
@@ -800,7 +820,10 @@ impl RenderState {
             let _guard = FlagGuard(&self.currently_rendering);
             let dbg_lay = ferrokit_platform::resize_debug::start();
             crate::layout_scheduler::LayoutScheduler::activate_pending();
-            ferrokit_platform::resize_debug::end(ferrokit_platform::resize_debug::Phase::LayoutActivate, dbg_lay);
+            ferrokit_platform::resize_debug::end(
+                ferrokit_platform::resize_debug::Phase::LayoutActivate,
+                dbg_lay,
+            );
             let g = self.geometry.get();
             let trace_hwnd = pw.native_handle() as usize;
             let dpr = self.device_pixel_ratio.get();
@@ -1134,7 +1157,9 @@ impl Window {
         widget
             .borrow_mut()
             .set_geometry(Rect::new(0, 0, geom.width, geom.height));
-        widget.borrow_mut().set_window_id(Some(self.object_data.id()));
+        widget
+            .borrow_mut()
+            .set_window_id(Some(self.object_data.id()));
         // The platform window holds the previous root's mask until the next render.
         {
             let new_root = widget.borrow();
@@ -1165,7 +1190,9 @@ impl Window {
     }
 
     /// `QWindow::screenChanged`: emitted with the new screen when the window moves to another one.
-    pub fn screen_changed(&self) -> &ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>> {
+    pub fn screen_changed(
+        &self,
+    ) -> &ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>> {
         &self.render_state.screen_changed
     }
 
@@ -1257,7 +1284,9 @@ impl Window {
     pub fn show(&mut self) {
         let _t = ferrokit_gui::startup_trace::span(|| "Window::show".into());
         {
-            let _s = ferrokit_gui::startup_trace::span(|| "platform_window.show() (ShowWindow + messages it dispatches)".into());
+            let _s = ferrokit_gui::startup_trace::span(|| {
+                "platform_window.show() (ShowWindow + messages it dispatches)".into()
+            });
             self.core.show();
         }
         self.render_and_present();
@@ -1363,7 +1392,9 @@ impl Window {
             return;
         }
         let handle = parent.map(|p| p.platform_window.borrow().native_handle());
-        self.platform_window.borrow_mut().set_transient_parent(handle);
+        self.platform_window
+            .borrow_mut()
+            .set_transient_parent(handle);
     }
 
     /// `QWindow::transientParent`: the window that owns this one, while it exists.
@@ -1528,7 +1559,10 @@ impl Window {
         self.platform_window.borrow().start_system_move()
     }
 
-    pub fn start_system_resize(&self, edges: ferrokit_platform::platform_window::WindowEdges) -> bool {
+    pub fn start_system_resize(
+        &self,
+        edges: ferrokit_platform::platform_window::WindowEdges,
+    ) -> bool {
         self.platform_window.borrow().start_system_resize(edges)
     }
 
@@ -1550,7 +1584,12 @@ impl Window {
         }
     }
 
-    pub fn set_mouse_press_handler<F: Fn(Point, ferrokit_platform::MouseButton) -> bool + 'static>(&mut self, handler: F) {
+    pub fn set_mouse_press_handler<
+        F: Fn(Point, ferrokit_platform::MouseButton) -> bool + 'static,
+    >(
+        &mut self,
+        handler: F,
+    ) {
         let mut cb = self.mouse_press_cb.borrow_mut();
         *cb = Some(Box::new(handler));
     }
@@ -1568,7 +1607,9 @@ impl Window {
         backdrop: ferrokit_platform::backdrop::BackdropType,
         dark_mode: bool,
     ) -> bool {
-        self.platform_window.borrow_mut().set_backdrop(backdrop, dark_mode)
+        self.platform_window
+            .borrow_mut()
+            .set_backdrop(backdrop, dark_mode)
     }
 
     /// Replaces an applied Acrylic blur with the flat tint of the same colour while the window
@@ -1587,7 +1628,9 @@ impl Window {
     }
 
     pub fn enable_drop_target(&mut self, enabled: bool) -> bool {
-        self.platform_window.borrow_mut().enable_drop_target(enabled)
+        self.platform_window
+            .borrow_mut()
+            .enable_drop_target(enabled)
     }
 
     pub fn native_handle(&self) -> isize {
@@ -1604,10 +1647,17 @@ impl Window {
         let geom = self.geometry.get();
         {
             let c = std::panic::Location::caller();
-            ferrokit_platform::resize_debug::note(|| format!(
-                "render_and_present() called from {}:{} with geometry {}x{}@({},{})",
-                c.file(), c.line(), geom.width, geom.height, geom.x, geom.y
-            ));
+            ferrokit_platform::resize_debug::note(|| {
+                format!(
+                    "render_and_present() called from {}:{} with geometry {}x{}@({},{})",
+                    c.file(),
+                    c.line(),
+                    geom.width,
+                    geom.height,
+                    geom.x,
+                    geom.y
+                )
+            });
         }
         let root = self.root_widget.clone();
         let state = &self.render_state;
@@ -1712,7 +1762,10 @@ impl Window {
     }
 
     pub fn save_png(&self, path: &std::path::Path) -> Result<(), &'static str> {
-        self.backing_store.borrow().save_png(path).map_err(|_| "failed to save PNG")
+        self.backing_store
+            .borrow()
+            .save_png(path)
+            .map_err(|_| "failed to save PNG")
     }
 
     /// Snapshot of the resize/render counters (diagnostics and tests).
@@ -1736,7 +1789,8 @@ impl Drop for Window {
     fn drop(&mut self) {
         #[cfg(windows)]
         {
-            let hwnd = self.platform_window.borrow().native_handle() as windows_sys::Win32::Foundation::HWND;
+            let hwnd = self.platform_window.borrow().native_handle()
+                as windows_sys::Win32::Foundation::HWND;
             ferrokit_platform::unregister_window_event_binding(hwnd);
         }
         // Deferred renders already queued for this window become no-ops.
@@ -1767,7 +1821,9 @@ impl QObject for Window {
         match (name, &value) {
             // `QWidget::setWindowOpacity` bounds the level to 0..=1 (qwidget.cpp:12480).
             ("windowOpacity", Variant::F64(v)) => self.set_opacity(v.clamp(0.0, 1.0) as f32),
-            ("pos", Variant::Point(x, y)) => self.set_geometry(Rect::new(*x, *y, g.width, g.height)),
+            ("pos", Variant::Point(x, y)) => {
+                self.set_geometry(Rect::new(*x, *y, g.width, g.height))
+            }
             ("pos", Variant::PointF(x, y)) => {
                 self.set_geometry(Rect::new(round(*x), round(*y), g.width, g.height))
             }
@@ -1994,7 +2050,8 @@ fn render_widget_recursive(widget_ref: &WidgetRef, painter: &mut Painter, dirty_
         let r = device_rect(&transform, bounds);
         Rect::new(r.x - 1, r.y - 1, r.width + 2, r.height + 2).intersected(&device_rect_all)
     };
-    let snapshot = (!saved_rect.is_empty()).then(|| PixelSnapshot::take(painter.device_mut(), saved_rect));
+    let snapshot =
+        (!saved_rect.is_empty()).then(|| PixelSnapshot::take(painter.device_mut(), saved_rect));
 
     painter.save();
     painter.clip_to_rect(RectF::new(
@@ -2048,10 +2105,17 @@ fn render_widget_unmasked(widget_ref: &WidgetRef, painter: &mut Painter, dirty_i
     if let Some(t0) = dbg_w {
         let us = t0.elapsed().as_micros();
         if us >= 1500 {
-            ferrokit_platform::resize_debug::note(|| format!(
-                "slow paint_event {:.1}ms: widget {:?} geom {}x{}@({},{})",
-                us as f64 / 1000.0, widget.object_name(), geom.width, geom.height, geom.x, geom.y
-            ));
+            ferrokit_platform::resize_debug::note(|| {
+                format!(
+                    "slow paint_event {:.1}ms: widget {:?} geom {}x{}@({},{})",
+                    us as f64 / 1000.0,
+                    widget.object_name(),
+                    geom.width,
+                    geom.height,
+                    geom.x,
+                    geom.y
+                )
+            });
         }
     }
 
@@ -2094,7 +2158,12 @@ pub(crate) fn window_client_origin(window_id: ObjectId) -> Option<Point> {
 /// for a style-sheet change that concerns the whole application.
 pub(crate) fn window_roots() -> Vec<WidgetRef> {
     RENDER_STATES
-        .try_with(|m| m.borrow().values().map(|s| s.root.borrow().clone()).collect())
+        .try_with(|m| {
+            m.borrow()
+                .values()
+                .map(|s| s.root.borrow().clone())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -2163,19 +2232,29 @@ fn do_render_and_present(
     // reallocate lazily here, and mark the entire window dirty so the new buffer is fully painted.
     let dbg_bs = ferrokit_platform::resize_debug::start();
     if backing_store.resize_to_native(logical_size, dpr, platform_window.native_size()) {
-        ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::BackingStoreResized);
+        ferrokit_platform::resize_debug::count(
+            ferrokit_platform::resize_debug::Count::BackingStoreResized,
+        );
         root_widget.borrow_mut().update();
     }
-    ferrokit_platform::resize_debug::end(ferrokit_platform::resize_debug::Phase::BackingStoreResize, dbg_bs);
+    ferrokit_platform::resize_debug::end(
+        ferrokit_platform::resize_debug::Phase::BackingStoreResize,
+        dbg_bs,
+    );
 
     let root_geom = Rect::new(0, 0, geometry.width, geometry.height);
     let dbg_col = ferrokit_platform::resize_debug::start();
     let dirty = collect_dirty_region(root_widget, Point::new(0, 0))
         .unwrap_or(root_geom)
         .intersected(&root_geom);
-    ferrokit_platform::resize_debug::end(ferrokit_platform::resize_debug::Phase::CollectDirty, dbg_col);
+    ferrokit_platform::resize_debug::end(
+        ferrokit_platform::resize_debug::Phase::CollectDirty,
+        dbg_col,
+    );
     if dirty.is_empty() {
-        ferrokit_platform::resize_debug::count(ferrokit_platform::resize_debug::Count::NoDirtyRegion);
+        ferrokit_platform::resize_debug::count(
+            ferrokit_platform::resize_debug::Count::NoDirtyRegion,
+        );
         return None;
     }
 
@@ -2190,7 +2269,8 @@ fn do_render_and_present(
     ferrokit_platform::resize_debug::end(ferrokit_platform::resize_debug::Phase::Clear, dbg_clr);
 
     let dbg_paint = ferrokit_platform::resize_debug::start();
-    let _paint_span = ferrokit_gui::startup_trace::span_min(0.5, || "paint (render_widget_recursive)".into());
+    let _paint_span =
+        ferrokit_gui::startup_trace::span_min(0.5, || "paint (render_widget_recursive)".into());
     {
         let mut painter = Painter::begin(&mut **backing_store);
         painter.set_clip_rect(RectF::new(
@@ -2259,7 +2339,8 @@ fn press_is_double(
 /// click distance from the last press on either axis cancels the pending press. The test is
 /// strict, so a move of exactly the distance keeps it.
 fn move_cancels_press(global_pos: Point) {
-    let distance = ferrokit_gui::application::GuiApplication::style_hints().mouse_double_click_distance;
+    let distance =
+        ferrokit_gui::application::GuiApplication::style_hints().mouse_double_click_distance;
     let mut pending = PENDING_PRESS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(prev) = pending.as_ref() {
         let dx = (global_pos.x - prev.global_pos.x).abs();
@@ -2449,7 +2530,10 @@ impl WindowSystemEventHandler for WindowEventHandler {
     fn handle_window_event(&mut self, event: WindowSystemEvent) {
         let _t = ferrokit_gui::startup_trace::span_min(2.0, || {
             let d = format!("{event:?}");
-            format!("handle_window_event {}", d.chars().take(60).collect::<String>())
+            format!(
+                "handle_window_event {}",
+                d.chars().take(60).collect::<String>()
+            )
         });
         let root = self.core.root();
         match event {
@@ -2796,12 +2880,12 @@ impl WindowSystemEventHandler for WindowEventHandler {
             } => {
                 let _ = self.handle_drop(pos, formats, data, drop_action);
             }
-            WindowSystemEvent::Minimize { minimized } => {
+            WindowSystemEvent::Minimize { minimized }
                 // Qt acts only when the minimized bit flips (`QWidget::event` WindowStateChange,
                 // qwidget.cpp:9292-9311). Minimize sends a spontaneous Hide first and then hides the
                 // children; restore shows the children first and then sends a spontaneous Show.
                 // `visible` is untouched, so `isVisible()` stays true while minimized.
-                if minimized != self.minimized {
+                if minimized != self.minimized => {
                     self.minimized = minimized;
                     if minimized {
                         self.core
@@ -2813,7 +2897,6 @@ impl WindowSystemEventHandler for WindowEventHandler {
                             .send_to_window(&mut Event::new_spontaneous(EventKind::Show));
                     }
                 }
-            }
             _ => {}
         }
     }

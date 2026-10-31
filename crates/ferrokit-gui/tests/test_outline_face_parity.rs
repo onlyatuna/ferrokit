@@ -16,14 +16,21 @@ fn compare(file: &str, ttc_index: u32) {
     let outline = OutlineFace::new(data.clone(), ttc_index).expect("outline face");
     let reference = fontdue::Font::from_bytes(
         data.as_slice(),
-        fontdue::FontSettings { collection_index: ttc_index, ..Default::default() },
+        fontdue::FontSettings {
+            collection_index: ttc_index,
+            ..Default::default()
+        },
     )
     .expect("fontdue");
 
     let (mut compared, mut sum, mut worst) = (0u64, 0u64, 0i32);
     for ch in TEXT.chars().filter(|c| !c.is_whitespace()) {
         let gid = reference.lookup_glyph_index(ch);
-        assert_eq!(outline.glyph_index(ch), gid, "{file}: glyph index of {ch:?}");
+        assert_eq!(
+            outline.glyph_index(ch),
+            gid,
+            "{file}: glyph index of {ch:?}"
+        );
         if gid == 0 {
             continue;
         }
@@ -31,10 +38,21 @@ fn compare(file: &str, ttc_index: u32) {
             let (rm, rb) = reference.rasterize_indexed(gid, px);
             let (om, ob) = outline.rasterize_indexed(gid, px);
             let ctx = format!("{file}: {ch:?}@{px}");
-            assert_eq!((om.xmin, om.ymin, om.width, om.height), (rm.xmin, rm.ymin, rm.width, rm.height), "{ctx}: placement");
-            assert!((om.advance_width - rm.advance_width).abs() < 1e-3, "{ctx}: advance");
+            assert_eq!(
+                (om.xmin, om.ymin, om.width, om.height),
+                (rm.xmin, rm.ymin, rm.width, rm.height),
+                "{ctx}: placement"
+            );
+            assert!(
+                (om.advance_width - rm.advance_width).abs() < 1e-3,
+                "{ctx}: advance"
+            );
             assert_eq!(ob.len(), rb.len(), "{ctx}: bitmap length");
-            assert_eq!(outline.metrics_indexed(gid, px), om, "{ctx}: metrics_indexed must match rasterize_indexed");
+            assert_eq!(
+                outline.metrics_indexed(gid, px),
+                om,
+                "{ctx}: metrics_indexed must match rasterize_indexed"
+            );
             for (a, b) in rb.iter().zip(ob.iter()) {
                 let d = (*a as i32 - *b as i32).abs();
                 sum += d as u64;
@@ -45,7 +63,10 @@ fn compare(file: &str, ttc_index: u32) {
     }
     assert!(compared > 0, "{file}: nothing compared");
     let mean = sum as f64 / compared as f64;
-    assert!(worst <= 16, "{file}: worst per-pixel coverage difference {worst}/255");
+    assert!(
+        worst <= 16,
+        "{file}: worst per-pixel coverage difference {worst}/255"
+    );
     assert!(mean < 1.0, "{file}: mean coverage difference {mean:.2}/255");
 }
 

@@ -93,14 +93,20 @@ fn marker(thread: ThreadId) -> Arc<AtomicBool> {
     post_event_to_thread(
         thread,
         ObjectId(0),
-        Event::new(EventKind::MetaCall(Box::new(move |_| f.store(true, Ordering::SeqCst)))),
+        Event::new(EventKind::MetaCall(Box::new(move |_| {
+            f.store(true, Ordering::SeqCst)
+        }))),
     );
     flag
 }
 
 fn recorder(seen: &Seen) -> impl FnOnce() + Send + 'static {
     let seen = Arc::clone(seen);
-    move || seen.lock().unwrap().push((std::thread::current().id(), Instant::now()))
+    move || {
+        seen.lock()
+            .unwrap()
+            .push((std::thread::current().id(), Instant::now()))
+    }
 }
 
 #[test]
@@ -110,14 +116,24 @@ fn fires_once_on_the_context_thread_and_not_early() {
     let ctx = new_ctx();
     let seen: Seen = Default::default();
     let start = Instant::now();
-    Timer::single_shot_with_context(INTERVAL.as_millis() as u64, OwnedObject::object_id(&ctx), recorder(&seen));
-    assert!(pump_until(&el, || !seen.lock().unwrap().is_empty()), "watchdog: never fired");
+    Timer::single_shot_with_context(
+        INTERVAL.as_millis() as u64,
+        OwnedObject::object_id(&ctx),
+        recorder(&seen),
+    );
+    assert!(
+        pump_until(&el, || !seen.lock().unwrap().is_empty()),
+        "watchdog: never fired"
+    );
     let done = marker(ThreadId::current());
     assert!(pump_until(&el, || done.load(Ordering::SeqCst)));
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "must fire exactly once");
     assert_eq!(seen[0].0, std::thread::current().id());
-    assert!(seen[0].1 + TOLERANCE >= start + INTERVAL, "fired before its expiry");
+    assert!(
+        seen[0].1 + TOLERANCE >= start + INTERVAL,
+        "fired before its expiry"
+    );
 }
 
 #[test]
@@ -130,9 +146,16 @@ fn zero_interval_is_queued_and_can_reach_its_context() {
     Timer::single_shot_with_context(0, id, move || {
         *r.lock().unwrap() = Some(with_object_mut(id, |_| ()).is_some());
     });
-    assert!(reached.lock().unwrap().is_none(), "must be queued, not run inline");
+    assert!(
+        reached.lock().unwrap().is_none(),
+        "must be queued, not run inline"
+    );
     assert!(pump_until(&el, || reached.lock().unwrap().is_some()));
-    assert_eq!(*reached.lock().unwrap(), Some(true), "functor must be able to borrow its context");
+    assert_eq!(
+        *reached.lock().unwrap(),
+        Some(true),
+        "functor must be able to borrow its context"
+    );
 }
 
 #[test]
@@ -148,10 +171,17 @@ fn context_destroy_cancels_and_drops_the_functor() {
     });
     assert!(log.dropped_on().is_none());
     drop(ctx);
-    assert_eq!(log.dropped_on(), Some(std::thread::current().id()), "captures must drop with the context");
+    assert_eq!(
+        log.dropped_on(),
+        Some(std::thread::current().id()),
+        "captures must drop with the context"
+    );
     let done = marker(ThreadId::current());
     assert!(pump_until(&el, || done.load(Ordering::SeqCst)));
-    assert!(!ran.load(Ordering::SeqCst), "cancelled functor must never run");
+    assert!(
+        !ran.load(Ordering::SeqCst),
+        "cancelled functor must never run"
+    );
 }
 
 #[test]
@@ -182,7 +212,10 @@ fn armed_from_another_thread_runs_on_the_context_thread() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, worker_thread, "must run on the context's thread");
-    assert!(seen[0].1 + TOLERANCE >= start + INTERVAL, "fired before its expiry");
+    assert!(
+        seen[0].1 + TOLERANCE >= start + INTERVAL,
+        "fired before its expiry"
+    );
     drop(seen);
     drop(ctx);
 }
@@ -204,7 +237,10 @@ fn forwarded_cross_thread_drop_of_the_context_cancels() {
         tid_tx.send(ThreadId::current()).unwrap();
         let armed: Arc<AtomicBool> = armed_rx.recv_timeout(WAIT).unwrap();
         // The arm is queued before the marker, so the marker running means the arm ran.
-        assert!(pump_until(&el, || armed.load(Ordering::SeqCst)), "watchdog: arm not delivered");
+        assert!(
+            pump_until(&el, || armed.load(Ordering::SeqCst)),
+            "watchdog: arm not delivered"
+        );
         dropped_tx.send(()).unwrap();
         pump_until(&el, || l.dropped_on().is_some());
         (l.dropped_on(), std::thread::current().id())
@@ -218,10 +254,17 @@ fn forwarded_cross_thread_drop_of_the_context_cancels() {
     });
     armed_tx.send(marker(there)).unwrap();
     dropped_rx.recv_timeout(WAIT).unwrap();
-    assert!(log.dropped_on().is_none(), "functor lives while the context does");
+    assert!(
+        log.dropped_on().is_none(),
+        "functor lives while the context does"
+    );
     drop(ctx); // forwarded to the context's thread
     let (dropped_on, worker_thread) = worker.join().unwrap();
-    assert_eq!(dropped_on, Some(worker_thread), "functor must drop on the context's thread");
+    assert_eq!(
+        dropped_on,
+        Some(worker_thread),
+        "functor must drop on the context's thread"
+    );
     assert!(!ran.load(Ordering::SeqCst));
 }
 
@@ -249,7 +292,10 @@ fn a_pending_shot_follows_its_context_to_the_new_thread_and_fires_there() {
     assert!(ok, "watchdog: the shot did not fire after the move");
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].0, worker_thread, "must fire on the context's new thread");
+    assert_eq!(
+        seen[0].0, worker_thread,
+        "must fire on the context's new thread"
+    );
     drop(seen);
     drop(ctx);
 }
@@ -276,7 +322,10 @@ fn destroying_a_moved_context_cancels_its_pending_shot_on_the_new_thread() {
         let el = EventLoop::new();
         tid_tx.send(ThreadId::current()).unwrap();
         let armed: Arc<AtomicBool> = armed_rx.recv_timeout(WAIT).unwrap();
-        assert!(pump_until(&el, || armed.load(Ordering::SeqCst)), "watchdog: adopt not delivered");
+        assert!(
+            pump_until(&el, || armed.load(Ordering::SeqCst)),
+            "watchdog: adopt not delivered"
+        );
         dropped_tx.send(()).unwrap();
         pump_until(&el, || l.dropped_on().is_some());
         (l.dropped_on(), std::thread::current().id())
@@ -285,10 +334,17 @@ fn destroying_a_moved_context_cancels_its_pending_shot_on_the_new_thread() {
     assert_eq!(move_to_thread_by_id(id, there, here), Ok(()));
     armed_tx.send(marker(there)).unwrap();
     dropped_rx.recv_timeout(WAIT).unwrap();
-    assert!(log.dropped_on().is_none(), "functor lives while the context does");
+    assert!(
+        log.dropped_on().is_none(),
+        "functor lives while the context does"
+    );
     drop(ctx);
     let (dropped_on, worker_thread) = worker.join().unwrap();
-    assert_eq!(dropped_on, Some(worker_thread), "functor must drop on the new thread");
+    assert_eq!(
+        dropped_on,
+        Some(worker_thread),
+        "functor must drop on the new thread"
+    );
     assert!(!ran.load(Ordering::SeqCst));
 }
 

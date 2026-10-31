@@ -148,7 +148,9 @@ fn test_platform_tray_abstraction_trait() {
     ptray.set_menu(win_menu);
     let mut new_pixmap = Pixmap::new(16, 16).expect("failed to create new pixmap");
     new_pixmap.fill(Color::from_rgba8(0, 200, 100, 255));
-    assert!(ptray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&new_pixmap)).is_ok());
+    assert!(ptray
+        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&new_pixmap))
+        .is_ok());
 
     assert!(ptray.hide().is_ok());
     TrayIcon::destroy_hicon(hicon);
@@ -211,7 +213,10 @@ fn test_platform_integration_factory() {
     let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");
     pixmap.fill(Color::from_rgba8(20, 120, 220, 255));
     let mut tray = p
-        .create_tray_icon("Factory Tray", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .create_tray_icon(
+            "Factory Tray",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
         .expect("factory tray icon creation failed");
     // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
     assert!(tray.show().is_ok());
@@ -356,7 +361,9 @@ fn test_cross_platform_tray_icon_implementations() {
     let mut dbus_tray: Box<dyn PlatformTrayIcon> =
         Box::new(DbusStatusNotifierItem::new("hud-monitor", "HUD Monitor"));
 
-    assert!(dbus_tray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).is_ok());
+    assert!(dbus_tray
+        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .is_ok());
     assert!(dbus_tray.set_tooltip("CPU 45% | RAM 62%").is_ok());
     // show() only queues the registration, so it succeeds with or without a session bus.
     assert!(dbus_tray.show().is_ok());
@@ -365,7 +372,9 @@ fn test_cross_platform_tray_icon_implementations() {
     // Verify D-Bus a(iiay) format conversion: width 24, height 24, channel order ARGB [180, 0, 200, 255]
     let downcasted = DbusStatusNotifierItem::new("test", "Test");
     let mut test_tray = downcasted;
-    test_tray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).unwrap();
+    test_tray
+        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .unwrap();
     let img = &test_tray.icon_pixmap()[0];
     assert_eq!(img.width, 24);
     assert_eq!(img.height, 24);
@@ -384,7 +393,11 @@ fn test_cross_platform_tray_icon_implementations() {
             icon.add_pixmap(&p, IconMode::Normal, IconState::Off);
         }
         test_tray.set_icon(&icon).unwrap();
-        let sizes: Vec<_> = test_tray.icon_pixmap().iter().map(|i| (i.width, i.height)).collect();
+        let sizes: Vec<_> = test_tray
+            .icon_pixmap()
+            .iter()
+            .map(|i| (i.width, i.height))
+            .collect();
         assert_eq!(sizes, vec![(16, 16), (32, 32)]);
         test_tray.set_icon(&Icon::new()).unwrap();
         assert!(test_tray.icon_pixmap().is_empty());
@@ -394,14 +407,24 @@ fn test_cross_platform_tray_icon_implementations() {
         // letterboxed on a square.
         let one = |w: u32, h: u32| {
             let mut icon = Icon::new();
-            icon.add_pixmap(&Pixmap::new(w, h).expect("pixmap"), IconMode::Normal, IconState::Off);
+            icon.add_pixmap(
+                &Pixmap::new(w, h).expect("pixmap"),
+                IconMode::Normal,
+                IconState::Off,
+            );
             icon
         };
         let sent = |tray: &DbusStatusNotifierItem| -> Vec<(i32, i32, usize)> {
-            tray.icon_pixmap().iter().map(|i| (i.width, i.height, i.data.len())).collect()
+            tray.icon_pixmap()
+                .iter()
+                .map(|i| (i.width, i.height, i.data.len()))
+                .collect()
         };
         test_tray.set_icon(&one(128, 128)).unwrap();
-        assert_eq!(sent(&test_tray), vec![(22, 22, 22 * 22 * 4), (64, 64, 64 * 64 * 4)]);
+        assert_eq!(
+            sent(&test_tray),
+            vec![(22, 22, 22 * 22 * 4), (64, 64, 64 * 64 * 4)]
+        );
         // Letterboxed: the 2x1 image lands in the top row of a 2x2 square (`(2 - 1) / 2 == 0`),
         // and its premultiplied pixels (100, 50, 25, 128) are sent as straight alpha
         // (`qUnpremultiply`: (c * 255 + a / 2) / a).
@@ -412,9 +435,15 @@ fn test_cross_platform_tray_icon_implementations() {
         test_tray.set_icon(&icon).unwrap();
         let square = &test_tray.icon_pixmap()[0];
         assert_eq!((square.width, square.height), (2, 2));
-        assert_eq!(square.data, vec![128, 199, 100, 50, 128, 199, 100, 50, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            square.data,
+            vec![128, 199, 100, 50, 128, 199, 100, 50, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         test_tray.set_icon(&one(16, 32)).unwrap();
-        assert_eq!(sent(&test_tray), vec![(32, 32, 32 * 32 * 4), (22, 22, 22 * 22 * 4)]);
+        assert_eq!(
+            sent(&test_tray),
+            vec![(32, 32, 32 * 32 * 4), (22, 22, 22 * 22 * 4)]
+        );
     }
 
     // 2. Verify macOS Cocoa NSStatusBar / NSStatusItem against the mock runtime. On macOS the
@@ -424,7 +453,9 @@ fn test_cross_platform_tray_icon_implementations() {
     {
         use ferrokit_platform::tray::CocoaStatusItem;
         let mut cocoa_tray: Box<dyn PlatformTrayIcon> = Box::new(CocoaStatusItem::new(101));
-        assert!(cocoa_tray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).is_ok());
+        assert!(cocoa_tray
+            .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .is_ok());
         assert!(cocoa_tray.set_tooltip("Claude HUD").is_ok());
         assert!(cocoa_tray.show().is_ok());
         assert!(cocoa_tray.hide().is_ok());
@@ -661,7 +692,10 @@ fn test_generic_platform_integration_full_lifecycle() {
     win.hide();
 
     let mut tray = integration
-        .create_tray_icon("Generic Tray", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .create_tray_icon(
+            "Generic Tray",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
         .expect("failed to create generic tray icon");
     assert!(tray.show().is_ok());
     assert!(tray.set_tooltip("Updated Generic Tooltip").is_ok());
@@ -696,7 +730,10 @@ fn test_unix_platform_integration_dbus_tray_and_window() {
 
     let pixmap = Pixmap::new(32, 32).expect("failed to create pixmap");
     let mut tray = unix_integration
-        .create_tray_icon("Linux Tray Icon", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .create_tray_icon(
+            "Linux Tray Icon",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
         .expect("failed to create Linux D-Bus tray icon");
     // show() only queues the registration on a D-Bus tray: it is Ok with or without a bus.
     assert!(tray.show().is_ok());
@@ -724,7 +761,10 @@ fn test_cocoa_platform_integration_status_item_and_retina() {
 
     let pixmap = Pixmap::new(32, 32).expect("failed to create pixmap");
     let mut tray = cocoa_integration
-        .create_tray_icon("macOS Status Item", &ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .create_tray_icon(
+            "macOS Status Item",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
         .expect("failed to create macOS Cocoa status bar icon");
     assert!(tray.show().is_ok());
     assert!(tray.hide().is_ok());
@@ -1066,7 +1106,9 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
 
     let mut pixmap = Pixmap::new(24, 24).expect("failed to create pixmap");
     pixmap.fill(Color::from_rgba8(40, 160, 220, 255));
-    assert!(tray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).is_ok());
+    assert!(tray
+        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .is_ok());
     assert!(tray.set_tooltip("Running Smoothly").is_ok());
 
     // show() queues the registration and returns; the watcher has not answered yet.
@@ -1250,7 +1292,9 @@ fn test_macos_cocoa_status_item_and_menu_objc_integration() {
 
     let mut pixmap = Pixmap::new(18, 18).expect("failed to create pixmap");
     pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
-    assert!(item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).is_ok());
+    assert!(item
+        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .is_ok());
     assert!(item.set_tooltip("Claude HUD macOS").is_ok());
 
     // Verify AppKit NSMenu and NSMenuItem hierarchy
@@ -1833,7 +1877,8 @@ fn test_cocoa_status_item_icon_has_pixels_and_does_not_leak_images() {
     pixmap.fill(Color::from_rgba8(0, 200, 255, 255));
 
     let mut item = CocoaStatusItem::new(7);
-    item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).unwrap();
+    item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .unwrap();
 
     let runtime = MockObjcRuntime::instance();
     let button = unsafe { ObjcMsg::send_0(item.native_status_item(), Sel::register("button")) };
@@ -1849,10 +1894,14 @@ fn test_cocoa_status_item_icon_has_pixels_and_does_not_leak_images() {
         .expect("representation alive");
     assert_eq!(rep.pixels, pixmap.data());
     assert_eq!(image_data.retain_count, 1, "only the button owns the image");
-    assert_eq!(rep.retain_count, 1, "only the image owns the representation");
+    assert_eq!(
+        rep.retain_count, 1,
+        "only the image owns the representation"
+    );
 
     // Replacing the icon releases the previous image.
-    item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap)).unwrap();
+    item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+        .unwrap();
     assert!(runtime.get_object_data(image).is_none(), "old image leaked");
     let new_image = runtime.get_object_data(button).expect("button").contents;
     assert_ne!(new_image, image);
@@ -1863,18 +1912,13 @@ fn test_cocoa_status_item_icon_has_pixels_and_does_not_leak_images() {
 #[test]
 fn test_cocoa_window_drop_orders_out_and_releases_native_objects() {
     use ferrokit_core::object::ThreadContext;
-    use ferrokit_platform::{
-        CocoaNativeWindow, MockObjcRuntime, PlatformWindow, WindowFlags,
-    };
     use ferrokit_platform::window_cocoa::CocoaVibrancyMaterial;
+    use ferrokit_platform::{CocoaNativeWindow, MockObjcRuntime, PlatformWindow, WindowFlags};
 
     ThreadContext::init_current(true, None);
-    let mut win = CocoaNativeWindow::new(
-        "Dropped",
-        Rect::new(10, 10, 200, 100),
-        WindowFlags::empty(),
-    )
-    .expect("failed to create window");
+    let mut win =
+        CocoaNativeWindow::new("Dropped", Rect::new(10, 10, 200, 100), WindowFlags::empty())
+            .expect("failed to create window");
     win.set_vibrancy(Some(CocoaVibrancyMaterial::Sidebar));
     win.show();
 
@@ -1884,11 +1928,22 @@ fn test_cocoa_window_drop_orders_out_and_releases_native_objects() {
     let view_data = runtime.get_object_data(ns_view).expect("view");
     assert_eq!(view_data.children.len(), 1, "vibrancy view is a subview");
     let effect = view_data.children[0];
-    assert!(runtime.get_object_data(ns_window).expect("window").is_visible);
+    assert!(
+        runtime
+            .get_object_data(ns_window)
+            .expect("window")
+            .is_visible
+    );
 
     drop(win);
 
-    assert!(runtime.get_object_data(ns_window).is_none(), "NSWindow leaked");
+    assert!(
+        runtime.get_object_data(ns_window).is_none(),
+        "NSWindow leaked"
+    );
     assert!(runtime.get_object_data(ns_view).is_none(), "NSView leaked");
-    assert!(runtime.get_object_data(effect).is_none(), "effect view leaked");
+    assert!(
+        runtime.get_object_data(effect).is_none(),
+        "effect view leaked"
+    );
 }

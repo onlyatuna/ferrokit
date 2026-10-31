@@ -30,13 +30,22 @@ fn toggled_and_changed_slots_can_read_the_action_they_belong_to() {
     let index = publish(&action);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
-    action.borrow().toggled.connect(move |_| log.lock().unwrap().push(("toggled", is_checked(index))));
+    action
+        .borrow()
+        .toggled
+        .connect(move |_| log.lock().unwrap().push(("toggled", is_checked(index))));
     let log = Arc::clone(&seen);
-    action.borrow().changed.connect(move |_| log.lock().unwrap().push(("changed", is_checked(index))));
+    action
+        .borrow()
+        .changed
+        .connect(move |_| log.lock().unwrap().push(("changed", is_checked(index))));
 
     Action::trigger(&action);
 
-    assert_eq!(*seen.lock().unwrap(), [("changed", true), ("toggled", true)]);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [("changed", true), ("toggled", true)]
+    );
 }
 
 #[test]
@@ -65,13 +74,18 @@ fn an_exclusive_group_unchecks_the_previous_action_and_notifies_it() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
     a.borrow().toggled.connect(move |on| {
-        log.lock().unwrap().push(format!("toggled {on} now {}", is_checked(index)));
+        log.lock()
+            .unwrap()
+            .push(format!("toggled {on} now {}", is_checked(index)));
     });
 
     Action::trigger(&a);
     Action::trigger(&b);
 
-    assert_eq!(*seen.lock().unwrap(), ["toggled true now true", "toggled false now false"]);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["toggled true now true", "toggled false now false"]
+    );
     assert!(!a.borrow().is_checked());
     assert!(b.borrow().is_checked());
 }
@@ -85,7 +99,11 @@ fn dropped_actions_do_not_pile_up_in_a_group() {
     let keep = group.add_new_action("keep");
     assert_eq!(group.actions().len(), 1);
     assert!(std::rc::Rc::ptr_eq(&group.actions()[0], &keep));
-    assert!(group.member_slots() <= 2, "dead entries are pruned: {}", group.member_slots());
+    assert!(
+        group.member_slots() <= 2,
+        "dead entries are pruned: {}",
+        group.member_slots()
+    );
 }
 
 #[test]

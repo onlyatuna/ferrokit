@@ -15,8 +15,7 @@ use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::{WindowSystemEvent, WindowSystemEventHandler};
 use ferrokit_platform::{
     set_platform_integration, GenericPlatformIntegration, KeyboardModifiers, MouseButton,
-    PlatformIntegration,
-    WindowFlags,
+    PlatformIntegration, WindowFlags,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget, WidgetRef};
 use ferrokit_widgets::{set_widget_enabled, Application, Cursor, Window};
@@ -402,12 +401,24 @@ fn the_override_cursor_is_a_stack() {
     assert_eq!(Application::override_cursor(), None);
 
     let entries = take();
-    assert!(entries.contains(&"platform override Wait".to_string()), "{entries:?}");
-    assert!(entries.contains(&"platform override Busy".to_string()), "{entries:?}");
-    assert!(entries.contains(&"platform override Forbidden".to_string()), "{entries:?}");
+    assert!(
+        entries.contains(&"platform override Wait".to_string()),
+        "{entries:?}"
+    );
+    assert!(
+        entries.contains(&"platform override Busy".to_string()),
+        "{entries:?}"
+    );
+    assert!(
+        entries.contains(&"platform override Forbidden".to_string()),
+        "{entries:?}"
+    );
     // The platform cursor is global: no window is under the pointer, so none is told.
     assert_eq!(entries.last().unwrap(), "platform override cleared");
-    assert!(!entries.iter().any(|e| e.starts_with("window cursor")), "{entries:?}");
+    assert!(
+        !entries.iter().any(|e| e.starts_with("window cursor")),
+        "{entries:?}"
+    );
     drop(f);
 }
 
@@ -428,7 +439,11 @@ fn an_override_cursor_beats_widget_cursors_and_restores_them() {
 
     Application::restore_override_cursor();
     let entries = take();
-    assert_eq!(entries.last().unwrap(), "window cursor PointingHand", "{entries:?}");
+    assert_eq!(
+        entries.last().unwrap(),
+        "window cursor PointingHand",
+        "{entries:?}"
+    );
 }
 
 #[test]
@@ -441,7 +456,10 @@ fn without_platform_override_support_the_shape_goes_to_every_window() {
     Application::set_override_cursor(CursorShape::Busy);
     let entries = take();
     assert_eq!(
-        entries.iter().filter(|e| *e == "window cursor Busy").count(),
+        entries
+            .iter()
+            .filter(|e| *e == "window cursor Busy")
+            .count(),
         2,
         "{entries:?}"
     );
@@ -534,7 +552,10 @@ fn grab_mouse_with_a_cursor_pushes_an_override_until_release() {
     let _g = install();
     let f = fixture();
     f.a.borrow().grab_mouse_with_cursor(CursorShape::ClosedHand);
-    assert_eq!(Application::override_cursor(), Some(CursorShape::ClosedHand));
+    assert_eq!(
+        Application::override_cursor(),
+        Some(CursorShape::ClosedHand)
+    );
     assert!(take().contains(&"window grab true".to_string()));
     f.a.borrow().release_mouse();
     assert_eq!(Application::override_cursor(), None);
@@ -596,8 +617,14 @@ fn a_mutably_borrowed_ancestor_can_still_be_mapped_into() {
 
     // A parent's own handler maps a child's point into itself.
     let _handler_scope = mid.borrow_mut();
-    assert_eq!(leaf.borrow().map_to(&mid, Point::new(1, 2)), Point::new(6, 9));
-    assert_eq!(leaf.borrow().map_from(&mid, Point::new(6, 9)), Point::new(1, 2));
+    assert_eq!(
+        leaf.borrow().map_to(&mid, Point::new(1, 2)),
+        Point::new(6, 9)
+    );
+    assert_eq!(
+        leaf.borrow().map_from(&mid, Point::new(6, 9)),
+        Point::new(1, 2)
+    );
 }
 
 #[test]
@@ -719,14 +746,20 @@ fn a_native_override_is_applied_only_to_the_window_under_the_pointer() {
     Application::set_override_cursor(CursorShape::Wait);
     let entries = take();
     assert_eq!(
-        entries.iter().filter(|e| *e == "window cursor Wait").count(),
+        entries
+            .iter()
+            .filter(|e| *e == "window cursor Wait")
+            .count(),
         1,
         "{entries:?}"
     );
     Application::restore_override_cursor();
     let entries = take();
     assert_eq!(
-        entries.iter().filter(|e| e.starts_with("window cursor")).count(),
+        entries
+            .iter()
+            .filter(|e| e.starts_with("window cursor"))
+            .count(),
         1,
         "{entries:?}"
     );

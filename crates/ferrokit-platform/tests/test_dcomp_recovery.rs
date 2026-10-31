@@ -168,8 +168,8 @@ fn test_dcomp_policy_opt_in_and_runtime_downgrade() {
     ferrokit_platform::set_dcomp_enabled(Some(true));
     assert!(is_dcomp_enabled());
 
-    // Drop current presenter and recreate to test selection logic
-    drop(window.presenter_mut().take());
+    // Recreate to test selection logic (`presenter_mut()` yields `Option<&mut _>`, so there is
+    // no presenter to take out here)
     let p_downgraded = window.get_or_create_presenter(100, 80).expect("presenter");
     match p_downgraded {
         WindowsPresenter::Layered(_) => {}

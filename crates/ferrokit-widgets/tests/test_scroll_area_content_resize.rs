@@ -109,7 +109,10 @@ fn area_with(content: &WidgetRef, link: bool) -> WidgetRef {
 fn max_v(a: &WidgetRef) -> (bool, i32) {
     let b = a.borrow();
     let s = b.as_any().downcast_ref::<ScrollArea>().unwrap();
-    (s.vertical_scroll_bar().is_visible(), s.vertical_scroll_bar().maximum())
+    (
+        s.vertical_scroll_bar().is_visible(),
+        s.vertical_scroll_bar().maximum(),
+    )
 }
 
 #[test]
@@ -137,5 +140,9 @@ fn a_content_resized_before_it_has_a_parent_link_is_picked_up() {
     let c = content(100, 100);
     let a = area_with(&c, false);
     c.borrow().set_geometry(Rect::new(0, 0, 100, 500));
-    assert_eq!(max_v(&a), (true, 400), "no adopt_tree yet: the subscription from set_widget works");
+    assert_eq!(
+        max_v(&a),
+        (true, 400),
+        "no adopt_tree yet: the subscription from set_widget works"
+    );
 }

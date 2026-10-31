@@ -14,7 +14,10 @@ fn test_shared_font_data_pointer_equality() {
     let shared1 = SharedFontData::from_vec(raw);
     let shared2 = shared1.clone();
 
-    assert!(shared1.ptr_eq(&shared2), "Cloned SharedFontData must share exact physical buffer");
+    assert!(
+        shared1.ptr_eq(&shared2),
+        "Cloned SharedFontData must share exact physical buffer"
+    );
     assert_eq!(shared1.strong_count(), 2);
     assert_eq!(shared1.as_slice(), shared2.as_slice());
     assert_eq!(shared1.len(), 6);
@@ -29,8 +32,12 @@ fn test_font_database_file_cache_deduplication() {
     // 1. Query Segoe UI or Arial from Windows Fonts
     let font_path = Path::new("C:/Windows/Fonts/segoeui.ttf");
     if font_path.exists() {
-        let data1 = db.get_raw_font_data_by_path(font_path).expect("load font data 1");
-        let data2 = db.get_raw_font_data_by_path(font_path).expect("load font data 2");
+        let data1 = db
+            .get_raw_font_data_by_path(font_path)
+            .expect("load font data 1");
+        let data2 = db
+            .get_raw_font_data_by_path(font_path)
+            .expect("load font data 2");
 
         assert!(
             data1.ptr_eq(&data2),
@@ -44,8 +51,12 @@ fn test_font_database_file_cache_deduplication() {
     let msyh_path = Path::new("C:/Windows/Fonts/msyh.ttc");
     if msyh_path.exists() {
         let initial_files = db.cached_files_count();
-        let ttc_data1 = db.get_raw_font_data_by_path(msyh_path).expect("load msyh 1");
-        let ttc_data2 = db.get_raw_font_data_by_path(msyh_path).expect("load msyh 2");
+        let ttc_data1 = db
+            .get_raw_font_data_by_path(msyh_path)
+            .expect("load msyh 1");
+        let ttc_data2 = db
+            .get_raw_font_data_by_path(msyh_path)
+            .expect("load msyh 2");
 
         assert!(
             ttc_data1.ptr_eq(&ttc_data2),
@@ -65,7 +76,9 @@ fn test_font_engine_shaping_with_shared_data() {
     let font_path = Path::new("C:/Windows/Fonts/segoeui.ttf");
     if font_path.exists() {
         let mut db = FontDatabase::new();
-        let raw_data = db.get_raw_font_data_by_path(font_path).expect("load raw data");
+        let raw_data = db
+            .get_raw_font_data_by_path(font_path)
+            .expect("load raw data");
         let face = ferrokit_gui::text::glyph_face::parse_face(&raw_data, 0).expect("parse face");
 
         let engine = FontEngine::new(face)

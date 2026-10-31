@@ -220,7 +220,13 @@ impl DBusMenu {
 
     pub fn handle_event(&self, id: u32, event_id: &str) -> bool {
         // Release the items lock before emitting so slots may call back into the menu.
-        let found = self.items.lock().unwrap().iter().find(|i| i.id == id).cloned();
+        let found = self
+            .items
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|i| i.id == id)
+            .cloned();
         let Some(item) = found else {
             return false;
         };
@@ -243,6 +249,8 @@ impl Default for DBusMenu {
     }
 }
 
+// The `PlatformMenuItem` trait hands out `Arc`s; the items are only used from the GUI thread.
+#[allow(clippy::arc_with_non_send_sync)]
 impl PlatformMenu for DBusMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(DBusMenuItem::new_action(id, text));

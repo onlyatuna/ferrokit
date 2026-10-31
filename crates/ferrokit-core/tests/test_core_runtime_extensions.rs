@@ -151,7 +151,11 @@ fn test_qobject_dynamic_properties_and_events() {
         "Dynamic property name must be removed from list"
     );
     assert_eq!(*last_prop.lock().unwrap(), Some("custom_color".to_string()));
-    assert_eq!(*count.lock().unwrap(), 3, "Event must be emitted on removal");
+    assert_eq!(
+        *count.lock().unwrap(),
+        3,
+        "Event must be emitted on removal"
+    );
 }
 // -----------------------------------------------------------------------------
 // 2. Test Signal connect_to and Object Thread Affinity
@@ -292,7 +296,8 @@ fn test_property_animation_does_not_retain_borrowed_object() {
 
 #[test]
 fn test_qsettings_hierarchy_and_atomic_sync() {
-    let tmp_dir = std::env::temp_dir().join(format!("ferrokit_test_settings_{}", ObjectId::next().0));
+    let tmp_dir =
+        std::env::temp_dir().join(format!("ferrokit_test_settings_{}", ObjectId::next().0));
     let ini_path = tmp_dir.join("app_settings.ini");
 
     {
@@ -350,10 +355,16 @@ fn test_qsettings_hierarchy_and_atomic_sync() {
 }
 #[test]
 fn test_qsettings_round_trips_typed_and_multiline_values() {
-    let path = std::env::temp_dir().join(format!("ferrokit_settings_roundtrip_{}.ini", ObjectId::next().0));
+    let path = std::env::temp_dir().join(format!(
+        "ferrokit_settings_roundtrip_{}.ini",
+        ObjectId::next().0
+    ));
     let expected = [
         ("numeric_text", Variant::String("123".to_string())),
-        ("multiline", Variant::String("first\nsecond=evil".to_string())),
+        (
+            "multiline",
+            Variant::String("first\nsecond=evil".to_string()),
+        ),
         ("float", Variant::F64(1.0)),
         ("large_unsigned", Variant::U64(u64::MAX)),
     ];
@@ -372,7 +383,10 @@ fn test_qsettings_round_trips_typed_and_multiline_values() {
 }
 #[test]
 fn test_qsettings_refuses_to_overwrite_after_load_error() {
-    let path = std::env::temp_dir().join(format!("ferrokit_settings_invalid_{}.ini", ObjectId::next().0));
+    let path = std::env::temp_dir().join(format!(
+        "ferrokit_settings_invalid_{}.ini",
+        ObjectId::next().0
+    ));
     fs::write(&path, [0xff, b'=', b'x', b'\n']).unwrap();
     let mut settings = Settings::new(&path);
     settings.set_value("new_key", "new value");

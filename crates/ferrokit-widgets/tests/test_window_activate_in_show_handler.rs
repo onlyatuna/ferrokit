@@ -162,5 +162,8 @@ fn activate_window_from_a_show_handler_reaches_the_platform_window_after_it_is_s
     assert_eq!(logged(), ["native show", "request activate"]);
     // Shown windows are asked at once.
     win.activate_window();
-    assert_eq!(logged(), ["native show", "request activate", "request activate"]);
+    assert_eq!(
+        logged(),
+        ["native show", "request activate", "request activate"]
+    );
 }

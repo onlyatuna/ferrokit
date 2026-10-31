@@ -420,11 +420,11 @@ impl Bezier {
     }
 
     /// `QBezier::toPolygon` (with `addToPolygon`): flattens the curve, first point included.
-    pub fn to_polygon(&self, threshold: f64) -> Vec<P> {
+    pub fn to_polygon(self, threshold: f64) -> Vec<P> {
         let mut polygon = vec![self.pt(0)];
         let mut beziers = [Bezier::default(); 10];
         let mut levels = [0i32; 10];
-        beziers[0] = *self;
+        beziers[0] = self;
         levels[0] = 9;
         let mut top: isize = 0;
         while top >= 0 {
@@ -482,7 +482,7 @@ impl Bezier {
         // Qt hangs/UB here; ferrokit raises a threshold that is not a usable positive float.
         // Below, a threshold of 0 (or NaN, or one that is 0 as a `float`) is multiplied by 1.5
         // until it exceeds 2, which it never does. 1e-30 needs about 200 turns to get there.
-        if !(threshold >= 1e-30) {
+        if threshold.partial_cmp(&1e-30).is_none_or(|o| o.is_lt()) {
             threshold = 0.00025;
         }
 
@@ -695,19 +695,14 @@ fn add_circle(b: &Bezier, offset: f64, o0: &mut Bezier, o1: &mut Bezier) -> bool
         b.x[0] - b.x[1] - b.x[2] + b.x[3],
         b.y[0] - b.y[1] - b.y[2] + b.y[3],
     );
-    let n1_len = -1.0 * (normals[1].x * normals[1].x + normals[1].y * normals[1].y).sqrt();
+    let n1_len = -(normals[1].x * normals[1].x + normals[1].y * normals[1].y).sqrt();
     normals[1] = P::new(normals[1].x / n1_len, normals[1].y / n1_len);
 
     let mut angles = [0.0f64; 2];
     let mut sign = 1.0;
     for i in 0..2 {
-        let mut cos_a = normals[i].x * normals[i + 1].x + normals[i].y * normals[i + 1].y;
-        if cos_a > 1.0 {
-            cos_a = 1.0;
-        }
-        if cos_a < -1.0 {
-            cos_a = -1.0;
-        }
+        let cos_a =
+            (normals[i].x * normals[i + 1].x + normals[i].y * normals[i + 1].y).clamp(-1.0, 1.0);
         angles[i] = cos_a.acos() * std::f64::consts::FRAC_1_PI;
     }
 
@@ -992,7 +987,7 @@ mod tests {
             .filter(|l| l.starts_with("arc 1 "))
             .enumerate()
         {
-            if n % STRIDE != 0 {
+            if !n.is_multiple_of(STRIDE) {
                 continue;
             }
             let t: Vec<&str> = line.split(' ').skip(2).collect();
@@ -1020,7 +1015,7 @@ mod tests {
             // arcMoveTo's point is arcTo's start, so Qt's lineTo adds nothing. Its cubicTo drops
             // a curve whose points all equal the current one (a sweep of 1e-9 degrees at 270).
             let mut ours = vec![(0u8, start.x, start.y)];
-            for chunk in curves.chunks_exact(3) {
+            for chunk in curves.as_chunks::<3>().0 {
                 let last = ours[ours.len() - 1];
                 let last = P::new(last.1, last.2);
                 if point_eq(last, chunk[0])

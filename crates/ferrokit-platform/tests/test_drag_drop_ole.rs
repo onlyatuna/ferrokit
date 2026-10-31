@@ -51,14 +51,18 @@ fn query_interface_answers_only_the_interfaces_it_implements() {
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let this = t as *mut c_void;
     unsafe {
-        let mut out: *mut c_void = 1 as *mut c_void;
+        let mut out: *mut c_void = std::ptr::dangling_mut::<c_void>();
         let before = (*t).ref_count.load(Ordering::SeqCst);
         assert_eq!(
             (vtbl.query_interface)(this, &IID_IMARSHAL, &mut out),
             E_NOINTERFACE
         );
         assert!(out.is_null(), "no pointer for a foreign interface");
-        assert_eq!((*t).ref_count.load(Ordering::SeqCst), before, "no reference taken");
+        assert_eq!(
+            (*t).ref_count.load(Ordering::SeqCst),
+            before,
+            "no reference taken"
+        );
 
         for iid in [&IID_IUNKNOWN, &IID_IDROPTARGET] {
             assert_eq!((vtbl.query_interface)(this, iid, &mut out), S_OK);
@@ -137,7 +141,11 @@ unsafe extern "system" fn m_query(this: *mut c_void, fmt: *const FormatEtc) -> i
     }
 }
 
-unsafe extern "system" fn m_get(this: *mut c_void, fmt: *const FormatEtc, out: *mut StgMedium) -> i32 {
+unsafe extern "system" fn m_get(
+    this: *mut c_void,
+    fmt: *const FormatEtc,
+    out: *mut StgMedium,
+) -> i32 {
     let this = &*(this as *const MockData);
     let fmt = &*fmt;
     if !supported(this, fmt) {
@@ -200,23 +208,39 @@ fn a_drop_delivers_the_text_of_the_data_object() {
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
-        assert_eq!((vtbl.drag_enter)(this, o, 0, POINTL { x: 5, y: 6 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_enter)(this, o, 0, POINTL { x: 5, y: 6 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 1, "plain drag proposes copy");
-        assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 5, y: 6 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drop)(this, o, 0, POINTL { x: 5, y: 6 }, &mut effect),
+            S_OK
+        );
         (vtbl.release)(this);
     }
     let events = events.lock();
     match &events[0] {
-        DropEvent::Enter { formats, effect, .. } => {
+        DropEvent::Enter {
+            formats, effect, ..
+        } => {
             assert_eq!(formats, &vec!["text/plain".to_string()]);
             assert_eq!(*effect, 1);
         }
         other => panic!("{other:?}"),
     }
     match &events[1] {
-        DropEvent::Drop { formats, data, effect, .. } => {
+        DropEvent::Drop {
+            formats,
+            data,
+            effect,
+            ..
+        } => {
             assert_eq!(formats, &vec!["text/plain".to_string()]);
-            assert_eq!(data, &vec![("text/plain".to_string(), "héllo wörld".as_bytes().to_vec())]);
+            assert_eq!(
+                data,
+                &vec![("text/plain".to_string(), "héllo wörld".as_bytes().to_vec())]
+            );
             assert_eq!(*effect, 1);
         }
         other => panic!("{other:?}"),
@@ -233,17 +257,29 @@ fn a_drop_of_files_is_a_uri_list_and_modifier_keys_choose_the_effect() {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
         // Shift asks for a move: an accepting target returns DROPEFFECT_MOVE (2).
-        assert_eq!((vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 2);
         // The source only offers move: move is proposed when accepted.
         effect = 2;
-        assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 2);
         // Ctrl+Shift asks for a link (4).
         effect = 7;
-        assert_eq!((vtbl.drag_over)(this, 0x0c, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_over)(this, 0x0c, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 4);
-        assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         (vtbl.release)(this);
     }
     let events = events.lock();
@@ -266,10 +302,16 @@ fn a_drag_without_a_decodable_format_is_refused() {
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
-        assert_eq!((vtbl.drag_enter)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_enter)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 0);
         effect = 7;
-        assert_eq!((vtbl.drag_over)(this, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_over)(this, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 0);
         (vtbl.release)(this);
     }
@@ -291,7 +333,10 @@ fn drag_positions_are_logical_client_coordinates() {
     let mut effect = 1u32;
     unsafe {
         let this = t as *mut c_void;
-        let pt = POINTL { x: origin.x + 40, y: origin.y + 60 };
+        let pt = POINTL {
+            x: origin.x + 40,
+            y: origin.y + 60,
+        };
         (vtbl.drag_over)(this, 0, pt, &mut effect);
         (vtbl.release)(this);
     }
@@ -300,7 +345,10 @@ fn drag_positions_are_logical_client_coordinates() {
         panic!("{events:?}")
     };
     let expect = Point::new((40.0 / dpr).round() as i32, (60.0 / dpr).round() as i32);
-    assert_eq!(*pos, expect, "screen point (origin + 40,60) is client (40,60) / dpr {dpr}");
+    assert_eq!(
+        *pos, expect,
+        "screen point (origin + 40,60) is client (40,60) / dpr {dpr}"
+    );
 }
 
 #[test]
@@ -312,14 +360,26 @@ fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shi
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
         let mut effect = 7u32;
-        assert_eq!((vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_enter)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 0, "refused DragEnter reports DROPEFFECT_NONE");
         effect = 7;
-        assert_eq!((vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_over)(this, 0x4, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 0, "refused DragOver reports DROPEFFECT_NONE");
         effect = 7;
-        assert_eq!((vtbl.drop)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
-        assert_eq!(effect, 0, "refused Drop reports DROPEFFECT_NONE so the source never deletes");
+        assert_eq!(
+            (vtbl.drop)(this, o, 0x4, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
+        assert_eq!(
+            effect, 0,
+            "refused Drop reports DROPEFFECT_NONE so the source never deletes"
+        );
         (vtbl.release)(this);
     }
 }
@@ -334,14 +394,26 @@ fn a_callback_may_change_the_effect_but_never_beyond_what_the_source_allows() {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
         let mut effect = 7u32; // copy | move | link
-        assert_eq!((vtbl.drag_enter)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_enter)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 4, "the effect the callback chose is reported");
         effect = 7;
-        assert_eq!((vtbl.drag_over)(this, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
+        assert_eq!(
+            (vtbl.drag_over)(this, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
         assert_eq!(effect, 4, "DragOver reports the callback's effect");
         effect = 3; // the source allows copy | move only
-        assert_eq!((vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect), S_OK);
-        assert_eq!(effect, 0, "an effect the source does not allow is a refusal");
+        assert_eq!(
+            (vtbl.drop)(this, o, 0, POINTL { x: 0, y: 0 }, &mut effect),
+            S_OK
+        );
+        assert_eq!(
+            effect, 0,
+            "an effect the source does not allow is a refusal"
+        );
         (vtbl.release)(this);
     }
 }

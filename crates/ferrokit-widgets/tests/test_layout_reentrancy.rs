@@ -23,7 +23,9 @@ fn container_with(layout: Box<dyn Layout>) -> WidgetRef {
 }
 
 fn adopt(container: &WidgetRef, child: &WidgetRef) {
-    child.borrow().set_parent_widget(Some(Rc::downgrade(container)));
+    child
+        .borrow()
+        .set_parent_widget(Some(Rc::downgrade(container)));
     container.borrow_mut().add_child(Rc::clone(child));
 }
 
@@ -33,14 +35,22 @@ fn box_layout_mutation_with_a_borrowed_item_is_deferred_not_a_panic() {
     let container = container_with(Box::new(BoxLayout::vertical()));
     let first = ProbeWidget::new(&log).into_ref();
     adopt(&container, &first);
-    container.borrow_mut().layout_mut().unwrap().add_widget(Rc::clone(&first));
+    container
+        .borrow_mut()
+        .layout_mut()
+        .unwrap()
+        .add_widget(Rc::clone(&first));
     LayoutScheduler::activate_pending();
 
     let second = ProbeWidget::new(&log).into_ref();
     adopt(&container, &second);
     {
         let _in_its_own_handler = first.borrow_mut();
-        container.borrow_mut().layout_mut().unwrap().add_widget(Rc::clone(&second));
+        container
+            .borrow_mut()
+            .layout_mut()
+            .unwrap()
+            .add_widget(Rc::clone(&second));
     }
     LayoutScheduler::flush_deferred(&container);
 
@@ -78,7 +88,10 @@ fn a_click_slot_that_adds_a_row_is_laid_out_after_the_dispatch() {
     let root = container_with(Box::new(BoxLayout::vertical()));
     let button = ProbeWidget::new(&log).into_ref();
     adopt(&root, &button);
-    root.borrow_mut().layout_mut().unwrap().add_widget(Rc::clone(&button));
+    root.borrow_mut()
+        .layout_mut()
+        .unwrap()
+        .add_widget(Rc::clone(&button));
     LayoutScheduler::activate_pending();
 
     let added: Rc<RefCell<Option<WidgetRef>>> = Rc::default();
@@ -92,7 +105,10 @@ fn a_click_slot_that_adds_a_row_is_laid_out_after_the_dispatch() {
         let row = ProbeWidget::new(&l).into_ref();
         row.borrow().set_parent_widget(Some(Rc::downgrade(&c)));
         c.borrow_mut().add_child(Rc::clone(&row));
-        c.borrow_mut().layout_mut().unwrap().add_widget(Rc::clone(&row));
+        c.borrow_mut()
+            .layout_mut()
+            .unwrap()
+            .add_widget(Rc::clone(&row));
         *slot.borrow_mut() = Some(row);
     }));
 
@@ -106,5 +122,8 @@ fn a_click_slot_that_adds_a_row_is_laid_out_after_the_dispatch() {
     dispatcher.dispatch_event(&root, &mut ev);
 
     let row = added.borrow().clone().expect("the slot ran");
-    assert!(row.borrow().geometry().y > 0, "the added row was placed by the layout");
+    assert!(
+        row.borrow().geometry().y > 0,
+        "the added row was placed by the layout"
+    );
 }

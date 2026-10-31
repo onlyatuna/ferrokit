@@ -68,7 +68,10 @@ impl QObject for Spy {
             EventKind::ZOrderChange => "ZOrderChange",
             _ => return false,
         };
-        self.log.lock().unwrap().push(format!("{}:{}", self.label, kind));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", self.label, kind));
         false
     }
 }
@@ -147,7 +150,10 @@ fn ensure_polished_sends_polish_once_children_after_parent_then_child_polished()
     let _c = watch(&child, "child", &log);
 
     root.borrow().ensure_polished();
-    assert_eq!(take(&log), ["root:Polish", "child:Polish", "root:ChildPolished"]);
+    assert_eq!(
+        take(&log),
+        ["root:Polish", "child:Polish", "root:ChildPolished"]
+    );
 
     root.borrow().ensure_polished();
     child.borrow().ensure_polished();
@@ -182,12 +188,27 @@ fn map_to_and_from_parent_and_global() {
     attach(&mid, &leaf);
     win.set_root_widget(root.clone());
 
-    assert_eq!(leaf.borrow().map_to_parent(Point::new(1, 1)), Point::new(6, 7));
-    assert_eq!(leaf.borrow().map_from_parent(Point::new(6, 7)), Point::new(1, 1));
+    assert_eq!(
+        leaf.borrow().map_to_parent(Point::new(1, 1)),
+        Point::new(6, 7)
+    );
+    assert_eq!(
+        leaf.borrow().map_from_parent(Point::new(6, 7)),
+        Point::new(1, 1)
+    );
     // window origin (100,50) + mid (20,30) + leaf (5,6) + point (1,1)
-    assert_eq!(leaf.borrow().map_to_global(Point::new(1, 1)), Point::new(126, 87));
-    assert_eq!(leaf.borrow().map_from_global(Point::new(126, 87)), Point::new(1, 1));
-    assert_eq!(root.borrow().map_to_global(Point::new(0, 0)), Point::new(100, 50));
+    assert_eq!(
+        leaf.borrow().map_to_global(Point::new(1, 1)),
+        Point::new(126, 87)
+    );
+    assert_eq!(
+        leaf.borrow().map_from_global(Point::new(126, 87)),
+        Point::new(1, 1)
+    );
+    assert_eq!(
+        root.borrow().map_to_global(Point::new(0, 0)),
+        Point::new(100, 50)
+    );
 }
 
 #[test]
@@ -275,7 +296,10 @@ impl QObject for Spy2Inner {
             EventKind::MouseButtonRelease { .. } => "Release",
             _ => return false,
         };
-        self.log.lock().unwrap().push(format!("{}:{}", self.label, kind));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", self.label, kind));
         false
     }
 }
@@ -311,7 +335,11 @@ fn accessible_name_and_description_reach_the_accessibility_tree() {
 
     let tree = AccessibleTree::from_widget(&root);
     let id = AccessibleId(button.borrow().id().0);
-    assert_eq!(tree.node(id).unwrap().name, "OK", "a button names itself by its text");
+    assert_eq!(
+        tree.node(id).unwrap().name,
+        "OK",
+        "a button names itself by its text"
+    );
 
     button.borrow().set_accessible_name("Confirm");
     button.borrow().set_accessible_description("Saves the form");
@@ -325,9 +353,21 @@ fn accessible_name_and_description_reach_the_accessibility_tree() {
     // A plain widget: explicit name first, else the object name.
     let plain_id = AccessibleId(root.borrow().id().0);
     root.borrow_mut().object_data_mut().set_object_name("panel");
-    assert_eq!(AccessibleTree::from_widget(&root).node(plain_id).unwrap().name, "panel");
+    assert_eq!(
+        AccessibleTree::from_widget(&root)
+            .node(plain_id)
+            .unwrap()
+            .name,
+        "panel"
+    );
     root.borrow().set_accessible_name("Main panel");
-    assert_eq!(AccessibleTree::from_widget(&root).node(plain_id).unwrap().name, "Main panel");
+    assert_eq!(
+        AccessibleTree::from_widget(&root)
+            .node(plain_id)
+            .unwrap()
+            .name,
+        "Main panel"
+    );
 }
 
 #[test]
@@ -340,7 +380,11 @@ fn property_animation_drives_widget_pos_size_and_geometry() {
     pos.animation_mut().set_end_value(Variant::Point(100, 40));
     pos.animation_mut().start();
     assert!(pos.step_target(50, &mut **w.borrow_mut()));
-    assert_eq!(w.borrow().geometry(), Rect::new(50, 20, 100, 50), "size is kept by `pos`");
+    assert_eq!(
+        w.borrow().geometry(),
+        Rect::new(50, 20, 100, 50),
+        "size is kept by `pos`"
+    );
     assert!(!pos.step_target(50, &mut **w.borrow_mut()));
     assert_eq!(w.borrow().geometry(), Rect::new(100, 40, 100, 50));
     assert_eq!(pos.animation().state(), AnimationState::Stopped);
@@ -351,12 +395,18 @@ fn property_animation_drives_widget_pos_size_and_geometry() {
     size.animation_mut().set_end_value(Variant::Size(200, 150));
     size.animation_mut().start();
     size.step_target(100, &mut **w.borrow_mut());
-    assert_eq!(w.borrow().geometry(), Rect::new(100, 40, 200, 150), "position is kept by `size`");
+    assert_eq!(
+        w.borrow().geometry(),
+        Rect::new(100, 40, 200, 150),
+        "position is kept by `size`"
+    );
 
     let mut geo = PropertyAnimation::new("geometry");
     geo.animation_mut().set_duration(200);
-    geo.animation_mut().set_start_value(Variant::Rect(100, 40, 200, 150));
-    geo.animation_mut().set_end_value(Variant::Rect(0, 0, 20, 10));
+    geo.animation_mut()
+        .set_start_value(Variant::Rect(100, 40, 200, 150));
+    geo.animation_mut()
+        .set_end_value(Variant::Rect(0, 0, 20, 10));
     geo.animation_mut().start();
     geo.step_target(100, &mut **w.borrow_mut());
     assert_eq!(w.borrow().geometry(), Rect::new(50, 20, 110, 80));
@@ -366,7 +416,10 @@ fn property_animation_drives_widget_pos_size_and_geometry() {
     let obj: &mut dyn QObject = &mut **guard;
     assert_eq!(obj.property("pos"), Some(Variant::Point(50, 20)));
     assert_eq!(obj.property("size"), Some(Variant::Size(110, 80)));
-    assert_eq!(obj.property("geometry"), Some(Variant::Rect(50, 20, 110, 80)));
+    assert_eq!(
+        obj.property("geometry"),
+        Some(Variant::Rect(50, 20, 110, 80))
+    );
 }
 
 #[test]
@@ -382,12 +435,19 @@ fn property_animation_drives_window_opacity_and_geometry() {
     fade.animation_mut().start();
     fade.step_target(50, &mut win);
     assert!((win.opacity() - 0.5).abs() < 1e-6);
-    assert_eq!(QObject::property(&win, "windowOpacity"), Some(Variant::F64(0.5)));
+    assert_eq!(
+        QObject::property(&win, "windowOpacity"),
+        Some(Variant::F64(0.5))
+    );
     fade.step_target(50, &mut win);
     assert_eq!(win.opacity(), 0.0);
 
     // `setWindowOpacity` bounds the level.
-    assert!(QObject::set_property(&mut win, "windowOpacity", Variant::F64(7.0)));
+    assert!(QObject::set_property(
+        &mut win,
+        "windowOpacity",
+        Variant::F64(7.0)
+    ));
     assert_eq!(win.opacity(), 1.0);
 
     let mut mv = PropertyAnimation::new("pos");
@@ -403,7 +463,11 @@ fn property_animation_drives_window_opacity_and_geometry() {
 fn button_down_click_and_signals() {
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     let mut b = Button::new("Go");
-    for (sig, name) in [(&b.pressed, "pressed"), (&b.released, "released"), (&b.clicked, "clicked")] {
+    for (sig, name) in [
+        (&b.pressed, "pressed"),
+        (&b.released, "released"),
+        (&b.clicked, "clicked"),
+    ] {
         let log = Arc::clone(&log);
         sig.connect(move |_| log.lock().unwrap().push(name));
     }
@@ -420,15 +484,20 @@ fn button_down_click_and_signals() {
     assert_eq!(*log.lock().unwrap(), ["pressed", "released", "clicked"]);
 
     log.lock().unwrap().clear();
-    b.base.set_attribute(ferrokit_widgets::widget::WidgetAttribute::Disabled, true);
+    b.base
+        .set_attribute(ferrokit_widgets::widget::WidgetAttribute::Disabled, true);
     b.click();
-    assert!(log.lock().unwrap().is_empty(), "a disabled button ignores click()");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a disabled button ignores click()"
+    );
 }
 
 #[test]
 fn layout_reached_through_as_any_mut_and_item_access() {
     let root = plain(Rect::new(0, 0, 200, 200));
-    root.borrow_mut().set_layout(Box::new(BoxLayout::vertical()));
+    root.borrow_mut()
+        .set_layout(Box::new(BoxLayout::vertical()));
     let a = plain(Rect::new(0, 0, 10, 10));
     let b = plain(Rect::new(0, 0, 10, 10));
     let c = plain(Rect::new(0, 0, 10, 10));
@@ -464,7 +533,10 @@ fn layout_reached_through_as_any_mut_and_item_access() {
     assert!(root.borrow().layout_ref_mut().unwrap().take_at(9).is_none());
 
     // A layout of another type does not downcast.
-    assert!(root.borrow().with_layout_as::<GridLayout, _>(|_| ()).is_none());
+    assert!(root
+        .borrow()
+        .with_layout_as::<GridLayout, _>(|_| ())
+        .is_none());
     // No layout at all.
     assert!(a.borrow().with_box_layout(|_| ()).is_none());
 }
@@ -473,7 +545,9 @@ fn layout_reached_through_as_any_mut_and_item_access() {
 fn style_sheet_background_and_hover_on_a_plain_widget() {
     let root = plain(Rect::new(0, 0, 40, 40));
     let cell = plain(Rect::new(0, 0, 40, 40));
-    cell.borrow_mut().object_data_mut().set_object_name("RowCell");
+    cell.borrow_mut()
+        .object_data_mut()
+        .set_object_name("RowCell");
     attach(&root, &cell);
     root.borrow().set_style_sheet(
         "QWidget#RowCell { background-color: #0000ff; } \
@@ -493,10 +567,22 @@ fn style_sheet_background_and_hover_on_a_plain_widget() {
 
     // Hover by delivering the real Enter through the dispatcher.
     let mut d = EventTreeDispatcher::new();
-    d.dispatch_mouse_move(&root, Point::new(20, 20), Point::new(20, 20), MouseButtons(0));
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(20, 20),
+        Point::new(20, 20),
+        MouseButtons(0),
+    );
     assert!(cell.borrow().under_mouse());
-    assert_eq!(paint(&cell), (255, 0, 0), ":hover background while under the mouse");
-    assert!(cell.borrow().widget_base().dirty_rect().is_some(), "Enter repaints a :hover widget");
+    assert_eq!(
+        paint(&cell),
+        (255, 0, 0),
+        ":hover background while under the mouse"
+    );
+    assert!(
+        cell.borrow().widget_base().dirty_rect().is_some(),
+        "Enter repaints a :hover widget"
+    );
 
     d.handle_mouse_leave();
     assert_eq!(paint(&cell), (0, 0, 255));
@@ -507,11 +593,17 @@ fn hover_without_a_hover_rule_does_not_repaint() {
     let root = plain(Rect::new(0, 0, 40, 40));
     let cell = plain(Rect::new(0, 0, 40, 40));
     attach(&root, &cell);
-    root.borrow().set_style_sheet("QWidget { background-color: #00ff00; }");
+    root.borrow()
+        .set_style_sheet("QWidget { background-color: #00ff00; }");
     cell.borrow().widget_base().clear_dirty();
 
     let mut d = EventTreeDispatcher::new();
-    d.dispatch_mouse_move(&root, Point::new(20, 20), Point::new(20, 20), MouseButtons(0));
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(20, 20),
+        Point::new(20, 20),
+        MouseButtons(0),
+    );
     assert!(cell.borrow().under_mouse());
     assert!(cell.borrow().widget_base().dirty_rect().is_none());
 }
@@ -519,7 +611,10 @@ fn hover_without_a_hover_rule_does_not_repaint() {
 #[test]
 fn motion_preference_scales_animation_duration() {
     set_system_motion_preference(MotionPreference::ReducedMotion);
-    assert_eq!(GuiApplication::motion_preference(), MotionPreference::ReducedMotion);
+    assert_eq!(
+        GuiApplication::motion_preference(),
+        MotionPreference::ReducedMotion
+    );
     assert_eq!(GuiApplication::animation_duration_factor(), 0.0);
     set_system_motion_preference(MotionPreference::NoPreference);
     assert_eq!(GuiApplication::animation_duration_factor(), 1.0);
@@ -528,9 +623,12 @@ fn motion_preference_scales_animation_duration() {
 #[test]
 fn layout_access_while_the_layout_is_in_use_gives_none_instead_of_panicking() {
     let root = plain(Rect::new(0, 0, 200, 200));
-    root.borrow_mut().set_layout(Box::new(BoxLayout::vertical()));
+    root.borrow_mut()
+        .set_layout(Box::new(BoxLayout::vertical()));
     let frame = widget_ref(ferrokit_widgets::frame::Frame::new());
-    frame.borrow_mut().set_layout(Box::new(BoxLayout::vertical()));
+    frame
+        .borrow_mut()
+        .set_layout(Box::new(BoxLayout::vertical()));
 
     for w in [&root, &frame] {
         let inner = w.borrow().with_box_layout(|_outer| {
@@ -570,7 +668,11 @@ fn a_widget_that_is_borrowed_still_runs_its_filters_for_input() {
     let mut d = EventTreeDispatcher::new();
     d.dispatch_event(
         &root,
-        &mut Event::new_spontaneous(EventKind::MouseButtonPress { x: 5, y: 5, button: 1 }),
+        &mut Event::new_spontaneous(EventKind::MouseButtonPress {
+            x: 5,
+            y: 5,
+            button: 1,
+        }),
     );
     assert_eq!(take(&log), ["child:Press"]);
 }

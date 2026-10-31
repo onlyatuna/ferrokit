@@ -138,11 +138,7 @@ fn successive_dpi_changes_preserve_old_dpr() {
     let recorded = history.lock().clone();
     assert_eq!(recorded.len(), 2);
     assert_eq!(recorded[0], (1.0, 1.25), "first transition: 1.0 -> 1.25");
-    assert_eq!(
-        recorded[1],
-        (1.25, 1.5),
-        "second transition: 1.25 -> 1.5"
-    );
+    assert_eq!(recorded[1], (1.25, 1.5), "second transition: 1.25 -> 1.5");
 }
 
 #[test]
@@ -155,7 +151,10 @@ fn a_dispatcher_told_the_tree_ratio_reports_it_as_old_dpr() {
     // A window applied 2.0 itself; the dispatcher did not see that event.
     dispatcher.set_device_pixel_ratio(2.0);
 
-    let mut ev = Event::new_spontaneous(EventKind::DpiChanged { dpi_x: 144, dpi_y: 144 });
+    let mut ev = Event::new_spontaneous(EventKind::DpiChanged {
+        dpi_x: 144,
+        dpi_y: 144,
+    });
     dispatcher.dispatch_event(&root, &mut ev);
 
     assert_eq!(history.lock().clone(), vec![(2.0, 1.5)]);

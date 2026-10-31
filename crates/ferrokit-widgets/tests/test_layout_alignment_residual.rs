@@ -435,7 +435,7 @@ mod label {
     fn ink(pm: &Pixmap) -> Option<(usize, usize, usize, usize)> {
         let w = pm.width() as usize;
         let mut bbox: Option<(usize, usize, usize, usize)> = None;
-        for (i, px) in pm.data().chunks_exact(4).enumerate() {
+        for (i, px) in pm.data().as_chunks::<4>().0.iter().enumerate() {
             if px[3] == 0 {
                 continue;
             }

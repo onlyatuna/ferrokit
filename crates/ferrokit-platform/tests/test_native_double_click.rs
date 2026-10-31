@@ -23,7 +23,11 @@ fn window_with_log() -> (
 ) {
     let platform = Win32PlatformIntegration::default();
     let mut win = platform
-        .create_window("double click", Rect::new(100, 100, 400, 300), WindowFlags::NORMAL)
+        .create_window(
+            "double click",
+            Rect::new(100, 100, 400, 300),
+            WindowFlags::NORMAL,
+        )
         .expect("native window");
     let log = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&log);
@@ -55,7 +59,9 @@ fn double_click_message_is_a_double_click_event_not_a_second_press() {
     }
     let events = log.lock().unwrap().clone();
     assert!(
-        !events.iter().any(|e| matches!(e, WindowSystemEvent::MousePress { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, WindowSystemEvent::MousePress { .. })),
         "a double click must not be reported as a press: {events:?}"
     );
     assert!(
@@ -69,7 +75,10 @@ fn double_click_message_is_a_double_click_event_not_a_second_press() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            WindowSystemEvent::MouseDoubleClick { button: MouseButton::Right, .. }
+            WindowSystemEvent::MouseDoubleClick {
+                button: MouseButton::Right,
+                ..
+            }
         )),
         "right double click missing: {events:?}"
     );

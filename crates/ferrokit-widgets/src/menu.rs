@@ -769,7 +769,10 @@ impl Menu {
         };
         // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
         // menu is hidden, then returns it.
-        let chosen = pending.activation.as_ref().map(|(action, _)| action.clone());
+        let chosen = pending
+            .activation
+            .as_ref()
+            .map(|(action, _)| action.clone());
         pending.emit();
         chosen
     }
@@ -828,7 +831,10 @@ impl Menu {
         let mut window = match Window::new(
             "",
             initial_rect,
-            WindowFlags::FRAMELESS | WindowFlags::TOOL | WindowFlags::STAYS_ON_TOP | WindowFlags::LAYERED,
+            WindowFlags::FRAMELESS
+                | WindowFlags::TOOL
+                | WindowFlags::STAYS_ON_TOP
+                | WindowFlags::LAYERED,
         ) {
             Ok(w) => w,
             Err(_) => {
@@ -876,11 +882,15 @@ impl Menu {
                 got > 0
             } {
                 let mouse_pt = Point::new(msg.pt.x, msg.pt.y);
-                let mouse_screen = ferrokit_platform::screen::win32_screen::from_native_global_point(
-                    mouse_pt,
-                    hwnd as isize,
+                let mouse_screen =
+                    ferrokit_platform::screen::win32_screen::from_native_global_point(
+                        mouse_pt,
+                        hwnd as isize,
+                    );
+                let local_pt = Point::new(
+                    mouse_screen.x - root_origin.x,
+                    mouse_screen.y - root_origin.y,
                 );
-                let local_pt = Point::new(mouse_screen.x - root_origin.x, mouse_screen.y - root_origin.y);
                 match msg.message {
                     WM_SETCURSOR => {
                         SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
@@ -989,7 +999,14 @@ impl Menu {
             drop(capture);
             // Discard any residual mouse button messages queued during the modal menu
             let mut discard_msg: MSG = std::mem::zeroed();
-            while PeekMessageW(&mut discard_msg, std::ptr::null_mut(), WM_LBUTTONDOWN, WM_RBUTTONUP, PM_REMOVE) != 0 {}
+            while PeekMessageW(
+                &mut discard_msg,
+                std::ptr::null_mut(),
+                WM_LBUTTONDOWN,
+                WM_RBUTTONUP,
+                PM_REMOVE,
+            ) != 0
+            {}
         }
         self.hide_now(true);
         // Destroying the popup window may pump messages; the quit is re-posted after that.
@@ -1009,7 +1026,12 @@ impl Menu {
     /// fractional logical shift would round each glyph of every item differently and make the
     /// letter spacing jump.
     #[cfg(windows)]
-    fn present_popup(&mut self, window: &mut crate::window::Window, root_origin: Point, min_size: Size) {
+    fn present_popup(
+        &mut self,
+        window: &mut crate::window::Window,
+        root_origin: Point,
+        min_size: Size,
+    ) {
         use ferrokit_platform::high_dpi::to_native_global_point;
         let covered = self.covered_rect();
         let win_pos = Point::new(root_origin.x + covered.x, root_origin.y + covered.y);
@@ -1069,7 +1091,10 @@ impl Menu {
 
     fn item_height(&self) -> i32 {
         if let Some(s) = self.effective_style() {
-            let h = FontMetrics::from_font(&s.row_font).height.max(FontMetrics::from_font(&s.font).height).ceil() as i32;
+            let h = FontMetrics::from_font(&s.row_font)
+                .height
+                .max(FontMetrics::from_font(&s.font).height)
+                .ceil() as i32;
             return h + s.item_padding[0] + s.item_padding[2];
         }
         let metrics = FontMetrics::from_font(&self.font);
@@ -1633,7 +1658,10 @@ impl Menu {
             let (hl, radius) = if style.is_some() {
                 (rect, 0.0)
             } else {
-                (Rect::new(rect.x + 3, rect.y, rect.width - 6, rect.height), 4.0)
+                (
+                    Rect::new(rect.x + 3, rect.y, rect.width - 6, rect.height),
+                    4.0,
+                )
             };
             painter.draw_rounded_rect(
                 RectF::new(hl.x as f32, hl.y as f32, hl.width as f32, hl.height as f32),
@@ -1680,7 +1708,11 @@ impl Menu {
                     painter.draw_ellipse(RectF::new(10.0, mid_y - 4.0, 8.0, 8.0));
                 } else {
                     painter.set_render_hint(RenderHint::Antialiasing, true);
-                    painter.set_pen(Pen::new(check_color, 2.0).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
+                    painter.set_pen(
+                        Pen::new(check_color, 2.0)
+                            .with_cap(ferrokit_gui::tiny_skia::LineCap::Round)
+                            .with_join(ferrokit_gui::tiny_skia::LineJoin::Round),
+                    );
                     painter.draw_line(PointF::new(9.0, mid_y), PointF::new(12.5, mid_y + 3.5));
                     painter.draw_line(
                         PointF::new(12.5, mid_y + 3.5),
@@ -1713,12 +1745,7 @@ impl Menu {
 
         let text = action.display_text();
         let baseline = mid_y - metrics.height / 2.0 + metrics.ascent;
-        painter.draw_text_colored(
-            PointF::new(text_x, baseline),
-            &text,
-            &font,
-            color,
-        );
+        painter.draw_text_colored(PointF::new(text_x, baseline), &text, &font, color);
         if let Some(offset) = keys::mnemonic_offset(action.text()) {
             let prefix_w = metrics.horizontal_advance(&text[..offset], &font);
             let ch: String = text[offset..].chars().take(1).collect();
@@ -1745,7 +1772,11 @@ impl Menu {
                 paint_submenu_arrow(painter, rect, color);
             } else {
                 let ax = (width - 14) as f32;
-                painter.set_pen(Pen::new(color, 1.5).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
+                painter.set_pen(
+                    Pen::new(color, 1.5)
+                        .with_cap(ferrokit_gui::tiny_skia::LineCap::Round)
+                        .with_join(ferrokit_gui::tiny_skia::LineJoin::Round),
+                );
                 painter.set_render_hint(RenderHint::Antialiasing, true);
                 painter.draw_line(PointF::new(ax, mid_y - 4.0), PointF::new(ax + 4.0, mid_y));
                 painter.draw_line(PointF::new(ax + 4.0, mid_y), PointF::new(ax, mid_y + 4.0));
@@ -1907,7 +1938,8 @@ impl Widget for Menu {
             }
             let g = self.base.geometry();
             let size = self.size_hint();
-            self.base.set_geometry(Rect::new(g.x, g.y, size.width, size.height));
+            self.base
+                .set_geometry(Rect::new(g.x, g.y, size.width, size.height));
             self.base.set_visible(true);
         } else {
             if !announced {
@@ -1928,7 +1960,11 @@ impl Widget for Menu {
             return None;
         }
         self.announced.set(true);
-        Some(if visible { self.about_to_show.clone() } else { self.about_to_hide.clone() })
+        Some(if visible {
+            self.about_to_show.clone()
+        } else {
+            self.about_to_hide.clone()
+        })
     }
 
     fn is_enabled(&self) -> bool {
@@ -2047,12 +2083,7 @@ impl Widget for Menu {
         painter.set_pen(Pen::new(s.border, 1.0));
         painter.set_render_hint(RenderHint::Antialiasing, true);
         painter.draw_rounded_rect(
-            RectF::new(
-                0.5,
-                0.5,
-                g.width as f32 - 1.0,
-                g.height as f32 - 1.0,
-            ),
+            RectF::new(0.5, 0.5, g.width as f32 - 1.0, g.height as f32 - 1.0),
             s.radius,
             s.radius,
         );
@@ -2145,14 +2176,17 @@ fn paint_macos_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     let pen_width = (half / 3.0).max(1.25);
     let cx = (rect.x + (rect.width - 1) / 2 + 1) as f32; // QRect::center().x() + 1
     let cy = (rect.y + (rect.height - 1) / 2 + 2) as f32; // QRect::center().y() + 2
-    painter.set_pen(Pen::new(color, pen_width).with_cap(ferrokit_gui::tiny_skia::LineCap::Round).with_join(ferrokit_gui::tiny_skia::LineJoin::Round));
+    painter.set_pen(
+        Pen::new(color, pen_width)
+            .with_cap(ferrokit_gui::tiny_skia::LineCap::Round)
+            .with_join(ferrokit_gui::tiny_skia::LineJoin::Round),
+    );
     painter.draw_polyline(&[
         PointF::new(cx - half / 2.0, cy + half),
         PointF::new(cx + half / 2.0, cy),
         PointF::new(cx - half / 2.0, cy - half),
     ]);
 }
-
 
 /// Submenu arrow of a style-sheet-driven menu item, as `QStyleSheetStyle` draws it
 /// (`CE_MenuItem`): without a `::right-arrow` rule it hands the base style a square of half the
@@ -2169,7 +2203,7 @@ fn paint_submenu_arrow(painter: &mut Painter, item: Rect, color: Color) {
     let dim = item.height / 2;
     let right = item.x + item.width - 1; // QRect::right()
     let center_y = item.y + (item.height - 1) / 2; // QRect::center().y()
-    // QRect::moveCenter on a dim x dim rect.
+                                                   // QRect::moveCenter on a dim x dim rect.
     let (left, top) = (right - dim - (dim - 1) / 2, center_y - (dim - 1) / 2);
     let square = Rect::new(left, top, dim, dim);
 
@@ -2219,7 +2253,9 @@ fn paint_fusion_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     use ferrokit_gui::tiny_skia::PathBuilder;
     const ARROW_WIDTH: i32 = 14; // dpiScaled(14) at 96 dpi
     const ARROW_HEIGHT: i32 = 8;
-    let size = ARROW_HEIGHT.min(ARROW_WIDTH).min(rect.width.min(rect.height));
+    let size = ARROW_HEIGHT
+        .min(ARROW_WIDTH)
+        .min(rect.width.min(rect.height));
     let (w, h) = ((ARROW_HEIGHT * size / ARROW_WIDTH) as f32, size as f32); // transposed
     let x = rect.x as f32 + (rect.width as f32 - w) / 2.0;
     let y = rect.y as f32 + (rect.height as f32 - h) / 2.0;

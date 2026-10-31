@@ -41,7 +41,10 @@ fn test_metrics_and_painter_shaping_exact_parity() {
     ];
 
     let engines = resolve_font_engines_global(&font);
-    assert!(!engines.is_empty(), "Font engines must resolve at least primary font");
+    assert!(
+        !engines.is_empty(),
+        "Font engines must resolve at least primary font"
+    );
 
     for s in test_strings {
         let metrics_width = metrics.horizontal_advance_exact(s, &font);
@@ -62,7 +65,10 @@ fn test_metrics_and_painter_shaping_exact_parity() {
 fn test_memory_font_retains_fallback_chain() {
     // Test with custom in-memory font buffer
     let mut font = Font::new("CustomIconFont", 14.0);
-    font.font_data = Some(ferrokit_gui::text::font::SharedFontData::from_vec(vec![0u8; 128]));
+    font.font_data = Some(ferrokit_gui::text::font::SharedFontData::from_vec(vec![
+        0u8;
+        128
+    ]));
 
     let engines = resolve_font_engines_global(&font);
     // On systems with CJK/Emoji system fonts, engines should contain fallback entries
@@ -79,7 +85,11 @@ fn test_fallback_chain_is_loaded_only_for_text_the_primary_cannot_cover() {
     }
 
     let ascii = resolve_font_engines_for_text_global(&font, "Claude HUD 42% --");
-    assert_eq!(ascii.len(), 1, "ASCII text must not pull in CJK/emoji fallbacks");
+    assert_eq!(
+        ascii.len(),
+        1,
+        "ASCII text must not pull in CJK/emoji fallbacks"
+    );
 
     if full.len() >= 3 {
         // CJK-only text stops after the CJK slot; the emoji font is not parsed for it.
@@ -88,13 +98,22 @@ fn test_fallback_chain_is_loaded_only_for_text_the_primary_cannot_cover() {
     }
 
     let cjk = resolve_font_engines_for_text_global(&font, "狀態: 🔄");
-    assert_eq!(cjk.len(), full.len(), "uncovered characters get the full fallback chain");
+    assert_eq!(
+        cjk.len(),
+        full.len(),
+        "uncovered characters get the full fallback chain"
+    );
 
     // Same shaping result as with the full chain, for covered and uncovered text alike.
     for s in ["Claude HUD 42%", "5 小時 🔄"] {
         let lazy = resolve_font_engines_for_text_global(&font, s);
         let a = GlyphLayout::shape_with_engines(s, &font, &lazy);
         let b = GlyphLayout::shape_with_engines(s, &font, &full);
-        assert!((a.width - b.width).abs() < 1e-4, "{s}: {} vs {}", a.width, b.width);
+        assert!(
+            (a.width - b.width).abs() < 1e-4,
+            "{s}: {} vs {}",
+            a.width,
+            b.width
+        );
     }
 }

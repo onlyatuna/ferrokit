@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 use crate::text::glyph_face::{GlyphFace, GlyphMetrics};
+use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorLayer {
@@ -32,7 +32,11 @@ fn get_sfnt_offset(font_data: &[u8], face_index: u32) -> Option<usize> {
 }
 
 /// Parses OpenType COLRv0 layers and CPAL palette colors for `glyph_id`.
-pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) -> Option<Vec<ColorLayer>> {
+pub fn parse_colr_v0_layers(
+    font_data: &[u8],
+    face_index: u32,
+    glyph_id: u16,
+) -> Option<Vec<ColorLayer>> {
     let sfnt_offset = get_sfnt_offset(font_data, face_index)?;
     let header = font_data.get(sfnt_offset..sfnt_offset.checked_add(12)?)?;
 
@@ -41,7 +45,10 @@ pub fn parse_colr_v0_layers(font_data: &[u8], face_index: u32, glyph_id: u16) ->
     let mut cpal_range: Option<(usize, usize)> = None;
 
     for i in 0..num_tables {
-        let entry_off = i.checked_mul(16)?.checked_add(sfnt_offset)?.checked_add(12)?;
+        let entry_off = i
+            .checked_mul(16)?
+            .checked_add(sfnt_offset)?
+            .checked_add(12)?;
         let Some(entry) = font_data.get(entry_off..entry_off.checked_add(16)?) else {
             break;
         };
@@ -200,7 +207,12 @@ pub fn rasterize_color_glyph(
         let xmax = (bbox.x_max as f32 * scale).ceil() as i32;
         let ymin = (bbox.y_min as f32 * scale).floor() as i32;
         let ymax = (bbox.y_max as f32 * scale).ceil() as i32;
-        ((xmax - xmin).max(1) as usize, (ymax - ymin).max(1) as usize, xmin, ymin)
+        (
+            (xmax - xmin).max(1) as usize,
+            (ymax - ymin).max(1) as usize,
+            xmin,
+            ymin,
+        )
     } else {
         let advance = metrics.advance_width.round().max(px_size) as usize;
         (advance, px_size.round().max(1.0) as usize, 0, 0)
@@ -220,10 +232,18 @@ pub fn rasterize_color_glyph(
         let mut skia_builder = SkiaPathBuilder {
             builder: PathBuilder::new(),
         };
-        if let Some(_bbox) = face.outline_glyph(rustybuzz::ttf_parser::GlyphId(layer.glyph_id), &mut skia_builder) {
+        if let Some(_bbox) = face.outline_glyph(
+            rustybuzz::ttf_parser::GlyphId(layer.glyph_id),
+            &mut skia_builder,
+        ) {
             if let Some(path) = skia_builder.builder.finish() {
                 let mut paint = Paint::default();
-                paint.set_color_rgba8(layer.color[0], layer.color[1], layer.color[2], layer.color[3]);
+                paint.set_color_rgba8(
+                    layer.color[0],
+                    layer.color[1],
+                    layer.color[2],
+                    layer.color[3],
+                );
                 paint.anti_alias = true;
                 pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
             }
@@ -306,7 +326,13 @@ mod colr_bounds_tests {
         let (c, p) = (colr_table(), cpal_table());
         let f = font(&c, &p, c.len() as u32, p.len() as u32);
         let layers = parse_colr_v0_layers(&f, 0, 5).unwrap();
-        assert_eq!(layers, vec![ColorLayer { glyph_id: 9, color: [3, 2, 1, 4] }]);
+        assert_eq!(
+            layers,
+            vec![ColorLayer {
+                glyph_id: 9,
+                color: [3, 2, 1, 4]
+            }]
+        );
         assert!(parse_colr_v0_layers(&f, 0, 6).is_none());
     }
 
@@ -331,10 +357,14 @@ mod colr_bounds_tests {
         let p = cpal_table();
         let mut c = colr_table();
         c[4..8].copy_from_slice(&1000u32.to_be_bytes()); // base record offset
-        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+        assert!(
+            parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none()
+        );
         let mut c = colr_table();
         c[8..12].copy_from_slice(&1000u32.to_be_bytes()); // layer record offset
-        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+        assert!(
+            parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none()
+        );
     }
 
     #[test]
@@ -357,13 +387,16 @@ mod colr_bounds_tests {
         c[4..8].copy_from_slice(&(u32::MAX - 5).to_be_bytes());
         c[8..12].copy_from_slice(&(u32::MAX - 3).to_be_bytes());
         c[12..14].copy_from_slice(&u16::MAX.to_be_bytes());
-        assert!(parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none());
+        assert!(
+            parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).is_none()
+        );
 
         // CPAL color record offset near u32::MAX falls back to white instead of wrapping.
         let c = colr_table();
         let mut p = cpal_table();
         p[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
-        let layers = parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).unwrap();
+        let layers =
+            parse_colr_v0_layers(&font(&c, &p, c.len() as u32, p.len() as u32), 0, 5).unwrap();
         assert_eq!(layers[0].color, [255, 255, 255, 255]);
 
         // TTC whose face offset is u32::MAX.

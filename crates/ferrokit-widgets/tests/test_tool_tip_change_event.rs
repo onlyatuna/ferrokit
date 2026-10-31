@@ -170,7 +170,11 @@ fn set_tool_tip_on_an_unregistered_widget_sends_tool_tip_change() {
     assert_eq!(w.tool_tip(), "one");
     assert_eq!(entries(&log), ["event:one"]);
     w.set_tool_tip("one");
-    assert_eq!(entries(&log), ["event:one", "event:one"], "sent even if the text is unchanged");
+    assert_eq!(
+        entries(&log),
+        ["event:one", "event:one"],
+        "sent even if the text is unchanged"
+    );
 }
 
 /// The event goes through the object filters first and `event()` second, and the new text is

@@ -29,10 +29,7 @@ fn test_single_instance_guard_callbacks() {
     let triggered = Arc::new(AtomicBool::new(false));
     let triggered_clone = Arc::clone(&triggered);
 
-    let res = SingleInstance::acquire(
-        "FerrokitTestCallbackApp",
-        SingleInstanceCommand::WakeUp,
-    );
+    let res = SingleInstance::acquire("FerrokitTestCallbackApp", SingleInstanceCommand::WakeUp);
 
     match &res {
         SingleInstanceResult::Primary(guard) => {
@@ -129,7 +126,8 @@ fn silent_client_does_not_block_later_commands() {
         SingleInstanceResult::Primary(_) => panic!("must be Secondary"),
     }
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(10)).expect("listener hung on the silent client"),
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("listener hung on the silent client"),
         SingleInstanceCommand::Show
     );
 }
@@ -148,5 +146,8 @@ fn drop_keeps_lock_file_so_inode_cannot_split() {
         panic!("Primary expected");
     };
     drop(guard);
-    assert!(lock.exists(), "unlinking the lock file races with a new locker");
+    assert!(
+        lock.exists(),
+        "unlinking the lock file races with a new locker"
+    );
 }

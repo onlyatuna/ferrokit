@@ -30,9 +30,6 @@ pub struct Label {
     type_name: &'static str,
 }
 
-
-
-
 /// `QApplication`'s default font family on Windows (`Microsoft JhengHei UI`).
 ///
 /// A `QLabel` whose style sheet does not set `font-family` keeps this family, so it is the
@@ -279,7 +276,14 @@ impl Label {
 
     /// Draws one line of plain text with its baseline at `baseline`: through the layout when it
     /// has tabs (which the painter's plain text drawing does not expand), else as it always was.
-    fn draw_line(painter: &mut Painter, x: f32, baseline: f32, line: &str, font: &Font, color: Color) {
+    fn draw_line(
+        painter: &mut Painter,
+        x: f32,
+        baseline: f32,
+        line: &str,
+        font: &Font,
+        color: Color,
+    ) {
         if line.contains('\t') {
             let layout = Self::unwrapped_line(line, font);
             let ascent = layout.line_at(0).map_or(0.0, |l| l.ascent());
@@ -340,7 +344,10 @@ impl Label {
     }
 
     /// The label's font with the stylesheet's size, family, weight and letter spacing applied.
-    fn styled_font(&self, style: &crate::style::stylesheet::ResolvedStyle) -> ferrokit_gui::text::Font {
+    fn styled_font(
+        &self,
+        style: &crate::style::stylesheet::ResolvedStyle,
+    ) -> ferrokit_gui::text::Font {
         let mut font = self.font.clone();
         if let Some(sz) = style.font_size {
             // `QCss` applies `font-size: Npx` with `QFont::setPixelSize(int)`, so 10.5px is 11px.

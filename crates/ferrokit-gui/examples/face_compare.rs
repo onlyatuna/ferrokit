@@ -14,11 +14,28 @@ impl GlyphFace for Fontdue {
     }
     fn metrics_indexed(&self, glyph_id: u16, px: f32) -> GlyphMetrics {
         let m = self.0.metrics_indexed(glyph_id, px);
-        GlyphMetrics { xmin: m.xmin, ymin: m.ymin, width: m.width, height: m.height, advance_width: m.advance_width, advance_height: m.advance_height }
+        GlyphMetrics {
+            xmin: m.xmin,
+            ymin: m.ymin,
+            width: m.width,
+            height: m.height,
+            advance_width: m.advance_width,
+            advance_height: m.advance_height,
+        }
     }
     fn rasterize_indexed(&self, glyph_id: u16, px: f32) -> (GlyphMetrics, Vec<u8>) {
         let (m, b) = self.0.rasterize_indexed(glyph_id, px);
-        (GlyphMetrics { xmin: m.xmin, ymin: m.ymin, width: m.width, height: m.height, advance_width: m.advance_width, advance_height: m.advance_height }, b)
+        (
+            GlyphMetrics {
+                xmin: m.xmin,
+                ymin: m.ymin,
+                width: m.width,
+                height: m.height,
+                advance_width: m.advance_width,
+                advance_height: m.advance_height,
+            },
+            b,
+        )
     }
 }
 
@@ -53,7 +70,11 @@ fn commit_mb() -> f64 {
 #[cfg(not(windows))]
 fn commit_mb() -> f64 {
     let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
-    let pages: f64 = statm.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let pages: f64 = statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
     pages * 4096.0 / 1048576.0
 }
 
@@ -83,7 +104,10 @@ fn main() {
         let before = commit_mb();
         let outline = OutlineFace::new(data.clone(), 0).expect("outline");
         let after_outline = commit_mb();
-        let fd = Fontdue(fontdue::Font::from_bytes(data.as_slice(), fontdue::FontSettings::default()).expect("fontdue"));
+        let fd = Fontdue(
+            fontdue::Font::from_bytes(data.as_slice(), fontdue::FontSettings::default())
+                .expect("fontdue"),
+        );
         let after_fd = commit_mb();
         println!(
             "\n== {name} ({} KB file)  commit: outline +{:.1} MB, fontdue +{:.1} MB",
@@ -134,7 +158,11 @@ fn main() {
                         max_abs = d;
                     }
                 }
-                let glyph_sum: i32 = ba.iter().zip(bb.iter()).map(|(a, b)| (*a as i32 - *b as i32).abs()).sum();
+                let glyph_sum: i32 = ba
+                    .iter()
+                    .zip(bb.iter())
+                    .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                    .sum();
                 let mean = glyph_sum as f32 / ba.len().max(1) as f32;
                 if mean > worst.0 {
                     worst = (mean, ch, px as i32);
@@ -155,8 +183,15 @@ fn main() {
         );
 
         // cost per glyph (cold = first rasterization, no cache)
-        let gids: Vec<u16> = chars.iter().map(|&c| fd.glyph_index(c)).filter(|&g| g != 0).collect();
-        for (label, face) in [("fontdue", &fd as &dyn GlyphFace), ("outline", &outline as &dyn GlyphFace)] {
+        let gids: Vec<u16> = chars
+            .iter()
+            .map(|&c| fd.glyph_index(c))
+            .filter(|&g| g != 0)
+            .collect();
+        for (label, face) in [
+            ("fontdue", &fd as &dyn GlyphFace),
+            ("outline", &outline as &dyn GlyphFace),
+        ] {
             let reps = 200;
             let t = Instant::now();
             let mut cnt = 0u64;

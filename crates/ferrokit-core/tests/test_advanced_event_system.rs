@@ -236,7 +236,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_ctx)).unwrap();
     assert!(context_menu.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::ContextMenu));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::ContextMenu)
+    );
 
     // 3. Pointer event with multiple points
     let p1 = EventPoint::new(
@@ -258,7 +261,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_ptr)).unwrap();
     assert!(pointer.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::Pointer));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::Pointer)
+    );
 
     // 4. Touch event
     let mut ev_touch = Event::new(EventKind::TouchBegin {
@@ -268,7 +274,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_touch)).unwrap();
     assert!(touch.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::TouchBegin));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::TouchBegin)
+    );
 
     // 5. Tablet event
     let mut ev_tablet = Event::new(EventKind::TabletPress {
@@ -285,7 +294,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_tablet)).unwrap();
     assert!(tablet.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::TabletPress));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::TabletPress)
+    );
 
     // 6. Gesture event
     let mut ev_gesture = Event::new(EventKind::Gesture {
@@ -294,7 +306,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_gesture)).unwrap();
     assert!(gesture.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::Gesture));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::Gesture)
+    );
 
     // 7. Hover event
     let mut ev_hover = Event::new(EventKind::HoverMove {
@@ -304,7 +319,10 @@ fn test_advanced_event_dispatch_to_qobject() {
     });
     pinned.with_mut(|p| p.event(&mut ev_hover)).unwrap();
     assert!(hover.load(Ordering::SeqCst));
-    assert_eq!(pinned.with(|p| p.last_event_type).unwrap(), Some(EventType::HoverMove));
+    assert_eq!(
+        pinned.with(|p| p.last_event_type).unwrap(),
+        Some(EventType::HoverMove)
+    );
 
     // SAFETY: the test event callbacks have returned on the registration thread.
     unsafe { ferrokit_core::object::unregister_qobject(spy_id) };

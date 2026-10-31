@@ -23,10 +23,10 @@ pub use desktop_services::{open_file, open_url, set_url_handler, UrlHandler};
 pub mod backdrop;
 pub mod clipboard;
 pub mod clipboard_cocoa;
-pub mod dark_mode;
 pub mod cursor;
-pub mod cursor_cocoa;
 pub mod cursor_bitmap;
+pub mod cursor_cocoa;
+pub mod dark_mode;
 pub mod drag_drop;
 pub mod high_dpi;
 pub use high_dpi::*;
@@ -53,18 +53,18 @@ pub mod theme;
 // under Miri, which cannot open a bus socket).
 #[cfg(any(all(target_os = "linux", not(miri)), test))]
 mod theme_portal;
+#[cfg(test)]
+mod thread_affinity;
 pub mod tray;
 pub mod tray_icon;
 pub mod window;
 pub mod window_cocoa;
 pub mod window_cocoa_input;
+#[cfg(windows)]
+mod window_region;
 pub mod window_system_interface;
 pub mod window_wayland;
 pub mod window_x11;
-#[cfg(windows)]
-mod window_region;
-#[cfg(test)]
-mod thread_affinity;
 pub use single_instance::*;
 
 #[cfg(windows)]
@@ -73,8 +73,8 @@ pub use windows_sys::Win32::Foundation::HWND;
 pub type HWND = isize;
 #[cfg(windows)]
 pub use clipboard::Win32Clipboard;
-pub use clipboard_cocoa::CocoaClipboard;
 pub use clipboard::{Clipboard, GenericClipboard, MimeData, PlatformClipboard};
+pub use clipboard_cocoa::CocoaClipboard;
 #[cfg(windows)]
 pub use cursor::Win32Cursor;
 pub use cursor::{CocoaCursor, CursorShape, GenericCursor, PlatformCursor, UnixCursor};
@@ -82,8 +82,8 @@ pub use cursor::{CocoaCursor, CursorShape, GenericCursor, PlatformCursor, UnixCu
 #[cfg(windows)]
 pub use hotkey::Win32HotkeyManager;
 pub use hotkey::{
-    CocoaHotkeyManager, GenericHotkeyManager, HotkeyError, HotkeyModifiers,
-    PlatformHotkeyManager, UnixHotkeyManager,
+    CocoaHotkeyManager, GenericHotkeyManager, HotkeyError, HotkeyModifiers, PlatformHotkeyManager,
+    UnixHotkeyManager,
 };
 #[cfg(windows)]
 pub use integration::Win32PlatformIntegration;

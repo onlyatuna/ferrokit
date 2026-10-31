@@ -96,10 +96,7 @@ impl Bitmap {
         for y in 0..self.height {
             let start = y as usize * self.bytes_per_line;
             let end = start + self.bytes_per_line;
-            if let (Some(src), Some(dst)) = (
-                self.data.get(start..end),
-                img.scan_line_mut(y),
-            ) {
+            if let (Some(src), Some(dst)) = (self.data.get(start..end), img.scan_line_mut(y)) {
                 dst.copy_from_slice(src);
             }
         }
@@ -177,7 +174,7 @@ impl Bitmap {
     /// Zeroes the unused trailing bits of every row so `PartialEq` and bitwise operations only
     /// ever see pixel bits.
     fn clear_padding(&mut self) {
-        let used = (self.width % 8) as u32;
+        let used = self.width % 8;
         if used == 0 || self.bytes_per_line == 0 {
             return;
         }
@@ -306,7 +303,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "attempts a multi-exabyte allocation, which Miri cannot refuse gracefully")]
+    #[cfg_attr(
+        miri,
+        ignore = "attempts a multi-exabyte allocation, which Miri cannot refuse gracefully"
+    )]
     fn huge_dimensions_yield_a_null_bitmap_instead_of_overflowing() {
         assert!(Bitmap::new(u32::MAX, u32::MAX).is_null());
         assert!(Bitmap::with_fill(u32::MAX, u32::MAX, true).is_null());

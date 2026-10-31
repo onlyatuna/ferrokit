@@ -107,7 +107,11 @@ fn disconnect_with_another_signals_id_leaves_that_connection_intact() {
 
     assert!(!b.disconnect(id_a), "b never owned this connection");
     a.emit(&1);
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "a's connection was removed");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a's connection was removed"
+    );
 
     // The foreign disconnect must not have cost the connection its automatic disconnect.
     destroy(r);

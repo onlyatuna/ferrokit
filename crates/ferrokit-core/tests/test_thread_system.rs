@@ -233,16 +233,17 @@ fn test_thread_with_event_loop() {
         let sender_clone = sender.clone();
         let flag = Arc::clone(&proc_flag);
         // Post an event inside the event loop
-        let meta_event = ferrokit_core::event::Event::new(ferrokit_core::event::EventKind::MetaCall(
-            Box::new(move |_| {
+        let meta_event = ferrokit_core::event::Event::new(
+            ferrokit_core::event::EventKind::MetaCall(Box::new(move |_| {
                 flag.store(true, Ordering::SeqCst);
                 // After processing, quit the event loop
-                let quit_event = ferrokit_core::event::Event::new(ferrokit_core::event::EventKind::Quit {
-                    exit_code: 42,
-                });
+                let quit_event =
+                    ferrokit_core::event::Event::new(ferrokit_core::event::EventKind::Quit {
+                        exit_code: 42,
+                    });
                 sender_clone.post_event(ferrokit_core::object::ObjectId(0), quit_event);
-            }),
-        ));
+            })),
+        );
         sender.post_event(ferrokit_core::object::ObjectId(0), meta_event);
     });
 
@@ -627,7 +628,10 @@ fn test_task_wait_timeout_in_pool_job_runs_the_queued_task() {
 
 #[test]
 fn test_task_join_in_pool_job_runs_the_queued_task() {
-    assert_eq!(wait_inside_pool_job_for_queued_task(|inner| inner.join()), Ok(41));
+    assert_eq!(
+        wait_inside_pool_job_for_queued_task(|inner| inner.join()),
+        Ok(41)
+    );
 }
 
 /// A worker that waits for a task it cannot take over (here: one running on another pool)

@@ -481,12 +481,7 @@ impl EventQueue {
         self.post_event_with_priority(receiver, event, 0);
     }
 
-    pub fn post_event_with_priority(
-        &mut self,
-        receiver: ObjectId,
-        event: Event,
-        priority: i32,
-    ) {
+    pub fn post_event_with_priority(&mut self, receiver: ObjectId, event: Event, priority: i32) {
         // A merged event is dropped here, under whatever lock the caller holds. Callers that hold
         // a lock use `post_from_slot`, which leaves it to them.
         let mut event = Some(event);
@@ -668,8 +663,14 @@ impl EventQueue {
     fn insert_at(&mut self, pos: usize, mut posted: PostedEvent, key: Option<MergeKey>) {
         const STRIDE: u128 = 1 << 64;
         let order_at = |events: &VecDeque<PostedEvent>| {
-            let previous = pos.checked_sub(1).map(|index| events[index].order).unwrap_or(0);
-            let next = events.get(pos).map(|event| event.order).unwrap_or(u128::MAX);
+            let previous = pos
+                .checked_sub(1)
+                .map(|index| events[index].order)
+                .unwrap_or(0);
+            let next = events
+                .get(pos)
+                .map(|event| event.order)
+                .unwrap_or(u128::MAX);
             if pos == events.len() {
                 previous.checked_add(STRIDE)
             } else if pos == 0 && next >= STRIDE {
@@ -840,7 +841,7 @@ impl Drop for RunningLoop {
 thread_local! {
     /// The calling thread's live loop state. Weak, so the state (and its dispatcher) lives exactly
     /// as long as some `EventLoop` on the thread.
-    static THREAD_LOOP_STATE: RefCell<Weak<ThreadLoopState>> = RefCell::new(Weak::new());
+    static THREAD_LOOP_STATE: RefCell<Weak<ThreadLoopState>> = const { RefCell::new(Weak::new()) };
 }
 
 impl ThreadLoopState {
@@ -863,6 +864,8 @@ impl ThreadLoopState {
         crate::timer::register_thread_timer_context(Arc::clone(&timer_registry));
 
         let thread_id = ThreadId::current();
+        // The loop state is deliberately thread-local data shared only through `Arc` handles.
+        #[allow(clippy::arc_with_non_send_sync)]
         let state = Arc::new(Self {
             thread_id,
             dispatcher,
@@ -1451,7 +1454,12 @@ impl EventLoopHandle {
 
     /// See [`EventQueue::post_from_slot`]: the caller drops what is left in the slot, after it has
     /// released every lock it holds.
-    pub(crate) fn post_from_slot(&self, receiver: ObjectId, event: &mut Option<Event>, priority: i32) {
+    pub(crate) fn post_from_slot(
+        &self,
+        receiver: ObjectId,
+        event: &mut Option<Event>,
+        priority: i32,
+    ) {
         // `EventCompressor::try_compress` is user code and runs under the queue lock, because it
         // merges into queued events in place and the merge-or-insert decision must be atomic
         // against other posters and the pump (Qt compresses under the `postEventList` mutex).
@@ -1534,7 +1542,8 @@ pub(crate) fn mark_thread_ended(thread_id: ThreadId) {
 /// starts a loop while its locals are being destroyed.
 pub(crate) fn is_thread_ended(thread_id: ThreadId) -> bool {
     let reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
-    reg.as_ref().is_some_and(|reg| reg.ended.contains(&thread_id))
+    reg.as_ref()
+        .is_some_and(|reg| reg.ended.contains(&thread_id))
 }
 
 /// Registers the live loop for `thread_id` and delivers, in posting order, every event that was
@@ -1629,7 +1638,8 @@ fn routed_thread(receiver: ObjectId, default: ThreadId) -> ThreadId {
 
 pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
     let reg = lock_unpoisoned(&THREAD_EVENT_HANDLES);
-    reg.as_ref().and_then(|r| r.handles.get(&thread_id).cloned())
+    reg.as_ref()
+        .and_then(|r| r.handles.get(&thread_id).cloned())
 }
 
 /// Moves the posted events addressed to `receivers` onto the queue of `to`, and runs `flip` (which
@@ -1764,8 +1774,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.call_count += 1;
                 let mut q = self.queue.lock().unwrap();
@@ -1830,8 +1840,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.received = true;
                 let mut q = self.queue.lock().unwrap();
@@ -1882,8 +1892,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::DeferredDelete { .. }) {
                     self.deleted = true;
@@ -1964,8 +1974,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::Quit { .. }) {
                     self.received_quit = true;
@@ -2045,8 +2055,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::User(..)) {
                     self.counter += 1;
@@ -2100,8 +2110,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.call_count += 1;
                 self.handle
@@ -2117,7 +2127,10 @@ mod tests {
         // SAFETY: this test keeps the relay on this thread and alive through unregister.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
 
-        event_loop.post_event(relay.object_data().id(), Event::new(EventKind::UpdateRequest));
+        event_loop.post_event(
+            relay.object_data().id(),
+            Event::new(EventKind::UpdateRequest),
+        );
 
         let processed = event_loop.process_events(false);
 
@@ -2150,8 +2163,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::UpdateRequest) {
                     self.paint_count += 1;
@@ -2205,8 +2218,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::User(..)) {
                     self.received_event = true;
@@ -2279,8 +2292,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event_filter(&mut self, _watched: ObjectId, _event: &mut Event) -> bool {
                 self.trace.lock().unwrap().push(self.label);
                 if let Some(target) = self.remove_target {
@@ -2312,8 +2325,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 self.trace.lock().unwrap().push("target_event");
                 true
@@ -2401,8 +2414,8 @@ mod tests {
             &self.data
         }
         fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+            crate::object::ObjectDataMut::new(&mut self.data)
+        }
         fn event_filter(&mut self, watched: ObjectId, _event: &mut Event) -> bool {
             self.trace.lock().unwrap().push(self.label);
             let me = self.data.id();
@@ -2432,8 +2445,8 @@ mod tests {
             &self.data
         }
         fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+            crate::object::ObjectDataMut::new(&mut self.data)
+        }
         fn event(&mut self, _event: &mut Event) -> bool {
             self.trace.lock().unwrap().push("target");
             true
@@ -2634,8 +2647,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 true
             }
@@ -2679,8 +2692,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if let EventKind::User(any_data) = &event.kind {
                     let label = *any_data.downcast_ref::<&'static str>().unwrap();
@@ -2757,8 +2770,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if let EventKind::User(any_data) = &event.kind {
                     let label = *any_data.downcast_ref::<&'static str>().unwrap();
@@ -3025,7 +3038,10 @@ mod tests {
         target.0.delete_later();
         el.process_events(false);
         ThreadContext::set_current_loop_level(0);
-        assert!(consumed.load(Ordering::SeqCst), "the DeferredDelete never reached the filter");
+        assert!(
+            consumed.load(Ordering::SeqCst),
+            "the DeferredDelete never reached the filter"
+        );
         assert!(
             crate::object::qobject::registration_thread_of(target_id).is_some(),
             "a consumed DeferredDelete must not destroy the object"
@@ -3106,7 +3122,10 @@ mod tests {
         outer.0.delete_later();
         el.process_events(false);
         ThreadContext::set_current_loop_level(0);
-        assert!(consumed.load(Ordering::SeqCst), "the nested DeferredDelete never reached the filter");
+        assert!(
+            consumed.load(Ordering::SeqCst),
+            "the nested DeferredDelete never reached the filter"
+        );
         assert!(
             crate::object::qobject::registration_thread_of(outer_id).is_none(),
             "the outer object must be destroyed"
@@ -3132,8 +3151,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 if matches!(event.kind, EventKind::DeferredDelete { .. }) {
                     self.deleted.store(true, Ordering::SeqCst);
@@ -3192,8 +3211,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, _event: &mut Event) -> bool {
                 false
             }
@@ -3211,8 +3230,8 @@ mod tests {
                 &self.data
             }
             fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+                crate::object::ObjectDataMut::new(&mut self.data)
+            }
             fn event(&mut self, event: &mut Event) -> bool {
                 match event.kind {
                     EventKind::MouseButtonPress { .. } => {
@@ -3263,7 +3282,9 @@ mod tests {
         let driver = unsafe {
             register_owned_qobject(Driver {
                 data: ObjectData::new(ObjectId::next()),
-                victim_data: victim.with(|v| &v.data as *const ObjectData as usize).unwrap(),
+                victim_data: victim
+                    .with(|v| &v.data as *const ObjectData as usize)
+                    .unwrap(),
                 victim_id,
                 survived_nested: Arc::clone(&survived_nested),
                 deleted_by_outer: Arc::clone(&deleted_by_outer),
@@ -3382,8 +3403,8 @@ mod tests {
         }
 
         fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
-        crate::object::ObjectDataMut::new(&mut self.data)
-    }
+            crate::object::ObjectDataMut::new(&mut self.data)
+        }
     }
 
     fn queued_for_current_thread() -> usize {
@@ -3551,7 +3572,10 @@ mod tests {
             }))),
         );
         assert_eq!(event_loop.exec_after(|| Some(9)), 9);
-        assert!(!ran.load(Ordering::SeqCst), "an event was delivered after the exit");
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "an event was delivered after the exit"
+        );
     }
 
     /// An inner loop that returns must not disturb the outer loop's timers or exit.
@@ -3636,7 +3660,9 @@ mod tests {
         let delivered = Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
         let event = |name: &'static str| {
             let log = Arc::clone(&delivered);
-            Event::new(EventKind::MetaCall(Box::new(move |_| log.lock().push(name))))
+            Event::new(EventKind::MetaCall(Box::new(move |_| {
+                log.lock().push(name)
+            })))
         };
         let el = EventLoop::new();
         let thread = ThreadId::current();
@@ -3853,14 +3879,22 @@ mod merge_index_tests {
         let key = MergeKey::new(3, 0);
 
         for _ in 0..250 {
-            queue.insert_at(0, PostedEvent::new(receiver, update_request(), 0), Some(key));
+            queue.insert_at(
+                0,
+                PostedEvent::new(receiver, update_request(), 0),
+                Some(key),
+            );
         }
         for _ in 0..250 {
             queue.push_back(PostedEvent::new(receiver, update_request(), 0));
         }
         for _ in 0..250 {
             let middle = queue.len() / 2;
-            queue.insert_at(middle, PostedEvent::new(receiver, update_request(), 0), Some(key));
+            queue.insert_at(
+                middle,
+                PostedEvent::new(receiver, update_request(), 0),
+                Some(key),
+            );
         }
         queue.assert_consistent();
 
@@ -4040,8 +4074,10 @@ mod merge_index_tests {
         let replaced = queue.replace_compressor(Arc::new(MergeAll));
         queue.assert_consistent();
         assert_eq!(queue.merge_index.len(), 1, "both are in one class now");
-        assert!(queue.merge_index[&(widget, MergeKey::new(0, 0))][0]
-            < queue.merge_index[&(widget, MergeKey::new(0, 0))][1]);
+        assert!(
+            queue.merge_index[&(widget, MergeKey::new(0, 0))][0]
+                < queue.merge_index[&(widget, MergeKey::new(0, 0))][1]
+        );
 
         queue.post_event(widget, Event::new(EventKind::LayoutRequest));
         assert_eq!(queue.len(), 2, "any event of the receiver is merged now");

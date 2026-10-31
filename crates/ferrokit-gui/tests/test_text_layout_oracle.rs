@@ -55,7 +55,8 @@ const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
 const TOLERANCE: f64 = 1.0 / 128.0;
 
 /// The reason of the `align/syn_align_rtl/*` entries.
-const ALIGN_RTL_WHY: &str = "when a line starts with a run of the opposite direction `cursorToX` of \
+const ALIGN_RTL_WHY: &str =
+    "when a line starts with a run of the opposite direction `cursorToX` of \
      its first position takes the neighbouring item from the previous line and returns a position \
      that depends on that unrelated item (the line width, clamped, or a sum of widths); ferrokit \
      keeps the cursor on the run";
@@ -198,7 +199,11 @@ const KNOWN_DIVERGENCES: &[(&str, &str, Option<f64>)] = &[
     // --- bidi ---
     ("align/syn_align_rtl/right/45", ALIGN_RTL_WHY, Some(20.125)),
     ("align/syn_align_rtl/right/100", ALIGN_RTL_WHY, Some(20.125)),
-    ("align/syn_align_rtl/center/45", ALIGN_RTL_WHY, Some(20.8125)),
+    (
+        "align/syn_align_rtl/center/45",
+        ALIGN_RTL_WHY,
+        Some(20.8125),
+    ),
     ("align/syn_align_rtl/center/100", ALIGN_RTL_WHY, Some(39.75)),
     (
         "hit/syn_hitwrap_rtl_base/45/line0",
@@ -703,7 +708,10 @@ fn run(kinds: &[&str], fonts: &[&str]) {
         .filter(|(k, f, _)| kinds.contains(k) && fonts.contains(f))
         .map(|e| e.2)
         .sum();
-    assert!(expected > 0, "no oracle line is expected for {kinds:?} {fonts:?}");
+    assert!(
+        expected > 0,
+        "no oracle line is expected for {kinds:?} {fonts:?}"
+    );
     assert_eq!(
         lines, expected,
         "the oracle holds {lines} lines for {kinds:?} {fonts:?}, EXPECTED_LINES says {expected}"
@@ -751,8 +759,10 @@ fn the_oracle_file_holds_the_expected_fixtures() {
     for t in oracle_lines() {
         *counts.entry((t[0], t[2])).or_default() += 1;
     }
-    let expected: BTreeMap<(&str, &str), usize> =
-        EXPECTED_LINES.iter().map(|&(k, f, n)| ((k, f), n)).collect();
+    let expected: BTreeMap<(&str, &str), usize> = EXPECTED_LINES
+        .iter()
+        .map(|&(k, f, n)| ((k, f), n))
+        .collect();
     assert_eq!(
         counts, expected,
         "tests/data/text_layout_oracle.txt and EXPECTED_LINES disagree; regenerate the file or \
