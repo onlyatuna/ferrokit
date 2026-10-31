@@ -7,6 +7,7 @@
 
 use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL};
+use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HRGN};
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 /// An owned movable global memory block (`GlobalAlloc(GMEM_MOVEABLE)`), freed with `GlobalFree`.
@@ -71,10 +72,55 @@ impl Drop for GlobalMem {
     }
 }
 
+/// An owned GDI region, deleted with `DeleteObject`.
+///
+/// `SetWindowRgn` takes ownership of the region when it succeeds (and deletes the previous
+/// window region itself); on failure the caller keeps it. So `into_raw` is called only after a
+/// successful `SetWindowRgn`.
+pub(crate) struct OwnedRgn(HRGN);
+
+impl OwnedRgn {
+    /// Takes ownership of a region returned by `CreateRectRgn`/`ExtCreateRegion`; `None` when
+    /// GDI returned null.
+    pub(crate) fn from_raw(rgn: HRGN) -> Option<Self> {
+        (!rgn.is_null()).then_some(Self(rgn))
+    }
+
+    /// The raw handle, still owned by the guard.
+    pub(crate) fn as_raw(&self) -> HRGN {
+        self.0
+    }
+
+    /// Releases ownership to the caller. Use only after the system accepted the region
+    /// (`SetWindowRgn` returned non-zero).
+    #[must_use = "the returned region is no longer deleted by the guard"]
+    pub(crate) fn into_raw(self) -> HRGN {
+        let rgn = self.0;
+        std::mem::forget(self);
+        rgn
+    }
+}
+
+impl Drop for OwnedRgn {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` is a region created by GDI that this guard still owns: `from_raw` only
+        // wraps a region its caller just created and does not share, and `into_raw` forgets the
+        // guard. A region the system took over (SetWindowRgn success) is never wrapped any more.
+        unsafe { DeleteObject(self.0) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Graphics::Gdi::CreateRectRgn;
     use windows_sys::Win32::System::Memory::GlobalSize;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
+    };
 
     #[test]
     fn global_mem_copies_bytes_and_frees_on_drop() {
@@ -102,5 +148,57 @@ mod tests {
         assert!(unsafe { GlobalSize(raw) } >= 1, "into_raw must not free");
         // SAFETY: the test now owns `raw` and frees it exactly once.
         assert!(unsafe { GlobalFree(raw) }.is_null());
+    }
+
+    /// GDI objects of this process. GDI keeps answering queries about a just-deleted region
+    /// handle, so the object count is the reliable witness of a delete.
+    fn gdi_objects() -> u32 {
+        // SAFETY: GetGuiResources only reads the per-process GDI handle count.
+        unsafe { GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS) }
+    }
+
+    const BATCH: u32 = 200;
+
+    fn create_regions() -> Vec<OwnedRgn> {
+        (0..BATCH)
+            .map(|_| {
+                // SAFETY: plain GDI call, the result is checked by from_raw.
+                OwnedRgn::from_raw(unsafe { CreateRectRgn(0, 0, 4, 4) }).expect("region")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn owned_rgn_deletes_on_drop_and_tolerates_null() {
+        assert!(OwnedRgn::from_raw(std::ptr::null_mut()).is_none());
+        let before = gdi_objects();
+        let regions = create_regions();
+        assert!(
+            gdi_objects() >= before + BATCH / 2,
+            "regions are GDI objects"
+        );
+        drop(regions);
+        assert!(
+            gdi_objects() < before + BATCH / 2,
+            "drop must delete the regions"
+        );
+    }
+
+    #[test]
+    fn owned_rgn_into_raw_does_not_delete() {
+        let before = gdi_objects();
+        let raw: Vec<HRGN> = create_regions()
+            .into_iter()
+            .map(OwnedRgn::into_raw)
+            .collect();
+        assert!(
+            gdi_objects() >= before + BATCH / 2,
+            "into_raw must not delete"
+        );
+        for rgn in raw {
+            // SAFETY: the test owns `rgn` again and deletes it once.
+            unsafe { DeleteObject(rgn) };
+        }
+        assert!(gdi_objects() < before + BATCH / 2);
     }
 }
