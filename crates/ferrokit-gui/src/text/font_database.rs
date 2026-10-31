@@ -169,6 +169,7 @@ pub fn uses_directwrite_engine() -> bool {
 }
 
 /// Font hinting style matching Qt's `QFontEngine::HintStyle` (qfontengine_p.h:60).
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HintStyle {
     /// No hinting (`FT_LOAD_NO_HINTING`).
@@ -212,7 +213,7 @@ pub fn default_hint_style() -> HintStyle {
 
 /// Sets the process-wide default hinting style.
 pub fn set_default_hint_style(style: HintStyle) {
-    if DEFAULT_HINT_STYLE.swap(style as u8, Ordering::Release) != style as u8 {
+    if DEFAULT_HINT_STYLE.swap(style as u8, Ordering::AcqRel) != style as u8 {
         FONT_GENERATION.fetch_add(1, Ordering::Release);
     }
 }
@@ -244,6 +245,9 @@ pub fn font_has_subpixel_positions(font: &Font) -> bool {
 
 /// Whether the default font engine at the current device pixel ratio has sub-pixel positions
 /// under default hinting preference ([`font_has_subpixel_positions`]).
+///
+/// Explicitly keeps `cfg!(target_os = "macos")` so standalone callers without a [`Font`] reference
+/// consistently observe CoreText's platform behavior.
 pub fn engine_has_subpixel_positions() -> bool {
     cfg!(target_os = "macos")
         || uses_directwrite_engine()

@@ -154,6 +154,7 @@ pub enum FontStyle {
 }
 
 /// Font hinting preference matching Qt's `QFont::HintingPreference`.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HintingPreference {
