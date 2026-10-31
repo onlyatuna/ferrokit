@@ -9,6 +9,7 @@ use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL};
 use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HRGN};
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreatePopupMenu, DestroyMenu, HMENU};
 
 /// An owned movable global memory block (`GlobalAlloc(GMEM_MOVEABLE)`), freed with `GlobalFree`.
 ///
@@ -113,6 +114,54 @@ impl Drop for OwnedRgn {
     }
 }
 
+/// An owned popup menu, destroyed with `DestroyMenu` (which also destroys its submenus).
+///
+/// `AppendMenuW(MF_POPUP)` makes the parent menu own the appended submenu once it succeeds;
+/// until then the submenu is still owned by its guard, so `into_raw` on a submenu is called only
+/// after that append succeeded.
+pub(crate) struct OwnedMenu(HMENU);
+
+impl OwnedMenu {
+    /// A new empty popup menu; `None` when `CreatePopupMenu` fails.
+    pub(crate) fn create_popup() -> Option<Self> {
+        // SAFETY: CreatePopupMenu takes no arguments; null is mapped to `None`.
+        let menu = unsafe { CreatePopupMenu() };
+        (!menu.is_null()).then_some(Self(menu))
+    }
+
+    /// Takes ownership of `menu`, which may be null (the guard then does nothing on drop).
+    pub(crate) fn from_raw(menu: HMENU) -> Self {
+        Self(menu)
+    }
+
+    /// The raw handle, still owned by the guard.
+    pub(crate) fn as_raw(&self) -> HMENU {
+        self.0
+    }
+
+    /// Releases ownership to the caller: after `AppendMenuW(MF_POPUP)` succeeded (the parent
+    /// owns the submenu now), or where an existing API hands the raw menu to its caller.
+    #[must_use = "the returned menu is no longer destroyed by the guard"]
+    pub(crate) fn into_raw(self) -> HMENU {
+        let menu = self.0;
+        std::mem::forget(self);
+        menu
+    }
+}
+
+impl Drop for OwnedMenu {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: `self.0` is a menu this guard still owns: it came from CreatePopupMenu or from
+        // a builder that handed it over, and it is never attached to a parent (AppendMenuW
+        // MF_POPUP success) or released by `into_raw` while a guard exists, so no one else
+        // destroys it. DestroyMenu is recursive and only fails on an invalid handle.
+        unsafe { DestroyMenu(self.0) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +170,7 @@ mod tests {
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{AppendMenuW, IsMenu, MF_POPUP, MF_STRING};
 
     #[test]
     fn global_mem_copies_bytes_and_frees_on_drop() {
@@ -200,5 +250,53 @@ mod tests {
             unsafe { DeleteObject(rgn) };
         }
         assert!(gdi_objects() < before + BATCH / 2);
+    }
+
+    fn is_menu(menu: HMENU) -> bool {
+        // SAFETY: IsMenu only validates the handle value.
+        unsafe { IsMenu(menu) != 0 }
+    }
+
+    #[test]
+    fn owned_menu_destroys_on_drop_and_tolerates_null() {
+        drop(OwnedMenu::from_raw(std::ptr::null_mut()));
+        let menu = OwnedMenu::create_popup().expect("popup menu");
+        let raw = menu.as_raw();
+        assert!(is_menu(raw));
+        drop(menu);
+        assert!(!is_menu(raw), "drop must destroy the menu");
+    }
+
+    #[test]
+    fn owned_menu_into_raw_after_append_hands_the_submenu_to_the_parent() {
+        let parent = OwnedMenu::create_popup().expect("parent");
+        let sub = OwnedMenu::create_popup().expect("submenu");
+        let sub_raw = sub.as_raw();
+        let text = [b'a' as u16, 0];
+        // SAFETY: both menus are live; `text` is NUL terminated.
+        let appended = unsafe {
+            AppendMenuW(
+                parent.as_raw(),
+                MF_POPUP | MF_STRING,
+                sub_raw as usize,
+                text.as_ptr(),
+            )
+        };
+        assert_ne!(appended, 0);
+        assert_eq!(sub.into_raw(), sub_raw);
+        assert!(is_menu(sub_raw), "into_raw must not destroy the submenu");
+        drop(parent);
+        assert!(
+            !is_menu(sub_raw),
+            "destroying the parent destroys the appended submenu"
+        );
+    }
+
+    #[test]
+    fn owned_menu_not_appended_submenu_is_destroyed_by_its_guard() {
+        let sub = OwnedMenu::create_popup().expect("submenu");
+        let sub_raw = sub.as_raw();
+        drop(sub);
+        assert!(!is_menu(sub_raw));
     }
 }
