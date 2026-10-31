@@ -802,8 +802,8 @@ struct ThreadLoopState {
     dispatcher: DefaultEventDispatcher,
     queue: Arc<Mutex<EventQueue>>,
     timer_registry: Arc<Mutex<TimerRegistry>>,
-    /// Exit flags of every loop running `exec` on this thread, innermost last.
-    running: Arc<parking_lot::Mutex<Vec<LoopExit>>>,
+    /// The loops running `exec` on this thread, and whether they are being ended.
+    running: Arc<parking_lot::Mutex<RunningLoops>>,
 }
 
 /// Exit flags of one running loop. `EventLoop::exit` affects only its own loop
@@ -829,12 +829,36 @@ impl LoopExit {
     }
 }
 
+/// The loops running `exec` on one thread (`QThreadData::eventLoops`) and `QThreadData::quitNow`.
+#[derive(Default)]
+struct RunningLoops {
+    /// Exit flags of every running loop, innermost last.
+    loops: Vec<LoopExit>,
+    /// Set by [`EventLoopHandle::exit`] and by a consumed `WM_QUIT` while loops run: a loop that
+    /// starts before they have all returned (a nested loop entered by an event the exiting loop
+    /// is still delivering) returns -1 at once instead of running on, as `QEventLoop::exec` does
+    /// while `quitNow` is set (qeventloop.cpp:140-143; set by `QThread::exit`,
+    /// qthread.cpp:775-786, and `QCoreApplication::exit`, qcoreapplication.cpp:1526).
+    ///
+    /// Deviation from Qt: Qt sets `quitNow` even when no loop runs, and clears it only at the
+    /// start of `QThread::exec` (qthread.cpp:685) and at both ends of `QCoreApplication::exec`
+    /// (qcoreapplication.cpp:1454, 1459, 1475), so after an exit every later `QEventLoop::exec`
+    /// on the thread returns -1 until one of those runs. Here the flag is set only while a loop
+    /// runs and is cleared when the last running loop returns, so an exit with no loop running is
+    /// a no-op and a later `exec` on the thread runs normally.
+    quit_now: bool,
+}
+
 /// Pops a loop's entry from its thread's running-loop stack when `exec` returns.
-struct RunningLoop(Arc<parking_lot::Mutex<Vec<LoopExit>>>);
+struct RunningLoop(Arc<parking_lot::Mutex<RunningLoops>>);
 
 impl Drop for RunningLoop {
     fn drop(&mut self) {
-        self.0.lock().pop();
+        let mut running = self.0.lock();
+        running.loops.pop();
+        if running.loops.is_empty() {
+            running.quit_now = false;
+        }
     }
 }
 
@@ -871,7 +895,7 @@ impl ThreadLoopState {
             dispatcher,
             queue: Arc::new(Mutex::new(EventQueue::new())),
             timer_registry,
-            running: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            running: Arc::default(),
         });
         register_thread_event_loop(thread_id, state.handle());
         THREAD_LOOP_STATE.with(|slot| *slot.borrow_mut() = Arc::downgrade(&state));
@@ -1109,9 +1133,17 @@ impl EventLoop {
         if let DispatchResult::Quit(code) = res {
             // A `WM_QUIT` is `QCoreApplication::quit`: it ends every loop running on the thread,
             // not only the innermost one, since the message is consumed here and the outer
-            // loops never see it (`QEventDispatcherWin32::processEvents`).
-            for running in self.state.running.lock().iter() {
-                running.request(code);
+            // loops never see it (`QEventDispatcherWin32::processEvents`). As `quit` leads to
+            // `QCoreApplication::exit`, it also sets `quit_now`, so a loop entered before the
+            // running ones return does not run on.
+            {
+                let mut running = self.state.running.lock();
+                if !running.loops.is_empty() {
+                    running.quit_now = true;
+                }
+                for loop_exit in running.loops.iter() {
+                    loop_exit.request(code);
+                }
             }
             self.exit.request(code);
         }
@@ -1133,16 +1165,28 @@ impl EventLoop {
     /// [`EventLoopHandle::exit`]. When it returns `Some(code)` the loop returns `code` at once,
     /// without delivering events, as `QThread::exec` returns the code of an `exit` that came
     /// before it (qthread.cpp:685-689).
+    ///
+    /// A loop entered while the thread's running loops are being ended by
+    /// [`EventLoopHandle::exit`] returns at once too: `pending_exit`'s code, else -1
+    /// (qeventloop.cpp:140-143). Checked under the same lock that `EventLoopHandle::exit` holds
+    /// while it tells the running loops, so a loop is either told or sees the flag.
     pub(crate) fn exec_after(&self, pending_exit: impl FnOnce() -> Option<i32>) -> i32 {
-        // qeventloop.cpp:157-158: entering a loop resets the exit flag, so exit() issued before
-        // exec() does not end this loop.
-        self.exit.exit_requested.store(false, Ordering::SeqCst);
+        {
+            let mut running = self.state.running.lock();
+            if running.quit_now {
+                drop(running);
+                return pending_exit().unwrap_or(-1);
+            }
+            // qeventloop.cpp:157-158: entering a loop resets the exit flag, so exit() issued
+            // before exec() does not end this loop.
+            self.exit.exit_requested.store(false, Ordering::SeqCst);
+            running.loops.push(self.exit.clone());
+        }
+        let _running = RunningLoop(Arc::clone(&self.state.running));
         // qeventloop.cpp:192-195: entering the application's loop drops its stale posted Quit.
         if let Some(app_id) = crate::application::app_object_on_current_thread() {
             lock_unpoisoned(&self.state.queue).remove_posted_quits_for(app_id);
         }
-        self.state.running.lock().push(self.exit.clone());
-        let _running = RunningLoop(Arc::clone(&self.state.running));
         let _level = LoopLevelGuard::enter();
         if let Some(code) = pending_exit() {
             // No events are delivered: the exit came first (qthread.cpp:686-689).
@@ -1437,7 +1481,7 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 pub struct EventLoopHandle {
     pub dispatcher: Arc<dyn EventDispatcherHandle>,
     pub queue: Arc<Mutex<EventQueue>>,
-    running: Arc<parking_lot::Mutex<Vec<LoopExit>>>,
+    running: Arc<parking_lot::Mutex<RunningLoops>>,
 }
 
 impl EventLoopHandle {
@@ -1483,10 +1527,20 @@ impl EventLoopHandle {
         self.dispatcher.wake_up();
     }
 
+    /// Ends every loop running on the thread with `return_code`, and a loop the thread enters
+    /// before they have all returned (it returns -1 at once). With no loop running it does
+    /// nothing.
     pub fn exit(&self, return_code: i32) {
-        // qthread.cpp:754-767: QThread::exit ends every loop running on the thread.
-        for running in self.running.lock().iter() {
-            running.request(return_code);
+        // qthread.cpp:775-786: QThread::exit sets `quitNow` and ends every loop running on the
+        // thread, under the lock `QEventLoop::exec` checks `quitNow` with.
+        {
+            let mut running = self.running.lock();
+            if !running.loops.is_empty() {
+                running.quit_now = true;
+            }
+            for loop_exit in running.loops.iter() {
+                loop_exit.request(return_code);
+            }
         }
         self.dispatcher.wake_up();
     }
