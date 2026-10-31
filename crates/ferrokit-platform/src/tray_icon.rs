@@ -1172,6 +1172,9 @@ impl TrayIcon {
         Ok(())
     }
 
+    /// Shows the context menu at the cursor and emits `on_menu_action` with the chosen command.
+    /// Does nothing when there is no menu, or while a `with_menu_mut` closure runs (a message it
+    /// dispatches may reach this call; the menu cell is busy then).
     pub fn show_context_menu(&self) {
         let mut pt = POINT { x: 0, y: 0 };
         // SAFETY: `GetCursorPos` writes one `POINT` through the pointer; `pt` is a live local.
@@ -1183,6 +1186,7 @@ impl TrayIcon {
         )));
     }
 
+    /// Shows the context menu at `screen_pos`; otherwise as `show_context_menu`.
     pub fn show_context_menu_at(&self, screen_pos: Point) {
         self.shared.show_context_menu_at(screen_pos);
     }
