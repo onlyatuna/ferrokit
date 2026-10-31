@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::geometry::primitives::RectF;
-use crate::text::font::{Font, FontStyle, FontTag, FontWeight};
+use crate::text::font::{Font, FontStyle, FontTag, FontWeight, HintingPreference};
 use crate::text::glyph_face::LineMetrics;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ struct AdvanceKey {
     /// `(tag value, feature value)` of every feature set, in tag order.
     features: Vec<(u32, u32)>,
     letter_spacing_bits: u32,
+    hinting_preference: HintingPreference,
 }
 
 impl AdvanceKey {
@@ -27,6 +28,7 @@ impl AdvanceKey {
             style: font.style,
             features: Self::features_of(font).collect(),
             letter_spacing_bits: font.letter_spacing.to_bits(),
+            hinting_preference: font.hinting_preference,
         }
     }
 
@@ -45,6 +47,7 @@ impl AdvanceKey {
             && self.style == font.style
             && self.letter_spacing_bits == font.letter_spacing.to_bits()
             && self.features.iter().copied().eq(Self::features_of(font))
+            && self.hinting_preference == font.hinting_preference
     }
 
     /// Hash of the query `(text, font)` from borrowed data, so a cache hit allocates nothing.
@@ -60,6 +63,7 @@ impl AdvanceKey {
             feature.hash(&mut h);
         }
         font.letter_spacing.to_bits().hash(&mut h);
+        font.hinting_preference.hash(&mut h);
         h.finish()
     }
 }
@@ -154,7 +158,7 @@ impl FontMetrics {
         let (line, average) = Self::face_metrics(font);
         let average_char_width = average.unwrap_or(size * 0.6);
         if let Some(line) = line {
-            let engine = Self::engine_line_metrics(line);
+            let engine = Self::engine_line_metrics(line, font);
             let (ascent, descent) = (q_round(engine.ascent), q_round(engine.descent));
             return Self {
                 ascent,
@@ -202,7 +206,7 @@ impl FontMetrics {
     pub fn layout_height(font: &Font) -> f32 {
         match Self::face_metrics(font).0 {
             Some(line) => {
-                let engine = Self::engine_line_metrics(line);
+                let engine = Self::engine_line_metrics(line, font);
                 engine.ascent + engine.descent
             }
             None => Self::from_font(font).height,
@@ -218,7 +222,9 @@ impl FontMetrics {
     /// `QFontMetricsF::ascent`, `descent` and `leading` of `font`: the engine's own 26.6 values
     /// (`None` for a font no face resolves for).
     pub fn engine_metrics(font: &Font) -> Option<LineMetrics> {
-        Self::face_metrics(font).0.map(Self::engine_line_metrics)
+        Self::face_metrics(font)
+            .0
+            .map(|line| Self::engine_line_metrics(line, font))
     }
 
     /// `QFontMetricsF::leading`: the engine's own value, a 26.6 number where it has sub-pixel
@@ -227,7 +233,7 @@ impl FontMetrics {
     pub fn layout_leading(font: &Font) -> f32 {
         Self::face_metrics(font)
             .0
-            .map_or(0.0, |line| Self::engine_line_metrics(line).leading)
+            .map_or(0.0, |line| Self::engine_line_metrics(line, font).leading)
     }
 
     /// The distance from one line of a plain text to the next, as `qt_format_text` stacks them
@@ -263,7 +269,7 @@ impl FontMetrics {
             let Some(line) = engines[run.engine_index].face.line_metrics(font.size) else {
                 continue;
             };
-            let engine = Self::engine_line_metrics(line);
+            let engine = Self::engine_line_metrics(line, font);
             ascent = ascent.max(engine.ascent);
             descent = descent.max(engine.descent);
         }
@@ -315,8 +321,8 @@ impl FontMetrics {
     /// The engine's height metrics as Qt holds them: the face's own values where the engine has
     /// sub-pixel positions, else rounded to whole pixels with the leading taking up the rounding
     /// of the line (`QFontEngine::initializeHeightMetrics`).
-    fn engine_line_metrics(line: LineMetrics) -> LineMetrics {
-        if crate::text::font_database::engine_has_subpixel_positions() {
+    fn engine_line_metrics(line: LineMetrics, font: &Font) -> LineMetrics {
+        if crate::text::font_database::font_has_subpixel_positions(font) {
             line
         } else {
             line.rounded()

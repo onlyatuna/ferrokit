@@ -299,6 +299,54 @@ fn labels_of_an_in_memory_font_at_a_ratio_of_one_stack_lines_by_the_leading() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+struct HintGuard(ferrokit_gui::text::font_database::HintStyle);
+#[cfg(not(target_os = "macos"))]
+impl Drop for HintGuard {
+    fn drop(&mut self) {
+        ferrokit_gui::text::font_database::set_default_hint_style(self.0);
+    }
+}
+
+/// Under HintLight (the Linux default, matching fontconfig hintslight) at ratio 1.0, labels
+/// keep fractional line metrics: a 16px line is 16px tall (12.5 + 3.5), leading is 0.0,
+/// so 5 lines of word*40 is 80px (not Windows's 81px) and 3 lines is 48px (not 49px).
+/// Under HintFull (Windows full hinting), it rounds lines to 17px with leading -1, giving 81px and 49px.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn label_size_hints_differ_between_hint_light_and_hint_full_at_ratio_one() {
+    use ferrokit_gui::text::font_database::{
+        default_hint_style, set_default_hint_style, HintStyle,
+    };
+    let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
+    let _hint_guard = HintGuard(default_hint_style());
+    set_application_device_pixel_ratio(1.0);
+
+    // HintLight (Linux desktop default: 80px and 48px)
+    set_default_hint_style(HintStyle::HintLight);
+    let mut lbl = Label::new("word ".repeat(40));
+    lbl.set_font(oracle(16.0));
+    lbl.set_word_wrap(true);
+    assert_eq!(lbl.size_hint().height, 80);
+
+    let mut lbl2 = Label::new("Hello\n\nworld");
+    lbl2.set_font(oracle(16.0));
+    lbl2.set_word_wrap(true);
+    assert_eq!(lbl2.size_hint().height, 48);
+
+    // HintFull (Windows default at ratio 1.0: 81px and 49px)
+    set_default_hint_style(HintStyle::HintFull);
+    let mut lbl_full = Label::new("word ".repeat(40));
+    lbl_full.set_font(oracle(16.0));
+    lbl_full.set_word_wrap(true);
+    assert_eq!(lbl_full.size_hint().height, 81);
+
+    let mut lbl2_full = Label::new("Hello\n\nworld");
+    lbl2_full.set_font(oracle(16.0));
+    lbl2_full.set_word_wrap(true);
+    assert_eq!(lbl2_full.size_hint().height, 49);
+}
+
 /// `QFontMetrics` (ascent, descent, leading, height, lineSpacing, averageCharWidth) and
 /// `QFontMetricsF::averageCharWidth` of an installed font at 12 and 16 px under DirectWrite,
 /// with its label hints.

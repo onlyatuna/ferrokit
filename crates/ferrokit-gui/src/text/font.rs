@@ -153,6 +153,21 @@ pub enum FontStyle {
     Oblique,
 }
 
+/// Font hinting preference matching Qt's `QFont::HintingPreference`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HintingPreference {
+    /// Use the default hinting style of the platform or font engine.
+    #[default]
+    PreferDefaultHinting = 0,
+    /// Do not hint the font; sub-pixel positions are always supported.
+    PreferNoHinting = 1,
+    /// Hint vertically only (light hinting); sub-pixel horizontal positions are supported.
+    PreferVerticalHinting = 2,
+    /// Hint both horizontally and vertically (full hinting); sub-pixel positions are disabled.
+    PreferFullHinting = 3,
+}
+
 /// A four-character OpenType feature tag (`QFont::Tag`), held as the big-endian `u32` of its
 /// bytes, so `FontTag::new(b"tnum").value()` is Qt's `QFont::Tag("tnum").value()`. The default
 /// tag has value 0, which is invalid. Tags compare and order by value, as `QMap` keys do.
@@ -244,6 +259,8 @@ pub struct Font {
     pub letter_spacing: f32,
     /// In-memory binary font data.
     pub font_data: Option<SharedFontData>,
+    /// Font hinting preference (`QFont::hintingPreference`).
+    pub hinting_preference: HintingPreference,
 }
 
 impl Font {
@@ -257,6 +274,7 @@ impl Font {
             features: BTreeMap::new(),
             letter_spacing: 0.0,
             font_data: None,
+            hinting_preference: HintingPreference::PreferDefaultHinting,
         }
     }
     #[inline]
@@ -297,6 +315,21 @@ impl Font {
     #[inline]
     pub fn set_style(&mut self, style: FontStyle) {
         self.style = style;
+    }
+    #[inline]
+    pub fn hinting_preference(&self) -> HintingPreference {
+        self.hinting_preference
+    }
+
+    #[inline]
+    pub fn set_hinting_preference(&mut self, preference: HintingPreference) {
+        self.hinting_preference = preference;
+    }
+
+    #[inline]
+    pub fn with_hinting_preference(mut self, preference: HintingPreference) -> Self {
+        self.hinting_preference = preference;
+        self
     }
 
     /// Sets the font weight.
@@ -400,6 +433,7 @@ pub struct FontDescription {
     pub weight: Option<FontWeight>,
     pub style: Option<FontStyle>,
     pub features: Option<BTreeMap<FontTag, u32>>,
+    pub hinting_preference: Option<HintingPreference>,
 }
 
 impl FontDescription {
@@ -438,6 +472,10 @@ impl FontDescription {
         self.features = Some(features);
         self
     }
+    pub fn with_hinting_preference(mut self, preference: HintingPreference) -> Self {
+        self.hinting_preference = Some(preference);
+        self
+    }
 
     /// Merges this description with parent font, overriding specified properties.
     pub fn merge_with_parent(&self, parent: &Font) -> Font {
@@ -452,6 +490,7 @@ impl FontDescription {
                 .unwrap_or_else(|| parent.features.clone()),
             letter_spacing: parent.letter_spacing,
             font_data: parent.font_data.clone(),
+            hinting_preference: self.hinting_preference.unwrap_or(parent.hinting_preference),
         }
     }
 }
@@ -464,6 +503,7 @@ impl From<&Font> for FontDescription {
             weight: Some(font.weight),
             style: Some(font.style),
             features: Some(font.features.clone()),
+            hinting_preference: Some(font.hinting_preference),
         }
     }
 }
