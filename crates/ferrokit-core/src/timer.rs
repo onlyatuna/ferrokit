@@ -466,8 +466,6 @@ pub(crate) fn is_precise_source(_raw_id: u32) -> bool {
 pub(crate) fn acknowledge_source(raw_id: u32) {
     precise::acknowledge(raw_id);
 }
-#[cfg(not(windows))]
-pub(crate) fn acknowledge_source(_raw_id: u32) {}
 
 /// What to do with a multimedia tick that arrives before the timer's expiry.
 #[derive(Debug, PartialEq, Eq)]
@@ -503,10 +501,6 @@ pub(crate) fn defer_source(_raw_id: u32) {}
 #[cfg(windows)]
 pub(crate) fn take_deferred_sources() -> Vec<u32> {
     precise::take_deferred()
-}
-#[cfg(not(windows))]
-pub(crate) fn take_deferred_sources() -> Vec<u32> {
-    Vec::new()
 }
 
 /// Next expiry of a timer whose ticks come from a fixed grid: the first grid point after `now_ms`
@@ -773,8 +767,6 @@ fn disarm_in_context(ctx: &ThreadTimerContext, receiver: Option<ObjectId>, id: T
             kill_native(ctx.internal_hwnd, id);
         }
     }
-    #[cfg(not(windows))]
-    drop(entry);
     true
 }
 

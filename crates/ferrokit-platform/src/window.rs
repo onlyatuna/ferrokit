@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+// On Windows `HWND` is a pointer; elsewhere it is already an `isize`.
+#![cfg_attr(not(windows), allow(clippy::unnecessary_cast))]
 #[allow(unused_imports)]
 use crate::presenter::SurfacePresenter;
 #[allow(unused_imports)]
@@ -173,6 +175,8 @@ pub fn register_window_event_binding(hwnd: HWND, handle: EventLoopHandle, receiv
         .insert(hwnd as isize, (handle, receiver));
 }
 
+// Only the Windows window procedure (and its test) calls this.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[inline]
 fn wheel_deltas(horizontal: bool, wheel_delta: i32) -> (i32, i32) {
     // Qt negates `WM_MOUSEHWHEEL`: its positive horizontal delta scrolls left, Win32's scrolls right.
