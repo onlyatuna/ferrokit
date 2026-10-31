@@ -2015,7 +2015,7 @@ pub struct NativeWindow {
     title: String,
     flags: WindowFlags,
     geometry: Rect,
-    drop_target: *mut crate::drag_drop::win32_ole::OleDropTarget,
+    drop_target: Option<crate::drag_drop::win32_ole::DropTargetRegistration>,
     opacity: f32,
     size_limits: crate::size_limits::SizeLimits,
     layered_surface: Option<crate::surface::WindowsSurface>,
@@ -2171,7 +2171,7 @@ impl NativeWindow {
             title: title.to_string(),
             flags,
             geometry: rect,
-            drop_target: std::ptr::null_mut(),
+            drop_target: None,
             opacity: 1.0,
             size_limits: crate::size_limits::SizeLimits::default(),
             layered_surface,
@@ -2581,11 +2581,9 @@ impl NativeWindow {
     pub fn close(&mut self) {
         self.layered_surface = None;
         self.presenter = None;
-        if !self.drop_target.is_null() {
-            // `DestroyWindow` neither revokes the OLE registration nor releases our reference.
-            crate::drag_drop::win32_ole::revoke_drop_target(self.hwnd, self.drop_target);
-            self.drop_target = std::ptr::null_mut();
-        }
+        // `DestroyWindow` neither revokes the OLE registration nor releases our reference, so the
+        // registration goes before the window.
+        self.drop_target = None;
         if !self.hwnd.is_null() {
             // Windows would destroy the windows this one owns with it (QTBUG-35499).
             crate::window_region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
@@ -2905,7 +2903,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn enable_drop_target(&mut self, enabled: bool) -> bool {
         if enabled {
-            if !self.drop_target.is_null() {
+            if self.drop_target.is_some() {
                 return true;
             }
             let hwnd_isize = self.hwnd as isize;
@@ -2960,16 +2958,13 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
             if let Ok(target) =
                 crate::drag_drop::win32_ole::register_drop_target(self.hwnd, callback)
             {
-                self.drop_target = target;
+                self.drop_target = Some(target);
                 true
             } else {
                 false
             }
         } else {
-            if !self.drop_target.is_null() {
-                crate::drag_drop::win32_ole::revoke_drop_target(self.hwnd, self.drop_target);
-                self.drop_target = std::ptr::null_mut();
-            }
+            self.drop_target = None;
             true
         }
     }

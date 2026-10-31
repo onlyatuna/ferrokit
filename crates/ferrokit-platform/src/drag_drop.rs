@@ -545,32 +545,51 @@ pub mod win32_ole {
         drop,
     };
 
+    /// A drop target registered for a window with `RegisterDragDrop`. Dropping it revokes the
+    /// registration (`RevokeDragDrop`, which releases OLE's reference) and releases this side's
+    /// reference, so the target is freed once neither OLE nor a running drag holds it.
+    pub struct DropTargetRegistration {
+        hwnd: HWND,
+        target: *mut OleDropTarget,
+    }
+
+    impl Drop for DropTargetRegistration {
+        fn drop(&mut self) {
+            // SAFETY: `target` came from `OleDropTarget::new` in `register_drop_target`, which
+            // handed its one reference to this registration; it is released exactly once, here,
+            // after the registration is revoked. `RevokeDragDrop` takes any handle value.
+            unsafe {
+                RevokeDragDrop(self.hwnd);
+                release(self.target as *mut c_void);
+            }
+        }
+    }
+
+    // `hwnd` is only passed to OLE, which validates it (an invalid window fails the registration);
+    // nothing here dereferences it.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn register_drop_target<F>(
         hwnd: HWND,
         callback: F,
-    ) -> Result<*mut OleDropTarget, &'static str>
+    ) -> Result<DropTargetRegistration, &'static str>
     where
         F: Fn(DropEvent) -> u32 + Send + Sync + 'static,
     {
         use windows_sys::Win32::System::Ole::OleInitialize;
+        // SAFETY: plain OLE calls; `target_ptr` is the live allocation just made, and on failure
+        // OLE took no reference, so it is freed here.
         unsafe {
             OleInitialize(std::ptr::null_mut());
             let target_ptr = OleDropTarget::new(hwnd, callback);
             let hr = RegisterDragDrop(hwnd, target_ptr as *mut _);
             if hr == S_OK {
-                Ok(target_ptr)
+                Ok(DropTargetRegistration {
+                    hwnd,
+                    target: target_ptr,
+                })
             } else {
                 let _ = Box::from_raw(target_ptr);
                 Err("RegisterDragDrop failed")
-            }
-        }
-    }
-
-    pub fn revoke_drop_target(hwnd: HWND, target: *mut OleDropTarget) {
-        unsafe {
-            RevokeDragDrop(hwnd);
-            if !target.is_null() {
-                release(target as *mut c_void);
             }
         }
     }
