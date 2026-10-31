@@ -574,22 +574,70 @@ impl GlyphLayout {
     /// Whether `text` holds a sequence that Qt shapes in an emoji font as one item even when the
     /// primary font has a glyph for every character of it (the keycap `1` U+FE0F U+20E3 is
     /// all Arial characters): `QTextEngine::itemize` splits emoji sequences off with its emoji
-    /// segmenter. Such text needs the fallback fonts loaded.
+    /// segmenter. Such text needs the fallback fonts loaded. Only real emoji sequences count: a
+    /// ZWJ next to a pictograph (a skin tone or variation selector may sit between them), U+FE0F
+    /// after a character that has an emoji form, and a keycap U+20E3 after `0`-`9`, `#` or `*`.
+    /// The ZWJ of Arabic, Persian or Indic text is not one.
     pub(crate) fn has_emoji_sequence(text: &str) -> bool {
-        text.contains(['\u{200d}', '\u{fe0f}', '\u{20e3}'])
+        if !text.contains(['\u{200d}', '\u{fe0f}', '\u{20e3}']) {
+            return false;
+        }
+        // The last character that is neither a variation selector nor a skin tone modifier: what
+        // a following selector, keycap or ZWJ attaches to.
+        let mut base: Option<char> = None;
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            let sequence = match c {
+                '\u{200d}' => {
+                    base.is_some_and(Self::is_pictographic)
+                        || chars.peek().copied().is_some_and(Self::is_pictographic)
+                }
+                '\u{fe0f}' => base.is_some_and(Self::is_emoji_base),
+                '\u{20e3}' => base.is_some_and(|b| matches!(b, '0'..='9' | '#' | '*')),
+                _ => false,
+            };
+            if sequence {
+                return true;
+            }
+            if !matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}') {
+                base = Some(c);
+            }
+        }
+        false
     }
 
-    /// Whether `c` can start an emoji sequence: a pictograph or symbol block character, or a
-    /// keycap base.
+    /// Whether `c` is in the blocks of the `Extended_Pictographic` characters (an approximation
+    /// without the Unicode emoji tables: the pictograph, symbol and arrow blocks and the few
+    /// pictographs outside them; regional indicators and skin tone modifiers are not).
+    fn is_pictographic(c: char) -> bool {
+        matches!(
+            c as u32,
+            0xA9 | 0xAE
+                | 0x203C
+                | 0x2049
+                | 0x2122
+                | 0x2139
+                | 0x2194..=0x2199
+                | 0x21A9..=0x21AA
+                | 0x231A..=0x23FF
+                | 0x24C2
+                | 0x25A0..=0x27BF
+                | 0x2934..=0x2935
+                | 0x2B05..=0x2B55
+                | 0x3030
+                | 0x303D
+                | 0x3297
+                | 0x3299
+                | 0x1F000..=0x1F1E5
+                | 0x1F200..=0x1F3FA
+                | 0x1F400..=0x1FAFF
+                | 0x1FC00..=0x1FFFD
+        )
+    }
+
+    /// Whether `c` can start an emoji sequence: a pictograph or a keycap base.
     fn is_emoji_base(c: char) -> bool {
-        let cp = c as u32;
-        cp >= 0x1F000
-            || (0x2190..=0x2BFF).contains(&cp)
-            || matches!(
-                cp,
-                0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x3030 | 0x303D | 0x3297 | 0x3299
-            )
-            || matches!(c, '0'..='9' | '#' | '*')
+        Self::is_pictographic(c) || matches!(c, '0'..='9' | '#' | '*')
     }
 
     /// Qt shapes an emoji sequence (a ZWJ family, a keycap, a character with the emoji variation
@@ -881,6 +929,33 @@ mod tests {
         let data = raw.as_slice().to_vec();
         let face = parse_face(&SharedFontData::from_vec(data.clone()), 0).unwrap();
         (Arc::new(data), face)
+    }
+
+    #[test]
+    fn only_real_emoji_sequences_need_the_emoji_fallback() {
+        for text in [
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", // family
+            "\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}",         // skin tone before the ZWJ
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}",           // VS16 before the ZWJ
+            "x\u{200D}\u{1F525}",                          // ZWJ before a pictograph
+            "\u{2764}\u{FE0F}",                            // emoji presentation
+            "1\u{FE0F}\u{20E3}",                           // keycap
+            "#\u{20E3}",                                   // keycap without VS16
+            "a \u{2600}\u{FE0F} b",
+        ] {
+            assert!(GlyphLayout::has_emoji_sequence(text), "{text:?}");
+        }
+        for text in [
+            "plain",
+            "\u{0645}\u{200D}",                 // Arabic joining
+            "\u{0645}\u{06CC}\u{200C}\u{200D}", // Persian
+            "\u{0915}\u{094D}\u{200D}\u{0937}", // Devanagari half form
+            "a\u{FE0F}",                        // no emoji form
+            "x\u{20E3}",                        // not a keycap base
+            "\u{1F3FB}\u{200D}a",               // a lone modifier is no pictograph
+        ] {
+            assert!(!GlyphLayout::has_emoji_sequence(text), "{text:?}");
+        }
     }
 
     #[test]

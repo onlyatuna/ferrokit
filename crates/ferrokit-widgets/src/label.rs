@@ -208,12 +208,23 @@ impl Label {
 
     /// The plain text as `QLabel` measures and draws it (`qt_format_text`): a carriage return in
     /// front of a line feed has no width, any other one is as wide as a space (measured: `"a\rb"` is
-    /// as wide as `"a b"`, `"a\r\nb"` and `"a\r\r\nb"` are two lines of `"a"` and `"b"`).
+    /// as wide as `"a b"`, `"a\r\nb"` and `"a\r\r\nb"` are two lines of `"a"` and `"b"`). The line
+    /// separator U+2028 ends a line like a line feed. The paragraph separator U+2029 neither
+    /// ends a line nor has a width; a line may break after it. That is what a zero width space
+    /// does, so it becomes one: the document would split its paragraphs at U+2029, and plain
+    /// drawing would draw its missing glyph (measured with PySide6 6.11.2: `"ab\u{2029}cd"` and
+    /// `"ab\u{200b}cd"` give the same widths and line counts, wrapped or not, at every width
+    /// tried; Qt's zero width space only adds a fallback font to the line height, which
+    /// ferrokit's does not).
     fn plain_text(&self) -> std::borrow::Cow<'_, str> {
-        if !self.text.contains('\r') {
+        if !self.text.contains(['\r', '\u{2028}', '\u{2029}']) {
             return std::borrow::Cow::Borrowed(&self.text);
         }
-        let mut lines: Vec<&str> = self.text.split('\n').collect();
+        let text = self
+            .text
+            .replace('\u{2028}', "\n")
+            .replace('\u{2029}', "\u{200b}");
+        let mut lines: Vec<&str> = text.split('\n').collect();
         let last = lines.len() - 1;
         for line in &mut lines[..last] {
             *line = line.trim_end_matches('\r');

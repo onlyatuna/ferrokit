@@ -101,9 +101,11 @@ fn tab_width(x: f32, distance: f32) -> f32 {
 
 /// Whether a grapheme is left out of shaping and drawing and has no advance: a line feed, a
 /// carriage return (alone or as the `"\r\n"` cluster; Qt measures `\r` as a character of no width
-/// too) or the line separator.
+/// too), the line separator or the paragraph separator U+2029 (`QTextEngine::itemize` flags both
+/// separators `LineOrParagraphSeparator` and gives them no width; unlike U+2028, U+2029 does not
+/// end a line of a `QTextLayout`, it is only a break opportunity).
 fn is_unshaped(grapheme: &str) -> bool {
-    matches!(grapheme, "\n" | "\r" | "\r\n") || grapheme == LINE_SEPARATOR
+    matches!(grapheme, "\n" | "\r" | "\r\n" | "\u{2029}") || grapheme == LINE_SEPARATOR
 }
 
 /// Whether a grapheme is white space that hangs past the end of a wrapped line instead of
@@ -475,7 +477,7 @@ impl TextLayout {
                 natural_width: 0.0,
                 advance_width: 0.0,
                 right_limit: self.position.x + self.wrap_width.unwrap_or(f32::INFINITY),
-                levels: Vec::new(),
+                runs: Vec::new(),
                 base_rtl: composite.base_rtl,
                 is_last: true,
                 grapheme_x_advances: vec![0.0],
@@ -724,10 +726,13 @@ impl TextLayout {
             natural_width: natural_w,
             advance_width: advance_w,
             right_limit,
-            levels: match composite.levels.get(line_start_grapheme..curr_grapheme) {
-                Some(levels) if levels.iter().any(|&l| l != 0) => levels.to_vec(),
-                _ => Vec::new(),
-            },
+            runs: crate::text::line::visual_runs(
+                composite
+                    .levels
+                    .get(line_start_grapheme..curr_grapheme)
+                    .unwrap_or(&[]),
+                &advances,
+            ),
             base_rtl: composite.base_rtl,
             is_last: curr_grapheme >= total_graphemes && !ends_with_break,
             grapheme_x_advances: advances,
@@ -922,12 +927,9 @@ impl TextLayout {
         default_color: Color,
     ) {
         // With right to left text on the line the span sits where its bidi run is shown.
-        let run_left = if line.levels.is_empty() {
-            0.0
-        } else {
-            line.run_left_of(span.start - line.text_start)
-                .map_or(0.0, |v| v.left)
-        };
+        let run_left = line
+            .run_left_of(span.start - line.text_start)
+            .map_or(0.0, |v| v.left);
         let origin = PointF::new(pos.x + line.position.x + run_left, line_y);
         for (color, glyphs) in self.span_runs(composite, paragraph, span, default_color) {
             painter.draw_glyph_run_colored(origin, &glyphs, &paragraph.engines, &self.font, color);
@@ -1402,39 +1404,27 @@ mod tests {
         assert!((line.natural_text_width() - expected).abs() < 1e-3);
     }
 
-    /// A font and a letter pair its shaping kerns: the pair is measurably narrower shaped than
-    /// as two separate letters. `None` on a machine with none of the usual fonts.
-    fn kerned_pair() -> Option<(Font, &'static str)> {
-        let families = [
-            "Segoe UI",
-            "Arial",
-            "Calibri",
-            "Microsoft JhengHei UI",
-            "DejaVu Sans",
-        ];
-        for family in families {
-            let font = Font::new(family, 16.0);
-            let metrics = FontMetrics::from_font(&font);
-            for pair in ["AV", "To", "Wa", "AT", "Ty", "LT"] {
-                let whole = metrics.horizontal_advance_exact(pair, &font);
-                let apart: f32 = pair
-                    .chars()
-                    .map(|c| metrics.horizontal_advance_exact(&c.to_string(), &font))
-                    .sum();
-                if (whole - apart).abs() > 0.25 {
-                    return Some((font, pair));
-                }
-            }
-        }
-        None
+    /// The embedded oracle font and a letter pair its kerning narrows by 2 px, so these tests run
+    /// on every machine.
+    fn kerned_pair() -> (Font, &'static str) {
+        let font = oracle_font();
+        let pair = "AV";
+        let metrics = FontMetrics::from_font(&font);
+        let whole = metrics.horizontal_advance_exact(pair, &font);
+        let apart: f32 = pair
+            .chars()
+            .map(|c| metrics.horizontal_advance_exact(&c.to_string(), &font))
+            .sum();
+        assert!(
+            (whole - apart).abs() > 0.25,
+            "precondition: the oracle font kerns {pair} ({whole} vs {apart})"
+        );
+        (font, pair)
     }
 
     #[test]
     fn grapheme_advances_are_shaped_not_summed_per_grapheme() {
-        let Some((font, pair)) = kerned_pair() else {
-            eprintln!("no kerning font installed; skipping");
-            return;
-        };
+        let (font, pair) = kerned_pair();
         let metrics = FontMetrics::from_font(&font);
         let advances = metrics.grapheme_advances(pair, &font);
         let whole = metrics.horizontal_advance_exact(pair, &font);
@@ -1449,10 +1439,7 @@ mod tests {
 
     #[test]
     fn wrapping_measures_kerned_runs_as_shaped() {
-        let Some((font, pair)) = kerned_pair() else {
-            eprintln!("no kerning font installed; skipping");
-            return;
-        };
+        let (font, pair) = kerned_pair();
         let metrics = FontMetrics::from_font(&font);
         let text = pair.repeat(8); // no break opportunity: wrapping falls back to a grapheme cut
         let advances = metrics.grapheme_advances(&text, &font);
@@ -1495,10 +1482,7 @@ mod tests {
 
     #[test]
     fn cursor_positions_follow_shaped_grapheme_boundaries() {
-        let Some((font, pair)) = kerned_pair() else {
-            eprintln!("no kerning font installed; skipping");
-            return;
-        };
+        let (font, pair) = kerned_pair();
         let metrics = FontMetrics::from_font(&font);
         let text = pair.repeat(3);
         let advances = metrics.grapheme_advances(&text, &font);
@@ -2043,5 +2027,20 @@ mod tests {
             large <= 5 * small,
             "4x the text scanned {large} graphemes against {small}: not linear"
         );
+    }
+
+    #[test]
+    fn a_document_block_is_laid_out_once() {
+        // Every layout pass builds (and shapes) the composite text once; laying a wrapped block
+        // with custom tab stops out must not build it for the unwrapped width first.
+        let mut doc = crate::text::document::TextDocument::from_plain_text("ab\tcd ef gh");
+        doc.set_default_font(oracle_font());
+        doc.set_tab_stop_distance(30.0);
+        doc.set_text_width(40.0);
+        let block = doc.block_at(0).unwrap();
+        COMPOSITE_BUILDS.with(|c| c.set(0));
+        let layout = doc.block_layout(block);
+        assert!(layout.line_count() > 1);
+        assert_eq!(COMPOSITE_BUILDS.with(Cell::get), 1);
     }
 }

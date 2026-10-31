@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Identity of a shaped-width query: everything `horizontal_advance_exact` depends on.
-#[derive(Hash, PartialEq, Eq)]
 struct AdvanceKey {
     text: String,
     family: String,
@@ -17,17 +16,70 @@ struct AdvanceKey {
     letter_spacing_bits: u32,
 }
 
+impl AdvanceKey {
+    fn new(text: &str, font: &Font) -> Self {
+        Self {
+            text: text.to_owned(),
+            family: font.family.clone(),
+            size_bits: font.size.to_bits(),
+            weight: font.weight,
+            style: font.style,
+            features: Self::features_of(font).collect(),
+            letter_spacing_bits: font.letter_spacing.to_bits(),
+        }
+    }
+
+    fn features_of(font: &Font) -> impl Iterator<Item = (u32, u32)> + '_ {
+        font.features()
+            .iter()
+            .map(|(tag, value)| (tag.value(), *value))
+    }
+
+    /// Whether this key is the query `(text, font)`, compared without building a key.
+    fn is(&self, text: &str, font: &Font) -> bool {
+        self.text == text
+            && self.family == font.family
+            && self.size_bits == font.size.to_bits()
+            && self.weight == font.weight
+            && self.style == font.style
+            && self.letter_spacing_bits == font.letter_spacing.to_bits()
+            && self.features.iter().copied().eq(Self::features_of(font))
+    }
+
+    /// Hash of the query `(text, font)` from borrowed data, so a cache hit allocates nothing.
+    fn hash_of(text: &str, font: &Font) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        font.family.hash(&mut h);
+        font.size.to_bits().hash(&mut h);
+        font.weight.hash(&mut h);
+        font.style.hash(&mut h);
+        for feature in Self::features_of(font) {
+            feature.hash(&mut h);
+        }
+        font.letter_spacing.to_bits().hash(&mut h);
+        h.finish()
+    }
+}
+
 struct AdvanceCache {
     generation: u64,
-    map: HashMap<AdvanceKey, f32>,
+    /// Entries by [`AdvanceKey::hash_of`]; a bucket holds the keys that share a hash.
+    map: HashMap<u64, Vec<(AdvanceKey, f32)>>,
+    /// Number of entries over all buckets.
+    len: usize,
 }
 
 /// Upper bound on cached strings; the cache is simply cleared when it is exceeded.
 const ADVANCE_CACHE_MAX: usize = 4096;
 
 thread_local! {
-    static ADVANCE_CACHE: RefCell<AdvanceCache> =
-        RefCell::new(AdvanceCache { generation: 0, map: HashMap::new() });
+    static ADVANCE_CACHE: RefCell<AdvanceCache> = RefCell::new(AdvanceCache {
+        generation: 0,
+        map: HashMap::new(),
+        len: 0,
+    });
     static LINE_CACHE: RefCell<LineCache> =
         RefCell::new(LineCache { generation: 0, map: HashMap::new() });
 }
@@ -201,6 +253,10 @@ impl FontMetrics {
                 self.average_char_width * 1.05
             } else {
                 match ch {
+                    // Zero width space, joiners, direction marks, word joiner, invisible
+                    // operators and the byte order mark have no width in any font (shaping
+                    // hides them); text made of them alone shapes to no width and lands here.
+                    '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}' => 0.0,
                     ' ' => self.average_char_width * 0.5,
                     '.' | ',' | ':' | ';' | '!' | '|' | '\'' | '`' => {
                         self.average_char_width * 0.35
@@ -228,26 +284,19 @@ impl FontMetrics {
             return self.shape_advance(text, font);
         }
         let generation = crate::text::font_database::font_generation();
-        let key = AdvanceKey {
-            text: text.to_owned(),
-            family: font.family.clone(),
-            size_bits: font.size.to_bits(),
-            weight: font.weight,
-            style: font.style,
-            features: font
-                .features()
-                .iter()
-                .map(|(tag, value)| (tag.value(), *value))
-                .collect(),
-            letter_spacing_bits: font.letter_spacing.to_bits(),
-        };
+        let hash = AdvanceKey::hash_of(text, font);
         let hit = ADVANCE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
             if c.generation != generation {
                 c.map.clear();
+                c.len = 0;
                 c.generation = generation;
             }
-            c.map.get(&key).copied()
+            c.map
+                .get(&hash)?
+                .iter()
+                .find(|(key, _)| key.is(text, font))
+                .map(|&(_, w)| w)
         });
         if let Some(w) = hit {
             return w;
@@ -263,10 +312,15 @@ impl FontMetrics {
         };
         ADVANCE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
-            if c.map.len() >= ADVANCE_CACHE_MAX {
+            if c.len >= ADVANCE_CACHE_MAX {
                 c.map.clear();
+                c.len = 0;
             }
-            c.map.insert(key, w);
+            c.map
+                .entry(hash)
+                .or_default()
+                .push((AdvanceKey::new(text, font), w));
+            c.len += 1;
         });
         w
     }
@@ -413,6 +467,62 @@ impl FontMetrics {
 mod tests {
     use super::*;
     use crate::text::font::Font;
+
+    /// Text of zero width characters alone shapes to no width and falls back to the heuristic,
+    /// which must not give them a width (Qt: a label of a lone U+200B is 0 px wide).
+    #[test]
+    fn zero_width_characters_have_no_heuristic_width() {
+        let font = Font::new("FerrokitOracleText", 16.0).with_font_data(
+            crate::text::font::SharedFontData::from_vec(
+                include_bytes!("../../tests/data/oracle_text.ttf").to_vec(),
+            ),
+        );
+        let metrics = FontMetrics::from_font(&font);
+        for text in [
+            "\u{200b}",
+            "\u{200d}",
+            "\u{2060}",
+            "\u{feff}",
+            "\u{200b}\u{200b}",
+        ] {
+            assert_eq!(metrics.horizontal_advance(text, &font), 0.0, "{text:?}");
+            assert_eq!(
+                metrics.horizontal_advance_exact(text, &font),
+                0.0,
+                "{text:?}"
+            );
+        }
+        assert!(metrics.horizontal_advance("a", &font) > 0.0);
+    }
+
+    /// The cache is looked up with the borrowed query: a key matches its own query and no query
+    /// that differs in any field, and equal queries hash alike.
+    #[test]
+    fn advance_keys_match_only_their_own_query() {
+        let font = Font::new("Arial", 12.0).with_feature(FontTag::TNUM, 1);
+        let key = AdvanceKey::new("Wa", &font);
+        assert!(key.is("Wa", &font));
+        assert_eq!(
+            AdvanceKey::hash_of("Wa", &font),
+            AdvanceKey::hash_of("Wa", &font.clone())
+        );
+        let mut spaced = font.clone();
+        spaced.letter_spacing = 1.0;
+        let others = [
+            Font::new("Arial", 12.0),
+            Font::new("Arial", 12.0).with_feature(FontTag::TNUM, 0),
+            Font::new("Arial", 13.0).with_feature(FontTag::TNUM, 1),
+            Font::new("Arial Black", 12.0).with_feature(FontTag::TNUM, 1),
+            font.clone().with_weight(FontWeight::Bold),
+            font.clone().with_style(FontStyle::Italic),
+            spaced,
+        ];
+        for other in &others {
+            assert!(!key.is("Wa", other), "{other:?}");
+        }
+        assert!(!key.is("Wa ", &font));
+        assert!(!key.is("W", &font));
+    }
 
     /// Whole-pixel ascent/descent of Segoe UI as `QFontMetrics` reports them (measured with
     /// PySide6 6.11.2 on Windows: 11px -> 12/3 = 15, 12px -> 13/3 = 16).

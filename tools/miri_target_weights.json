@@ -552,6 +552,10 @@
       "SB": 1,
       "TB": 1
     },
+    "test_label_separators": {
+      "SB": 2,
+      "TB": 3
+    },
     "test_label_tabs": {
       "SB": 2,
       "TB": 3

@@ -283,6 +283,17 @@ fn test_document_html_and_markdown_serialization() {
     assert!(md_out.contains("**BoldText**"));
 }
 
+/// Foreground colour the highlighter overlay (`QTextLayout::additionalFormats`) gives to the
+/// graphemes `start..start + len` of block `block`.
+fn overlay_foreground(doc: &TextDocument, block: usize, start: usize, len: usize) -> Option<Color> {
+    doc.block_at(block)
+        .unwrap()
+        .additional_formats()
+        .iter()
+        .find(|r| r.start <= start && start + len <= r.start + r.length)
+        .and_then(|r| r.format.foreground)
+}
+
 #[test]
 fn test_syntax_highlighter() {
     let mut doc = TextDocument::new();
@@ -297,23 +308,19 @@ fn test_syntax_highlighter() {
     highlighter.rehighlight(&mut doc);
 
     // The highlight is an overlay (`QTextLayout::additionalFormats`): the document fragments keep
-    // their user formats, and `effective_fragments` merges the overlay in.
+    // their user formats, and the overlay carries the highlight.
     let block0 = doc.block_at(0).unwrap();
     assert!(block0
         .fragments()
         .iter()
         .all(|f| f.char_format().foreground.is_none()));
-    assert!(block0
-        .effective_fragments()
-        .iter()
-        .any(|f| f.text() == "fn" && f.char_format().foreground.is_some()));
+    assert!(overlay_foreground(&doc, 0, 0, 2).is_some(), "fn");
 
     // Verify block 2 has comment color
-    let block2 = doc.block_at(2).unwrap();
-    assert!(block2
-        .effective_fragments()
-        .iter()
-        .any(|f| f.char_format().foreground == Some(Color::from_rgba8(0, 128, 0, 255))));
+    assert_eq!(
+        overlay_foreground(&doc, 2, 4, 10),
+        Some(Color::from_rgba8(0, 128, 0, 255))
+    );
 }
 
 #[test]
@@ -335,19 +342,12 @@ fn test_rehighlight_preserves_user_character_formatting() {
         &before[..],
         "fragments untouched"
     );
-    let fn_color = |doc: &TextDocument| {
-        doc.block_at(0)
-            .unwrap()
-            .effective_fragments()
-            .iter()
-            .find(|f| f.text() == "fn")
-            .and_then(|f| f.char_format().foreground)
-    };
+    let fn_color = |doc: &TextDocument| overlay_foreground(doc, 0, 0, 2);
     assert_eq!(fn_color(&doc), Some(Color::from_rgba8(200, 0, 100, 255)));
 
     // Dropping the rule and rehighlighting restores the user colour.
     SyntaxHighlighter::new().rehighlight(&mut doc);
-    assert_eq!(doc.block_at(0).unwrap().effective_fragments(), before);
+    assert_eq!(fn_color(&doc), None);
     assert_eq!(doc.block_at(0).unwrap().fragments(), &before[..]);
 }
 
@@ -364,12 +364,7 @@ fn test_highlight_overlay_survives_fragment_splitting() {
     let user = TextCharFormat::default().with_background(Color::from_rgba8(9, 9, 9, 255));
     doc.merge_char_format(1, 4, &user);
     assert!(doc.block_at(0).unwrap().fragments().len() > 1);
-    assert!(doc
-        .block_at(0)
-        .unwrap()
-        .effective_fragments()
-        .iter()
-        .any(|f| f.char_format().foreground == Some(color)));
+    assert_eq!(overlay_foreground(&doc, 0, 0, 2), Some(color));
 }
 
 #[test]
@@ -390,12 +385,7 @@ fn test_exports_do_not_include_highlighter_overlay_like_qt() {
     );
     highlighter.rehighlight(&mut doc);
     // The overlay is applied for display ...
-    assert!(doc
-        .block_at(0)
-        .unwrap()
-        .effective_fragments()
-        .iter()
-        .any(|f| f.char_format().foreground.is_some()));
+    assert!(overlay_foreground(&doc, 0, 0, 2).is_some());
     // ... but the exports are unchanged and keep the user's own bold.
     assert_eq!(doc.to_html(), user_html);
     assert_eq!(doc.to_markdown(), user_markdown);
@@ -615,6 +605,73 @@ fn oracle_document(text: &str) -> TextDocument {
     doc
 }
 
+/// U+2029 has no width in a `QTextLayout` and does not end its line, but a line may break
+/// after it. Lines are `(textStart, textLength, naturalTextWidth, cursorToX of every
+/// position)` measured with PySide6 6.11.2 and the oracle font.
+#[test]
+fn test_a_paragraph_separator_has_no_width_as_in_qt() {
+    type Line = (usize, usize, f32, &'static [f32]);
+    let cases: [(&str, Option<f32>, &[Line]); 6] = [
+        (
+            "ab\u{2029}cd",
+            None,
+            &[(0, 5, 30.75, &[0.0, 7.5, 15.125, 15.125, 22.875, 30.75])],
+        ),
+        (
+            "ab\u{2029}",
+            None,
+            &[(0, 3, 15.125, &[0.0, 7.5, 15.125, 15.125])],
+        ),
+        ("\u{2029}", None, &[(0, 1, 0.0, &[0.0, 0.0])]),
+        (
+            "a\u{2029}\u{2029}b",
+            None,
+            &[(0, 4, 15.125, &[0.0, 7.5, 7.5, 7.5, 15.125])],
+        ),
+        (
+            "aaa\u{2029}bbb",
+            Some(40.0),
+            &[
+                (0, 4, 22.5, &[0.0, 7.5, 15.0, 22.5, 22.5]),
+                (4, 3, 22.875, &[0.0, 7.625, 15.25, 22.875]),
+            ],
+        ),
+        (
+            "aaa\u{2029}bbb",
+            Some(50.0),
+            &[(
+                0,
+                7,
+                45.375,
+                &[0.0, 7.5, 15.0, 22.5, 22.5, 30.125, 37.75, 45.375],
+            )],
+        ),
+    ];
+    for (text, width, expected) in cases {
+        let font = oracle_document("").default_font().clone();
+        let mut layout = TextLayout::new(text, font);
+        if let Some(w) = width {
+            layout.set_wrap_mode(WrapMode::WrapAtWordBoundaryOrAnywhere);
+            layout.set_wrap_width(Some(w));
+        }
+        layout.do_layout();
+        let got: Vec<(usize, usize, f32, Vec<f32>)> = (0..layout.line_count())
+            .map(|i| {
+                let l = layout.line_at(i).unwrap();
+                let xs = (l.text_start()..=l.text_start() + l.text_length())
+                    .map(|p| l.cursor_to_x(p, Edge::Leading))
+                    .collect();
+                (l.text_start(), l.text_length(), l.natural_text_width(), xs)
+            })
+            .collect();
+        let want: Vec<(usize, usize, f32, Vec<f32>)> = expected
+            .iter()
+            .map(|&(s, n, w, xs)| (s, n, w, xs.to_vec()))
+            .collect();
+        assert_eq!(got, want, "{text:?} at {width:?}");
+    }
+}
+
 /// `Up` and `Down` keep the x coordinate in a document without a text width too, not the grapheme
 /// column. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 (document margin 0), so the
 /// same column is a different x on the lines of `"bbbbbb\n      ab\nbbbbbbbb"`.
@@ -674,8 +731,18 @@ fn test_cursor_sticky_x_without_wrapping() {
         11,
         "clamped into the short line"
     );
-    // A zero-count move does not reset it.
-    c.move_position(&doc, MoveOperation::Left, MoveMode::MoveAnchor, 0);
+    // A zero-count move, vertical or not, does not reset it.
+    for op in [MoveOperation::Left, MoveOperation::Up, MoveOperation::Down] {
+        for mode in [MoveMode::MoveAnchor, MoveMode::KeepAnchor] {
+            let mut c = c.clone();
+            c.move_position(&doc, op, mode, 0);
+            assert_eq!(
+                press(&mut c, &doc, MoveOperation::Up),
+                5,
+                "back at the original x after {op:?} x0"
+            );
+        }
+    }
     assert_eq!(
         press(&mut c, &doc, MoveOperation::Up),
         5,
@@ -717,4 +784,75 @@ fn test_cursor_sticky_x_without_wrapping() {
         press(&mut c, &doc2, MoveOperation::Down),
         press(&mut fresh, &doc2, MoveOperation::Down)
     );
+}
+
+/// `Up`/`Down` through narrow wrapped blocks with an empty block between them keep the x of the
+/// first move. Positions are `QTextCursor::movePosition` of PySide6 6.11.2 with the oracle font,
+/// document margin 0 and a text width of 60 px (the blocks wrap as `"bbbbbb "|"bb"`, `""`,
+/// `"bb "|"bbbbbbb"|"b"` and `"bb "|"bbbbbb"`, `""`, `"bbbbbb "|"bb"`).
+#[test]
+fn test_cursor_sticky_x_across_wrapped_lines_and_an_empty_block_as_in_qt() {
+    let cases: [(&str, usize, &str, &[usize]); 4] = [
+        (
+            "bbbbbb bb\n\nbb bbbbbbbb",
+            5,
+            "DDDDUUUU",
+            &[9, 10, 13, 19, 13, 10, 9, 5],
+        ),
+        (
+            "bbbbbb bb\n\nbb bbbbbbbb",
+            8,
+            "DDDUUU",
+            &[10, 12, 15, 12, 10, 8],
+        ),
+        (
+            "bb bbbbbb\n\nbbbbbb bb",
+            6,
+            "DDDUUU",
+            &[10, 14, 20, 14, 10, 6],
+        ),
+        (
+            "bb bbbbbb\n\nbbbbbb bb",
+            8,
+            "DDDDUUUU",
+            &[10, 16, 20, 20, 16, 10, 8, 2],
+        ),
+    ];
+    for (text, start, moves, expected) in cases {
+        let mut doc = oracle_document(text);
+        doc.set_text_width(60.0);
+        let mut cursor = TextCursor::at_position(start);
+        let got: Vec<usize> = moves
+            .chars()
+            .map(|m| {
+                let op = if m == 'D' {
+                    MoveOperation::Down
+                } else {
+                    MoveOperation::Up
+                };
+                press(&mut cursor, &doc, op)
+            })
+            .collect();
+        assert_eq!(got, expected, "{text:?} from {start} {moves}");
+    }
+}
+
+/// `set_position` forgets the saved x even when it puts the cursor where it already is
+/// (`QTextCursor::setPosition` resets `QTextCursorPrivate::x`). PySide6 6.11.2, oracle font: from
+/// 5, `Down` gives 11; then `setPosition(11)` and `Down` gives 15 (17 without it), `Up` gives 3
+/// (5 without it), wrapped or not.
+#[test]
+fn test_cursor_set_position_to_the_same_spot_forgets_the_saved_x_as_in_qt() {
+    for width in [-1.0, 1000.0] {
+        let mut doc = oracle_document("bbbbbb\n  ab\nbbbbbbbb");
+        doc.set_text_width(width);
+        for (op, kept, forgotten) in [(MoveOperation::Down, 17, 15), (MoveOperation::Up, 5, 3)] {
+            let mut c = TextCursor::at_position(5);
+            assert_eq!(press(&mut c, &doc, MoveOperation::Down), 11);
+            let mut same = c.clone();
+            assert_eq!(press(&mut c, &doc, op), kept, "{op:?} at {width}");
+            same.set_position(11, MoveMode::MoveAnchor);
+            assert_eq!(press(&mut same, &doc, op), forgotten, "{op:?} at {width}");
+        }
+    }
 }
