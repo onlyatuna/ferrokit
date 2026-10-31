@@ -169,6 +169,10 @@ impl CocoaNativeWindow {
 
         let style_mask = cocoa_style_mask(flags);
 
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`;
+        // `window_class` is the NSWindow/QNSWindow class resolved above (a nil class would make
+        // the send a no-op returning nil, which is checked right below). `new` asserted the main
+        // thread at its start, which AppKit requires.
         let ns_window_alloc =
             unsafe { ObjcMsg::send_class_0(window_class, Sel::register("alloc")) };
         if ns_window_alloc.is_nil() {
@@ -177,6 +181,9 @@ impl CocoaNativeWindow {
 
         let cg_rect = native_rect(rect);
 
+        // SAFETY: `initWithContentRect:styleMask:backing:defer:` takes (NSRect, NSUInteger,
+        // NSUInteger, BOOL), exactly the arguments of `send_window_init`; the receiver is the
+        // unconsumed `alloc` result checked non-nil above, so it is initialised exactly once.
         let ns_window = unsafe {
             ObjcMsg::send_window_init(
                 ns_window_alloc,
@@ -190,22 +197,37 @@ impl CocoaNativeWindow {
 
         // `releasedWhenClosed` defaults to YES: a user close would free the window we still own
         // and `Drop` would then message freed memory. Qt: qcocoawindow.mm:2079.
+        // SAFETY: `ns_window` is the object initialised above (nil is a no-op); `setReleasedWhenClosed:`
+        // takes one BOOL, matching `send_bool`.
         unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setReleasedWhenClosed:"), false) };
+        // SAFETY: `ns_window` as above; `setTitle:` takes one NSString, which `send_str` builds from
+        // `title` and passes (the string is copied by AppKit).
         unsafe { ObjcMsg::send_str(ns_window, Sel::register("setTitle:"), title) };
 
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`;
+        // `view_class` is the QNSView class (registered by `qnsview_class`).
         let ns_view_alloc = unsafe { ObjcMsg::send_class_0(view_class, Sel::register("alloc")) };
         let view_rect = CGRect::new(0.0, 0.0, rect.width as f64, rect.height as f64);
+        // SAFETY: `initWithFrame:` takes one NSRect, matching `send_rect`; the receiver is the
+        // unconsumed `alloc` result from the previous statement.
         let ns_view = unsafe {
             ObjcMsg::send_rect(ns_view_alloc, Sel::register("initWithFrame:"), view_rect)
         };
 
+        // SAFETY: `ns_window` and `ns_view` are the freshly created objects above;
+        // `setContentView:` takes one object (the window retains it, so our +1 stays ours).
         unsafe { ObjcMsg::send_id(ns_window, Sel::register("setContentView:"), ns_view) };
         // Key events go to the first responder; the content view is the one that handles them.
+        // SAFETY: `ns_window` and `ns_view` as above; `makeFirstResponder:` takes one responder
+        // object and returns BOOL, which `send_id_logged` ignores as an object-sized return
+        // [inferred: the BOOL return is in a register and ignoring it is harmless].
         unsafe {
             ObjcMsg::send_id_logged(ns_window, Sel::register("makeFirstResponder:"), ns_view)
         };
         // `mouseMoved:` is delivered to the view's tracking area, but a window that does not
         // accept moved events also drops them for any grab-style handler.
+        // SAFETY: `ns_window` as above; `setAcceptsMouseMovedEvents:` takes one BOOL, matching
+        // `send_bool_logged`.
         unsafe {
             ObjcMsg::send_bool_logged(
                 ns_window,
@@ -216,9 +238,13 @@ impl CocoaNativeWindow {
         // Qt: QNSView makes itself layer-backed (qnsview_drawing.mm:57) and the backing store
         // flushes into the view's layer (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
         // qcocoabackingstore.mm:392), not into the view.
+        // SAFETY: `ns_view` is the view created above; `setWantsLayer:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(ns_view, Sel::register("setWantsLayer:"), true) };
+        // SAFETY: `ns_view` as above; `layer` takes no arguments and returns an object.
         let layer = unsafe { ObjcMsg::send_0(ns_view, Sel::register("layer")) };
 
+        // SAFETY: `ns_window` as above; `setLevel:` takes one NSInteger, which `send_int` passes
+        // (`cocoa_window_level` returns an `NSWindowLevel`, an NSInteger).
         unsafe {
             ObjcMsg::send_int(
                 ns_window,
@@ -231,11 +257,13 @@ impl CocoaNativeWindow {
 
         let click_through = flags.contains(WindowFlags::CLICK_THROUGH);
         if click_through {
+            // SAFETY: `ns_window` as above; `setIgnoresMouseEvents:` takes one BOOL.
             unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true) };
         }
 
         // Qt: `hidesOnDeactivate` for `Qt::Tool` (qcocoawindow.mm `setWindowFlags`).
         if flags.contains(WindowFlags::TOOL) {
+            // SAFETY: `ns_window` as above; `setHidesOnDeactivate:` takes one BOOL.
             unsafe {
                 ObjcMsg::send_bool_logged(ns_window, Sel::register("setHidesOnDeactivate:"), true)
             };
@@ -249,7 +277,11 @@ impl CocoaNativeWindow {
             Ok(surface) => surface,
             Err(err) => {
                 // Nothing owns the window yet: undo the `alloc`/`init` and the view's +1.
+                // SAFETY: `ns_view` and `ns_window` are the +1 objects this function created and
+                // nothing else owns them yet (`register_view` has not run, no `Self` exists), so
+                // each `release` balances exactly one `alloc`/`init`; `release` takes no arguments.
                 unsafe { ObjcMsg::send_0(ns_view, Sel::register("release")) };
+                // SAFETY: see the `release` of `ns_view` above; `ns_window` is released once.
                 unsafe { ObjcMsg::send_0(ns_window, Sel::register("release")) };
                 return Err(err);
             }
@@ -300,10 +332,17 @@ impl CocoaNativeWindow {
         self.vibrancy_material = material;
         if let Some(mat) = material {
             // 1. Make window transparent
+            // SAFETY: `self.ns_window` is created in `new` (+1) and released only in `Drop`, so it
+            // is live for any `&mut self`; this runs on the main thread because the type is `!Send`
+            // and was built under `assert_main_thread`. `setOpaque:` takes one BOOL.
             unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), false) };
             let color_class = Class::get("NSColor").unwrap_or(Class::NIL);
+            // SAFETY: `clearColor` is a no-argument class method of `NSColor` returning an
+            // object, matching `send_class_0` (a nil class from `unwrap_or` is a no-op).
             let clear_color =
                 unsafe { ObjcMsg::send_class_0(color_class, Sel::register("clearColor")) };
+            // SAFETY: `self.ns_window` is live (see above); `setBackgroundColor:` takes one NSColor,
+            // which `clear_color` is (or nil, which AppKit accepts).
             unsafe {
                 ObjcMsg::send_id(
                     self.ns_window,
@@ -315,6 +354,8 @@ impl CocoaNativeWindow {
             // 2. Instantiate or configure NSVisualEffectView
             if self.vibrancy_view.is_none() {
                 let effect_class = Class::get("NSVisualEffectView").unwrap_or(Class::NIL);
+                // SAFETY: `alloc` takes no arguments and returns an object, matching
+                // `send_class_0` (a nil class from `unwrap_or` is a no-op).
                 let effect_alloc =
                     unsafe { ObjcMsg::send_class_0(effect_class, Sel::register("alloc")) };
                 let view_rect = CGRect::new(
@@ -323,14 +364,22 @@ impl CocoaNativeWindow {
                     self.geometry.width as f64,
                     self.geometry.height as f64,
                 );
+                // SAFETY: `initWithFrame:` takes one NSRect, matching `send_rect`; the receiver is
+                // the unconsumed `alloc` result above (nil is a no-op, checked below).
                 let effect_view = unsafe {
                     ObjcMsg::send_rect(effect_alloc, Sel::register("initWithFrame:"), view_rect)
                 };
                 if !effect_view.is_nil() {
                     // NSVisualEffectBlendingModeBehindWindow = 0
+                    // SAFETY: `effect_view` is the non-nil `NSVisualEffectView` initialised above;
+                    // `setBlendingMode:` takes one NSInteger.
                     unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) };
                     // NSVisualEffectStateActive = 1
+                    // SAFETY: as above; `setState:` takes one NSInteger.
                     unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) };
+                    // SAFETY: `self.ns_view` is live (created in `new`, released in `Drop`) and
+                    // `effect_view` is a live view; `addSubview:` takes one NSView and retains it, so
+                    // our +1 from `alloc`/`init` is kept and released in `set_vibrancy(None)`/`Drop`.
                     unsafe {
                         ObjcMsg::send_id(self.ns_view, Sel::register("addSubview:"), effect_view)
                     };
@@ -339,15 +388,23 @@ impl CocoaNativeWindow {
             }
 
             if let Some(effect_view) = self.vibrancy_view {
+                // SAFETY: `effect_view` is the live view stored in `self.vibrancy_view`, owned (+1)
+                // by this window; `setMaterial:` takes one NSInteger (`mat` is a `#[repr(i64)]` enum).
                 unsafe {
                     ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), mat as isize)
                 };
             }
         } else {
+            // SAFETY: `self.ns_window` is live (see above); `setOpaque:` takes one BOOL.
             unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), true) };
             if let Some(effect_view) = self.vibrancy_view.take() {
+                // SAFETY: `effect_view` was just taken from `self.vibrancy_view`, so it is the +1
+                // object this window created and still owns; `removeFromSuperview` takes no arguments.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
                 // Drop our +1 from `alloc`/`init`.
+                // SAFETY: `effect_view` is still live (the superview's retain was just dropped, ours
+                // remains); this `release` balances our own `alloc`/`init` and the value was taken
+                // out of `self.vibrancy_view`, so it is released once.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
         }
@@ -392,6 +449,8 @@ impl CocoaNativeWindow {
 
     #[inline]
     pub fn is_flipped(&self) -> bool {
+        // SAFETY: `self.ns_view` is created in `new` and released only in `Drop`, so it is live;
+        // `isFlipped` takes no arguments and returns BOOL, matching `send_bool_return`.
         unsafe { ObjcMsg::send_bool_return(self.ns_view, Sel::register("isFlipped")) }
     }
 
@@ -413,6 +472,8 @@ impl CocoaNativeWindow {
         } else {
             NS_VISUAL_EFFECT_STATE_INACTIVE
         };
+        // SAFETY: `view` is `self.backdrop_view`, the +1 effect view this window added and
+        // releases when the backdrop is removed, so it is live; `setState:` takes one NSInteger.
         unsafe { ObjcMsg::send_int_logged(view, Sel::register("setState:"), state) };
         true
     }
@@ -423,13 +484,19 @@ impl CocoaNativeWindow {
     /// mask. An empty region removes the mask.
     fn apply_mask(&mut self, region: &Region) {
         let window = self.ns_window;
+        // SAFETY: `self.ns_view` is live (see `is_flipped`); `layer` takes no arguments and
+        // returns an object (nil is checked next).
         let layer = unsafe { ObjcMsg::send_0(self.ns_view, Sel::register("layer")) };
         if layer.is_nil() {
             return;
         }
         if region.is_empty() {
+            // SAFETY: `layer` is the non-nil backing layer just obtained; `setMask:` takes one
+            // CALayer, here nil to remove the mask.
             unsafe { ObjcMsg::send_id_logged(layer, Sel::register("setMask:"), Id::NIL) };
             self.restore_opaque_after_mask();
+            // SAFETY: `window` is `self.ns_window`, live from `new` to `Drop`; `invalidateShadow`
+            // takes no arguments.
             unsafe { ObjcMsg::send_0_logged(window, Sel::register("invalidateShadow")) };
             return;
         }
@@ -438,8 +505,11 @@ impl CocoaNativeWindow {
             .iter()
             .map(|r| CGRect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64))
             .collect();
-        // SAFETY: `layer` is the live backing layer of the content view; the shape layer is
-        // created (+1) here, and the layer's `setMask:` retains it, so the +1 is released.
+        // SAFETY: `layer` is the live, non-nil backing layer of the content view; `bounds` and
+        // `isGeometryFlipped` take no arguments and return an NSRect / BOOL, matching
+        // `send_rect_return` / `send_bool_prop`. The shape layer is created (+1) by
+        // `make_region_mask_layer` from a slice that outlives the call; `setMask:` takes one
+        // CALayer and retains it, so the +1 is then released exactly once with `appkit::release`.
         unsafe {
             let bounds = ObjcMsg::send_rect_return(layer, Sel::register("bounds"));
             let flipped = ObjcMsg::send_bool_prop(layer, Sel::register("isGeometryFlipped"));
@@ -453,20 +523,28 @@ impl CocoaNativeWindow {
         if !self.mask_made_transparent
             && self.vibrancy_material.is_none()
             && self.backdrop_view.is_none()
+            // SAFETY: `window` is `self.ns_window`, live from `new` to `Drop`; `isOpaque` takes no
+            // arguments and returns BOOL.
             && unsafe { ObjcMsg::send_bool_prop(window, Sel::register("isOpaque")) }
         {
+            // SAFETY: `clearColor` is a no-argument class method of `NSColor` returning an object
+            // (a nil class from `unwrap_or` is a no-op).
             let clear = unsafe {
                 ObjcMsg::send_class_0(
                     Class::get("NSColor").unwrap_or(Class::NIL),
                     Sel::register("clearColor"),
                 )
             };
+            // SAFETY: `window` is live (see above); `setOpaque:` takes one BOOL and
+            // `setBackgroundColor:` one NSColor, matching `send_bool_logged` / `send_id_logged`.
             unsafe {
                 ObjcMsg::send_bool_logged(window, Sel::register("setOpaque:"), false);
                 ObjcMsg::send_id_logged(window, Sel::register("setBackgroundColor:"), clear);
             }
             self.mask_made_transparent = true;
         }
+        // SAFETY: `window` is `self.ns_window`, live from `new` to `Drop`; `invalidateShadow`
+        // takes no arguments.
         unsafe { ObjcMsg::send_0_logged(window, Sel::register("invalidateShadow")) };
     }
 
@@ -480,12 +558,16 @@ impl CocoaNativeWindow {
             return;
         }
         let window = self.ns_window;
+        // SAFETY: `windowBackgroundColor` is a no-argument class method of `NSColor` returning an
+        // object (a nil class from `unwrap_or` is a no-op).
         let color = unsafe {
             ObjcMsg::send_class_0(
                 Class::get("NSColor").unwrap_or(Class::NIL),
                 Sel::register("windowBackgroundColor"),
             )
         };
+        // SAFETY: `window` is `self.ns_window`, live from `new` to `Drop`; `setOpaque:` takes one
+        // BOOL and `setBackgroundColor:` one NSColor, matching `send_bool_logged` / `send_id_logged`.
         unsafe {
             ObjcMsg::send_bool_logged(window, Sel::register("setOpaque:"), true);
             ObjcMsg::send_id_logged(window, Sel::register("setBackgroundColor:"), color);
@@ -506,6 +588,8 @@ impl CocoaNativeWindow {
             return;
         }
         self.geometry = target;
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setFrame:display:` takes (NSRect,
+        // BOOL), matching `send_rect_display`.
         unsafe {
             ObjcMsg::send_rect_display(
                 self.ns_window,
@@ -526,15 +610,21 @@ impl PlatformWindow for CocoaNativeWindow {
         } else {
             "makeKeyAndOrderFront:"
         };
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` /
+        // `makeKeyAndOrderFront:` each take one sender object (nil here).
         unsafe { ObjcMsg::send_id(self.ns_window, Sel::register(order), Id::NIL) };
         self.visible.store(true, Ordering::Release);
     }
 
     fn is_active(&self) -> bool {
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isKeyWindow` takes no arguments
+        // and returns BOOL, matching `send_bool_return`.
         unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isKeyWindow")) }
     }
 
     fn hide(&self) {
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderOut:` takes one sender
+        // object (nil here).
         unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
         self.visible.store(false, Ordering::Release);
     }
@@ -546,6 +636,8 @@ impl PlatformWindow for CocoaNativeWindow {
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
         let cg_rect = native_rect(rect);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setFrame:display:` takes
+        // (NSRect, BOOL), matching `send_rect_display`.
         unsafe {
             ObjcMsg::send_rect_display(
                 self.ns_window,
@@ -564,6 +656,7 @@ impl PlatformWindow for CocoaNativeWindow {
         // flags (qcocoawindow.mm:749).
         self.stays_on_top = enabled;
         self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setLevel:` takes one NSInteger.
         unsafe {
             ObjcMsg::send_int(
                 self.ns_window,
@@ -575,6 +668,8 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setIgnoresMouseEvents:` takes
+        // one BOOL.
         unsafe {
             ObjcMsg::send_bool(
                 self.ns_window,
@@ -601,6 +696,8 @@ impl PlatformWindow for CocoaNativeWindow {
         if changed.intersects(
             WindowFlags::FRAMELESS | WindowFlags::TOOLTIP | WindowFlags::CUSTOM_FRAMELESS,
         ) {
+            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setStyleMask:` takes one
+            // NSUInteger, which `cocoa_style_mask` returns.
             unsafe {
                 ObjcMsg::send_uint_logged(
                     self.ns_window,
@@ -614,6 +711,7 @@ impl PlatformWindow for CocoaNativeWindow {
             self.stays_on_top = self
                 .flags
                 .intersects(WindowFlags::STAYS_ON_TOP | WindowFlags::TOOLTIP);
+            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setLevel:` takes one NSInteger.
             unsafe {
                 ObjcMsg::send_int_logged(
                     self.ns_window,
@@ -623,6 +721,8 @@ impl PlatformWindow for CocoaNativeWindow {
             };
         }
         if changed.contains(WindowFlags::TOOL) {
+            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setHidesOnDeactivate:` takes
+            // one BOOL.
             unsafe {
                 ObjcMsg::send_bool_logged(
                     self.ns_window,
@@ -633,6 +733,8 @@ impl PlatformWindow for CocoaNativeWindow {
         }
         if changed.contains(WindowFlags::CLICK_THROUGH) {
             self.click_through = self.flags.contains(WindowFlags::CLICK_THROUGH);
+            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setIgnoresMouseEvents:` takes
+            // one BOOL.
             unsafe {
                 ObjcMsg::send_bool_logged(
                     self.ns_window,
@@ -648,7 +750,10 @@ impl PlatformWindow for CocoaNativeWindow {
     /// the window; AppKit shows it from the next pointer movement.
     fn set_cursor(&mut self, shape: CursorShape) {
         let selector = CocoaCursor::ns_cursor_selector(shape);
-        // SAFETY: the standard cursors are shared, immortal AppKit objects.
+        // SAFETY: `standard_cursor` looks up a class-method cursor by selector on `NSCursor`;
+        // `ns_cursor_selector` only returns names of standard `NSCursor` class methods, and the
+        // standard cursors are shared AppKit objects that are never freed [inferred: AppKit
+        // documentation], so the returned `Id` stays valid for `replace_cursor`.
         let cursor = unsafe { appkit::standard_cursor(selector) };
         input::replace_cursor(self.ns_view, cursor);
     }
@@ -698,8 +803,13 @@ impl PlatformWindow for CocoaNativeWindow {
             .filter(|&handle| handle != 0 && handle != me.0 as isize)
             .map(|handle| Id(handle as *mut std::ffi::c_void))
             .unwrap_or(Id::NIL);
-        // SAFETY: `me` is alive; `parentWindow` is AppKit's own link, so the current parent
-        // is a live window or nil. `wanted` is the caller's live window, per the contract above.
+        // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`; `parentWindow` is AppKit's
+        // own link, so the current parent is a live window or nil, and a window that is removed
+        // from it is alive for the call. `wanted` is non-nil only when the caller supplied
+        // another window's `native_handle`; the trait contract on this method (documented above:
+        // the parent must outlive the attachment) is what makes it live. Nothing in this code can
+        // check that, so it is a caller obligation. `removeChildWindow:` takes one window and
+        // `addChildWindow:ordered:` a window and an `NSWindowOrderingMode` (NSInteger).
         unsafe {
             let current = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
             if current == wanted {
@@ -720,7 +830,8 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn transient_parent(&self) -> Option<isize> {
-        // SAFETY: `ns_window` is alive for the lifetime of `self`.
+        // SAFETY: `ns_window` is created in `new` and released only in `Drop`, so it is live;
+        // `parentWindow` takes no arguments and returns an object.
         let parent =
             unsafe { ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow")) };
         (!parent.is_nil()).then_some(parent.0 as isize)
@@ -730,8 +841,10 @@ impl PlatformWindow for CocoaNativeWindow {
     /// input context that the caret moved.
     fn set_ime_focus(&mut self, pos: Point) {
         input::with_slot(self.ns_view, |slot| slot.ime_pos = Some(pos));
-        // SAFETY: `ns_view` is alive; `inputContext` is nil unless the view conforms to
-        // NSTextInputClient, and the context belongs to the view.
+        // SAFETY: `ns_view` is live (created in `new`, released in `Drop`); `inputContext` takes
+        // no arguments and returns an object that is nil unless the view conforms to
+        // `NSTextInputClient` (`install_view_methods` declares it); a nil context makes the next
+        // send a no-op, and a non-nil one belongs to the view [inferred: AppKit documentation].
         unsafe {
             let context = ObjcMsg::send_id_prop(self.ns_view, Sel::register("inputContext"));
             ObjcMsg::send_0_logged(context, Sel::register("invalidateCharacterCoordinates"));
@@ -746,11 +859,16 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: only while the left button alone is pressed; otherwise the move is refused
         // (QCocoaWindow::startSystemMove, qcocoawindow.mm:366-370).
         let ns_event = Id(Class::get("NSEvent").unwrap_or(Class::NIL).0);
+        // SAFETY: `ns_event` is the `NSEvent` class object (nil makes the send a no-op);
+        // `pressedMouseButtons` is a class method with no arguments returning NSUInteger,
+        // matching `send_usize_return`.
         if unsafe { ObjcMsg::send_usize_return(ns_event, Sel::register("pressedMouseButtons")) }
             != 1
         {
             return false;
         }
+        // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication` returning
+        // an object (a nil class from `unwrap_or` is a no-op).
         let nsapp = unsafe {
             ObjcMsg::send_class_0(
                 Class::get("NSApplication").unwrap_or(Class::NIL),
@@ -758,8 +876,13 @@ impl PlatformWindow for CocoaNativeWindow {
             )
         };
         if !nsapp.is_nil() {
+            // SAFETY: `nsapp` was checked non-nil; `currentEvent` takes no arguments and returns an
+            // object (nil is checked next).
             let current_event = unsafe { ObjcMsg::send_0(nsapp, Sel::register("currentEvent")) };
             if !current_event.is_nil() {
+                // SAFETY: `self.ns_window` is live from `new` to `Drop` and `current_event` is the
+                // non-nil event AppKit is currently dispatching; `performWindowDragWithEvent:`
+                // takes one NSEvent.
                 unsafe {
                     ObjcMsg::send_id(
                         self.ns_window,
@@ -780,6 +903,8 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity.clamp(0.0, 1.0);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setAlphaValue:` takes one
+        // CGFloat, which `send_length` passes (it is the one-`CGFloat` sender).
         unsafe {
             ObjcMsg::send_length(
                 self.ns_window,
@@ -797,6 +922,8 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: QCocoaWindow::propagateSizeHints sets window.contentMinSize, the minimum of the
         // content area (qcocoawindow.mm:1181-1185), not the frame's minSize.
         self.size_limits.min = crate::size_limits::clamp_size_limit(min_w, min_h);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setContentMinSize:` takes one
+        // NSSize, matching `send_size`.
         unsafe {
             ObjcMsg::send_size(
                 self.ns_window,
@@ -817,6 +944,8 @@ impl PlatformWindow for CocoaNativeWindow {
         // Qt: the same `propagateSizeHints` sets window.contentMaxSize to `windowMaximumSize()`
         // as is, `QWINDOWSIZE_MAX` included for an axis without a maximum (qcocoawindow.mm:1187-1188).
         self.size_limits.max = crate::size_limits::clamp_size_limit(max_w, max_h);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setContentMaxSize:` takes one
+        // NSSize, matching `send_size`.
         unsafe {
             ObjcMsg::send_size(
                 self.ns_window,
@@ -920,7 +1049,8 @@ impl Drop for CocoaNativeWindow {
     fn drop(&mut self) {
         // A child window is attached to its parent, which retains it and may still be alive.
         // SAFETY: `ns_window` is alive until the releases below; `parentWindow` is AppKit's own
-        // link, cleared when the parent goes away first.
+        // link, cleared when the parent goes away first [inferred: AppKit documentation], so a
+        // non-nil `parent` is live; `removeChildWindow:` takes one window.
         unsafe {
             let parent = ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow"));
             if !parent.is_nil() {
@@ -935,6 +1065,8 @@ impl Drop for CocoaNativeWindow {
         // its tracking area and cursor with it while the view is still alive.
         input::teardown_view(self.ns_view);
         // `release` below is the only release; stop `close` from releasing the window too.
+        // SAFETY: `self.ns_window` is still live (its only release is at the end of this
+        // function); `setReleasedWhenClosed:` takes one BOOL.
         unsafe {
             ObjcMsg::send_bool(
                 self.ns_window,
@@ -942,17 +1074,27 @@ impl Drop for CocoaNativeWindow {
                 false,
             )
         };
+        // SAFETY: `self.ns_window` is still live; `orderOut:` takes one sender object (nil).
         unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
+        // SAFETY: `self.ns_window` is still live; `close` takes no arguments. With
+        // `releasedWhenClosed` turned off above it does not release the window.
         unsafe { ObjcMsg::send_0(self.ns_window, Sel::register("close")) };
         // Each effect view is a subview (retained by `ns_view`) that was also `alloc`ed here.
         for view in [self.vibrancy_view.take(), self.backdrop_view.take()]
             .into_iter()
             .flatten()
         {
+            // SAFETY: `view` was taken out of the `Option` just above, so it is the +1 effect view
+            // this window alone still owned and is released once; the superview's own retain keeps
+            // it live until then; `release` takes no arguments.
             unsafe { ObjcMsg::send_0(view, Sel::register("release")) };
         }
         // `setContentView:` retained `ns_view`; the window releases that when it deallocates.
+        // SAFETY: `self.ns_view` is the +1 view created in `new` and released only here; the
+        // window's own retain from `setContentView:` is separate and dropped by the window.
         unsafe { ObjcMsg::send_0(self.ns_view, Sel::register("release")) };
+        // SAFETY: `self.ns_window` is the +1 window created in `new` and released only here, after
+        // `close` and with `releasedWhenClosed` off, so this is its one balancing release.
         unsafe { ObjcMsg::send_0(self.ns_window, Sel::register("release")) };
     }
 }

@@ -65,7 +65,9 @@ fn the_compressor_panic_case() {
     let thread = ThreadId::current();
 
     let dropped = Arc::new(AtomicUsize::new(0));
-    // SAFETY: the owner stays on this thread and is dropped while no callback of it runs.
+    // SAFETY: the returned owner is a local on this thread that is neither used nor dropped while
+    // a callback of the object runs: no callback ever runs (events are only queued, the loop is
+    // never executed), and the only use is `drop(owned)` below.
     let owned = unsafe {
         register_owned_qobject(Node {
             data: ObjectData::new(ObjectId::next()),

@@ -30,8 +30,9 @@ struct Receiver {
 impl Receiver {
     /// A registered receiver on this thread, held by its owner.
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and nothing touches the object while a callback
-        // of it runs.
+        // SAFETY: the returned owner is a test local on this thread, used only through `with`/
+        // `with_mut`/`object_id` and dropped by the test; the tests that run callbacks of the
+        // receiver (`Direct`/`Queued` slots via the registry) do not touch the owner meanwhile.
         unsafe {
             register_owned_qobject(Self {
                 data: ObjectData::with_auto_id(),
@@ -425,7 +426,8 @@ fn single_shot_to_on_the_context_thread_runs_once_even_when_emitted_inside_the_s
 
 #[test]
 fn a_movable_context_is_refused_and_the_closure_is_not_kept() {
-    // SAFETY: the object holds no state that is not `Send`; it is never moved.
+    // SAFETY: `Receiver` holds nothing but its `ObjectData`, which is `Send`, and the object is
+    // never moved: the test only checks that `connect_local_to` refuses a movable context.
     let data = unsafe { ObjectData::with_auto_id().with_thread_moves_allowed() };
     let context = Receiver { data };
     let signal: Signal<i32> = Signal::new();

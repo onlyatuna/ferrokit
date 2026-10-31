@@ -174,6 +174,11 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
         data: ObjectData::new(ObjectId::next()),
     };
     let receiver_id = receiver.data.id();
+    // SAFETY: the pointer comes from `&raw mut receiver`, so no reference exists that a later use
+    // of `receiver` could invalidate. `receiver` is a local that is not moved or dropped until
+    // after the `unregister_qobject` below, and it is not used directly in between (its id was
+    // copied out before). This thread is the registration thread, and the queued call reaches the
+    // object only through the registry in `process_events` here; the worker only posts by id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let processed = Arc::new(AtomicBool::new(false));
@@ -215,6 +220,10 @@ fn test_blocking_queued_signal_cross_thread_synchronization() {
     // Worker can now unblock and terminate
     worker.join().unwrap();
     assert!(worker_finished.load(Ordering::SeqCst));
+    // SAFETY: `unregister_qobject` needs `receiver` alive and unmoved until it returns, on its
+    // registration thread, with no callback active. `receiver` is the local above, dropped only at
+    // the end of the fn. This is the registering thread, the worker is joined, and
+    // `process_events` has returned, so no callback is active.
     unsafe { unregister_qobject(receiver_id) };
 }
 
@@ -240,6 +249,11 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
         data: ObjectData::new(ObjectId::next()),
     };
     let receiver_id = receiver.data.id();
+    // SAFETY: the pointer comes from `&raw mut receiver`, so no reference exists that a later use
+    // of `receiver` could invalidate. `receiver` is a local that is not moved or dropped until
+    // after the `unregister_qobject` below, and it is not used directly in between (its id was
+    // copied out before). This thread is the registration thread and the only one that runs its
+    // callbacks.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let ran = Arc::new(AtomicBool::new(false));
@@ -258,6 +272,10 @@ fn test_queued_signal_to_unregistered_receiver_never_runs() {
     std::thread::spawn(move || sig_clone.emit(&1))
         .join()
         .unwrap();
+    // SAFETY: `unregister_qobject` needs `receiver` alive and unmoved until it returns, on its
+    // registration thread, with no callback active. `receiver` is the local above, dropped only at
+    // the end of the fn. This is the thread that registered it, and no loop has run and none is
+    // running, so no callback is active.
     unsafe { unregister_qobject(receiver_id) };
 
     let event_loop = EventLoop::new();

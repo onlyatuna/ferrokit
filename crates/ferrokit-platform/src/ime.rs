@@ -30,6 +30,9 @@ pub fn set_window_ime_enabled(hwnd: windows_sys::Win32::Foundation::HWND, enable
     use windows_sys::Win32::UI::Input::Ime::{ImmAssociateContextEx, IACE_DEFAULT};
     let _t =
         ferrokit_gui::startup_trace::span(|| format!("ImmAssociateContextEx(enabled={enabled})"));
+    // SAFETY: `ImmAssociateContextEx` takes only by-value arguments; `hwnd` is validated by imm32
+    // (invalid handle -> returns FALSE), and a null `HIMC` is the documented value when `IACE_DEFAULT`
+    // or 0 is passed (per the ImmAssociateContextEx documentation). Nothing is dereferenced.
     unsafe {
         ImmAssociateContextEx(
             hwnd,
@@ -61,6 +64,10 @@ impl Win32InputContext {
             return;
         }
 
+        // SAFETY: `self.hwnd` was checked non-null above and is validated by imm32. `himc` is checked
+        // non-null before use, `&form` is a live, fully initialized `CANDIDATEFORM` (the all-zero
+        // `RECT` is valid for a plain integer struct) that outlives the call, and `himc` is released
+        // with the same `hwnd` it was obtained from.
         unsafe {
             let himc = ImmGetContext(self.hwnd);
             if !himc.is_null() {
@@ -95,6 +102,8 @@ impl Win32InputContext {
             return (None, None, 0);
         }
 
+        // SAFETY: `self.hwnd` was checked non-null just above and is validated by imm32; the returned
+        // `himc` is null-checked before use and released at the end of this function.
         let himc = unsafe { ImmGetContext(self.hwnd) };
         if himc.is_null() {
             return (None, None, 0);
@@ -106,6 +115,10 @@ impl Win32InputContext {
 
         let flags = lparam as u32;
 
+        // SAFETY: `himc` is the non-null context from `ImmGetContext(self.hwnd)` above, released once
+        // at the end of this block with the same `hwnd`. Each `buffer` holds `bytes_needed / 2` u16s
+        // (the byte count imm32 itself reported, always even for UTF-16), so the write of at most
+        // `bytes_needed` bytes stays in bounds; the null/0 calls are the documented size query.
         unsafe {
             // Read intermediate composition string if present
             if (flags & GCS_COMPSTR) != 0 {

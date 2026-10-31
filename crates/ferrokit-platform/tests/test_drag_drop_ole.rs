@@ -41,6 +41,8 @@ fn target_with(
         sink.lock().push(ev);
         proposed
     });
+    // SAFETY: `t` came from `OleDropTarget::new` just above (a leaked `Box`, alive until its last
+    // reference is released), and its `vtbl` field points at the `'static` vtable.
     let vtbl = unsafe { &*(*t).vtbl };
     (t, vtbl)
 }
@@ -50,6 +52,9 @@ fn query_interface_answers_only_the_interfaces_it_implements() {
     let events = Arc::default();
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let this = t as *mut c_void;
+    // SAFETY: `t` is the live target from `target_with` and `this` is that same pointer, as the
+    // vtable methods expect. Every `query_interface` reference is released again, and the final
+    // `release` (count 1 -> 0) is the last use of `t`. `out` and the IID statics outlive the calls.
     unsafe {
         let mut out: *mut c_void = std::ptr::dangling_mut::<c_void>();
         let before = (*t).ref_count.load(Ordering::SeqCst);
@@ -118,6 +123,10 @@ unsafe extern "system" fn m_ref(_: *mut c_void) -> u32 {
 }
 
 fn block(bytes: &[u8]) -> *mut c_void {
+    // SAFETY: per the Win32 documentation `GlobalAlloc(GMEM_MOVEABLE, n)` returns a handle to `n`
+    // bytes and `GlobalLock` yields a pointer to them (allocation failure for these tiny sizes is
+    // not handled, it would only fault the test); the copy writes exactly `bytes.len()` bytes
+    // from a distinct source slice.
     unsafe {
         let h = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         let p = GlobalLock(h) as *mut u8;
@@ -205,6 +214,9 @@ fn a_drop_delivers_the_text_of_the_data_object() {
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let mut obj = data_object(Some("héllo wörld"), None);
     let mut effect = 3u32; // copy | move offered
+                           // SAFETY: `t` is the live target from `target_with` (sole reference, released at the end of
+                           // this block); `this` is that pointer and `o` points at `obj`, which outlives the block and is
+                           // a `MockData` whose vtable (`MOCK_VTBL`) the mock slots read. `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
@@ -253,6 +265,9 @@ fn a_drop_of_files_is_a_uri_list_and_modifier_keys_choose_the_effect() {
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let mut obj = data_object(None, Some(&["C:\\a dir\\f.txt", "\\\\srv\\share\\g.txt"]));
     let mut effect = 7u32;
+    // SAFETY: as in `a_drop_delivers_the_text_of_the_data_object`: `t` is the live sole-reference
+    // target released at the end of the block, `o` points at `obj` (a `MockData`) that outlives it,
+    // and `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
@@ -299,6 +314,9 @@ fn a_drag_without_a_decodable_format_is_refused() {
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let mut obj = data_object(None, None);
     let mut effect = 7u32;
+    // SAFETY: as in `a_drop_delivers_the_text_of_the_data_object`: `t` is the live sole-reference
+    // target released at the end of the block, `o` points at `obj` (a `MockData`) that outlives it,
+    // and `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
@@ -326,11 +344,15 @@ fn drag_positions_are_logical_client_coordinates() {
     let events = Arc::default();
     let (t, vtbl) = target_with(hwnd, &events);
     let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: `hwnd` is the live window created above and owned by `win`; `origin` is a live
+    // `POINT` that user32 writes to.
     unsafe {
         ClientToScreen(hwnd, &mut origin);
     }
     let dpr = ferrokit_platform::window::get_window_dpr(hwnd) as f64;
     let mut effect = 1u32;
+    // SAFETY: `t` is the live sole-reference target released at the end of this block; `this` is
+    // that pointer and `effect` is a live `u32`. `DragOver` does not touch a data object.
     unsafe {
         let this = t as *mut c_void;
         let pt = POINTL {
@@ -354,8 +376,12 @@ fn drag_positions_are_logical_client_coordinates() {
 #[test]
 fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shift_move() {
     let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| 0);
+    // SAFETY: `t` came from `OleDropTarget::new` just above (a leaked `Box`) and its `vtbl` field
+    // points at the `'static` vtable.
     let vtbl = unsafe { &*(*t).vtbl };
     let mut obj = data_object(Some("refused"), None);
+    // SAFETY: `t` is the live sole-reference target released at the end of this block; `o` points
+    // at `obj` (a `MockData` with the `MOCK_VTBL` slots) that outlives it; `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;
@@ -388,8 +414,12 @@ fn a_refusing_callback_writes_dropeffect_none_even_for_decodable_formats_and_shi
 fn a_callback_may_change_the_effect_but_never_beyond_what_the_source_allows() {
     // The callback answers LINK (4) whatever was proposed.
     let t = OleDropTarget::new(std::ptr::null_mut(), |_ev| 4);
+    // SAFETY: `t` came from `OleDropTarget::new` just above (a leaked `Box`) and its `vtbl` field
+    // points at the `'static` vtable.
     let vtbl = unsafe { &*(*t).vtbl };
     let mut obj = data_object(Some("relink"), None);
+    // SAFETY: `t` is the live sole-reference target released at the end of this block; `o` points
+    // at `obj` (a `MockData` with the `MOCK_VTBL` slots) that outlives it; `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;

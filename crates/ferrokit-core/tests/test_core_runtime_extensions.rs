@@ -19,7 +19,9 @@ use ferrokit_core::variant::Variant;
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `DynamicMockObject` keeps its state in `Arc<Mutex<_>>` handles, which are `Send`.
+    // SAFETY: `DynamicMockObject` holds an `ObjectData` and two `Arc<Mutex<_>>` handles, which
+    // are `Send`; no `Rc`, `Cell`, raw pointer or thread-local state (see the struct definition),
+    // so using and dropping it on another thread after `move_to_thread_by_id` is sound.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -165,6 +167,13 @@ fn test_qobject_dynamic_properties_and_events() {
 fn test_signal_auto_thread_affinity() {
     let last_prop = Arc::new(Mutex::new(None));
     let count = Arc::new(Mutex::new(0));
+    // SAFETY: `register_owned_qobject` requires that nothing outside a callback accesses the
+    // object during one; the test uses it only through `obj.with` (which refuses during a
+    // callback), and this object defines no callbacks beyond `dynamic_property_change`. The owner
+    // `obj` stays in this local. At the end of the test `obj` is dropped on this thread after
+    // `move_to_thread_by_id` moved the registration to another thread, which is not the
+    // registration thread; `OwnedObject::drop` handles that by posting the destruction to the
+    // registration thread (documented on `destroy_owned`), so no memory is freed from here.
     let obj = unsafe {
         register_owned_qobject(DynamicMockObject::new(ObjectId::next(), last_prop, count))
     };

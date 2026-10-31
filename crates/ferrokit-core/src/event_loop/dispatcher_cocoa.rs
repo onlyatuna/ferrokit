@@ -121,10 +121,19 @@ struct Runtime {
     date_from_now: Sel,
 }
 
-// SAFETY: class and selector pointers are process-wide constants.
+// SAFETY: [inferred] the `Id`/`Sel` fields are class objects and interned selectors from the
+// Objective-C runtime; they are looked up once, never mutated afterwards, and the runtime
+// documents class lookup and selectors as process-wide and thread-safe. The field types are
+// raw pointers only, which is why `Send` is not automatic.
 unsafe impl Send for Runtime {}
+// SAFETY: same as `Send` above: the fields are immutable after construction, so shared
+// access from several threads reads only constant pointers.
 unsafe impl Sync for Runtime {}
 
+// SAFETY: `objc_getClass` and `sel_registerName` are given NUL-terminated C-string literals
+// (`c"..."`) that outlive the calls and may be called from any thread per the Objective-C
+// runtime documentation. [inferred] AppKit and Foundation are linked by the `#[link]` blocks
+// in `ffi`, so the classes exist; a null class would only make later message sends no-ops.
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| unsafe {
     use ffi::{objc_getClass, sel_registerName};
     Runtime {
@@ -169,18 +178,26 @@ struct AutoreleasePool(*mut c_void);
 
 impl AutoreleasePool {
     fn new() -> Self {
+        // SAFETY: `objc_autoreleasePoolPush` takes no arguments and may be called on any
+        // thread; the returned token is popped once by `Drop`.
         Self(unsafe { ffi::objc_autoreleasePoolPush() })
     }
 }
 
 impl Drop for AutoreleasePool {
     fn drop(&mut self) {
+        // SAFETY: [inferred] `self.0` is the token returned by the `objc_autoreleasePoolPush`
+        // in `new`; pools are popped exactly once and, being stack-scoped guards, in reverse
+        // order of creation on the same thread.
         unsafe { ffi::objc_autoreleasePoolPop(self.0) }
     }
 }
 
 fn ns_app() -> Id {
     let rt = &*RUNTIME;
+    // SAFETY: [inferred] `ns_application` is the `NSApplication` class and `sharedApplication`
+    // takes no argument and returns an object, matching `send0::<Id>`. The class and selector
+    // were resolved by `RUNTIME` just above.
     unsafe { send0(rt.ns_application, rt.shared_application) }
 }
 
@@ -188,6 +205,11 @@ fn ns_app() -> Id {
 /// dequeue:YES]`.
 fn next_event(app: Id, until: Id) -> Id {
     let rt = &*RUNTIME;
+    // SAFETY: [inferred] `f` is `objc_msgSend` cast to the signature of
+    // `nextEventMatchingMask:untilDate:inMode:dequeue:` (mask `NSUInteger`, `NSDate*`,
+    // mode `NSString*`, `BOOL`; returns `NSEvent*`); `app` is `NSApp` and `until` is null or a
+    // live `NSDate`, both supplied by this module's callers on the main thread
+    // (`process_events` asserts it); `NSDefaultRunLoopMode` is an AppKit constant.
     unsafe {
         let f: unsafe extern "C" fn(Id, Sel, usize, Id, Id, i8) -> Id =
             std::mem::transmute(ffi::objc_msgSend as *const ());
@@ -207,6 +229,15 @@ fn next_event(app: Id, until: Id) -> Id {
 fn post_wakeup_event() {
     let _pool = AutoreleasePool::new();
     let rt = &*RUNTIME;
+    // SAFETY: [inferred] `make` is declared with the argument and return types of
+    // `+[NSEvent otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:
+    // subtype:data1:data2:]` (type, `NSPoint`, flags, timestamp, window number, context,
+    // subtype, two data words; returns an object), receiver `rt.ns_event` is the `NSEvent`
+    // class, and the `NSPoint` is passed by value. `postEvent:atStart:` takes (`Id`, `BOOL`)
+    // and returns void, matching `send2::<Id, i8, ()>`; the event is autoreleased by the
+    // pool above, which outlives both calls. [inferred] `postEvent:atStart:` only enqueues the
+    // event; this function runs on the main thread (from the run loop source callback, the
+    // launch timer, and `wait_for_more_events`' caller), as Qt's `cancelWaitForMoreEvents`.
     unsafe {
         let make: unsafe extern "C" fn(
             Id,
@@ -263,6 +294,10 @@ extern "C" fn wake_source_perform(_info: *mut c_void) {
 /// Runs once `[NSApp run]` has launched the application (:568-572).
 extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
     let app = ns_app();
+    // SAFETY: [inferred] `stop:` takes one object argument and returns void, matching
+    // `send1::<Id, ()>`; `app` is `NSApp` from `ns_app()` and the sender argument may be
+    // `NSApp` itself. This timer callout runs on the main run loop (the timer was added to
+    // `CFRunLoopGetMain` in `ensure_nsapp_initialized`).
     unsafe { send1::<Id, ()>(app, RUNTIME.stop, app) };
     post_wakeup_event();
 }
@@ -289,6 +324,11 @@ impl WakeSource {
             cancel: None,
             perform: Some(wake_source_perform),
         };
+        // SAFETY: `context` is a live local of the declared `CFRunLoopSourceContext` layout
+        // (version 0, every unused callback `None`, `perform` an `extern "C"` fn of the right
+        // type); `CFRunLoopSourceCreate` copies it, so it need not outlive the call. The
+        // result is checked non-null before it is added to the main run loop, and
+        // `kCFRunLoopCommonModes` is a CoreFoundation constant.
         unsafe {
             let source = ffi::CFRunLoopSourceCreate(std::ptr::null(), 0, &mut context);
             assert!(!source.is_null(), "CFRunLoopSourceCreate");
@@ -299,6 +339,10 @@ impl WakeSource {
 
     /// `QCocoaEventDispatcher::wakeUp` (:525-531).
     fn signal(&self) {
+        // SAFETY: `self.0` is the source created in `new` and stays alive while `&self` does
+        // (released only in `Drop`); per the Core Foundation documentation
+        // `CFRunLoopSourceSignal`, `CFRunLoopWakeUp` and `CFRunLoopGetMain` may be called from
+        // any thread.
         unsafe {
             ffi::CFRunLoopSourceSignal(self.0);
             ffi::CFRunLoopWakeUp(ffi::CFRunLoopGetMain());
@@ -308,6 +352,9 @@ impl WakeSource {
 
 impl Drop for WakeSource {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the source created in `new`, owned only by this `WakeSource`;
+        // `Drop` runs once (the `Arc` in the dispatcher and its handles drops it after the last
+        // holder), so it is invalidated and its single retain released exactly once.
         unsafe {
             ffi::CFRunLoopSourceInvalidate(self.0);
             ffi::CFRelease(self.0);
@@ -356,12 +403,20 @@ impl CocoaEventDispatcher {
     fn ensure_nsapp_initialized(&self, app: Id) {
         let rt = &*RUNTIME;
         if NSAPP_RUN_CALLED.load(Ordering::SeqCst)
+            // SAFETY: [inferred] `app` is the `NSApp` instance from `ns_app()` and `isRunning`
+            // takes no arguments and returns `BOOL` (read as `i8`), matching `send0::<i8>`.
             || unsafe { send0::<i8>(app, rt.is_running) } != 0
         {
             return;
         }
         NSAPP_RUN_CALLED.store(true, Ordering::SeqCst);
         INITIALIZING_NSAPP.store(true, Ordering::SeqCst);
+        // SAFETY: [inferred] Runs on the main thread (`process_events` asserts it before
+        // calling this). `CFRunLoopTimerCreate` gets a null allocator (default), a plain
+        // `extern "C"` callout of the declared `TimerCallback` type and a null context;
+        // its result is checked non-null before use, and the timer is invalidated and released
+        // once after `[NSApp run]` returns (`stop_nsapp_after_launch` stops it on the first
+        // run-loop turn). `run` takes no arguments, matching `send0::<()>`.
         unsafe {
             let main = ffi::CFRunLoopGetMain();
             let now = ffi::CFAbsoluteTimeGetCurrent();
@@ -403,6 +458,10 @@ impl CocoaEventDispatcher {
                 &NativeMessage::Mac(event),
                 &mut result,
             ) {
+                // SAFETY: [inferred] `sendEvent:` takes one object argument and returns void,
+                // matching `send1::<Id, ()>`; `app` is `NSApp` and `event` is the non-null
+                // `NSEvent` just dequeued above, inside this iteration's autorelease pool. Runs
+                // on the main thread (only reached from `process_events`, which asserts it).
                 unsafe { send1::<Id, ()>(app, rt.send_event, event) };
                 sent = true;
             }
@@ -414,6 +473,13 @@ impl CocoaEventDispatcher {
     fn wait_for_more_events(app: Id, timeout: Option<Duration>) -> bool {
         let rt = &*RUNTIME;
         let _pool = AutoreleasePool::new();
+        // SAFETY: [inferred] `rt.ns_date` is the `NSDate` class and the selectors are
+        // `dateWithTimeIntervalSinceNow:` (one `f64` argument, returns an object) and
+        // `distantFuture` (no argument, returns an object), so the `send0`/`send1` signatures
+        // match the methods; `until` is passed straight to `next_event`. `app` is `NSApp` from
+        // `process_events`, the only caller, which asserts it runs on the main thread; the
+        // event it returns is non-null (checked) and re-posted with `postEvent:atStart:`
+        // (`Id`, `BOOL`) as in Qt's `qt_mac_waitForMoreEvents`.
         unsafe {
             let until: Id = match timeout {
                 Some(timeout) => send1(rt.ns_date, rt.date_from_now, timeout.as_secs_f64()),

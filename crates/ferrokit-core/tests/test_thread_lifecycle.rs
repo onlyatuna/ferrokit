@@ -186,6 +186,8 @@ mod windows_priority {
     };
 
     fn current_thread_priority() -> i32 {
+        // SAFETY: `GetCurrentThread()` returns the calling thread's pseudo handle, which is
+        // always valid for `GetThreadPriority` on this thread (Win32 docs). It takes no pointers.
         unsafe { GetThreadPriority(GetCurrentThread()) }
     }
 
@@ -205,6 +207,9 @@ mod windows_priority {
     #[test]
     fn inherit_copies_creator_priority() {
         let handle = Thread::spawn(|| {
+            // SAFETY: `GetCurrentThread()` returns the calling thread's pseudo handle, which
+            // always has the access `SetThreadPriority` needs (Win32 docs). The call takes no
+            // pointers.
             unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
             // No `.priority(..)` call: the default `Inherit` takes the creator's level.
             let child = Thread::spawn(current_thread_priority);
@@ -222,6 +227,10 @@ mod windows_priority {
 #[test]
 fn idle_priority_sets_sched_idle() {
     fn current_policy() -> i32 {
+        // SAFETY: `pthread_self()` is the calling thread's own handle, so it is valid. `policy`
+        // and `param` are locals that outlive the call and are valid for the writes the call
+        // makes. A zeroed `sched_param` is a valid value: the libc struct holds only integers
+        // [inferred from the libc definition].
         unsafe {
             let mut policy = 0;
             let mut param: libc::sched_param = std::mem::zeroed();
@@ -310,8 +319,12 @@ mod swallowed_exit {
     pub fn install_on_this_thread(pass: u32) {
         let data = ObjectData::new(ObjectId::next());
         let id = data.id();
-        // SAFETY: the object lives in a thread-local, in place, until the thread ends; nothing
-        // else touches it.
+        // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+        // runs. The owner is moved into the `FILTER` thread-local right below and never touched
+        // again, so nothing reads the object directly; the registry reaches it only from this
+        // thread, which registered it, and `ObjectData::new` does not opt in to thread moves.
+        // The thread-local is dropped at thread exit on this thread, after the loop has ended, so
+        // no callback is running then.
         let filter = unsafe { register_owned_qobject(SwallowCalls { data, pass }) };
         install_application_event_filter(id);
         FILTER.with(|slot| *slot.borrow_mut() = Some(filter));

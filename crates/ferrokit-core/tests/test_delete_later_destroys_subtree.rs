@@ -72,12 +72,20 @@ impl QObject for Probe {
 }
 
 fn owned(name: &'static str, log: &Log) -> OwnedObject<Probe> {
-    // SAFETY: the owner stays on this thread and is dropped when no callback of the object runs.
+    // SAFETY: `register_owned_qobject` requires that nothing outside a callback of the object
+    // accesses it during that callback. The returned `OwnedObject` has no `Deref`, and its `with`
+    // and `with_mut` refuse while a callback runs. The owner is returned to the calling test, which
+    // stays on this thread (the registration thread); dropping it during a callback is the
+    // deferred-destroy case the contract allows.
     unsafe { register_owned_qobject(Probe::new(name, log)) }
 }
 
 fn owned_child(parent: ObjectId, name: &'static str, log: &Log) -> ObjectId {
-    // SAFETY: the child stays where it is allocated; nothing reaches it during a callback.
+    // SAFETY: `add_owned_child` requires the child's address to stay put while owned and the
+    // child to be used on its registration thread: the `Box` is passed in fresh, with no earlier
+    // reference to it, and the parent (registered by `owned` on this thread) keeps it in
+    // `owned_children`. The tests only reach the child by id through `with_object*`, which refuse
+    // during its own callbacks.
     unsafe { add_owned_child(parent, Box::new(Probe::new(name, log))) }
         .unwrap_or_else(|(error, _)| panic!("add_owned_child: {error:?}"))
 }
@@ -237,8 +245,15 @@ fn stale_list_setup(log: &Log) -> (OwnedObject<Probe>, OwnedObject<Probe>, Owned
     let mut stale = Probe::new("stale", log);
     let mut kid = Probe::new("kid", log);
     reparent(&mut kid.data, None, Some(&mut stale.data));
+    // SAFETY: `stale` moves into the returned `OwnedObject`, which gives the registry a pointer to
+    // its heap copy and keeps it there. The owner is used and dropped on this thread, the
+    // registration thread, and the tests reach the object only through `with`/`with_mut` (which
+    // refuse during its callbacks) or by dropping the owner, which is allowed during a callback.
     let stale = unsafe { register_owned_qobject(stale) };
     reparent(&mut kid.data, None, None);
+    // SAFETY: as for `stale`: `kid` moves into the returned `OwnedObject`, which the caller keeps
+    // on this thread; `kid` is not touched during a callback of its own (the test only calls
+    // `with`/`with_mut`, which refuse while one runs).
     let kid = unsafe { register_owned_qobject(kid) };
     let real = owned("real", log);
     set_parent_by_id(

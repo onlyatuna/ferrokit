@@ -21,7 +21,9 @@ use ferrokit_core::signal::{ConnectionType, Signal};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Probe` holds an `Arc` log and plain fields, which are `Send`.
+    // SAFETY: `Probe` holds an `ObjectData`, a `&'static str` and an `Arc<Mutex<_>>` log, all
+    // `Send`; it has no `Rc`, `Cell`/`RefCell` shared with a handle left behind, or thread-local
+    // state, so it may be used and dropped on the target thread of a move (docs of the opt-in).
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -69,7 +71,12 @@ impl QObject for Probe {
 }
 
 fn owned(name: &'static str, log: &Log) -> OwnedObject<Probe> {
-    // SAFETY: the owner stays on this thread and is dropped when no callback of the object runs.
+    // SAFETY: `register_owned_qobject` allocates the object inside the returned owner, so the
+    // registered pointer is the owner's own and the object does not move when the owner does. The
+    // owner is used only through `with`/`with_mut` (which refuse during a callback of the object)
+    // and dropped by the caller: on this thread, or from another thread, where `OwnedObject::drop`
+    // forwards the destruction to the registration thread; a drop inside a callback is parked
+    // until it returns (see `destroy_owned`).
     unsafe { register_owned_qobject(Probe::new(name, log)) }
 }
 
@@ -232,7 +239,10 @@ fn destroyed_goes_out_before_the_children_are_deleted() {
         }
     });
     child_signal.connect(log_id(&log, "child destroyed"));
-    // SAFETY: the child is not used again outside the registry.
+    // SAFETY: `child` is a fresh object created on this thread (the parent's thread), moved into
+    // the `Box` here; the earlier uses (`child.data.id()`, `destroyed().clone()`) copied values, no
+    // reference to the child is held across this call, and afterwards it is reached only through
+    // the registry and the parent. No callback of the child runs here.
     let added = unsafe { add_owned_child(parent_id, Box::new(child)) };
     assert_eq!(added.map_err(|(e, _)| e), Ok(child_id));
 
@@ -458,7 +468,11 @@ fn a_parked_parent_emits_before_its_descendants() {
     parent
         .with(|p| p.destroyed().connect(log_id(&log, "parent destroyed")))
         .unwrap();
-    // SAFETY: the child is not used again outside the registry.
+    // SAFETY: `child` is a fresh object created on this thread (the parent's thread), moved into
+    // the `Box` here; the earlier uses (`child.data.id()`, `destroyed().clone()`, `connect`)
+    // copied values and cloned a shared signal, no reference to the child is held across this
+    // call, and afterwards it is reached only through the registry and the parent. No callback of
+    // the child runs here.
     let added = unsafe { add_owned_child(parent_id, Box::new(child)) };
     assert_eq!(added.map_err(|(e, _)| e), Ok(child_id));
 
@@ -565,7 +579,9 @@ fn unregistering_a_live_object_emits_destroyed_once() {
     owner
         .with(|p| p.destroyed().connect(log_id(&log, "destroyed")))
         .unwrap();
-    // SAFETY: no callback of the object runs.
+    // SAFETY: `unregister` follows `unregister_qobject`: the memory stays valid because `owner`
+    // is alive and unmoved (it is dropped only afterwards), and no registry callback of the object
+    // runs: the only code running on it is this `with_mut` closure on the registration thread.
     owner.with_mut(|p| unsafe { p.data.unregister() }).unwrap();
     assert_eq!(entries(&log), vec![format!("destroyed {}", id.0)]);
     drop(owner);

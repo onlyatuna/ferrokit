@@ -62,9 +62,14 @@ fn install_event_filter_allows_self() {
     );
     let id = obj.data.id();
     let obj_ptr = &raw mut obj;
+    // SAFETY: `obj` is a local that stays here, unmoved, until unregistered at the end of the
+    // test; the pointer is taken with `&raw mut` and kept as `obj_ptr`, so no reference exists
+    // that a later callback could invalidate. Single thread, no callback is active.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
-    // SAFETY: no callback of `obj` runs; `obj_ptr` is the registered pointer.
+    // SAFETY: `obj_ptr` is the registered pointer and `obj` a live local; `install_event_filter`
+    // only edits the filter list [inferred] and runs no callback of `obj`, so this `&mut` is the
+    // only access to the object while it lives.
     let ok = install_event_filter(unsafe { &mut (*obj_ptr).data }, id);
     assert!(
         ok,
@@ -75,6 +80,8 @@ fn install_event_filter_allows_self() {
         "filter chain must contain self id"
     );
 
+    // SAFETY: `obj` is a local, unmoved and undropped until after this call, as `unregister_qobject`
+    // requires; no callback is running and no timers exist [inferred].
     unsafe { unregister_qobject(id) };
 }
 
@@ -95,13 +102,20 @@ fn install_event_filter_allows_mutual_cycle() {
     let a_ptr = &raw mut obj_a;
     let b_ptr = &raw mut obj_b;
 
+    // SAFETY: `obj_a` and `obj_b` are locals that stay here, unmoved, until unregistered at the
+    // end of the test; the pointers are taken with `&raw mut` and kept, so no reference exists
+    // that a later callback could invalidate. Single thread, no callback is active.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(a_ptr));
         register_qobject_ptr(NonNull::new_unchecked(b_ptr));
     }
 
-    // SAFETY: no callback of either object runs; the pointers are the registered ones.
+    // SAFETY: `a_ptr` is the registered pointer of `obj_a` and `b_ptr` that of `obj_b`; both
+    // objects are live locals. `install_event_filter` only edits the given `ObjectData` and runs
+    // no callback of either object [inferred from it being a plain filter-list edit], so each
+    // `&mut` is the only access to its object while it lives.
     let ok_a = install_event_filter(unsafe { &mut (*a_ptr).data }, b_id);
+    // SAFETY: as above, for `b_ptr`; the `&mut` of the previous statement has ended.
     let ok_b = install_event_filter(unsafe { &mut (*b_ptr).data }, a_id);
 
     assert!(ok_a, "obj_a installing obj_b must succeed");
@@ -110,6 +124,8 @@ fn install_event_filter_allows_mutual_cycle() {
         "obj_b installing obj_a must succeed even when obj_a filters obj_b (qobject.cpp:2407-2423)"
     );
 
+    // SAFETY: `obj_a` and `obj_b` are locals, unmoved and undropped until after this block, and
+    // no callback is running; no timers exist [inferred].
     unsafe {
         unregister_qobject(b_id);
         unregister_qobject(a_id);
@@ -129,8 +145,10 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     // the pointer the registry holds.
     install_event_filter(&mut obj.data, id);
     let obj_ptr = &raw mut obj;
-    // SAFETY: `obj` stays on this thread, unmoved and alive, until unregistered below, and only
-    // `obj_ptr` is used to reach it from here on.
+    // SAFETY: `obj` is a local that stays on this thread, unmoved and undropped, until it is
+    // unregistered at the end of the test. The pointer is taken with `&raw mut`, and from here on
+    // only `obj_ptr` writes the object (the earlier `install_event_filter` ran before
+    // registration), so the registry's pointer stays valid across the `send_event` callbacks.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(obj_ptr)) };
 
     let mut ev1 = Event::new(EventKind::UpdateRequest);
@@ -141,7 +159,9 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
     assert_eq!(event_called.load(Ordering::SeqCst), 1);
 
     // 2. Consume mode: filter returns true -> event() is NOT called, send_event returns true
-    // SAFETY: no callback is active, and `obj_ptr` is the pointer that was registered.
+    // SAFETY: `obj_ptr` is the `&raw mut` pointer that was registered, so this write goes through
+    // the registry's own pointer (rule 7). No callback of `obj` is running: the earlier
+    // `send_event` has returned and this is the only thread.
     unsafe { (*obj_ptr).consume = true };
     let mut ev2 = Event::new(EventKind::UpdateRequest);
     let res2 = send_event(id, &mut ev2);
@@ -154,5 +174,7 @@ fn self_event_filter_delivers_and_can_pass_or_consume() {
         "event() must not be called when consumed"
     );
 
+    // SAFETY: `obj` is a local, unmoved and undropped until after this call, as `unregister_qobject`
+    // requires; no callback is running (`send_event` has returned), and no timers exist [inferred].
     unsafe { unregister_qobject(id) };
 }

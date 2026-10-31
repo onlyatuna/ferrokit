@@ -33,6 +33,9 @@ impl ThreadWaker {
 
 fn create_thread_waker(waker: Arc<ThreadWaker>) -> Waker {
     unsafe fn clone_waker(data: *const ()) -> RawWaker {
+        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`. The
+        // `Arc` is leaked back with `forget` after one extra count is created (also forgotten)
+        // for the new `RawWaker`, so the original keeps its count.
         let arc = Arc::from_raw(data as *const ThreadWaker);
         std::mem::forget(Arc::clone(&arc));
         std::mem::forget(arc);
@@ -40,22 +43,32 @@ fn create_thread_waker(waker: Arc<ThreadWaker>) -> Waker {
     }
 
     unsafe fn wake(data: *const ()) {
+        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of the `Waker` being
+        // consumed; this `Arc` takes over its strong count and releases it when dropped.
         let arc = Arc::from_raw(data as *const ThreadWaker);
         arc.wake();
     }
 
     unsafe fn wake_by_ref(data: *const ()) {
+        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`, which
+        // holds a strong count for the duration of this by-ref call; no count is consumed.
         let arc = &*(data as *const ThreadWaker);
         arc.wake();
     }
 
     unsafe fn drop_waker(data: *const ()) {
+        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer given to `RawWaker::new`
+        // (or a clone of it from `clone_waker`); each `Waker` owns one strong count, released here.
         drop(Arc::from_raw(data as *const ThreadWaker));
     }
 
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
 
     let ptr = Arc::into_raw(waker) as *const ();
+    // SAFETY: `ptr` comes from `Arc::into_raw` on the line above (one strong count owned by the
+    // new `Waker`), the vtable functions below all treat the data as that `Arc<ThreadWaker>`,
+    // and they are thread-safe because `ThreadWaker` holds only a `std::thread::Thread` and an
+    // `AtomicBool`, as the `RawWakerVTable` contract requires.
     unsafe { Waker::from_raw(RawWaker::new(ptr, &VTABLE)) }
 }
 
@@ -64,6 +77,9 @@ fn create_thread_waker(waker: Arc<ThreadWaker>) -> Waker {
 /// On a [`ThreadPool`] worker, a task of the same pool that the future awaits and that has not
 /// started yet is run inline (see [`ThreadPool`]).
 pub fn block_on<F: Future>(mut future: F) -> F::Output {
+    // SAFETY: `future` is a local owned by this function and is never moved or accessed by name
+    // again after this line, only through `pinned`, so it stays at one address until it is
+    // dropped at the end of the function, as `Pin` requires.
     let mut pinned = unsafe { Pin::new_unchecked(&mut future) };
     let thread_waker = Arc::new(ThreadWaker::new());
     let waker = create_thread_waker(Arc::clone(&thread_waker));

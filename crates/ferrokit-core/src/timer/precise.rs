@@ -38,6 +38,9 @@ impl Drop for Active {
     /// `TIME_KILL_SYNCHRONOUS` makes `timeKillEvent` wait for a running callback, so `_posted` is
     /// not freed while the callback thread can still read it.
     fn drop(&mut self) {
+        // SAFETY: `self.handle` is the id `timeSetEvent` returned in `arm` for this `Active`,
+        // which is the only owner of it and is dropped once; `timeKillEvent` takes it by value
+        // and reports an unknown id as an error instead of touching memory.
         unsafe {
             timeKillEvent(self.handle);
         }
@@ -50,6 +53,10 @@ thread_local! {
 }
 
 unsafe extern "system" fn callback(_id: u32, _msg: u32, user: usize, _dw1: usize, _dw2: usize) {
+    // SAFETY: `user` is the address of the boxed `Posted` passed to `timeSetEvent` in `arm`. The
+    // box outlives every callback: `Active::drop` calls `timeKillEvent` with
+    // `TIME_KILL_SYNCHRONOUS` (it waits for a running callback) before the box is freed, and
+    // the callback only takes a shared reference to `Posted`, whose mutable state is atomic.
     let posted = &*(user as *const Posted);
     if !posted.queued.swap(true, Ordering::AcqRel)
         && PostMessageW(posted.hwnd as HWND, WM_TIMER, posted.id as usize, 0) == 0
@@ -82,6 +89,11 @@ pub(crate) fn arm(hwnd: HWND, id: TimerId, interval_ms: u64) -> bool {
         queued: AtomicBool::new(false),
     });
     let user = &*posted as *const Posted as usize;
+    // SAFETY: `callback` has the `extern "system"` signature `timeSetEvent` expects, and `user`
+    // is the address of the heap `Posted` that `callback` reads back. On success, `posted`
+    // is moved into `Active` below, which keeps the box alive and at that address until
+    // `Active::drop` has run `timeKillEvent`; with `TIME_KILL_SYNCHRONOUS` no callback runs
+    // once that returns. On failure no callback was scheduled and `posted` is simply dropped.
     let handle = unsafe {
         timeSetEvent(
             delay,

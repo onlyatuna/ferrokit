@@ -132,8 +132,10 @@ impl Waiter {
                     revents: 0,
                 },
             ];
-            // SAFETY: `fds` is two valid `pollfd`s, and `source` and `self.bell` keep their
-            // descriptors open for the whole call.
+            // SAFETY: `fds` is a local array of two initialised `pollfd`s and `fds.len()` is
+            // exactly its length, so `poll` reads and writes only inside it; the first
+            // descriptor belongs to `source` and the second to `self.bell` (or is -1, which
+            // `poll` ignores), both borrowed for this whole call, so neither is closed meanwhile.
             let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if ready < 0 {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {

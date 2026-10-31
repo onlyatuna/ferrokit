@@ -96,6 +96,9 @@ fn swap(a: &mut Owner, b: &mut Owner) -> Result<(), ReparentError> {
 #[test]
 fn test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf() {
     let freed = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, and the owner is used (`with`, `with_mut`,
+    // drop) only on this test thread, the registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed))) };
     let a_id = OwnedObject::object_id(&a);
 
@@ -125,6 +128,9 @@ fn test_swapping_object_data_does_not_leave_dangling_registry_pointer_or_uaf() {
 #[test]
 fn test_encapsulated_getters_return_consistent_views() {
     let freed = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let parent = unsafe { register_owned_qobject(make_node(Arc::clone(&freed))) };
     let parent_id = OwnedObject::object_id(&parent);
 
@@ -132,6 +138,10 @@ fn test_encapsulated_getters_return_consistent_views() {
     let child = Box::new(make_node(Arc::clone(&child_freed)));
     let child_id = child.data.id();
 
+    // SAFETY: `add_owned_child` contract: `child` is a fresh Box moved in by value (its earlier
+    // `child.data.id()` borrow ended above), so nothing aliases it; `parent` owns it at a stable
+    // heap address; no callback of it runs (none is dispatched); `parent_id` is registered on
+    // this thread, as is the child.
     unsafe { add_owned_child(parent_id, child) }
         .map_err(|(e, _)| e)
         .expect("attach child");
@@ -158,6 +168,10 @@ fn test_encapsulated_getters_return_consistent_views() {
 #[test]
 fn test_running_child_cannot_be_cleared_by_safe_code() {
     let parent_freed = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference); the only callback is the child's, in which the parent is reached via the
+    // registry (`with_object`), never while the parent's own callback runs; owner stays on this
+    // test thread, the registration thread.
     let parent = unsafe { register_owned_qobject(make_node(Arc::clone(&parent_freed))) };
     let parent_id = OwnedObject::object_id(&parent);
 
@@ -181,6 +195,12 @@ fn test_running_child_cannot_be_cleared_by_safe_code() {
         assert!(!child_freed_clone.load(Ordering::Acquire));
     }));
 
+    // SAFETY: `add_owned_child` contract: `child` is a fresh Box moved in by value (its earlier
+    // `child.data`/`child.on_user` accesses ended above), so nothing aliases it; `parent` owns it
+    // at a stable heap address; no callback of it runs during the call. The one callback
+    // dispatched later touches only the registry (`with_object(parent_id)`, `parent` is not
+    // borrowed then) and Rc/Arc clones, never `child` directly. `parent_id` is registered on
+    // this thread, as is the child.
     unsafe { add_owned_child(parent_id, child) }
         .map_err(|(e, _)| e)
         .expect("attach child");
@@ -195,10 +215,15 @@ fn test_running_child_cannot_be_cleared_by_safe_code() {
 #[test]
 fn test_swapping_two_registered_objects_data_and_dropping_one() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread. The owner is used only via `with`/`with_mut`, which refuse during a
+    // callback.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
@@ -212,6 +237,10 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
     let child_a_freed = Arc::new(AtomicBool::new(false));
     let child_a = Box::new(make_node(Arc::clone(&child_a_freed)));
     let child_a_id = child_a.data.id();
+    // SAFETY: `add_owned_child` contract: `child_a` is a fresh Box moved in by value (its earlier
+    // `child_a.data.id()` borrow ended above), so nothing aliases it; `a` owns it at a stable heap
+    // address; no callback of it runs (none is dispatched); `a_id` is registered on this thread,
+    // as is the child.
     unsafe { add_owned_child(a_id, child_a) }
         .map_err(|(e, _)| e)
         .expect("attach child_a");
@@ -219,6 +248,10 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
     let child_b_freed = Arc::new(AtomicBool::new(false));
     let child_b = Box::new(make_node(Arc::clone(&child_b_freed)));
     let child_b_id = child_b.data.id();
+    // SAFETY: `add_owned_child` contract: `child_b` is a fresh Box moved in by value (its earlier
+    // `child_b.data.id()` borrow ended above), so nothing aliases it; `b` owns it at a stable heap
+    // address; no callback of it runs (none is dispatched); `b_id` is registered on this thread,
+    // as is the child.
     unsafe { add_owned_child(b_id, child_b) }
         .map_err(|(e, _)| e)
         .expect("attach child_b");
@@ -416,10 +449,16 @@ fn test_swapping_two_registered_objects_data_and_dropping_one() {
 #[test]
 fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
     let freed_root = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut root = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_root))) };
     let root_id = OwnedObject::object_id(&root);
 
     let freed_peer = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut peer = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_peer))) };
     let peer_id = OwnedObject::object_id(&peer);
 
@@ -432,10 +471,18 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
     let grandchild = Box::new(make_node(Arc::clone(&freed_grandchild)));
     let grandchild_id = grandchild.data.id();
 
+    // SAFETY: `add_owned_child` contract: `child` is a fresh Box moved in by value (its earlier
+    // `child.data.id()` borrow ended above), so nothing aliases it; `root` owns it at a stable
+    // heap address; no callback of it runs (none is dispatched); `root_id` is registered on this
+    // thread, as is the child.
     unsafe { add_owned_child(root_id, child) }
         .map_err(|(e, _)| e)
         .expect("attach child to root");
 
+    // SAFETY: `add_owned_child` contract: `grandchild` is a fresh Box moved in by value (its
+    // earlier `grandchild.data.id()` borrow ended above), so nothing aliases it; `child`, owned
+    // by `root` and not borrowed by any callback, owns it at a stable heap address; no callback
+    // of it runs; `child_id` is registered on this thread, as is the grandchild.
     unsafe { add_owned_child(child_id, grandchild) }
         .map_err(|(e, _)| e)
         .expect("attach grandchild to child");
@@ -489,14 +536,21 @@ fn test_nested_child_cleanup_across_three_levels_of_swapped_objects() {
 #[test]
 fn test_swap_hierarchy_with_non_owned_child() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
     let freed_c = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let c = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c))) };
     let c_id = OwnedObject::object_id(&c);
 
@@ -581,6 +635,9 @@ fn test_swap_hierarchy_with_non_owned_child() {
 #[test]
 fn test_swap_hierarchy_rejects_cross_thread() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
@@ -589,6 +646,11 @@ fn test_swap_hierarchy_rejects_cross_thread() {
     // needs both objects borrowed at once. So B is created with the remote affinity already set.
     let remote_thread = std::thread::spawn(ThreadId::current).join().unwrap();
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread. The
+    // `remote_thread` affinity in its `ObjectData` does not change the registration thread, which
+    // the registry records as `ThreadId::current()` (qobject.rs `register_record`), so callbacks
+    // would still run here.
     let mut b = unsafe {
         register_owned_qobject(EncapsulatedNode {
             data: ObjectData::with_thread(ObjectId::next(), remote_thread),
@@ -602,6 +664,10 @@ fn test_swap_hierarchy_rejects_cross_thread() {
     let child_a_freed = Arc::new(AtomicBool::new(false));
     let child_a = Box::new(make_node(Arc::clone(&child_a_freed)));
     let child_a_id = child_a.data.id();
+    // SAFETY: `add_owned_child` contract: `child_a` is a fresh Box moved in by value (its earlier
+    // `child_a.data.id()` borrow ended above), so nothing aliases it; `a` owns it at a stable heap
+    // address; no callback of it runs (none is dispatched); `a_id` is registered on this thread,
+    // as is the child.
     unsafe { add_owned_child(a_id, child_a) }
         .map_err(|(e, _)| e)
         .expect("attach child_a");
@@ -625,10 +691,14 @@ fn test_swap_hierarchy_rejects_cross_thread() {
 #[test]
 fn test_swap_hierarchy_rejects_cycle() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
@@ -656,6 +726,10 @@ fn test_swap_hierarchy_rejects_cycle() {
 #[test]
 fn test_swap_hierarchy_rejects_missing_registry_record() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference); it is used only through `a.with_mut` (which refuses during a callback), no
+    // callback is dispatched to it, and the owner stays on this test thread, the registration
+    // thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
 
     // Node B is not registered in the global registry
@@ -678,10 +752,15 @@ fn test_swap_hierarchy_rejects_missing_registry_record() {
 
     // Now test child missing from registry:
     let freed_b2 = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a` above: node moved into the owner, no callback runs, owner stays on this
+    // thread.
     let mut b2 = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b2))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_c = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let c = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c))) };
     let c_id = OwnedObject::object_id(&c);
 
@@ -689,6 +768,10 @@ fn test_swap_hierarchy_rejects_missing_registry_record() {
     assert_eq!(query_object_parent(c_id), Some(Some(a_id)));
 
     // Unregister C so its registry record is missing
+    // SAFETY: `unregister_qobject` contract: `c`'s memory stays valid, unmoved and undropped
+    // (owned by `c`, dropped only at `drop(c)` after this call), and no callback of `c` is
+    // running (none is dispatched and this thread is not inside one). Called on this thread,
+    // which is `c`'s registration thread.
     unsafe { ferrokit_core::object::unregister_qobject(c_id) };
     assert_eq!(query_object_parent(c_id), None);
 
@@ -704,13 +787,21 @@ fn test_swap_hierarchy_rejects_missing_registry_record() {
 #[test]
 fn test_swap_hierarchy_rejects_when_child_is_borrowed() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference); the callback below runs on `c`, never on `a`, and the owner stays on this
+    // test thread, the registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, owner stays on this thread; the callback
+    // below runs on `c`, never on `b`.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
 
     let freed_c = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference); `c` is not touched while the `with_object_mut` callback on it runs (the
+    // callback uses only `a` and `b`); owner stays on this registration thread.
     let c = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c))) };
     let c_id = OwnedObject::object_id(&c);
 
@@ -736,19 +827,26 @@ fn test_swap_hierarchy_rejects_when_child_is_borrowed() {
 #[test]
 fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, and the owner is used (`swap`) and dropped
+    // only on this test thread, the registration thread. The spawned reader captures only ids
+    // and Arcs and calls registry queries that never dereference the object pointer.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
     let freed_c1 = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let c1 = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c1))) };
     let c1_id = OwnedObject::object_id(&c1);
     set_parent_by_id(c1_id, Some(a_id)).expect("c1 under a");
 
     let freed_c2 = Arc::new(AtomicBool::new(false));
+    // SAFETY: as for `a`: node moved into the owner, no callback runs, owner stays on this thread.
     let c2 = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_c2))) };
     let c2_id = OwnedObject::object_id(&c2);
     set_parent_by_id(c2_id, Some(b_id)).expect("c2 under b");
@@ -822,10 +920,14 @@ fn test_swap_hierarchy_concurrent_visibility_is_atomic() {
 #[test]
 fn test_swap_hierarchy_mixed_owned_and_non_owned_children() {
     let freed_a = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let mut a = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_a))) };
     let a_id = OwnedObject::object_id(&a);
 
     let freed_b = Arc::new(AtomicBool::new(false));
+    // SAFETY: as above: node moved into the owner, no callback runs, owner stays on this thread.
     let mut b = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_b))) };
     let b_id = OwnedObject::object_id(&b);
 
@@ -833,11 +935,18 @@ fn test_swap_hierarchy_mixed_owned_and_non_owned_children() {
     let freed_oa = Arc::new(AtomicBool::new(false));
     let oa = Box::new(make_node(Arc::clone(&freed_oa)));
     let oa_id = oa.data.id();
+    // SAFETY: `add_owned_child` contract: `oa` is a fresh Box moved in by value (its earlier
+    // `oa.data.id()` borrow ended above), so nothing aliases it; `a` owns it at a stable heap
+    // address; no callback of it runs (none is dispatched); `a_id` is registered on this thread,
+    // as is the child.
     unsafe { add_owned_child(a_id, oa) }
         .map_err(|(e, _)| e)
         .expect("add oa");
 
     let freed_na = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let na = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_na))) };
     let na_id = OwnedObject::object_id(&na);
     set_parent_by_id(na_id, Some(a_id)).expect("set parent na");
@@ -846,11 +955,18 @@ fn test_swap_hierarchy_mixed_owned_and_non_owned_children() {
     let freed_ob = Arc::new(AtomicBool::new(false));
     let ob = Box::new(make_node(Arc::clone(&freed_ob)));
     let ob_id = ob.data.id();
+    // SAFETY: `add_owned_child` contract: `ob` is a fresh Box moved in by value (its earlier
+    // `ob.data.id()` borrow ended above), so nothing aliases it; `b` owns it at a stable heap
+    // address; no callback of it runs (none is dispatched); `b_id` is registered on this thread,
+    // as is the child.
     unsafe { add_owned_child(b_id, ob) }
         .map_err(|(e, _)| e)
         .expect("add ob");
 
     let freed_nb = Arc::new(AtomicBool::new(false));
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let nb = unsafe { register_owned_qobject(make_node(Arc::clone(&freed_nb))) };
     let nb_id = OwnedObject::object_id(&nb);
     set_parent_by_id(nb_id, Some(b_id)).expect("set parent nb");
@@ -924,11 +1040,18 @@ fn test_swap_hierarchy_mixed_owned_and_non_owned_children() {
 
 #[test]
 fn test_set_parent_and_reparent_owned_failure_invariance() {
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let p1 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    // SAFETY: as above: node moved into the owner, no callback runs, owner stays on this thread.
     let _p2 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
     let p1_id = OwnedObject::object_id(&p1);
 
     // 1. Non-owned child failure invariance with set_parent
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, owner stays on this test thread, the
+    // registration thread.
     let non_owned = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
     let no_id = OwnedObject::object_id(&non_owned);
     set_parent_by_id(no_id, Some(p1_id)).expect("set parent p1");
@@ -946,6 +1069,11 @@ fn test_set_parent_and_reparent_owned_failure_invariance() {
 
     // 2. Owned child failure invariance with reparent_owned_object
     let owned_child = make_node(Arc::new(AtomicBool::new(false)));
+    // SAFETY: `add_owned_child` contract: `Box::new(owned_child)` is a fresh Box moved in by
+    // value, so nothing aliases it afterwards (the `owned_child` local is consumed); `p1` owns it
+    // at a stable heap address; no callback of it runs (none is dispatched); `p1` is registered
+    // on this thread, as is the child. An `Err` would hand the Box back unattached and `unwrap`
+    // would panic.
     let oc_id = unsafe {
         add_owned_child(p1_id, Box::new(owned_child))
             .map_err(|(e, _)| e)
@@ -982,12 +1110,22 @@ fn test_set_parent_and_reparent_owned_failure_invariance() {
 
 #[test]
 fn test_reparent_owned_concurrent_snapshot_atomicity() {
+    // SAFETY: `register_owned_qobject` contract: node moved by value into the owner (no other
+    // reference), no callback is dispatched to it, and the owner is used and dropped only on this
+    // test thread (the registration thread); the spawned reader never receives an owner (it
+    // captures only ids and atomics).
     let p1 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
+    // SAFETY: as above: node moved into the owner, no callback runs, owner stays on this thread.
     let p2 = unsafe { register_owned_qobject(make_node(Arc::new(AtomicBool::new(false)))) };
     let p1_id = OwnedObject::object_id(&p1);
     let p2_id = OwnedObject::object_id(&p2);
 
     let child = make_node(Arc::new(AtomicBool::new(false)));
+    // SAFETY: `add_owned_child` contract: `Box::new(child)` is a fresh Box moved in by value, so
+    // nothing aliases it afterwards (the `child` local is consumed); `p1` owns it at a stable heap
+    // address until dropped; no callback of it runs (none is dispatched) and it is used afterwards
+    // only through registry ids. `p1` is registered on this thread, as is the child. The reader
+    // thread captures only ids and atomics, never an owner or the object.
     let child_id = unsafe {
         add_owned_child(p1_id, Box::new(child))
             .map_err(|(e, _)| e)

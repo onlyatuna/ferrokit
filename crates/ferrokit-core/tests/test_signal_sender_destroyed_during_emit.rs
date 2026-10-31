@@ -40,9 +40,14 @@ fn record(calls: &Calls, name: &'static str) -> impl Fn(&String) + Send + Sync +
 /// A handle that lets a closure that must be `Send + Sync` hold a thread-bound value. Every use
 /// in this file is on one thread.
 struct ThreadBound<T>(T);
-// SAFETY: the wrapped value is only ever created, used and dropped on the test's own thread (see
-// the type's documentation); `Send + Sync` only satisfies the bounds of the slot closures.
+// SAFETY: `Send` is only needed to satisfy the `Send + Sync + 'static` bounds of `connect`; the
+// wrapped value is created, cloned, used and dropped only on the test's own thread: the file
+// has no `spawn`, and slots run directly in `emit` on that thread, so the `Rc` inside is never
+// touched from two threads. This is not sound for arbitrary `T` and arbitrary use, which is
+// why the type is private to this file.
 unsafe impl<T> Send for ThreadBound<T> {}
+// SAFETY: `Sync` has the same premise as `Send` above: a `&ThreadBound` is only ever used on the
+// thread that owns it.
 unsafe impl<T> Sync for ThreadBound<T> {}
 impl<T> ThreadBound<T> {
     fn get(&self) -> &T {
@@ -70,8 +75,10 @@ impl Node {
     }
 
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+        // runs. The owner is used on this thread only (no `spawn` in this file), and `Node` has no
+        // callbacks that touch itself. Dropping the owner while a callback of the object runs is
+        // permitted by that function's docs (deferred free).
         unsafe { register_owned_qobject(Self::unboxed()) }
     }
 }
@@ -109,7 +116,12 @@ impl Sender {
         let child = Node::new();
         let signal = child.data.object_name_changed().clone();
         let freed = Arc::clone(&child.freed);
-        // SAFETY: the parent owns the Box from here on and is dropped on this thread.
+        // SAFETY: `add_owned_child` needs the child to keep its heap address while owned, to be
+        // used on its registration thread, and not to be accessed outside while one of its
+        // callbacks runs. The `Box` moves into the parent's owner and keeps its address. Parent and
+        // child were made on this thread, which is the only one in this file (no `spawn`). Only
+        // copies of the child's `signal` and `freed` handles were taken from the box, which stay
+        // valid after the child is freed (`Signal` clone, `Arc`).
         unsafe { add_owned_child(parent_id, child) }
             .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
         Self {
@@ -334,7 +346,12 @@ fn a_signal_emitted_while_its_owner_is_being_destroyed_reaches_no_slot() {
     let mut child = Node::new();
     let emitter = signal.clone();
     child.on_drop = Some(Box::new(move || emitter.emit(&String::new())));
-    // SAFETY: the parent owns the Box from here on and is dropped on this thread.
+    // SAFETY: `add_owned_child` needs the child to keep its heap address while owned, to be used
+    // on its registration thread, and not to be accessed outside while one of its callbacks runs.
+    // The `Box` moves into the parent's owner and keeps its address. `parent` and `child` were
+    // made on this thread, which is the only one in this file (no `spawn`), and nothing touches
+    // the child directly after this call. The parent is dropped on this thread, outside any
+    // callback of the child, and the child's `on_drop` hook only emits a signal handle.
     unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
 

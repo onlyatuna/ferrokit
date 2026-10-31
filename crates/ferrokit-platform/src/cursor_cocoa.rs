@@ -54,9 +54,11 @@ mod native {
 
     impl CursorServices for NativeCursorServices {
         fn location(&self) -> Option<(f64, f64)> {
-            // SAFETY: `CGEventCreate(NULL)` returns an owned (+1) event or NULL; the location is
-            // read while it is alive and the event is released exactly once. The functions touch
-            // no Rust memory and may be called from any thread.
+            // SAFETY: `CGEventCreate(NULL)` returns an owned (+1) event or NULL, and NULL is
+            // checked before use; the location is read while the event is alive and the event is
+            // released exactly once. These Quartz functions take no Rust pointers (the only
+            // pointer is NULL by design) and are not main-thread-bound per the Quartz Event
+            // Services documentation [inferred].
             unsafe {
                 let event = CGEventCreate(std::ptr::null());
                 if event.is_null() {
@@ -69,8 +71,9 @@ mod native {
         }
 
         fn warp(&self, x: f64, y: f64) {
-            // SAFETY: both calls take plain values and return a `CGError` that is ignored:
-            // a failed warp leaves the pointer where it was, which `QCursor::setPos` allows.
+            // SAFETY: both calls take plain values (a by-value `CGPoint`, a `boolean_t`), no
+            // pointers. The returned `CGError` is ignored on purpose: a failed warp leaves the
+            // pointer where it was, which `QCursor::setPos` allows.
             unsafe {
                 CGWarpMouseCursorPosition(CGPoint::new(x, y));
                 // A warp detaches the pointer from the mouse until the next association.

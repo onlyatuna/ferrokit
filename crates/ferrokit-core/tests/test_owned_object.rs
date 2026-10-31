@@ -76,13 +76,17 @@ fn gone(id: ObjectId) -> bool {
 }
 
 fn root() -> OwnedObject<Node> {
-    // SAFETY: the owner stays on this thread and is dropped, which unregisters the object, when
-    // no callback of it runs.
+    // SAFETY: the returned owner is used only through `with`/`with_mut`/`object_id` and dropped by
+    // the test on this thread; a drop inside a callback of the object is the case
+    // `OwnedObject::drop` handles by unregistering at once and parking the allocation until the
+    // callback returns (see `destroy_owned`).
     unsafe { register_owned_qobject(Node::new()) }
 }
 
 fn add(parent: ObjectId) -> ObjectId {
-    // SAFETY: the parent owns the child from here on and is dropped on this thread.
+    // SAFETY: the `Box::new(Node::new())` is a fresh allocation moved into the call, with no
+    // other pointer to it; the parent owns it afterwards and the test never uses it except through
+    // the registry, on this thread.
     unsafe { add_owned_child(parent, Box::new(Node::new())) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"))
 }
@@ -196,14 +200,16 @@ fn a_child_released_as_an_owner_stays_registered_and_usable() {
 fn an_object_in_a_variable_registered_by_a_raw_pointer_can_be_read_between_callbacks() {
     let mut x = Node::new();
     let id = x.data.id();
-    // SAFETY: `x` stays here, unmoved, until it is unregistered below, and the pointer is taken
-    // without making a reference.
+    // SAFETY: `x` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut` (no reference is made) and `x` is only read between
+    // callbacks (`x.n`), the allowed use (rule 7).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut x as *mut dyn QObject)) };
     touch(id);
     assert_eq!(x.n, 1);
     touch(id);
     assert_eq!(x.n, 2);
-    // SAFETY: no callback of `x` runs.
+    // SAFETY: `x` is a local that outlives this call and is unmoved; `touch` has returned, so no
+    // callback of `x` runs; this is the registration thread.
     unsafe { unregister_qobject(id) };
     assert!(gone(id));
 }
@@ -214,7 +220,10 @@ fn registering_again_with_the_owners_pointer_keeps_the_object_alive() {
     let id = OwnedObject::object_id(&owner);
     let alive = owner.with(|o| o.data.liveness()).unwrap();
     touch(id);
-    // SAFETY: the object stays in place while `owner` lives, and no callback of it runs.
+    // SAFETY: `owner` keeps the object at the address it is already registered at (the pointer is
+    // `as_non_null(&owner)`, the owner's own), and `owner` is a local that outlives the test; no
+    // callback of it runs here (`touch` has returned). Registering the same pointer again
+    // replaces the registry's pointer by an equal one.
     unsafe { register_qobject_ptr(OwnedObject::<Node>::as_non_null(&owner)) };
     assert!(alive.load(std::sync::atomic::Ordering::SeqCst));
     touch(id);
@@ -268,7 +277,8 @@ fn a_registered_parent_dropped_in_its_childs_callback_frees_the_child_afterwards
         seen: Rc::clone(&seen),
     });
     let rid = reactor.data.id();
-    // SAFETY: the parent owns the child from here on and is dropped on this thread.
+    // SAFETY: `reactor` is a fresh `Box` created on this thread (the parent's thread); only its
+    // id was read earlier, so no reference is held, and the parent owns it afterwards.
     unsafe { add_owned_child(pid, reactor) }.unwrap_or_else(|(err, _)| panic!("{err:?}"));
 
     dispatch_to_object(rid, &mut Event::new(EventKind::UpdateRequest));
@@ -349,9 +359,12 @@ fn a_released_owned_child_dropped_in_its_own_callback_is_freed_afterwards() {
         post_drop_writes: 0,
     });
     let cid = child.data.id();
-    // SAFETY: `parent` owns `child` on this thread; `reparent_owned_object` below is safe.
+    // SAFETY: `child` is a fresh `Box` created on this thread (`parent`'s thread); only its id
+    // was read earlier, so no reference is held, and `parent` owns it afterwards (until
+    // `reparent_owned_object` takes it back).
     unsafe { add_owned_child(pid, child) }.unwrap_or_else(|(err, _)| panic!("{err:?}"));
-    // SAFETY: `cid` owns `grand` on this thread.
+    // SAFETY: `grand` is a fresh `Box` created on this thread (`cid`'s thread); only its id was
+    // read earlier, so no reference is held, and `cid` owns it afterwards.
     unsafe { add_owned_child(cid, grand) }.unwrap_or_else(|(err, _)| panic!("{err:?}"));
 
     // Detach `cid` from `parent` through the safe public API and hand the returned
@@ -388,8 +401,10 @@ fn a_top_level_owned_object_dropped_in_its_own_callback_is_freed_afterwards() {
     let child = Box::new(Node::new());
     let child_id = child.data.id();
 
-    // SAFETY: the owner stays on this thread; dropping it inside its own callback parks the
-    // allocation until the callback returns.
+    // SAFETY: `owner` is moved into `typed_slot` right after and is only dropped there, from
+    // inside its own callback, which `OwnedObject::drop` handles by unregistering at once and
+    // parking the allocation until the callback returns (see `destroy_owned`). Nothing else on
+    // this thread touches the object meanwhile.
     let owner = unsafe {
         register_owned_qobject(SelfDropper {
             data: ObjectData::new(ObjectId::next()),
@@ -402,7 +417,8 @@ fn a_top_level_owned_object_dropped_in_its_own_callback_is_freed_afterwards() {
         })
     };
     let id = OwnedObject::object_id(&owner);
-    // SAFETY: `owner` owns `child` on this thread.
+    // SAFETY: `child` is a fresh `Box` created on this thread (`owner`'s thread); only its id was
+    // read earlier, so no reference to it is held, and `owner` owns it afterwards.
     unsafe { add_owned_child(id, child) }.unwrap_or_else(|(err, _)| panic!("{err:?}"));
     typed_slot.set(Some(owner));
     assert!(dispatch_to_object(
@@ -465,7 +481,10 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
     //    readable in `T::drop`, unlinks from `parent.data.children()`, and delivers `ChildRemoved`
     //    when the callback returns.
     let parent_removed = Rc::new(Cell::new(0));
-    // SAFETY: `non_owning_parent` stays on this thread and no callback of it runs during setup.
+    // SAFETY: `non_owning_parent` is a local owner on this thread, used only through `with` and
+    // `object_id` and dropped by the test after the callback below returned; no callback of it
+    // runs during setup (only its `ChildRemoved`, delivered when the child is dropped, which
+    // happens with the test not touching the parent).
     let non_owning_parent = unsafe {
         register_owned_qobject(ParentObserver {
             data: ObjectData::new(ObjectId::next()),
@@ -479,7 +498,9 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
 
     let self_slot = Rc::new(Cell::new(None));
     let non_owned_parent_in_drop = Rc::new(Cell::new(None));
-    // SAFETY: `child` stays on this thread; dropping it in its callback parks deallocation.
+    // SAFETY: `child` is a local owner on this thread, moved into `self_slot` before the dispatch
+    // and dropped there from inside its own callback, which `OwnedObject::drop` handles by
+    // unregistering at once and parking the allocation until the callback returns.
     let child = unsafe {
         register_owned_qobject(ParentObserver {
             data: ObjectData::new(ObjectId::next()),
@@ -525,7 +546,9 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
     //    the child's callback has `clear_parent()` called before `T::drop` runs, so `parent()` is
     //    `None` in `T::drop`.
     let owning_parent_slot = Rc::new(Cell::new(None));
-    // SAFETY: `owning_parent` stays on this thread and is dropped inside `owned_child`'s callback.
+    // SAFETY: `owning_parent` is a local owner on this thread; it is moved into
+    // `owning_parent_slot` right after and is only dropped there, from inside `owned_child`'s
+    // callback, the case `OwnedObject::drop` parks (see `destroy_owned`).
     let owning_parent = unsafe {
         register_owned_qobject(ParentObserver {
             data: ObjectData::new(ObjectId::next()),
@@ -547,7 +570,9 @@ fn parked_drop_clears_parent_only_when_owned_by_parent_and_notifies_non_owning_p
         owning_parent_slot: Rc::clone(&owning_parent_slot),
     });
     let owned_cid = owned_child.data.id();
-    // SAFETY: `owning_parent` owns `owned_child` on this thread.
+    // SAFETY: `owned_child` is a fresh `Box` created on this thread (the parent's thread); only
+    // its id was read before the call, so no reference to it is held, and the parent owns it
+    // afterwards.
     unsafe { add_owned_child(owning_pid, owned_child) }
         .unwrap_or_else(|(err, _)| panic!("{err:?}"));
 
@@ -577,8 +602,11 @@ impl QObject for Gate {
         ferrokit_core::object::ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, _event: &mut Event) -> bool {
-        // SAFETY: the test keeps the owner in place, and only a shared reference to the owner
-        // (not to the object) is made.
+        // SAFETY: `self.owner` was set by the test to the address of the local `owner`, which is
+        // still in place and alive for the whole `dispatch_to_object` call that runs this callback.
+        // The reference made is to the `OwnedObject` handle, not to the object, and only shared
+        // (`with` and `is_borrowed` take `&self`), so it does not alias the `&mut self` of this
+        // callback; the test makes no `&mut` of `owner` until the dispatch returned.
         let owner = unsafe { &*self.owner.get() };
         self.seen.set(Some((
             owner.with(|_| ()).is_none(),
@@ -592,7 +620,10 @@ impl QObject for Gate {
 fn the_owner_cannot_be_used_while_the_objects_callback_runs() {
     let slot = Rc::new(Cell::new(std::ptr::null()));
     let seen = Rc::new(Cell::new(None));
-    // SAFETY: the owner stays on this thread and is dropped when no callback of it runs.
+    // SAFETY: `owner` is a local on this thread, not moved between `slot.set` below and the
+    // dispatch, and not used while the callback runs (the callback's own use of it goes through
+    // `with`/`is_borrowed`, which take or read the borrow flag). It is dropped by the test after
+    // the callback returned.
     let mut owner = unsafe {
         register_owned_qobject(Gate {
             data: ObjectData::new(ObjectId::next()),

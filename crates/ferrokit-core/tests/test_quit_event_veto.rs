@@ -44,7 +44,10 @@ fn posted_quit_consumed_by_application_filter_does_not_end_exec() {
         data: ObjectData::new(ObjectId::next()),
     };
     let filter_id = filter.data.id();
-    // SAFETY: the filter stays on this thread and is unregistered before it is dropped.
+    // SAFETY: `filter` is a local that stays here, unmoved, until unregistered below, and is
+    // registered by `&raw mut`, so no reference exists for a later callback to invalidate. Its
+    // callbacks (`event_filter`) run inside `app.exec()` on this thread, the registration thread,
+    // and the test does not touch `filter` between registering and unregistering it.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
     Timer::single_shot(10, move || {
@@ -53,6 +56,8 @@ fn posted_quit_consumed_by_application_filter_does_not_end_exec() {
     Timer::single_shot(500, || CoreApplication::exit(7)); // watchdog
     let code = app.exec();
     clear_application_event_filters();
+    // SAFETY: `filter` is a local, unmoved and undropped until after this call, as
+    // `unregister_qobject` requires; `exec` has returned, so no callback of the filter runs.
     unsafe { unregister_qobject(filter_id) };
     assert_eq!(
         code, 7,
@@ -69,7 +74,8 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
         data: ObjectData::new(ObjectId::next()),
     };
     let filter_id = filter.data.id();
-    // SAFETY: as above.
+    // SAFETY: as in the first test: `filter` is a local on this thread, unmoved until it is
+    // unregistered below, registered by `&raw mut`, and not accessed while `exec` runs its callbacks.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
     // QCoreApplication::quit on the application thread is sendEvent (qcoreapplication.cpp:2153-2155).
@@ -77,6 +83,8 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
     Timer::single_shot(500, || CoreApplication::exit(7)); // watchdog
     let code = app.exec();
     clear_application_event_filters();
+    // SAFETY: `filter` is a local, unmoved and undropped until after this call, as
+    // `unregister_qobject` requires; `exec` has returned, so no callback of the filter runs.
     unsafe { unregister_qobject(filter_id) };
     assert_eq!(
         code, 7,

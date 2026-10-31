@@ -295,7 +295,11 @@ impl Drop for ObjectBorrowGuard {
 /// frees an object that only the registration thread (or, once that thread is gone, nobody) can be
 /// running a callback of, and the borrow flag orders it after those callbacks.
 pub(crate) struct SendFree(Box<dyn FnOnce(bool)>);
-// SAFETY: see the type's documentation; the closure's captures are a raw object pointer and ids.
+// SAFETY: the closure captures only what `OwnedObject::drop` gives it: a raw pointer to the heap
+// allocation that it alone frees, and ids. `destroy_here` and `run_parked` decide which thread runs
+// it, and the borrow flag's acquire/release exchange orders it after every callback of the object.
+// An object type that is not `Send` reaches another thread only after its creator opted in with
+// `ObjectData::with_thread_moves_allowed`, which promises that dropping it there is sound.
 unsafe impl Send for SendFree {}
 
 impl SendFree {
@@ -362,7 +366,9 @@ struct ForwardedDestroy {
     free: Option<SendFree>,
 }
 
-// SAFETY: the payload is a `SendFree` and an `Arc` of atomics and a mutex; see `SendFree`.
+// SAFETY: the payload is a `SendFree` (see its `Send` impl) and an `Arc<ObjectBorrowState>`, whose
+// fields are atomics and a mutex; the ids are plain integers. The job is delivered once or dropped
+// once, and either path ends in `destroy_here`.
 unsafe impl Send for ForwardedDestroy {}
 
 impl ForwardedDestroy {
@@ -950,8 +956,9 @@ fn inspect_owned_tree(
             }
             scan.enqueue(owned_id);
         } else {
-            // SAFETY: the registry has no live entry for it, so no callback of it can start, and
-            // `is_borrowed` above found no running one.
+            // SAFETY: `owned_id` has no live registry entry (the branch above handles a live
+            // one), so no callback of it can start; `is_borrowed` above found no running one, and
+            // the owner (`owned`) is alive and borrowed here, so nothing frees the object.
             let owned = unsafe { owned.as_ref_unchecked() };
             if !owned.object_data().can_move_to_thread() {
                 return Err(MoveError::NotMovable);
@@ -1450,7 +1457,8 @@ pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
 /// - The thread rules of [`crate::object`] apply.
 pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
     let raw = ptr.as_ptr();
-    // SAFETY: the caller guarantees the object is alive and that no callback of it runs.
+    // SAFETY: the caller guarantees (`# Safety`) that `ptr` points to a live object and that no
+    // callback of it runs, so forming a shared reference for the duration of `object_data` is sound.
     let data = unsafe { (*raw).object_data() };
     register_object_metadata(data, raw);
 }
@@ -1465,13 +1473,15 @@ pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
 /// While a callback of the object runs, nothing outside it accesses the object, not even to read
 /// it (the owner's `with` and `with_mut` refuse then). Dropping the owner while a callback of the object runs is
 /// allowed: [`OwnedObject::drop`] unregisters the object at once and frees its memory only after
-/// the running callback returns. The owner is used and dropped on the registration thread. The
-/// thread rules of [`crate::object`] apply.
+/// the running callback returns. The owner is used on the registration thread; it may be dropped on
+/// another thread, which forwards the destruction to the registration thread (see
+/// `destroy_owned`). The thread rules of [`crate::object`] apply.
 pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObject<T> {
     let owned = OwnedObject::new(obj);
     let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owned);
-    // SAFETY: the object stays at this address until the owner is dropped; the rest is the
-    // caller's contract.
+    // SAFETY: `ptr` is `OwnedObject::as_non_null(&owned)`, the owner keeps the object at this heap
+    // address until it is dropped, and `owned` is returned (moved, which does not move the object).
+    // The caller upholds the rest through this function's `# Safety` section.
     unsafe { register_qobject_ptr(ptr) };
     owned
 }
@@ -2670,8 +2680,11 @@ impl Drop for ObjectData {
         // 3. Advance the generation for QPointer / GenerationalId safety
         self.generation = self.generation.wrapping_add(1);
 
-        // SAFETY: an object registered through the unsafe registration API must be
-        // unregistered only after dispatch callbacks have completed; Drop follows that contract.
+        // SAFETY: `ObjectData::drop` runs only when the object's memory is being freed, and that
+        // happens only after the owner won the borrow flag or the guard of the running callback
+        // returned (`destroy_here`, `run_parked`), or, for an object without an `OwnedObject`, under
+        // the registration contract (no callback runs while the owner drops it). So no callback
+        // runs, and `unregister_qobject` is memory-neutral: it works from the record and ids.
         unsafe { unregister_qobject(self.id) };
 
         if let Some(payload) = held_panic {
@@ -3927,7 +3940,10 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
         let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owner);
         // The accessors of both objects (their own code) run before the registry is touched.
         let mut parent_data = parent.object_data_mut();
-        // SAFETY: the owner keeps the object alive at this address, and nothing else reaches it.
+        // SAFETY: `ptr` is the owner's pointer to the heap allocation of `child`, which the owner
+        // keeps alive at this address; `child` was moved in and nothing else holds a pointer to it
+        // yet (the registry's is made below, from `ptr`). A shared reference is formed only for
+        // `object_data` and `register_record`, which copies what it keeps.
         let child_data = unsafe { (*ptr.as_ptr()).object_data() };
         // The registration checks that the parent is not a descendant of the child, records the
         // child and lists it in the registry's list of the parent, all under
@@ -3943,7 +3959,9 @@ pub unsafe fn add_owned_child<T: QObject + 'static>(
             }
             Err(error) => {
                 // Nothing was inserted, so the registry holds no pointer made from this owner.
-                // SAFETY: see above; the object goes back to the caller as it came.
+                // SAFETY: `register_record` failed before inserting anything, so the registry holds
+                // no pointer made from `owner`, and `ptr` is used no more; `owner` is turned back
+                // into the `Box` that `from_box` took, once.
                 let mut child = unsafe { OwnedObject::into_box(owner) };
                 {
                     let mut data = child.object_data_mut();
@@ -5125,6 +5143,9 @@ mod tests {
             "a refused swap changed something"
         );
 
+        // SAFETY: `a` and `b` are locals of this test, registered above and not moved since; this
+        // thread is their registration thread, and nothing is delivered to them, so no callback of
+        // either runs. Both outlive the call (they drop at the end of the function).
         unsafe {
             unregister_qobject(a_id);
             unregister_qobject(b_id);
@@ -5196,6 +5217,9 @@ mod tests {
             "a refused swap changed something"
         );
 
+        // SAFETY: `a`, `b` and `ancestor` are locals of this test, registered above and not moved
+        // since; this thread is their registration thread and no callback of any runs. They drop
+        // only at the end of the function, after this call.
         unsafe {
             unregister_qobject(a_id);
             unregister_qobject(b_id);
@@ -5251,6 +5275,9 @@ mod tests {
 
         // Cleanup
         a.0.children.retain(|&id| id != c_id);
+        // SAFETY: `a`, `b` and `c` are locals of this test, registered above and not moved since;
+        // no callback of any runs (none is delivered), and this is their registration thread.
+        // They drop only at the end of the function, after this call.
         unsafe {
             unregister_qobject(c_id);
             unregister_qobject(b_id);
@@ -5265,6 +5292,7 @@ mod tests {
     fn test_swap_refuses_a_registry_list_that_disagrees_with_the_objects_own() {
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let mut a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: as for `a` above: `b` is owned here and dropped at the end, on this thread.
         let mut b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
         let listed_only_in_the_registry = ObjectId::next();
@@ -5351,6 +5379,9 @@ mod tests {
         );
         assert_eq!(child.0.parent(), None);
 
+        // SAFETY: `child` and `parent` are locals of this test, registered above and not moved
+        // since; no callback of either runs, and this is their registration thread. They drop only
+        // at the end of the function, after this call.
         unsafe {
             unregister_qobject(child_id);
             unregister_qobject(parent_id);
@@ -5380,6 +5411,9 @@ mod tests {
         register_object_metadata(&p2.0, ptr_p2);
 
         let child_box = Box::new(Node(ObjectData::new(ObjectId::next())));
+        // SAFETY: `child_box` is moved into the call and not used again, so the parent's owner is
+        // the only way to reach the child, and it keeps the child at its heap address. No callback
+        // of the child runs, and this is the registration thread of `p1`.
         let child_id = unsafe {
             add_owned_child(p1_id, child_box)
                 .map_err(|(e, _)| e)
@@ -5422,6 +5456,9 @@ mod tests {
             .iter()
             .any(|c| OwnedObject::object_id(c) == child_id));
 
+        // SAFETY: `p1` and `p2` are locals of this test, registered above and not moved since; no
+        // callback of either runs, and this is their registration thread. `p1` still owns the
+        // child, which is freed when `p1` drops at the end of the function, after this call.
         unsafe {
             unregister_qobject(p2_id);
             unregister_qobject(p1_id);
@@ -5451,6 +5488,9 @@ mod tests {
         register_object_metadata(&p2.0, ptr_p2);
 
         let child_box = Box::new(Node(ObjectData::new(ObjectId::next())));
+        // SAFETY: `child_box` is moved into the call and not used again, so the parent's owner is
+        // the only way to reach the child, and it keeps the child at its heap address. No callback
+        // of the child runs yet, and this is the registration thread of `p1`.
         let child_id = unsafe {
             add_owned_child(p1_id, child_box)
                 .map_err(|(e, _)| e)
@@ -5488,6 +5528,9 @@ mod tests {
             .iter()
             .any(|c| OwnedObject::object_id(c) == child_id));
 
+        // SAFETY: `p1` and `p2` are locals of this test, registered above and not moved since; the
+        // only borrow of a child, `child_guard`, was dropped above, and no callback of either
+        // parent runs. This is their registration thread, and they drop after this call.
         unsafe {
             unregister_qobject(p2_id);
             unregister_qobject(p1_id);
@@ -5517,13 +5560,17 @@ mod tests {
     #[test]
     fn test_swap_with_an_object_registered_on_another_thread_is_refused() {
         let _serial = serial();
+        // SAFETY: `a` is owned here and dropped at the end of the test, on this thread.
         let mut a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         // SAFETY: `Plain` holds nothing but its `ObjectData`, so `b` may change thread.
         let b_data = unsafe { ObjectData::new(ObjectId::next()).with_thread_moves_allowed() };
+        // SAFETY: `b` is owned here and dropped at the end of the test, on this thread.
         let mut b = unsafe { register_owned_qobject(Plain(b_data)) };
         let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
         let child = Box::new(Plain(ObjectData::new(ObjectId::next())));
         let child_id_attached = child.0.id();
+        // SAFETY: `child` is moved into the call and not used again; `a` owns it at its heap
+        // address. No callback of the child runs, and `a` is registered on this thread.
         unsafe { add_owned_child(a_id, child) }
             .map_err(|(e, _)| e)
             .expect("attach a child to a");
@@ -5982,7 +6029,9 @@ mod tests {
         };
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        // SAFETY: as above: `p2` is owned here and dropped at the end of the test, on this thread.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        // SAFETY: as above: `child` is owned here and dropped at the end of the test, on this thread.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6040,8 +6089,12 @@ mod tests {
             }
         });
 
+        // SAFETY: `p1`, `p2` and `child` are owned here and dropped at the end of the test, on this
+        // thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6076,7 +6129,9 @@ mod tests {
         });
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(panicking))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6138,8 +6193,12 @@ mod tests {
                 panic!("handler of the old parent panics during set_parent_by_id");
             }
         });
+        // SAFETY: `p1`, `p2` and `child` are owned here and dropped at the end of the test, on this
+        // thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(panicking))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6237,8 +6296,11 @@ mod tests {
 
         // SAFETY: registered on current thread and owned.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `p3`.
         let p3 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, p3_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6316,8 +6378,12 @@ mod tests {
             }
         });
 
+        // SAFETY: `p1`, `p2` and `child` are owned here and dropped at the end of the test, on this
+        // thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6377,8 +6443,12 @@ mod tests {
             }
         });
 
+        // SAFETY: `p1`, `p2` and `child` are owned here and dropped at the end of the test, on this
+        // thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6445,8 +6515,12 @@ mod tests {
     fn test_set_parent_by_id_rejected_when_child_is_borrowed() {
         let _serial = serial();
         let log = Log::default();
+        // SAFETY: `p1`, `p2` and `child` are owned here and dropped at the end of the test, on this
+        // thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6505,9 +6579,14 @@ mod tests {
             }
         });
 
+        // SAFETY: `p1`, `p2`, `p3` and `child` are owned here and dropped at the end of the test, on
+        // this thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `p3`.
         let p3 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, p3_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6580,9 +6659,14 @@ mod tests {
                 nested_ran_clone.set(true);
             }
         });
+        // SAFETY: `p1`, `p2`, `p3` and `child` are owned here and dropped at the end of the test, on
+        // this thread; no callback of them runs while the owners use them.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(hook))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `p3`.
         let p3 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `child`.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, p3_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6633,6 +6717,8 @@ mod tests {
         let elsewhere = std::thread::spawn(ThreadId::current).join().unwrap();
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, None)) };
+        // SAFETY: as above for `p2`; its thread affinity is another thread's, its registration
+        // thread is this one.
         let p2 = unsafe {
             register_owned_qobject(Handler {
                 data: ObjectData::with_thread(ObjectId::next(), elsewhere),
@@ -6640,6 +6726,7 @@ mod tests {
                 on_event: None,
             })
         };
+        // SAFETY: as above for `child`.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (p1_id, p2_id, child_id) = (
             OwnedObject::object_id(&p1),
@@ -6690,6 +6777,7 @@ mod tests {
         };
         // SAFETY: both parents are owned here and dropped at the end, on this thread.
         let p1 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
+        // SAFETY: as above for `p2`.
         let p2 = unsafe { register_owned_qobject(Handler::new(&log, Some(probe()))) };
         let (p1_id, p2_id) = (OwnedObject::object_id(&p1), OwnedObject::object_id(&p2));
         // SAFETY: the child is handed over to its parent, which keeps it at its address.
@@ -6846,6 +6934,8 @@ mod tests {
         let (reached_tx, reached) = mpsc::channel();
         let (resume, resume_rx) = mpsc::channel();
         let x = side(
+            // SAFETY: runs on the `side` thread, which keeps the owner until `finish` and drops it
+            // there; nothing else uses the object, and no callback of it runs while the owner is used.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(x_id, affinity)))
             },
@@ -6855,6 +6945,7 @@ mod tests {
             },
         );
         let y = side(
+            // SAFETY: as for `x`: owned by this `side` thread until `finish`.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(y_id, affinity)))
             },
@@ -6901,6 +6992,7 @@ mod tests {
         let (reached_tx, reached) = mpsc::channel();
         let (resume, resume_rx) = mpsc::channel();
         let w = side(
+            // SAFETY: as for `x` above: owned by this `side` thread until `finish`.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(w_id, affinity)))
             },
@@ -6916,10 +7008,13 @@ mod tests {
                         affinity,
                     )))
                 };
+                // SAFETY: as above for `y`, owned by this `side` thread until `finish`.
                 let mut y = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(y_id, affinity)))
                 };
                 assert_eq!(set_owned_parent(&mut y, Some(w_id)), Ok(()));
+                // SAFETY: the new `Box` is moved into the call and not used again; `p` owns it at its
+                // heap address. No callback of the child runs, and `p` is registered on this thread.
                 let added = unsafe {
                     add_owned_child(
                         OwnedObject::object_id(&p),
@@ -6980,6 +7075,8 @@ mod tests {
         let (reached_tx, reached) = mpsc::channel();
         let (resume, resume_rx) = mpsc::channel();
         let w = side(
+            // SAFETY: runs on the `side` thread, which keeps the owner until `finish` and drops it
+            // there; nothing else uses the object, and no callback of it runs while the owner is used.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(w_id, affinity)))
             },
@@ -6992,10 +7089,13 @@ mod tests {
                 let p = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(p_id, affinity)))
                 };
+                // SAFETY: as above for `q`, owned by this `side` thread until `finish`.
                 let mut q = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(q_id, affinity)))
                 };
                 assert_eq!(set_owned_parent(&mut q, Some(w_id)), Ok(()));
+                // SAFETY: the new `Box` is moved into the call and not used again; `p` owns it at its
+                // heap address. No callback of the child runs, and `p` is registered on this thread.
                 let added = unsafe {
                     add_owned_child(
                         p_id,
@@ -7066,6 +7166,7 @@ mod tests {
                         affinity,
                     )))
                 };
+                // SAFETY: as above for `p`, owned by this `side` thread until `finish`.
                 let p = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(
                         ObjectId::next(),
@@ -7146,6 +7247,7 @@ mod tests {
                 let p = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(p_id, affinity)))
                 };
+                // SAFETY: as above for `q`, owned by this `side` thread until `finish`.
                 let q = unsafe {
                     register_owned_qobject(Plain(ObjectData::with_thread(q_id, affinity)))
                 };
@@ -7165,6 +7267,8 @@ mod tests {
             },
         );
         let adder = side(
+            // SAFETY: runs on the `side` thread, which keeps the owner until `finish` and drops it
+            // there; nothing else uses the object, and no callback of it runs while the owner is used.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(c_id, affinity)))
             },
@@ -7268,6 +7372,9 @@ mod tests {
         assert_eq!(query_object_parent(a_id), Some(Some(b_id)));
         assert_eq!(query_object_parent(b_id), Some(None));
         assert!(registry_has_no_cycle(&[a_id, b_id]));
+        // SAFETY: `a` and `b` are locals of this test, registered above and not moved since; no
+        // callback of either runs, and this is their registration thread. They drop only at the end
+        // of the function, after this call.
         unsafe {
             unregister_qobject(a_id);
             unregister_qobject(b_id);
@@ -7277,13 +7384,19 @@ mod tests {
     /// `add_owned_child` refuses a parent that is a descendant of the child. Only a child that is
     /// registered already can have descendants; the deprecated `Box` registration lets one reach
     /// the function. The `Box` comes back unchanged.
+    // The test registers the object through the deprecated `register_boxed_qobject` and then moves
+    // and uses the returned `Box` (`add_owned_child(d_id, boxed)`, `returned.0`). That breaks the
+    // contract of the registration functions (rule 1 of the `crate::object` module documentation)
+    // on purpose, to check that the registry copes; Miri would report it, which is why the test
+    // is ignored under Miri (see below). No SAFETY comment can be true here.
+    #[allow(clippy::undocumented_unsafe_blocks)]
     #[test]
     #[allow(deprecated)]
     // Ignored under Miri without a reason on purpose: the sweep reads `ignored` at the end of the
     // line. The deprecated `Box` registration breaks the aliasing rules by design.
     #[cfg_attr(miri, ignore)]
     fn test_add_owned_child_refuses_a_parent_that_is_a_descendant_of_the_child() {
-        // SAFETY: the box is kept and not used between the calls below.
+        // Deliberate contract break (see the `allow` above); nothing here is a safety argument.
         let (b_id, boxed) =
             unsafe { register_boxed_qobject(Box::new(Plain(ObjectData::new(ObjectId::next())))) };
         let mut d = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
@@ -7320,6 +7433,8 @@ mod tests {
         let child_id = boxed.0.id();
         let before = parent.with(|p| states(&[&p.0])).unwrap();
 
+        // SAFETY: `boxed` is moved into the call; the call refuses it (the parent's registry list is
+        // poisoned) and hands the `Box` back unregistered. `parent` is owned here, on this thread.
         let (error, returned) = unsafe { add_owned_child(parent_id, boxed) }.unwrap_err();
         assert_eq!(error, ReparentError::Busy);
         assert_eq!(parent.with(|p| states(&[&p.0])).unwrap(), before);
@@ -7466,8 +7581,12 @@ mod tests {
     /// is below the object and leaves the object.
     #[test]
     fn test_unregister_descendants_ends_on_a_ring() {
+        // SAFETY: `a` is owned here and dropped at the end of the test, on this thread; no callback of
+        // it runs while the owner uses it.
         let a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: as above for `b`.
         let b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: as above for `c`.
         let c = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (a_id, b_id, c_id) = (
             OwnedObject::object_id(&a),
@@ -7541,6 +7660,8 @@ mod tests {
         };
         let child_id = OwnedObject::object_id(&child);
         let x = side(
+            // SAFETY: runs on the `side` thread, which keeps the owner until `finish` and drops it
+            // there; nothing else uses the object, and no callback of it runs while the owner is used.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(x_id, affinity)))
             },
@@ -7625,6 +7746,7 @@ mod tests {
     fn test_poisoned_thread_affinity_locks_do_not_panic_the_hierarchy_calls() {
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let parent = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: as above for `child`.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (parent_id, child_id) = (
             OwnedObject::object_id(&parent),
@@ -7675,6 +7797,8 @@ mod tests {
         let affinity = ThreadId::current();
         let np_id = ObjectId::next();
         let there = side(
+            // SAFETY: runs on the `side` thread, which keeps the owner until `finish` and drops it
+            // there; nothing else uses the object, and no callback of it runs while the owner is used.
             move || unsafe {
                 register_owned_qobject(Plain(ObjectData::with_thread(np_id, affinity)))
             },
@@ -7685,6 +7809,8 @@ mod tests {
         let p = unsafe {
             register_owned_qobject(Plain(ObjectData::with_thread(ObjectId::next(), affinity)))
         };
+        // SAFETY: the new `Box` is moved into the call and not used again; `p` owns it at its heap
+        // address. No callback of the child runs, and `p` is registered on this thread.
         let child_id = unsafe {
             add_owned_child(
                 OwnedObject::object_id(&p),
@@ -7722,6 +7848,8 @@ mod tests {
     fn test_reparent_owned_object_answers_invalid_parent_for_its_own_id_inside_its_own_callback() {
         // SAFETY: the objects are owned here and dropped at the end, on this thread.
         let p = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: the new `Box` is moved into the call and not used again; `p` owns it at its heap
+        // address. No callback of the child runs, and `p` is registered on this thread.
         let child_id = unsafe {
             add_owned_child(
                 OwnedObject::object_id(&p),
@@ -7743,6 +7871,7 @@ mod tests {
     fn test_add_owned_child_refuses_a_child_that_has_a_parent_already() {
         // SAFETY: the parents are owned here and dropped at the end, on this thread.
         let a = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: as above for `b`.
         let b = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let (a_id, b_id) = (OwnedObject::object_id(&a), OwnedObject::object_id(&b));
         let mut boxed = Box::new(Plain(ObjectData::new(ObjectId::next())));
@@ -7750,6 +7879,8 @@ mod tests {
         assert_eq!(set_parent(&mut boxed.0, Some(a_id)), Ok(()));
         assert_eq!(query_object_children(a_id), Some(vec![child_id]));
 
+        // SAFETY: `boxed` is moved into the call; the call refuses it (it has a parent already) and
+        // hands the `Box` back unregistered. `b` is owned here, on this thread.
         let (error, returned) = unsafe { add_owned_child(b_id, boxed) }.unwrap_err();
         assert_eq!(error, ReparentError::InvalidParent);
         assert_eq!(returned.0.parent(), Some(a_id));
@@ -7846,15 +7977,21 @@ mod tests {
             }
         });
 
+        // SAFETY: `p_a` is owned here and dropped at the end of the test, on this thread; no callback
+        // of it runs while the owner uses it.
         let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
         let a_id = OwnedObject::object_id(&p_a);
 
+        // SAFETY: `child` is owned here and dropped at the end of the test, on this thread.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let child_id = OwnedObject::object_id(&child);
         child_id_cell.set(child_id);
         assert_eq!(set_parent_by_id(child_id, Some(a_id)), Ok(()));
         log_a.borrow_mut().clear();
 
+        // SAFETY: `p_b` goes into `p_b_cell` and is dropped there, on this thread, from inside a
+        // callback of the child while `set_parent_by_id` holds `p_b`'s borrow: `OwnedObject::drop`
+        // allows that, unregistering at once and freeing the memory after the callback returns.
         let p_b =
             unsafe { register_owned_qobject(ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
         let b_id = OwnedObject::object_id(&p_b);
@@ -7891,6 +8028,13 @@ mod tests {
     }
 
     #[test]
+    // The event callback drops this test's `ProbeDirectParent` by hand (`drop_in_place`, `dealloc`)
+    // while `set_parent_by_id` holds that object's borrow. The contract of the registration
+    // functions forbids dropping an object while a callback of it runs, except through
+    // `OwnedObject`'s deferred destruction (see the `crate::object` module documentation). That is
+    // broken on purpose, to check that the registry copes. Miri passes it under both Stacked and
+    // Tree Borrows. The other `unsafe` blocks of the test are covered by the narrow `allow` too.
+    #[allow(clippy::undocumented_unsafe_blocks)]
     fn test_reentrant_new_parent_deletion_direct_pointer_path_a() {
         let _serial = serial();
         let log_a = Rc::new(RefCell::new(Vec::new()));
@@ -7915,9 +8059,12 @@ mod tests {
             }
         });
 
+        // SAFETY: `p_a` is owned here and dropped at the end of the test, on this thread; no callback
+        // of it runs while the owner uses it.
         let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
         let a_id = OwnedObject::object_id(&p_a);
 
+        // SAFETY: `child` is owned here and dropped at the end of the test, on this thread.
         let child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let child_id = OwnedObject::object_id(&child);
         child_id_cell.set(child_id);
@@ -7925,9 +8072,17 @@ mod tests {
         log_a.borrow_mut().clear();
 
         let b_layout = std::alloc::Layout::new::<ProbeDirectParent>();
+        // SAFETY: `b_layout` is the layout of `ProbeDirectParent`, which is not zero-sized, as
+        // `alloc` requires; the result is initialised on the next line before any other use.
         let p_raw = unsafe { std::alloc::alloc(b_layout) as *mut ProbeDirectParent };
+        // SAFETY: `p_raw` is the fresh allocation for exactly this layout (non-null unless `alloc`
+        // failed, which aborts in a test), so it is valid and aligned for the write.
         unsafe { std::ptr::write(p_raw, ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: `p_raw` was initialised on the previous line and nothing else refers to it yet.
         let b_id = unsafe { (*p_raw).0.id() };
+        // SAFETY: `p_raw` points to the initialised object, which stays allocated until the event
+        // callback below drops it (`ObjectData::drop` unregisters it); only a shared reference to
+        // its data is formed, for the duration of the call.
         unsafe { register_object_metadata(&(*p_raw).0, p_raw as *mut dyn QObject) };
         *p_b_ptr_cell.borrow_mut() = Some(p_raw);
 
@@ -7958,6 +8113,14 @@ mod tests {
     }
 
     #[test]
+    // This test hands the registry an object that it then drops by hand (`drop_in_place`, `dealloc`
+    // in the event callback) while `set_owned_parent` (`set_parent`) holds that object's borrow. The
+    // contract of the registration functions forbids dropping an object while a callback of it
+    // runs, except through `OwnedObject`'s deferred destruction (see the `crate::object` module
+    // documentation). That is broken on purpose, to check that the registry copes. Miri passes it
+    // under both Stacked and Tree Borrows. The other `unsafe` blocks are covered by the narrow
+    // `allow` too.
+    #[allow(clippy::undocumented_unsafe_blocks)]
     fn test_set_parent_reentrant_new_parent_deletion_clears_local_state() {
         let _serial = serial();
         let log_a = Rc::new(RefCell::new(Vec::new()));
@@ -7977,18 +8140,29 @@ mod tests {
             }
         });
 
+        // SAFETY: `p_a` is owned here and dropped at the end of the test, on this thread; no callback
+        // of it runs while the owner uses it.
         let p_a = unsafe { register_owned_qobject(Handler::new(&log_a, Some(on_event))) };
         let a_id = OwnedObject::object_id(&p_a);
 
+        // SAFETY: `child` is owned here and dropped at the end of the test, on this thread.
         let mut child = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let child_id = OwnedObject::object_id(&child);
         assert_eq!(set_owned_parent(&mut child, Some(a_id)), Ok(()));
         log_a.borrow_mut().clear();
 
         let b_layout = std::alloc::Layout::new::<ProbeDirectParent>();
+        // SAFETY: `b_layout` is the layout of `ProbeDirectParent`, which is not zero-sized, as
+        // `alloc` requires; the result is initialised on the next line before any other use.
         let b_raw = unsafe { std::alloc::alloc(b_layout) as *mut ProbeDirectParent };
+        // SAFETY: `b_raw` is the fresh allocation for exactly this layout (non-null unless `alloc`
+        // failed, which aborts in a test), so it is valid and aligned for the write.
         unsafe { std::ptr::write(b_raw, ProbeDirectParent(ObjectData::new(ObjectId::next()))) };
+        // SAFETY: `b_raw` was initialised on the previous line and nothing else refers to it yet.
         let b_id = unsafe { (*b_raw).0.id() };
+        // SAFETY: `b_raw` points to the initialised object, which stays allocated until the event
+        // callback drops it (`ObjectData::drop` unregisters it); only a shared reference to its data
+        // is formed, for the duration of the call.
         unsafe { register_object_metadata(&(*b_raw).0, b_raw as *mut dyn QObject) };
         *p_b_ptr_cell.borrow_mut() = Some(b_raw);
         let child_rec = record(child_id);

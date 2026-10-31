@@ -628,6 +628,10 @@ mod tests {
         });
         let thread_b = tid_rx.recv().unwrap();
 
+        // SAFETY: `obj` is owned here and dropped at the end of the test, on this thread, which is
+        // its registration thread; no callback of it runs while the owner uses it. The opt-in
+        // `with_thread_moves_allowed` is sound because `UnitProbe` holds nothing but its
+        // `ObjectData` (no `Rc`, no thread-local state), so it may change thread.
         let obj = unsafe {
             crate::object::register_owned_qobject(UnitProbe {
                 // `UnitProbe` holds nothing but its `ObjectData`, so it may change thread.
@@ -655,6 +659,8 @@ mod tests {
         let thread_a = ThreadId::current();
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
+        // SAFETY: `obj` is owned here and dropped at the end of the test, on this thread, which is
+        // its registration thread; no callback of it runs while the owner uses it.
         let obj = unsafe {
             crate::object::register_owned_qobject(UnitProbe {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),
@@ -674,6 +680,8 @@ mod tests {
 
         let mut data = ObjectData::with_thread(ObjectId::next(), thread_a);
         data.set_parent(Some(ObjectId(1))).unwrap();
+        // SAFETY: `obj` is owned here and dropped at the end of the test, on this thread, which is
+        // its registration thread; no callback of it runs while the owner uses it.
         let obj = unsafe { crate::object::register_owned_qobject(UnitProbe { data }) };
         let id = crate::object::OwnedObject::object_id(&obj);
 
@@ -687,6 +695,8 @@ mod tests {
         let thread_a = ThreadId::current();
         let thread_b = std::thread::spawn(ThreadId::current).join().unwrap();
 
+        // SAFETY: `obj` is owned here and dropped at the end of the test, on this thread, which is
+        // its registration thread; no callback of it runs while the owner uses it.
         let obj = unsafe {
             crate::object::register_owned_qobject(UnitProbe {
                 data: ObjectData::with_thread(ObjectId::next(), thread_a),

@@ -124,6 +124,13 @@ pub mod win32 {
             let dirty_w = br.width as usize;
             let src_data = surface.data();
 
+            // SAFETY: `target.bits()` points to the DIB section made by `create_dib_section` for
+            // `self.width` x `self.height` (4 bytes/pixel, top-down, stride `width*4`), and `resize`
+            // above made those equal the surface's physical size, so rows `br` (clipped to `full`)
+            // lie inside both the source `Pixmap` data and the DIB; the DIB is a separate allocation,
+            // so the slices do not overlap, and `&mut self` excludes other users of the bits. The
+            // window/memory DCs are live: `window_dc` is acquired here and null-checked, `target.dc()`
+            // is owned by `self`.
             unsafe {
                 for y in br.y..(br.y + br.height) {
                     let y = y as usize;

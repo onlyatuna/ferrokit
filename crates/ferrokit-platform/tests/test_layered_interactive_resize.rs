@@ -338,6 +338,8 @@ fn window_pipeline_interactive_drag_uses_persistent_dib_and_traces_every_wm_size
         }
     );
 
+    // SAFETY: `hwnd` is the live window of `win` (alive for the rest of the test), messaged from
+    // its own thread; the message has integer parameters only.
     unsafe { SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0) };
     assert!(ferrokit_platform::window::is_interactive_resize(hwnd));
 
@@ -358,6 +360,8 @@ fn window_pipeline_interactive_drag_uses_persistent_dib_and_traces_every_wm_size
     resize_trace::set_enabled(false);
     let entries = resize_trace::take();
 
+    // SAFETY: `hwnd` is the live window of `win` (still alive), messaged from its own thread; the
+    // message has integer parameters only.
     unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
     assert!(!ferrokit_platform::window::is_interactive_resize(hwnd));
 

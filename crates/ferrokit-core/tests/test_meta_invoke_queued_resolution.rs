@@ -142,14 +142,18 @@ fn queued_name_only_invoke_runs_first_compatible_overload() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The queued `&mut self` invoke (rule 7 case Miri was seen
+    // to accept [inferred]) posts an event that runs as a callback in `pump_until` on this thread,
+    // where `ran_of` reads through the registry and no reference to `w` is held.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let posted = w.invoke_method_with_type("tag", &[Variant::I64(3)], ConnectionType::Queued);
     pump_until(&el, "queued tag", || ran_of(id).is_some_and(|ran| ran != 0));
     let ran = w.ran;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; `pump_until` has returned, so
+    // no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(posted, Ok(Variant::Invalid));
@@ -165,14 +169,17 @@ fn queued_signature_invoke_rejects_wrong_argument_type_without_posting() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The refused `&mut self` invoke (rule 7 case Miri was seen
+    // to accept [inferred]) posts nothing, so `process_events` runs no callback.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let r = w.invoke_method_with_type("tag(QString)", &[Variant::I64(3)], ConnectionType::Queued);
     el.process_events(false);
     let ran = w.ran;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; `process_events` has
+    // returned, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(
@@ -192,14 +199,17 @@ fn queued_name_only_with_no_compatible_overload_is_method_not_found_without_post
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The refused `&mut self` invoke (rule 7 case Miri was seen
+    // to accept [inferred]) posts nothing, so `process_events` runs no callback.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let r = w.invoke_method_with_type("tag", &[Variant::F64(1.5)], ConnectionType::Queued);
     el.process_events(false);
     let ran = w.ran;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; `process_events` has
+    // returned, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(r, Err(InvokeError::MethodNotFound));
@@ -220,7 +230,10 @@ fn queued_signal_invoke_emits_on_owner_loop() {
     let s = Arc::clone(&seen);
     probe.changed.connect(move |v| s.lock().push(v.clone()));
 
-    // SAFETY: `probe` stays on this thread and alive until unregistered below.
+    // SAFETY: `probe` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut`, and the signal was connected before this call, so
+    // no write through the variable follows (rule 7). The queued emit runs as a callback in
+    // `pump_until`, where only `seen` (an `Arc`, not a reference into `probe`) is read.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
     let posted = probe.invoke_method_with_type(
         "changed(String)",
@@ -230,7 +243,8 @@ fn queued_signal_invoke_emits_on_owner_loop() {
     let before_loop = seen.lock().clone();
     pump_until(&el, "queued signal", || !seen.lock().is_empty());
 
-    // SAFETY: `probe` was registered above and is still alive.
+    // SAFETY: `probe` is a local that outlives this call and is unmoved; `pump_until` has
+    // returned, so no callback of `probe` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(posted, Ok(Variant::Invalid));
@@ -248,8 +262,10 @@ fn cross_thread_queued_signature_rejects_wrong_argument_type_without_posting() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
-    // the receiver id and the static MetaObject, never the object itself.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The worker thread gets only `id` and a `'static`
+    // `MetaObject`, never a reference to `w`; nothing is posted (the call is refused), and any
+    // callback would run in `process_events` on this thread with no reference to `w` held.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
@@ -282,7 +298,8 @@ fn cross_thread_queued_signature_rejects_wrong_argument_type_without_posting() {
     el.process_events(false);
     let ran = w.ran;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; the worker is joined and the
+    // last `process_events` has returned, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(

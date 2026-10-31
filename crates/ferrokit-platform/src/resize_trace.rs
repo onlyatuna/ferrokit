@@ -134,8 +134,10 @@ pub fn record_window_rect(kind: TraceKind, hwnd: usize) {
         if !ENABLED.load(Ordering::Relaxed) {
             return;
         }
+        // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
         let mut r: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
-        // SAFETY: plain out-parameter; an invalid HWND just fails and records zeros.
+        // SAFETY: `r` is a local out pointer valid for the call; GetWindowRect fails harmlessly
+        // for a stale `hwnd`, which `ok == 0` then skips.
         let ok = unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd as _, &mut r)
         };

@@ -50,6 +50,8 @@ fn serial() -> MutexGuard<'static, ()> {
 /// Whether the multimedia timer behind `handle` no longer exists. Kills it if it does, so call it
 /// last.
 fn released(handle: u32) -> bool {
+    // SAFETY: `timeKillEvent` takes a plain integer id and no pointers; a handle that no longer
+    // exists makes it return `TIMERR_NOCANDO` rather than fault (Win32 docs).
     unsafe { timeKillEvent(handle) == TIMERR_NOCANDO }
 }
 
@@ -86,7 +88,12 @@ fn register_probe() -> (ObjectId, Arc<Mutex<Vec<ThreadId>>>) {
         ticks: Arc::clone(&ticks),
     }));
     let id = probe.data.id();
-    // SAFETY: the probe is leaked, so it outlives its registration.
+    // SAFETY: the probe is leaked, so it is never freed or moved, which covers the lifetime
+    // requirement for the whole registration. `NonNull::from(probe)` consumes the only reference
+    // (`id` was read from it before, and `probe` is not used afterwards), so no later direct use
+    // invalidates the registry's pointer. The registration thread is this one, and the leaked
+    // probe is touched only by registry callbacks. Its `ObjectData` allows moves, and `Probe`
+    // holds only `Arc<Mutex<..>>` so moving the registration to another thread is sound.
     unsafe { register_qobject_ptr(NonNull::from(probe)) };
     (id, ticks)
 }
@@ -148,7 +155,11 @@ fn a_moved_timer_is_one_native_timer_on_the_target_and_none_on_the_source() {
         tid_tx.send(me).unwrap();
         let ticking = pump_until(&el, || ticks_on(&owner_ticks, me) >= 3);
         let handle_while_running = ticking.then(|| native_handle(timer)).flatten();
-        // SAFETY: after the move this thread is the object's registration thread.
+        // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+        // callback active. The probe is leaked (`register_probe`), so its memory stays valid. After
+        // the `move_to_thread_by_id` in the test body this thread is the registration thread
+        // (`pump_until` above only returns after ticks arrived on `me`, i.e. after the move).
+        // This code is not inside a callback, so none is active.
         unsafe { unregister_qobject(id) };
         let handle_after_destroy = native_handle(timer);
         let before = owner_ticks.lock().unwrap().len();
@@ -218,7 +229,11 @@ fn finish_side(id: ObjectId, timer: TimerId, me: ThreadId) -> SideReport {
     let native_timer = native_handle(timer).is_some();
     let owner = query_object_thread(id) == Some(me);
     if owner {
-        // SAFETY: this thread is the object's registration thread.
+        // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+        // callback active. The probe is leaked (`register_probe`), so its memory outlives this
+        // call. `query_object_thread(id) == Some(me)` just confirmed that this thread is the
+        // registration thread, and the only other thread moves the object only while the query
+        // names that thread. This code is not inside a callback, so none is active here.
         unsafe { unregister_qobject(id) };
     }
     SideReport {

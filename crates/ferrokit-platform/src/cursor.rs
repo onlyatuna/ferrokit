@@ -179,8 +179,10 @@ pub mod win32_cursor {
         ) else {
             return std::ptr::null_mut();
         };
-        // SAFETY: the DIB section is written only inside the `width * height * 4` bytes Windows
-        // allocates for it.
+        // SAFETY: `bits` is the non-null pixel pointer `create_dib_section` returned for a 32-bit
+        // `image.width` x `image.height` DIB section kept alive by `color`, i.e. `width * height * 4`
+        // writable bytes, and `image.bgra` is exactly that long (allocated `w * h * 4` in
+        // `cursor_bitmap`); the two buffers cannot overlap (GDI-owned memory vs a `Vec`).
         unsafe {
             std::ptr::copy_nonoverlapping(image.bgra.as_ptr(), bits, image.bgra.len());
         }
@@ -194,7 +196,8 @@ pub mod win32_cursor {
                 }
             }
         }
-        // SAFETY: `and_mask` holds `height` rows of `stride` bytes, the 1-bit layout GDI reads.
+        // SAFETY: `and_mask` outlives the call and holds `height` rows of `stride` bytes (a WORD
+        // multiple), exactly the 1-bit layout CreateBitmap reads for a `width` x `height` bitmap.
         let mask = OwnedBitmap::from_raw(unsafe {
             CreateBitmap(width, height, 1, 1, and_mask.as_ptr() as *const _)
         });
@@ -207,7 +210,9 @@ pub mod win32_cursor {
                 .map_or(std::ptr::null_mut(), OwnedBitmap::as_raw),
             hbmColor: color.as_raw(),
         };
-        // SAFETY: `icon` points at live bitmaps for the duration of the call.
+        // SAFETY: `icon` is a live, fully initialised ICONINFO; `hbmColor`/`hbmMask` are bitmaps
+        // owned by the guards `color`/`mask`, alive past the call (CreateIconIndirect copies them);
+        // a null mask, if CreateBitmap failed, is simply rejected by the call.
         unsafe { CreateIconIndirect(&icon) }
     }
 
@@ -237,14 +242,15 @@ pub mod win32_cursor {
             | CursorShape::DragCopy
             | CursorShape::DragMove
             | CursorShape::DragLink => {
-                // SAFETY: plain metrics query.
+                // SAFETY: GetSystemMetrics takes only an integer index and has no preconditions.
                 let width = unsafe { GetSystemMetrics(SM_CXCURSOR) };
                 let key = (shape as u8, width);
                 let Ok(cached) = CUSTOM_CURSORS.try_with(|m| m.borrow().get(&key).copied()) else {
                     // The thread-local cache is gone (thread teardown): a cursor made now could
                     // never be cached or destroyed and would leak on every call, so fall back to
                     // the shared system arrow, which belongs to the system and is never destroyed.
-                    // SAFETY: a null instance loads a shared system cursor.
+                    // SAFETY: a null instance with an `IDC_*` id is the documented way to load a
+                    // shared system cursor, which belongs to the system and needs no destruction.
                     return unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) };
                 };
                 if let Some(handle) = cached {
@@ -258,7 +264,8 @@ pub mod win32_cursor {
                 return handle;
             }
         };
-        // SAFETY: a null instance loads a shared system cursor.
+        // SAFETY: a null instance with an `IDC_*` id (chosen by the match above) is the documented
+        // way to load a shared system cursor, which belongs to the system and needs no destruction.
         unsafe { LoadCursorW(std::ptr::null_mut(), idc) }
     }
 
@@ -310,7 +317,9 @@ pub mod win32_cursor {
             OVERRIDE_SHAPE.store(NO_SHAPE, Ordering::Relaxed);
             let previous = OVERRIDDEN_CURSOR.swap(0, Ordering::Relaxed);
             if previous != 0 {
-                // SAFETY: the handle came from `SetCursor` and system cursors stay valid.
+                // SAFETY: `previous` is the non-zero `HCURSOR` that `SetCursor` returned in
+                // `set_override`; it is a system cursor or one of the cached custom cursors, neither
+                // of which is ever destroyed, so it is still valid. SetCursor only takes the handle.
                 unsafe { SetCursor(previous as HCURSOR) };
             }
         }
@@ -346,6 +355,7 @@ pub mod win32_cursor {
         }
 
         fn size(&self, screen_dpr: f64, primary_dpr: f64) -> (i32, i32) {
+            // SAFETY: GetSystemMetrics takes only an integer index and has no preconditions.
             let width = unsafe { GetSystemMetrics(SM_CXCURSOR) };
             let s = windows_cursor_size(width, cursor_base_size(), screen_dpr, primary_dpr);
             (s, s)
@@ -353,12 +363,13 @@ pub mod win32_cursor {
 
         fn pos(&self) -> Option<Point> {
             let mut pt = POINT { x: 0, y: 0 };
-            // SAFETY: `pt` is a valid out pointer.
+            // SAFETY: `&mut pt` points at the live local `pt`, a POINT GetCursorPos fills in.
             (unsafe { GetCursorPos(&mut pt) } != 0).then(|| Point::new(pt.x, pt.y))
         }
 
         fn set_pos(&mut self, pos: Point) {
-            // SAFETY: plain Win32 call.
+            // SAFETY: SetCursorPos takes two integers and has no pointer or handle arguments;
+            // out-of-range coordinates are clamped by the system.
             unsafe { SetCursorPos(pos.x, pos.y) };
         }
 
@@ -382,6 +393,11 @@ pub mod win32_cursor {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // SAFETY: `subkey` and `value_name` are NUL-terminated UTF-16 buffers (terminators chained
+        // above) alive for the whole block. `hkey` is a live out slot, used only after
+        // RegOpenKeyExW succeeded (status 0) and closed exactly once below. `data` is a `u32`
+        // and `data_size` its byte size (4), so RegQueryValueExW writes at most the 4 bytes of
+        // `data`; a value of another type/size is rejected by the `REG_DWORD` check.
         unsafe {
             let mut hkey: HKEY = std::ptr::null_mut();
             if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
@@ -487,8 +503,14 @@ pub mod cocoa_cursor {
         pub fn set_shape(shape: CursorShape) {
             let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
             let sel_name = Self::ns_cursor_selector(shape);
+            // SAFETY: `send_class_0` fits a class method with no arguments returning an object, and
+            // every selector from `ns_cursor_selector` is such an `NSCursor` class method; a nil
+            // class (failed lookup) makes the send a no-op returning nil. Main-thread use is the
+            // caller's contract [inferred: not checked here].
             let cursor = unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register(sel_name)) };
             if !cursor.is_nil() {
+                // SAFETY: `cursor` is non-nil (checked above), a shared `NSCursor` returned by the
+                // class method; `set` takes no arguments and returns void, matching `send_0`.
                 unsafe { ObjcMsg::send_0(cursor, Sel::register("set")) };
             }
         }

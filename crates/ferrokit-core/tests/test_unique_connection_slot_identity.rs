@@ -31,7 +31,9 @@ impl QObject for Receiver {
 }
 
 fn receiver() -> OwnedObject<Receiver> {
-    // SAFETY: the owner stays on this thread; no callback of the receiver runs.
+    // SAFETY: the returned owner is a test local on this thread, used only through `with`/
+    // `object_id` and dropped by the test; `Receiver` has no event handler and no event is sent
+    // to it, so no callback of it runs.
     unsafe {
         register_owned_qobject(Receiver {
             data: ObjectData::new(ObjectId::next()),
@@ -74,7 +76,8 @@ fn two_slots_with_equal_code_are_both_connected() {
     assert!(named_first.is_some());
     assert!(named_second.is_some());
 
-    // SAFETY: no callback of the receiver runs.
+    // SAFETY: `rcv` (the owner) is alive until the end of the test, so the memory stays valid; no
+    // callback of the receiver runs (the test only connects slots, none is emitted).
     unsafe { unregister_qobject(id) };
 }
 
@@ -131,6 +134,7 @@ fn the_same_slot_is_refused_a_second_time() {
         "after disconnect, the same SlotId can be connected again"
     );
 
-    // SAFETY: no callback of the receiver runs.
+    // SAFETY: `rcv` (the owner) is alive until the end of the test, so the memory stays valid; no
+    // callback of the receiver runs (the test only emits signals whose slots are plain functions).
     unsafe { unregister_qobject(id) };
 }

@@ -118,8 +118,10 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
     let mut app = CoreApplication::new(vec!["test".to_string()]);
     let log: Log = Arc::new(Mutex::new(Vec::new()));
 
-    // SAFETY: both owners stay on this thread; nothing touches either object while a handler runs,
-    // and they are unregistered after exec returns.
+    // SAFETY: the returned owners are locals on this thread that are neither used nor dropped
+    // during `app.exec()`, so nothing touches the objects while a handler runs; `Trigger::event`
+    // re-enters the loop via `process_events`, which only reaches `sink` through the registry.
+    // Both are unregistered after exec returns.
     let sink = unsafe {
         register_owned_qobject(Sink {
             data: ObjectData::new(ObjectId::next()),
@@ -127,7 +129,9 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
         })
     };
     let sink_id = OwnedObject::object_id(&sink);
-    // SAFETY: as above.
+    // SAFETY: same as the `sink` registration above: `trigger` is owned by a local `OwnedObject`
+    // that stays on this thread; the handler uses only the registry (`post_event_to_thread`,
+    // `process_events`) and never the owner, and the owner is not touched during `exec`.
     let trigger = unsafe {
         register_owned_qobject(Trigger {
             data: ObjectData::new(ObjectId::next()),
@@ -148,7 +152,9 @@ fn process_events_inside_exec_delivers_posted_events_before_returning() {
 
     app.exec();
 
-    // SAFETY: exec has returned, so no handler can reach either object any more.
+    // SAFETY: `exec` has returned on this (the registration) thread, so the handlers of `trigger`
+    // and `sink` are not running; both owners are still alive (dropped at end of scope), so the
+    // memory stays valid until after the unregistration.
     unsafe {
         unregister_qobject(trigger_id);
         unregister_qobject(sink_id);

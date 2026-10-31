@@ -55,7 +55,9 @@ fn callback(id: ObjectId) {
 fn reading_the_variable_between_callbacks_leaves_the_registered_pointer_usable() {
     let mut node = Node::new();
     let id = node.data.id();
-    // SAFETY: `node` stays here, unmoved, until it is unregistered below.
+    // SAFETY: `node` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut` (no reference), and the test only reads `node.hits`
+    // through the variable between callbacks, the allowed use (rule 7).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
 
     assert_eq!(node.hits, 0);
@@ -64,7 +66,8 @@ fn reading_the_variable_between_callbacks_leaves_the_registered_pointer_usable()
     callback(id);
     assert_eq!(node.hits, 2);
 
-    // SAFETY: no callback of `node` runs.
+    // SAFETY: `node` is a local that outlives this call and is unmoved; both `callback`s have
+    // returned, so no callback of it runs.
     unsafe { unregister_qobject(id) };
 }
 
@@ -73,18 +76,23 @@ fn writing_through_the_registered_pointer_between_callbacks_leaves_it_usable() {
     let mut node = Node::new();
     let id = node.data.id();
     let node_ptr = &raw mut node;
-    // SAFETY: `node` stays here, unmoved, until it is unregistered below.
+    // SAFETY: `node` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut`, and the variable is only read afterwards.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(node_ptr)) };
 
-    // SAFETY: no callback runs, and `node_ptr` is the pointer that was registered.
+    // SAFETY: `node_ptr` is the `&raw mut node` pointer that was registered and `node` is still
+    // alive and in place; no callback runs (the previous `callback` returned), so the write through
+    // it does not overlap one, and writing through the registered pointer keeps it valid.
     unsafe { (*node_ptr).hits += 10 };
     callback(id);
-    // SAFETY: as above.
+    // SAFETY: as above: `node_ptr` is still the registered pointer, no callback is running, and
+    // `node` has not been written through the variable.
     unsafe { (*node_ptr).hits += 10 };
     callback(id);
     assert_eq!(node.hits, 22);
 
-    // SAFETY: no callback of `node` runs.
+    // SAFETY: `node` is a local that outlives this call and is unmoved; both `callback`s have
+    // returned, so no callback of it runs.
     unsafe { unregister_qobject(id) };
 }
 
@@ -95,16 +103,22 @@ fn writing_through_the_registered_pointer_between_callbacks_leaves_it_usable() {
     not(miri),
     ignore = "undefined behavior under Stacked Borrows; run under Miri"
 )]
+// Deliberate contract violation (Miri negative control): rule 7 of the `object` module, writing
+// the variable (`node.hits += 1`) after registering it by pointer, invalidates the registered
+// pointer under Stacked Borrows. The `unsafe` blocks below therefore cannot carry a truthful
+// `SAFETY` comment; Miri reports the next callback.
+#[allow(clippy::undocumented_unsafe_blocks)]
 fn control_writing_the_variable_after_registering_it_by_pointer() {
     let mut node = Node::new();
     let id = node.data.id();
-    // SAFETY: this breaks the rule on purpose; see the module documentation of this file.
+    // (No SAFETY comment: rule 7 is broken on purpose, see the `allow` on this function.)
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut node)) };
 
     node.hits += 1;
     callback(id);
     assert_eq!(node.hits, 2);
 
-    // SAFETY: no callback of `node` runs.
+    // (Covered by the `allow`: the registered pointer was invalidated by `node.hits += 1`, and
+    // under Stacked Borrows Miri reports at the second `callback` above, before this call.)
     unsafe { unregister_qobject(id) };
 }

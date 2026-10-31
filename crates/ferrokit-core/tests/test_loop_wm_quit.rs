@@ -21,7 +21,9 @@ fn wm_quit_in_a_nested_loop_ends_the_outer_loop_too() {
         ObjectId(0),
         Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
             let inner = EventLoop::new();
-            // SAFETY: posts WM_QUIT to this thread's own queue.
+            // SAFETY: `PostQuitMessage` takes only an integer exit code and no pointer, so it has
+            // no memory precondition; it posts `WM_QUIT` to the calling thread's queue, which is
+            // this (the loop) thread, so the nested `inner.exec()` on the next line consumes it.
             unsafe { PostQuitMessage(7) };
             sink.store(inner.exec(), Ordering::SeqCst);
         }))),

@@ -36,8 +36,9 @@ impl Node {
         Box::new(Self::new())
     }
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: the returned owner is used only through `with`/`with_mut`/`object_id` and dropped
+        // by the test on this thread, outside any callback of the node (the tests that run hooks
+        // inside `event()` do not touch the owner while it runs).
         unsafe { register_owned_qobject(Self::new()) }
     }
 }
@@ -106,7 +107,9 @@ impl QObject for Spy {
 fn adopt(parent_id: ObjectId) -> (ObjectId, Arc<std::sync::atomic::AtomicBool>) {
     let child = Node::boxed();
     let alive = child.data.liveness();
-    // SAFETY: the child's Box is moved into `parent` and only moved again by reparent_owned.
+    // SAFETY: `child` is a fresh `Box` made on this thread (the parent's thread), moved into the
+    // call; only `alive` (a shared flag) and the id were taken from it, so no reference is held,
+    // and the parent owns it afterwards (until `reparent_owned_object` hands ownership on).
     let id = unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
     (id, alive)
@@ -115,7 +118,9 @@ fn adopt(parent_id: ObjectId) -> (ObjectId, Arc<std::sync::atomic::AtomicBool>) 
 fn finish(node: OwnedObject<Node>) {
     let id = OwnedObject::object_id(&node);
     drop(node);
-    // SAFETY: dropped on its registration thread, no callback active.
+    // SAFETY: `node` was dropped on the line above, which already unregistered the object and
+    // freed it. `unregister_qobject` is memory-neutral (it works from the registry record and the
+    // id and never touches the object) and finds no record, so it does nothing; no callback runs.
     unsafe { unregister_qobject(id) };
 }
 
@@ -249,7 +254,9 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
     let mut a = Node::registered();
     let mut b = Node::registered();
     let log = Arc::new(Mutex::new(Vec::new()));
-    // SAFETY: the owner stays on this thread and is dropped when no callback of it runs.
+    // SAFETY: the returned owner is a local on this thread, used only for its id and dropped by
+    // the test outside any callback; the spy's `event_filter` callbacks run on this thread while the
+    // test holds no reference to it.
     let spy = unsafe {
         register_owned_qobject(Spy {
             data: ObjectData::new(ObjectId::next()),
@@ -288,7 +295,9 @@ fn reparent_owned_notifies_both_parents_through_event_filters() {
     finish(b);
     let spy_id = OwnedObject::object_id(&spy);
     drop(spy);
-    // SAFETY: dropped on its registration thread.
+    // SAFETY: `spy` was dropped on the line above, which already unregistered it and freed it.
+    // `unregister_qobject` is memory-neutral (it works from the registry record and the id and
+    // never touches the object) and finds no record, so it does nothing; no callback runs.
     unsafe { unregister_qobject(spy_id) };
 }
 
@@ -321,7 +330,8 @@ fn reparent_owned_rejects_self_and_descendant_parents_without_changes() {
 /// attach (`Busy`), so this must not run inside `with_object_mut(mid_id, …)`.
 fn attach_grandchild(mid_id: ObjectId) -> ObjectId {
     let grand = Node::boxed();
-    // SAFETY: the Box moves into `mid` and stays there until `top` is finished.
+    // SAFETY: `grand` is a fresh `Box` made on this thread (`mid`'s thread), moved into the call
+    // and never referenced again by the test; `mid` owns it until `top` is finished.
     unsafe { add_owned_child(mid_id, grand) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"))
 }
@@ -417,7 +427,9 @@ fn add_owned_child_sends_child_added() {
     let parent_id = parent.id();
     let child = Node::boxed();
     let child_id = child.data.id();
-    // SAFETY: the Box is owned by `parent` for the rest of the test.
+    // SAFETY: `child` is a fresh `Box` made on this thread (the parent's thread), moved into the
+    // call; only `child_id` was read from it earlier, so no reference is held, and the parent
+    // owns it afterwards.
     let attached = unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
     assert_eq!(attached, child_id);
@@ -433,7 +445,9 @@ fn add_owned_child_fails_visibly_when_parent_is_borrowed() {
     let parent = Node::registered();
     let parent_id = parent.id();
     let outcome = ferrokit_core::object::with_object_mut(parent_id, |_| {
-        // SAFETY: the Box is returned in the error and never stored.
+        // SAFETY: `Node::boxed()` is a fresh `Box` made on this thread; because the parent is
+        // borrowed by this `with_object_mut`, the call returns `Busy` and gives the `Box` back
+        // without registering it, so nothing keeps a pointer to it.
         unsafe { add_owned_child(parent_id, Node::boxed()) }.map(|_| ())
     })
     .expect("parent is registered");

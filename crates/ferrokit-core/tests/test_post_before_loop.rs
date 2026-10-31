@@ -203,13 +203,21 @@ fn core_application_post_event_before_receiver_thread_has_loop_is_delivered() {
             data: ObjectData::new(id),
             got: got_w,
         };
-        // SAFETY: `rcv` stays on this thread and alive until unregistered below.
+        // SAFETY: the pointer comes from `&raw mut rcv`, so no reference is created that a later
+        // use of `rcv` could invalidate. `rcv` is a local that is not moved or dropped until after
+        // `unregister_qobject` below. This thread is the registration thread and runs the
+        // callbacks (`process_events`). The only use of `rcv` between callbacks is the read
+        // `rcv.got.load`, which rule 7 allows, and `Receiver1` holds an `Arc<AtomicBool>` only.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
         reg_tx.send(id).unwrap();
         go_rx.recv().unwrap();
         let el = EventLoop::new();
         el.process_events(false);
         let delivered = rcv.got.load(Ordering::SeqCst);
+        // SAFETY: `unregister_qobject` needs `rcv` alive and unmoved until it returns, on the
+        // registration thread, with no callback active. `rcv` is the local above, in scope until
+        // the closure ends. This is the thread that registered it, and `process_events` has
+        // returned, so no callback is running.
         unsafe { unregister_qobject(id) };
         assert!(
             delivered,

@@ -139,7 +139,10 @@ impl LoopThatLeavesACall {
                 data: ObjectData::new(id),
                 width: 0,
             };
-            // SAFETY: `widget` stays on this thread, in place, until it is unregistered below.
+            // SAFETY: `widget` is a local of this thread's closure, not moved or dropped until
+            // after the `unregister_qobject` at the end; the pointer comes from `&raw mut`, and the
+            // closure never uses `widget` again, so no reference invalidates it. Callbacks run on
+            // this thread, inside `el.exec()`, while the closure itself is not touching the widget.
             unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
             let sender = el.sender();
@@ -166,7 +169,9 @@ impl LoopThatLeavesACall {
             // Alive, no loop, until the test is done. Returns on `finish` or when the test is
             // dropped by a failed assertion.
             let _ = release_rx.recv();
-            // SAFETY: registered above on this thread, and still alive.
+            // SAFETY: `widget` is a local of this closure, still in place and dropped only after
+            // this call. `el.exec()` has returned and the loop is dropped, so no callback of the
+            // widget runs; this is the registration thread.
             unsafe { unregister_qobject(id) };
         });
         let (thread, queue_handle) = ready_rx

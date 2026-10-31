@@ -40,7 +40,8 @@ use ferrokit_core::timer::{start_object_timer, with_thread_timer_context, TimerT
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Probe` holds an `Arc` flag and plain fields, which are `Send`.
+    // SAFETY: `Probe` holds an `ObjectData` and an `Arc<AtomicBool>`: both `Send`, with no `Rc`,
+    // no `Cell` shared with a handle left behind, and no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -112,7 +113,10 @@ fn the_object_is_freed_when_its_callback_on_the_other_thread_returns() {
     let here = ThreadId::current();
     let _el = EventLoop::new();
     let dropped = Arc::new(AtomicBool::new(false));
-    // SAFETY: the owner is dropped by this thread only, and no callback of the object runs here.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test. After
+    // `move_to_thread_by_id` this thread is not the registration thread, and `OwnedObject::drop`
+    // then does not touch the object but forwards the destruction there (see `destroy_owned`);
+    // if a callback runs on the worker at that moment, the destruction is parked until it returns.
     let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -217,7 +221,11 @@ fn the_owner_drop_does_not_overlap_a_callback_that_starts_during_it() {
     let (mut missed, mut parked, mut destroyed) = (0u32, 0u32, 0u32);
     for i in 0..iterations {
         let dropped = Arc::new(AtomicBool::new(false));
-        // SAFETY: as above.
+        // SAFETY: a fresh owner on this thread, used only for its id and dropped by the test. The
+        // object is moved to the worker, where `Job` runs a callback on it; `OwnedObject::drop`
+        // does not touch the object from this (non-registration) thread and forwards the
+        // destruction, or parks it behind a running callback (see `destroy_owned`), which is the
+        // behavior under test.
         let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
         let id = OwnedObject::object_id(&owner);
         assert_eq!(move_to_thread_by_id(id, there, here), Ok(()));
@@ -275,7 +283,11 @@ fn the_timers_of_the_object_are_removed_when_the_owner_is_dropped() {
     let here = ThreadId::current();
     let _el = EventLoop::new();
     let dropped = Arc::new(AtomicBool::new(false));
-    // SAFETY: the owner is dropped by this thread only, and no callback of the object runs here.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test. No callback
+    // of the object runs here: `Probe` has no event handlers and the test does not turn a loop that
+    // reaches it. After `move_to_thread_by_id` this thread is not the registration thread, and
+    // `OwnedObject::drop` then forwards the destruction there instead of touching the object (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
     let id = OwnedObject::object_id(&owner);
     let base_here = timers_here();
@@ -344,7 +356,11 @@ fn the_timers_of_the_object_are_removed_when_the_owner_is_dropped() {
 fn an_owner_dropped_by_a_callback_on_the_registration_thread_parks_until_the_callback_returns() {
     let _el = EventLoop::new();
     let dropped = Arc::new(AtomicBool::new(false));
-    // SAFETY: the owner is dropped on this thread only, by the callback below.
+    // SAFETY: the owner is a local on this thread, which is the registration thread (the object is
+    // never moved). It is dropped from inside the `with_object_mut` callback, the case
+    // `OwnedObject::drop` handles by unregistering at once and parking the allocation until the
+    // callback returns (see `destroy_owned`); the callback uses the object afterwards, which is
+    // valid because the allocation is parked, not freed.
     let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -383,7 +399,10 @@ fn owner_drops_on_the_registration_thread_destroy_each_object_once_in_or_out_of_
     let _el = EventLoop::new();
     for i in 0..200u32 {
         let dropped = Arc::new(AtomicBool::new(false));
-        // SAFETY: as above.
+        // SAFETY: as above: a fresh owner on this thread, which is also the registration thread
+        // (never moved here). It is dropped either with no callback running (freed at once) or
+        // inside a `with_object_mut` callback (`OwnedObject::drop` unregisters and parks the
+        // allocation until the callback returns, see `destroy_owned`).
         let owner = unsafe { register_owned_qobject(Probe::new(&dropped)) };
         let id = OwnedObject::object_id(&owner);
         if i % 2 == 0 {

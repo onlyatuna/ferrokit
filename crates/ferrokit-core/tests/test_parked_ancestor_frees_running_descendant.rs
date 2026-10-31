@@ -100,7 +100,10 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
     let freed = Rc::new(Cell::new(false));
     let report = Rc::new(Cell::new(None));
 
-    // SAFETY: the owner stays on this thread and is dropped when no callback of it runs.
+    // SAFETY: `root` is moved into `root_cell` right after and is dropped only there, from inside
+    // `mid`'s callback, where `OwnedObject::drop` parks the allocation (and the unregistered
+    // descendants) until the running callbacks return (see `destroy_owned`). The test touches
+    // nothing while the callbacks run.
     let root = unsafe {
         register_owned_qobject(Root {
             data: ObjectData::new(ObjectId::next()),
@@ -114,7 +117,8 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
         root: Rc::clone(&root_cell),
     });
     let mid_id = mid.data.id();
-    // SAFETY: the parent owns the child from here on and is dropped on this thread.
+    // SAFETY: `mid` is a fresh `Box` created on this thread (`root`'s thread); only its id was
+    // read earlier, so no reference is held, and `root` owns it afterwards.
     unsafe { add_owned_child(root_id, mid) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
     let leaf = Box::new(Leaf {
@@ -125,7 +129,8 @@ fn a_descendant_inside_its_callback_is_not_freed_when_its_ancestor_is_dropped_be
         freed_during_its_callback: Rc::clone(&report),
     });
     let leaf_id = leaf.data.id();
-    // SAFETY: as above.
+    // SAFETY: `leaf` is a fresh `Box` created on this thread (`mid`'s thread); only its id was
+    // read earlier, so no reference is held, and `mid` owns it afterwards.
     unsafe { add_owned_child(mid_id, leaf) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
     dispatch_to_object(leaf_id, &mut Event::new(EventKind::UpdateRequest));
@@ -204,7 +209,9 @@ impl QObject for RunningChild {
 #[test]
 fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
     let found = Rc::new(Cell::new(None));
-    // SAFETY: the owner stays on this thread and is dropped after callbacks finish.
+    // SAFETY: the returned owner is a test local on this thread, used only through `with` and
+    // `object_id`, and not touched while the child's callback runs (the test only dispatches);
+    // dropped by the test after the dispatch returned.
     let parent = unsafe {
         register_owned_qobject(SearchingParent {
             data: ObjectData::new(ObjectId::next()),
@@ -221,7 +228,8 @@ fn find_child_on_parent_skips_owned_child_whose_callback_is_running() {
         steps: 0,
     });
     let child_id = child.data.id();
-    // SAFETY: parent owns the child on this thread.
+    // SAFETY: `child` is a fresh `Box` created on this thread (the parent's thread); only its id
+    // was read earlier, so no reference is held, and the parent owns it afterwards.
     unsafe { add_owned_child(parent_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
 
     assert!(

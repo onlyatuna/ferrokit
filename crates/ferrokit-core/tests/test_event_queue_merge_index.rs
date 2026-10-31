@@ -82,7 +82,9 @@ impl QObject for Node {
 }
 
 fn node() -> OwnedObject<Node> {
-    // SAFETY: the owner stays on this thread, and is dropped while no callback of it runs.
+    // SAFETY: the returned owner is a test local on this thread and is used only for its id and
+    // dropped by the test. Callbacks of the node (during `send_posted_events`) run on this thread
+    // while the test does not touch the owner, and a drop never happens inside a callback.
     unsafe {
         register_owned_qobject(Node {
             data: ObjectData::new(ObjectId::next()),

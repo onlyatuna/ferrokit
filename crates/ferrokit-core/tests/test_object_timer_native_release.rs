@@ -134,6 +134,9 @@ impl Fixture {
 /// removes that timer, so call this last.
 fn native_timer_existed(id: TimerId) -> bool {
     ferrokit_core::timer::precise::native_handle(id).is_some()
+        // SAFETY: `ctx.internal_hwnd` is the window of this thread's own timer context, which
+        // `with_thread_timer_context` hands out on the calling thread, the thread that owns the
+        // window as `KillTimer` requires. A stale id only makes the call return 0 (Win32 docs).
         || with_thread_timer_context(|ctx| unsafe {
             KillTimer(ctx.internal_hwnd, id.0 as usize) != 0
         })
@@ -152,6 +155,9 @@ fn a_started_object_timer_exists_natively() {
         native_timer_existed(id),
         "the probe must see a live native timer, or it proves nothing below"
     );
+    // SAFETY: `obj` is an owner held by this test, so the object is alive and unmoved until the
+    // end of the fn. This is the thread that registered it (`Fixture::new`) and no loop is
+    // running, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -167,6 +173,9 @@ fn kill_timer_releases_the_native_timer() {
 
     assert_eq!(f.wm_timers_after_the_end(&[id]), 0);
     assert!(!native_timer_existed(id));
+    // SAFETY: `obj` is an owner held by this test, so the object is alive and unmoved until the
+    // end of the fn. This is the thread that registered it (`Fixture::new`) and no loop is
+    // running, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -182,6 +191,9 @@ fn unregistering_an_object_releases_its_native_timers() {
     f.wait_until_running(&ids);
     let ticks_before = f.ticks.load(Ordering::SeqCst);
 
+    // SAFETY: `obj` is an owner held by this test, so the object is alive and unmoved until the
+    // end of the fn. This is the thread that registered it and no loop is running, so no
+    // callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 
     assert_eq!(

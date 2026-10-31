@@ -17,7 +17,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Probe` holds an `Arc` and plain fields, which are `Send`.
+    // SAFETY: `Probe` holds an `ObjectData` and an `Arc<Mutex<_>>`: both `Send`, with no `Rc`,
+    // no `Cell` shared with a handle left behind, and no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -57,7 +58,10 @@ fn the_destruction_runs_on_the_registration_thread_when_its_loop_turns() {
     let here = ThreadId::current();
     let _el = EventLoop::new();
     let dropped_on = Arc::new(Mutex::new(None));
-    // SAFETY: the owner is dropped by this thread only, and no callback of the object runs here.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. After `move_to_thread_by_id` this thread is not the registration
+    // thread, so `OwnedObject::drop` posts the destruction to the registration thread instead of
+    // touching the object (see `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -115,7 +119,10 @@ fn the_object_is_destroyed_when_the_registration_thread_ends_without_running_its
     let _el = EventLoop::new();
     let dropped_on = Arc::new(Mutex::new(None));
     let ran = Arc::new(AtomicBool::new(false));
-    // SAFETY: as above.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. This thread is not the registration thread after the move, so
+    // `OwnedObject::drop` forwards or discards the destruction instead of touching the object (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -147,7 +154,10 @@ fn the_object_is_destroyed_when_the_registration_thread_ends_without_running_its
 fn an_owner_dropped_after_the_registration_thread_ended_destroys_the_object_itself() {
     let here = ThreadId::current();
     let dropped_on = Arc::new(Mutex::new(None));
-    // SAFETY: as above.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. The registration thread has ended after the move, so
+    // `OwnedObject::drop` destroys the object on this thread, the only one left (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -171,7 +181,10 @@ fn an_owner_dropped_after_the_registration_thread_ended_destroys_the_object_itse
 fn an_owner_dropped_after_the_registration_threads_loop_and_thread_ended_destroys_the_object() {
     let here = ThreadId::current();
     let dropped_on = Arc::new(Mutex::new(None));
-    // SAFETY: as above.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. This thread is not the registration thread after the move, so
+    // `OwnedObject::drop` forwards or discards the destruction instead of touching the object (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -195,7 +208,10 @@ fn an_owner_dropped_after_the_registration_threads_loop_and_thread_ended_destroy
 fn a_registration_thread_without_a_loop_keeps_the_object_until_it_ends() {
     let here = ThreadId::current();
     let dropped_on = Arc::new(Mutex::new(None));
-    // SAFETY: as above.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. This thread is not the registration thread after the move, so
+    // `OwnedObject::drop` forwards or discards the destruction instead of touching the object (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 
@@ -250,7 +266,10 @@ fn events_moved_with_an_object_to_an_ended_thread_are_dropped_not_held() {
     let here = ThreadId::current();
     let _el = EventLoop::new();
     let dropped_on = Arc::new(Mutex::new(None));
-    // SAFETY: as above.
+    // SAFETY: the owner is a local used only for its id and then dropped by the test; `Probe` has
+    // no callbacks of its own. This thread is not the registration thread after the move, so
+    // `OwnedObject::drop` forwards or discards the destruction instead of touching the object (see
+    // `destroy_owned`), which is the behavior under test.
     let owner = unsafe { register_owned_qobject(probe(&dropped_on)) };
     let id = OwnedObject::object_id(&owner);
 

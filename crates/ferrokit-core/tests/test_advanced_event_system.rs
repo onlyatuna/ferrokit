@@ -209,7 +209,9 @@ fn test_advanced_event_dispatch_to_qobject() {
         Arc::clone(&hover),
     );
 
-    // SAFETY: the owner stays on this thread; no callback of the spy runs in this test.
+    // SAFETY: the object is moved into the registry-owned allocation of the returned owner, which
+    // this thread keeps and uses only through `with`/`with_mut` (they refuse during a callback).
+    // The test sends no event through the registry, so no callback of the spy runs at all.
     let mut pinned = unsafe { register_owned_qobject(spy) };
     let spy_id = OwnedObject::object_id(&pinned);
 
@@ -324,7 +326,9 @@ fn test_advanced_event_dispatch_to_qobject() {
         Some(EventType::HoverMove)
     );
 
-    // SAFETY: the test event callbacks have returned on the registration thread.
+    // SAFETY: the spy's memory is owned by `pinned`, which is alive until the end of the test, so
+    // the registered address stays valid; the test only called `event` through `with_mut` (not a
+    // registry callback), so no callback of the spy is running or queued.
     unsafe { ferrokit_core::object::unregister_qobject(spy_id) };
 }
 

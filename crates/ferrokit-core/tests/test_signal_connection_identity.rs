@@ -20,8 +20,9 @@ struct Receiver {
 
 impl Receiver {
     fn owned() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread; nothing touches the object while a callback of
-        // it runs, and `destroy` unregisters it before the owner is dropped.
+        // SAFETY: the returned owner is a test local on this thread, used only for its id and
+        // dropped by the test (after `destroy` unregistered it, or directly). The object's event
+        // handler is empty and no event is sent to it, so no callback runs during those uses.
         unsafe {
             register_owned_qobject(Self {
                 data: ObjectData::new(ObjectId::next()),
@@ -51,7 +52,9 @@ impl QObject for Receiver {
 /// Destroys a receiver the way its owner does: unregister (which severs its connections), drop.
 fn destroy(receiver: OwnedObject<Receiver>) {
     let id = OwnedObject::object_id(&receiver);
-    // SAFETY: no callback is running; the object is still alive for this call.
+    // SAFETY: `receiver` is a local owner still alive (it is dropped on the next line), so the
+    // memory stays valid, and no callback of it runs: the test only emits signals, never events
+    // to it. `unregister_qobject` is memory-neutral (it works from the registry record).
     unsafe { unregister_qobject(id) };
     drop(receiver);
 }

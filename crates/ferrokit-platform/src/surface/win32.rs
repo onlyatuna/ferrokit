@@ -136,6 +136,12 @@ impl Win32LayeredSurface {
             return Err("Width and height must be greater than 0");
         }
 
+        // SAFETY: only Win32 calls on `hwnd` and on DCs/bitmaps created inside this block.
+        //   `GetWindowLongPtrW`/`SetWindowLongPtrW` take `hwnd` by value and validate it (they
+        //   fail, not fault, on an invalid window). `screen`, `mem_dc` and the DIB are fresh RAII
+        //   wrappers (`win32_handles`) used only while alive, `screen` is null-checked, and
+        //   `create_dib_section` is handed the live `mem_dc`. Ownership of `mem_dc` and the
+        //   bitmap moves into `DibTarget::select`, which keeps `bits` valid for the DIB's life.
         unsafe {
             // Ensure window has WS_EX_LAYERED extended style for UpdateLayeredWindow
             let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -228,12 +234,21 @@ impl Win32LayeredSurface {
     #[inline]
     pub fn buffer(&self) -> &[u8] {
         let len = (self.alloc_width as usize) * (self.alloc_height as usize) * 4;
+        // SAFETY: `target.bits()` points at the pixels of the 32-bpp DIB section owned by
+        //   `self.target`; its size is `alloc_width * alloc_height * 4` bytes because every
+        //   (re)allocation goes through `create_dib_section(dc, alloc_w, alloc_h)` and
+        //   `realloc_dib` updates `alloc_*` together with the bitmap. The memory stays valid for
+        //   the returned borrow of `&self` (it is replaced only through `&mut self`).
         unsafe { std::slice::from_raw_parts(self.target.bits(), len) }
     }
 
     #[inline]
     pub fn buffer_mut(&mut self) -> &mut [u8] {
         let len = (self.alloc_width as usize) * (self.alloc_height as usize) * 4;
+        // SAFETY: as in `buffer`: `target.bits()` is the live DIB's `alloc_width * alloc_height
+        //   * 4` bytes; `&mut self` guarantees exclusive access for the returned borrow, and the
+        //   GDI is not writing to it concurrently (the surface is single-threaded, used on the
+        //   window's thread only).
         unsafe { std::slice::from_raw_parts_mut(self.target.bits(), len) }
     }
 
@@ -385,6 +400,14 @@ impl Win32LayeredSurface {
         );
         let t_copy = tick();
         let dbg_copy = crate::resize_debug::start();
+        // SAFETY: bounds of both slices. Source: `resize` above made `self.width/height` equal
+        //   the pixmap's `physical_width/height`, `clipped_dirty` is intersected with
+        //   `[0, width) x [0, height)`, and the pixmap is tightly packed `width * 4` per row
+        //   [inferred from the `Pixmap` contract]. Destination: DIB rows are `alloc_width * 4`
+        //   apart and `alloc_width/alloc_height >= width/height` (invariant kept by `resize` /
+        //   `realloc_dib`, which return early on error before the visible size changes), so
+        //   `y * dst_stride + dirty_x * 4 + dirty_w * 4` stays inside the DIB. The two slices
+        //   belong to different allocations, so `&mut` does not alias `&`.
         unsafe {
             let src_data = pixmap.data();
             for y in clipped_dirty.y..(clipped_dirty.y + clipped_dirty.height) {
@@ -416,6 +439,14 @@ impl Win32LayeredSurface {
         self.stats.last_copied_height = clipped_dirty.height as u32;
         trace_record(TraceKind::PixelCopyEnd, hwnd_id, (0, 0), phys);
 
+        // SAFETY: Win32 calls with `self.hwnd` (this surface's window, validated by user32) and
+        //   pointers to locals (`blend`, `pt_dst`, `size`, `pt_src`, `dirty_win_rect`, `info`,
+        //   `win_rect`) that outlive every call, including `UpdateLayeredWindowIndirect`'s use of
+        //   `info`. `info` is zero-initialised with `cbSize` set, per the documentation of
+        //   `UPDATELAYEREDWINDOWINFO`; `hdcSrc` is the live DIB DC in `self.target`, `hdcDst` the
+        //   screen DC held by `screen` until the end of the block (a null DC is accepted per the
+        //   `UpdateLayeredWindow` documentation). `std::mem::zeroed` is used only for plain C
+        //   structs (`RECT`, `UPDATELAYEREDWINDOWINFO`) for which all-zero is valid.
         unsafe {
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as u8,

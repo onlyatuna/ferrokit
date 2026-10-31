@@ -420,6 +420,9 @@ pub mod cocoa {
     #[cfg(target_os = "macos")]
     fn init_ns_application() {
         use crate::objc_runtime::{objc_get_class, qcocoa_application_delegate, ObjcMsg, Sel};
+        // SAFETY: `objc_get_class("NSApplication")` is the AppKit class object and
+        // `sharedApplication` is a zero-argument class method returning an object, matching
+        // `send_class_0`'s signature (AppKit is linked by this module's cocoa backend) [inferred].
         let app = unsafe {
             ObjcMsg::send_class_0(
                 objc_get_class("NSApplication"),
@@ -431,6 +434,8 @@ pub mod cocoa {
         {
             transform_process_to_foreground_application(app);
         }
+        // SAFETY: `app` is the NSApplication instance returned above; `setDelegate:` takes one
+        // object argument, which `qcocoa_application_delegate()` supplies, matching `send_id` [inferred].
         unsafe {
             ObjcMsg::send_id(
                 app,
@@ -449,6 +454,8 @@ pub mod cocoa {
         let set = |key| info_plist_int(key).is_some_and(|value| value != 0);
         if !set("LSUIElement") && !set("LSBackgroundOnly") {
             // NSApplicationActivationPolicyRegular
+            // SAFETY: `app` is the live NSApplication singleton; `setActivationPolicy:` takes one
+            // integer argument, matching `send_int` [inferred].
             unsafe { ObjcMsg::send_int(app, Sel::register("setActivationPolicy:"), 0) };
         }
     }
@@ -478,12 +485,22 @@ pub mod cocoa {
         const K_CF_NUMBER_INT_TYPE: isize = 9;
 
         let ns_key = nsstring_from_str(key);
+        // SAFETY: CFBundleGetMainBundle takes no arguments; `ns_key.0` is the live NSString made
+        // just above (toll-free bridged to CFString), and the returned value is a borrowed
+        // (Get-rule) reference used only below while the bundle dictionary keeps it alive.
         let value =
             unsafe { CFBundleGetValueForInfoDictionaryKey(CFBundleGetMainBundle(), ns_key.0) };
+        // SAFETY: `ns_key` is the +1 NSString created by `nsstring_from_str` above and is released
+        // exactly once here; `release` takes no arguments, matching `send_0`.
         unsafe { ObjcMsg::send_0(ns_key, Sel::register("release")) };
         if value.is_null() {
             return None;
         }
+        // SAFETY: `value` is non-null (checked above) and a valid CF object borrowed from the main
+        // bundle's Info dictionary; the type-ID comparison selects the matching accessor: for a
+        // CFString (toll-free bridged NSString) `UTF8String` returns a NUL-terminated buffer owned
+        // by `value`, valid while it is read here; CFBooleanGetValue/CFNumberGetValue get the
+        // type they require, and `number` is a local i32 matching `kCFNumberIntType` (9).
         unsafe {
             let kind = CFGetTypeID(value);
             if kind == CFStringGetTypeID() {

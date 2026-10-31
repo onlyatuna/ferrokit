@@ -19,6 +19,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 pub(crate) fn remove_posted_timer_event(hwnd: HWND, timer_id: u32) {
     if !hwnd.is_null() {
+        // SAFETY: `msg` is an all-zero `MSG` (valid: integers and raw pointers only) that
+        // `PeekMessageW` fills through the out-pointer; `hwnd` is non-null (checked above) and
+        // is passed by value, and the call only removes `WM_TIMER` messages and reports a
+        // handle it cannot use by returning 0.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while PeekMessageW(&mut msg, hwnd, WM_TIMER, WM_TIMER, PM_REMOVE) != 0 {
@@ -140,6 +144,8 @@ impl Drop for InTimerGuard<'_> {
             } else if let Some(elapse) = rearm_elapse {
                 self.rearmed_elapse.set(Some(elapse));
                 if !self.internal_hwnd.is_null() {
+                    // SAFETY: `internal_hwnd` is non-null (checked above) and is the window of
+                    // the dispatcher whose timer this guard serves, on the same thread.
                     unsafe {
                         SetTimer(self.internal_hwnd, self.raw_id as usize, elapse, None);
                     }
@@ -229,6 +235,8 @@ fn dispatch_thread_timer_impl(
 
     if let Some(elapse) = unexpired_elapse {
         if !internal_hwnd.is_null() {
+            // SAFETY: `internal_hwnd` is non-null (checked above) and belongs to this thread's
+            // dispatcher; `SetTimer` with a null callback just posts `WM_TIMER` to that window.
             unsafe {
                 SetTimer(internal_hwnd, raw_id as usize, elapse, None);
             }
@@ -264,6 +272,10 @@ fn dispatch_thread_timer_impl(
 static REGISTER_CLASS_ONCE: Once = Once::new();
 
 fn ensure_window_class_registered() {
+    // SAFETY: `wc` is fully initialised with `cbSize` matching its type; `lpszClassName`
+    // points at the static NUL-terminated `CLASS_NAME`, and `lpfnWndProc` is
+    // `internal_wnd_proc`, which has the required `extern "system"` signature. `RegisterClassExW`
+    // copies the struct, so `wc` may be dropped afterwards. `call_once` registers once.
     REGISTER_CLASS_ONCE.call_once(|| unsafe {
         let h_instance = GetModuleHandleW(ptr::null());
         let wc = WNDCLASSEXW {
@@ -307,6 +319,10 @@ impl Win32EventDispatcher {
     pub fn new() -> Self {
         ensure_window_class_registered();
 
+        // SAFETY: `CLASS_NAME` is a static, NUL-terminated wide string naming the class that
+        // `ensure_window_class_registered` registered just above (`call_once`); the null
+        // pointers mean no title, menu, parent or creation data, and `HWND_MESSAGE` is the
+        // documented parent value for a message-only window; `h_instance` is this module's.
         let internal_hwnd = unsafe {
             let h_instance = GetModuleHandleW(ptr::null());
             CreateWindowExW(
@@ -329,6 +345,9 @@ impl Win32EventDispatcher {
             panic!("Failed to create Win32 message-only window for Win32EventDispatcher");
         }
 
+        // SAFETY: `msg` is an all-zero `MSG` (valid: integers and raw pointers only) that
+        // `PeekMessageW` fills; `internal_hwnd` was created just above on this thread, and
+        // the messages it returns are passed straight to that window's `DefWindowProcW`.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while PeekMessageW(&mut msg, internal_hwnd, 0, 0, PM_REMOVE) != 0 {
@@ -344,6 +363,8 @@ impl Win32EventDispatcher {
         });
 
         // Keeps the 1 ms timer resolution while this dispatcher lives; `Drop` ends the period.
+        // SAFETY: `timeBeginPeriod` takes an integer period and no pointers; the matching
+        // `timeEndPeriod(1)` is in `Drop`.
         unsafe {
             windows_sys::Win32::Media::timeBeginPeriod(1);
         }
@@ -360,6 +381,9 @@ impl Win32EventDispatcher {
         if !self.wakeup_pending.swap(true, Ordering::Release) {
             // A failed post leaves no message to clear the flag, so reset it or every later
             // wake-up would be skipped.
+            // SAFETY: `internal_hwnd` is the window created in `new` and not destroyed before
+            // `Drop`; `&self` is live here, and `PostMessageW` is callable from any thread
+            // per the Win32 documentation.
             if unsafe { PostMessageW(self.internal_hwnd, WM_FERROKIT_WAKEUP, 0, 0) } == 0 {
                 self.wakeup_pending.store(false, Ordering::Release);
             }
@@ -399,6 +423,10 @@ impl Win32EventDispatcher {
             let mut awoken = false;
             let mut timer_dispatched = false;
 
+            // SAFETY: `msg` is an all-zero `MSG` (valid: integers and raw pointers only) that
+            // `PeekMessageW` fills; the NULL hwnd retrieves this thread's messages only. Every
+            // message handed to `DispatchMessageW`/`DefWindowProcW`/`TranslateMessage` was just
+            // filled in by `PeekMessageW` on the thread that owns its window.
             unsafe {
                 let mut msg: MSG = std::mem::zeroed();
                 while PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
@@ -474,6 +502,9 @@ impl Win32EventDispatcher {
                 None => INFINITE,
             };
 
+            // SAFETY: with `nCount == 0` the handle-array pointer is never read, so the null
+            // pointer is fine; this thread owns the queue being waited on (it created
+            // `internal_hwnd`).
             let wait_ret = unsafe {
                 MsgWaitForMultipleObjectsEx(0, ptr::null(), timeout_ms, QS_ALLINPUT, MWMO_ALERTABLE)
             };
@@ -567,6 +598,8 @@ impl Win32EventDispatcher {
             if let Some(elapse) = unexpired_elapse {
                 rearmed.push(elapse);
                 if !self.internal_hwnd.is_null() {
+                    // SAFETY: `internal_hwnd` is the live, non-null window of this dispatcher,
+                    // used on the creating thread (the check above, `new`).
                     unsafe {
                         SetTimer(self.internal_hwnd, raw_id as usize, elapse, None);
                     }
@@ -610,6 +643,8 @@ impl Win32EventDispatcher {
                 } else if let Some(elapse) = rearm_elapse {
                     rearmed.push(elapse);
                     if !self.internal_hwnd.is_null() {
+                        // SAFETY: `internal_hwnd` is the live, non-null window of this
+                        // dispatcher, used on the creating thread (the check above, `new`).
                         unsafe {
                             SetTimer(self.internal_hwnd, raw_id as usize, elapse, None);
                         }
@@ -643,6 +678,10 @@ impl Win32EventDispatcherHandle {
             return;
         }
         if !self.wakeup_pending.swap(true, Ordering::Release)
+            // SAFETY: `internal_hwnd` is only an integer here; `PostMessageW` may be called from
+            // any thread per the Win32 documentation. If the window was destroyed in the
+            // gap after the `alive` check the call fails with an invalid handle instead of
+            // misbehaving (documented race above), and a failed post is handled right below.
             && unsafe { PostMessageW(self.internal_hwnd as HWND, WM_FERROKIT_WAKEUP, 0, 0) } == 0
         {
             // See `Win32EventDispatcher::wake_up`.
@@ -710,9 +749,16 @@ impl Drop for Win32EventDispatcher {
             });
             crate::timer::precise::disarm_all_for(self.internal_hwnd);
             // Pairs the `timeBeginPeriod(1)` of `new`.
+            // SAFETY: balances the `timeBeginPeriod(1)` in `new`; each dispatcher makes exactly
+            // one begin and, guarded by the `internal_hwnd` null check, one end. Per the
+            // timeapi documentation the end value must equal the begin value (1).
             unsafe {
                 windows_sys::Win32::Media::timeEndPeriod(1);
             }
+            // SAFETY: `internal_hwnd` was created by `new` on this thread (the type is `!Send`
+            // because of the raw `HWND`), is non-null here, and is destroyed exactly once: the
+            // field is reset to null right below, and `alive` was cleared first so handles stop
+            // posting to it.
             unsafe {
                 DestroyWindow(self.internal_hwnd);
             }
@@ -852,6 +898,8 @@ mod tests {
         std::thread::spawn(|| {
             let dispatcher = Win32EventDispatcher::new();
 
+            // SAFETY: `PostQuitMessage` only posts `WM_QUIT` to the calling thread's own queue,
+            // which the `process_events` call below drains; it takes an integer and no pointer.
             unsafe {
                 windows_sys::Win32::UI::WindowsAndMessaging::PostQuitMessage(42);
             }
@@ -924,6 +972,11 @@ mod tests {
 
         let dispatcher = Win32EventDispatcher::new();
         dispatcher.register_timer(&entry);
+        // SAFETY: `receiver` is a local that is never moved after this line, and `&raw mut`
+        // gives the pointer without a reference; registration ends when `receiver` drops at the
+        // end of the test, because `ObjectData::drop` calls `unregister_qobject`. Callbacks only
+        // run from `process_events_with_timers` below on this (the registering) thread, and
+        // the test touches `receiver` itself only via `hits`, a separate `Arc`.
         unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
         let deadline = std::time::Instant::now() + Duration::from_millis(1500);
@@ -965,6 +1018,8 @@ mod tests {
         let handle = precise::native_handle(precise_id)
             .expect("a Precise timer started on the raw route is a multimedia timer");
         assert_eq!(
+            // SAFETY: `internal_hwnd` is the live window of `dispatcher` on this thread;
+            // `KillTimer` only looks the timer id up and returns 0 if none exists.
             unsafe { KillTimer(dispatcher.internal_hwnd, precise_id.0 as usize) },
             0,
             "and not also a SetTimer timer"
@@ -972,6 +1027,9 @@ mod tests {
         dispatcher.unregister_timer(&precise_entry);
         assert_eq!(precise::native_handle(precise_id), None);
         // TIMERR_NOCANDO: the multimedia timer is gone.
+        // SAFETY: `handle` is the id of the multimedia timer that `precise::native_handle`
+        // returned above; `timeKillEvent` takes it by value and reports unknown ids (97) rather
+        // than touching memory.
         assert_eq!(unsafe { timeKillEvent(handle) }, 97);
 
         let coarse_id = registry.register(ObjectId(1), 100, TimerType::Coarse, false);
@@ -979,6 +1037,8 @@ mod tests {
         dispatcher.register_timer(&coarse_entry);
         assert_eq!(precise::native_handle(coarse_id), None);
         assert_ne!(
+            // SAFETY: `internal_hwnd` is the live window of `dispatcher` on this thread;
+            // `KillTimer` only looks the timer id up and returns 0 if none exists.
             unsafe { KillTimer(dispatcher.internal_hwnd, coarse_id.0 as usize) },
             0,
             "a coarse timer keeps its SetTimer timer"
@@ -1018,6 +1078,8 @@ mod tests {
             intercepted: Arc::clone(&intercepted),
         }));
 
+        // SAFETY: `dispatcher.internal_hwnd` is the live window `Win32EventDispatcher::new`
+        // created above on this thread, and `PostMessageW` takes plain integer arguments.
         unsafe {
             PostMessageW(dispatcher.internal_hwnd, WM_USER + 77, 0, 0);
         }
@@ -1035,6 +1097,9 @@ mod tests {
     fn take_wakeup_messages(hwnd: HWND) -> (usize, Option<MSG>) {
         let mut count = 0;
         let mut last = None;
+        // SAFETY: an all-zero `MSG` is valid (integers and raw pointers only) and is passed as
+        // the out-pointer of `PeekMessageW`, which fills it; the caller passes the test's own
+        // dispatcher window, belonging to the current thread, as `PeekMessageW` requires.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             while PeekMessageW(
@@ -1073,6 +1138,9 @@ mod tests {
         assert!(el.dispatcher().wakeup_pending.load(Ordering::Acquire));
 
         // Simulate the native modal loop dispatching the wake-up message itself.
+        // SAFETY: `msg` is an initialised `MSG` that `take_wakeup_messages` just removed from
+        // this thread's queue; the window belongs to `el`, alive and on this thread, so
+        // `DispatchMessageW` runs its window procedure on the owning thread.
         unsafe {
             DispatchMessageW(&msg.unwrap());
         }
@@ -1086,6 +1154,9 @@ mod tests {
         el.post_event(ObjectId(0), counting_metacall(&delivered));
         let (count, msg) = take_wakeup_messages(hwnd);
         assert_eq!(count, 1);
+        // SAFETY: `msg` is an initialised `MSG` that `take_wakeup_messages` just removed from
+        // this thread's queue; the window belongs to `el`, alive and on this thread, so
+        // `DispatchMessageW` runs its window procedure on the owning thread.
         unsafe {
             DispatchMessageW(&msg.unwrap());
         }
@@ -1112,6 +1183,9 @@ mod tests {
         );
 
         let (_, msg) = take_wakeup_messages(hwnd);
+        // SAFETY: `msg` is an initialised `MSG` that `take_wakeup_messages` just removed from
+        // this thread's queue; the window belongs to `el`, alive and on this thread, so
+        // `DispatchMessageW` runs its window procedure on the owning thread.
         unsafe {
             DispatchMessageW(&msg.unwrap());
         }
@@ -1123,6 +1197,9 @@ mod tests {
 
         let (count, msg) = take_wakeup_messages(hwnd);
         assert_eq!(count, 1, "new post re-armed the wake-up");
+        // SAFETY: `msg` was removed by `take_wakeup_messages` from this thread's queue, so it
+        // is a fully initialised `MSG` for the window this thread created (`hwnd` is live as
+        // `el` is held); dispatching on the owning thread is what `DispatchMessageW` requires.
         unsafe {
             DispatchMessageW(&msg.unwrap());
         }
@@ -1633,8 +1710,10 @@ mod tests {
         let el = crate::event_loop::EventLoop::new();
         let data = ObjectData::new(ObjectId::next());
         let object_id = data.id();
-        // SAFETY: the owner stays on this thread and nothing touches the object while a callback
-        // of it runs.
+        // SAFETY: `register_owned_qobject` boxes the `Raiser`, so it stays at one address until
+        // `owner` is dropped at the end of this test (which unregisters it). The test runs on
+        // the thread that registered it and only drives callbacks from this thread; it never
+        // touches the object except through `owner`, and not while `timer_event` runs.
         let owner = unsafe { register_owned_qobject(Raiser { data }) };
         let mut registry = TimerRegistry::new();
         let id = registry.register(object_id, 1_000_000, TimerType::Precise, false);

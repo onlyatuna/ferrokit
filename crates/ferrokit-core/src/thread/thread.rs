@@ -63,6 +63,10 @@ mod os_priority {
                 Some(priority) => Some(to_win32(priority)),
                 // `Inherit`: copy the creator's current level (qthread_win.cpp:439-442).
                 None => {
+                    // SAFETY: `GetCurrentThread()` returns the documented pseudo-handle for the
+                    // calling thread, which is valid for the thread it is used on and needs no
+                    // closing; `GetThreadPriority` takes no pointers and signals failure with
+                    // `ERROR_RETURN`, checked below.
                     let current = unsafe { GetThreadPriority(GetCurrentThread()) };
                     (current != ERROR_RETURN).then_some(current)
                 }
@@ -71,6 +75,10 @@ mod os_priority {
 
         pub(in super::super) fn apply(pending: Pending) {
             if let Some(level) = pending {
+                // SAFETY: `GetCurrentThread()` returns the documented pseudo-handle for the
+                // calling thread, always valid for the thread it is called on; `level` is an
+                // integer from `to_win32` or an earlier `GetThreadPriority`. Failure is
+                // reported by a 0 return, handled right here.
                 if unsafe { SetThreadPriority(GetCurrentThread(), level) } == 0 {
                     eprintln!(
                         "ferrokit: SetThreadPriority failed: {}",
@@ -110,7 +118,13 @@ mod os_priority {
             if !idle {
                 return;
             }
+            // SAFETY: `libc::sched_param` is a plain C struct of integer fields, for which
+            // all-zero bytes are a valid value.
             let param: libc::sched_param = unsafe { std::mem::zeroed() };
+            // SAFETY: `param` is a live, initialised local that `pthread_setschedparam` only
+            // reads, and `pthread_self()` is the calling thread, which is running and so cannot
+            // have been joined. `SCHED_IDLE` requires `sched_priority == 0`, which the zeroed
+            // value gives; failure is reported through the return code, handled below.
             let rc = unsafe {
                 libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_IDLE, &param)
             };

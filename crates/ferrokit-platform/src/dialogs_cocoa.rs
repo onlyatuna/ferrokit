@@ -439,8 +439,10 @@ mod native {
 
     impl DialogRuntime for NativeRuntime {
         fn require_main_thread(&self, operation: &str) {
-            // SAFETY: `+[NSThread isMainThread]` takes no arguments, returns BOOL and may be
-            // called from any thread.
+            // SAFETY: `NSThread` is a Foundation class; `+isMainThread` takes no arguments and
+            // returns BOOL, matching `send_bool_return`, and is documented as callable from any
+            // thread [inferred: Foundation documentation]. This is the one call made before the
+            // main-thread check, so nothing here may assume the main thread.
             let is_main = unsafe {
                 ObjcMsg::send_bool_return(class_id("NSThread"), Sel::register("isMainThread"))
             };
@@ -452,8 +454,11 @@ mod native {
         }
 
         fn pool_push(&self) -> Id {
-            // SAFETY: `[[NSAutoreleasePool alloc] init]` yields a +1 pool, balanced by `drain` in
-            // `pool_pop`; called on the main thread.
+            // SAFETY: `NSAutoreleasePool` is a Foundation class; `alloc` and `init` take no
+            // arguments and return objects, matching `send_class_0` / `send_0`, with `init`
+            // sent to the unconsumed `alloc` result. The +1 pool is balanced by `drain` in
+            // `pool_pop`, which `Pool::drop` calls on the same thread after
+            // `require_main_thread` has passed.
             unsafe {
                 let pool = ObjcMsg::send_class_0(
                     objc_get_class("NSAutoreleasePool"),
@@ -464,12 +469,16 @@ mod native {
         }
 
         fn pool_pop(&self, pool: Id) {
-            // SAFETY: `pool` came from `pool_push` and is popped exactly once; `drain` releases it.
+            // SAFETY: `pool` was returned by `pool_push` and `Pool`'s `Drop` pops it exactly once,
+            // on the thread that pushed it (the guard is a stack local); `drain` takes no
+            // arguments and releases the pool (nil would be a no-op).
             unsafe { ObjcMsg::send_0(pool, Sel::register("drain")) };
         }
 
         fn shared_application(&self) -> Id {
-            // SAFETY: `+[NSApplication sharedApplication]` returns an object owned by AppKit.
+            // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication`
+            // returning an object that AppKit owns for the life of the process (no +1 to
+            // balance); main thread already verified by `require_main_thread`.
             unsafe {
                 ObjcMsg::send_class_0(
                     objc_get_class("NSApplication"),
@@ -479,19 +488,24 @@ mod native {
         }
 
         fn class_msg(&self, class: &str, sel: &str) -> Id {
-            // SAFETY: the selectors used (`openPanel`, `savePanel`, `array`) are class methods
-            // without arguments returning an autoreleased object.
+            // SAFETY: the callers pass only `openPanel`, `savePanel` and `array`
+            // (`CocoaDialogs::run_panel`), which are no-argument class methods returning an
+            // autoreleased object that lives until the enclosing `Pool` pops; an unknown class
+            // name gives a nil class and a no-op send.
             unsafe { ObjcMsg::send_class_0(objc_get_class(class), Sel::register(sel)) }
         }
 
         fn class_msg_id(&self, class: &str, sel: &str, arg: Id) -> Id {
-            // SAFETY: the selector (`fileURLWithPath:`) takes one object and returns an
-            // autoreleased object; `arg` is a live NSString.
+            // SAFETY: the only caller passes `fileURLWithPath:` (`CocoaDialogs::url`), which takes
+            // one NSString and returns an autoreleased NSURL; `arg` is the autoreleased NSString
+            // from `ns_string`, live until the pool pops, which is after this call.
             unsafe { ObjcMsg::send_id(class_id(class), Sel::register(sel), arg) }
         }
 
         fn alloc_init(&self, class: &str) -> Id {
-            // SAFETY: `alloc`/`init` on the class; the result is +1, released by the caller.
+            // SAFETY: `alloc` and `init` take no arguments and return objects; `init` is sent to
+            // the unconsumed `alloc` result. The result is +1 and is released through `release`
+            // by the caller (`Owned`), which is why this is not autoreleased.
             unsafe {
                 let object = ObjcMsg::send_class_0(objc_get_class(class), Sel::register("alloc"));
                 ObjcMsg::send_0(object, Sel::register("init"))
@@ -499,36 +513,46 @@ mod native {
         }
 
         fn msg(&self, recv: Id, sel: &str) -> Id {
-            // SAFETY: argument-less selector returning an object; `recv` is live and on the
-            // main thread (or nil, for which the send is a no-op).
+            // SAFETY: the callers pass argument-less selectors that return an object (`URLs`,
+            // `URL`, `path`, `window`, ...); `recv` is an object the logic created or got from an
+            // earlier call inside the same pool (so live), or nil (a no-op send); main thread
+            // already verified.
             unsafe { ObjcMsg::send_0(recv, Sel::register(sel)) }
         }
 
         fn msg_id(&self, recv: Id, sel: &str, arg: Id) -> Id {
-            // SAFETY: one-object-argument selector; `arg` is live for the duration of the call.
+            // SAFETY: the callers pass selectors taking exactly one object (`setMessageText:`,
+            // `setDirectoryURL:`, ...); `recv` is live as in `msg`, and `arg` is an object built
+            // inside the same pool (or nil), so it outlives this call.
             unsafe { ObjcMsg::send_id(recv, Sel::register(sel), arg) }
         }
 
         fn msg_bool(&self, recv: Id, sel: &str, value: bool) {
-            // SAFETY: one-BOOL-argument setter.
+            // SAFETY: the callers pass selectors taking exactly one BOOL (`setCanChooseFiles:`,
+            // ...); `recv` is the live panel/application as in `msg`.
             unsafe { ObjcMsg::send_bool(recv, Sel::register(sel), value) };
         }
 
         fn msg_int(&self, recv: Id, sel: &str, value: NSInteger) {
-            // SAFETY: one-NSInteger-argument setter (`setAlertStyle:`).
+            // SAFETY: the callers pass selectors taking exactly one NSInteger (`setAlertStyle:`,
+            // `setActivationPolicy:`); `recv` is the live alert/application as in `msg`.
             unsafe { ObjcMsg::send_int(recv, Sel::register(sel), value) };
         }
 
         fn msg_int_return(&self, recv: Id, sel: &str) -> NSInteger {
-            // SAFETY: argument-less selector returning an NSInteger (`runModal`); it has the
-            // same register-sized return as the NSUInteger wrapper used here.
+            // SAFETY: the callers pass argument-less selectors returning NSInteger
+            // (`activationPolicy`, `runModal`); the NSUInteger sender is read through the same
+            // 64-bit integer return register and `as NSInteger` reinterprets the bits
+            // [inferred: x86-64 and arm64 return both in the integer register]; `recv` is the
+            // live panel/alert/application as in `msg`.
             unsafe { ObjcMsg::send_usize_return(recv, Sel::register(sel)) as NSInteger }
         }
 
         fn ns_string(&self, text: &str) -> Id {
             let owned = nsstring_from_str(text);
-            // SAFETY: `owned` is the +1 string just created; autorelease hands that reference to
-            // the enclosing pool.
+            // SAFETY: `owned` is the +1 NSString just created by `nsstring_from_str`, so it is a
+            // live receiver for `autorelease` (no arguments, returns the object), which hands that
+            // one reference to the enclosing pool; no other release happens.
             unsafe { ObjcMsg::send_0(owned, Sel::register("autorelease")) }
         }
 
@@ -536,8 +560,11 @@ mod native {
             if string.is_nil() {
                 return None;
             }
-            // SAFETY: `UTF8String` returns a NUL-terminated buffer owned by `string` and valid
-            // until the pool is popped; it is copied before returning.
+            // SAFETY: `string` was checked non-nil; the callers pass NSStrings (paths from `[url
+            // path]`). `UTF8String` takes no arguments and returns a `const char *`, read here
+            // through the integer-return sender [inferred: pointer returns use the same register
+            // as NSUInteger]; the buffer is NUL-terminated, owned by `string` and valid until the
+            // pool pops (per the NSString documentation), and it is copied before returning.
             unsafe {
                 let ptr = ObjcMsg::send_usize_return(string, Sel::register("UTF8String"))
                     as *const c_char;
@@ -549,8 +576,11 @@ mod native {
         }
 
         fn array(&self, items: &[Id]) -> Id {
-            // SAFETY: `[NSMutableArray array]` is autoreleased; `addObject:` retains each live
-            // item, so the items may be released by the pool in any order.
+            // SAFETY: `+[NSMutableArray array]` returns an autoreleased array that lives until the
+            // pool pops; `addObject:` takes one non-nil object and retains it. `items` are the
+            // autoreleased strings/URLs from this operation, live until the pool pops, so the
+            // array never holds a freed element (a nil item would raise; the callers pass only
+            // non-nil objects).
             unsafe {
                 let array =
                     ObjcMsg::send_class_0(objc_get_class("NSMutableArray"), Sel::register("array"));
@@ -562,17 +592,21 @@ mod native {
         }
 
         fn array_len(&self, array: Id) -> usize {
-            // SAFETY: `-[NSArray count]` returns NSUInteger.
+            // SAFETY: `array` is the autoreleased array returned by `URLs` (or nil, giving 0);
+            // `count` takes no arguments and returns NSUInteger, matching `send_usize_return`.
             unsafe { ObjcMsg::send_usize_return(array, Sel::register("count")) }
         }
 
         fn array_at(&self, array: Id, index: usize) -> Id {
-            // SAFETY: callers keep `index < count`, so `objectAtIndex:` does not raise.
+            // SAFETY: `array` is the live array from `URLs`, and `run_panel` calls this only for
+            // `i in 0..array_len(urls)`, so `index < count` and `objectAtIndex:` does not raise;
+            // it takes one NSUInteger, matching `send_id_with_usize`.
             unsafe { ObjcMsg::send_id_with_usize(array, Sel::register("objectAtIndex:"), index) }
         }
 
         fn release(&self, object: Id) {
-            // SAFETY: balances the +1 from `alloc_init`; the caller drops its reference.
+            // SAFETY: `object` is the +1 alert from `alloc_init`, released exactly once by its
+            // `Owned` guard, which is dropped before the pool pops; `release` takes no arguments.
             unsafe { ObjcMsg::send_0(object, Sel::register("release")) };
         }
     }

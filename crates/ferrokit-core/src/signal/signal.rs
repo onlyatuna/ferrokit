@@ -1268,7 +1268,10 @@ mod tests {
             data: crate::object::ObjectData::new(ObjectId::next()),
         };
         let receiver_id = receiver.data.id();
-        // SAFETY: registered for the test; unregistered before it returns.
+        // SAFETY: per `register_qobject_ptr`'s contract: `receiver` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is not used afterwards, and no callback runs yet (nothing is dispatched
+        // before `process_events`).
         unsafe { crate::object::register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
         let target_thread = ThreadId::current();
 
@@ -1294,7 +1297,8 @@ mod tests {
         assert!(processed);
 
         assert_eq!(*received_msg.lock(), "hello queued");
-        // SAFETY: `receiver` was registered above and is still alive.
+        // SAFETY: `event_loop.process_events` has returned, so no callback of `receiver` runs;
+        // `receiver` is still alive and this is the registration thread.
         unsafe { crate::object::unregister_qobject(receiver_id) };
     }
 

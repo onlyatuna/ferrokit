@@ -138,8 +138,9 @@ impl QObject for Receiver {
 #[test]
 fn receiver_destroyed_during_emit_is_not_called() {
     let signal = Signal::<i32>::new();
-    // SAFETY: the owner stays on this thread; nothing touches the object while a callback of it
-    // runs, and the slot below unregisters it before the owner is dropped.
+    // SAFETY: `receiver` is a test local on this thread, used only for its id and dropped by the
+    // test after the emit; the only code that touches the object is its (empty) event handler,
+    // which no event reaches in this test.
     let receiver = unsafe {
         register_owned_qobject(Receiver {
             data: ObjectData::with_auto_id(),
@@ -149,7 +150,10 @@ fn receiver_destroyed_during_emit_is_not_called() {
 
     let (calls, slot) = counter();
     signal.connect(move |_| {
-        // SAFETY: no callback is active for the receiver; same registration thread.
+        // SAFETY: this slot runs inside `signal.emit` on this thread, which is also `receiver`'s
+        // registration thread; `receiver` (the owner) is a local of the test that outlives the
+        // emit, so the memory stays valid, and no callback of the receiver runs: the only code on
+        // the stack is the emit, and `Receiver` is not the target of any event here.
         unsafe { unregister_qobject(receiver_id) };
     });
     signal.connect_direct_object(receiver_id, slot);

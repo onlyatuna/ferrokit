@@ -270,6 +270,21 @@ impl DCompSurface {
             return Err("Width and height must be greater than 0");
         }
 
+        // SAFETY: the whole block is raw FFI against D3D11/DXGI/DirectComposition, each call
+        // following the documented COM contract (per the Microsoft documentation):
+        // - Entry points come from `LoadLibraryA`/`GetProcAddress` on the DLLs loaded at the top;
+        //   they are null-checked (`is_none`) before being `transmute`d to the `Pfn*` types, whose
+        //   signatures are copied from the documented C prototypes.
+        // - Every interface pointer used (`d3d_device`, `dxgi_factory2`, `swap_chain`,
+        //   `dcomp_device`, `dcomp_target`, visuals) was returned by a successful call a few
+        //   lines above and null-checked, so it points at a live COM object whose first word is
+        //   its vtable; the vtable slot numbers are the documented interface layouts [inferred
+        //   from the interface IDL order; not checkable here].
+        // - Out-pointers (`&mut d3d_device`, `&desc`, ...) are locals that outlive the call.
+        // - Each early-return path releases exactly the objects created so far and frees the
+        //   libraries, so no COM pointer outlives its DLL; on success ownership of all pointers
+        //   and module handles moves into `Self`, whose `Drop` releases them once.
+        // - `hwnd` is only passed to `CreateTargetForHwnd`, which validates it.
         unsafe {
             // 1. Dynamically load runtime DLLs
             let d3d11_mod = LoadLibraryA(c"d3d11.dll".as_ptr() as *const u8);
@@ -695,6 +710,9 @@ impl DCompSurface {
         self.stats.visible_resize_count += 1;
         // Content outside the previous visible area is stale: repaint all visible pixels.
         self.force_full = true;
+        // SAFETY: `self.dcomp_clip_visual` is a live `IDCompositionVisual` created in `new` and
+        //   released only in `Drop`; the mock surface (null visual) returned early above because
+        //   `dcomp_device` is null, so this point is only reached by a real surface.
         unsafe {
             if set_clip_rect(self.dcomp_clip_visual, width, height) < 0 {
                 return Err("SetClip failed on clip visual");
@@ -712,6 +730,13 @@ impl DCompSurface {
 
     /// Reallocates swap chain buffers and the staging DIB to `alloc_w x alloc_h`.
     fn resize_buffers(&mut self, alloc_w: u32, alloc_h: u32) -> Result<(), &'static str> {
+        // SAFETY: `resize_buffers` is reached only from `resize`, after the mock early-return, so
+        //   `self.swap_chain` is the live `IDXGISwapChain` created in `new` (released only in
+        //   `Drop`) and slot 13 is `ResizeBuffers` per the IDXGISwapChain vtable layout [inferred
+        //   from interface order]. `&mut self` guarantees no other call uses the swap chain, and
+        //   `ResizeBuffers` requires that no back-buffer references are outstanding: `present`
+        //   releases its `GetBuffer` surface before returning, so none are. `staging_dc()` is
+        //   the staging DC owned by `self.staging` (non-null for a real surface).
         unsafe {
             // ResizeBuffers is slot 13 on IDXGISwapChain
             let sc_vtbl = *(self.swap_chain as *mut *mut usize);
@@ -807,6 +832,16 @@ impl DCompSurface {
             return Ok(());
         }
 
+        // SAFETY: only reached for a real surface (the mock returned early on null
+        //   `dcomp_device`), so `swap_chain`, `dcomp_device` and `staging` are live objects from
+        //   `new`. The row copy stays in bounds: `resize` above made `pixmap` dimensions equal
+        //   `self.width/height`, `clipped` lies inside `[0, width) x [0, height)`, so source rows
+        //   are within the tightly-packed pixmap, and `staging_w >= width`, `staging_h >= height`
+        //   (alloc >= visible) keeps the destination rows inside the staging DIB
+        //   (`staging_w * staging_h * 4` bytes). Source and destination are distinct allocations.
+        //   COM calls follow the documented IDXGISwapChain/IDXGISurface1 protocol: `GetDC` is
+        //   paired with `ReleaseDC`, and the surface reference from `GetBuffer` is released on
+        //   every path that obtained it; vtable slots are [inferred from interface order].
         unsafe {
             // 1. Copy dirty rect pixels from Pixmap (RGBA) into staging DIB (BGRA)
             let src_stride = (self.width * 4) as usize;
@@ -984,6 +1019,10 @@ impl PlatformSurface for DCompSurface {
 
 impl Drop for DCompSurface {
     fn drop(&mut self) {
+        // SAFETY: each pointer was returned by `new` and is owned solely by this struct, so it is
+        //   released exactly once here; `com_release` ignores null (mock surface). The DLLs are
+        //   freed after the objects are released, as their code lives in those modules. `Drop`
+        //   has `&mut self`, so no other use can follow.
         unsafe {
             com_release(self.dcomp_clip_visual);
             com_release(self.dcomp_visual);

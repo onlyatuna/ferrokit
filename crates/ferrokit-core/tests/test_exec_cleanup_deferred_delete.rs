@@ -38,8 +38,9 @@ impl QObject for Victim {
 #[test]
 fn test_exec_flushes_deferred_delete_requested_by_last_handler() {
     let mut app = CoreApplication::new(vec!["test".to_string()]);
-    // SAFETY: the owner stays on this thread until exec returns and the flush unregisters the
-    // object; nothing touches the object while a handler runs.
+    // SAFETY: `victim` is a local on this thread that the test neither uses nor drops while
+    // `app.exec()` runs; the only code touching the object then is its own `event` callback,
+    // which asks for `delete_later`, the crate's deferred destruction, and does not touch the owner.
     let victim = unsafe {
         register_owned_qobject(Victim {
             data: ObjectData::new(ObjectId::next()),

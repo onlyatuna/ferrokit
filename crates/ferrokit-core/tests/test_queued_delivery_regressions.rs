@@ -107,7 +107,10 @@ fn connect_queued_survives_single_shot_zero_between_emits() {
 #[test]
 fn queued_slot_can_access_its_registered_receiver() {
     let thread = ThreadId::current();
-    // SAFETY: the `OwnedObject` stays on this thread; no callback of the receiver runs.
+    // SAFETY: `rcv` is a local owner on this thread, used only for its id and dropped at the end
+    // of the test. The slots call `with_object_mut(rid, ..)`, a registry callback that runs to
+    // completion on this thread (the slots run inside `process_events`/`emit`), while the test
+    // touches nothing.
     let rcv = unsafe {
         register_owned_qobject(Receiver {
             data: ObjectData::with_auto_id(),
@@ -160,8 +163,9 @@ fn queued_slot_can_access_its_registered_receiver() {
 const WATCHDOG: Duration = Duration::from_secs(10);
 
 fn new_receiver() -> OwnedObject<Receiver> {
-    // SAFETY: the owner stays on the thread that registers it and is dropped there; no callback of
-    // the receiver runs while the test holds it.
+    // SAFETY: the returned owner is a test local on this thread, used only for its id and dropped
+    // by the test; `Receiver` has no callbacks of its own, and the tests that deliver events
+    // (`notify_helper`, a loop) do so with the test not touching the owner, outside any drop.
     unsafe {
         register_owned_qobject(Receiver {
             data: ObjectData::with_auto_id(),

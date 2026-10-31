@@ -15,7 +15,10 @@ use ferrokit_core::timer::TimerType;
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `TestWidget` holds `Arc` handles and plain fields, which are `Send`.
+    // SAFETY: the opt-in promises that the object may be used and dropped on another thread as a
+    // `Send` type is. `TestWidget` holds an `ObjectData`, a `String`, an `Option<u64>` and
+    // `usize` counters, with no `Rc`, no `Cell` shared with a handle that stays behind, and no
+    // thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -99,12 +102,19 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     });
     let target_thread = tid_rx.recv().unwrap();
 
-    // SAFETY: the owner stays on this registration thread; nothing touches the parent while a
-    // callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it runs.
+    // The owner `parent` is used on this thread (registration thread) until the move below, and
+    // afterwards only through `object_id` and `unregister_qobject` (`with` refuses off the
+    // registration thread); the move itself needs the opt-in of `movable_data`. No event loop
+    // runs on the widgets, so no callback touches them.
     let parent = unsafe { register_owned_qobject(TestWidget::new("worker_root")) };
 
     let child = Box::new(TestWidget::new("worker_child"));
-    // SAFETY: child remains boxed and owned at a stable address by parent.
+    // SAFETY: `add_owned_child` needs the child to keep its heap address while owned, to be used on
+    // its registration thread, and no access to it during its callbacks. The `Box` moves into the
+    // parent's owner and keeps its address; no reference to the child was taken before the call,
+    // `parent` and `child` were made on this thread, and the child is reached afterwards only by
+    // id.
     let child_id = unsafe { add_owned_child(OwnedObject::object_id(&parent), child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
@@ -132,7 +142,12 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
     assert_eq!(query_object_thread(child_id), Some(target_thread));
     assert_eq!(child_thread, Some(target_thread));
 
-    // SAFETY: parent callbacks have ended on its registration thread.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback of `parent` active.
+    // `parent` is an owner still in scope until the end of the test, so its memory (and its owned
+    // child's) stays valid. The subtree was moved to `target_thread`, the worker, which only
+    // read it through `with_object` and has been joined above, so no callback of it is active. Called from this
+    // thread rather than the registration thread: the widgets have no timers for the registry to
+    // stop there, and they opted in to thread moves (`movable_data`).
     unsafe { unregister_qobject(OwnedObject::object_id(&parent)) };
     ThreadContext::clear_current();
 }
@@ -143,8 +158,9 @@ fn test_move_to_thread_rejects_parented_and_migrates_subtree() {
 
 #[test]
 fn test_signal_sender_tracking_and_auto_disconnection() {
-    // SAFETY: the owner stays on this thread through the signal's lifetime; nothing touches the
-    // emitter while a callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+    // runs. The owner `emitter` stays on this thread until the end of the test and is only read
+    // through `with`; its signal's slots are closures that never touch the widget.
     let emitter = unsafe { register_owned_qobject(TestWidget::new("emitter")) };
     let emitter_id = OwnedObject::object_id(&emitter);
 
@@ -169,8 +185,10 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
     // Test automatic disconnection on object drop
     let recv_count = Arc::new(AtomicUsize::new(0));
     {
-        // SAFETY: the owner stays on this thread until it is dropped below; nothing touches the
-        // receiver while a callback of it runs.
+        // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+        // runs. The owner `receiver` stays on this thread until `drop(receiver)` below and is only
+        // used through `with`, which refuses during a callback; the connected slot is a closure
+        // that never touches the widget.
         let receiver = unsafe { register_owned_qobject(TestWidget::new("receiver")) };
         let r_id = OwnedObject::object_id(&receiver);
 
@@ -189,7 +207,10 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
 
         // Drop receiver: connection automatically severed
         drop(receiver);
-        // SAFETY: receiver destruction completed and no callback is active.
+        // SAFETY: `unregister_qobject` is memory-neutral and works from the registry record; the
+        // record is already gone because `drop(receiver)` above unregistered the object, so this
+        // call finds nothing and touches no memory. No callback of the receiver is active, as the
+        // drop has returned on this registration thread.
         unsafe { unregister_qobject(r_id) };
     }
 
@@ -200,7 +221,10 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
         1,
         "slot of a destroyed receiver ran"
     );
-    // SAFETY: emitter callbacks have ended on its registration thread.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback of the emitter
+    // active. `emitter` is an owner still in scope until the end of the test, so its memory stays
+    // valid; this is its registration thread, and the signal's slots are closures, not callbacks
+    // of the emitter.
     unsafe { unregister_qobject(emitter_id) };
 }
 
@@ -210,8 +234,10 @@ fn test_signal_sender_tracking_and_auto_disconnection() {
 
 #[test]
 fn test_qobject_start_and_kill_timer() {
-    // SAFETY: the owner stays on this thread until after the timers are stopped; nothing touches
-    // the widget while a callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+    // runs. The owner `widget` stays on this thread until it is dropped below, after both timers
+    // were stopped or are stopped by the drop, and is only used through `with`/`with_mut`, which
+    // refuse during a callback. No event loop runs here, so no callback of it is active.
     let mut widget = unsafe { register_owned_qobject(TestWidget::new("timer_widget")) };
 
     // Initialize thread timer context
@@ -243,7 +269,10 @@ fn test_qobject_start_and_kill_timer() {
     // Dropping widget kills remaining timers
     let wid = OwnedObject::object_id(&widget);
     drop(widget);
-    // SAFETY: widget destruction ended its callback lifetime on this thread.
+    // SAFETY: `unregister_qobject` is memory-neutral and works from the registry record; the
+    // record is already gone because dropping the owner unregistered the object (see the
+    // registration docs), so this call finds nothing and touches no memory. No callback of the
+    // widget is active, as `drop(widget)` has returned on this registration thread.
     unsafe { unregister_qobject(wid) };
 
     assert_eq!(registry.lock().unwrap().len(), 0);
@@ -257,8 +286,9 @@ fn test_qobject_start_and_kill_timer() {
 #[test]
 fn test_delete_later_posts_one_deferred_delete_and_debounces() {
     let event_loop = EventLoop::new();
-    // SAFETY: the owner stays on this thread until the unregister below; nothing touches the
-    // widget while a callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+    // runs. The owner `widget` lives until the end of the test and is only used through `with`,
+    // which refuses during a callback; no event is delivered to the widget in this test.
     let widget = unsafe { register_owned_qobject(TestWidget::new("self_post")) };
     let wid = OwnedObject::object_id(&widget);
 
@@ -275,15 +305,21 @@ fn test_delete_later_posts_one_deferred_delete_and_debounces() {
     );
 
     ThreadContext::set_current_loop_level(0);
-    // SAFETY: test ends; no delivery happened.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback of the widget active.
+    // `widget` is an owner still in scope until the end of the test, so its memory stays valid,
+    // this is its registration thread, and nothing pumps events after the queue count above, so
+    // the queued `DeferredDelete` was never delivered.
     unsafe { unregister_qobject(wid) };
 }
 
 #[test]
 fn test_delete_later_inside_handler_scope_survives_nested_pump() {
     let event_loop = EventLoop::new();
-    // SAFETY: the owner stays on this thread until delivery unregisters the object; nothing
-    // touches the widget while a callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+    // runs. The owner `widget` lives until the end of the test and is only used through `with`,
+    // which refuses during a callback. The deferred delete delivered by `process_events` only
+    // unregisters a standalone owned object and leaves its memory to this owner
+    // (`destroy_deferred`), so the memory stays valid for every later use of the owner.
     let widget = unsafe { register_owned_qobject(TestWidget::new("nested_pump")) };
     let wid = OwnedObject::object_id(&widget);
 
@@ -375,9 +411,14 @@ fn test_qt6_reactive_property_bindings_and_cycle_prevention() {
 
 #[test]
 fn test_event_filter_cross_thread_and_cycle_prevention() {
-    // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
-    // object while a callback of it runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+    // runs. `obj_a` stays on this thread until the unregister below and is only used through
+    // `with`/`with_mut`, which refuse during a callback. `TestWidget::event` only bumps its own
+    // fields, and the widget is never moved to another thread in this test.
     let mut obj_a = unsafe { register_owned_qobject(TestWidget::new("obj_a")) };
+    // SAFETY: same contract as the registration above: `obj_b` stays on this thread until
+    // the unregister below, and is only used through `with`/`with_mut`, which refuse during a
+    // callback.
     let mut obj_b = unsafe { register_owned_qobject(TestWidget::new("obj_b")) };
 
     // 1. Qt allows installing self as event filter (qobject.cpp:2407-2423)
@@ -404,7 +445,10 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
         .with_mut(|b| ferrokit_core::object::install_event_filter(&mut b.data, a_id))
         .unwrap();
     assert!(cycle, "Mutual filter installation succeeds in Qt");
-    // SAFETY: neither registered object has an active callback.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback of the objects active.
+    // `obj_a` and `obj_b` are owners still in scope until the end of the test, so their memory
+    // stays valid; this is their registration thread, and nothing dispatched an event to them
+    // (installing a filter id only edits the filter list).
     unsafe {
         unregister_qobject(a_id);
         unregister_qobject(b_id);

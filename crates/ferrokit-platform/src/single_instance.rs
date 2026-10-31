@@ -86,6 +86,9 @@ impl Drop for SingleInstanceGuard {
                 extern "system" {
                     fn CloseHandle(hObject: isize) -> i32;
                 }
+                // SAFETY: `mutex_handle` is the non-zero handle returned by `CreateMutexW` in
+                // `acquire_windows`; the guard owns it exclusively (not copied elsewhere) and `drop`
+                // runs once, so it is closed exactly once.
                 unsafe {
                     CloseHandle(self.mutex_handle);
                 }
@@ -156,6 +159,11 @@ impl SingleInstance {
             .encode_wide()
             .collect();
 
+        // SAFETY: `mutex_name` and `wake_name` are NUL-terminated UTF-16 buffers (the `\0` is in the
+        // format string) alive for the whole block; the null security-attributes pointer is permitted
+        // by CreateMutexW. A non-zero `handle` is closed here only on the Secondary path, otherwise
+        // ownership moves into the returned guard (closed in `Drop`). `HWND_BROADCAST` is the
+        // documented broadcast target of PostMessageW.
         unsafe {
             let handle = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
             // Read the status before any other call can overwrite it.
@@ -226,6 +234,9 @@ impl SingleInstance {
         };
 
         // 2. Try acquiring non-blocking exclusive flock
+        // SAFETY: `file` is the lock file opened above and stays open until the end of this function
+        // (or is moved into the guard), so its raw fd is a valid open descriptor; `flock` only
+        // takes the integer fd and flags (LOCK_EX|LOCK_NB, values 2|4 as on Linux/BSD/macOS).
         let lock_acquired = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0;
 
         if !lock_acquired {

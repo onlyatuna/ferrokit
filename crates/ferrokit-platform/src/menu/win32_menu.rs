@@ -251,6 +251,15 @@ impl PlatformMenu for Win32Menu {
     }
 
     fn exec_popup(&self, screen_pos: Point) -> Option<u32> {
+        // SAFETY: `build_hmenu`'s contract is that Win32 menu calls run on this thread and that the
+        // returned `HMENU` is destroyed: it is wrapped in `OwnedMenu` immediately, which destroys
+        // it on drop (also on the early return). `self.hwnd` is the window handle given to
+        // `Win32Menu::new`; `SetForegroundWindow`, `TrackPopupMenu` and `PostMessageW` validate it
+        // and fail harmlessly for a null or stale one, and `TrackPopupMenu`'s window-owned-by-the-
+        // calling-thread requirement is the caller's, as menus are shown from the UI thread
+        // [inferred: thread of `exec_popup` callers not checked]. The `ptr::null()` `prcRect` is
+        // documented as ignored. `hmenu` lives past `TrackPopupMenu` and is dropped only after it
+        // returns.
         unsafe {
             let hmenu = match self.build_hmenu() {
                 Ok(m) => OwnedMenu::from_raw(m),
@@ -286,6 +295,11 @@ impl PlatformMenu for Win32Menu {
     }
 
     fn build_native_menu(&self) -> Result<isize, &'static str> {
+        // SAFETY: `build_hmenu` requires Win32 menu calls on this thread and that the returned
+        // `HMENU` be destroyed; `build_native_menu` hands that ownership to its caller as the raw
+        // `isize` (the trait contract: a parent wraps it in `OwnedMenu`, see `build_hmenu`'s submenu
+        // arm), and menu construction needs no window, only the UI thread the menu is used on
+        // [inferred: callers' thread not checked].
         unsafe { self.build_hmenu().map(|h| h as isize) }
     }
 
@@ -294,6 +308,9 @@ impl PlatformMenu for Win32Menu {
     }
 
     fn dismiss(&self) {
+        // SAFETY: `PostMessageW` takes the window handle by value and validates it, failing
+        // harmlessly for a null or stale `self.hwnd` (set in `Win32Menu::new`); `WM_NULL` with zero
+        // parameters carries no pointers.
         unsafe {
             PostMessageW(self.hwnd, WM_NULL, 0, 0);
         }
@@ -337,6 +354,8 @@ mod tests {
         assert!(triggered.load(Ordering::SeqCst));
 
         // Test native HMENU construction and destruction
+        // SAFETY: the test runs on one thread (`build_hmenu`'s thread requirement); `hmenu` is the
+        // popup just built, owned by the test, and is destroyed exactly once by `DestroyMenu`.
         unsafe {
             let hmenu = menu.build_hmenu().expect("failed to build HMENU");
             assert!(!hmenu.is_null());
@@ -354,6 +373,10 @@ mod tests {
         let mut menu = Win32Menu::new(ptr::null_mut());
         menu.add_submenu("Sub", Box::new(sub));
 
+        // SAFETY: the test runs on one thread (`build_hmenu`'s thread requirement); `hmenu` is the
+        // popup just built, destroyed exactly once by `DestroyMenu`; `GetSubMenu` and `IsMenu`
+        // validate their handles, so querying `sub_hmenu` after its destruction is defined
+        // (`IsMenu` returns 0, which the test asserts).
         unsafe {
             let hmenu = menu.build_hmenu().expect("failed to build HMENU");
             let sub_hmenu = GetSubMenu(hmenu, 0);
@@ -382,6 +405,8 @@ mod tests {
         menu.add_action(1, "Before");
         menu.add_submenu("Foreign", Box::new(CocoaMenu::new()));
         menu.add_action(2, "After");
+        // SAFETY: the test runs on one thread (`build_hmenu`'s thread requirement); `hmenu` is the
+        // popup just built, destroyed exactly once by `DestroyMenu` after `GetMenuItemCount`.
         unsafe {
             let hmenu = menu.build_hmenu().expect("failed to build HMENU");
             assert_eq!(GetMenuItemCount(hmenu), 2);

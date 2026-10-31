@@ -40,7 +40,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# Lints a member enables with `[lints] workspace = true`. ferrokit-core and ferrokit-platform
-# have not documented their unsafe blocks yet and do not opt in.
+# Lints every member enables with `[lints] workspace = true`. ferrokit-model is not a member
+# (it has its own manifest and `[lints]` table).
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

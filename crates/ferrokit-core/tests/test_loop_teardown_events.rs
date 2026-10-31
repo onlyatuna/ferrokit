@@ -72,8 +72,10 @@ fn victim_with_delete_later(
     panic_on_delete: bool,
 ) -> (OwnedObject<Victim>, ObjectId, Arc<AtomicBool>) {
     let saw_delete = Arc::new(AtomicBool::new(false));
-    // SAFETY: the owner stays on this thread; no callback of the victim runs until the loop's
-    // teardown, which does not overlap a use of the owner.
+    // SAFETY: the returned owner is handed to the test, which keeps it on this thread and touches
+    // it only with `with_mut` (here, before any loop runs) and `drop` (after teardown). The only
+    // callback is the `DeferredDelete` delivered inside `drop(el)`, a point where the test is not
+    // inside any use of the owner.
     let mut victim = unsafe {
         register_owned_qobject(Victim {
             data: ObjectData::new(ObjectId::next()),

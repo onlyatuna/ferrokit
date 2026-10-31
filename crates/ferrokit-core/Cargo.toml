@@ -26,3 +26,6 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Future dependencies: kqueue, core-foundation
+
+[lints]
+workspace = true

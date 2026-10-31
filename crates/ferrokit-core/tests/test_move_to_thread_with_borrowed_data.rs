@@ -18,7 +18,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Probe` holds nothing but its `ObjectData`.
+    // SAFETY: `Probe` holds an `ObjectData` and a `u32`: both `Send`, with no `Rc`, no `Cell`
+    // shared with a handle left behind, and no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -82,8 +83,10 @@ fn an_owned_object_moved_to_another_thread() {
         result_tx.send((thread_changes, thread)).unwrap();
     });
     let target = tid_rx.recv().unwrap();
-    // SAFETY: the owner stays on this thread; the only callback that runs is the one
-    // `move_to_thread_by_id` causes.
+    // SAFETY: the owner is a local on this thread; it is used only through `with`, which refuses
+    // during a callback (and refuses once the object lives on another thread, as asserted
+    // below). The only callback is the `ThreadChange` that `move_to_thread_by_id` delivers, during
+    // which the test touches nothing. The object is moved by the opt-in in `movable_data`.
     let probe = unsafe { register_owned_qobject(Probe::new()) };
     let id = probe.with(|p| p.data.id()).unwrap();
 
@@ -103,7 +106,9 @@ fn an_owned_object_moved_to_another_thread() {
     worker.join().unwrap();
     assert_eq!(thread_changes, Some(1), "ThreadChange reached the object");
     assert_eq!(thread, Some(target));
-    // SAFETY: no callback of the object runs.
+    // SAFETY: `probe` (the owner) is alive until the end of the test, so the memory stays valid;
+    // the worker was joined, so no callback of the object runs. The object's registration moved
+    // to the worker thread, which has exited, so no timers or callbacks remain for it.
     unsafe { unregister_qobject(id) };
 }
 
@@ -112,8 +117,10 @@ fn a_variable_registered_by_a_raw_pointer_moved_to_another_thread() {
     let target = another_thread();
     let mut probe = Probe::new();
     let id = probe.data.id();
-    // SAFETY: `probe` stays here, unmoved, until it is unregistered below; the pointer is taken
-    // with `&raw mut`.
+    // SAFETY: `probe` is a local, not moved or dropped before the unregistration below; the
+    // pointer comes from `&raw mut`. The only callback is the `ThreadChange` that
+    // `move_to_thread_by_id` delivers on this thread, during which the test holds no reference to
+    // `probe` (the reads of `probe.thread_changes` and `probe.data` come after it, between callbacks).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
 
     assert_eq!(
@@ -123,7 +130,10 @@ fn a_variable_registered_by_a_raw_pointer_moved_to_another_thread() {
 
     assert_eq!(probe.thread_changes, 1, "ThreadChange reached the object");
     assert_eq!(probe.data.thread_id(), target);
-    // SAFETY: no callback of the object runs.
+    // SAFETY: `probe` is a local that outlives this call and is unmoved; the `ThreadChange` callback
+    // finished inside `move_to_thread_by_id`, and the target thread has already exited
+    // (`another_thread` joins it), so no callback of `probe` can run and none is concurrent. No
+    // timers exist for unregistration to stop.
     unsafe { unregister_qobject(id) };
 }
 
@@ -158,7 +168,10 @@ fn move_to_thread_by_id_rejects_unknown_and_busy_objects() {
     );
 
     let result = Rc::new(Cell::new(None));
-    // SAFETY: the owner stays on this thread and is dropped after callbacks finish.
+    // SAFETY: the owner is a local on this thread; the test uses it only through `with` (which
+    // refuses during a callback) and the single callback is the `dispatch_to_object` below, during
+    // which the test touches nothing. The owner is dropped after that callback returned. The
+    // object has no thread-move opt-in (it holds an `Rc`), so it never leaves this thread.
     let probe = unsafe {
         register_owned_qobject(BusyProbe {
             data: ObjectData::new(ObjectId::next()),
@@ -174,6 +187,7 @@ fn move_to_thread_by_id_rejects_unknown_and_busy_objects() {
         Some(Err(MoveByIdError::Busy)),
         "moving an object whose callback currently holds its borrow must return Busy"
     );
-    // SAFETY: no callback runs.
+    // SAFETY: `probe` (the owner) is alive until the end of the test, so the memory stays valid;
+    // `dispatch_to_object` has returned, so the `BusyProbe` callback is no longer running.
     unsafe { unregister_qobject(id) };
 }

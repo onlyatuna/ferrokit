@@ -102,6 +102,10 @@ fn messages_for(messages: &Messages, id: TimerId) -> usize {
 /// Whether `window`, which the calling thread owns, has no timer `id`. Kills the timer if there is
 /// one, so call it last.
 fn no_timer_on(window: usize, id: TimerId) -> bool {
+    // SAFETY: `KillTimer` takes an `HWND` (an integer handle) and an integer id, and no pointer
+    // is dereferenced by us. A window the calling thread does not own, or a destroyed one, makes
+    // the call fail with 0 (Win32 docs) instead of faulting; the callers pass a window of an
+    // event loop that was alive when the ticks were recorded.
     unsafe { KillTimer(window as _, id.0 as usize) == 0 }
 }
 
@@ -138,7 +142,12 @@ fn register_probe() -> (ObjectId, Arc<Mutex<Vec<ThreadId>>>) {
         ticks: Arc::clone(&ticks),
     }));
     let id = probe.data.id();
-    // SAFETY: the probe is leaked, so it outlives its registration.
+    // SAFETY: the probe is leaked, so it is never freed or moved, which covers the lifetime
+    // requirement for the whole registration. `NonNull::from(probe)` consumes the only reference
+    // (`id` was read from it before, and `probe` is not used afterwards), so no later direct use
+    // invalidates the registry's pointer. The registration thread is this one, and the leaked
+    // probe is touched only by registry callbacks. Its `ObjectData` allows moves, and `Probe`
+    // holds only `Arc<Mutex<..>>`, so moving the registration to another thread is sound.
     unsafe { register_qobject_ptr(NonNull::from(probe)) };
     (id, ticks)
 }
@@ -239,7 +248,11 @@ fn a_moved_timer_leaves_the_source_window_and_ticks_only_on_the_target() {
     let (target, target_thread) = spawn_loop_thread(move |el, messages, me| {
         let ticked = pump_until(&el, || ticks_on(&target_ticks, me) >= 3);
         let window = window_of(&messages, timer);
-        // SAFETY: after the move this thread is the object's registration thread.
+        // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+        // callback active. The probe is leaked (`register_probe`), so its memory stays valid.
+        // `pump_until` returned only after ticks arrived on `me`, which happens only after the
+        // test body's `move_to_thread_by_id` moved the object here, so this is the registration
+        // thread. This code is not inside a callback, so none is active.
         unsafe { unregister_qobject(id) };
         let none_after_destroy = window.is_some_and(|w| no_timer_on(w, timer));
         let before = ticks_on(&target_ticks, me);
@@ -341,7 +354,10 @@ fn a_timer_moved_there_and_back_is_one_timer_that_ticks_on_the_owner_only() {
     let settled = ticks.lock().unwrap().len();
     pump_for(&el, Duration::from_millis(4 * INTERVAL));
     assert_eq!(ticks.lock().unwrap().len(), settled);
-    // SAFETY: the source is the object's registration thread again.
+    // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+    // callback active. The probe is leaked (`register_probe`), so its memory stays valid. The
+    // `pump_until` after the move back saw ticks on the source again, so the source is the
+    // registration thread. This code is not inside a callback, so none is active.
     unsafe { unregister_qobject(id) };
 }
 
@@ -375,7 +391,11 @@ fn an_object_moved_on_before_adoption_ticks_on_its_last_owner_only() {
     let (last, last_thread) = spawn_loop_thread(move |el, messages, me| {
         let ticked = pump_until(&el, || ticks_on(&last_ticks, me) >= 3);
         let window = window_of(&messages, timer);
-        // SAFETY: the object was moved here, so this is its registration thread.
+        // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+        // callback active. The probe is leaked (`register_probe`), so its memory stays valid.
+        // `pump_until` returned after ticks arrived on `me`, which only happens once the object
+        // was moved here (the `middle` thread's `move_to_thread_by_id(id, last, ..)`), so this
+        // is the registration thread. This code is not inside a callback, so none is active.
         unsafe { unregister_qobject(id) };
         let none_after_destroy = window.is_some_and(|w| no_timer_on(w, timer));
         (ticked, none_after_destroy)
@@ -412,7 +432,11 @@ fn an_object_destroyed_before_adoption_leaves_no_timer_behind() {
     let (go_tx, go_rx): (Sender<()>, Receiver<()>) = channel();
     let (target, target_thread) = spawn_loop_thread(move |el, messages, _me| {
         wait_for(&go_rx);
-        // SAFETY: the object was moved here, so this is its registration thread.
+        // SAFETY: `unregister_qobject` needs the object alive, on its registration thread, with no
+        // callback active. The probe is leaked (`register_probe`), so its memory stays valid. The
+        // `go` message is sent only after the test body's `move_to_thread_by_id(id, target, ..)`
+        // returned `Ok`, so this thread is the registration thread. This code is not inside a
+        // callback, so none is active.
         unsafe { unregister_qobject(id) };
         let stopped = kill_object_timer(timer);
         pump_for(&el, Duration::from_millis(6 * INTERVAL));

@@ -210,10 +210,11 @@ pub(crate) struct WindowDc {
 impl WindowDc {
     /// The client DC of `hwnd`.
     pub(crate) fn acquire(hwnd: HWND) -> Self {
-        // SAFETY: GetDC validates `hwnd` itself (null selects the screen); a null result is kept
-        // and tolerated by Drop.
+        // SAFETY: GetDC takes no pointers and validates `hwnd` itself (null selects the screen,
+        // per the GetDC documentation); a null result is stored and tolerated by `Drop`.
         Self {
             hwnd,
+            // SAFETY: see the comment above `Self {`; `hwnd` is the same value passed to GetDC.
             hdc: unsafe { GetDC(hwnd) },
         }
     }
@@ -536,7 +537,7 @@ mod tests {
     fn create_regions() -> Vec<OwnedRgn> {
         (0..BATCH)
             .map(|_| {
-                // SAFETY: plain GDI call, the result is checked by from_raw.
+                // SAFETY: CreateRectRgn takes only integers; a null result is rejected by `from_raw`.
                 OwnedRgn::from_raw(unsafe { CreateRectRgn(0, 0, 4, 4) }).expect("region")
             })
             .collect()
@@ -577,7 +578,7 @@ mod tests {
     }
 
     fn is_menu(menu: HMENU) -> bool {
-        // SAFETY: IsMenu only validates the handle value.
+        // SAFETY: IsMenu takes a handle value only and returns 0 for one that is not a menu.
         unsafe { IsMenu(menu) != 0 }
     }
 
@@ -645,12 +646,13 @@ mod tests {
     }
 
     fn selected_bitmap(dc: HDC) -> HGDIOBJ {
-        // SAFETY: GetCurrentObject only reads the DC's selection.
+        // SAFETY: `dc` is a live DC in the callers (a `DibTarget`'s memory DC); GetCurrentObject only reads its selection.
         unsafe { GetCurrentObject(dc, OBJ_BITMAP as u32) }
     }
 
     /// `GetObjectW` fails (0) for a handle that is not a live bitmap.
     fn bitmap_is_live(bitmap: HBITMAP) -> bool {
+        // SAFETY: BITMAP is a plain C struct of integers and a pointer, for which all-zero is valid.
         let mut info: BITMAP = unsafe { std::mem::zeroed() };
         // SAFETY: GetObjectW writes at most `size_of::<BITMAP>()` bytes into `info`.
         unsafe {
@@ -666,7 +668,7 @@ mod tests {
     #[test]
     fn dib_without_bits_is_rejected_and_the_bitmap_deleted() {
         let screen = WindowDc::screen();
-        // SAFETY: plain GDI call; the result is checked by from_raw.
+        // SAFETY: `screen` is a live screen DC owned above; a null result is rejected by `from_raw`.
         let raw = unsafe { CreateCompatibleBitmap(screen.as_raw(), 4, 4) };
         let bitmap = OwnedBitmap::from_raw(raw).expect("bitmap");
         assert!(bitmap_is_live(raw));

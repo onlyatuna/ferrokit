@@ -85,7 +85,10 @@ fn block_survives_unregister() {
 
     owner.block_signals(true);
     let id = owner.id;
-    // SAFETY: `owner` is a local that is not moved between register and unregister.
+    // SAFETY: `owner` is a local that is not moved or dropped between the registration and the
+    // unregistration in this block; the pointer comes from `&raw mut`, and no callback of it runs
+    // in between (nothing is emitted or dispatched), so the unregistration is not concurrent
+    // with one. The registration and unregistration are on this thread.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut owner));
         unregister_qobject(id);

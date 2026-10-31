@@ -73,7 +73,10 @@ fn probe_data(movable: bool) -> ObjectData {
 }
 
 fn probe(movable: bool) -> OwnedObject<Probe> {
-    // SAFETY: the owner stays on this thread and the tests use it only between callbacks.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it runs.
+    // The owner is used on this thread and only through `with`/`with_mut`, which refuse during a
+    // callback, and `Probe::event` only bumps its own counter. A movable probe may later be moved to
+    // a `Host` thread; its data opted in (`probe_data(true)`) and holds only counters.
     unsafe {
         register_owned_qobject(Probe {
             data: probe_data(movable),
@@ -95,8 +98,11 @@ impl RawRoot {
             data: probe_data(movable),
             thread_changes: 0,
         }));
-        // SAFETY: the allocation is owned by this `RawRoot` until `drop`, never moves, and is
-        // accessed only through `ptr`.
+        // SAFETY: `register_qobject_ptr` needs a live object at a fixed address until it is
+        // unregistered. `ptr` comes from `Box::into_raw`, so it is non-null, and the heap allocation
+        // is owned by this `RawRoot` until `drop`, never moves, and is accessed only through `ptr`
+        // (the registered pointer is the same raw pointer). This thread is the registration
+        // thread, and the owner uses the object only between callbacks via `read`/`with_data`.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(ptr as *mut dyn QObject));
             Self(NonNull::new_unchecked(ptr))
@@ -104,12 +110,20 @@ impl RawRoot {
     }
 
     fn read<R>(&self, f: impl FnOnce(&Probe) -> R) -> R {
-        // SAFETY: no callback of the object runs while `f` does, and no other reference is live.
+        // SAFETY: the allocation is live until `drop` (see `new`). The shared reference is made from
+        // the pointer that was registered, and ends with `f`, which at every call site only reads
+        // plain fields. Nothing runs a callback of the object meanwhile, and no `&mut` is live
+        // because `with_data`'s reference has ended.
         unsafe { f(&*self.0.as_ptr()) }
     }
 
     fn with_data<R>(&self, f: impl FnOnce(&mut ObjectData) -> R) -> R {
-        // SAFETY: as in `read`; the borrow ends with `f`.
+        // SAFETY: the allocation is live until `drop` (see `new`). The reference is made from the
+        // pointer that was registered, and ends with `f`. No callback of the object runs during
+        // `f`: its call sites here either only edit local `ObjectData` fields (`reparent`), or
+        // call `move_to_thread` where it refuses before sending any event (`NotMovable`,
+        // `Busy`; checked by the `changes() == 0` assertions after each), or the object is already
+        // unregistered (the test at `unregister_qobject(root_id)`).
         unsafe { f(&mut (*self.0.as_ptr()).data) }
     }
 
@@ -128,7 +142,12 @@ impl RawRoot {
 
 impl Drop for RawRoot {
     fn drop(&mut self) {
-        // SAFETY: the pointer came from `Box::into_raw` and is dropped once.
+        // SAFETY: `Box::from_raw` needs a pointer from `Box::into_raw` of the same type that is
+        // freed once: `new` made it, and `Drop::drop` runs once. The `Box` is derived from the
+        // same raw pointer that was registered and no reference into the object is live. Dropping
+        // it runs `ObjectData::drop`, which unregisters the object before the memory is freed, so
+        // the registry's pointer is not used for a callback after this point; no callback of the
+        // object is active in `drop` [inferred from `ObjectData::drop`; not run under Miri here].
         drop(unsafe { Box::from_raw(self.0.as_ptr()) });
     }
 }
@@ -443,7 +462,10 @@ fn an_object_moves_unless_it_refuses() {
         "ThreadChange must reach a moved object"
     );
     assert!(plain.with(|_| ()).is_none());
-    // SAFETY: no callback of the object runs.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs the object alive with no callback
+    // active. `plain` is an owner still in scope. After the move it belongs to `host`'s thread,
+    // which only waits for jobs, so no callback of it runs. Called from this thread: `Probe` has
+    // no timers for the registry to stop on the registration thread.
     unsafe { unregister_qobject(plain_id) };
 
     let pinned = probe(false);
@@ -479,7 +501,11 @@ fn a_subtree_without_a_refusing_object_still_moves_as_a_whole() {
     );
     assert_eq!(query_object_thread(root_id), Some(target));
     assert_eq!(query_object_thread(child_id), Some(target));
-    // SAFETY: no callback of the objects runs.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs the objects alive with no callback
+    // active. `root` and `child` are owners still in scope. After the move they belong to
+    // `host`'s thread, which only waits for jobs, so no callback of them runs. Called from this
+    // thread: `Probe` has no timers for the registry to stop on the registration thread, and
+    // movable `Probe`s promised (`probe_data`) to be usable on another thread.
     unsafe {
         unregister_qobject(child_id);
         unregister_qobject(root_id);
@@ -701,8 +727,10 @@ fn the_deprecated_move_refuses_when_a_timer_descendant_is_in_its_callback() {
     let mid_outcome: Rc<Cell<Option<Result<(), MoveError>>>> = Rc::new(Cell::new(None));
     let mid_outcome_in_cb = Rc::clone(&mid_outcome);
     let root2_in_cb = Rc::clone(&root2);
-    // SAFETY: `mid` stays on this thread and is only touched through `OwnedObject` after the
-    // callback returns.
+    // SAFETY: the owner `mid` is used on this thread only, and read with `with` only after
+    // `dispatch_to_object` returned. Its callback (`on_update`) touches `root2` and never `mid`.
+    // The closure holds `Rc`s and `ObjectData::new` does not opt in to thread moves, so the object
+    // stays on this thread.
     let mid = unsafe {
         register_owned_qobject(BorrowedMid {
             data: ObjectData::new(ObjectId::next()),
@@ -749,18 +777,26 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
         thread_changes: 0,
     });
     let child_id = child.data.id();
-    // SAFETY: `root` owns `child` at a stable heap address on this thread.
+    // SAFETY: `add_owned_child` needs the child to stay at its address, used on its registration
+    // thread, with no access during its callbacks. `child` moves into `root`'s owner and keeps
+    // its heap address. `root` is a `RawRoot` of this thread whose `with_data`/`read` references
+    // ended before this call, and only a copy of `child.data.id()` was taken from the box.
     unsafe { add_owned_child(root_id, child) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
     let grand = Box::new(Probe {
         data: probe_data(true),
         thread_changes: 0,
     });
     let grand_id = grand.data.id();
-    // SAFETY: `child` owns `grand` at a stable heap address on this thread.
+    // SAFETY: `add_owned_child` needs the child to stay at its address, used on its registration
+    // thread, with no access during its callbacks. `grand` moves into `child`'s owner and keeps
+    // its heap address. `child` is owned by `root`, so it stays allocated and registered here, and
+    // only a copy of `grand.data.id()` was taken from the box.
     unsafe { add_owned_child(child_id, grand) }.unwrap_or_else(|(e, _)| panic!("{e:?}"));
-    // SAFETY: no callback is running; unregister `root`, `child` and `grand` so the successful
-    // deprecated `move_to_thread(&mut root.data, ...)` does not also deliver `ThreadChange` to
-    // `root_id` through the registry while `&mut root.data` is held.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback active. All three
+    // objects stay allocated (`root` is a `RawRoot`, `child` and `grand` are held by the owners
+    // in `owned_children`), and this thread, their registration thread, runs no callback. They are
+    // unregistered so that the `move_to_thread(&mut root.data, ..)` below, which holds a `&mut`
+    // across its events (rule 6), has no registered object to deliver `ThreadChange` to.
     unsafe {
         unregister_qobject(grand_id);
         unregister_qobject(child_id);
@@ -793,10 +829,16 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
         thread_changes: 0,
     });
     let pinned_child_id = pinned_child.data.id();
-    // SAFETY: `root_pinned` owns `pinned_child` on this thread.
+    // SAFETY: `add_owned_child` needs the child to stay at its address, used on its registration
+    // thread, with no access during its callbacks. The `Box` moves into the parent's owner and
+    // keeps its heap address. The parent `root_pinned` is a `RawRoot` of this thread, and its
+    // `with_data` reference ended before this call. Only a copy of `pinned_child.data.id()` was
+    // taken from the box.
     unsafe { add_owned_child(root_pinned_id, pinned_child) }
         .unwrap_or_else(|(e, _)| panic!("{e:?}"));
-    // SAFETY: no callback runs on `pinned_child`.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback active. `pinned_child` is
+    // owned by `root_pinned`'s `owned_children`, so its memory stays valid until that parent is
+    // dropped at the end of the test. This thread is its registration thread and no callback runs.
     unsafe { unregister_qobject(pinned_child_id) };
     assert!(with_object(pinned_child_id, |_| ()).is_none());
 
@@ -822,12 +864,19 @@ fn the_deprecated_move_keeps_unregistered_owned_descendants_working() {
         thread_changes: 0,
     });
     let mid_child_id = mid_child.data.id();
-    // SAFETY: `root_with_timer` owns `mid_child` on this thread.
+    // SAFETY: `add_owned_child` needs the child to stay at its address, used on its registration
+    // thread, with no access during its callbacks. The `Box` moves into the parent's owner and
+    // keeps its heap address. The parent `root_with_timer` is a `RawRoot` of this thread, and its
+    // `with_data` reference ended before this call. No reference to the child was taken before
+    // the call except `child.data.id()`, whose value was copied.
     unsafe { add_owned_child(root_with_timer_id, mid_child) }
         .unwrap_or_else(|(e, _)| panic!("{e:?}"));
     let timer = Timer::new();
     set_parent_by_id(timer.object_id(), Some(mid_child_id)).unwrap();
-    // SAFETY: no callback runs on `mid_child`.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs no callback active. `mid_child` is
+    // owned by `root_with_timer`'s `owned_children`, so its memory stays valid until that parent is
+    // dropped at the end of the test. This thread is its registration thread and nothing here is
+    // running a callback.
     unsafe { unregister_qobject(mid_child_id) };
     assert!(with_object(mid_child_id, |_| ()).is_none());
 
@@ -897,7 +946,9 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         thread_changes: 0,
     };
     set_parent(&mut holder_raw.data, Some(mid_id)).unwrap();
-    // SAFETY: `holder` stays on this thread and is only used between callbacks.
+    // SAFETY: the owner `holder` is used on this thread only and no callback of it runs while it is
+    // read: `Probe::event` only bumps its own counter and no event is dispatched to it here.
+    // `holder_raw` is moved in, so no other reference to the object remains.
     let holder = unsafe { register_owned_qobject(holder_raw) };
     let holder_id = OwnedObject::object_id(&holder);
 
@@ -957,7 +1008,10 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         })),
     };
     set_parent(&mut busy_child_raw.data, Some(mid_busy_id)).unwrap();
-    // SAFETY: `busy_child` stays on this thread and is only touched after its callback returns.
+    // SAFETY: the owner `busy_child` is used on this thread only, and read with `with` only after
+    // `dispatch_to_object` returned. Its callback touches other objects (`root_busy`) and never
+    // `busy_child`. The closure holds `Rc`s and the data does not opt in to thread moves, so it
+    // stays on this thread.
     let busy_child = unsafe { register_owned_qobject(busy_child_raw) };
     let busy_child_id = OwnedObject::object_id(&busy_child);
     let (timer_busy, _ticks_busy) = counting_timer(5);
@@ -991,7 +1045,10 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     let dead_by_ref_cb = Rc::clone(&dead_by_ref);
     let timer_thread_cb = Rc::clone(&timer_thread_in_cb);
     let root_dead_cb = Rc::clone(&root_dead);
-    // SAFETY: `notifier` stays on this thread until the end of the block.
+    // SAFETY: the owner `notifier` is used on this thread only, and only to read its id. Its one
+    // callback (`on_removed`) runs inside the `drop_in_place` below and touches neither `notifier`
+    // nor its owner. The closure holds `Rc`s and `ObjectData::new` does not opt in to thread moves,
+    // so the object never leaves this thread.
     let notifier = unsafe {
         register_owned_qobject(OnChildRemoved {
             data: ObjectData::new(ObjectId::next()),
@@ -1009,20 +1066,28 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         thread_changes: 0,
     });
     let dying_mid_ptr: *mut Probe = (&raw mut dying_mid).cast::<Probe>();
-    // SAFETY: `dying_mid` stays in `ManuallyDrop` on this stack frame and is not registered yet;
-    // every access goes through `dying_mid_ptr`.
+    // SAFETY: `dying_mid_ptr` comes from `&raw mut dying_mid`, a live, initialised local, so the
+    // read is of valid memory. Nothing else accesses it: it is not registered yet and no
+    // reference to it exists.
     let dying_mid_id = unsafe { (*dying_mid_ptr).data.id() };
     // List `dying_mid_id` in `root_dead.data.children` while leaving `dying_mid.data.parent` clear
     // before registration; then attach `dying_mid` to `notifier` so dropping `dying_mid` in place
     // fires `notifier`'s `ChildRemoved` while `dying_mid`'s record still exists in the registry
     // with `liveness == false` and `children == [timer]`.
+    // SAFETY: `dying_mid_ptr` points at the live local `dying_mid` (see the comment above), and
+    // the `&mut ObjectData` taken through it ends within each `reparent` call. `reparent` edits
+    // only local `ObjectData` fields: it touches no registry, runs no callback and sends no event,
+    // and `dying_mid` is not registered yet; `root_dead` is registered but not in a callback.
     unsafe {
         root_dead.with_data(|d| reparent(&mut (*dying_mid_ptr).data, None, Some(d)));
         reparent(&mut (*dying_mid_ptr).data, None, None);
     }
-    // SAFETY: `dying_mid` stays in place at `dying_mid_ptr` in `ManuallyDrop` until after
-    // `ObjectData::drop` finishes `unregister_qobject(dying_mid_id)` inside `drop_in_place` below,
-    // and every owner access goes through `dying_mid_ptr`.
+    // SAFETY: the registry keeps a copy of `dying_mid_ptr`, which comes from `&raw mut dying_mid`,
+    // so no reference was made that a later use of `dying_mid` could invalidate. The local is
+    // `ManuallyDrop`, is not moved, and stays in place until the `drop_in_place` below, which
+    // unregisters it. The earlier `&mut (*dying_mid_ptr).data` borrows ended before this call and
+    // were taken before any registration, and every later access goes through `dying_mid_ptr`.
+    // This thread is the registration thread.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(dying_mid_ptr as *mut dyn QObject));
     }
@@ -1032,9 +1097,14 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         with_object(dying_mid_id, |obj| obj.object_data().can_move_to_thread()),
         Some(true)
     );
-    // SAFETY: `dying_mid_ptr` is the registered pointer, no callback on `dying_mid` is running,
-    // `ObjectData::drop` unregisters `dying_mid_id` before returning while the object remains at
-    // `dying_mid_ptr`, and `ManuallyDrop` prevents a second drop when `dying_mid` leaves scope.
+    // SAFETY: `drop_in_place` needs a valid, aligned `Probe` that is dropped exactly once.
+    // `dying_mid_ptr` points at `dying_mid`, a local that is initialised and unmoved; the
+    // `ManuallyDrop` wrapper keeps the end of scope from dropping it again. It is the pointer that
+    // was registered, and `ObjectData::drop` unregisters `dying_mid_id` before the storage is
+    // released (the storage is this stack slot, so it outlives the call). The registry reaches the
+    // object during the nested `ChildRemoved` callback only through the record, because `drop`
+    // first sets `liveness` false and `memory_destroyed` [inferred from `ObjectData::drop`, which
+    // sets both before it sends events]. No callback of `dying_mid` itself runs.
     unsafe {
         std::ptr::drop_in_place(dying_mid_ptr);
     }
@@ -1058,7 +1128,10 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
         thread_changes: 0,
     };
     set_parent(&mut leaf_ok_raw.data, Some(mid_ok_id)).unwrap();
-    // SAFETY: `leaf_ok` stays on this thread and is unregistered below.
+    // SAFETY: the owner `leaf_ok` is used on this thread only until the move to `host_ok` below,
+    // and afterwards only through `with` (which refuses off the registration thread) and
+    // `unregister_qobject`. `Probe::event` touches only its own counter, so nothing accesses the
+    // object while one of its callbacks runs. The thread move is covered by the `probe_data(true)` opt-in.
     let leaf_ok = unsafe { register_owned_qobject(leaf_ok_raw) };
     let leaf_ok_id = OwnedObject::object_id(&leaf_ok);
 
@@ -1070,7 +1143,13 @@ fn an_intermediate_node_without_a_live_record_still_exposes_its_registered_desce
     );
     assert_eq!(query_object_thread(root_ok_id), Some(host_ok.tid));
     assert_eq!(query_object_thread(leaf_ok_id), Some(host_ok.tid));
-    // SAFETY: no callback of `root_ok` or `leaf_ok` runs.
+    // SAFETY: `unregister_qobject` is memory-neutral and needs the objects alive with no callback
+    // active. `root_ok` is a `RawRoot` and `leaf_ok` an owner, both still in scope, so the memory
+    // stays valid and unmoved. After the move above they belong to `host_ok`'s thread, but that
+    // thread only waits for jobs (`Host::spawn`) and no job runs, so no callback of either is
+    // active. Called from this thread rather than the registration thread: `Probe` has no timers
+    // for the registry to stop there, and the movable `Probe` promised (`probe_data`) to be usable
+    // from another thread.
     unsafe {
         unregister_qobject(leaf_ok_id);
         unregister_qobject(root_ok_id);
