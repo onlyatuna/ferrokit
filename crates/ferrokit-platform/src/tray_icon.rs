@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+#[cfg(windows)]
+use crate::win32_handles::{create_dib_section, IconHandle, MemDc, OwnedBitmap, OwnedMenu};
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 #[cfg(windows)]
@@ -14,10 +16,7 @@ use std::sync::{Mutex, Once};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(windows)]
-use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-};
+use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
@@ -27,11 +26,11 @@ use windows_sys::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DestroyWindow, GetCursorPos, RegisterClassExW, RegisterWindowMessageW,
-    SetForegroundWindow, TrackPopupMenuEx, HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED,
-    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
+    AppendMenuW, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
+    GetCursorPos, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenuEx,
+    HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_CLOSE, WM_CONTEXTMENU,
+    WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
 };
 
 /// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
@@ -138,36 +137,35 @@ impl Menu {
     /// # Safety
     /// The caller must destroy this handle with `DestroyMenu` when appropriate to prevent resource leaks.
     pub unsafe fn create_native_hmenu(&self) -> Result<HMENU, &'static str> {
-        let hmenu = CreatePopupMenu();
-        if hmenu.is_null() {
-            return Err("CreatePopupMenu failed");
-        }
+        let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
 
         for item in &self.items {
             if let Some(sub) = &item.submenu {
-                let sub_hmenu = match sub.create_native_hmenu() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        DestroyMenu(hmenu);
-                        return Err(e);
-                    }
-                };
+                // A failed build leaves nothing to free here; `hmenu` drops on the way out.
+                let sub_hmenu = OwnedMenu::from_raw(sub.create_native_hmenu()?);
                 let wide_text: Vec<u16> =
                     item.text.encode_utf16().chain(std::iter::once(0)).collect();
                 let mut sub_flags = MF_POPUP | MF_STRING;
                 if !item.enabled {
                     sub_flags |= MF_GRAYED | MF_DISABLED;
                 }
-                if AppendMenuW(hmenu, sub_flags, sub_hmenu as usize, wide_text.as_ptr()) == 0 {
-                    DestroyMenu(sub_hmenu);
-                    DestroyMenu(hmenu);
+                // On failure both guards destroy their menu; on success the parent owns the
+                // submenu.
+                if AppendMenuW(
+                    hmenu.as_raw(),
+                    sub_flags,
+                    sub_hmenu.as_raw() as usize,
+                    wide_text.as_ptr(),
+                ) == 0
+                {
                     return Err("AppendMenuW failed to add submenu");
                 }
+                let _ = sub_hmenu.into_raw();
                 continue;
             }
 
             if item.is_separator {
-                AppendMenuW(hmenu, MF_SEPARATOR, 0, ptr::null());
+                AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
                 continue;
             }
 
@@ -185,13 +183,12 @@ impl Menu {
 
             let wide_text: Vec<u16> = item.text.encode_utf16().chain(std::iter::once(0)).collect();
 
-            if AppendMenuW(hmenu, flags, item.id as usize, wide_text.as_ptr()) == 0 {
-                DestroyMenu(hmenu);
+            if AppendMenuW(hmenu.as_raw(), flags, item.id as usize, wide_text.as_ptr()) == 0 {
                 return Err("AppendMenuW failed");
             }
         }
 
-        Ok(hmenu)
+        Ok(hmenu.into_raw())
     }
 
     #[cfg(windows)]
@@ -205,12 +202,12 @@ impl Menu {
         screen_y: i32,
     ) -> Result<Option<u32>, &'static str> {
         unsafe {
-            let hmenu = self.create_native_hmenu()?;
+            let hmenu = OwnedMenu::from_raw(self.create_native_hmenu()?);
 
             SetForegroundWindow(hwnd);
 
             let selected = TrackPopupMenuEx(
-                hmenu,
+                hmenu.as_raw(),
                 TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
                 screen_x,
                 screen_y,
@@ -218,7 +215,7 @@ impl Menu {
                 ptr::null(),
             );
 
-            DestroyMenu(hmenu);
+            drop(hmenu);
 
             if selected > 0 {
                 Ok(Some(selected as u32))
@@ -425,39 +422,19 @@ fn ensure_tray_window_class_registered() {
     });
 }
 
-/// An icon for a balloon message and whether this code owns it. `LoadIcon` hands out shared
-/// handles that belong to the system and must not be destroyed; an icon made by
-/// `SHDefExtractIcon` is ours to free.
-#[cfg(windows)]
-struct BalloonIcon {
-    hicon: HICON,
-    owned: bool,
-}
-
-#[cfg(windows)]
-impl BalloonIcon {
-    /// Frees the icon if it is owned; a shared system icon is left alone.
-    fn release(self) {
-        if self.owned {
-            unsafe { DestroyIcon(self.hicon) };
-        }
-    }
-}
-
 #[cfg(windows)]
 pub struct TrayIcon {
     hwnd: HWND,
-    /// Cells: `TaskbarCreated` replaces the icon from the window procedure, which only has
-    /// shared access (see `tray_window_proc_inner`).
-    hicon: std::cell::Cell<HICON>,
-    /// Whether this icon created `hicon` (and so destroys it); an `HICON` passed to `new` or
-    /// `set_icon` stays the caller's.
-    owns_icon: std::cell::Cell<bool>,
-    /// The icon `hicon` was made from, when the tray was given an [`Icon`]
+    /// The icon shown and whether the tray owns it (an owned one is destroyed when replaced or
+    /// with the tray; an `HICON` passed to `new` or `set_icon` stays the caller's).
+    /// `RefCell`: `TaskbarCreated` replaces the icon from the window procedure, which only has
+    /// shared access (see `tray_window_proc_inner`); borrows are never held across a call out.
+    icon: std::cell::RefCell<IconHandle>,
+    /// The icon `icon` was made from, when the tray was given an [`Icon`]
     /// (`QWindowsSystemTrayIcon::m_icon`): `TaskbarCreated` builds the `HICON` again from it.
     source: Option<ferrokit_gui::image::Icon>,
     /// The icon of the last balloon message, kept as `QWindowsSystemTrayIcon::m_hMessageIcon`.
-    balloon_icon: Option<BalloonIcon>,
+    balloon_icon: Option<IconHandle>,
     tooltip: String,
     visible: bool,
     taskbar_created_msg: u32,
@@ -478,6 +455,12 @@ pub struct TrayIcon {
 #[cfg(windows)]
 impl TrayIcon {
     pub fn new(tooltip: impl Into<String>, hicon: HICON) -> Result<Box<Self>, &'static str> {
+        Self::with_icon(tooltip, IconHandle::shared(hicon))
+    }
+
+    /// A tray icon that shows `icon` and destroys it with the tray if it is owned; an early
+    /// failure drops `icon` and so destroys an owned one.
+    fn with_icon(tooltip: impl Into<String>, icon: IconHandle) -> Result<Box<Self>, &'static str> {
         ensure_tray_window_class_registered();
 
         let taskbar_created_msg = unsafe {
@@ -522,8 +505,7 @@ impl TrayIcon {
 
         let mut tray = Box::new(Self {
             hwnd,
-            hicon: std::cell::Cell::new(hicon),
-            owns_icon: std::cell::Cell::new(false),
+            icon: std::cell::RefCell::new(icon),
             source: None,
             balloon_icon: None,
             tooltip: tooltip.into(),
@@ -576,7 +558,7 @@ impl TrayIcon {
         if msg != NIM_DELETE {
             nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY_CALLBACK;
-            nid.hIcon = self.hicon.get();
+            nid.hIcon = self.icon.borrow().as_raw();
 
             let wide_tip: Vec<u16> = self.tooltip.encode_utf16().collect();
             let copy_len = wide_tip.len().min(127);
@@ -641,28 +623,27 @@ impl TrayIcon {
         Ok(())
     }
 
-    /// Shows `hicon`, which stays owned by the caller (it is not destroyed with the tray icon).
+    /// Shows `hicon`, which stays owned by the caller (it is not destroyed with the tray icon),
+    /// unless it is the handle the tray already owns: that one stays the tray's.
     pub fn set_icon(&mut self, hicon: HICON) -> Result<(), &'static str> {
-        self.replace_icon(hicon, false)
+        self.replace_icon(IconHandle::shared(hicon))
     }
 
-    fn replace_icon(&mut self, hicon: HICON, owned: bool) -> Result<(), &'static str> {
-        let old = self.hicon.replace(hicon);
-        let old_owned = self.owns_icon.replace(owned);
+    fn replace_icon(&mut self, new: IconHandle) -> Result<(), &'static str> {
+        let old = self.icon.borrow_mut().replace(new);
         self.source = None;
         let result = if self.visible {
             self.send_notify_icon_message(NIM_MODIFY)
         } else {
             Ok(())
         };
-        if old_owned && old != hicon {
-            Self::destroy_hicon(old);
-        }
+        // An owned previous icon is destroyed only now that the shell shows the new one.
+        drop(old);
         result
     }
 
     pub fn icon(&self) -> HICON {
-        self.hicon.get()
+        self.icon.borrow().as_raw()
     }
 
     /// A tray icon showing `icon` at the size of a small icon (`QSystemTrayIcon(const QIcon &)`).
@@ -671,24 +652,17 @@ impl TrayIcon {
         tooltip: impl Into<String>,
         icon: &ferrokit_gui::image::Icon,
     ) -> Result<Box<Self>, &'static str> {
-        let hicon = Self::hicon_for_small_icon(icon)?;
-        match Self::new(tooltip, hicon) {
-            Ok(mut tray) => {
-                tray.owns_icon.set(true);
-                tray.source = Some(icon.clone());
-                Ok(tray)
-            }
-            Err(e) => {
-                Self::destroy_hicon(hicon);
-                Err(e)
-            }
-        }
+        let hicon = IconHandle::owned(Self::hicon_for_small_icon(icon)?);
+        // If the tray cannot be created the guard destroys the icon.
+        let mut tray = Self::with_icon(tooltip, hicon)?;
+        tray.source = Some(icon.clone());
+        Ok(tray)
     }
 
     /// Shows `icon` (`QSystemTrayIcon::setIcon`) and keeps it for `TaskbarCreated`.
     pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
         let hicon = Self::hicon_for_small_icon(icon)?;
-        let result = self.replace_icon(hicon, true);
+        let result = self.replace_icon(IconHandle::owned(hicon));
         // Kept even when the shell refused the change: the `HICON` is shown from now on.
         self.source = Some(icon.clone());
         result
@@ -719,12 +693,10 @@ impl TrayIcon {
         let Ok(new) = Self::hicon_for_small_icon(icon) else {
             return;
         };
-        let old = self.hicon.replace(new);
-        let old_owned = self.owns_icon.replace(true);
-        if old_owned && old != new {
-            // The shell has no icon of ours any more (it was re-created); the old one is ours.
-            Self::destroy_hicon(old);
-        }
+        // The shell has no icon of ours any more (it was re-created); an old owned icon is ours
+        // and is destroyed when `old` drops.
+        let old = self.icon.borrow_mut().replace(IconHandle::owned(new));
+        drop(old);
     }
 
     pub fn is_visible(&self) -> bool {
@@ -816,21 +788,19 @@ impl TrayIcon {
             title,
             msg,
             flags,
-            balloon.as_ref().map_or(ptr::null_mut(), |b| b.hicon),
+            balloon.as_ref().map_or(ptr::null_mut(), IconHandle::as_raw),
             duration_ms,
         );
         self.set_balloon_icon(balloon);
         result
     }
 
-    /// Replaces the icon of the last balloon message and frees the old one. As
+    /// Replaces the icon of the last balloon message; the old one is destroyed if owned. As
     /// `QWindowsSystemTrayIcon::m_hMessageIcon` the icon is kept after `NIM_MODIFY` returns (the
     /// `hBalloonIcon` documentation does not say the shell is done with the handle by then) and
     /// freed when the next message is shown, when the icon is hidden and when it is dropped.
-    fn set_balloon_icon(&mut self, icon: Option<BalloonIcon>) {
-        if let Some(old) = std::mem::replace(&mut self.balloon_icon, icon) {
-            old.release();
-        }
+    fn set_balloon_icon(&mut self, icon: Option<IconHandle>) {
+        self.balloon_icon = icon;
     }
 
     /// The pixel size of the balloon icon made from a stock icon: `QWindowsTheme::
@@ -855,7 +825,7 @@ impl TrayIcon {
     /// `QWindowsTheme::standardPixmap` tries the shell's stock icon, then (for the types that
     /// have one, not these) a shell32 resource, then `LoadIcon(IDI_INFORMATION / IDI_WARNING /
     /// IDI_ERROR)`, and gives a null pixmap, hence `NIIF_INFO`, when all fail.
-    fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<BalloonIcon>) {
+    fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<IconHandle>) {
         use crate::platform_tray::TrayMessageIcon;
         use windows_sys::Win32::UI::Shell::{SIID_ERROR, SIID_INFO, SIID_WARNING};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -871,13 +841,8 @@ impl TrayIcon {
             TrayMessageIcon::Warning => (SIID_WARNING, IDI_WARNING),
             TrayMessageIcon::Critical => (SIID_ERROR, IDI_ERROR),
         };
-        let owned_stock = Self::stock_icon(siid).map(|hicon| BalloonIcon { hicon, owned: true });
-        let shared = || {
-            Self::system_icon(idi).map(|hicon| BalloonIcon {
-                hicon,
-                owned: false,
-            })
-        };
+        let owned_stock = Self::stock_icon(siid).map(IconHandle::owned);
+        let shared = || Self::system_icon(idi).map(IconHandle::shared);
         match owned_stock.or_else(shared) {
             Some(balloon) => (NIIF_USER | NIIF_LARGE_ICON, Some(balloon)),
             None => (NIIF_INFO, None),
@@ -949,18 +914,15 @@ impl TrayIcon {
         const NIIF_LARGE_ICON: u32 = 0x00000020;
         // The previous message's icon is freed before this one is made.
         self.set_balloon_icon(None);
-        let hballoon = Self::hicon_for_balloon(icon)?;
+        let balloon = IconHandle::owned(Self::hicon_for_balloon(icon)?);
         let result = self.notify_balloon(
             title,
             msg,
             NIIF_USER | NIIF_LARGE_ICON,
-            hballoon,
+            balloon.as_raw(),
             duration_ms,
         );
-        self.set_balloon_icon(Some(BalloonIcon {
-            hicon: hballoon,
-            owned: true,
-        }));
+        self.set_balloon_icon(Some(balloon));
         result
     }
 
@@ -1070,44 +1032,26 @@ impl TrayIcon {
             return Err("invalid pixmap size");
         }
 
+        let src_data = pixmap.data();
+        let pixel_count = (w as usize) * (h as usize);
+        if src_data.len() < pixel_count * 4 {
+            return Err("pixmap data shorter than its size");
+        }
+
+        let Some(hdc) = MemDc::create_compatible(ptr::null_mut()) else {
+            return Err("CreateCompatibleDC failed");
+        };
+        let created = create_dib_section(hdc.as_raw(), w as u32, h as u32);
+        // The bitmap is never selected into the DC, so the DC is not needed any more.
+        drop(hdc);
+        // The guards delete both bitmaps on every path out; `CreateIconIndirect` copies them.
+        let Some((hbm_color, bits_ptr)) = created else {
+            return Err("CreateDIBSection failed");
+        };
+
+        // SAFETY: the DIB section holds `w * h * 4` bytes (`pixel_count * 4`), and `src_data` was
+        // checked above to hold at least as many.
         unsafe {
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = w;
-            bmi.bmiHeader.biHeight = -h;
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-
-            let src_data = pixmap.data();
-            let pixel_count = (w as usize) * (h as usize);
-            if src_data.len() < pixel_count * 4 {
-                return Err("pixmap data shorter than its size");
-            }
-
-            let hdc = CreateCompatibleDC(ptr::null_mut());
-            if hdc.is_null() {
-                return Err("CreateCompatibleDC failed");
-            }
-            let mut bits_ptr: *mut u8 = ptr::null_mut();
-            let hbm_color = CreateDIBSection(
-                hdc,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits_ptr as *mut _ as *mut *mut std::ffi::c_void,
-                ptr::null_mut(),
-                0,
-            );
-
-            DeleteDC(hdc);
-
-            if hbm_color.is_null() || bits_ptr.is_null() {
-                if !hbm_color.is_null() {
-                    DeleteObject(hbm_color);
-                }
-                return Err("CreateDIBSection failed");
-            }
-
             for i in 0..pixel_count {
                 let r = src_data[i * 4];
                 let g = src_data[i * 4 + 1];
@@ -1119,32 +1063,30 @@ impl TrayIcon {
                 *bits_ptr.add(i * 4 + 2) = r;
                 *bits_ptr.add(i * 4 + 3) = a;
             }
-
-            let hbm_mask = CreateBitmap(w, h, 1, 1, ptr::null());
-            if hbm_mask.is_null() {
-                DeleteObject(hbm_color);
-                return Err("CreateBitmap failed");
-            }
-
-            let icon_info = ICONINFO {
-                fIcon: 1,
-                xHotspot: 0,
-                yHotspot: 0,
-                hbmMask: hbm_mask,
-                hbmColor: hbm_color,
-            };
-
-            let hicon = CreateIconIndirect(&icon_info);
-
-            DeleteObject(hbm_color);
-            DeleteObject(hbm_mask);
-
-            if hicon.is_null() {
-                return Err("CreateIconIndirect failed");
-            }
-
-            Ok(hicon)
         }
+
+        // SAFETY: a null bits pointer asks GDI for an uninitialised monochrome bitmap.
+        let Some(hbm_mask) =
+            OwnedBitmap::from_raw(unsafe { CreateBitmap(w, h, 1, 1, ptr::null()) })
+        else {
+            return Err("CreateBitmap failed");
+        };
+
+        let icon_info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: hbm_mask.as_raw(),
+            hbmColor: hbm_color.as_raw(),
+        };
+
+        // SAFETY: `icon_info` points at live bitmaps for the duration of the call.
+        let hicon = unsafe { CreateIconIndirect(&icon_info) };
+        if hicon.is_null() {
+            return Err("CreateIconIndirect failed");
+        }
+
+        Ok(hicon)
     }
 
     // `DestroyIcon` validates the handle and fails for one that is not an icon. Destroying an
@@ -1255,9 +1197,6 @@ impl Drop for TrayIcon {
             unsafe {
                 DestroyWindow(self.hwnd);
             }
-        }
-        if self.owns_icon.get() {
-            Self::destroy_hicon(self.hicon.get());
         }
     }
 }
@@ -1387,6 +1326,7 @@ mod tests {
     use super::*;
     use crate::menu::PlatformMenu;
     use ferrokit_gui::tiny_skia::Color;
+    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
     #[test]
     fn test_menu_item_constructors() {
         let act = MenuItem::action(1, "Open Main Window");
@@ -1428,12 +1368,20 @@ mod tests {
         assert_eq!(menu.items[3].id, 99);
 
         // Test native Win32 HMENU creation and safe destruction
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyMenu, GetSubMenu, IsMenu};
+        let mut inner = Menu::new();
+        inner.add_action(12, "Inner");
+        menu.add_submenu("More", inner);
         unsafe {
             let hmenu = menu
                 .create_native_hmenu()
                 .expect("failed to create native menu");
             assert!(!hmenu.is_null());
+            // The parent owns the appended submenu and the builder must not have destroyed it.
+            let sub = GetSubMenu(hmenu, 4);
+            assert_ne!(IsMenu(sub), 0);
             assert_ne!(DestroyMenu(hmenu), 0);
+            assert_eq!(IsMenu(sub), 0);
         }
     }
 
@@ -1458,6 +1406,47 @@ mod tests {
             );
         }
         drop(tray);
+    }
+
+    /// `set_icon` with the handle the tray already shows must not change who owns it: an icon
+    /// the tray made stays the tray's and is destroyed with it.
+    #[test]
+    fn setting_the_icon_the_tray_already_owns_keeps_it_owned() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
+        let alive = |icon: HICON| {
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
+            if ok {
+                unsafe {
+                    DeleteObject(info.hbmColor);
+                    DeleteObject(info.hbmMask);
+                }
+            }
+            ok
+        };
+        let pixmap = Pixmap::new(16, 16).unwrap();
+        let mut tray = TrayIcon::from_icon(
+            "same handle",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
+        .expect("tray");
+        let hicon = tray.icon();
+        assert!(alive(hicon));
+
+        tray.set_icon(hicon).expect("set the same icon");
+        assert_eq!(tray.icon(), hicon);
+        assert!(alive(hicon), "the tray must not destroy the icon it shows");
+
+        drop(tray);
+        let leaked = alive(hicon);
+        if leaked {
+            // Do not leak the handle out of the failing test.
+            TrayIcon::destroy_hicon(hicon);
+        }
+        assert!(
+            !leaked,
+            "the tray still owns its icon and destroys it on drop"
+        );
     }
 
     #[test]
@@ -1503,7 +1492,7 @@ mod tests {
             .unwrap();
         let first = tray.balloon_icon.as_ref().expect("kept after the message");
         assert!(
-            first.owned && alive(first.hicon),
+            first.is_owned() && alive(first.as_raw()),
             "still alive after the call"
         );
         // A small image is scaled up to the large icon size, which the shell accepts.
@@ -1518,8 +1507,8 @@ mod tests {
             .balloon_icon
             .as_ref()
             .expect("replaced by the next message");
-        assert!(second.owned && alive(second.hicon));
-        let handle = second.hicon;
+        assert!(second.is_owned() && alive(second.as_raw()));
+        let handle = second.as_raw();
         // A message without an icon frees the previous one and keeps none.
         tray.show_message(" ", "None", TrayMessageIcon::NoIcon, 1000)
             .unwrap();
@@ -1527,7 +1516,7 @@ mod tests {
         assert!(!alive(handle), "freed by the next message");
         tray.show_message(" ", "Info", TrayMessageIcon::Information, 1000)
             .unwrap();
-        let handle = tray.balloon_icon.as_ref().expect("kept").hicon;
+        let handle = tray.balloon_icon.as_ref().expect("kept").as_raw();
         tray.hide().unwrap();
         assert!(tray.balloon_icon.is_none());
         assert!(!alive(handle), "freed on hide");
@@ -1587,12 +1576,8 @@ mod tests {
                 "square: {}",
                 bm.bmWidth
             );
-            // A shared system icon is not destroyed: it still works after `release`.
-            BalloonIcon {
-                hicon: icon,
-                owned: false,
-            }
-            .release();
+            // A shared system icon is not destroyed: it still works after its guard drops.
+            drop(IconHandle::shared(icon));
             let mut again: ICONINFO = unsafe { std::mem::zeroed() };
             assert_ne!(
                 unsafe { GetIconInfo(icon, &mut again) },
@@ -1625,7 +1610,7 @@ mod tests {
             let (flags, balloon) = TrayIcon::balloon_style(kind);
             assert_eq!(flags, NIIF_USER_LARGE, "{kind:?}");
             let balloon = balloon.expect("the shell has a stock icon");
-            let icon = balloon.hicon;
+            let icon = balloon.as_raw();
             assert!(!icon.is_null());
             // Extracted at 256 px, the largest size the balloon asks the style icon for.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
@@ -1655,10 +1640,10 @@ mod tests {
                 )
             };
             assert_eq!(bm.bmWidth, expected as i32, "{kind:?}");
-            // An owned icon is destroyed by `release`.
-            let (hicon, owned) = (balloon.hicon, balloon.owned);
+            // An owned icon is destroyed when its guard drops.
+            let (hicon, owned) = (balloon.as_raw(), balloon.is_owned());
             assert!(owned, "{kind:?}: the extracted stock icon is ours");
-            balloon.release();
+            drop(balloon);
             let mut gone: ICONINFO = unsafe { std::mem::zeroed() };
             assert_eq!(
                 unsafe {

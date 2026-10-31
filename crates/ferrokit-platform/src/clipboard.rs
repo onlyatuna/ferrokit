@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use std::collections::BTreeMap;
 #[cfg(windows)]
-use std::ptr;
+use crate::win32_handles::{ClipboardSession, GlobalMem};
+use std::collections::BTreeMap;
 use std::sync::RwLock;
 #[cfg(windows)]
-use std::time::Duration;
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::GlobalFree;
-#[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-    GetClipboardFormatNameW, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Memory::{
-    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
-};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 #[cfg(windows)]
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 
@@ -133,35 +127,6 @@ pub struct Win32Clipboard;
 
 #[cfg(windows)]
 impl Win32Clipboard {
-    fn open_with_retry() -> bool {
-        for _ in 0..3 {
-            if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        false
-    }
-
-    fn alloc_clipboard_bytes(bytes: &[u8]) -> Result<*mut std::ffi::c_void, &'static str> {
-        let hmem = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) };
-        if hmem.is_null() {
-            return Err("GlobalAlloc failed");
-        }
-        let ptr = unsafe { GlobalLock(hmem) as *mut u8 };
-        if ptr.is_null() {
-            unsafe { GlobalFree(hmem) };
-            return Err("GlobalLock failed");
-        }
-        unsafe {
-            if !bytes.is_empty() {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
-            }
-            GlobalUnlock(hmem);
-        }
-        Ok(hmem)
-    }
-
     fn register_mime_format(mime_type: &str) -> Result<u32, &'static str> {
         let name: Vec<u16> = mime_type.encode_utf16().chain(std::iter::once(0)).collect();
         let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
@@ -242,27 +207,16 @@ impl Win32Clipboard {
             prepared.push((format, payload));
         }
 
-        if !Self::open_with_retry() {
-            return Err("Failed to open clipboard");
-        }
+        let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
         unsafe { EmptyClipboard() };
         for (format, payload) in prepared {
-            let hmem = match Self::alloc_clipboard_bytes(&payload) {
-                Ok(hmem) => hmem,
-                Err(error) => {
-                    unsafe { CloseClipboard() };
-                    return Err(error);
-                }
-            };
-            if unsafe { SetClipboardData(format, hmem) }.is_null() {
-                unsafe {
-                    GlobalFree(hmem);
-                    CloseClipboard();
-                }
+            let hmem = GlobalMem::alloc_copy(&payload)?;
+            if unsafe { SetClipboardData(format, hmem.as_raw()) }.is_null() {
                 return Err("SetClipboardData failed");
             }
+            // The clipboard owns the block now.
+            let _ = hmem.into_raw();
         }
-        unsafe { CloseClipboard() };
         Ok(())
     }
     /// Whether `format` is backed by an `HGLOBAL`. GDI-handle formats (bitmaps, palettes,
@@ -289,9 +243,7 @@ impl Win32Clipboard {
     }
 
     pub fn mime_data_static() -> Result<MimeData, &'static str> {
-        if !Self::open_with_retry() {
-            return Err("Failed to open clipboard");
-        }
+        let session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
         let mut result = MimeData::new();
         let mut format = 0;
         loop {
@@ -332,61 +284,39 @@ impl Win32Clipboard {
                 }
             }
         }
-        unsafe { CloseClipboard() };
+        drop(session);
         Ok(result)
     }
     pub fn set_text_static(text: &str) -> Result<(), &'static str> {
-        let utf16: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-        let bytes_len = utf16.len() * std::mem::size_of::<u16>();
+        let bytes: Vec<u8> = text
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_ne_bytes)
+            .collect();
+        let hmem = GlobalMem::alloc_copy(&bytes)?;
 
-        let hmem = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes_len) };
-        if hmem.is_null() {
-            return Err("GlobalAlloc failed");
+        let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
+
+        unsafe { EmptyClipboard() };
+        if unsafe { SetClipboardData(CF_UNICODETEXT as u32, hmem.as_raw()) }.is_null() {
+            return Err("SetClipboardData failed");
         }
-
-        unsafe {
-            let ptr = GlobalLock(hmem) as *mut u16;
-            if ptr.is_null() {
-                GlobalFree(hmem);
-                return Err("GlobalLock failed");
-            }
-            std::ptr::copy_nonoverlapping(utf16.as_ptr(), ptr, utf16.len());
-            GlobalUnlock(hmem);
-        }
-
-        if !Self::open_with_retry() {
-            unsafe { GlobalFree(hmem) };
-            return Err("Failed to open clipboard");
-        }
-
-        unsafe {
-            EmptyClipboard();
-            if SetClipboardData(CF_UNICODETEXT as u32, hmem).is_null() {
-                GlobalFree(hmem);
-                CloseClipboard();
-                return Err("SetClipboardData failed");
-            }
-            CloseClipboard();
-        }
-
+        // The clipboard owns the block now.
+        let _ = hmem.into_raw();
         Ok(())
     }
 
     pub fn text_static() -> Result<String, &'static str> {
-        if !Self::open_with_retry() {
-            return Err("Failed to open clipboard");
-        }
+        let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
 
         unsafe {
             let hmem = GetClipboardData(CF_UNICODETEXT as u32);
             if hmem.is_null() {
-                CloseClipboard();
                 return Ok(String::new());
             }
 
             let ptr = GlobalLock(hmem) as *const u16;
             if ptr.is_null() {
-                CloseClipboard();
                 return Err("GlobalLock failed to read");
             }
 
@@ -401,19 +331,13 @@ impl Win32Clipboard {
             let s = String::from_utf16_lossy(slice);
 
             GlobalUnlock(hmem);
-            CloseClipboard();
             Ok(s)
         }
     }
 
     pub fn clear_static() -> Result<(), &'static str> {
-        if !Self::open_with_retry() {
-            return Err("Failed to open clipboard");
-        }
-        unsafe {
-            EmptyClipboard();
-            CloseClipboard();
-        }
+        let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
+        unsafe { EmptyClipboard() };
         Ok(())
     }
 }
@@ -456,6 +380,8 @@ impl Win32Clipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::ptr;
 
     #[cfg(windows)]
     #[test]
@@ -485,6 +411,7 @@ mod tests {
     #[test]
     fn test_win32_clipboard_skips_gdi_formats_and_bounds_unterminated_text() {
         use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
+        use windows_sys::Win32::System::Memory::{GlobalAlloc, GMEM_MOVEABLE};
         // Single test: both cases share the process-wide clipboard.
         let hbm = unsafe { CreateBitmap(1, 1, 1, 32, ptr::null()) };
         assert!(!hbm.is_null());
@@ -496,12 +423,12 @@ mod tests {
             let p = GlobalLock(hmem) as *mut u16;
             ptr::copy_nonoverlapping(units.as_ptr(), p, 8);
             GlobalUnlock(hmem);
-            assert!(Win32Clipboard::open_with_retry());
+            let session = ClipboardSession::open_with_retry().expect("open clipboard");
             EmptyClipboard();
             assert!(!SetClipboardData(CF_UNICODETEXT as u32, hmem).is_null());
             // CF_BITMAP (2) is a GDI handle, not an HGLOBAL.
             assert!(!SetClipboardData(2, hbm as _).is_null());
-            CloseClipboard();
+            drop(session);
         }
         let data = Win32Clipboard::mime_data_static().expect("GDI format must not fail the read");
         // Windows may force a terminator into the last unit, so 7 or 8 units

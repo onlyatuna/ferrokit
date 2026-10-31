@@ -32,9 +32,9 @@ pub trait SurfacePresenter {
 #[cfg(windows)]
 pub mod win32 {
     use super::*;
-    use std::ptr;
+    use crate::win32_handles::{create_dib_section, DibTarget, MemDc, WindowDc};
     use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::Graphics::Gdi::{BitBlt, SRCCOPY};
     /// Presenter for standard Win32 windows using GDI `GetDC` + `BitBlt`.
     ///
     /// Mirrors Qt's `QWindowsBackingStore::flush` non-layered branch:
@@ -43,10 +43,8 @@ pub mod win32 {
         hwnd: HWND,
         width: u32,
         height: u32,
-        mem_dc: HDC,
-        hbitmap: HBITMAP,
-        old_hbitmap: HGDIOBJ,
-        bits: *mut u8,
+        /// The memory DC with the DIB section selected into it.
+        target: DibTarget,
     }
 
     // Deliberately neither `Send` nor `Sync`: owns GDI handles and a DIB-section pointer that
@@ -54,45 +52,25 @@ pub mod win32 {
 
     impl Win32DcPresenter {
         pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self, &'static str> {
-            unsafe {
-                // Only needed to make `mem_dc` compatible; never kept (see `ScreenDc`).
-                let screen = crate::surface::win32::ScreenDc::acquire();
-                if screen.0.is_null() {
-                    return Err("GetDC failed on screen");
-                }
-                let mem_dc = CreateCompatibleDC(screen.0);
-                if mem_dc.is_null() {
-                    return Err("CreateCompatibleDC failed");
-                }
-
-                let mut bmi: BITMAPINFO = std::mem::zeroed();
-                bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-                bmi.bmiHeader.biWidth = width.max(1) as i32;
-                bmi.bmiHeader.biHeight = -(height.max(1) as i32); // Top-down
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-                bmi.bmiHeader.biCompression = BI_RGB;
-
-                let mut bits: *mut core::ffi::c_void = ptr::null_mut();
-                let hbitmap =
-                    CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
-                if hbitmap.is_null() || bits.is_null() {
-                    DeleteDC(mem_dc);
-                    return Err("CreateDIBSection failed");
-                }
-
-                let old_hbitmap = SelectObject(mem_dc, hbitmap);
-
-                Ok(Self {
-                    hwnd,
-                    width: width.max(1),
-                    height: height.max(1),
-                    mem_dc,
-                    hbitmap,
-                    old_hbitmap,
-                    bits: bits as *mut u8,
-                })
+            // Only needed to make the memory DC compatible; never kept (see `WindowDc`).
+            let screen = WindowDc::screen();
+            if screen.as_raw().is_null() {
+                return Err("GetDC failed on screen");
             }
+            let Some(mem_dc) = MemDc::create_compatible(screen.as_raw()) else {
+                return Err("CreateCompatibleDC failed");
+            };
+            // A failed DIB drops `mem_dc` (DeleteDC) on the way out.
+            let Some((bitmap, bits)) = create_dib_section(mem_dc.as_raw(), width, height) else {
+                return Err("CreateDIBSection failed");
+            };
+
+            Ok(Self {
+                hwnd,
+                width: width.max(1),
+                height: height.max(1),
+                target: DibTarget::select(mem_dc, bitmap, bits),
+            })
         }
 
         pub fn width(&self) -> u32 {
@@ -101,22 +79,6 @@ pub mod win32 {
 
         pub fn height(&self) -> u32 {
             self.height
-        }
-    }
-
-    impl Drop for Win32DcPresenter {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.mem_dc.is_null() && !self.old_hbitmap.is_null() {
-                    SelectObject(self.mem_dc, self.old_hbitmap);
-                }
-                if !self.hbitmap.is_null() {
-                    DeleteObject(self.hbitmap);
-                }
-                if !self.mem_dc.is_null() {
-                    DeleteDC(self.mem_dc);
-                }
-            }
         }
     }
 
@@ -129,37 +91,15 @@ pub mod win32 {
                 return Ok(());
             }
 
-            unsafe {
-                let mut bmi: BITMAPINFO = std::mem::zeroed();
-                bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-                bmi.bmiHeader.biWidth = width as i32;
-                bmi.bmiHeader.biHeight = -(height as i32);
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-                bmi.bmiHeader.biCompression = BI_RGB;
-
-                let mut bits: *mut core::ffi::c_void = ptr::null_mut();
-                let new_bitmap = CreateDIBSection(
-                    self.mem_dc,
-                    &bmi,
-                    DIB_RGB_COLORS,
-                    &mut bits,
-                    ptr::null_mut(),
-                    0,
-                );
-                if new_bitmap.is_null() || bits.is_null() {
-                    return Err("Failed to resize DIBSection for Win32DcPresenter");
-                }
-
-                SelectObject(self.mem_dc, self.old_hbitmap);
-                DeleteObject(self.hbitmap);
-
-                self.hbitmap = new_bitmap;
-                self.old_hbitmap = SelectObject(self.mem_dc, new_bitmap);
-                self.bits = bits as *mut u8;
-                self.width = width;
-                self.height = height;
-            }
+            // Restores the previous object, deletes the old DIB, then selects the new one; a
+            // failed allocation leaves everything as it was.
+            let Some((new_bitmap, bits)) = create_dib_section(self.target.dc(), width, height)
+            else {
+                return Err("Failed to resize DIBSection for Win32DcPresenter");
+            };
+            self.target.replace_deselecting(new_bitmap, bits);
+            self.width = width;
+            self.height = height;
             Ok(())
         }
 
@@ -191,8 +131,10 @@ pub mod win32 {
                     let copy_bytes = dirty_w * 4;
                     let src_row =
                         std::slice::from_raw_parts(src_data.as_ptr().add(row_offset), copy_bytes);
-                    let dst_row =
-                        std::slice::from_raw_parts_mut(self.bits.add(row_offset), copy_bytes);
+                    let dst_row = std::slice::from_raw_parts_mut(
+                        self.target.bits().add(row_offset),
+                        copy_bytes,
+                    );
 
                     let (src_chunks, _) = src_row.as_chunks::<4>();
                     let (dst_chunks, _) = dst_row.as_chunks_mut::<4>();
@@ -204,7 +146,8 @@ pub mod win32 {
                     }
                 }
 
-                let dc = GetDC(self.hwnd);
+                let window_dc = WindowDc::acquire(self.hwnd);
+                let dc = window_dc.as_raw();
                 if dc.is_null() {
                     return Err("GetDC failed on hwnd");
                 }
@@ -218,7 +161,7 @@ pub mod win32 {
                             clipped.y,
                             clipped.width,
                             clipped.height,
-                            self.mem_dc,
+                            self.target.dc(),
                             clipped.x,
                             clipped.y,
                             SRCCOPY,
@@ -226,7 +169,7 @@ pub mod win32 {
                     }
                 }
 
-                ReleaseDC(self.hwnd, dc);
+                drop(window_dc);
             }
 
             Ok(())
