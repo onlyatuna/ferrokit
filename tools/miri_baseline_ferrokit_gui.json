@@ -675,6 +675,8 @@
     "lib::text::layout::tests::cursor_positions_of_a_combining_sequence_stay_on_grapheme_boundaries::TB": "unsupported",
     "test_text_system::test_cursor_sticky_x_with_wrapping::SB": "unsupported",
     "test_text_system::test_cursor_sticky_x_with_wrapping::TB": "unsupported",
+    "test_text_layout_oracle::the_oracle_file_is_the_generated_one::SB": "pass",
+    "test_text_layout_oracle::the_oracle_file_is_the_generated_one::TB": "pass",
     "test_text_layout_oracle::synthetic_font_cursor_x_matches_qt::SB": "unsupported",
     "test_text_layout_oracle::synthetic_font_cursor_x_matches_qt::TB": "unsupported",
     "test_text_layout_oracle::synthetic_font_line_breaks_match_qt::SB": "unsupported",

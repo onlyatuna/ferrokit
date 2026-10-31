@@ -17,7 +17,8 @@ type MousePressCallback = std::rc::Rc<
 >;
 type MouseMoveCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Point)>>>>;
 type ResizeCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Size)>>>>;
-type WindowEventCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&mut Event)>>>>;
+type WindowEventFn = Box<dyn Fn(&mut Event)>;
+type WindowEventCallback = std::rc::Rc<std::cell::RefCell<Option<WindowEventFn>>>;
 
 /// The state `Window::show/hide/close` and the native close request share, so that both paths run
 /// the same Qt sequence: `QWidgetPrivate::handleClose`, `show_helper`, `hide_helper`
@@ -1332,6 +1333,14 @@ impl Window {
     ///   handler ignores falls back to the press handler, as `QWidget::mouseDoubleClickEvent` does.
     pub fn set_window_event_handler<F: Fn(&mut Event) + 'static>(&mut self, handler: F) {
         *self.core.event_cb.borrow_mut() = Some(Box::new(handler));
+    }
+    /// Replaces the window event handler and returns the previous one (crate-internal: the tool
+    /// tip hides its window with no handler while it recovers from a handler's panic).
+    pub(crate) fn replace_window_event_handler(
+        &self,
+        handler: Option<WindowEventFn>,
+    ) -> Option<WindowEventFn> {
+        std::mem::replace(&mut *self.core.event_cb.borrow_mut(), handler)
     }
     pub fn set_stays_on_top(&mut self, enabled: bool) {
         self.platform_window.borrow_mut().set_stays_on_top(enabled);
