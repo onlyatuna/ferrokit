@@ -11,12 +11,31 @@
 use ferrokit_gui::text::font::{Font, SharedFontData};
 use ferrokit_widgets::{Label, Widget};
 
+/// Qt's DirectWrite engine (any device pixel ratio but 1) gives this font 12.5 + 3.5 = 16 px
+/// lines; at a ratio of 1 its GDI-style rounding makes them 17 px with a leading of -1, which
+/// spaces the lines 16 apart (measured), so whole lines of the one-line height only hold under
+/// DirectWrite. The ratio is process-wide: this sets it for one measurement and puts it back.
+struct DirectWriteRatio(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+static RATIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl DirectWriteRatio {
+    fn set() -> Self {
+        let guard = RATIO.lock().unwrap_or_else(|e| e.into_inner());
+        ferrokit_gui::text::font_database::set_application_device_pixel_ratio(1.25);
+        Self(guard)
+    }
+}
+
+impl Drop for DirectWriteRatio {
+    fn drop(&mut self) {
+        ferrokit_gui::text::font_database::set_application_device_pixel_ratio(1.0);
+    }
+}
+
 /// (width, number of lines of the font's line height).
 fn hint(text: &str, word_wrap: bool) -> (i32, i32) {
-    // Qt's DirectWrite engine (any device pixel ratio but 1) gives this font 12.5 + 3.5 = 16 px
-    // lines; at a ratio of 1 its GDI-style rounding makes them 17 px with a leading of -1, which
-    // spaces the lines 16 apart (measured), so whole lines of the one-line height only hold here.
-    ferrokit_gui::text::font_database::set_application_device_pixel_ratio(1.25);
+    let _ratio = DirectWriteRatio::set();
     let mut l = Label::new(text);
     l.set_font(
         Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(

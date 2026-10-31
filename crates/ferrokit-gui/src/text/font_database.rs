@@ -157,9 +157,13 @@ pub fn set_application_device_pixel_ratio(dpr: f32) {
     }
 }
 
-/// Whether Qt lays text out with its DirectWrite font engine rather than its GDI one
-/// (`useDirectWrite` in `qwindowsfontdatabase.cpp`, for the default hinting preference):
-/// any application device pixel ratio other than 1 (`qFuzzyCompare`).
+/// Whether text is laid out as Qt's DirectWrite font engine lays it out rather than as its GDI
+/// one: any application device pixel ratio other than 1 (`qFuzzyCompare`). In the source,
+/// `useDirectWrite` (qwindowsfontdatabase.cpp:42-61) picks DirectWrite for a ratio other than 1 with
+/// the default hinting preference; that at a ratio of 1 the engine is still DirectWrite, with full
+/// hinting, was observed (PySide6 6.11.2 under `QT_SCALE_FACTOR=0.8` on a 125 % display), not read
+/// from the source. A real GDI engine (`windows:nodirectwrite`) differs again, e.g. in
+/// `averageCharWidth` (`tmAveCharWidth`), and is not modelled.
 pub fn uses_directwrite_engine() -> bool {
     let dpr = f64::from(application_device_pixel_ratio());
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()
@@ -167,11 +171,17 @@ pub fn uses_directwrite_engine() -> bool {
 
 /// `QFontEngine::supportsSubPixelPositions` of the engine Qt lays text out with, which decides
 /// whether its line metrics stay fractional or are rounded to whole pixels
-/// ([`LineMetrics::rounded`]): DirectWrite positions glyphs at sub-pixel offsets unless it hints
-/// fully (the default at a device pixel ratio of 1, `determineHinting`, qwindowsfontenginedirectwrite.cpp:167-183;
-/// measured: 12.5 + 3.5 at 1.25, 13 + 4 with a leading of -1 at 1), CoreText always does
-/// (qfontengine_coretext_p.h:60). FreeType's depends on the hint style fontconfig reports, which is
-/// not modelled: it follows the DirectWrite rule here, as the advances do. [inferred]
+/// ([`LineMetrics::rounded`]). Windows: DirectWrite positions glyphs at sub-pixel offsets unless
+/// it hints fully, which is what a ratio of 1 gives (`determineHinting`,
+/// qwindowsfontenginedirectwrite.cpp:167-183; measured: 12.5 + 3.5 at 1.25, 13 + 4 with a leading
+/// of -1 at 1). macOS: CoreText always does (qfontengine_coretext_p.h:60).
+///
+/// **Known deviation (Linux and other FreeType platforms):** Qt's FreeType engine is sub-pixel
+/// only for the light or no hint style (`default_hint_style`, qfontengine_ft_p.h:170-179), which
+/// comes from fontconfig and the platform theme; ferrokit has no such input, so FreeType follows
+/// the DirectWrite rule here (fractional metrics at a ratio other than 1, as the advances do). A
+/// Linux desktop with `hintslight` (the common default) is therefore rounded at a ratio of 1
+/// where Qt is not. [inferred]
 pub fn engine_has_subpixel_positions() -> bool {
     cfg!(target_os = "macos") || uses_directwrite_engine()
 }

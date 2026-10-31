@@ -762,6 +762,8 @@
     "test_font_line_metrics_oracle::the_average_char_width_of_the_other_engines_is_the_os2_average::TB": "unsupported",
     "test_font_line_metrics_oracle::the_outline_backend_reads_line_metrics_and_average_width_from_the_tables::SB": "pass",
     "test_font_line_metrics_oracle::the_outline_backend_reads_line_metrics_and_average_width_from_the_tables::TB": "pass",
+    "test_font_line_metrics_oracle::absurd_pixel_sizes_do_not_overflow::SB": "pass",
+    "test_font_line_metrics_oracle::absurd_pixel_sizes_do_not_overflow::TB": "pass",
     "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::SB": "unsupported",
     "test_painter_advanced_features::drawing_text_far_to_the_right_of_the_target_does_not_overflow::TB": "unsupported",
     "test_text_layout_oracle::a_negative_wrap_width_lays_out_one_grapheme_per_line::SB": "unsupported",

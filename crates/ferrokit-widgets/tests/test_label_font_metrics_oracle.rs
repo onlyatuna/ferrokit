@@ -149,6 +149,36 @@ fn labels_of_an_in_memory_font_are_sized_as_qt_sizes_them() {
     set_application_device_pixel_ratio(1.0);
 }
 
+/// `sizeForWidth` starts with `if (minimumWidth() > 0) w = qMax(w, minimumWidth())`
+/// (qlabel.cpp:536-537), so a wrapping label with a minimum width has no width of its own choice:
+/// its hints wrap at that width. Measured (oracle font, 16 px, `"word " * 40`, `setMinimumWidth`):
+/// 0: 310x80 (minimum 31x16), 50: 50x640 (50x16), 200: 200x128 (200x16), 400: 400x64 (400x16);
+/// a label that does not wrap is 1395x16 whatever the minimum.
+#[test]
+fn a_minimum_width_makes_a_wrapping_label_wrap_at_it() {
+    let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
+    set_application_device_pixel_ratio(1.25);
+    for (minimum, wrap, expected) in [
+        (0, true, (310, 80, 31, 16)),
+        (50, true, (50, 640, 50, 16)),
+        (200, true, (200, 128, 200, 16)),
+        (400, true, (400, 64, 400, 16)),
+        (200, false, (1395, 16, 1395, 16)),
+    ] {
+        let mut label = Label::new("word ".repeat(40));
+        label.set_font(oracle(16.0));
+        label.set_word_wrap(wrap);
+        label.set_minimum_size(ferrokit_gui::geometry::primitives::Size::new(minimum, 0));
+        let (hint, least) = (label.size_hint(), label.minimum_size_hint());
+        assert_eq!(
+            (hint.width, hint.height, least.width, least.height),
+            expected,
+            "minimum {minimum}, wrap {wrap}"
+        );
+    }
+    set_application_device_pixel_ratio(1.0);
+}
+
 /// `QLabel("x")` then `setText("")` is a text label with no text: no width and one line's height
 /// (12 and 16 px here), where a label that never had text is `averageCharWidth() x lineSpacing()`
 /// (6x12 and 8x17). `QLabel("")` is the second: its `setText("")` returns early.
@@ -419,14 +449,30 @@ const INSTALLED: [Installed; 10] = [
     ),
 ];
 
+/// Whether `C:/Windows/Fonts/<file>` is the file the numbers were measured with (same length):
+/// another version of a font has other tables and other advances.
+#[cfg(windows)]
+fn is_the_measured_file(file: &str) -> bool {
+    let length: u64 = match file {
+        "arial.ttf" => 1_045_720,
+        "segoeui.ttf" => 959_752,
+        "consola.ttf" => 453_088,
+        "times.ttf" => 1_190_736,
+        "msjh.ttc" => 21_404_172,
+        _ => return false,
+    };
+    std::fs::metadata(std::path::Path::new("C:/Windows/Fonts").join(file))
+        .is_ok_and(|m| m.len() == length)
+}
+
 #[cfg(windows)]
 #[test]
 fn labels_of_installed_fonts_are_sized_as_qt_sizes_them() {
     let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
     set_application_device_pixel_ratio(1.25);
     for (family, file, px, ints, average, expected) in INSTALLED {
-        if !std::path::Path::new("C:/Windows/Fonts").join(file).exists() {
-            continue;
+        if !is_the_measured_file(file) {
+            continue; // not installed, or not the version measured
         }
         let font = Font::new(family, px);
         let m = FontMetrics::from_font(&font);

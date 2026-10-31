@@ -405,6 +405,18 @@ impl Label {
     /// `max-height` is not a hint.
     fn size_for_width(&self, width: Option<i32>) -> Size {
         let style = self.resolved_style();
+        // `if (q->minimumWidth() > 0) w = qMax(w, q->minimumWidth())` (qlabel.cpp:536-537): with a
+        // minimum width a size hint is a wrap at that width, never the label's own choice (the
+        // tryWidth of `w == -1`), and the width the narrowest-word probe asks for is the minimum.
+        let minimum_width = self
+            .minimum_size()
+            .width
+            .max(self.widget_base().min_size.get().width);
+        let width = if minimum_width > 0 {
+            Some(width.map_or(minimum_width, |w| w.max(minimum_width)))
+        } else {
+            width
+        };
         let font = self.styled_font(&style);
         let metrics = FontMetrics::from_font(&font);
         let (box_l, box_r, box_t, box_b) = Self::box_insets(&style, self.margin as f32);
@@ -413,7 +425,10 @@ impl Label {
         let hextra = box_l + box_r + h_indent;
         let vextra = box_t + box_b + v_indent;
         let (text_w, text_h) = self.text_size(&font, &metrics, hextra, width);
-        let (min_w, min_h) = style.min_box_size();
+        // `expandedTo(q->minimumSize())`: the style sheet's `min-*` and the explicit minimum size.
+        let (style_w, style_h) = style.min_box_size();
+        let explicit = self.widget_base().min_size.get();
+        let (min_w, min_h) = (style_w.max(explicit.width), style_h.max(explicit.height));
         Size::new(
             (text_w.ceil() as i32 + hextra.round() as i32).max(min_w),
             (text_h.ceil() as i32 + vextra.round() as i32).max(min_h),

@@ -59,8 +59,11 @@ impl OutlineFace {
     /// `QFixed::fromReal(value * px / unitsPerEm)`, truncated to 1/64 px. Read straight from the
     /// table bytes, as Qt does, so the result does not depend on a platform shaper.
     ///
-    /// A font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) keeps its platform's values in Qt;
-    /// those are the `hhea` ones here (CoreText's and FreeType's, the DirectWrite ones differ).
+    /// **Known deviation:** a font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) keeps its
+    /// platform engine's own values in Qt, neither read from the tables nor rounded
+    /// (qfontengine.cpp:432-445: DirectWrite's `DWRITE_FONT_METRICS`, FreeType's scaled size
+    /// metrics, CoreText's). Those are not available here, so such a font only skips the OS/2
+    /// override and is read from `hhea`, and is rounded like any other. [inferred]
     /// macOS has no override at all: CoreText reports the `hhea` values (`CTFontGetAscent`,
     /// `CTFontGetDescent`, `CTFontGetLeading`, qfontengine_coretext.mm:401-411) unless the
     /// application asks for `QFont::PreferTypoLineMetrics`.
@@ -143,20 +146,28 @@ impl OutlineFace {
     /// truncated to 26.6 (`abs` for fonts like Lucida Grande that store a negative width).
     fn os2_average_char_width(&self, px: f32) -> Option<f32> {
         let raw = self.face.raw_face();
-        let avg = raw
+        let upem = i64::from(self.face.units_per_em());
+        let os2 = raw
             .table(Tag::from_bytes(b"OS/2"))
-            .filter(|t| t.len() >= 10)
-            .map_or(0, |t| be_i16(t, 2));
+            .filter(|t| t.len() >= 10);
+        if cfg!(target_os = "macos") {
+            // CoreText takes the table's width as it is, zero included (`os2Table.size() >= 10`,
+            // qfontengine_coretext.mm:244-248); only a font without the table asks the glyph.
+            let Some(os2) = os2 else {
+                return self.x_advance(px);
+            };
+            let width = f64::from(be_i16(os2, 2).unsigned_abs());
+            return Some(((width * f64::from(px) / upem as f64 * 64.0).trunc() / 64.0) as f32);
+        }
+        // FreeType: a zero width falls back to the glyph (`os2->xAvgCharWidth`, ft.cpp:2169).
+        let avg = os2.map_or(0, |t| be_i16(t, 2));
         if avg == 0 {
             return self.x_advance(px);
         }
-        let upem = i64::from(self.face.units_per_em());
-        if cfg!(target_os = "macos") {
-            let width = f64::from(avg.unsigned_abs());
-            return Some(((width * f64::from(px) / upem as f64 * 64.0).trunc() / 64.0) as f32);
-        }
-        // `QFixed(i) / QFixed(j)`: ((i * 64) << 6 + (j * 64) / 2) / (j * 64), in 1/64 units.
-        let ppem = f64::from(px).round() as i64;
+        // `QFixed(i) / QFixed(j)`: ((i * 64) << 6 + (j * 64) / 2) / (j * 64), in 1/64 units. A
+        // pixel size no strike has (FreeType's ppem is 16 bits) is clamped, so the products stay
+        // far inside `i64`; NaN becomes 0.
+        let ppem = f64::from(px).round().clamp(0.0, f64::from(u16::MAX)) as i64;
         let (a, b) = (i64::from(avg) * ppem * 64, upem * 64);
         Some((((a << 6) + (b >> 1)) / b) as f32 / 64.0)
     }

@@ -212,6 +212,7 @@ const VARIANTS: [Variant; 4] = [
     ),
 ];
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn hhea_typographic_and_windows_metrics_are_chosen_as_qt_chooses_them() {
     let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
@@ -325,6 +326,18 @@ fn the_average_char_width_of_the_other_engines_is_the_os2_average() {
     }
 }
 
+/// The bytes of the installed font `file` if it is the very file measured (same length): the
+/// numbers below belong to one version of it.
+#[cfg(windows)]
+fn measured_font(file: &str) -> Option<Vec<u8>> {
+    let length = match file {
+        "arial.ttf" => 1_045_720,
+        "segoeui.ttf" => 959_752,
+        _ => return None,
+    };
+    let bytes = std::fs::read(format!("C:/Windows/Fonts/{file}")).ok()?;
+    (bytes.len() == length).then_some(bytes)
+}
 /// The generic outline backend plays Qt's FreeType engine, which rounds ascent and descent (full
 /// hinting) and scales `xAvgCharWidth` as `QFixed(xAvgCharWidth * x_ppem) / emSquareSize()`.
 /// Measured with PySide6 6.11.2 (`QT_QPA_PLATFORM=windows:fontengine=freetype`, installed fonts):
@@ -339,8 +352,8 @@ fn the_outline_backend_matches_qts_freetype_engine() {
         ("arial.ttf", 16.0, 14.0, 3.0, 1.0, 7.0625),
         ("segoeui.ttf", 12.0, 13.0, 3.0, 0.0, 6.46875),
     ] {
-        let Ok(bytes) = std::fs::read(format!("C:/Windows/Fonts/{file}")) else {
-            continue; // font not installed on this machine
+        let Some(bytes) = measured_font(file) else {
+            continue; // not installed, or not the version measured
         };
         let face = OutlineFace::new(SharedFontData::from_vec(bytes), 0).expect("outline face");
         let line = GlyphFace::line_metrics(&face, px)
@@ -355,6 +368,27 @@ fn the_outline_backend_matches_qts_freetype_engine() {
             GlyphFace::average_char_width(&face, px),
             Some(average),
             "{file} {px}px"
+        );
+    }
+}
+
+/// A pixel size no font has must not overflow the 26.6 arithmetic of the average width or the
+/// line metrics (a debug build panics on integer overflow); NaN and infinity neither.
+#[test]
+fn absurd_pixel_sizes_do_not_overflow() {
+    use ferrokit_gui::text::glyph_face::GlyphFace;
+    use ferrokit_gui::text::outline_face::OutlineFace;
+    let face = OutlineFace::new(SharedFontData::from_vec(ORACLE_TTF.to_vec()), 0).expect("face");
+    for px in [1.0e9, f32::MAX, f32::INFINITY, f32::NAN, -5.0, 0.0] {
+        let _ = GlyphFace::average_char_width(&face, px);
+        let _ = GlyphFace::line_metrics(&face, px);
+    }
+    // Past FreeType's 16-bit ppem the width is that of the largest strike, not a wrapped one
+    // (CoreText scales by the size itself).
+    if !cfg!(target_os = "macos") {
+        assert_eq!(
+            GlyphFace::average_char_width(&face, 1.0e9),
+            GlyphFace::average_char_width(&face, 65535.0)
         );
     }
 }

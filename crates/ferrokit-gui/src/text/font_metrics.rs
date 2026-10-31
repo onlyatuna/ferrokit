@@ -259,7 +259,10 @@ impl FontMetrics {
         }
         let (mut ascent, mut descent) = (0.0f32, 0.0f32);
         for run in &runs {
-            let line = engines[run.engine_index].face.line_metrics(font.size)?;
+            // A face with no metrics does not enter the stacking; the others still do.
+            let Some(line) = engines[run.engine_index].face.line_metrics(font.size) else {
+                continue;
+            };
             let engine = Self::engine_line_metrics(line);
             ascent = ascent.max(engine.ascent);
             descent = descent.max(engine.descent);
