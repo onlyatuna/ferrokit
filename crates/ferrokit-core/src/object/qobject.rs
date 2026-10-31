@@ -1203,43 +1203,6 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     None
 }
 
-/// Registers `obj` so that the registry can call it by id.
-///
-/// Deprecated, because the registry keeps a pointer made from the reference `obj`. Under Rust's
-/// aliasing rules, the next direct use of the object through the variable, field or `Box` that
-/// `obj` borrowed from invalidates that pointer, so a callback after such a use is undefined
-/// behavior, even if the program appears to work; Miri reports it. Nothing in this function
-/// prevents that use, and nothing in the function can tell whether the caller makes it.
-///
-/// # Migrating
-/// - An object in a variable: `register_qobject_ptr(NonNull::new_unchecked(&raw mut x))`. The
-///   variable can be read directly between callbacks; write it before registering, or through the
-///   pointer that was registered.
-/// - An object in a `Box`: create it with [`register_owned_qobject`] and keep the returned
-///   [`OwnedObject`] where the `Box` was. It dereferences the same way and may be moved.
-///
-/// The [`crate::object`] module documentation says which function fits where the object lives
-/// and lists the uses that break the aliasing rules.
-///
-/// # Safety
-/// The object must remain alive at the same address until `unregister_qobject` completes.
-/// Do not move or drop it while registered. The thread rules of [`crate::object`] apply. The
-/// caller must ensure that no overlapping mutable or mutable/shared aliases exist while a
-/// callback runs, and that the owner makes no direct use of the object between callbacks (see
-/// above).
-#[deprecated(
-    note = "the registry's pointer comes from a reference that the next direct use of the object \
-            invalidates; use `register_qobject_ptr` with a pointer taken by `&raw mut`, or \
-            `register_owned_qobject`; see the documentation of the `object` module"
-)]
-pub unsafe fn register_qobject(obj: &mut dyn QObject) {
-    let ptr = obj as *mut dyn QObject;
-    // SAFETY: `ptr` was just made from the live `obj`, and the shared reference lives only until
-    // `object_data` returns; `register_object_metadata` copies what it keeps.
-    let data = unsafe { &*ptr }.object_data();
-    register_object_metadata(data, ptr);
-}
-
 /// Registers `ptr` under the id of `data`. See [`register_record`]. This form cannot fail: a parent
 /// link that would close a cycle is left out of the record.
 fn register_object_metadata(data: &ObjectData, ptr: *mut dyn QObject) {
@@ -1384,46 +1347,6 @@ pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) 
     // `object_data`'s use in the call below, which copies what it keeps.
     let data = unsafe { (*ptr).object_data() };
     register_object_metadata(data, ptr);
-}
-
-/// Registers a boxed object and hands the `Box` back.
-///
-/// Deprecated, because Rust treats a `Box` as the only pointer to its object. Returning `(id,
-/// boxed)` moves the `Box<T>`, which under Stacked Borrows (for `T: Sized + Unpin`) already
-/// invalidates the pointer the registry took before the first callback even runs; under both
-/// Stacked Borrows and Tree Borrows, any direct use of the `Box<T>` invalidates the registry's
-/// pointer, and any callback through the registry invalidates the `Box<T>` so that even dropping
-/// it afterwards is undefined behavior. No wrapper around this function can make that sound.
-///
-/// # Migrating
-/// [`register_owned_qobject`] takes the value instead of a `Box` and returns an [`OwnedObject`],
-/// whose pointer is the one the registry keeps. It dereferences like the `Box` did.
-///
-/// ```text
-/// // before
-/// let (id, mut node) = unsafe { register_boxed_qobject(Box::new(Node::new())) };
-/// // after
-/// let mut node = unsafe { register_owned_qobject(Node::new()) };
-/// let id = OwnedObject::object_id(&node);
-/// ```
-///
-/// # Safety
-/// The returned Box must remain alive and unmoved until unregistered. The thread rules of
-/// [`crate::object`] apply, and the owner must make no use of the object between callbacks, which
-/// is what the `Box` is for.
-#[deprecated(
-    note = "using or moving the returned `Box` invalidates the registry's pointer; use \
-            `register_owned_qobject`, which takes the value and returns an `OwnedObject` that \
-            shares its pointer with the registry: `let (id, b) = register_boxed_qobject(Box::new(v))` \
-            becomes `let b = register_owned_qobject(v); let id = OwnedObject::object_id(&b);`"
-)]
-pub unsafe fn register_boxed_qobject<T: QObject + 'static>(
-    mut boxed: Box<T>,
-) -> (ObjectId, Box<T>) {
-    let id = boxed.object_data().id();
-    let ptr = &mut *boxed as *mut dyn QObject;
-    register_object_metadata(boxed.object_data(), ptr);
-    (id, boxed)
 }
 
 /// Registers the object at `ptr`. The registry keeps this exact pointer.
@@ -7382,23 +7305,24 @@ mod tests {
     }
 
     /// `add_owned_child` refuses a parent that is a descendant of the child. Only a child that is
-    /// registered already can have descendants; the deprecated `Box` registration lets one reach
-    /// the function. The `Box` comes back unchanged.
-    // The test registers the object through the deprecated `register_boxed_qobject` and then moves
-    // and uses the returned `Box` (`add_owned_child(d_id, boxed)`, `returned.0`). That breaks the
-    // contract of the registration functions (rule 1 of the `crate::object` module documentation)
-    // on purpose, to check that the registry copes; Miri would report it, which is why the test
-    // is ignored under Miri (see below). No SAFETY comment can be true here.
+    /// registered already can have descendants; a `Box` made from the registered pointer lets one
+    /// reach the function. The `Box` comes back unchanged.
+    // The test builds a `Box` from the pointer that it registered, then moves and uses that `Box`
+    // (`add_owned_child(d_id, boxed)`, `returned.0`). That breaks the contract of
+    // `register_qobject_ptr` (rule 1 of the `crate::object` module documentation) on purpose, to
+    // check that the registry copes; Miri would report it, which is why the test is ignored under
+    // Miri (see below). No SAFETY comment can be true here.
     #[allow(clippy::undocumented_unsafe_blocks)]
     #[test]
-    #[allow(deprecated)]
     // Ignored under Miri without a reason on purpose: the sweep reads `ignored` at the end of the
-    // line. The deprecated `Box` registration breaks the aliasing rules by design.
+    // line. The `Box` made from the registered pointer breaks the aliasing rules by design.
     #[cfg_attr(miri, ignore)]
     fn test_add_owned_child_refuses_a_parent_that_is_a_descendant_of_the_child() {
         // Deliberate contract break (see the `allow` above); nothing here is a safety argument.
-        let (b_id, boxed) =
-            unsafe { register_boxed_qobject(Box::new(Plain(ObjectData::new(ObjectId::next())))) };
+        let raw = Box::into_raw(Box::new(Plain(ObjectData::new(ObjectId::next()))));
+        let b_id = unsafe { (*raw).0.id() };
+        unsafe { register_qobject_ptr(NonNull::new_unchecked(raw as *mut dyn QObject)) };
+        let boxed = unsafe { Box::from_raw(raw) };
         let mut d = unsafe { register_owned_qobject(Plain(ObjectData::new(ObjectId::next()))) };
         let d_id = OwnedObject::object_id(&d);
         assert_eq!(set_owned_parent(&mut d, Some(b_id)), Ok(()));
