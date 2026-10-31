@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 #[cfg(windows)]
-#[cfg(windows)]
 use crate::menu::PlatformMenu;
 #[cfg(windows)]
 use crate::win32_handles::{create_dib_section, IconHandle, MemDc, OwnedBitmap, OwnedMenu};
@@ -345,7 +344,8 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                         ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
                     );
                     let pos = crate::screen::native_cursor_to_logical(native);
-                    let has_menu = shared.menu.borrow().is_some();
+                    // `try_borrow`: busy while `TrayIcon::with_menu_mut` runs; then no menu.
+                    let has_menu = shared.menu.try_borrow().is_ok_and(|m| m.is_some());
                     shared.on_context_menu_requested.emit(&pos);
                     if shared.closed.get() {
                         return 0;
@@ -571,7 +571,9 @@ impl TrayShared {
         // The modal loop runs slots, one of which may replace the menu or drop the icon: the loop
         // runs on a handle of its own (and the emit through this state's own signal handle), with
         // no borrow held.
-        let menu = self.menu.borrow().clone();
+        // `try_borrow`: `TrayIcon::with_menu_mut` holds the cell while its closure runs, and a
+        // message dispatched from there finds it busy; no menu is shown then.
+        let menu = self.menu.try_borrow().ok().and_then(|m| m.clone());
         if let Some(menu) = menu {
             if let Some(cmd_id) = menu.exec_popup(screen_pos) {
                 self.on_menu_action.emit(&cmd_id);
@@ -596,6 +598,9 @@ pub struct TrayIcon {
     /// both.
     tooltip: String,
 
+    // These are handles to the signals the window procedure emits through (a `Signal` clone
+    // shares its connections). Connect to them; do not replace them by assignment, which would
+    // leave the procedure emitting through the old ones.
     pub on_activated: Signal<TrayActivation>,
     pub on_menu_action: Signal<u32>,
     pub on_message_clicked: Signal<()>,
@@ -726,18 +731,14 @@ impl TrayIcon {
         Some(unsafe { &*menu })
     }
 
-    /// The menu, if no context menu is being shown (while it is, the modal loop holds a second
-    /// handle and there is no exclusive access: `None`). The reference must not be held across
-    /// message dispatch: the window procedure shows the menu through shared access.
-    pub fn menu_mut(&mut self) -> Option<&mut (dyn PlatformMenu + 'static)> {
-        let menu: *mut dyn PlatformMenu = Rc::get_mut(self.shared.menu.borrow_mut().as_mut()?)?;
-        // SAFETY: `Rc::get_mut` returned `Some`, so this `Rc` is the only strong handle and has
-        // no `Weak`: nothing else can reach the menu now. The slot is replaced only by
-        // `set_menu(&mut self)` and the returned reference borrows `&mut self`, so that cannot
-        // happen while it lives. The window procedure could clone the `Rc` and show the menu
-        // only by dispatching a message to this window, which the caller must not do while
-        // holding the reference (documented above).
-        Some(unsafe { &mut *menu })
+    /// Runs `f` with exclusive access to the menu; `None` when there is no menu or a context
+    /// menu is being shown (its modal loop holds a second handle). The menu cell stays borrowed
+    /// while `f` runs: if `f` dispatches messages, a context menu request meanwhile finds the cell
+    /// busy and shows nothing (`TrayShared::show_context_menu_at`).
+    pub fn with_menu_mut<R>(&mut self, f: impl FnOnce(&mut dyn PlatformMenu) -> R) -> Option<R> {
+        let mut slot = self.shared.menu.borrow_mut();
+        let menu = Rc::get_mut(slot.as_mut()?)?;
+        Some(f(menu))
     }
 
     pub fn show(&mut self) -> Result<(), &'static str> {
