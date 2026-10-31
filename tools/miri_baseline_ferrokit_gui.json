@@ -265,6 +265,8 @@
     "test_font_features::features_take_part_in_font_equality_and_cloning::TB": "pass",
     "test_font_features::tag_matches_qfont_tag::SB": "pass",
     "test_font_features::tag_matches_qfont_tag::TB": "pass",
+    "test_font_file_mapping::truncating_the_file_leaves_the_loaded_data_intact::SB": "unsupported",
+    "test_font_file_mapping::truncating_the_file_leaves_the_loaded_data_intact::TB": "unsupported",
     "test_font_file_mapping::an_empty_file_loads_as_empty_data_and_a_missing_one_is_an_error::SB": "unsupported",
     "test_font_file_mapping::an_empty_file_loads_as_empty_data_and_a_missing_one_is_an_error::TB": "unsupported",
     "test_font_file_mapping::mapped_data_equals_the_file_and_is_shared_by_clones::SB": "unsupported",
