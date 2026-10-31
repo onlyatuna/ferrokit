@@ -121,13 +121,13 @@ pub struct ColorSpace {
     primaries: Primaries,
     primary_points: PrimaryPoints,
     transfer_function: TransferFunction,
-    /// Divergent per-channel curves; `None` when one curve serves every channel. When set,
-    /// `transfer_function` is [`TransferFunction::Custom`].
+    /// Curves of a [`TransferFunction::Custom`] space (divergent per channel, or a curve Qt
+    /// keeps unnamed); `None` when `transfer_function` itself serves every channel.
     channel_curves: Option<ChannelCurves>,
     description: String,
 }
 
-/// Divergent per-channel curves of a [`ColorSpace`].
+/// Per-channel curves behind a [`TransferFunction::Custom`] label.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ChannelCurves {
     curves: [TransferFunction; 3],
@@ -253,6 +253,18 @@ impl ColorSpace {
         if curves[0] == curves[1] && curves[1] == curves[2] {
             return Self::from_primary_points(primaries, primary_points, curves[0], description);
         }
+        Self::from_primary_points_custom(primaries, primary_points, curves, description)
+    }
+
+    /// Like [`Self::from_primary_points_per_channel`] but `transfer_function()` reports
+    /// [`TransferFunction::Custom`] even when the curves are equal: the curves only approximate
+    /// a curve `QColorSpace` keeps as a table or unnamed parametric function.
+    pub(crate) fn from_primary_points_custom(
+        primaries: Primaries,
+        primary_points: PrimaryPoints,
+        curves: [TransferFunction; 3],
+        description: impl Into<String>,
+    ) -> Self {
         let mut space = Self {
             primaries,
             primary_points,
@@ -325,8 +337,8 @@ impl ColorSpace {
 
     /// Transfer function of each of the R, G and B channels.
     ///
-    /// Equal to `[transfer_function(); 3]` unless the space was built with divergent
-    /// per-channel curves (e.g. an ICC profile whose `rTRC`, `gTRC` and `bTRC` differ).
+    /// Equal to `[transfer_function(); 3]` unless the space is [`TransferFunction::Custom`] with
+    /// curves (e.g. an ICC profile whose `rTRC`, `gTRC` and `bTRC` differ).
     pub(crate) fn channel_transfer_functions(&self) -> [TransferFunction; 3] {
         self.channel_curves
             .map_or([self.transfer_function; 3], |c| c.curves)
@@ -344,14 +356,18 @@ impl ColorSpace {
     /// Decodes an encoded value [0.0, 1.0] of single-component (grayscale) data in this space to
     /// linear light, as `QColorTransform` does for grayscale images.
     ///
-    /// With one curve for every channel this is that curve. With divergent per-channel curves
-    /// (`transfer_function()` is [`TransferFunction::Custom`]) it is the luminance of the
-    /// neutral `(v, v, v)`: each channel's curve weighted by the channel's D50-adapted
-    /// luminance. A `Custom` transfer function without curves (see
-    /// [`Self::with_transfer_function`]) returns `encoded` unchanged.
+    /// With one curve for every channel (named or behind a `Custom` label) this is that curve.
+    /// With divergent per-channel curves (`transfer_function()` is
+    /// [`TransferFunction::Custom`]) it is the luminance of the neutral `(v, v, v)`: each
+    /// channel's curve weighted by the channel's D50-adapted luminance. A `Custom` transfer
+    /// function without curves (see [`Self::with_transfer_function`]) returns `encoded`
+    /// unchanged.
     pub fn to_linear(&self, encoded: f32) -> f32 {
         match &self.channel_curves {
             None => Self::decode(self.transfer_function, encoded),
+            Some(ch) if ch.curves[0] == ch.curves[1] && ch.curves[1] == ch.curves[2] => {
+                Self::decode(ch.curves[0], encoded)
+            }
             Some(ch) => (0..3)
                 .map(|c| ch.luminance[c] * Self::decode(ch.curves[c], encoded))
                 .sum(),
