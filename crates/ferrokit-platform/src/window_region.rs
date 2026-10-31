@@ -29,7 +29,10 @@ const HEADER_WORDS: usize = 8;
 pub(crate) fn region_to_hrgn(region: &Region) -> Option<OwnedRgn> {
     let rects = region.rects();
     let rgn = match rects {
+        // SAFETY: CreateRectRgn takes only integers and returns null on failure, which
+        // `OwnedRgn::from_raw` below rejects.
         [] => unsafe { CreateRectRgn(0, 0, 0, 0) },
+        // SAFETY: as above.
         [r] => unsafe { CreateRectRgn(r.x, r.y, r.right(), r.bottom()) },
         _ => {
             // Header followed by the rectangles; every field is 4 bytes, so an `i32` buffer
@@ -51,6 +54,10 @@ pub(crate) fn region_to_hrgn(region: &Region) -> Option<OwnedRgn> {
                 words[at + 2] = r.right();
                 words[at + 3] = r.bottom();
             }
+            // SAFETY: `words` is a live, 4-aligned buffer of `words.len() * 4` bytes laid out above as
+            // an `RGNDATAHEADER` (dwSize/nCount/nRgnSize consistent with `rects.len()`) followed by
+            // that many RECTs, which is what ExtCreateRegion reads (per its documentation); a null
+            // transform means identity, and `words` outlives the call.
             unsafe {
                 ExtCreateRegion(
                     ptr::null(),
@@ -66,6 +73,9 @@ pub(crate) fn region_to_hrgn(region: &Region) -> Option<OwnedRgn> {
 /// The rectangles of a GDI region (`GetRegionData`), or `None` when it cannot be read.
 #[cfg(test)]
 pub(crate) fn hrgn_rects(rgn: HRGN) -> Option<Vec<Rect>> {
+    // SAFETY: GetRegionData only reads `rgn`, which callers pass live. The size query uses a null
+    // buffer (allowed per its documentation); the second call writes at most `bytes` bytes into
+    // `words`, which holds `bytes.div_ceil(4) * 4 >= bytes` bytes and is 4-aligned like `RGNDATA`.
     unsafe {
         let bytes = GetRegionData(rgn, 0, ptr::null_mut());
         if bytes == 0 {
@@ -99,6 +109,9 @@ pub(crate) fn hrgn_rects(rgn: HRGN) -> Option<Vec<Rect>> {
 /// coordinates, a mask in client coordinates (`QWindowsWindow::setMask` offsets by the frame
 /// margins, `qwindowswindow.cpp`).
 fn client_origin_in_window(hwnd: HWND) -> (i32, i32) {
+    // SAFETY: RECT and POINT are plain integer structs, so zeroed is valid; `window` and
+    // `client` are local out pointers valid for the calls; user32 validates `hwnd` and the calls
+    // return 0 for a stale one, which is handled.
     unsafe {
         let mut window: RECT = std::mem::zeroed();
         let mut client = POINT { x: 0, y: 0 };
@@ -116,6 +129,9 @@ pub(crate) fn set_window_mask(hwnd: HWND, region: &Region) -> bool {
     if hwnd.is_null() {
         return false;
     }
+    // SAFETY: `hwnd` is non-null (checked above) and user32/gdi32 validate it, failing harmlessly
+    // for a stale one. `rgn` is a live region owned by the guard until `into_raw`, which runs only
+    // after SetWindowRgn succeeded (the system then owns it); OffsetRgn runs before that transfer.
     unsafe {
         if region.is_empty() {
             return SetWindowRgn(hwnd, ptr::null_mut(), 1) != 0;
@@ -155,6 +171,8 @@ pub(crate) fn window_mask_rects(hwnd: HWND) -> Option<Vec<Rect>> {
     if hwnd.is_null() {
         return None;
     }
+    // SAFETY: `hwnd` is non-null (checked above) and validated by user32; `probe` is a live region
+    // owned by its guard, so GetWindowRgn copies into a valid handle and `hrgn_rects` reads it.
     unsafe {
         let probe = OwnedRgn::from_raw(CreateRectRgn(0, 0, 0, 0))?;
         // GetWindowRgn copies the window region into `probe`; ERROR (0) means there is none.
@@ -180,6 +198,9 @@ pub(crate) fn set_owner(hwnd: HWND, owner: Option<HWND>) {
     if hwnd.is_null() {
         return;
     }
+    // SAFETY: `hwnd` is non-null (checked above) and validated by user32; `new` is either null or
+    // a window from the caller / GetParent, which user32 validates and which stays valid across
+    // these synchronous calls on this thread.
     unsafe {
         let old = GetWindow(hwnd, GW_OWNER);
         let mut new = owner.unwrap_or(ptr::null_mut());
@@ -197,6 +218,8 @@ pub(crate) fn owner_of(hwnd: HWND) -> Option<HWND> {
     if hwnd.is_null() {
         return None;
     }
+    // SAFETY: `hwnd` is non-null (checked above); GetWindow validates it and returns null for a
+    // stale one.
     let owner = unsafe { GetWindow(hwnd, GW_OWNER) };
     (!owner.is_null()).then_some(owner)
 }
@@ -211,8 +234,12 @@ unsafe extern "system" fn collect_owned(hwnd: HWND, lparam: LPARAM) -> i32 {
     // SAFETY: `lparam` is the `OwnedScan` that `release_owned_windows` keeps alive across
     // `EnumWindows`, which calls this on the same thread before it returns.
     let scan = unsafe { &mut *(lparam as *mut OwnedScan) };
+    // SAFETY: GetWindow takes only a window handle and validates it; `hwnd` is the one EnumWindows
+    // just passed.
     if unsafe { GetWindow(hwnd, GW_OWNER) } == scan.owner {
         let mut name = [0u16; 64];
+        // SAFETY: `name` is a local buffer of `name.len()` u16s, the capacity passed to GetClassNameW,
+        // which writes at most that many and returns the count copied (`len <= 64`).
         let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
         if len > 0 && name[..len as usize] == *scan.class {
             scan.found.push(hwnd);
@@ -234,6 +261,8 @@ pub(crate) fn release_owned_windows(owner: HWND, class: &[u16]) {
         class: class.strip_suffix(&[0]).unwrap_or(class),
         found: Vec::new(),
     };
+    // SAFETY: `collect_owned` has the WNDENUMPROC signature; `lparam` is `&mut scan`, a local that
+    // outlives EnumWindows, which calls back synchronously on this thread and only before returning.
     unsafe {
         EnumWindows(Some(collect_owned), &mut scan as *mut OwnedScan as LPARAM);
     }
@@ -248,6 +277,7 @@ mod tests {
     use windows_sys::Win32::Graphics::Gdi::{PtInRegion, RectInRegion};
 
     fn hit(rgn: HRGN, x: i32, y: i32) -> bool {
+        // SAFETY: PtInRegion only reads `rgn`, which callers pass from a live `OwnedRgn` in scope.
         unsafe { PtInRegion(rgn, x, y) != 0 }
     }
 
@@ -288,6 +318,7 @@ mod tests {
             right: 8,
             bottom: 6,
         };
+        // SAFETY: `rgn` is the live region owned by `owned`; `probe` is a local RECT valid for the call.
         assert_ne!(unsafe { RectInRegion(rgn, &probe) }, 0);
     }
 
@@ -353,6 +384,7 @@ mod tests {
         )
         .expect("tool window");
         let tool_hwnd = tool.hwnd();
+        // SAFETY: `tool_hwnd` is the live window owned by `tool`; user32 validates it anyway.
         let ex_style = unsafe { GetWindowLongPtrW(tool_hwnd, GWL_EXSTYLE) } as u32;
         assert_ne!(ex_style & WS_EX_TOOLWINDOW, 0, "no taskbar button");
         assert_eq!(ex_style & WS_EX_APPWINDOW, 0);
@@ -369,6 +401,7 @@ mod tests {
         tool.set_transient_parent(Some(parent.hwnd() as isize));
         drop(parent);
         assert_ne!(
+            // SAFETY: IsWindow takes a handle value only and returns 0 for a destroyed one.
             unsafe { IsWindow(tool_hwnd) },
             0,
             "dropping the owner must not destroy the window it owned"

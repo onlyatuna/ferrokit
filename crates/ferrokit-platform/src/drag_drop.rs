@@ -576,8 +576,12 @@ pub mod win32_ole {
         F: Fn(DropEvent) -> u32 + Send + Sync + 'static,
     {
         use windows_sys::Win32::System::Ole::OleInitialize;
-        // SAFETY: plain OLE calls; `target_ptr` is the live allocation just made, and on failure
-        // OLE took no reference, so it is freed here.
+        // SAFETY: `OleInitialize` takes a reserved null pointer, as documented. `target_ptr` comes
+        // from `Box::into_raw` in `OleDropTarget::new` just above with `ref_count` 1 and is not shared
+        // yet, and `target_ptr as *mut _` is an `IDropTarget*` because `vtbl` is the first `repr(C)`
+        // field, pointing at `OLE_DROP_TARGET_VTBL`. On success OLE takes its own reference and ours
+        // moves into the returned registration; on failure OLE took none, so the sole reference is
+        // freed here with `Box::from_raw` and never used again. `hwnd` is validated by OLE.
         unsafe {
             OleInitialize(std::ptr::null_mut());
             let target_ptr = OleDropTarget::new(hwnd, callback);

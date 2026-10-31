@@ -201,6 +201,12 @@ impl Menu {
         screen_x: i32,
         screen_y: i32,
     ) -> Result<Option<u32>, &'static str> {
+        // SAFETY: `create_native_hmenu` requires that the returned `HMENU` be destroyed: it is
+        // wrapped in `OwnedMenu` at once and dropped only after `TrackPopupMenuEx` returns, which
+        // destroys it on every path. `hwnd` is only passed by value to `SetForegroundWindow` and
+        // `TrackPopupMenuEx`, which validate it and fail (returning 0, mapped to `Ok(None)`) for a
+        // handle that is stale or belongs to another thread; the `ptr::null()` `lptpm` is documented
+        // as optional.
         unsafe {
             let hmenu = OwnedMenu::from_raw(self.create_native_hmenu()?);
 
@@ -228,6 +234,7 @@ impl Menu {
     #[cfg(windows)]
     pub fn track_popup(&self, hwnd: HWND) -> Result<Option<u32>, &'static str> {
         let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: `GetCursorPos` writes one `POINT` through the pointer; `pt` is a live local.
         unsafe {
             GetCursorPos(&mut pt);
         }
@@ -402,6 +409,12 @@ unsafe extern "system" fn tray_window_proc(
 
 #[cfg(windows)]
 fn ensure_tray_window_class_registered() {
+    // SAFETY: inside `call_once`, so at most once per process. `wc` is fully initialised and its
+    // `cbSize` is its own size; `lpszClassName` is the `'static` NUL-terminated
+    // `TRAY_WINDOW_CLASS_NAME`; `lpfnWndProc` is `tray_window_proc`, an `extern "system"` function
+    // of the `WNDPROC` signature; `hInstance` is the current module's handle from
+    // `GetModuleHandleW(null)`. `RegisterClassExW` copies the struct, so `wc` need not outlive the
+    // call.
     TRAY_WINDOW_CLASS_ONCE.call_once(|| unsafe {
         let h_instance = GetModuleHandleW(ptr::null());
         let wc = WNDCLASSEXW {
@@ -463,6 +476,8 @@ impl TrayIcon {
     fn with_icon(tooltip: impl Into<String>, icon: IconHandle) -> Result<Box<Self>, &'static str> {
         ensure_tray_window_class_registered();
 
+        // SAFETY: `taskbar_msg_name` is a NUL-terminated UTF-16 vector that lives to the end of the
+        // block, which is all `RegisterWindowMessageW` needs.
         let taskbar_created_msg = unsafe {
             let taskbar_msg_name: Vec<u16> = "TaskbarCreated"
                 .encode_utf16()
@@ -471,6 +486,12 @@ impl TrayIcon {
             RegisterWindowMessageW(taskbar_msg_name.as_ptr())
         };
 
+        // SAFETY: `TRAY_WINDOW_CLASS_NAME` is `'static` and NUL-terminated and names the class
+        // registered by `ensure_tray_window_class_registered` just above (if registration failed the
+        // call returns null, handled right below); the null window name, parent, menu and
+        // `lpParam` are all documented as optional; `hInstance` is this module's own handle. The
+        // window is created on the calling thread, which `TrayIcon` (neither `Send` nor `Sync`)
+        // keeps for its whole life.
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
@@ -494,6 +515,8 @@ impl TrayIcon {
         // Let `TaskbarCreated` through the UIPI filter, so a tray in an elevated process still
         // hears an Explorer that was restarted without elevation
         // (`QWindowsSystemTrayIcon::ensureInstalled`).
+        // SAFETY: `hwnd` was created by `CreateWindowExW` above and checked non-null; a null
+        // `pChangeFilterStruct` is documented as allowed for `MSGFLT_ALLOW`.
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::ChangeWindowMessageFilterEx(
                 hwnd,
@@ -548,6 +571,8 @@ impl TrayIcon {
     }
 
     fn send_notify_icon_message(&self, msg: u32) -> Result<(), &'static str> {
+        // SAFETY: `NOTIFYICONDATAW` is a C struct of integers, raw pointers and arrays, for which
+        // all-zero is a valid value (null handles, empty strings); `cbSize` is set right below.
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = self.hwnd;
@@ -566,8 +591,14 @@ impl TrayIcon {
             nid.szTip[copy_len] = 0;
         }
 
+        // SAFETY: `nid` is fully initialised with `cbSize` set to its size; `hWnd` is this tray's
+        // own window (created in `with_icon`, destroyed only in `Drop`); `hIcon` is the handle
+        // `self.icon` holds; `szTip` is NUL-terminated (`copy_len <= 127` of 128 elements). `nid`
+        // outlives the call, and the shell only reads it.
         let res = unsafe { Shell_NotifyIconW(msg, &nid) };
         if res == 0 {
+            // SAFETY: `cls` is a NUL-terminated UTF-16 vector that lives to the end of the block;
+            // the null window name is documented as allowed by `FindWindowW`.
             let tray_wnd = unsafe {
                 let cls: Vec<u16> = "Shell_TrayWnd"
                     .encode_utf16()
@@ -586,9 +617,13 @@ impl TrayIcon {
             // Without version 4 the shell sends callbacks in the old layout, which the window
             // procedure would misread, so the icon is taken off again and the add fails
             // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
+            // SAFETY: as for the first call: `nid` is initialised, `cbSize` set, `hWnd` is this
+            // tray's live window, and `uVersion` is set just above as `NIM_SETVERSION` requires.
             if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) }
                 == 0
             {
+                // SAFETY: as above: `nid` is initialised and `hWnd` is this tray's live window;
+                // `NIM_DELETE` reads only `hWnd` and `uID`.
                 unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
                 return Err("Shell_NotifyIconW (NIM_SETVERSION) failed");
             }
@@ -679,6 +714,7 @@ impl TrayIcon {
         if icon.is_null() {
             return Err("null icon");
         }
+        // SAFETY: `GetSystemMetrics` takes only an index constant and has no pointer arguments.
         let requested =
             unsafe { Size::new(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
         let size = icon.actual_size(requested, IconMode::Normal, IconState::Off);
@@ -724,6 +760,8 @@ impl TrayIcon {
         if !self.visible {
             return None;
         }
+        // SAFETY: `NOTIFYICONIDENTIFIER` is a C struct of integers, a `GUID` and an `HWND`, for
+        // which all-zero is a valid value; `cbSize` is set right below.
         let mut id: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
         id.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
         id.hWnd = self.hwnd;
@@ -734,13 +772,23 @@ impl TrayIcon {
             right: 0,
             bottom: 0,
         };
+        // SAFETY: `id` is initialised with `cbSize`, `hWnd` (this tray's live window) and `uID`, as
+        // `Shell_NotifyIconGetRect` requires; `id` and `rect` are live locals, `rect` being the
+        // out pointer.
         let hr = unsafe { Shell_NotifyIconGetRect(&id, &mut rect) };
         if hr != 0 {
             return None;
         }
+        // SAFETY: `MONITORINFO` is a C struct of integers and `RECT`s, for which all-zero is a
+        // valid value; `cbSize` is set right below.
         let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        // SAFETY: `MonitorFromWindow` takes the window handle by value and validates it; with
+        // `MONITOR_DEFAULTTONEAREST` it always returns a monitor handle, which needs no cleanup.
         let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        // SAFETY: `info` is a live `MONITORINFO` with `cbSize` set to its size, as the call
+        // requires; `GetMonitorInfoW` validates `monitor`, and on failure leaves `info` zeroed (the
+        // result is deliberately ignored).
         unsafe { GetMonitorInfoW(monitor, &mut info) };
         (rect.bottom <= info.rcMonitor.bottom).then_some(rect)
     }
@@ -858,15 +906,23 @@ impl TrayIcon {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetSystemMetrics, SM_CXICON, SM_CXSMICON,
         };
+        // SAFETY: `SHSTOCKICONINFO` is a C struct of integers, an `HICON` and arrays, for which
+        // all-zero is a valid value; `cbSize` is set right below.
         let mut info: SHSTOCKICONINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<SHSTOCKICONINFO>() as u32;
+        // SAFETY: `info` is a live `SHSTOCKICONINFO` with `cbSize` set to its size, as
+        // `SHGetStockIconInfo` requires; `siid` is an `SIID_*` value from `balloon_style`.
         if unsafe { SHGetStockIconInfo(siid, SHGSI_ICONLOCATION, &mut info) } < 0 {
             return None;
         }
+        // SAFETY: `GetSystemMetrics` takes only an index constant and has no pointer arguments.
         let size = unsafe {
             Self::stock_icon_size(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CXICON))
         };
         let mut hicon: HICON = ptr::null_mut();
+        // SAFETY: `info.szPath` is the fixed `MAX_PATH` array filled by the successful
+        // `SHGetStockIconInfo` above (it started zeroed, so it is NUL-terminated either way);
+        // `hicon` is a live local out pointer; the null `phiconSmall` is documented as optional.
         let hr = unsafe {
             SHDefExtractIconW(
                 info.szPath.as_ptr(),
@@ -883,6 +939,9 @@ impl TrayIcon {
     /// A system icon (`LoadIcon(nullptr, idi)`), at the size the system chooses. It is a shared
     /// handle owned by the system: it must never be passed to `DestroyIcon`.
     fn system_icon(idi: windows_sys::core::PCWSTR) -> Option<HICON> {
+        // SAFETY: with a null `hInstance`, `LoadIconW` takes an `IDI_*` resource identifier, which
+        // is what every caller of `system_icon` passes (`balloon_style` and the tests), so no
+        // string is read from `idi`; the returned shared handle is never destroyed.
         let hicon =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(ptr::null_mut(), idi) };
         (!hicon.is_null()).then_some(hicon)
@@ -935,6 +994,7 @@ impl TrayIcon {
         use ferrokit_gui::image::{IconMode, IconState};
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXICON, SM_CYICON};
         let actual = icon.actual_size(Size::new(256, 256), IconMode::Normal, IconState::Off);
+        // SAFETY: `GetSystemMetrics` takes only an index constant and has no pointer arguments.
         let large = unsafe { Size::new(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)) };
         let size = Self::balloon_icon_size(actual, large);
         Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
@@ -960,6 +1020,8 @@ impl TrayIcon {
         balloon_icon: HICON,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        // SAFETY: `NOTIFYICONDATAW` is a C struct of integers, raw pointers and arrays, for which
+        // all-zero is a valid value (null handles, empty strings); `cbSize` is set right below.
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = self.hwnd;
@@ -986,8 +1048,14 @@ impl TrayIcon {
         nid.dwInfoFlags = info_flags;
         nid.hBalloonIcon = balloon_icon;
 
+        // SAFETY: `nid` is fully initialised with `cbSize` set to its size; `hWnd` is this tray's
+        // own window; `hBalloonIcon` is `balloon_icon`, which the caller keeps alive across the
+        // call; `szInfo` (256) and `szInfoTitle` (64) are NUL-terminated (`msg_len <= 255`,
+        // `title_len <= 63`). `nid` outlives the call, and the shell only reads it.
         let res = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
         if res == 0 {
+            // SAFETY: `cls` is a NUL-terminated UTF-16 vector that lives to the end of the block;
+            // the null window name is documented as allowed by `FindWindowW`.
             let tray_wnd = unsafe {
                 let cls: Vec<u16> = "Shell_TrayWnd"
                     .encode_utf16()
@@ -1005,6 +1073,7 @@ impl TrayIcon {
 
     pub fn show_context_menu(&self) {
         let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: `GetCursorPos` writes one `POINT` through the pointer; `pt` is a live local.
         unsafe {
             GetCursorPos(&mut pt);
         }
@@ -1094,6 +1163,9 @@ impl TrayIcon {
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn destroy_hicon(hicon: HICON) {
         if !hicon.is_null() {
+            // SAFETY: `hicon` is non-null (checked above); `DestroyIcon` validates the handle and
+            // fails for one that is not an icon; ownership of the icon is the caller's, as the
+            // comment above says.
             unsafe {
                 DestroyIcon(hicon);
             }
@@ -1156,6 +1228,10 @@ fn enable_balloon_tips() -> u32 {
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced");
     let name = wide("EnableBalloonTips");
+    // SAFETY: `subkey` and `name` are NUL-terminated UTF-16 vectors that outlive the calls; `hkey`
+    // is written by the successful `RegOpenKeyExW` and closed exactly once, right after the query;
+    // `data` is a live `u32` and `size` starts at 4, so `RegQueryValueExW` (per its documentation)
+    // writes at most 4 bytes through the `*mut u8`.
     unsafe {
         let mut hkey: HKEY = ptr::null_mut();
         if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
@@ -1194,6 +1270,10 @@ impl Drop for TrayIcon {
         }
 
         if !self.hwnd.is_null() {
+            // SAFETY: `self.hwnd` is non-null (checked above), was created by this thread in
+            // `with_icon` and is destroyed only here; it was removed from `TRAY_INSTANCES` just
+            // above, so the messages `DestroyWindow` sends reach `tray_window_proc` with no tray to
+            // dereference and take the `DefWindowProcW` path.
             unsafe {
                 DestroyWindow(self.hwnd);
             }
@@ -1372,6 +1452,9 @@ mod tests {
         let mut inner = Menu::new();
         inner.add_action(12, "Inner");
         menu.add_submenu("More", inner);
+        // SAFETY: `create_native_hmenu` requires that the `HMENU` be destroyed: `hmenu` is destroyed
+        // exactly once by `DestroyMenu` below; `GetSubMenu` and `IsMenu` validate their handles, so
+        // querying `sub` after the parent's destruction is defined (`IsMenu` then returns 0).
         unsafe {
             let hmenu = menu
                 .create_native_hmenu()
@@ -1414,9 +1497,15 @@ mod tests {
     fn setting_the_icon_the_tray_already_owns_keeps_it_owned() {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
         let alive = |icon: HICON| {
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            // SAFETY: `GetIconInfo` validates `icon` (it fails for a destroyed handle, leaving
+            // `info` zeroed) and writes one `ICONINFO` through the pointer; `info` is a live local.
             let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
             if ok {
+                // SAFETY: after a successful `GetIconInfo` the caller owns `hbmColor` and `hbmMask`
+                // (per its documentation); each is deleted exactly once here.
                 unsafe {
                     DeleteObject(info.hbmColor);
                     DeleteObject(info.hbmMask);
@@ -1456,9 +1545,15 @@ mod tests {
         use crate::platform_tray::TrayMessageIcon;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
         let alive = |icon: HICON| {
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            // SAFETY: `GetIconInfo` validates `icon` (it fails for a destroyed handle, leaving
+            // `info` zeroed) and writes one `ICONINFO` through the pointer; `info` is a live local.
             let ok = unsafe { GetIconInfo(icon, &mut info) } != 0;
             if ok {
+                // SAFETY: after a successful `GetIconInfo` the caller owns `hbmColor` and `hbmMask`
+                // (per its documentation); each is deleted exactly once here.
                 unsafe {
                     DeleteObject(info.hbmColor);
                     DeleteObject(info.hbmMask);
@@ -1559,9 +1654,19 @@ mod tests {
         };
         for idi in [IDI_INFORMATION, IDI_WARNING, IDI_ERROR] {
             let icon = TrayIcon::system_icon(idi).expect("a system icon");
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            // SAFETY: `icon` is the live shared system icon from `system_icon`; `info` is a live
+            // local written through the pointer.
             assert_ne!(unsafe { GetIconInfo(icon, &mut info) }, 0);
+            // SAFETY: `BITMAP` is a C struct of integers and a pointer, for which all-zero is a
+            // valid value; `GetObjectW` overwrites it.
             let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+            // SAFETY: `hbmColor` was just returned by `GetIconInfo`; `GetObjectW` writes at most
+            // `size_of_val(&bm)` bytes into the live `bm` (a null handle makes it return 0 and write
+            // nothing); the caller owns both bitmaps (per the `GetIconInfo` documentation) and
+            // deletes each exactly once.
             unsafe {
                 GetObjectW(
                     info.hbmColor,
@@ -1578,12 +1683,18 @@ mod tests {
             );
             // A shared system icon is not destroyed: it still works after its guard drops.
             drop(IconHandle::shared(icon));
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut again: ICONINFO = unsafe { std::mem::zeroed() };
             assert_ne!(
+                // SAFETY: `icon` is the shared system icon, which dropping `IconHandle::shared` did
+                // not destroy; `again` is a live local written through the pointer.
                 unsafe { GetIconInfo(icon, &mut again) },
                 0,
                 "the shared icon survives"
             );
+            // SAFETY: `again` was filled by the successful `GetIconInfo` above; the caller owns both
+            // bitmaps (per its documentation) and deletes each exactly once.
             unsafe {
                 DeleteObject(again.hbmColor);
                 DeleteObject(again.hbmMask);
@@ -1613,14 +1724,23 @@ mod tests {
             let icon = balloon.as_raw();
             assert!(!icon.is_null());
             // Extracted at 256 px, the largest size the balloon asks the style icon for.
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
             assert_ne!(
+                // SAFETY: `icon` is the live handle held by `balloon`; `info` is a live local written
+                // through the pointer.
                 unsafe {
                     windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(icon, &mut info)
                 },
                 0
             );
+            // SAFETY: `BITMAP` is a C struct of integers and a pointer, for which all-zero is a
+            // valid value; `GetObjectW` overwrites it.
             let mut bm: windows_sys::Win32::Graphics::Gdi::BITMAP = unsafe { std::mem::zeroed() };
+            // SAFETY: `hbmColor` was just returned by `GetIconInfo`; `GetObjectW` writes at most
+            // `size_of_val(&bm)` bytes into the live `bm`; the caller owns both bitmaps (per the
+            // `GetIconInfo` documentation) and deletes each exactly once.
             unsafe {
                 windows_sys::Win32::Graphics::Gdi::GetObjectW(
                     info.hbmColor,
@@ -1630,6 +1750,7 @@ mod tests {
                 DeleteObject(info.hbmColor);
                 DeleteObject(info.hbmMask);
             }
+            // SAFETY: `GetSystemMetrics` takes only an index constant and has no pointer arguments.
             let expected = unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
                     GetSystemMetrics, SM_CXICON, SM_CXSMICON,
@@ -1644,8 +1765,12 @@ mod tests {
             let (hicon, owned) = (balloon.as_raw(), balloon.is_owned());
             assert!(owned, "{kind:?}: the extracted stock icon is ours");
             drop(balloon);
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut gone: ICONINFO = unsafe { std::mem::zeroed() };
             assert_eq!(
+                // SAFETY: `hicon` was destroyed by dropping `balloon`; `GetIconInfo` validates the
+                // handle and fails for it, and `gone` is a live local.
                 unsafe {
                     windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo(hicon, &mut gone)
                 },
@@ -1668,9 +1793,18 @@ mod tests {
                 icon.add_pixmap(&pixmap, IconMode::Normal, IconState::Off);
             }
             let hicon = TrayIcon::hicon_for_balloon(&icon).expect("balloon icon");
+            // SAFETY: `ICONINFO` is a C struct of integers and bitmap handles, for which all-zero is
+            // a valid value; `GetIconInfo` overwrites it.
             let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            // SAFETY: `hicon` was just made by `hicon_for_balloon` and is destroyed only below;
+            // `info` is a live local written through the pointer.
             assert_ne!(unsafe { GetIconInfo(hicon, &mut info) }, 0);
+            // SAFETY: `BITMAP` is a C struct of integers and a pointer, for which all-zero is a
+            // valid value; `GetObjectW` overwrites it.
             let mut bm: BITMAP = unsafe { std::mem::zeroed() };
+            // SAFETY: `hbmColor` was just returned by `GetIconInfo`; `GetObjectW` writes at most
+            // `size_of::<BITMAP>()` bytes into the live `bm`; the caller owns both bitmaps (per the
+            // `GetIconInfo` documentation) and deletes each exactly once.
             unsafe {
                 GetObjectW(
                     info.hbmColor,
@@ -1689,6 +1823,7 @@ mod tests {
             "the image that fits, not a fixed 32 px"
         );
         assert_eq!(width_of(&[16, 512]), 256, "scaled down to fit 256 px");
+        // SAFETY: `GetSystemMetrics` takes only an index constant and has no pointer arguments.
         let large = unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
                 windows_sys::Win32::UI::WindowsAndMessaging::SM_CXICON,
@@ -1788,6 +1923,9 @@ mod tests {
         });
 
         // Simulate the shell's NIN_SELECT notification triggering Trigger
+        // SAFETY: `tray.hwnd()` is the live window of `tray` (alive to the end of the test), created
+        // on this thread, so `SendMessageW` calls `tray_window_proc` synchronously here; `lParam`
+        // is an integer event code and `wParam` is 0, so no pointers cross the call.
         unsafe {
             SendMessageW(tray.hwnd(), WM_TRAY_CALLBACK, 0, NIN_SELECT as isize);
         }
@@ -1797,6 +1935,8 @@ mod tests {
         );
 
         // Simulate explorer.exe crash and restart broadcast (TaskbarCreated)
+        // SAFETY: same window and thread as above; `wParam` and `lParam` are 0, so no pointers
+        // cross the call.
         unsafe {
             SendMessageW(tray.hwnd(), tray.taskbar_created_msg, 0, 0);
         }

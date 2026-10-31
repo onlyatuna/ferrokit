@@ -216,6 +216,8 @@ const MAX_FRAMES: usize = 20_000;
 
 fn hwnd_rect(hwnd: isize) -> (i32, i32, i32, i32) {
     #[cfg(windows)]
+    // SAFETY: RECT is a plain integer struct, so zeroed is valid; `r` is a local out pointer
+    // valid for the call, and GetWindowRect just fails (leaving zeros) for a stale `hwnd`.
     unsafe {
         let mut r: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
         windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd as _, &mut r);

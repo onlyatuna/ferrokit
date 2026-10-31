@@ -249,6 +249,8 @@ fn test_window_system_events_dispatch_pipeline() {
 
     let hwnd = win.native_handle() as windows_sys::Win32::Foundation::HWND;
 
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread; every message here carries integers in wparam/lparam, no pointers.
     unsafe {
         // 1. Simulate mouse move (x: 50, y: 80)
         let mouse_pos = (50 & 0xffff) | ((80 & 0xffff) << 16);
@@ -585,6 +587,9 @@ fn test_cocoa_status_item_and_menu_clicks_reach_rust_callbacks() {
         sink.fetch_add(1, Ordering::SeqCst);
     });
     let button =
+        // SAFETY: `native_status_item()` is the mock id of the live `status_item`; `button` is a
+        // registered selector that takes no arguments and returns an object, which is how
+        // `send_0` calls it. Everything runs against the mock runtime on this thread.
         unsafe { ObjcMsg::send_0(status_item.native_status_item(), Sel::register("button")) };
     let wired = mock.get_object_data(button).expect("button exists");
     assert!(!wired.target.is_nil());
@@ -1578,10 +1583,15 @@ fn test_platform_parity_gaps_verification() {
     {
         use ferrokit_platform::objc_runtime::{CGRect, Class, MockObjcRuntime, ObjcMsg, Sel};
         let win_cls = Class::get("NSWindow").unwrap_or(Class::NIL);
+        // SAFETY: `win_cls` is a mock class or `Class::NIL` (a nil class is a no-op); `alloc`
+        // takes no arguments and returns an object, matching `send_class_0`. Mock runtime only.
         let win_alloc = unsafe { ObjcMsg::send_class_0(win_cls, Sel::register("alloc")) };
         assert!(!win_alloc.is_nil());
 
         let cg_rect = CGRect::new(10.0, 20.0, 300.0, 200.0);
+        // SAFETY: `win_alloc` is the mock object just allocated (asserted non-nil), and the
+        // selector is `initWithContentRect:styleMask:backing:defer:`, which `send_window_init`
+        // requires. Mock runtime only.
         let win = unsafe {
             ObjcMsg::send_window_init(
                 win_alloc,
@@ -1594,14 +1604,25 @@ fn test_platform_parity_gaps_verification() {
         };
         assert!(!win.is_nil());
 
+        // SAFETY: `win` is the live mock window (asserted non-nil); `setTitle:` takes one string,
+        // as `send_str` does. Mock runtime only.
         unsafe { ObjcMsg::send_str(win, Sel::register("setTitle:"), "Parity Window") };
+        // SAFETY: `win` is the live mock window; `setLevel:` takes one integer, as `send_int` does.
         unsafe { ObjcMsg::send_int(win, Sel::register("setLevel:"), 3) };
+        // SAFETY: `win` is the live mock window; `setIgnoresMouseEvents:` takes one BOOL, as
+        // `send_bool` does.
         unsafe { ObjcMsg::send_bool(win, Sel::register("setIgnoresMouseEvents:"), true) };
 
         let view_cls = Class::get("QNSView").unwrap_or(Class::NIL);
+        // SAFETY: `view_cls` is a mock class or `Class::NIL` (a no-op); `alloc` takes no
+        // arguments and returns an object, matching `send_class_0`. Mock runtime only.
         let view_alloc = unsafe { ObjcMsg::send_class_0(view_cls, Sel::register("alloc")) };
         let view =
+            // SAFETY: `view_alloc` is the mock object just allocated; `initWithFrame:` takes one
+            // rect, as `send_rect` does. Mock runtime only.
             unsafe { ObjcMsg::send_rect(view_alloc, Sel::register("initWithFrame:"), cg_rect) };
+        // SAFETY: `win` is the live mock window and `view` a mock object; `setContentView:`
+        // takes one object, as `send_id` does.
         unsafe { ObjcMsg::send_id(win, Sel::register("setContentView:"), view) };
 
         let data = MockObjcRuntime::instance()
@@ -1828,12 +1849,19 @@ fn test_dbus_menu_slot_can_reenter_menu_during_activation() {
     /// `DBusMenu` holds `Box<dyn PlatformMenu>` submenus, so it is neither `Send` nor `Sync`; the
     /// test only ever touches it from one thread at a time while the box below keeps it alive.
     struct MenuPtr(*const DBusMenu);
-    // SAFETY: see the type docs; the pointee outlives every use and is accessed by one thread.
+    // SAFETY: `DBusMenu` is not `Send`/`Sync`, so these impls only assert what the test upholds:
+    // the pointee is the `Box` below, which is not moved or mutated while the pointer is in use,
+    // and the shared reference `get` hands out is used by one thread at a time (the worker
+    // runs while the test thread blocks in `recv_timeout`). On a failed run (timeout) the test
+    // panics and drops `menu` while the worker may still hold the pointer; the pass path is sound.
     unsafe impl Send for MenuPtr {}
+    // SAFETY: same as the `Send` impl above; `&MenuPtr` only exposes a shared `&DBusMenu` to
+    // the one thread running at a time.
     unsafe impl Sync for MenuPtr {}
     impl MenuPtr {
         fn get(&self) -> &DBusMenu {
-            // SAFETY: the pointee is alive (owned by the test) for as long as any `MenuPtr` is used.
+            // SAFETY: the pointee is the `Box<DBusMenu>` in the test body, which stays alive and
+            // unmoved until after `recv_timeout` returns on the passing path (see the impls).
             unsafe { &*self.0 }
         }
     }
@@ -1881,6 +1909,8 @@ fn test_cocoa_status_item_icon_has_pixels_and_does_not_leak_images() {
         .unwrap();
 
     let runtime = MockObjcRuntime::instance();
+    // SAFETY: `native_status_item()` is the mock id of the live `item`; `button` is a registered
+    // selector taking no arguments and returning an object, as `send_0` calls it. Mock runtime only.
     let button = unsafe { ObjcMsg::send_0(item.native_status_item(), Sel::register("button")) };
     let image = runtime.get_object_data(button).expect("button").contents;
     let image_data = runtime.get_object_data(image).expect("button has an image");

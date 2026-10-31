@@ -129,6 +129,8 @@ pub struct Win32Clipboard;
 impl Win32Clipboard {
     fn register_mime_format(mime_type: &str) -> Result<u32, &'static str> {
         let name: Vec<u16> = mime_type.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `name` is a NUL-terminated UTF-16 buffer (terminator chained above) that outlives
+        // the call; RegisterClipboardFormatW only reads it.
         let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
         if format == 0 {
             Err("RegisterClipboardFormatW failed")
@@ -139,6 +141,8 @@ impl Win32Clipboard {
 
     fn get_format_name(format: u32) -> Option<String> {
         let mut name = [0u16; 256];
+        // SAFETY: `name` is a live local array and the length passed is its exact capacity in
+        // u16 units, so GetClipboardFormatNameW writes at most `name.len()` units into it.
         let len = unsafe { GetClipboardFormatNameW(format, name.as_mut_ptr(), name.len() as i32) };
         (len > 0).then(|| String::from_utf16_lossy(&name[..len as usize]))
     }
@@ -208,9 +212,14 @@ impl Win32Clipboard {
         }
 
         let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
+        // SAFETY: takes no arguments; the clipboard is open for this thread via `_session`
+        // (EmptyClipboard requires that, per its documentation).
         unsafe { EmptyClipboard() };
         for (format, payload) in prepared {
             let hmem = GlobalMem::alloc_copy(&payload)?;
+            // SAFETY: the clipboard is open via `_session`; `hmem.as_raw()` is a live moveable
+            // HGLOBAL from `GlobalMem::alloc_copy` that we still own. On success the system takes
+            // ownership (hence `into_raw` below); on failure `hmem` is dropped and freed by us.
             if unsafe { SetClipboardData(format, hmem.as_raw()) }.is_null() {
                 return Err("SetClipboardData failed");
             }
@@ -247,6 +256,8 @@ impl Win32Clipboard {
         let mut result = MimeData::new();
         let mut format = 0;
         loop {
+            // SAFETY: by-value argument; the clipboard is open via `session` for this thread, which
+            // EnumClipboardFormats requires. `format` is 0 or the previous result, as documented.
             format = unsafe { EnumClipboardFormats(format) };
             if format == 0 {
                 break;
@@ -254,17 +265,27 @@ impl Win32Clipboard {
             if !Self::is_global_memory_format(format) {
                 continue;
             }
+            // SAFETY: by-value argument; the clipboard is open via `session`, and `format` was just
+            // returned by EnumClipboardFormats and is HGLOBAL-backed (checked above).
             let hmem = unsafe { GetClipboardData(format) };
             if hmem.is_null() {
                 continue;
             }
+            // SAFETY: `hmem` is non-null (checked above), clipboard-owned, and HGLOBAL-backed
+            // because `is_global_memory_format` excluded the GDI-handle formats; a failed lock
+            // returns null, checked next.
             let ptr = unsafe { GlobalLock(hmem) as *const u8 };
             if ptr.is_null() {
                 // One unreadable format must not discard the others.
                 continue;
             }
+            // SAFETY: `hmem` is the same non-null handle, currently locked by us.
             let size = unsafe { GlobalSize(hmem) };
+            // SAFETY: `ptr` is non-null from GlobalLock and `hmem` stays locked until the unlock
+            // below, so `ptr` addresses `size` readable bytes (GlobalSize of that same block, taken
+            // while the clipboard is still open); the bytes are copied out before the unlock.
             let bytes = unsafe { std::slice::from_raw_parts(ptr, size).to_vec() };
+            // SAFETY: `hmem` was successfully locked above and `ptr` is not used after this.
             unsafe { GlobalUnlock(hmem) };
 
             if format == CF_UNICODETEXT as u32 {
@@ -297,7 +318,11 @@ impl Win32Clipboard {
 
         let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
 
+        // SAFETY: takes no arguments; the clipboard is open for this thread via `_session` above.
         unsafe { EmptyClipboard() };
+        // SAFETY: the clipboard is open via `_session`; `hmem.as_raw()` is a live moveable HGLOBAL
+        // we own. On success the system takes ownership (`into_raw` below); on failure `hmem` is
+        // dropped and freed by us.
         if unsafe { SetClipboardData(CF_UNICODETEXT as u32, hmem.as_raw()) }.is_null() {
             return Err("SetClipboardData failed");
         }
@@ -309,6 +334,10 @@ impl Win32Clipboard {
     pub fn text_static() -> Result<String, &'static str> {
         let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
 
+        // SAFETY: the clipboard is open via `_session`. `hmem` is null-checked before use and is
+        // the CF_UNICODETEXT HGLOBAL; `GlobalLock` is null-checked. While locked (until
+        // `GlobalUnlock` below) `ptr` addresses `GlobalSize(hmem)` bytes, and the scan is capped at
+        // `max_units` u16 units so `*ptr.add(len)` and the slice of `len` units stay in bounds.
         unsafe {
             let hmem = GetClipboardData(CF_UNICODETEXT as u32);
             if hmem.is_null() {
@@ -337,6 +366,7 @@ impl Win32Clipboard {
 
     pub fn clear_static() -> Result<(), &'static str> {
         let _session = ClipboardSession::open_with_retry().ok_or("Failed to open clipboard")?;
+        // SAFETY: takes no arguments; the clipboard is open for this thread via `_session` above.
         unsafe { EmptyClipboard() };
         Ok(())
     }
@@ -413,10 +443,16 @@ mod tests {
         use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
         use windows_sys::Win32::System::Memory::{GlobalAlloc, GMEM_MOVEABLE};
         // Single test: both cases share the process-wide clipboard.
+        // SAFETY: test-only; the arguments are plain integers and a null bits pointer, which
+        // CreateBitmap permits (uninitialised bitmap). The result is null-checked below.
         let hbm = unsafe { CreateBitmap(1, 1, 1, 32, ptr::null()) };
         assert!(!hbm.is_null());
         // Unterminated CF_UNICODETEXT: 8 non-zero units, exactly the allocation size.
         let units = [0x41u16; 8];
+        // SAFETY: test-only. `hmem` is a fresh moveable allocation of 16 bytes, null-checked, and
+        // locked while `p` is written with 8 u16 (16 bytes) from the live `units`, non-overlapping.
+        // The clipboard is open via `session` for Empty/SetClipboardData, which take ownership of
+        // `hmem` and `hbm` on success (asserted); neither is touched afterwards.
         unsafe {
             let hmem = GlobalAlloc(GMEM_MOVEABLE, 16);
             assert!(!hmem.is_null());

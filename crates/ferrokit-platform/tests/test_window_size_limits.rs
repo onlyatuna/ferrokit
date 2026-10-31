@@ -38,14 +38,16 @@ struct ThreadDpi(DPI_AWARENESS_CONTEXT);
 
 impl ThreadDpi {
     fn enter(context: DPI_AWARENESS_CONTEXT) -> Self {
-        // SAFETY: plain value argument; the previous context is restored on drop.
+        // SAFETY: the argument is a plain `DPI_AWARENESS_CONTEXT` constant; the call changes only
+        // the calling thread's awareness, and the returned previous value is restored in `Drop`.
         Self(unsafe { SetThreadDpiAwarenessContext(context) })
     }
 }
 
 impl Drop for ThreadDpi {
     fn drop(&mut self) {
-        // SAFETY: restores the context returned by `SetThreadDpiAwarenessContext`.
+        // SAFETY: `self.0` is the previous context returned by `SetThreadDpiAwarenessContext` in
+        // `enter`, and `Drop` runs on the same thread (the guard is a local, never moved away).
         unsafe { SetThreadDpiAwarenessContext(self.0) };
     }
 }
@@ -104,7 +106,7 @@ impl TestWindow {
     /// `WM_GETMINMAXINFO` through the window's real procedure.
     fn query(&self) -> MINMAXINFO {
         let _dpi = ThreadDpi::enter(self.context);
-        // SAFETY: an all-zero `MINMAXINFO` is valid; the pointer outlives the synchronous send.
+        // SAFETY: `MINMAXINFO` is only `POINT`s (integers), so all-zero is a valid value.
         let mut mmi: MINMAXINFO = unsafe { std::mem::zeroed() };
         mmi.ptMinTrackSize = POINT {
             x: SYSTEM_MIN.0,
@@ -118,6 +120,9 @@ impl TestWindow {
             x: SYSTEM_MAX_SIZE.0,
             y: SYSTEM_MAX_SIZE.1,
         };
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`, messaged from its own
+        // thread; `WM_GETMINMAXINFO` takes a `MINMAXINFO*` in lparam, and `mmi` is a live,
+        // initialised `MINMAXINFO` that outlives the synchronous send.
         unsafe {
             SendMessageW(
                 self.window.hwnd(),
@@ -131,14 +136,20 @@ impl TestWindow {
 
     fn window_size(&self) -> (i32, i32) {
         let _dpi = ThreadDpi::enter(self.context);
+        // SAFETY: `RECT` is four integers, so all-zero is a valid value.
         let mut r: RECT = unsafe { std::mem::zeroed() };
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`; `r` is a live `RECT`
+        // that the call fills in.
         unsafe { GetWindowRect(self.window.hwnd(), &mut r) };
         (r.right - r.left, r.bottom - r.top)
     }
 
     fn client_size(&self) -> (i32, i32) {
         let _dpi = ThreadDpi::enter(self.context);
+        // SAFETY: `RECT` is four integers, so all-zero is a valid value.
         let mut r: RECT = unsafe { std::mem::zeroed() };
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`; `r` is a live `RECT`
+        // that the call fills in.
         unsafe { GetClientRect(self.window.hwnd(), &mut r) };
         (r.right - r.left, r.bottom - r.top)
     }
@@ -146,7 +157,8 @@ impl TestWindow {
     /// `SetWindowPos` with a native size: what an interactive or programmatic resize asks Windows.
     fn resize_natively(&self, w: i32, h: i32) {
         let _dpi = ThreadDpi::enter(self.context);
-        // SAFETY: a live window of this thread.
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`, used from its own
+        // thread; the insert-after handle is null (`HWND_TOP`-style, unused with `SWP_NOZORDER`).
         unsafe {
             SetWindowPos(
                 self.window.hwnd(),
@@ -487,7 +499,10 @@ impl TestWindow {
     /// bottom-right (`-1` is the last pixel).
     fn hit(&self, dx: i32, dy: i32) -> u32 {
         let _dpi = ThreadDpi::enter(self.context);
+        // SAFETY: `RECT` is four integers, so all-zero is a valid value.
         let mut r: RECT = unsafe { std::mem::zeroed() };
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`; `r` is a live `RECT`
+        // that the call fills in.
         unsafe { GetWindowRect(self.window.hwnd(), &mut r) };
         let x = if dx >= 0 {
             r.left + dx
@@ -500,6 +515,8 @@ impl TestWindow {
             r.bottom + dy + 1
         };
         let lparam = ((y as u16 as isize) << 16) | (x as u16 as isize);
+        // SAFETY: `self.window.hwnd()` is the live window owned by `self`, messaged from its own
+        // thread; `WM_NCHITTEST` takes packed coordinates in lparam and no pointers.
         unsafe { SendMessageW(self.window.hwnd(), WM_NCHITTEST, 0, lparam) as u32 }
     }
 }

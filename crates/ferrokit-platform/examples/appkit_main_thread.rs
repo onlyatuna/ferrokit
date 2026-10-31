@@ -164,6 +164,8 @@ mod harness {
     }
 
     fn on_os_main_thread() -> bool {
+        // SAFETY: `pthread_main_np` (libSystem) takes no arguments, reads only the calling thread's
+        // identity and has no preconditions, per the macOS documentation. [inferred]
         unsafe { pthread_main_np() == 1 }
     }
 
@@ -295,6 +297,9 @@ mod objc {
         }
         let utf8: *const c_char = send(ns_string, "UTF8String");
         (!utf8.is_null()).then(|| {
+            // SAFETY: `utf8` is non-null (checked above) and came from `-[NSString UTF8String]`,
+            // which returns a NUL-terminated buffer owned by the string; `ns_string` is alive and
+            // the buffer is copied out (`into_owned`) before any further message is sent. [inferred]
             unsafe { CStr::from_ptr(utf8) }
                 .to_string_lossy()
                 .into_owned()
@@ -328,6 +333,10 @@ mod objc {
         // SAFETY: the selector takes exactly these argument types (`NSEventType`, `NSPoint`,
         // `NSEventModifierFlags`, `NSTimeInterval`, `NSInteger`, `id`, `NSInteger`, `NSInteger`,
         // `float`) and returns the autoreleased event.
+        // SAFETY: [inferred] `objc_msgSend` is cast to the exact C signature of `+[NSEvent
+        // mouseEventWithType:...]`, spelled in the comment above (the transmute changes only the
+        // function-pointer type). The receiver is the `NSEvent` class, the selector registered
+        // from that name, and the args match those types.
         unsafe {
             let f: extern "C" fn(
                 Id,
@@ -365,7 +374,10 @@ mod objc {
         let selector = Sel::register(
             "keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:",
         );
-        // SAFETY: as for `mouse_event`; the strings are `NSString`s that outlive the call.
+        // SAFETY: [inferred] as for `mouse_event`: `objc_msgSend` is cast to the exact C signature
+        // of `+[NSEvent keyEventWithType:...]` (the transmute changes only the function-pointer
+        // type); the `NSString` arguments are alive for the call (autoreleased, within this
+        // thread's autorelease scope) and `isARepeat` is the `i8` BOOL.
         unsafe {
             let f: extern "C" fn(
                 Id,
@@ -430,6 +442,9 @@ mod objc {
 
     pub fn log_exceptions_for(check: &str) {
         let _ = CHECK_NAME.set(check.to_string());
+        // SAFETY: `log_exception` is an `extern "C" fn(Id) -> Id`, the `NSException` preprocessor
+        // signature `objc_setExceptionPreprocessor` documents (it is `'static`, so it outlives the
+        // registration); the previous preprocessor it returns is stored and called from it. [inferred]
         let previous = unsafe { objc_setExceptionPreprocessor(log_exception) };
         let _ = PREVIOUS.set(previous);
     }
@@ -1050,6 +1065,11 @@ mod checks {
         ));
         // A bitmap context's first memory row is its top edge.
         let mut rgba = vec![0u8; 100 * 100 * 4];
+        // SAFETY: [inferred] `rgba` holds `100 * 100 * 4` bytes, exactly the `width * height *
+        // bytes_per_row` the context is created with, and outlives it (the context is released
+        // before `rgba` is read again). `space` and `context` come from the Create calls above
+        // and are released once each; a null `context` is not checked, as the arguments are valid
+        // for an 8-bit RGBA context. `layer` is the live content layer on the main thread.
         unsafe {
             let space = cg::CGColorSpaceCreateDeviceRGB();
             let context = cg::CGBitmapContextCreate(
@@ -1192,6 +1212,9 @@ mod checks {
         let contents: Id = send(layer, "contents");
         let image = contents.as_ptr() as cg::CGImageRef;
         let is_image =
+            // SAFETY: [inferred] `image` is non-null here (`contents` is not nil, checked first by
+            // the `&&`) and is an object `layer.contents` holds alive; `CFGetTypeID` only reads its
+            // type, and `CGImageGetTypeID` takes no arguments.
             !contents.is_nil() && unsafe { cg::CFGetTypeID(image) == cg::CGImageGetTypeID() };
         t.expect(
             is_image,
@@ -1200,6 +1223,8 @@ mod checks {
         if is_image {
             t.eq(
                 "contents CGImage size (the presented pixmap)",
+                // SAFETY: `is_image` was true, so `image` is a live `CGImage` (its type id was
+                // checked above) held by the layer; the width/height getters only read it.
                 unsafe { (cg::CGImageGetWidth(image), cg::CGImageGetHeight(image)) },
                 (100, 100),
             );
@@ -1230,6 +1255,8 @@ mod checks {
             let layer: Id = send(content, "layer");
             let contents: Id = send(layer, "contents");
             let image = contents.as_ptr() as cg::CGImageRef;
+            // SAFETY: [inferred] `contents` is non-nil here (short-circuit `||`), so `image` is a
+            // non-null object held alive by the layer; `CFGetTypeID` only reads its type.
             if contents.is_nil() || unsafe { cg::CFGetTypeID(image) != cg::CGImageGetTypeID() } {
                 t.expect(
                     false,
@@ -1240,6 +1267,10 @@ mod checks {
             // Draw the layer's image into an RGBA (premultiplied last, big endian) bitmap and
             // read the centre pixel.
             let mut rgba = vec![0u8; 100 * 100 * 4];
+            // SAFETY: [inferred] `rgba` holds `100 * 100 * 4` bytes, exactly `width * height *
+            // bytes_per_row` of the context, and outlives it (released before `rgba` is read).
+            // `image` is the `CGImage` whose type was just verified, kept alive by the layer;
+            // `space` and `context` come from the Create calls above, each released once.
             unsafe {
                 let space = cg::CGColorSpaceCreateDeviceRGB();
                 let context = cg::CGBitmapContextCreate(
@@ -1268,6 +1299,10 @@ mod checks {
 
     /// The bytes behind a CGImage, copied (`CGDataProviderCopyData`).
     fn image_bytes(image: cg::CGImageRef) -> Vec<u8> {
+        // SAFETY: [inferred] `image` is a live `CGImage` supplied by the caller. The provider data
+        // is a +1 `CFData` (a `Copy` function) assumed non-null for a bitmap-backed image (not
+        // checked); the byte pointer and length are read before the single `CFRelease` that
+        // balances the copy, and the slice is copied (`to_vec`) first, so it does not dangle.
         unsafe {
             let data = cg::CGDataProviderCopyData(cg::CGImageGetDataProvider(image));
             let bytes = std::slice::from_raw_parts(
@@ -1287,6 +1322,8 @@ mod checks {
         // bytes after the next present. Bytes are compared, not colours (the channel order is a known open item).
         let (mut win, layer) = presented_window(1.0);
         let first: Id = send(layer, "contents");
+        // SAFETY: [inferred] `first` is non-nil (checked first by the `||`), so `as_ptr()` is a
+        // non-null object held alive by the layer; `CFGetTypeID` only reads its type.
         if first.is_nil() || unsafe { cg::CFGetTypeID(first.as_ptr()) != cg::CGImageGetTypeID() } {
             t.expect(
                 false,
@@ -1294,6 +1331,8 @@ mod checks {
             );
             return;
         }
+        // SAFETY: `first` is the non-nil `layer.contents` verified to be a `CGImage` just above;
+        // `CFRetain` takes a +1 on it, balanced by the `CFRelease` at the end of this function.
         let first = unsafe { cg::CFRetain(first.as_ptr()) } as cg::CGImageRef;
         let red = image_bytes(first);
         let mut blue = pixmap(100, Color::from_rgba8(0, 0, 255, 255));
@@ -1310,6 +1349,8 @@ mod checks {
             image_bytes(first) == red,
             "the first frame's image keeps its bytes after the second present",
         );
+        // SAFETY: `first` is the `CGImage` retained above (+1) and not released before; this
+        // is the single balancing release and `first` is not used afterwards.
         unsafe { cg::CFRelease(first as *const _) };
     }
 

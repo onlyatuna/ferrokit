@@ -38,6 +38,9 @@ pub fn open_url(url: &str) -> bool {
         let wide_op: Vec<u16> = "open\0".encode_utf16().collect();
         let wide_url: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
 
+        // SAFETY: `wide_op` and `wide_url` are NUL-terminated UTF-16 buffers (terminator appended above)
+        // that live until after the call; the null HWND, parameters and directory are permitted by the
+        // ShellExecuteW documentation.
         let hinst = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),
@@ -88,6 +91,9 @@ pub fn open_file(path: impl AsRef<Path>) -> bool {
         let path_str = p.to_string_lossy();
         let wide_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
 
+        // SAFETY: `wide_op` and `wide_path` are NUL-terminated UTF-16 buffers (terminator appended above)
+        // that live until after the call; the null HWND, parameters and directory are permitted by the
+        // ShellExecuteW documentation.
         let hinst = unsafe {
             ShellExecuteW(
                 std::ptr::null_mut(),

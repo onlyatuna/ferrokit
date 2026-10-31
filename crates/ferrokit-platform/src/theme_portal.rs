@@ -219,7 +219,10 @@ fn wait_readable(
         revents: 0,
     };
     let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: `pfd` is one valid `pollfd` and `nfds` is 1; `poll` writes only `revents`.
+    // SAFETY: `PollFd` is `#[repr(C)]` with the field order and widths of `struct pollfd`
+    // (`int`, `short`, `short`), and `nfds` is `c_ulong` as `nfds_t` is on Linux; `pfd` is a live
+    // local and `nfds` is 1, so `poll` reads and writes exactly that one element. `fd >= 0` was
+    // checked above; `poll` itself tolerates a closed descriptor by reporting `POLLNVAL`.
     let ready = unsafe { poll(&mut pfd, 1, millis) };
     ready > 0
 }

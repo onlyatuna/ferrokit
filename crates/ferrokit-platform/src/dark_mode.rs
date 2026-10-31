@@ -439,10 +439,18 @@ mod win {
                 0 => None,
                 addr => Some(addr),
             };
-            // SAFETY: each address is the export the ordinal names on this build range (the
-            // signatures in the table of the module documentation); the function pointer types
-            // have the size of `usize`, and the build gate above is what makes the ordinals mean
-            // these functions.
+            // SAFETY: `transmute::<usize, fn>` is sound only if each address is an export with the
+            // signature of the target type. `resolve`'s contract (it is `pub(super)`; its callers are
+            // `load`, which returns `GetProcAddress` results, and the tests, which return `extern
+            // "system"` stubs of the matching signature) is that `resolver(ordinal)` is the export
+            // that ordinal names, with the signatures in the module documentation table (133 =
+            // `AllowDarkModeForWindow(HWND, BOOL)`, 135 = `SetPreferredAppMode(int)` from
+            // `FIRST_BUILD_WITH_PREFERRED_APP_MODE` else `AllowDarkModeForApp(BOOL)`, 136 =
+            // `FlushMenuThemes()`); the early return above keeps builds before 17763 (where the
+            // ordinals mean other functions) from reaching here, and the branch on `build` picks the
+            // 135 signature. A function pointer is `usize`-sized, and `lookup` maps 0 to `None`, so
+            // no null address is transmuted. [inferred: the ordinal-to-signature mapping is from
+            // undocumented exports and cannot be verified here.]
             unsafe {
                 fns.allow_dark_mode_for_window = lookup(ORDINAL_ALLOW_DARK_MODE_FOR_WINDOW)
                     .map(|a| std::mem::transmute::<usize, AllowDarkModeForWindow>(a));
@@ -468,8 +476,12 @@ mod win {
                     .encode_utf16()
                     .chain(std::iter::once(0))
                     .collect();
-                // SAFETY: `name` is NUL-terminated; a failed load yields null, handled below.
-                // The module stays loaded for the life of the process.
+                // SAFETY: `name` is a live NUL-terminated UTF-16 vector for both calls. A null result
+                // from `GetModuleHandleW` or `LoadLibraryExW` is handled right below (`return 0`), so
+                // the handle is never used unchecked. `GetModuleHandleW` takes no reference, and the
+                // `LoadLibraryExW` handle is never freed, so the module stays loaded for the process
+                // (the module is therefore valid for every later `GetProcAddress`). `hFile` is null
+                // as the API requires for the `LOAD_LIBRARY_SEARCH_SYSTEM32` flag.
                 let module = unsafe {
                     let loaded = GetModuleHandleW(name.as_ptr());
                     if loaded.is_null() {
@@ -485,7 +497,10 @@ mod win {
                 if module.is_null() {
                     return 0;
                 }
-                // SAFETY: a `PCSTR` below 0x10000 is an ordinal, which `GetProcAddress` documents.
+                // SAFETY: `module` is the non-null, never-unloaded `uxtheme.dll` handle checked
+                // above; `ordinal as usize` is at most 136 (< 0x10000), which `GetProcAddress`
+                // documents as an ordinal rather than a pointer to a NUL-terminated name, so nothing
+                // is dereferenced.
                 unsafe { GetProcAddress(module, ordinal as usize as *const u8) }
                     .map_or(0, |f| f as usize)
             })
@@ -503,14 +518,20 @@ mod win {
             let call: Box<dyn Fn()> = match plan {
                 AppModePlan::Unsupported => return false,
                 AppModePlan::AllowDarkForApp(on) => match self.allow_dark_mode_for_app {
-                    // SAFETY: resolved for this build range by `resolve`.
+                    // SAFETY: `f` is `allow_dark_mode_for_app`, set by `resolve` only for builds
+                    // before `FIRST_BUILD_WITH_PREFERRED_APP_MODE` (the plan above is
+                    // `AllowDarkForApp` only on those builds) from ordinal 135, whose signature is
+                    // `AllowDarkModeForApp(BOOL)`; it takes a plain integer, no pointers.
                     Some(f) => Box::new(move || unsafe {
                         f(on as i32);
                     }),
                     None => return false,
                 },
                 AppModePlan::Preferred(mode) => match self.set_preferred_app_mode {
-                    // SAFETY: as above.
+                    // SAFETY: `f` is `set_preferred_app_mode`, set by `resolve` only for builds from
+                    // `FIRST_BUILD_WITH_PREFERRED_APP_MODE` (the plan above is `Preferred` only on
+                    // those builds) from ordinal 135, whose signature is `SetPreferredAppMode(int)`;
+                    // it takes a plain integer, no pointers.
                     Some(f) => Box::new(move || unsafe {
                         f(mode as i32);
                     }),
@@ -526,7 +547,9 @@ mod win {
             }
             call();
             if let Some(flush) = self.flush_menu_themes {
-                // SAFETY: resolved for this build range by `resolve`.
+                // SAFETY: `flush` is `flush_menu_themes`, set by `resolve` from ordinal 136
+                // (`FlushMenuThemes()`, no arguments); no lock is held across the call, so the
+                // window messages it sends cannot deadlock on `applied`.
                 unsafe { flush() };
             }
             true
@@ -536,7 +559,11 @@ mod win {
         pub(super) fn allow_window(&self, hwnd: HWND, allow: bool) -> bool {
             match self.allow_dark_mode_for_window {
                 Some(f) if !hwnd.is_null() => {
-                    // SAFETY: resolved for this build range; `hwnd` is a window handle.
+                    // SAFETY: `f` is `allow_dark_mode_for_window`, set by `resolve` from ordinal 133
+                    // (`AllowDarkModeForWindow(HWND, BOOL)`); `hwnd` is non-null (checked in the
+                    // match guard) and comes from the window registry, and uxtheme validates the
+                    // handle itself [inferred: undocumented export, so this is not checked against
+                    // any documentation].
                     unsafe { f(hwnd, allow as i32) };
                     true
                 }
@@ -575,7 +602,10 @@ mod win {
         }
         let value: i32 = dark as i32;
         let size = std::mem::size_of::<i32>() as u32;
-        // SAFETY: `value` outlives the calls and `size` is its size.
+        // SAFETY: `hwnd` is non-null (checked above) and `DwmSetWindowAttribute` validates it,
+        // failing with an `HRESULT` for a stale handle; `pvAttribute` points to `value`, a live
+        // `i32` (a `BOOL`, which both dark-mode attributes take per the DWM documentation), with
+        // `size` its byte size 4, and it is only read; `value` outlives every call in the iterator.
         unsafe {
             [
                 DWMWA_USE_IMMERSIVE_DARK_MODE as u32,

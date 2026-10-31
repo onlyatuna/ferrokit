@@ -299,7 +299,9 @@ pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
     }
 
     #[cfg(windows)]
-    // SAFETY: `PostMessageW` accepts any handle value and fails harmlessly for a stale one.
+    // SAFETY: PostMessageW takes no pointers (all arguments are plain integers/handle values) and,
+    // per its documentation, fails with an error return for a handle that is not (or no longer) a
+    // window, so a stale `hwnd` cannot cause UB here; the return value is intentionally ignored.
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
             hwnd,
@@ -328,7 +330,9 @@ fn has_local_handler(hwnd: isize) -> bool {
 fn owned_by_other_thread(hwnd: isize) -> bool {
     #[cfg(windows)]
     {
-        // SAFETY: any handle value is accepted; an invalid one yields thread id 0.
+        // SAFETY: GetWindowThreadProcessId takes no required pointers (null out-pid is allowed per
+        // its documentation) and returns 0 for an invalid handle; GetCurrentThreadId has no
+        // arguments. A stale `hwnd` therefore only yields tid 0.
         unsafe {
             let tid = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
                 hwnd as HWND,
@@ -464,7 +468,8 @@ fn is_repeated_buttonless_move(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> bo
         x: get_x_lparam(lparam),
         y: get_y_lparam(lparam),
     };
-    // SAFETY: `hwnd` is the window receiving this message; `pt` is a valid out pointer.
+    // SAFETY: `hwnd` is the window that received this message (passed by the wndproc) and user32
+    // validates it; `pt` is a local POINT, a valid out pointer for the duration of the call.
     unsafe { ClientToScreen(hwnd, &mut pt) };
     let current = Some((hwnd as isize, pt.x, pt.y));
     let previous = LAST_MOUSE_MOVE.with(|last| last.replace(current));
@@ -509,7 +514,8 @@ thread_local! {
 #[cfg(windows)]
 fn release_capture_for_system_loop() {
     let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(true));
-    // SAFETY: plain Win32 call; the capture notification is sent before it returns.
+    // SAFETY: ReleaseCapture takes no arguments and only affects this thread's mouse capture; the
+    // WM_CAPTURECHANGED it triggers is delivered synchronously, inside the flag set just above.
     unsafe { ReleaseCapture() };
     let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(false));
 }
@@ -545,7 +551,8 @@ fn set_auto_capture_flag(hwnd: isize, on: bool) {
 /// with no capture captures the mouse automatically.
 #[cfg(windows)]
 fn capture_on_press(hwnd: HWND) {
-    // SAFETY: plain Win32 calls on a window handle of this process.
+    // SAFETY: `hwnd` is the window currently handling a mouse press (called from the wndproc) and
+    // user32 validates it; SetCapture/GetCapture take no pointers and run on the window's thread.
     unsafe {
         if GetCapture() != hwnd {
             SetCapture(hwnd);
@@ -561,7 +568,8 @@ fn release_capture_when_idle(hwnd: HWND) {
     let idle = APP_MOUSE_BUTTONS
         .try_with(|b| b.get().is_empty())
         .unwrap_or(true);
-    // SAFETY: as in `capture_on_press`.
+    // SAFETY: as in `capture_on_press`: `hwnd` is the window handling this message, validated by
+    // user32; GetCapture/ReleaseCapture take no pointers.
     unsafe {
         if idle && GetCapture() == hwnd && auto_capture_flag(hwnd as isize) {
             set_auto_capture_flag(hwnd as isize, false);
@@ -578,7 +586,8 @@ fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
     if hwnd.is_null() {
         return false;
     }
-    // SAFETY: plain Win32 calls on a window handle of this process.
+    // SAFETY: `hwnd` is non-null (checked above) and validated by user32 (stale handles make the
+    // calls fail harmlessly); none of the calls takes a pointer.
     unsafe {
         if grab && IsWindowVisible(hwnd) == 0 {
             return false;
@@ -604,7 +613,8 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
         GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
-    // SAFETY: plain Win32 queries without pointers.
+    // SAFETY: GetSystemMetrics and GetAsyncKeyState take only integer arguments and read global
+    // input state; they have no preconditions.
     unsafe {
         let swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
         let down = |vk| GetAsyncKeyState(vk as i32) < 0;
@@ -895,6 +905,9 @@ fn is_window_thread(hwnd: HWND) -> bool {
         if hwnd.is_null() {
             return ferrokit_core::object::ThreadContext::is_main_thread();
         }
+        // SAFETY: GetWindowThreadProcessId takes a window handle (validated by user32; `hwnd` is
+        // non-null here) and a null out-pid, which its documentation allows; GetCurrentThreadId has
+        // no arguments.
         unsafe {
             let win_tid = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
                 hwnd,
@@ -941,6 +954,8 @@ pub fn handle_geometry_change(delivery: Delivery, hwnd: HWND, geometry: Rect) {
 
 #[cfg(windows)]
 fn query_keyboard_modifiers() -> KeyboardModifiers {
+    // SAFETY: GetKeyState takes only an integer virtual-key code and reads this thread's input
+    // state; it has no preconditions.
     unsafe {
         let is_down = |vk: u16| -> bool { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 };
         KeyboardModifiers {
@@ -986,6 +1001,8 @@ thread_local! {
 
 #[cfg(windows)]
 fn get_cursor_global_pos() -> ferrokit_gui::geometry::primitives::Point {
+    // SAFETY: POINT is a plain integer struct, so the all-zero value is valid; `pt` is a local out
+    // pointer valid for the GetCursorPos call.
     unsafe {
         let mut pt: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
@@ -1044,6 +1061,9 @@ fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
         GetWindowLongPtrW, IsWindowVisible, SetLayeredWindowAttributes, SetWindowLongPtrW,
         GWL_EXSTYLE, LWA_ALPHA,
     };
+    // SAFETY: `hwnd` is the window being styled (validated by user32; stale handles make the
+    // calls fail harmlessly); the only pointer argument is null, which InvalidateRect accepts to
+    // mean the whole client area (per its documentation).
     unsafe {
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let new_style = needs.layered_ex_style(ex_style);
@@ -1063,6 +1083,8 @@ fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
 // `hwnd` is passed only to `GetDpiForWindow`, which returns 0 for an invalid handle.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_window_dpr(hwnd: HWND) -> f32 {
+    // SAFETY: GetDpiForWindow takes only a handle and returns 0 for an invalid one (per its
+    // documentation), which the `dpi > 0` check below maps to a scale of 1.0.
     unsafe {
         let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
         if dpi > 0 {
@@ -1289,7 +1311,10 @@ unsafe fn native_window_proc_inner(
             // `fromNativeWindowGeometry` for a top-level window: the position maps against its
             // screen's native top-left (`qwindowsysteminterface.cpp:298`,
             // `qhighdpiscaling_p.h:254-260`).
+            // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
             let mut r: RECT = unsafe { std::mem::zeroed() };
+            // SAFETY: `hwnd` is the window this message was dispatched to (validated by user32); `r`
+            // is a local RECT, a valid out pointer for the call; a 0 return is handled below.
             let (x, y) = if unsafe { GetWindowRect(hwnd, &mut r) } != 0 {
                 let logical_pt = window_global_position(hwnd, Point::new(r.left, r.top), dpr);
                 (logical_pt.x, logical_pt.y)
@@ -1324,6 +1349,8 @@ unsafe fn native_window_proc_inner(
             // Qt ignores a move while iconic: `QWindowsWindow::handleMoved` only runs the geometry
             // change when `!IsIconic` (qwindowswindow.cpp:2328-2333). Windows reports the iconic
             // position as (-32000, -32000), which must not reach the geometry or the event receiver.
+            // SAFETY: `hwnd` is the window this message was dispatched to; IsIconic takes only the
+            // handle and validates it.
             if unsafe { IsIconic(hwnd) } != 0 {
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
             }
@@ -1332,7 +1359,10 @@ unsafe fn native_window_proc_inner(
             let phys_x = get_x_lparam(lparam);
             let phys_y = get_y_lparam(lparam);
             let pos = window_global_position(hwnd, Point::new(phys_x, phys_y), dpr);
+            // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
             let mut r: RECT = unsafe { std::mem::zeroed() };
+            // SAFETY: as for WM_SIZE: `hwnd` is the window receiving WM_MOVE and `r` is a local
+            // out pointer valid for the call.
             let (w, h) = if unsafe { GetWindowRect(hwnd, &mut r) } != 0 {
                 let logical_size = crate::high_dpi::from_native_size(
                     ferrokit_gui::geometry::primitives::Size::new(
@@ -1491,6 +1521,8 @@ unsafe fn native_window_proc_inner(
                     button,
                     modifiers,
                     // `QWindowsContext` stamps mouse messages with `GetMessageTime()` (qwindowscontext.cpp:836).
+                    // SAFETY: GetMessageTime takes no arguments and reads the time of the message
+                    // this thread is currently handling (we are inside its wndproc).
                     timestamp: unsafe { GetMessageTime() } as u32,
                 },
             );
@@ -1934,6 +1966,8 @@ unsafe fn native_window_proc_inner(
 
 #[cfg(windows)]
 pub fn set_dpi_awareness() -> bool {
+    // SAFETY: SetProcessDpiAwarenessContext takes a predefined context constant, not a pointer; it
+    // only changes process state and returns 0 (handled by the caller) if already set or refused.
     unsafe {
         use windows_sys::Win32::UI::HiDpi::{
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -1992,6 +2026,10 @@ pub(crate) const NATIVE_WINDOW_CLASS_NAME: &[u16] = &[
 
 #[cfg(windows)]
 fn ensure_native_window_class_registered() {
+    // SAFETY: the closure's block runs once: `GetModuleHandleW(null)` returns this module's handle;
+    // `wc` is a fully initialised WNDCLASSEXW with `cbSize` set and a `'static` wndproc and class
+    // name (`NATIVE_WINDOW_CLASS_NAME` is NUL-terminated), outliving the call; LoadCursorW with a
+    // null instance and IDC_ARROW loads the shared system cursor. RegisterClassExW copies `wc`.
     REGISTER_WINDOW_CLASS_ONCE.call_once(|| unsafe {
         let h_instance = GetModuleHandleW(ptr::null());
         let wc = WNDCLASSEXW {
@@ -2089,6 +2127,10 @@ impl NativeWindow {
 
         let wide_title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
 
+        // SAFETY: the class was registered by `ensure_native_window_class_registered` above; the
+        // class name and `wide_title` are NUL-terminated UTF-16 buffers that outlive the call (the
+        // title is copied by the system); null parent/menu/param are permitted for a top-level
+        // window; a null result is checked right after.
         let hwnd = unsafe {
             let h_instance = GetModuleHandleW(ptr::null());
             CreateWindowExW(
@@ -2125,6 +2167,8 @@ impl NativeWindow {
         crate::ime::set_window_ime_enabled(hwnd, false);
 
         if flags.contains(WindowFlags::CUSTOM_FRAMELESS) && !flags.contains(WindowFlags::LAYERED) {
+            // SAFETY: `hwnd` is the window just created above (non-null, checked); `margins` is a
+            // local MARGINS that outlives the call; the window is on this thread.
             unsafe {
                 let margins = MARGINS {
                     cxLeftWidth: 1,
@@ -2205,7 +2249,11 @@ impl NativeWindow {
     pub fn geometry(&self) -> Rect {
         #[cfg(windows)]
         if !self.hwnd.is_null() {
+            // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
             let mut r: RECT = unsafe { std::mem::zeroed() };
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle (set
+            // in `new`, nulled only after `DestroyWindow`); `r` is a local out pointer valid for the
+            // call; a 0 return falls back to the cached geometry.
             if unsafe { GetWindowRect(self.hwnd, &mut r) } != 0 {
                 return Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top);
             }
@@ -2233,6 +2281,8 @@ impl NativeWindow {
 
     pub fn show(&self) {
         if !self.hwnd.is_null() {
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle (set
+            // in `new`, nulled only after `DestroyWindow`); ShowWindow takes no pointers.
             unsafe {
                 let cmd = if self.flags.contains(WindowFlags::TOOLTIP) {
                     SW_SHOWNOACTIVATE
@@ -2246,6 +2296,7 @@ impl NativeWindow {
 
     pub fn hide(&self) {
         if !self.hwnd.is_null() {
+            // SAFETY: as in `show`: `self.hwnd` is this window's own live handle; no pointers.
             unsafe {
                 ShowWindow(self.hwnd, SW_HIDE);
             }
@@ -2258,7 +2309,8 @@ impl NativeWindow {
     pub fn raise(&self) {
         use windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOP;
         if !self.hwnd.is_null() {
-            // SAFETY: `hwnd` is the live window this value owns.
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle (set
+            // in `new`, nulled only after `DestroyWindow`); `HWND_TOP` is a predefined constant.
             unsafe {
                 SetWindowPos(
                     self.hwnd,
@@ -2282,7 +2334,8 @@ impl NativeWindow {
         if self.hwnd.is_null() || self.flags.contains(WindowFlags::TOOLTIP) {
             return;
         }
-        // SAFETY: `hwnd` is the live window this value owns.
+        // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle (set in
+        // `new`, nulled only after `DestroyWindow`); the calls take no pointers.
         unsafe {
             if IsWindowVisible(self.hwnd) != 0 {
                 SetForegroundWindow(self.hwnd);
@@ -2293,6 +2346,8 @@ impl NativeWindow {
     pub fn set_geometry(&mut self, rect: Rect) {
         if !self.hwnd.is_null() {
             let _guard = SetGeometryGuard::new(&self.state_flags);
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; the
+            // null insert-after is permitted because `SWP_NOZORDER` is set; no other pointers.
             unsafe {
                 SetWindowPos(
                     self.hwnd,
@@ -2333,6 +2388,8 @@ impl NativeWindow {
     pub fn set_stays_on_top(&mut self, enabled: bool) {
         if !self.hwnd.is_null() {
             let insert_after = topmost_insert_after(enabled);
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle;
+            // `insert_after` is HWND_TOPMOST/HWND_NOTOPMOST from `topmost_insert_after`.
             unsafe {
                 SetWindowPos(
                     self.hwnd,
@@ -2353,6 +2410,8 @@ impl NativeWindow {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE,
             };
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; the
+            // calls take only integers/handles, no pointers.
             unsafe {
                 let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) as u32;
                 let new_style = if enabled {
@@ -2378,6 +2437,8 @@ impl NativeWindow {
 
     pub fn start_system_move(&self) -> bool {
         if !self.hwnd.is_null() {
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; the
+            // calls take no pointers (PostMessageW queues the message, it does not dereference).
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
                 release_capture_for_system_loop();
@@ -2391,6 +2452,8 @@ impl NativeWindow {
 
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
+            // SAFETY: as in `start_system_move`: `self.hwnd` is this window's own live handle and no
+            // pointer arguments are involved.
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
                 release_capture_for_system_loop();
@@ -2592,6 +2655,9 @@ impl NativeWindow {
             // Windows would destroy the windows this one owns with it (QTBUG-35499).
             crate::window_region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
             remove_window_size_limits(self.hwnd);
+            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle, created
+            // in `new`; this is its only DestroyWindow call because `hwnd` is nulled right after, and
+            // `NativeWindow` is `!Send`, so this runs on the creating thread DestroyWindow requires.
             unsafe {
                 DestroyWindow(self.hwnd);
             }
@@ -2652,8 +2718,11 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         if self.hwnd.is_null() {
             return false;
         }
+        // SAFETY: GetForegroundWindow takes no arguments; the result is only compared or passed on.
         let foreground = unsafe { GetForegroundWindow() };
         !foreground.is_null()
+            // SAFETY: `foreground` is non-null (checked just above) and `self.hwnd` is non-null
+            // (checked at the top); IsChild takes handles only and validates them.
             && (foreground == self.hwnd || unsafe { IsChild(foreground, self.hwnd) } != 0)
     }
 
@@ -2713,7 +2782,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     }
 
     fn has_mouse_grab(&self) -> bool {
-        // SAFETY: plain Win32 query.
+        // SAFETY: GetCapture takes no arguments; `self.hwnd` is only compared with the result.
         !self.hwnd.is_null() && unsafe { GetCapture() } == self.hwnd
     }
 
@@ -2854,8 +2923,11 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         if self.hwnd.is_null() {
             return None;
         }
+        // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
         let mut r: RECT = unsafe { std::mem::zeroed() };
         // Same rect `UpdateLayeredWindowIndirect` is given as `psize`.
+        // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; `r` is a
+        // local out pointer valid for the call; a 0 return is handled.
         if unsafe { GetWindowRect(self.hwnd, &mut r) } == 0 {
             return None;
         }
@@ -3009,6 +3081,8 @@ pub(crate) fn edges_to_win_orientation(edges: crate::platform_window::WindowEdge
 pub fn post_system_move(_hwnd: isize) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
+        // SAFETY: `_hwnd` is non-zero and user32 validates any handle value (PostMessageW takes no
+        // pointers and fails harmlessly for a stale one); ReleaseCapture takes no arguments.
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
             release_capture_for_system_loop();
@@ -3022,6 +3096,7 @@ pub fn post_system_move(_hwnd: isize) -> bool {
 pub fn post_system_resize(_hwnd: isize, _edges: crate::platform_window::WindowEdges) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
+        // SAFETY: as in `post_system_move`: `_hwnd` is non-zero and validated by user32; no pointers.
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
             release_capture_for_system_loop();
@@ -3044,6 +3119,9 @@ pub fn calc_frameless_edge(
     const M: i32 = 8;
     #[cfg(windows)]
     let (w, h) = if _hwnd != 0 {
+        // SAFETY: RECT is a plain integer struct, so zeroed is valid; `rect` is a local out pointer
+        // valid for the call; GetClientRect validates `_hwnd` (non-zero) and on failure leaves the
+        // zeroed rect.
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
             let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
@@ -3100,6 +3178,8 @@ mod tests {
         let win = NativeWindow::new("Style Test Window", rect, WindowFlags::NORMAL)
             .expect("failed to create standard window");
 
+        // SAFETY: `win` owns the live window created above; IsWindow/GetWindowLongPtrW take only the
+        // handle and read window state, no pointers.
         unsafe {
             assert_ne!(IsWindow(win.hwnd()), 0);
             let style = GetWindowLongPtrW(win.hwnd(), GWL_STYLE) as u32;
@@ -3120,6 +3200,8 @@ mod tests {
         )
         .expect("failed to create frameless layered window");
 
+        // SAFETY: `frameless_win` owns the live window created above; the calls take only the
+        // handle, no pointers.
         unsafe {
             assert_ne!(IsWindow(frameless_win.hwnd()), 0);
             let style = GetWindowLongPtrW(frameless_win.hwnd(), GWL_STYLE) as u32;
@@ -3138,6 +3220,8 @@ mod tests {
         )
         .expect("failed to create custom window");
 
+        // SAFETY: `custom_win` owns the live window created above; the calls take only the handle,
+        // no pointers.
         unsafe {
             assert_ne!(IsWindow(custom_win.hwnd()), 0);
             let style = GetWindowLongPtrW(custom_win.hwnd(), GWL_STYLE) as u32;
@@ -3166,6 +3250,10 @@ mod tests {
         assert_eq!(cfg.caption_height, 40);
         assert_eq!(cfg.resize_border, 10);
 
+        // SAFETY: `win` owns the live window created above and the test runs on its thread; RECT and
+        // NCCALCSIZE_PARAMS are plain C structs, so zeroed is valid; for WM_NCCALCSIZE with
+        // wparam=1 the wndproc reads only `rgrc[0]` through the `lparam` pointer to `ncp`, which
+        // outlives the call; the WM_NCHITTEST calls pass packed coordinates, no pointers.
         unsafe {
             let mut ncp: NCCALCSIZE_PARAMS = std::mem::zeroed();
             ncp.rgrc[0] = RECT {
@@ -3233,6 +3321,7 @@ mod tests {
             WindowFlags::NORMAL,
         )
         .expect("failed to create window");
+        // SAFETY: in the closure, `w` owns the live window; GetWindowLongPtrW takes only the handle.
         let topmost = |w: &NativeWindow| unsafe {
             GetWindowLongPtrW(w.hwnd(), GWL_EXSTYLE) as u32 & WS_EX_TOPMOST
         };
@@ -3260,9 +3349,11 @@ mod tests {
             WindowFlags::NORMAL,
         )
         .expect("failed to create window");
+        // SAFETY: in the closure, `w` owns the live window; GetWindowLongPtrW takes only the handle.
         let transparent = |w: &NativeWindow| unsafe {
             GetWindowLongPtrW(w.hwnd(), GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT
         };
+        // SAFETY: in the closure, `w` owns the live window; GetWindowLongPtrW takes only the handle.
         let layered = |w: &NativeWindow| unsafe {
             GetWindowLongPtrW(w.hwnd(), GWL_EXSTYLE) as u32 & WS_EX_LAYERED
         };
@@ -3321,11 +3412,13 @@ mod tests {
         assert!(!win.flags().contains(WindowFlags::STAYS_ON_TOP));
 
         assert_ne!(
+            // SAFETY: `win` owns the live window; IsWindowVisible takes only the handle.
             unsafe { IsWindowVisible(win.hwnd()) },
             0,
             "stays-on-top toggle must not hide the window"
         );
         let transparent =
+            // SAFETY: `win` owns the live window; GetWindowLongPtrW takes only the handle.
             unsafe { GetWindowLongPtrW(win.hwnd(), GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT };
         assert_ne!(
             transparent, 0,
@@ -3339,6 +3432,9 @@ mod tests {
         let win = NativeWindow::new("WndProc Event Window", rect, WindowFlags::NORMAL)
             .expect("failed to create window");
 
+        // SAFETY: `win` owns the live window created above and the test runs on its creating
+        // thread, as the wndproc expects; the messages are passed directly to its wndproc with
+        // plain integer arguments (no pointers).
         unsafe {
             let erase_ret = native_window_proc(win.hwnd(), WM_ERASEBKGND, 0, 0);
             assert_eq!(erase_ret, 1);

@@ -204,25 +204,32 @@ mod imp {
     }
 
     fn os_register(id: u32, modifiers: HotkeyModifiers, vk: u32) -> Result<(), HotkeyError> {
-        // SAFETY: plain FFI call; a NULL window binds the hotkey to the calling (worker) thread.
+        // SAFETY: by-value arguments only, no pointers; the NULL window is permitted by the
+        // RegisterHotKey documentation and binds the hotkey to the calling thread, which is the
+        // worker (`os_register` is reached only via `run_op`, see its doc). Failure is reported
+        // through the return value.
         if unsafe { RegisterHotKey(std::ptr::null_mut(), id as i32, modifiers.bits(), vk) } != 0 {
             Ok(())
         } else {
             // Read before anything else can overwrite it.
             Err(HotkeyError::Os {
-                // SAFETY: plain FFI call, made right after the failing call on the same thread.
+                // SAFETY: `GetLastError` takes no arguments and reads the calling thread's error
+                // slot; it runs immediately after the failed `RegisterHotKey` on the same thread.
                 code: unsafe { GetLastError() },
             })
         }
     }
 
     fn os_unregister(id: u32) -> Result<(), HotkeyError> {
-        // SAFETY: plain FFI call on the thread that registered `id`.
+        // SAFETY: by-value arguments only, no pointers; NULL window as at registration, so this
+        // targets the calling worker thread's hotkeys (`os_unregister` runs only on the worker or
+        // in `ExitGuard::drop` on it). An unknown id merely makes the call fail.
         if unsafe { UnregisterHotKey(std::ptr::null_mut(), id as i32) } != 0 {
             Ok(())
         } else {
             Err(HotkeyError::Os {
-                // SAFETY: plain FFI call, made right after the failing call on the same thread.
+                // SAFETY: `GetLastError` takes no arguments and reads the calling thread's error
+                // slot; it runs immediately after the failed `UnregisterHotKey` on the same thread.
                 code: unsafe { GetLastError() },
             })
         }
@@ -315,16 +322,19 @@ mod imp {
         let _exit = ExitGuard(&shared);
         // SAFETY: `MSG` is plain data for which all-zero is valid.
         let mut msg: MSG = unsafe { std::mem::zeroed() };
-        // SAFETY: PM_NOREMOVE only makes the system create this thread's message queue, so that
-        // `PostThreadMessageW` to the id published below cannot fail for want of a queue.
+        // SAFETY: `&mut msg` points at the live local `msg` initialized above, and the NULL window
+        // plus 0/0 filter are permitted by PeekMessageW. PM_NOREMOVE only makes the system create
+        // this thread's message queue, so `PostThreadMessageW` to the id published below cannot
+        // fail for want of a queue.
         unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
-        // SAFETY: plain FFI call with no arguments.
+        // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
         let thread_id = unsafe { GetCurrentThreadId() };
         if ready.send(thread_id).is_err() {
             return;
         }
         loop {
-            // SAFETY: `msg` is a valid out-pointer; no window, so no dispatching is needed.
+            // SAFETY: `&mut msg` points at the live local `msg` initialized above and is written
+            // only during the call; the NULL window means no dispatching is needed.
             let ret = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
             if ret <= 0 {
                 // 0: WM_QUIT (shutdown); -1: the call failed and the queue is unusable.
@@ -385,10 +395,13 @@ mod imp {
                     return Err(HotkeyError::Stopped);
                 }
                 queue.requests.push_back(Request { op, reply });
-                // SAFETY: plain FFI call to our live worker thread, whose queue exists (created
-                // before start-up ended).
+                // SAFETY: by-value arguments only. `self.thread_id` names our worker: `closed` is
+                // unset (checked above under the queue lock the worker must take before it
+                // exits), so the id cannot have been reused, and its queue exists (created by
+                // `PeekMessageW` in `worker` before the id was published).
                 if unsafe { PostThreadMessageW(self.thread_id, WM_WAKE, 0, 0) } == 0 {
-                    // SAFETY: plain FFI call; read before anything else can overwrite it.
+                    // SAFETY: `GetLastError` takes no arguments; called right after the failed post
+                    // on the same thread, before anything else can overwrite the error slot.
                     let code = unsafe { GetLastError() };
                     // Nobody will wake the worker for this request, and it must not run later.
                     queue.requests.pop_back();
@@ -450,7 +463,9 @@ mod imp {
             // already leaving and needs no message. A post fails only transiently (full queue).
             loop {
                 let queue = lock(&self.shared.queue);
-                // SAFETY: plain FFI call, to our own live worker thread (see above).
+                // SAFETY: by-value arguments only. `queue.closed` is unset in this branch (`||`
+                // short-circuits) and the queue lock is held, so the worker is still alive and
+                // `thread_id` has not been reused (see the comment above the loop).
                 if queue.closed || unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) } != 0
                 {
                     break;
@@ -484,6 +499,9 @@ mod imp {
         /// A hotkey press, without a key press: what the system posts to the thread.
         fn press(manager: &Manager, id: u32) {
             assert_ne!(
+                // SAFETY: by-value arguments only; `worker_thread_id()` is the id of the live worker
+                // of `manager`, which the caller keeps alive; a post to a dead thread would only
+                // fail and trip the assertion.
                 unsafe {
                     PostThreadMessageW(manager.worker_thread_id(), WM_HOTKEY, id as usize, 0)
                 },
@@ -562,6 +580,9 @@ mod imp {
                 tx.lock().unwrap().send(()).unwrap();
             });
             drop(m);
+            // SAFETY: by-value arguments only; `thread_id` is the live worker of `m`'s manager,
+            // kept alive by `held` (moved into the handler) until the handler runs. A failing post
+            // would only trip the assertion.
             assert_ne!(unsafe { PostThreadMessageW(thread_id, WM_HOTKEY, 4, 0) }, 0);
             rx.recv_timeout(PRESS_TIMEOUT).unwrap();
             // The handler (and the sender in it) is freed when the worker thread, the last owner

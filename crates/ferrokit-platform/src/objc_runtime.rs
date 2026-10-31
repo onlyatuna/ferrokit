@@ -197,6 +197,15 @@ pub fn qnsview_class() -> Class {
     extern "C" fn is_flipped(_this: *mut c_void, _cmd: *const c_void) -> BOOL {
         YES
     }
+    // SAFETY: the closure runs once (LazyLock) and only calls runtime functions with arguments it
+    // built itself: `ns_view` comes from `objc_getClass("NSView")` (NSView always exists once
+    // AppKit is linked, per the `#[link]` on `native_bindings`), `name` is a NUL-terminated
+    // `CString` alive for the whole closure, and `class` is the fresh pair returned by
+    // `objc_allocateClassPair` that is configured and then registered before it is shared.
+    // `is_flipped` has the C ABI and the `c@:` shape `-isFlipped` needs; it is passed with the
+    // inherited method's own type encoding. The `[inferred]` premise is that
+    // `objc_allocateClassPair` returns non-nil here (a nil result would make the `class_addMethod`
+    // calls no-ops per the runtime documentation, not UB).
     static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
         let existing = objc_get_class("QNSView");
         if !existing.is_nil() {
@@ -229,6 +238,9 @@ fn is_macos_at_least(major: NSInteger) -> bool {
         minor: NSInteger,
         patch: NSInteger,
     }
+    // SAFETY: `NSProcessInfo` is a Foundation class (linked via AppKit); `processInfo` takes no
+    // arguments and returns an object, which is what `send_class_0` models. The result is
+    // autoreleased/shared, so there is no +1 to balance.
     let info = unsafe {
         ObjcMsg::send_class_0(
             objc_get_class("NSProcessInfo"),
@@ -241,6 +253,12 @@ fn is_macos_at_least(major: NSInteger) -> bool {
         minor: 0,
         patch: 0,
     };
+    // SAFETY: `transmute` only reinterprets the address of the variadic-declared `objc_msgSend`
+    // symbol as a function pointer of the signature this call actually has (receiver, selector,
+    // by-value 3-word struct `NSOperatingSystemVersion` -> `BOOL`), which is how the runtime
+    // documents `objc_msgSend` must be called. `info` is `[NSProcessInfo processInfo]` from above
+    // and `isOperatingSystemAtLeastVersion:` takes exactly that `NSOperatingSystemVersion` struct
+    // (`#[repr(C)]` with three `NSInteger`s, matching Foundation's layout) and returns `BOOL`.
     let res: BOOL = unsafe {
         let msg_send: unsafe extern "C" fn(
             *mut c_void,
@@ -269,23 +287,37 @@ pub fn qcocoa_application_delegate() -> Id {
         {
             return;
         }
+        // SAFETY: `currentApplication` is a class method of `NSRunningApplication` taking no
+        // arguments and returning an object, matching `send_class_0`; AppKit invokes the delegate
+        // callback on the main thread [inferred from the AppKit delegate contract].
         let current = unsafe {
             ObjcMsg::send_class_0(
                 objc_get_class("NSRunningApplication"),
                 Sel::register("currentApplication"),
             )
         };
+        // SAFETY: `current` is the object returned above (nil is tolerated: `send_bool_return`
+        // returns false for nil); `isActive` takes no arguments and returns `BOOL`, matching
+        // `send_bool_return`.
         if !unsafe { ObjcMsg::send_bool_return(current, Sel::register("isActive")) } {
+            // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication`
+            // returning an object, matching `send_class_0`; still on the main thread.
             let app = unsafe {
                 ObjcMsg::send_class_0(
                     objc_get_class("NSApplication"),
                     Sel::register("sharedApplication"),
                 )
             };
+            // SAFETY: `app` is the shared `NSApplication` from the line above;
+            // `activateIgnoringOtherApps:` takes one `BOOL`, matching `send_bool`.
             unsafe { ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true) };
         }
         if is_macos_at_least(14) {
             // NSApplicationActivateAllWindows
+            // SAFETY: `current` is the `NSRunningApplication` from above; `activateWithOptions:`
+            // takes one `NSApplicationActivationOptions` (an NSUInteger bit set; `1` is
+            // `NSApplicationActivateAllWindows`), passed through `send_int` which has the same
+            // register layout [inferred: same-size integer argument].
             unsafe { ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1) };
         }
     }
@@ -298,6 +330,13 @@ pub fn qcocoa_application_delegate() -> Id {
     ) {
         crate::clipboard_cocoa::CocoaClipboard::new().poll_changes();
     }
+    // SAFETY: the closure runs once (LazyLock). Every runtime call receives values built here:
+    // `name` is a NUL-terminated `CString` (or a `c"..."` literal) alive across the call,
+    // `NSObject` always exists, `raw` is the pair returned by `objc_allocateClassPair` and is
+    // registered after its methods are added. `did_finish_launching` / `did_become_active` are
+    // `extern "C"` functions of (self, _cmd, notification) returning nothing, which is exactly the
+    // `v@:@` encoding passed. The delegate is created with `alloc` + `init` (no arguments) on the
+    // class just registered; the +1 is intentionally never released (see the doc comment).
     static DELEGATE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
         let mut class = objc_get_class("QCocoaApplicationDelegate");
         if class.is_nil() {
@@ -337,7 +376,15 @@ pub fn nsstring_from_str(s: &str) -> Id {
     let cls = objc_get_class("NSString");
     let sel_alloc = Sel::register("alloc");
     let sel_init = Sel::register("initWithBytes:length:encoding:");
+    // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`; `cls` is
+    // the `NSString` class from `objc_getClass` (a nil class would make the send a no-op).
     let str_obj = unsafe { ObjcMsg::send_class_0(cls, sel_alloc) };
+    // SAFETY: `transmute` reinterprets `objc_msgSend` as a function pointer with this call's real
+    // signature (receiver, selector, `*const u8`, `NSUInteger` length, `NSUInteger` encoding ->
+    // object), as the runtime documentation requires. `str_obj` is the fresh `alloc` result,
+    // consumed by `initWithBytes:length:encoding:`, whose parameters are (const void*, NSUInteger,
+    // NSUInteger) per the Foundation documentation; `s.as_ptr()`/`s.len()` describe a live UTF-8
+    // buffer that the call copies, and 4 is `NSUTF8StringEncoding`.
     unsafe {
         let msg_send: extern "C" fn(
             *mut c_void,
@@ -361,6 +408,8 @@ pub fn objc_get_class(name: &str) -> Class {
     #[cfg(target_os = "macos")]
     {
         let c_str = CString::new(name).unwrap();
+        // SAFETY: `c_str` is a NUL-terminated `CString` alive for the whole call, which is what
+        // `objc_getClass` requires; it returns nil for an unknown class, which `Class` represents.
         Class(unsafe { native_bindings::objc_getClass(c_str.as_ptr()) })
     }
     #[cfg(not(target_os = "macos"))]
@@ -374,6 +423,8 @@ pub fn sel_register_name(name: &str) -> Sel {
     #[cfg(target_os = "macos")]
     {
         let c_str = CString::new(name).unwrap();
+        // SAFETY: `c_str` is a NUL-terminated `CString` alive for the whole call, which is what
+        // `sel_registerName` requires; it registers the name if needed and returns a selector.
         Sel(unsafe { native_bindings::sel_registerName(c_str.as_ptr()) })
     }
     #[cfg(not(target_os = "macos"))]
@@ -1666,6 +1717,11 @@ fn action_target_class() -> Class {
     ) {
         let _ = std::panic::catch_unwind(|| ActionTarget::perform(Id(this)));
     }
+    // SAFETY: the closure runs once (LazyLock). `FerrokitActionTarget` is looked up first, so the
+    // pair is only allocated when absent; the name is a `c"..."` literal (NUL-terminated,
+    // 'static), the superclass is `NSObject`, and a nil `class` returns early before any use.
+    // `perform_action` / `observe_value` are `extern "C"` functions whose parameters match the
+    // `v@:@` / `v@:@@@^v` encodings passed; the class is registered after its methods are added.
     static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
         let existing = objc_get_class("FerrokitActionTarget");
         if !existing.is_nil() {
@@ -1714,8 +1770,10 @@ impl ActionTarget {
             if class.is_nil() {
                 return Err("Cannot register the action target class");
             }
-            // SAFETY: `alloc`/`init` take no arguments and `class` is a registered NSObject
-            // subclass; the +1 reference is released in `Drop`.
+            // SAFETY: `alloc` and `init` take no arguments and return objects, matching
+            // `send_class_0` / `send_0`; `class` is the registered, non-nil `FerrokitActionTarget`
+            // (checked just above) and the `alloc` result is non-nil receiver for `init`. The +1
+            // reference is released in `Drop`.
             unsafe {
                 ObjcMsg::send_0(
                     ObjcMsg::send_class_0(class, Sel::register("alloc")),
@@ -1891,7 +1949,10 @@ impl Drop for ActionTarget {
         }
         drop(registered);
         #[cfg(target_os = "macos")]
-        // SAFETY: balances the +1 from `alloc`/`init` in `new`.
+        // SAFETY: `self.id` is the object `alloc` created in `new`/`new_shared` and is released
+        // only here (the type is not `Clone`), balancing the +1; `release` takes no arguments.
+        // Reference counting is thread-safe for plain `NSObject`s, so dropping off the creating
+        // thread is fine [inferred from Foundation's refcounting documentation].
         unsafe {
             ObjcMsg::send_0(self.id, Sel::register("release"));
         }

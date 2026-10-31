@@ -125,6 +125,9 @@ pub mod win32_hotkey {
                 return Err(HotkeyError::IdInUse(id));
             }
             let win_mod: HOT_KEY_MODIFIERS = modifiers.bits();
+            // SAFETY: by-value arguments only; `self.hwnd` is supplied by the owner in `new` and
+            // user32 validates it (a null hwnd binds the hotkey to the calling thread, per the
+            // RegisterHotKey documentation). Failure is reported through the return value.
             let success = unsafe { RegisterHotKey(self.hwnd, id as i32, win_mod, vk) };
             if success != 0 {
                 self.registered_ids.insert(id);
@@ -132,6 +135,8 @@ pub mod win32_hotkey {
             } else {
                 // Read before anything else can overwrite it.
                 Err(HotkeyError::Os {
+                    // SAFETY: `GetLastError` takes no arguments and reads this thread's error slot,
+                    // called immediately after the failed `RegisterHotKey` on the same thread.
                     code: unsafe { GetLastError() },
                 })
             }
@@ -142,11 +147,15 @@ pub mod win32_hotkey {
             if !self.registered_ids.remove(&id) {
                 return Err(HotkeyError::NotRegistered(id));
             }
+            // SAFETY: by-value arguments only; `self.hwnd` is the same handle used at registration
+            // and user32 validates it; an id that was never registered just makes the call fail.
             let success = unsafe { UnregisterHotKey(self.hwnd, id as i32) };
             if success != 0 {
                 Ok(())
             } else {
                 Err(HotkeyError::Os {
+                    // SAFETY: `GetLastError` takes no arguments and reads this thread's error slot,
+                    // called immediately after the failed `UnregisterHotKey` on the same thread.
                     code: unsafe { GetLastError() },
                 })
             }
@@ -874,8 +883,11 @@ pub mod cocoa_hotkey {
             ) -> Result<usize, &'static str> {
                 (*HANDLER_INSTALLED)?;
                 let mut hot_key: EventHotKeyRef = std::ptr::null_mut();
-                // SAFETY: plain Carbon call on the main thread; `hot_key` is a writable out
-                // pointer and the application event target outlives the process.
+                // SAFETY: `CarbonBackend::new` asserted the main thread, which Carbon hotkey
+                // registration requires [inferred: per Carbon docs, not checked per call];
+                // `hot_key` is a live writable `EventHotKeyRef` out slot read only on success,
+                // and `GetApplicationEventTarget` returns the process-wide application target,
+                // valid for the process lifetime. The handler was installed just above.
                 let status = unsafe {
                     RegisterEventHotKey(
                         keycode,

@@ -995,8 +995,14 @@ mod native {
             extern "C" fn $name(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
                 let handled = guarded(true, || input::handle_ns_event(Id(this), $kind, Id(event)));
                 if !handled {
-                    // SAFETY: every method installed with this macro takes the event and returns
-                    // nothing; the superclass is NSView.
+                    // SAFETY: `sup` lives across the call and names `this` (the receiver AppKit
+                    // is dispatching to) with `NSView` as the class where lookup starts, which
+                    // `QNSView` is a subclass of (see `qnsview_class`), so `this` is an
+                    // instance of a subclass of `super_class` as `objc_msgSendSuper` requires.
+                    // `super_send_fn` is transmuted to the exact signature used: (`*const
+                    // ObjcSuper`, selector, event), and every method installed with this macro
+                    // takes the event and returns nothing. `cmd`/`event` are the selector and
+                    // argument AppKit passed to this very method.
                     unsafe {
                         let sup = ObjcSuper {
                             receiver: this,
@@ -1042,8 +1048,11 @@ mod native {
 
     extern "C" fn update_tracking_areas(this: *mut c_void, cmd: *const c_void) {
         guarded((), || input::update_tracking_area(Id(this)));
-        // SAFETY: `updateTrackingAreas` takes no arguments and returns nothing; the superclass
-        // is NSView, whose implementation Cocoa asks subclasses to call.
+        // SAFETY: `sup` lives across the call and names `this` with `NSView` as the lookup start
+        // class; `this` is a `QNSView`, an `NSView` subclass. `updateTrackingAreas` takes no
+        // arguments and returns nothing, matching the transmuted signature (`*const ObjcSuper`,
+        // selector); `cmd` is the selector AppKit passed. Cocoa asks subclasses to call the
+        // superclass implementation [inferred: AppKit documentation].
         unsafe {
             let sup = ObjcSuper {
                 receiver: this,
@@ -1057,7 +1066,9 @@ mod native {
     extern "C" fn reset_cursor_rects(this: *mut c_void, cmd: *const c_void) {
         let applied = guarded(false, || input::reset_cursor_rects(Id(this)));
         if !applied {
-            // SAFETY: as in `update_tracking_areas`.
+            // SAFETY: same as in `update_tracking_areas`: `sup` names `this` (a `QNSView`) with
+            // `NSView` as the lookup start; `resetCursorRects` takes no arguments and returns
+            // nothing, matching the transmuted signature; `cmd` is the selector AppKit passed.
             unsafe {
                 let sup = ObjcSuper {
                     receiver: this,
@@ -1072,7 +1083,10 @@ mod native {
     extern "C" fn cursor_update(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
         let applied = guarded(false, || input::cursor_update(Id(this)));
         if !applied {
-            // SAFETY: `cursorUpdate:` takes the event and returns nothing.
+            // SAFETY: `sup` names `this` (a `QNSView`) with `NSView` as the lookup start;
+            // `cursorUpdate:` takes the event and returns nothing, matching the transmuted
+            // signature (`*const ObjcSuper`, selector, event); `cmd`/`event` are what AppKit
+            // passed to this method.
             unsafe {
                 let sup = ObjcSuper {
                     receiver: this,
@@ -1141,7 +1155,10 @@ mod native {
         _this: *mut c_void,
         _cmd: *const c_void,
     ) -> *mut c_void {
-        // SAFETY: `+[NSArray array]` is an autoreleased empty array.
+        // SAFETY: `+[NSArray array]` takes no arguments and returns an object, matching
+        // `send_class_0`; the class is looked up by name and a nil class would only yield nil.
+        // The result is autoreleased [inferred: Foundation convention for class factory methods],
+        // which is what a `validAttributesForMarkedText` getter returns.
         unsafe { ObjcMsg::send_class_0(objc_get_class("NSArray"), Sel::register("array")).0 }
     }
 
@@ -1152,8 +1169,11 @@ mod native {
         actual: *mut NSRange,
     ) -> CGRect {
         if !actual.is_null() {
-            // SAFETY: AppKit passes a writable NSRange or NULL. The rectangle is for the range
-            // asked about, whatever it is.
+            // SAFETY: `actual` was just checked non-null, and the `NSTextInputClient` contract
+            // for `firstRectForCharacterRange:actualRange:` is that a non-NULL `actualRange` points
+            // to a writable `NSRange` that the method fills in [inferred: AppKit documentation;
+            // not checkable in code]. The reported rectangle is for the range asked about,
+            // whatever it is, so it is the actual range.
             unsafe { *actual = range };
         }
         guarded(CGRect::ZERO, || input::text_input_first_rect(Id(this)))
@@ -1289,6 +1309,13 @@ mod native {
     /// `QNSWindow` it says yes to `-canBecomeKeyWindow` and `-canBecomeMainWindow`, which a plain
     /// borderless `NSWindow` (a frameless window) refuses.
     pub fn qnswindow_class() -> Class {
+        // SAFETY: the closure runs once (LazyLock). `QNSWindow` is only allocated when absent;
+        // `ns_window` is `NSWindow` (always present with AppKit linked), `name` is a
+        // NUL-terminated `CString` alive for the call, and a nil `class` returns early before any
+        // use. `returns_yes` is an `extern "C"` function of (self, _cmd) returning `BOOL`, which
+        // is what `ENC_BOOL_GETTER` (`c@:` / `B@:` per architecture) describes for the
+        // `canBecomeKeyWindow` / `canBecomeMainWindow` getters. The class is registered after
+        // its methods are added.
         static CLASS: LazyLock<usize> = LazyLock::new(|| unsafe {
             let existing = objc_get_class("QNSWindow");
             if !existing.is_nil() {

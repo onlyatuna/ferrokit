@@ -268,16 +268,22 @@ mod native {
 
     impl Pool {
         fn new() -> Self {
-            // SAFETY: push/pop are plain libobjc calls; the guard pops exactly what it pushed,
-            // on the same thread (`Pool` is `!Send` through its raw pointer).
+            // SAFETY: `objc_autoreleasePoolPush` takes no arguments and returns the opaque token
+            // that `objc_autoreleasePoolPop` expects; it is declared with that signature in the
+            // `extern` block above and is available from any thread per the libobjc
+            // documentation [inferred]. The token is stored in the returned guard, whose `Drop`
+            // pops it exactly once, on the same thread (`Pool` holds a raw pointer, so it is
+            // `!Send`).
             Self(unsafe { objc_autoreleasePoolPush() })
         }
     }
 
     impl Drop for Pool {
         fn drop(&mut self) {
-            // SAFETY: `self.0` came from `objc_autoreleasePoolPush` on this thread and pools are
-            // dropped in reverse order of creation.
+            // SAFETY: `self.0` is the token this guard's `new` got from `objc_autoreleasePoolPush`
+            // on this thread and is popped only here. Pools are popped in reverse creation order
+            // because each guard is a local that drops before the guard declared before it (the
+            // only nesting in this file is a single `Pool` per backend call).
             unsafe { objc_autoreleasePoolPop(self.0) };
         }
     }
@@ -293,8 +299,9 @@ mod native {
 
     impl Drop for OwnedString {
         fn drop(&mut self) {
-            // SAFETY: `nsstring_from_str` returns an owned (+1) string, released exactly once
-            // here; sending `release` to nil is a no-op.
+            // SAFETY: `self.0` is the +1 string `nsstring_from_str` returned, released exactly
+            // once here (`OwnedString` is neither `Clone` nor `Copy`); `release` takes no
+            // arguments and sending it to nil is a no-op.
             unsafe { ObjcMsg::send_0(self.0, Sel::register("release")) };
         }
     }
@@ -309,8 +316,10 @@ mod native {
         if utf8.is_null() {
             return None;
         }
-        // SAFETY: `UTF8String` is a NUL-terminated buffer valid while `string` lives; it is
-        // copied before the caller's autorelease pool drains.
+        // SAFETY: the caller guarantees `string` is nil (then `send_0` above returns nil and we
+        // returned `None`) or a live NSString; `UTF8String` returns a NUL-terminated buffer
+        // owned by `string` that stays valid while the caller's autorelease pool has not drained
+        // (per the NSString documentation), and it is copied here before returning.
         Some(CStr::from_ptr(utf8).to_string_lossy().into_owned())
     }
 
@@ -327,7 +336,9 @@ mod native {
         /// The general pasteboard singleton (autoreleased, so only valid inside the caller's
         /// [`Pool`]).
         fn general() -> Id {
-            // SAFETY: class method with no arguments on `NSPasteboard`, returning an object.
+            // SAFETY: `generalPasteboard` is a no-argument class method of `NSPasteboard`
+            // returning an autoreleased object; it is only used inside the caller's `Pool`, which
+            // every call site of `general()` holds, and the sends are serialized by `self.lock`.
             unsafe {
                 ObjcMsg::send_class_0(
                     objc_get_class("NSPasteboard"),
@@ -341,8 +352,10 @@ mod native {
         fn change_count(&self) -> isize {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
-            // SAFETY: `changeCount` takes no argument and returns `NSInteger`, the register-sized
-            // integer `send_usize_return` reads (same ABI as `NSUInteger`).
+            // SAFETY: `Self::general()` is the live pasteboard (inside `_pool`, under `_guard`);
+            // `changeCount` takes no arguments and returns NSInteger, which `send_usize_return`
+            // reads from the same integer return register (same ABI as NSUInteger) and the value
+            // is reinterpreted as `isize`.
             let count = unsafe {
                 ObjcMsg::send_usize_return(Self::general(), Sel::register("changeCount"))
             };
@@ -352,8 +365,10 @@ mod native {
         fn clear_contents(&self) -> isize {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
-            // SAFETY: `clearContents` takes no argument and returns `NSInteger`; `send_0` reads
-            // the return register as a pointer-sized value.
+            // SAFETY: `Self::general()` is the live pasteboard (inside `_pool`, under `_guard`);
+            // `clearContents` takes no arguments and returns NSInteger, which `send_0` reads from
+            // the same pointer-sized integer return register and the value is cast to `isize`
+            // without ever being dereferenced.
             unsafe { ObjcMsg::send_0(Self::general(), Sel::register("clearContents")).0 as isize }
         }
 
@@ -361,9 +376,12 @@ mod native {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
             let mut out = Vec::new();
-            // SAFETY: `types` returns an autoreleased `NSArray<NSString *>` (nil when empty);
-            // `count` and `objectAtIndex:` stay within its bounds, the strings are copied before
-            // `_pool` drains, and nothing is retained or released here.
+            // SAFETY: `Self::general()` is the live pasteboard (inside `_pool`, under `_guard`);
+            // `types` returns an autoreleased NSArray of NSString or nil (a nil array makes `count`
+            // return 0 and the loop does not run). `objectAtIndex:` takes one NSUInteger and is
+            // called only for `index < count`, so it does not raise. Every item stays valid
+            // until `_pool` drains, after this block, and `rust_string` copies it; nothing is
+            // retained or released here.
             unsafe {
                 let array = ObjcMsg::send_0(Self::general(), Sel::register("types"));
                 let count = ObjcMsg::send_usize_return(array, Sel::register("count"));
@@ -382,9 +400,12 @@ mod native {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
             let ns_type = OwnedString::new(ty);
-            // SAFETY: `dataForType:` takes one `NSString` and returns an autoreleased `NSData` or
-            // nil. `bytes` points at `length` bytes owned by that `NSData`, which outlives the
-            // copy because `_pool` drains after this block.
+            // SAFETY: `dataForType:` takes one NSString (`ns_type`, the live +1 string created
+            // above and released after this block) and returns an autoreleased NSData or nil, which
+            // is checked. `length` and `bytes` take no arguments, so `bytes` points at `len`
+            // bytes owned by that NSData, which stays valid until `_pool` drains (after this
+            // block), and `from_raw_parts` is only called for `len > 0` with a non-null pointer.
+            // The slice is read only, and copied by `to_vec` before the block ends.
             unsafe {
                 let data =
                     ObjcMsg::send_id(Self::general(), Sel::register("dataForType:"), ns_type.0);
@@ -407,11 +428,16 @@ mod native {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
             let ns_type = OwnedString::new(ty);
-            // SAFETY: `+[NSData dataWithBytes:length:]` copies `data.len()` bytes from a valid
-            // slice and returns an autoreleased object, so it needs no release; the transmuted
-            // signatures match `dataWithBytes:length:` (`id, SEL, const void *, NSUInteger -> id`)
-            // and `setData:forType:` (`id, SEL, id, id -> BOOL`), which the pasteboard
-            // copies/retains.
+            // SAFETY: the first transmute reinterprets `objc_msgSend` as the signature of
+            // `+[NSData dataWithBytes:length:]` (receiver, selector, `const void *`, NSUInteger ->
+            // id); `data.as_ptr()`/`data.len()` describe a live slice that the call copies, and
+            // the result is autoreleased (valid until `_pool` drains, after this block) or nil,
+            // which is checked. The second transmute reinterprets it as `-setData:forType:`
+            // (receiver, selector, id, id -> BOOL); `pasteboard` is the live, non-nil general
+            // pasteboard (inside `_pool`, under `_guard`), `ns_data` the non-nil NSData and
+            // `ns_type.0` the live NSString, all valid for the call, which retains or copies
+            // them. Both signatures are as the AppKit/Foundation documentation gives them
+            // [inferred].
             unsafe {
                 let make: extern "C" fn(
                     *mut c_void,

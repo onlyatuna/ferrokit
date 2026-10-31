@@ -16,11 +16,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 fn is_layered(hwnd: isize) -> bool {
+    // SAFETY: callers pass the handle of a `NativeWindow` they keep alive for the call;
+    // `GetWindowLongPtrW` only reads window data and validates the handle.
     unsafe { GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) & WS_EX_LAYERED as isize != 0 }
 }
 
 fn layered_alpha(hwnd: isize) -> Option<u8> {
     let (mut key, mut alpha, mut flags) = (0u32, 0u8, 0u32);
+    // SAFETY: callers pass the handle of a `NativeWindow` they keep alive for the call; `key`,
+    // `alpha` and `flags` are live locals of the types the API writes (`u32`, `u8`, `u32`).
     let ok = unsafe { GetLayeredWindowAttributes(hwnd as _, &mut key, &mut alpha, &mut flags) };
     (ok != 0 && flags & LWA_ALPHA != 0).then_some(alpha)
 }

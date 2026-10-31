@@ -148,12 +148,14 @@ pub mod win32_screen {
     fn monitor_dpr(h_monitor: HMONITOR) -> f32 {
         let mut dpi_x = 96u32;
         let mut dpi_y = 96u32;
-        // SAFETY: valid out pointers; a stale monitor handle makes the call fail.
+        // SAFETY: `&mut dpi_x`/`&mut dpi_y` point at live `u32` locals that GetDpiForMonitor fills in;
+        // `h_monitor` is only passed through and a stale handle makes the call fail (non-zero HRESULT,
+        // handled by the fallback below).
         let hr = unsafe { GetDpiForMonitor(h_monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
         let dpr = if hr == 0 {
             dpi_x as f32 / 96.0
         } else {
-            // SAFETY: no arguments.
+            // SAFETY: GetDpiForSystem takes no arguments and has no preconditions.
             unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() as f32 / 96.0 }
         };
         ferrokit_gui::round_scale_factor(dpr as f64) as f32
@@ -164,7 +166,9 @@ pub mod win32_screen {
         if h_monitor.is_null() {
             return None;
         }
-        // SAFETY: a zeroed MONITORINFO with cbSize set is a valid out parameter.
+        // SAFETY: `info` is a zeroed MONITORINFO (all-zero is valid for this plain C struct) with
+        // `cbSize` set as GetMonitorInfoW requires, and lives past the call; `h_monitor` was
+        // null-checked above and a stale handle makes the call fail (checked via the return value).
         let rc = unsafe {
             let mut info: MONITORINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
@@ -179,7 +183,8 @@ pub mod win32_screen {
     /// The mapping of the screen a top-level window is on (`MonitorFromWindow`, as
     /// `QWindowsWindow` finds its screen); `None` without a monitor.
     pub fn window_screen_mapping(hwnd: isize) -> Option<(Point, f32)> {
-        // SAFETY: any handle value is accepted; an invalid one yields the nearest monitor or null.
+        // SAFETY: by-value arguments only; MonitorFromWindow accepts any HWND value and returns the
+        // nearest monitor or null for an invalid one (null is rejected by `monitor_mapping`).
         monitor_mapping(unsafe { MonitorFromWindow(hwnd as _, MONITOR_DEFAULTTONEAREST) })
     }
 
@@ -187,7 +192,8 @@ pub mod win32_screen {
     /// screen that contains it, else through the window's screen (`qhighdpiscaling.cpp:646-681,
     /// 733-744`, used for mouse events at `qwindowsysteminterface.cpp:419-420`).
     pub fn from_native_global_point(pt: Point, hwnd: isize) -> Point {
-        // SAFETY: plain value arguments.
+        // SAFETY: by-value arguments only; MONITOR_DEFAULTTONULL makes the call return null when no
+        // monitor contains `pt`, which `monitor_mapping` rejects.
         let at = unsafe { MonitorFromPoint(POINT { x: pt.x, y: pt.y }, MONITOR_DEFAULTTONULL) };
         match monitor_mapping(at).or_else(|| window_screen_mapping(hwnd)) {
             Some((origin, dpr)) => crate::high_dpi::from_native_global_point(pt, origin, dpr),
@@ -212,6 +218,11 @@ pub mod win32_screen {
                 return None;
             }
 
+            // SAFETY: `h_monitor` was null-checked above. `info_ex` is a zeroed MONITORINFOEXW (all-zero is
+            // valid for this plain C struct) with `cbSize` set to the extended size, so GetMonitorInfoW
+            // fills the whole struct; the cast to `*mut MONITORINFO` is valid because `monitorInfo` is
+            // its first field, and `info_ex` outlives the call. A stale handle makes the call fail
+            // (checked via the return value).
             unsafe {
                 let mut info_ex: MONITORINFOEXW = std::mem::zeroed();
                 info_ex.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
@@ -267,6 +278,9 @@ pub mod win32_screen {
         }
 
         fn system_fallback_primary() -> Self {
+            // SAFETY: GetSystemMetrics/GetDpiForSystem take no pointers. `work_area` is a zeroed RECT
+            // (valid for plain integers) that lives past SystemParametersInfoW, and for
+            // SPI_GETWORKAREA `pvParam` must be a `RECT*` with `uiParam` 0, as passed.
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
                     GetSystemMetrics, SystemParametersInfoW, SM_CXSCREEN, SM_CYSCREEN,
@@ -296,6 +310,10 @@ pub mod win32_screen {
 
         pub fn all_screens() -> Vec<Self> {
             let mut list = Vec::<Self>::new();
+            // SAFETY: `EnumDisplayMonitors` is given a null HDC and clip rect (enumerate all monitors,
+            // per its documentation) and `monitor_enum_proc`, which runs synchronously inside the call.
+            // `lparam` is the address of the local `list` (a `Vec<Win32Screen>`), exclusively borrowed
+            // for the call, and the callback casts it back to exactly that type.
             unsafe {
                 unsafe extern "system" fn monitor_enum_proc(
                     h_monitor: HMONITOR,
@@ -303,6 +321,8 @@ pub mod win32_screen {
                     _rect: *mut RECT,
                     lparam: LPARAM,
                 ) -> BOOL {
+                    // SAFETY: `lparam` is the `&mut Vec<Win32Screen>` passed by `all_screens` to
+                    // EnumDisplayMonitors, valid and exclusive for the duration of this synchronous callback.
                     let list_ref = &mut *(lparam as *mut Vec<Win32Screen>);
                     if let Some(screen) = Win32Screen::from_hmonitor(h_monitor) {
                         if screen.is_primary {
@@ -527,8 +547,12 @@ pub mod cocoa_screen {
             let sel_visible_frame = Sel::register("visibleFrame");
             let sel_scale = Sel::register("backingScaleFactor");
 
+            // SAFETY: `screen` is an NSScreen (nil gives a no-op returning zeros) per the caller's
+            // contract [inferred: not checked here]; `frame` returns an NSRect, matching `send_rect_return`.
             let frame = unsafe { ObjcMsg::send_rect_return(screen, sel_frame) };
+            // SAFETY: as above; `visibleFrame` returns an NSRect, matching `send_rect_return`.
             let visible_frame = unsafe { ObjcMsg::send_rect_return(screen, sel_visible_frame) };
+            // SAFETY: as above; `backingScaleFactor` returns a CGFloat (double), matching `send_f64_return`.
             let scale = unsafe { ObjcMsg::send_f64_return(screen, sel_scale) };
 
             let raw_geom = Rect::new(
@@ -564,18 +588,29 @@ pub mod cocoa_screen {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
             // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen
             // (the primary is the CGDisplayIsMain display, which is screens[0]).
+            // SAFETY: `screens` is a class method with no arguments returning an object, matching
+            // `send_class_0`; a nil class (failed lookup) yields nil, which is checked next. In the
+            // `count` send, `screens_array` is non-nil (short-circuit `||`) and the NSArray returned
+            // above; `count` returns an NSUInteger, matching `send_usize_return`.
             let screens_array =
                 unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
             let main_screen = if screens_array.is_nil()
+                // SAFETY: `screens_array` is non-nil here (short-circuit `||`); `count` returns an
+                // NSUInteger, matching `send_usize_return`.
                 || unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) } == 0
             {
                 Id::NIL
             } else {
+                // SAFETY: `screens_array` is a non-nil NSArray with `count > 0` (checked above), so
+                // index 0 is in bounds; `objectAtIndex:` takes an NSUInteger and returns an object,
+                // matching `send_id_with_usize`.
                 unsafe {
                     ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
                 }
             };
             if !main_screen.is_nil() {
+                // SAFETY: `main_screen` is non-nil (checked above); `frame` returns an NSRect,
+                // matching `send_rect_return`.
                 let frame =
                     unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
                 let primary_height = frame.size.height as i32;
@@ -593,26 +628,36 @@ pub mod cocoa_screen {
 
         pub fn screens() -> Vec<Self> {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
+            // SAFETY: `screens` is a class method with no arguments returning an object, matching
+            // `send_class_0`; a nil class (failed lookup) yields nil, which is checked next.
             let screens_array =
                 unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
             if screens_array.is_nil() {
                 return vec![Self::primary()];
             }
 
+            // SAFETY: `screens_array` is non-nil (checked above); `count` returns an NSUInteger,
+            // matching `send_usize_return`.
             let count =
                 unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) };
             if count == 0 {
                 return vec![Self::primary()];
             }
 
+            // SAFETY: `screens_array` is a non-nil NSArray with `count != 0` (checked above), so index
+            // 0 is in bounds; `objectAtIndex:` takes an NSUInteger, matching `send_id_with_usize`.
             let first = unsafe {
                 ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
             };
+            // SAFETY: `first` is element 0 of a non-empty NSArray of NSScreen; `frame` returns an
+            // NSRect, matching `send_rect_return`.
             let first_frame = unsafe { ObjcMsg::send_rect_return(first, Sel::register("frame")) };
             let primary_height = first_frame.size.height as i32;
 
             let mut result = Vec::with_capacity(count);
             for i in 0..count {
+                // SAFETY: `i < count`, the array's own count read above, so the index is in bounds;
+                // `objectAtIndex:` takes an NSUInteger, matching `send_id_with_usize`.
                 let screen_id = unsafe {
                     ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), i)
                 };

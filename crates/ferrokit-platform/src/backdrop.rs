@@ -134,6 +134,11 @@ pub fn set_window_backdrop(
         return false;
     }
 
+    // SAFETY: only the DWM calls below need `unsafe`. `hwnd` was null-checked above and DWM
+    // validates it (a stale or foreign handle makes the call fail, per the DwmSetWindowAttribute
+    // and DwmEnableBlurBehindWindow documentation). Every `*const _` points at a live local
+    // (`none_type`, `mica_type`, `mica_alt_type`, `bb`) that outlives the call, and the size passed
+    // is that of the `u32` it points to, as `DWMWA_SYSTEMBACKDROP_TYPE` expects.
     unsafe {
         if backdrop == BackdropType::None {
             if !crate::dark_mode::release_frame_to_scheme(hwnd) {
@@ -240,6 +245,14 @@ fn set_win10_accent(
         windows_sys::Win32::Foundation::HWND,
         *mut WindowCompositionAttributeData,
     ) -> i32;
+    // SAFETY: both names are NUL-terminated C-string literals. `LoadLibraryA` of the always-loaded
+    // system `user32.dll` is null-checked, and a null `GetProcAddress` result takes the `else`
+    // branch. The transmute converts the non-null `SetWindowCompositionAttribute` export to the
+    // `extern "system"` signature of that undocumented function (HWND, *mut
+    // WINDOWCOMPOSITIONATTRIBDATA) -> BOOL, which `SetWindowCompositionAttributeFn` and the
+    // `#[repr(C)]` structs mirror [inferred: undocumented API, layout taken from common use].
+    // `policy` and `data` are live locals outliving the call; `data.data` points at `policy` and
+    // `size_of_data` is its size.
     unsafe {
         let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
         if user32.is_null() {
@@ -286,6 +299,9 @@ pub fn set_cocoa_window_backdrop(
     let target_window = if !ns_window.is_nil() {
         ns_window
     } else {
+        // SAFETY: `ns_view` is non-nil here (the early return rejects both nil) and, per this
+        // function's caller contract, a live NSView used on the main thread [inferred: not
+        // checked here]; `window` is a no-argument selector returning an object, matching `send_0`.
         unsafe { ObjcMsg::send_0(ns_view, Sel::register("window")) }
     };
 
@@ -298,8 +314,15 @@ pub fn set_cocoa_window_backdrop(
             // Qt removes the area's effect view from its superview and forgets it; the content
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
             if let Some(effect_view) = backdrop_view.take() {
+                // SAFETY: `effect_view` was taken from `backdrop_view`, which only ever holds the
+                // effect view this function created below, still retained by us (+1 from
+                // `alloc`/`init`); `removeFromSuperview` takes no arguments and returns void,
+                // matching `send_0`. Main-thread use is the caller's contract [inferred].
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("removeFromSuperview")) };
                 // Drop our +1 from `alloc`/`init`; the superview's retain went with the removal.
+                // SAFETY: same `effect_view` as above, still alive until this `release`, which balances
+                // our single +1 from `alloc`/`init`; it is not used afterwards (`take()` removed it
+                // from the slot). `release` takes no arguments and returns void, matching `send_0`.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
             // `FlatTint` is a Windows accent tint that AppKit has no counterpart for: the tint
@@ -317,11 +340,16 @@ pub fn set_cocoa_window_backdrop(
                 Some(view) => view,
                 None => {
                     let effect_class = Class::get("NSVisualEffectView").unwrap_or(Class::NIL);
+                    // SAFETY: `alloc` is a class method with no arguments returning an object,
+                    // matching `send_class_0`; `effect_class` is the `NSVisualEffectView` class
+                    // (or `Class::NIL`, a no-op returning nil, handled just below).
                     let effect_alloc =
                         unsafe { ObjcMsg::send_class_0(effect_class, Sel::register("alloc")) };
                     if effect_alloc.is_nil() {
                         return false;
                     }
+                    // SAFETY: `effect_alloc` is non-nil (checked above) and freshly allocated;
+                    // `init` takes no arguments and returns an object, matching `send_0`.
                     unsafe { ObjcMsg::send_0(effect_alloc, Sel::register("init")) }
                 }
             };
@@ -335,8 +363,12 @@ pub fn set_cocoa_window_backdrop(
                 BackdropType::None | BackdropType::FlatTint => 0,
             };
 
+            // SAFETY: `effect_view` is a live NSVisualEffectView (existing slot value, or just
+            // allocated and initialised); `setMaterial:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material) };
+            // SAFETY: as above; `setBlendingMode:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) }; // BehindWindow
+                                                                                             // SAFETY: as above; `setState:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) }; // Active
 
             let app_name = if dark_mode {
@@ -345,6 +377,10 @@ pub fn set_cocoa_window_backdrop(
                 "NSAppearanceNameAqua"
             };
             let appearance_class = Class::get("NSAppearance").unwrap_or(Class::NIL);
+            // SAFETY: `appearanceNamed:` is a class method taking an NSString and returning an
+            // object, matching `send_str`; the receiver is the `NSAppearance` class reinterpreted
+            // as `Id` (a class is an object), or nil if the lookup failed, which makes the send a
+            // no-op returning nil.
             let appearance = unsafe {
                 ObjcMsg::send_str(
                     Id(appearance_class.0),
@@ -353,6 +389,8 @@ pub fn set_cocoa_window_backdrop(
                 )
             };
             if !appearance.is_nil() {
+                // SAFETY: `effect_view` is live and `appearance` was null-checked just above;
+                // `setAppearance:` takes one object, matching `send_id`.
                 unsafe {
                     ObjcMsg::send_id(effect_view, Sel::register("setAppearance:"), appearance)
                 };
@@ -361,8 +399,13 @@ pub fn set_cocoa_window_backdrop(
             if existing.is_none() {
                 // Qt stacks the effect layer below the content layer (z 0): wantsLayer, then
                 // layer.zPosition = -FLT_MAX (qcocoawindow.mm:2267-2270). zPosition is a CGFloat.
+                // SAFETY: `effect_view` is live; `setWantsLayer:` takes one BOOL, matching `send_bool`.
                 unsafe { ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true) };
+                // SAFETY: `effect_view` is live; `layer` takes no arguments and returns an object,
+                // matching `send_0`.
                 let effect_layer = unsafe { ObjcMsg::send_0(effect_view, Sel::register("layer")) };
+                // SAFETY: `effect_layer` is the layer just returned by the live view (nil is a
+                // no-op); `setZPosition:` takes one CGFloat, matching `send_length`.
                 unsafe {
                     ObjcMsg::send_length(
                         effect_layer,
@@ -370,13 +413,20 @@ pub fn set_cocoa_window_backdrop(
                         f64::from(-f32::MAX),
                     )
                 };
+                // SAFETY: `target_window` is non-nil (checked above) and, per the caller contract, a
+                // live NSWindow; `contentView` takes no arguments and returns an object, matching `send_0`.
                 let content_view =
                     unsafe { ObjcMsg::send_0(target_window, Sel::register("contentView")) };
                 if !content_view.is_nil() {
+                    // SAFETY: `content_view` is non-nil (checked above) and `effect_view` is live;
+                    // `addSubview:` takes one object, matching `send_id`. The superview retains the
+                    // subview, while our +1 is kept in `backdrop_view`.
                     unsafe {
                         ObjcMsg::send_id(content_view, Sel::register("addSubview:"), effect_view)
                     };
                 } else {
+                    // SAFETY: `target_window` is live and non-nil; `effect_view` is live;
+                    // `setContentView:` takes one object, matching `send_id`.
                     unsafe {
                         ObjcMsg::send_id(
                             target_window,

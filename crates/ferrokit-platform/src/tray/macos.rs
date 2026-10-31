@@ -44,12 +44,18 @@ impl CocoaStatusItem {
         ThreadContext::assert_main_thread("CocoaStatusItem::new");
 
         let status_bar_class = Class::get("NSStatusBar").unwrap_or(Class::NIL);
+        // SAFETY: `systemStatusBar` is a no-argument class method of `NSStatusBar` returning an
+        // object (a nil class from `unwrap_or` makes the send a no-op returning nil). `new`
+        // asserted the main thread, which AppKit requires.
         let status_bar =
             unsafe { ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar")) };
 
         // Qt: statusItemWithLength:NSSquareStatusItemLength (qcocoasystemtrayicon.mm:37). Qt
         // switches to NSVariableStatusItemLength only for icons backed by a native NSImage
         // (QAppleIconEngine, :88-98); pixmap icons keep the square length.
+        // SAFETY: `status_bar` is the shared `NSStatusBar` (or nil, a no-op);
+        // `statusItemWithLength:` takes one CGFloat, which `send_length` passes. The status bar
+        // owns the item; it is removed again in `Drop`.
         let status_item = unsafe {
             ObjcMsg::send_length(
                 status_bar,
@@ -90,10 +96,16 @@ impl CocoaStatusItem {
 
     pub fn set_template(&mut self, is_template: bool) {
         self.is_template = is_template;
+        // SAFETY: `self.status_item` is the item created in `new` and removed only in `Drop`
+        // (nil is a no-op); `button` takes no arguments and returns an object.
         let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
+            // SAFETY: `button` was checked non-nil and belongs to the live status item; `image`
+            // takes no arguments and returns an object.
             let image = unsafe { ObjcMsg::send_0(button, Sel::register("image")) };
             if !image.is_nil() {
+                // SAFETY: `image` was checked non-nil and is the button's live NSImage;
+                // `setTemplate:` takes one BOOL.
                 unsafe { ObjcMsg::send_bool(image, Sel::register("setTemplate:"), is_template) };
             }
         }
@@ -125,6 +137,8 @@ impl CocoaStatusItem {
         if self.click_target.is_some() {
             return true;
         }
+        // SAFETY: `self.status_item` is the item created in `new` and removed only in `Drop`
+        // (nil is a no-op); `button` takes no arguments and returns an object.
         let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if button.is_nil() {
             return false;
@@ -147,7 +161,13 @@ impl CocoaStatusItem {
         };
         // [button setTarget:target] & [button setAction:@selector(ferrokitPerformAction:)]: the
         // target runs the callbacks when AppKit delivers the click.
+        // SAFETY: `button` was checked non-nil and belongs to the live status item; `target.id()`
+        // is the live ActionTarget object, which `self.click_target` keeps alive (below) until
+        // `Drop` clears the button's target first, so the button's weak reference never dangles.
+        // `setTarget:` takes one object.
         unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), target.id()) };
+        // SAFETY: as above for `button`; `setAction:` takes one selector, matching `send_action`,
+        // and `ActionTarget::action()` is the selector the target class implements.
         unsafe {
             ObjcMsg::send_action(button, Sel::register("setAction:"), ActionTarget::action())
         };
@@ -184,8 +204,13 @@ impl CocoaStatusItem {
             return;
         };
         let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
-        // SAFETY: `+defaultCenter` returns the shared centre; the observer is removed in
-        // `remove_menu_observer` before `target` is released.
+        // SAFETY: `center` is the shared notification centre (a nil class is a no-op);
+        // `addObserver:selector:name:object:` takes (observer, selector, NSString name, object),
+        // matching `send_add_observer_logged`. `target` is a live ActionTarget implementing the
+        // selector and `menu_id` is the menu of `self.menu`; the observer is removed in
+        // `remove_menu_observer` before `target` is dropped, so the centre never holds a freed
+        // observer. (The centre does not retain observers: documented AppKit behaviour
+        // [inferred].)
         unsafe {
             let center = ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter"));
             ObjcMsg::send_add_observer_logged(
@@ -205,7 +230,9 @@ impl CocoaStatusItem {
             return;
         };
         let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
-        // SAFETY: `[center removeObserver:target]` before the target is released by drop.
+        // SAFETY: `center` is the shared notification centre (a nil class is a no-op);
+        // `removeObserver:` takes one object, here the live `target`, which is dropped only after
+        // this block (`drop(target)` below), so the observer is removed before it can be freed.
         unsafe {
             let center = ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter"));
             ObjcMsg::send_id_logged(center, Sel::register("removeObserver:"), target.id());
@@ -246,19 +273,32 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.icon_bytes = pixmap.data().to_vec();
 
         // Configure icon on status item button
+        // SAFETY: `self.status_item` is the item created in `new` and removed only in `Drop`
+        // (nil is a no-op); `button` takes no arguments and returns an object.
         let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
             let image_class = Class::get("NSImage").unwrap_or(Class::NIL);
+            // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`
+            // (a nil class from `unwrap_or` is a no-op).
             let image_alloc = unsafe { ObjcMsg::send_class_0(image_class, Sel::register("alloc")) };
             let cg_size =
                 crate::objc_runtime::CGSize::new(self.icon_width as f64, self.icon_height as f64);
+            // SAFETY: `initWithSize:` takes one NSSize, matching `send_size`; the receiver is the
+            // unconsumed `alloc` result above (nil is a no-op, checked next).
             let image =
                 unsafe { ObjcMsg::send_size(image_alloc, Sel::register("initWithSize:"), cg_size) };
             if !image.is_nil() {
                 // Give the image its pixels: an NSBitmapImageRep holding the pixmap's
                 // premultiplied RGBA bytes (without a representation the button draws nothing).
                 let rep_class = Class::get("NSBitmapImageRep").unwrap_or(Class::NIL);
+                // SAFETY: `alloc` takes no arguments and returns an object, matching
+                // `send_class_0` (a nil class from `unwrap_or` is a no-op).
                 let rep_alloc = unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };
+                // SAFETY: `send_bitmap_rep_init` consumes the `alloc` result and a slice of the
+                // icon bytes together with the width and height they were taken from
+                // (`self.icon_bytes = pixmap.data()` with `pixmap`'s own physical width/height),
+                // so the slice covers the declared pixel area; the bytes are RGBA8 premultiplied,
+                // as the helper documents.
                 let rep = unsafe {
                     ObjcMsg::send_bitmap_rep_init(
                         rep_alloc,
@@ -268,18 +308,29 @@ impl PlatformTrayIcon for CocoaStatusItem {
                     )
                 };
                 if rep.is_nil() {
+                    // SAFETY: `image` is the non-nil +1 NSImage allocated above and no one else
+                    // owns it (it was not attached to the button), so this is its one release.
                     unsafe { ObjcMsg::send_0(image, Sel::register("release")) };
                     return Err("Cannot create NSBitmapImageRep from icon pixmap");
                 }
+                // SAFETY: `image` and `rep` are live non-nil objects created above;
+                // `addRepresentation:` takes one NSImageRep.
                 unsafe { ObjcMsg::send_id(image, Sel::register("addRepresentation:"), rep) };
                 // The image retains the representation.
+                // SAFETY: `rep` is the +1 representation created above; the image retained it in
+                // `addRepresentation:`, so this releases only our own reference, once.
                 unsafe { ObjcMsg::send_0(rep, Sel::register("release")) };
+                // SAFETY: `image` is live (see above); `setTemplate:` takes one BOOL.
                 unsafe {
                     ObjcMsg::send_bool(image, Sel::register("setTemplate:"), self.is_template)
                 };
                 // The button retains the image (and releases the previous one); drop our +1 from
                 // `alloc`.
+                // SAFETY: `button` and `image` are live; `setImage:` takes one NSImage and the
+                // button retains it.
                 unsafe { ObjcMsg::send_id(button, Sel::register("setImage:"), image) };
+                // SAFETY: `image` is the +1 from `alloc`/`init`; the button retained its own
+                // reference in `setImage:`, so this releases ours once.
                 unsafe { ObjcMsg::send_0(image, Sel::register("release")) };
             }
         }
@@ -290,8 +341,12 @@ impl PlatformTrayIcon for CocoaStatusItem {
 
         // Qt: m_statusItem.button.toolTip (qcocoasystemtrayicon.mm:195-200); the button title
         // is never set, so no text appears in the menu bar.
+        // SAFETY: `self.status_item` is the item created in `new` and removed only in `Drop`
+        // (nil is a no-op); `button` takes no arguments and returns an object.
         let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         if !button.is_nil() {
+            // SAFETY: `button` was checked non-nil and belongs to the live status item;
+            // `setToolTip:` takes one NSString, which `send_str` builds from `tooltip`.
             unsafe { ObjcMsg::send_str(button, Sel::register("setToolTip:"), tooltip) };
         }
         Ok(())
@@ -303,6 +358,10 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.remove_menu_observer();
         // [status_item setMenu:ns_menu]
         let menu_id = Id(menu.native_handle() as *mut std::ffi::c_void);
+        // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`); `menu_id`
+        // is the NSMenu handle of `menu`, which is stored in `self.menu` right below and so
+        // outlives the status item's use of it (the status item retains its menu [inferred]);
+        // `setMenu:` takes one NSMenu.
         unsafe { ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), menu_id) };
         self.menu = Some(menu);
         self.observe_menu_tracking();
@@ -322,8 +381,14 @@ impl PlatformTrayIcon for CocoaStatusItem {
             return;
         }
         self.handlers.borrow_mut().activation = Some(Rc::from(handler));
+        // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`); `button`
+        // takes no arguments and returns an object (non-nil here: `ensure_button_target`
+        // returned true).
         let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
         // [button sendActionOn:LeftMouseDown | RightMouseDown | OtherMouseDown]
+        // SAFETY: `button` is the live button of the status item; `sendActionOn:` takes one
+        // NSEventMask (an unsigned 64-bit integer), which `send_int_logged` passes in the same
+        // register [inferred: same size and class as NSInteger].
         unsafe {
             ObjcMsg::send_int_logged(
                 button,
@@ -337,6 +402,8 @@ impl PlatformTrayIcon for CocoaStatusItem {
     fn show(&mut self) -> Result<(), &'static str> {
         self.is_visible = true;
         // Set status item visible
+        // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`);
+        // `setVisible:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), true) };
         Ok(())
     }
@@ -344,6 +411,8 @@ impl PlatformTrayIcon for CocoaStatusItem {
     fn hide(&mut self) -> Result<(), &'static str> {
         self.is_visible = false;
         // Set status item hidden
+        // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`);
+        // `setVisible:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(self.status_item, Sel::register("setVisible:"), false) };
         Ok(())
     }
@@ -359,15 +428,27 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.last_message = Some((title.to_string(), msg.to_string(), icon, dur));
 
         let center_class = Class::get("NSUserNotificationCenter").unwrap_or(Class::NIL);
+        // SAFETY: `defaultUserNotificationCenter` is a no-argument class method returning an
+        // object (a nil class from `unwrap_or` is a no-op).
         let center = unsafe {
             ObjcMsg::send_class_0(center_class, Sel::register("defaultUserNotificationCenter"))
         };
         let notif_class = Class::get("NSUserNotification").unwrap_or(Class::NIL);
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`
+        // (a nil class from `unwrap_or` is a no-op).
         let notif_alloc = unsafe { ObjcMsg::send_class_0(notif_class, Sel::register("alloc")) };
+        // SAFETY: `init` takes no arguments; the receiver is the unconsumed `alloc` result above.
         let notif = unsafe { ObjcMsg::send_0(notif_alloc, Sel::register("init")) };
         if !notif.is_nil() {
+            // SAFETY: `notif` is the non-nil NSUserNotification initialised above;
+            // `setTitle:` takes one NSString, which `send_str` builds from `title`.
             unsafe { ObjcMsg::send_str(notif, Sel::register("setTitle:"), title) };
+            // SAFETY: as above; `setInformativeText:` takes one NSString.
             unsafe { ObjcMsg::send_str(notif, Sel::register("setInformativeText:"), msg) };
+            // SAFETY: `center` is the shared centre (nil is a no-op) and `notif` the live
+            // notification; `deliverNotification:` takes one NSUserNotification and the centre
+            // retains it [inferred], so our `alloc` +1 is deliberately left to it (not released
+            // here), which is a leak of one object per message, not unsoundness.
             unsafe { ObjcMsg::send_id(center, Sel::register("deliverNotification:"), notif) };
         }
         Ok(())
@@ -382,15 +463,25 @@ impl Drop for CocoaStatusItem {
     fn drop(&mut self) {
         self.remove_menu_observer();
         if self.click_target.is_some() {
+            // SAFETY: `self.status_item` is still live (removed from the bar only below);
+            // `button` takes no arguments and returns an object (nil is a no-op for the next send).
             let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+            // SAFETY: `button` is the status item's button or nil; `setTarget:` takes one
+            // object, here nil, which clears the button's weak reference to `click_target` before
+            // that is dropped with `self`.
             unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), Id::NIL) };
         }
         // [[NSStatusBar systemStatusBar] removeStatusItem:status_item]
         if !self.status_item.is_nil() {
             let status_bar_class = Class::get("NSStatusBar").unwrap_or(Class::NIL);
+            // SAFETY: `systemStatusBar` is a no-argument class method of `NSStatusBar` returning
+            // an object (a nil class from `unwrap_or` is a no-op).
             let status_bar = unsafe {
                 ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar"))
             };
+            // SAFETY: `status_bar` is the shared `NSStatusBar` (or nil, a no-op) and
+            // `self.status_item` the non-nil item this value created in `new`; `removeStatusItem:`
+            // takes one NSStatusItem and is sent once, in `drop`.
             unsafe {
                 ObjcMsg::send_id(
                     status_bar,
@@ -461,13 +552,20 @@ pub fn activation_reason_for_event(event: Id) -> TrayActivation {
     if event.is_nil() {
         return TrayActivation::Trigger;
     }
-    // SAFETY: `event` is a live NSEvent; `type` is defined for every NSEvent, and
-    // `clickCount`/`buttonNumber` only for the mouse types checked before reading them.
+    // SAFETY: `event` is non-nil (checked above) and is the NSEvent given by the caller
+    // (`[NSApp currentEvent]` or the one AppKit is delivering), live for this call. `type` is
+    // defined for every NSEvent and returns NSEventType (NSUInteger), read here as an `isize` of
+    // the same size; `clickCount` and `buttonNumber` are only read after `is_mouse_event`
+    // established a mouse type (AppKit raises for the others), per the NSEvent documentation
+    // [inferred].
     let event_type = unsafe { ObjcMsg::send_isize_return(event, Sel::register("type")) };
     if !is_mouse_event(event_type) {
         return TrayActivation::Unknown;
     }
+    // SAFETY: `event` is a live, non-nil NSEvent of a mouse type (checked above), for which
+    // `clickCount` (NSInteger, no arguments) is defined [inferred: NSEvent documentation].
     let click_count = unsafe { ObjcMsg::send_isize_return(event, Sel::register("clickCount")) };
+    // SAFETY: as above; `buttonNumber` (NSInteger, no arguments) is defined for mouse types.
     let button_number = unsafe { ObjcMsg::send_isize_return(event, Sel::register("buttonNumber")) };
     activation_reason(event_type, click_count, button_number)
 }
@@ -499,7 +597,9 @@ fn is_mouse_move_event(event_type: isize) -> bool {
 /// `[NSApp currentEvent]`.
 fn current_event() -> Id {
     let app_class = Class::get("NSApplication").unwrap_or(Class::NIL);
-    // SAFETY: `+sharedApplication` and `-currentEvent` take no arguments and return objects.
+    // SAFETY: `+sharedApplication` and `-currentEvent` take no arguments and return objects;
+    // a nil class or nil `app` makes the sends no-ops returning nil, and the returned event is
+    // only used by callers for the duration of the AppKit callback that is running.
     unsafe {
         let app = ObjcMsg::send_class_0(app_class, Sel::register("sharedApplication"));
         ObjcMsg::send_0(app, Sel::register("currentEvent"))

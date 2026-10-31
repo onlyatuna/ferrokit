@@ -155,7 +155,11 @@ pub mod win32_theme {
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
-            // SAFETY: plain registry reads into stack buffers whose size is passed along.
+            // SAFETY: `subkey` and `value_name` are NUL-terminated UTF-16 vectors that outlive the
+            // calls; `hkey` is the out-handle written by the successful `RegOpenKeyExW` and closed
+            // exactly once below; `buf` is a 32-byte stack buffer and `size` is initialised to its
+            // byte length, so `RegQueryValueExW` (per its documentation) writes at most that many
+            // bytes and updates `size`; the read back is clamped to `buf.len()`.
             unsafe {
                 let mut hkey: HKEY = std::ptr::null_mut();
                 if RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
@@ -212,6 +216,11 @@ pub mod win32_theme {
                 .chain(std::iter::once(0))
                 .collect();
 
+            // SAFETY: `subkey` and `value_name` are NUL-terminated UTF-16 vectors that outlive the
+            // calls; `hkey` is the out-handle written by the successful `RegOpenKeyExW` and closed
+            // exactly once, right after the query; `data` is a live `u32` and `data_size` is
+            // initialised to 4, so `RegQueryValueExW` (per its documentation) writes at most
+            // 4 bytes through the `*mut u8`.
             unsafe {
                 let mut hkey: HKEY = std::ptr::null_mut();
                 if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
@@ -270,7 +279,10 @@ pub mod win32_theme {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 SystemParametersInfoW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS,
             };
-            // SAFETY: `NONCLIENTMETRICSW` is plain data; `cbSize` is set as the API requires.
+            // SAFETY: an all-zero `NONCLIENTMETRICSW` is a valid value (integers and integer arrays
+            // only); `cbSize` is set to its size before the call, as `SPI_GETNONCLIENTMETRICS`
+            // requires per the `SystemParametersInfoW` documentation, and `uiParam` repeats it;
+            // `pvParam` points to the live local `ncm`, which the call fills.
             unsafe {
                 let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
                 ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
@@ -297,7 +309,9 @@ pub mod win32_theme {
             use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
             const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
             let mut on: i32 = 0;
-            // SAFETY: the query writes one `BOOL` through the pointer.
+            // SAFETY: `SPI_GETCLIENTAREAANIMATION` takes `pvParam` as a pointer to a `BOOL`
+            // (per the `SystemParametersInfoW` documentation); `on` is a live local `i32`, the same
+            // size as `BOOL`.
             let ok = unsafe {
                 SystemParametersInfoW(
                     SPI_GETCLIENTAREAANIMATION,
@@ -323,7 +337,9 @@ pub mod win32_theme {
             const FE_FONTSMOOTHINGCLEARTYPE: u32 = 0x0002;
             let mut kind: u32 = 0;
             let mut contrast: u32 = 0;
-            // SAFETY: both queries write one `UINT` through the pointer.
+            // SAFETY: `SPI_GETFONTSMOOTHINGTYPE` and `SPI_GETFONTSMOOTHINGCONTRAST` take `pvParam`
+            // as a pointer to a `UINT` (per the `SystemParametersInfoW` documentation); `kind` and
+            // `contrast` are live local `u32`s, one per query.
             let (kind_ok, contrast_ok) = unsafe {
                 (
                     SystemParametersInfoW(
@@ -454,9 +470,10 @@ pub mod cocoa_theme {
         key_path: crate::objc_runtime::Id,
     }
 
-    // SAFETY: the `Id`s are only messaged to remove the observers, which AppKit allows from any
-    // thread for key-value and notification observers; `NSApp`, the notification center and the
-    // key path outlive the observer (the first two are process-lifetime singletons).
+    // SAFETY: the `Id`s are only messaged to remove the observers; AppKit permits removing key-value
+    // and notification observers from another thread [inferred: not checked against Apple's
+    // documentation here]. `NSApp` and the notification center are process-lifetime singletons and
+    // `key_path` is a +1 string released only in `drop`, so all three outlive the observer.
     #[cfg(target_os = "macos")]
     unsafe impl Send for AppearanceObserver {}
 
@@ -464,7 +481,10 @@ pub mod cocoa_theme {
     impl Drop for AppearanceObserver {
         fn drop(&mut self) {
             use crate::objc_runtime::{ObjcMsg, Sel};
-            // SAFETY: undoes the registrations made in `register`, with the same objects.
+            // SAFETY: `nsapp`, `center` and `key_path` are the objects `register` made the
+            // registrations with and are still live (see the `Send` impl above); `self.target` is
+            // still owned by this struct and is dropped only after this body, so its id stays valid
+            // while it is unregistered; `key_path` is released exactly once, here.
             unsafe {
                 ObjcMsg::send_remove_key_path_observer(self.nsapp, self.target.id(), self.key_path);
                 ObjcMsg::send_remove_notification_observer(self.center, self.target.id());
@@ -537,7 +557,8 @@ pub mod cocoa_theme {
             }
             use ferrokit_core::event::{Event, EventKind};
             use ferrokit_core::object::{ObjectId, ThreadContext, ThreadId};
-            // SAFETY: `pthread_main_np` takes no arguments and only reads the calling thread.
+            // SAFETY: `pthread_main_np` is declared above with its libSystem signature (no
+            // arguments, returns `int`); it takes no pointers and reads only the calling thread.
             let os_main = unsafe { pthread_main_np() } != 0;
             match Self::observe_plan(
                 ThreadContext::main_thread_id(),
@@ -629,19 +650,29 @@ pub mod cocoa_theme {
         pub fn query_color_scheme() -> ColorScheme {
             use crate::objc_runtime::{nsstring_from_str, Class, Id, ObjcMsg, Sel};
             let nsapp_class = Class::get("NSApplication").unwrap_or(Class::NIL);
+            // SAFETY: `nsapp_class` is `NSApplication` or nil; messaging nil is a no-op returning
+            // nil, and `sharedApplication` takes no arguments and returns an object.
             let nsapp =
                 unsafe { ObjcMsg::send_class_0(nsapp_class, Sel::register("sharedApplication")) };
+            // SAFETY: `effectiveAppearance` takes no arguments; `nsapp` is `NSApp` (or nil, which
+            // yields nil).
             let appearance =
                 unsafe { ObjcMsg::send_0(nsapp, Sel::register("effectiveAppearance")) };
 
             let aqua = nsstring_from_str("NSAppearanceNameAqua");
             let dark_aqua = nsstring_from_str("NSAppearanceNameDarkAqua");
             let array_class = Id(Class::get("NSArray").unwrap_or(Class::NIL).0);
+            // SAFETY: `+arrayWithObject:` takes one object; `aqua` is the live +1 NSString just
+            // made, and `array_class` is `NSArray` or nil.
             let names =
                 unsafe { ObjcMsg::send_id(array_class, Sel::register("arrayWithObject:"), aqua) };
+            // SAFETY: `-arrayByAddingObject:` takes one object; `names` is the autoreleased array
+            // above and `dark_aqua` the live +1 NSString just made.
             let names = unsafe {
                 ObjcMsg::send_id(names, Sel::register("arrayByAddingObject:"), dark_aqua)
             };
+            // SAFETY: `-bestMatchFromAppearancesWithNames:` takes one NSArray; `appearance` is the
+            // object returned above (or nil) and `names` the live array.
             let best = unsafe {
                 ObjcMsg::send_id(
                     appearance,
@@ -649,10 +680,17 @@ pub mod cocoa_theme {
                     names,
                 )
             };
+            // SAFETY: `-isEqualToString:` takes one NSString and returns `BOOL`, matching
+            // `send_id_bool_return`; `dark_aqua` is still live (released below) and `best` is an
+            // NSString or nil.
             let dark = unsafe {
                 ObjcMsg::send_id_bool_return(best, Sel::register("isEqualToString:"), dark_aqua)
             };
+            // SAFETY: `aqua` is the +1 string from `nsstring_from_str` and is released exactly once,
+            // here, after its last use above.
             unsafe { ObjcMsg::send_0(aqua, Sel::register("release")) };
+            // SAFETY: `dark_aqua` is the +1 string from `nsstring_from_str` and is released exactly
+            // once, here, after its last use above.
             unsafe { ObjcMsg::send_0(dark_aqua, Sel::register("release")) };
             if dark {
                 ColorScheme::Dark

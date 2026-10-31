@@ -15,7 +15,8 @@ use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_USE_IMMERSI
 
 fn frame_is_dark(window: &NativeWindow) -> bool {
     let mut value: i32 = -1;
-    // SAFETY: `value` is the 4-byte `BOOL` the attribute reads back into.
+    // SAFETY: `window.hwnd()` is the live window borrowed here; `value` is a live 4-byte `i32`,
+    // the size of the `BOOL` this attribute writes, and its size is passed as the buffer length.
     let hr = unsafe {
         DwmGetWindowAttribute(
             window.hwnd(),

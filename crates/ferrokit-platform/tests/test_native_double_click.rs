@@ -41,6 +41,8 @@ fn window_with_log() -> (
 #[test]
 fn native_window_class_asks_the_os_for_double_clicks() {
     let (_win, _log, hwnd) = window_with_log();
+    // SAFETY: `hwnd` is the handle of `_win`, which `window_with_log` returned and which is alive
+    // until the end of the test; `GetClassLongPtrW` only reads the window class.
     let style = unsafe { GetClassLongPtrW(hwnd, GCL_STYLE) } as u32;
     assert_ne!(
         style & CS_DBLCLKS,
@@ -53,6 +55,8 @@ fn native_window_class_asks_the_os_for_double_clicks() {
 fn double_click_message_is_a_double_click_event_not_a_second_press() {
     let (_win, log, hwnd) = window_with_log();
     let pos = (50 & 0xffff) | ((80 & 0xffff) << 16);
+    // SAFETY: `hwnd` is the live window of `_win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_LBUTTONDBLCLK, 0, pos);
         SendMessageW(hwnd, WM_RBUTTONDBLCLK, 0, pos);

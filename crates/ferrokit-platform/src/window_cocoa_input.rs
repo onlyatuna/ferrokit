@@ -299,8 +299,11 @@ pub(crate) fn teardown_view(view: Id) {
         return;
     };
     if !slot.tracking_area.is_nil() {
-        // SAFETY: `view` is alive (the window releases it after this) and the area was added to it
-        // by `update_tracking_area`; the slot owns one reference of the area.
+        // SAFETY: `view` is live: the only caller is `CocoaNativeWindow::drop`, which calls this
+        // before it releases the view. The area was added to this very view by
+        // `update_tracking_area` and the slot owns one reference of it, which the `release`
+        // here balances once (the slot was removed from the table above, so no second release
+        // can happen). `removeTrackingArea:` takes one NSTrackingArea.
         unsafe {
             ObjcMsg::send_id_logged(
                 view,
@@ -310,7 +313,8 @@ pub(crate) fn teardown_view(view: Id) {
             appkit::release(slot.tracking_area);
         }
     }
-    // SAFETY: the slot owns one reference of the cursor (`replace_cursor`).
+    // SAFETY: `slot.cursor` is nil (a no-op) or the cursor `replace_cursor` retained for this
+    // slot; the slot was removed from the table above, so this is the one release of that +1.
     unsafe { appkit::release(slot.cursor) };
     drop(slot);
 }
@@ -547,8 +551,11 @@ fn sel(name: &str) -> Sel {
 /// desktop coordinates. `None` when the view is not registered.
 fn locate(view: Id, event: Id) -> Option<(CGPoint, Point)> {
     let window = with_slot(view, |slot| slot.ns_window)?;
-    // SAFETY: `event` is the live NSEvent AppKit passed to the view method, `view` its live
-    // receiver and `window` its window (kept alive by the owning `CocoaNativeWindow`).
+    // SAFETY: `event` is the NSEvent AppKit passed to the view method on the main thread, live
+    // for that call; `view` is its receiver, which `with_slot` just found registered, so the
+    // owning `CocoaNativeWindow` has not been dropped; `window` is that window's `ns_window`,
+    // live for the same reason. `locationInWindow` returns NSPoint, `convertPoint:fromView:`
+    // and `convertPointToScreen:` take and return NSPoint, matching the `send_*point*` senders.
     unsafe {
         let in_window = ObjcMsg::send_point_return(event, sel("locationInWindow"));
         let local =
@@ -568,7 +575,9 @@ fn locate(view: Id, event: Id) -> Option<(CGPoint, Point)> {
 
 /// `-[NSEvent buttonNumber]`: 0 left, 1 right, 2 middle, 3 and up the extra buttons.
 fn button_number(event: Id) -> u16 {
-    // SAFETY: `event` is a live mouse NSEvent, the only kind this is called on.
+    // SAFETY: `event` is a live mouse NSEvent (callers only pass the mouse kinds from
+    // `handle_ns_event`), for which `buttonNumber` (NSInteger, no arguments) is defined per the
+    // NSEvent documentation [inferred].
     let number = unsafe { ObjcMsg::send_isize_return(event, sel("buttonNumber")) };
     number.clamp(0, u16::MAX as isize) as u16
 }
@@ -583,8 +592,9 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
     if with_slot(view, |_| ()).is_none() || event.is_nil() {
         return false;
     }
-    // SAFETY: `event` is a live NSEvent of the type `kind` names; every selector below is
-    // defined for that type, with the return type the function used expects.
+    // SAFETY: `event` is the non-nil NSEvent AppKit passed to the view method (checked above);
+    // `modifierFlags` is defined for every NSEvent and returns NSUInteger, matching
+    // `send_nsuinteger_return`.
     let flags = unsafe { ObjcMsg::send_nsuinteger_return(event, sel("modifierFlags")) };
     let modifiers = qt_modifiers_from_ns_flags(flags);
     match kind {
@@ -701,7 +711,9 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
             )
         }
         NsEventKind::FlagsChanged => {
-            // SAFETY: `keyCode` is defined for every NSEvent of a key type.
+            // SAFETY: `event` is the live flagsChanged NSEvent; `keyCode` (unsigned short, no
+            // arguments) is defined for key-type events, which include flagsChanged
+            // [inferred: NSEvent documentation].
             let key_code = unsafe { ObjcMsg::send_u16_return(event, sel("keyCode")) };
             let Some((key, flag)) = modifier_key(key_code) else {
                 return false;
@@ -724,7 +736,10 @@ pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
 /// A trackpad's pixel deltas become 1/4 degree per pixel; a wheel's accelerated delta is
 /// reduced to a single notch per event (qnsview_mouse.mm `scrollWheel:`).
 fn wheel_angle_delta(event: Id) -> (f64, f64) {
-    // SAFETY: the scroll-wheel selectors are defined for NSEvents of the scroll wheel type.
+    // SAFETY: `event` is the live scroll-wheel NSEvent `handle_ns_event` passed; the selectors
+    // used (`hasPreciseScrollingDeltas` BOOL; `scrollingDeltaX/Y`, `deltaX/Y` CGFloat; none take
+    // arguments) are defined for scroll-wheel events [inferred: NSEvent documentation], and each
+    // matches the sender used for it.
     unsafe {
         if ObjcMsg::send_bool_prop(event, sel("hasPreciseScrollingDeltas")) {
             let pixels_to_degrees = 2.0;
@@ -744,8 +759,10 @@ fn wheel_angle_delta(event: Id) -> (f64, f64) {
 
 /// The `Qt::Key` and key code of a key event.
 fn key_of_event(event: Id, flags: usize) -> (u32, u16) {
-    // SAFETY: `keyCode` and `charactersIgnoringModifiers` are defined for key NSEvents (the
-    // latter raises for flagsChanged, which never gets here).
+    // SAFETY: `event` is the live keyDown/keyUp NSEvent from `handle_ns_event`; `keyCode`
+    // (unsigned short) and `charactersIgnoringModifiers` (NSString or nil, copied by
+    // `send_string_prop`) are defined for key events, and the latter raises for flagsChanged,
+    // which is handled in its own arm and never reaches here [inferred: NSEvent documentation].
     let (key_code, characters) = unsafe {
         (
             ObjcMsg::send_u16_return(event, sel("keyCode")),
@@ -765,15 +782,19 @@ fn key_of_event(event: Id, flags: usize) -> (u32, u16) {
 /// shortcuts, not text, and skip the input method.
 fn handle_key_down(view: Id, event: Id, flags: usize, modifiers: u32) -> bool {
     let (key, key_code) = key_of_event(event, flags);
-    // SAFETY: `isARepeat` is defined for keyDown NSEvents (it raises for flagsChanged).
+    // SAFETY: `event` is the live keyDown NSEvent; `isARepeat` (BOOL, no arguments) is defined
+    // for keyDown/keyUp and raises for flagsChanged, which never reaches here [inferred:
+    // NSEvent documentation].
     let is_repeat = unsafe { ObjcMsg::send_bool_prop(event, sel("isARepeat")) };
     let was_composing = has_marked_text(view);
     let chord = flags & (NS_EVENT_MODIFIER_FLAG_COMMAND | NS_EVENT_MODIFIER_FLAG_CONTROL) != 0;
     if !chord {
         with_slot(view, |slot| slot.send_key_event = true);
-        // SAFETY: `view` is the live receiver of the keyDown it handles; the array is an
-        // autoreleased one-element NSArray holding the live event. AppKit calls the
-        // NSTextInputClient methods of this view before returning.
+        // SAFETY: `view` is the live receiver of the keyDown being handled (found in the slot
+        // table by `handle_ns_event`); `array_with_object` builds an autoreleased one-element
+        // NSArray holding the live `event`, and `interpretKeyEvents:` takes exactly one NSArray
+        // of NSEvents. AppKit calls back into this view's NSTextInputClient methods before it
+        // returns, which is why no slot borrow is held across the call.
         unsafe {
             let events = appkit::array_with_object(event);
             ObjcMsg::send_id_logged(view, sel("interpretKeyEvents:"), events);
@@ -813,7 +834,9 @@ fn utf16_len(text: &str) -> usize {
 
 /// `-insertText:replacementRange:` with an `NSString` or `NSAttributedString`.
 pub fn text_input_insert(view: Id, text: Id) {
-    // SAFETY: `text` is the live argument of the NSTextInputClient call being handled.
+    // SAFETY: `text` is the argument AppKit passed to `insertText:replacementRange:`: an
+    // NSString or NSAttributedString (or nil), live for this call [inferred: NSTextInputClient
+    // documentation]; `ns_text_to_string` accepts exactly that.
     if let Some(text) = unsafe { appkit::ns_text_to_string(text) } {
         text_input_insert_str(view, &text);
     }
@@ -850,7 +873,9 @@ pub fn text_input_insert_str(view: Id, text: &str) {
 
 /// `-setMarkedText:selectedRange:replacementRange:`: the composition changed.
 pub fn text_input_set_marked(view: Id, text: Id, selected: NSRange) {
-    // SAFETY: `text` is the live argument of the NSTextInputClient call being handled.
+    // SAFETY: `text` is the argument AppKit passed to `setMarkedText:...`: an NSString or
+    // NSAttributedString (or nil), live for this call [inferred: NSTextInputClient
+    // documentation]; `ns_text_to_string` accepts exactly that.
     let text = unsafe { appkit::ns_text_to_string(text) }.unwrap_or_default();
     text_input_set_marked_str(view, &text, selected);
 }
@@ -939,7 +964,10 @@ pub fn text_input_first_rect(view: Id) -> CGRect {
     }) else {
         return CGRect::ZERO;
     };
-    // SAFETY: `view` is the live receiver of the call and `window` its window.
+    // SAFETY: `view` is the receiver of the NSTextInputClient call being handled, live for that
+    // call, and `window` is its slot's window (kept alive by the owning `CocoaNativeWindow`);
+    // `convertPoint:toView:` and `convertPointToScreen:` take and return NSPoint, matching the
+    // senders used.
     let bottom = unsafe {
         let in_window = ObjcMsg::send_convert_point(
             view,
@@ -965,9 +993,13 @@ pub fn update_tracking_area(view: Id) {
     }) else {
         return;
     };
-    // SAFETY: `view` is the live view being updated; `old` is the area this slot added to it,
-    // of which the slot owned one reference; the new area is allocated here (+1) and either
-    // handed to the slot or released again.
+    // SAFETY: `view` is live: AppKit invoked this from the view's own method, or the window
+    // just registered it. `old` was taken out of the slot just above, so it is the area this
+    // slot added to the view and holds one reference to; it is removed and released once here.
+    // The new area comes from `alloc` + `initWithRect:options:owner:userInfo:` (+1) with the
+    // view's own bounds and the view as owner, and is either stored in the slot (which then
+    // owns the +1) or removed and released again, so each path balances. `bounds` returns
+    // NSRect; `addTrackingArea:` / `removeTrackingArea:` take one NSTrackingArea.
     unsafe {
         if !old.is_nil() {
             ObjcMsg::send_id_logged(view, sel("removeTrackingArea:"), old);
@@ -996,7 +1028,10 @@ pub fn reset_cursor_rects(view: Id) -> bool {
     if cursor.is_nil() {
         return false;
     }
-    // SAFETY: `view` is the live receiver; the cursor is retained by the slot.
+    // SAFETY: `view` is the receiver of the AppKit call being handled, live for that call;
+    // `cursor` is non-nil (checked above) and was retained by the slot (`replace_cursor`), so
+    // it outlives `addCursorRect:cursor:` (AppKit retains it for the rect too) [inferred].
+    // `visibleRect` returns NSRect; `discardCursorRects` takes no arguments.
     unsafe {
         ObjcMsg::send_0_logged(view, sel("discardCursorRects"));
         let visible = ObjcMsg::send_rect_return(view, sel("visibleRect"));
@@ -1012,7 +1047,8 @@ pub fn cursor_update(view: Id) -> bool {
     if cursor.is_nil() {
         return false;
     }
-    // SAFETY: the cursor is retained by the slot.
+    // SAFETY: `cursor` is the non-nil NSCursor retained by the slot (`replace_cursor`), live
+    // here; `set` takes no arguments.
     unsafe { ObjcMsg::send_0_logged(cursor, sel("set")) };
     true
 }
@@ -1020,18 +1056,23 @@ pub fn cursor_update(view: Id) -> bool {
 /// Makes `cursor` (a shared `NSCursor`, or nil for the default one) the window cursor and has
 /// AppKit rebuild the view's cursor rects. The slot keeps its own reference.
 pub(crate) fn replace_cursor(view: Id, cursor: Id) {
-    // SAFETY: `cursor` is nil or a live NSCursor; the extra reference is the slot's, released
-    // when the cursor is replaced or the slot torn down.
+    // SAFETY: `cursor` is nil (retain on nil is a no-op) or a shared NSCursor; retaining it
+    // takes the +1 the slot will own, released when the cursor is replaced (below), when the
+    // slot is torn down, or in the early-return branch if there is no slot.
     unsafe { appkit::retain(cursor) };
     let slot = with_slot(view, |slot| {
         (std::mem::replace(&mut slot.cursor, cursor), slot.ns_window)
     });
     let Some((previous, window)) = slot else {
-        // SAFETY: undoes the retain above; nobody holds the cursor.
+        // SAFETY: balances the `retain` above: no slot took ownership, so this releases the +1
+        // taken a few lines up and nothing else holds that reference.
         unsafe { appkit::release(cursor) };
         return;
     };
-    // SAFETY: `previous` was retained by this slot; `window` is the live window of `view`.
+    // SAFETY: `previous` is nil or the cursor this slot retained earlier, swapped out of the
+    // slot above, so this is the one release of that +1. `window` is the slot's `ns_window`,
+    // live while the slot exists (the window removes the slot before releasing the window);
+    // `invalidateCursorRectsForView:` takes one NSView, here `view`.
     unsafe {
         appkit::release(previous);
         ObjcMsg::send_id_logged(window, sel("invalidateCursorRectsForView:"), view);

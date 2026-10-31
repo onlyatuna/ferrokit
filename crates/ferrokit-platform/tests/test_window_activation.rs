@@ -27,10 +27,13 @@ mod win32 {
     };
 
     fn ex_style(w: &NativeWindow) -> u32 {
+        // SAFETY: `w.hwnd()` is the window's own live handle (held by the borrowed `NativeWindow`);
+        // `GetWindowLongW` only reads window data and validates the handle.
         unsafe { GetWindowLongW(w.hwnd(), GWL_EXSTYLE) as u32 }
     }
 
     fn foreground() -> isize {
+        // SAFETY: `GetForegroundWindow` takes no arguments and returns a handle value only.
         unsafe { GetForegroundWindow() as isize }
     }
 
@@ -46,6 +49,8 @@ mod win32 {
             "WS_EX_TOOLWINDOW (no taskbar button)"
         );
         assert_eq!(ex & WS_EX_APPWINDOW, 0);
+        // SAFETY: `tip.hwnd()` is the live window created at the top of this test; user32
+        // validates the handle and only reads its style.
         let style = unsafe { GetWindowLongW(tip.hwnd(), GWL_STYLE) as u32 };
         assert_ne!(style & WS_POPUP, 0);
         assert_eq!(style & WS_CAPTION, 0, "no frame");
@@ -60,6 +65,8 @@ mod win32 {
     /// Makes `w` the foreground window. A process that lost foreground rights (for example
     /// because the previous foreground window was destroyed) may need the Alt-tap trick.
     fn take_foreground(w: &NativeWindow) -> bool {
+        // SAFETY: `w.hwnd()` is the live handle of the borrowed `NativeWindow`; the calls take
+        // integer arguments only (`keybd_event` synthesises a key press, with no pointers).
         unsafe {
             SetForegroundWindow(w.hwnd());
             if foreground() != w.hwnd() as isize {
@@ -85,6 +92,7 @@ mod win32 {
         let tip = NativeWindow::new("tip", rect(), WindowFlags::TOOLTIP).unwrap();
         PlatformWindow::show(&tip);
         assert_ne!(
+            // SAFETY: `tip.hwnd()` is the live window created above; `IsWindowVisible` only reads.
             unsafe { IsWindowVisible(tip.hwnd()) },
             0,
             "the tip is visible"
@@ -191,11 +199,15 @@ mod win32 {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GW_HWNDNEXT};
         // Whether `upper` is above `lower` in the system z-order.
         let is_above = |upper: &NativeWindow, lower: &NativeWindow| {
+            // SAFETY: `upper.hwnd()` is the live handle of the borrowed window; `GetWindow` only
+            // reads the z-order and validates the handle.
             let mut cur = unsafe { GetWindow(upper.hwnd(), GW_HWNDNEXT) };
             while !cur.is_null() {
                 if cur == lower.hwnd() {
                     return true;
                 }
+                // SAFETY: `cur` is non-null (loop condition) and came from `GetWindow`; if that
+                // window was destroyed meanwhile, user32 rejects the stale handle.
                 cur = unsafe { GetWindow(cur, GW_HWNDNEXT) };
             }
             false

@@ -29,7 +29,13 @@ pub struct CocoaMenuItem {
 impl CocoaMenuItem {
     pub fn new_action(id: u32, text: &str) -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`
+        // (a nil class from `unwrap_or` makes the send a no-op returning nil).
         let ns_item_alloc = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("alloc")) };
+        // SAFETY: `send_menu_item_init` sends `initWithTitle:action:keyEquivalent:` (NSString,
+        // selector, NSString) to the unconsumed `alloc` result above; `ActionTarget::action()` is
+        // a registered selector. The +1 is never released, so `ns_item` is live for the life of
+        // this value (and beyond, inside its menu).
         let ns_item = unsafe {
             ObjcMsg::send_menu_item_init(ns_item_alloc, text, ActionTarget::action(), "")
         };
@@ -50,7 +56,13 @@ impl CocoaMenuItem {
 
     pub fn new_checkable(id: u32, text: &str, checked: bool) -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`
+        // (a nil class from `unwrap_or` makes the send a no-op returning nil).
         let ns_item_alloc = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("alloc")) };
+        // SAFETY: `send_menu_item_init` sends `initWithTitle:action:keyEquivalent:` (NSString,
+        // selector, NSString) to the unconsumed `alloc` result above; `ActionTarget::action()` is
+        // a registered selector. The +1 is never released, so `ns_item` is live for the life of
+        // this value (and beyond, inside its menu).
         let ns_item = unsafe {
             ObjcMsg::send_menu_item_init(ns_item_alloc, text, ActionTarget::action(), "")
         };
@@ -60,6 +72,8 @@ impl CocoaMenuItem {
         } else {
             NS_CONTROL_STATE_VALUE_OFF
         };
+        // SAFETY: `ns_item` is the item initialised above (nil is a no-op); `setState:` takes one
+        // NSInteger (an `NSControlStateValue`).
         unsafe { ObjcMsg::send_int(ns_item, Sel::register("setState:"), initial_state) };
 
         Self {
@@ -78,6 +92,8 @@ impl CocoaMenuItem {
 
     pub fn new_separator() -> Self {
         let item_class = Class::get("NSMenuItem").unwrap_or(Class::NIL);
+        // SAFETY: `separatorItem` is a no-argument class method of `NSMenuItem` returning a shared
+        // object (a nil class from `unwrap_or` makes the send a no-op returning nil).
         let ns_item = unsafe { ObjcMsg::send_class_0(item_class, Sel::register("separatorItem")) };
 
         Self {
@@ -106,6 +122,10 @@ impl CocoaMenuItem {
         }) else {
             return;
         };
+        // SAFETY: `self.ns_item` is the item created in `new_*` and never released, so it is
+        // live; `target.id()` is the live ActionTarget, which is stored in `self.target` right
+        // below and cleared from the item in `Drop` before it is released, so the item's weak
+        // target never dangles. `setTarget:` takes one object.
         unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setTarget:"), target.id()) };
         *self.target.borrow_mut() = Some(target);
     }
@@ -133,6 +153,7 @@ impl CocoaMenuItem {
                 } else {
                     NS_CONTROL_STATE_VALUE_OFF
                 };
+                // SAFETY: `self.ns_item` is live (never released); `setState:` takes one NSInteger.
                 unsafe { ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state) };
             }
             self.activated.emit(&());
@@ -141,6 +162,9 @@ impl CocoaMenuItem {
 
     pub fn set_submenu(&self, menu: Box<dyn PlatformMenu>) {
         let sub_id = Id(menu.native_handle() as *mut std::ffi::c_void);
+        // SAFETY: `self.ns_item` is live (never released); `sub_id` is the NSMenu handle of
+        // `menu`, which is stored in `self.submenu` right below and so outlives the item's use
+        // of it; `setSubmenu:` takes one NSMenu.
         unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setSubmenu:"), sub_id) };
         *self.submenu.lock().unwrap() = Some(menu);
     }
@@ -154,6 +178,9 @@ impl Drop for CocoaMenuItem {
     fn drop(&mut self) {
         // The item may outlive us inside its NSMenu; it must not keep a dangling target.
         if self.target.get_mut().is_some() {
+            // SAFETY: `self.ns_item` is live (its `alloc` +1 is never released); `setTarget:` takes
+            // one object, here nil, which clears the item's weak reference to `self.target`
+            // before that ActionTarget is dropped with `self`.
             unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setTarget:"), Id::NIL) };
         }
     }
@@ -170,6 +197,8 @@ impl PlatformMenuItem for CocoaMenuItem {
 
     fn set_text(&mut self, text: &str) {
         *self.text.lock().unwrap() = text.to_string();
+        // SAFETY: `self.ns_item` is live (never released); `setTitle:` takes one NSString, which
+        // `send_str` builds from `text`.
         unsafe { ObjcMsg::send_str(self.ns_item, Sel::register("setTitle:"), text) };
     }
 
@@ -192,6 +221,7 @@ impl PlatformMenuItem for CocoaMenuItem {
         } else {
             NS_CONTROL_STATE_VALUE_OFF
         };
+        // SAFETY: `self.ns_item` is live (never released); `setState:` takes one NSInteger.
         unsafe { ObjcMsg::send_int(self.ns_item, Sel::register("setState:"), state) };
     }
 
@@ -201,6 +231,7 @@ impl PlatformMenuItem for CocoaMenuItem {
 
     fn set_enabled(&mut self, enabled: bool) {
         *self.enabled.lock().unwrap() = enabled;
+        // SAFETY: `self.ns_item` is live (never released); `setEnabled:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(self.ns_item, Sel::register("setEnabled:"), enabled) };
     }
 
@@ -223,7 +254,12 @@ pub struct CocoaMenu {
 impl CocoaMenu {
     pub fn new() -> Self {
         let menu_class = Class::get("NSMenu").unwrap_or(Class::NIL);
+        // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`
+        // (a nil class from `unwrap_or` makes the send a no-op returning nil).
         let ns_menu_alloc = unsafe { ObjcMsg::send_class_0(menu_class, Sel::register("alloc")) };
+        // SAFETY: `initWithTitle:` takes one NSString, which `send_str` builds from ""; the
+        // receiver is the unconsumed `alloc` result above. The +1 is never released, so
+        // `ns_menu` is live for the life of this value.
         let ns_menu =
             unsafe { ObjcMsg::send_str(ns_menu_alloc, Sel::register("initWithTitle:"), "") };
 
@@ -242,6 +278,8 @@ impl CocoaMenu {
 
     pub fn set_title(&self, title: &str) {
         *self.title.lock().unwrap() = title.to_string();
+        // SAFETY: `self.ns_menu` is live (never released); `setTitle:` takes one NSString, which
+        // `send_str` builds from `title`.
         unsafe { ObjcMsg::send_str(self.ns_menu, Sel::register("setTitle:"), title) };
     }
 
@@ -288,6 +326,9 @@ impl PlatformMenu for CocoaMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(CocoaMenuItem::new_action(id, text));
         item.attach_target();
+        // SAFETY: `self.ns_menu` is live (never released) and `item.native_item()` is the live
+        // NSMenuItem just created (kept alive by `item` in `self.items` and by its own +1);
+        // `addItem:` takes one NSMenuItem and retains it.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item.clone());
         item
@@ -296,6 +337,9 @@ impl PlatformMenu for CocoaMenu {
     fn add_checkable(&mut self, id: u32, text: &str, checked: bool) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(CocoaMenuItem::new_checkable(id, text, checked));
         item.attach_target();
+        // SAFETY: `self.ns_menu` is live (never released) and `item.native_item()` is the live
+        // NSMenuItem just created (kept alive by `item` in `self.items` and by its own +1);
+        // `addItem:` takes one NSMenuItem and retains it.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item.clone());
         item
@@ -303,6 +347,8 @@ impl PlatformMenu for CocoaMenu {
 
     fn add_separator(&mut self) {
         let item = Arc::new(CocoaMenuItem::new_separator());
+        // SAFETY: `self.ns_menu` is live (never released) and `item.native_item()` is the live
+        // separator NSMenuItem just obtained; `addItem:` takes one NSMenuItem.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
         self.items.lock().unwrap().push(item);
     }
@@ -313,8 +359,13 @@ impl PlatformMenu for CocoaMenu {
         item.set_submenu(submenu);
         // A submenu parent has no action of its own: with an action but no target AppKit would
         // disable it.
+        // SAFETY: `item.native_item()` is the live NSMenuItem created just above; `setAction:`
+        // takes one selector, here nil, matching `send_action`.
         unsafe { ObjcMsg::send_action(item.native_item(), Sel::register("setAction:"), Sel::NIL) };
         let arc_item = Arc::new(item);
+        // SAFETY: `self.ns_menu` is live (never released) and `arc_item.native_item()` is the
+        // live NSMenuItem created above, kept alive by `arc_item`; `addItem:` takes one NSMenuItem
+        // and retains it.
         unsafe {
             ObjcMsg::send_id(
                 self.ns_menu,

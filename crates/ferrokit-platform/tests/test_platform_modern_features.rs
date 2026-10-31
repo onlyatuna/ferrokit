@@ -779,6 +779,7 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         .expect("create normal native window");
 
         let hwnd_normal = normal_win.hwnd();
+        // SAFETY: `hwnd_normal` is the live window of `normal_win`; `GetWindowLongPtrW` only reads.
         let ex_style_normal = unsafe { GetWindowLongPtrW(hwnd_normal, GWL_EXSTYLE) };
         assert_eq!(
             (ex_style_normal as u32 & WS_EX_LAYERED),
@@ -794,6 +795,7 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         let res = normal_win.present_region(&pixmap, &dirty_region);
         assert!(res.is_ok(), "normal_win.present_region failed: {:?}", res);
 
+        // SAFETY: `hwnd_normal` is the live window of `normal_win` (still alive); read only.
         let ex_style_after = unsafe { GetWindowLongPtrW(hwnd_normal, GWL_EXSTYLE) };
         assert_eq!(
             (ex_style_after as u32 & WS_EX_LAYERED),
@@ -821,6 +823,7 @@ fn test_surface_presenter_dc_and_layered_alignment() {
         .expect("create layered native window");
 
         let hwnd_layered = layered_win.hwnd();
+        // SAFETY: `hwnd_layered` is the live window of `layered_win`; `GetWindowLongPtrW` only reads.
         let ex_style_layered = unsafe { GetWindowLongPtrW(hwnd_layered, GWL_EXSTYLE) };
         assert_ne!(
             (ex_style_layered as u32 & WS_EX_LAYERED),

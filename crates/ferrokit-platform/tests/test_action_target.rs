@@ -15,8 +15,11 @@ use std::sync::Arc;
 /// `unsafe impl Send` (the theme's observer) may.
 #[allow(dead_code)] // held for its `Drop`
 struct Moved(ActionTarget);
-// SAFETY: test-only; the target is only dropped on the receiving thread, and the mock runtime
-// that backs it is behind a mutex.
+// SAFETY: `ActionTarget` holds an `Id` (raw pointer), which is why it is not `Send`. This wrapper
+// is only used by tests to move a target to another thread and drop it there; the mock Objective-C
+// runtime behind it is guarded by a mutex, so a drop on another thread touches no unsynchronised
+// state (the same contract the theme observer's `unsafe impl Send` relies on). [inferred: the
+// runtime's locking is not re-checked here]
 unsafe impl Send for Moved {}
 
 /// `ActionTarget::perform(id)` from a fresh thread (an `Id` is a raw pointer, so not `Send`).

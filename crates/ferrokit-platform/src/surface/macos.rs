@@ -85,6 +85,20 @@ impl CocoaLayerSurface {
         }
 
         #[cfg(target_os = "macos")]
+        // SAFETY: `layer` is non-nil (checked above) and is the content view's backing layer,
+        // captured by `CocoaNativeWindow::new` and owned by that view, which outlives the
+        // surface's `present` calls [inferred: the layer keeps the same identity for the view's
+        // life]. Every Core Graphics/CoreFoundation object here is created in this block and
+        // released once after its last use: `data` (checked non-null before `CFRelease`, and
+        // before `CFDataSetLength`/`CFDataGetMutableBytePtr`; the slice is `len` bytes because
+        // `CFDataSetLength(data, len)` just sized it), `provider`, `cg_image` and `color_space`
+        // (each null-checked before release; Core Graphics accepts NULL arguments by returning
+        // NULL [inferred: Core Graphics documentation]). `CGImageCreate` is given the buffer
+        // dimensions, whose `pixel_buffer` size equals `width * height * 4` (`buffer_len`),
+        // matching bytes-per-row `width * 4`; the provider holds its own retained copy, so the
+        // image never reads `pixel_buffer` after the call. `setContents:` takes an object and a
+        // `CGImageRef` is accepted there; `contentsAreFlipped` returns BOOL; `CATransaction`
+        // `begin`/`commit` take no arguments.
         unsafe {
             use core_graphics::*;
             let color_space = CGColorSpaceCreateDeviceRGB();
@@ -164,6 +178,10 @@ impl CocoaLayerSurface {
 
         #[cfg(not(target_os = "macos"))]
         {
+            // SAFETY: `layer` is the non-nil handle checked above. Only the mock runtime
+            // compiles here: it records the `setContents:` argument (the buffer address) as an
+            // opaque value and never dereferences it, so the borrow of `pixel_buffer` need not
+            // outlive the call.
             unsafe {
                 ObjcMsg::send_id(
                     layer,

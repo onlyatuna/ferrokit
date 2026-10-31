@@ -44,6 +44,8 @@ fn events_posted_from_another_thread_are_delivered_by_the_message_pump() {
     );
 
     // The message was posted to the window before `join` returned: drain it without waiting.
+    // SAFETY: an all-zero `MSG` is a valid value; `msg` outlives the pump calls, which run on this
+    // (the window's own) thread, the only one allowed to pump its queue. `win` is still alive.
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
@@ -64,6 +66,8 @@ fn window(title: &str) -> Box<dyn ferrokit_platform::platform_window::PlatformWi
 
 fn set_cursor_message(hwnd: HWND) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{HTCLIENT, WM_MOUSEMOVE, WM_SETCURSOR};
+    // SAFETY: `hwnd` is a live window of this thread, supplied by the caller from its own
+    // window; the message has integer parameters only.
     unsafe {
         SendMessageW(
             hwnd,
@@ -85,6 +89,9 @@ fn each_window_keeps_its_own_cursor_and_blank_hides_it() {
     a.set_cursor(CursorShape::IBeam);
     b.set_cursor(CursorShape::Cross);
     let (ha, hb) = (a.native_handle() as HWND, b.native_handle() as HWND);
+    // SAFETY: `ha`/`hb` are the live handles of `a` and `b`, which outlive the block; the
+    // messages are sent on the window-owning thread with integer parameters, and
+    // `LoadCursorW(null, IDC_*)` loads a shared system cursor from a static resource id.
     unsafe {
         set_cursor_message(ha);
         assert_eq!(
@@ -121,6 +128,8 @@ fn a_horizontal_wheel_message_is_delivered_with_its_own_axis() {
     win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
         sink.lock().push(ev);
     })));
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_MOUSEHWHEEL, (120usize) << 16, 0);
     }
@@ -146,6 +155,8 @@ fn an_alt_key_combination_reaches_the_handler() {
     win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |ev| {
         sink.lock().push(ev);
     })));
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_SYSKEYDOWN, 0x46, 0x2000_0001); // Alt+F
         SendMessageW(hwnd, WM_SYSKEYUP, 0x46, 0xE000_0001u32 as isize);
@@ -169,6 +180,8 @@ fn a_cancelled_mouse_mode_forgets_the_pressed_buttons() {
     };
     let win = window("Cancel");
     let hwnd = win.native_handle() as HWND;
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only; `GetCapture` takes no arguments.
     unsafe {
         SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
         // A popup or dialog took over: the release of the left button is never seen.
@@ -203,6 +216,8 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
         })),
     );
     // Put the window under the cursor so the loop end sees the release inside it.
+    // SAFETY: `hwnd` is the live window of `win`, used from its own thread; `cursor` is a live
+    // `POINT` that `GetCursorPos` fills in; the message and `SetWindowPos` take integers only.
     unsafe {
         let mut cursor = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor);
@@ -219,6 +234,8 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
     }
     // `ReleaseCapture` for the native loop must not make the window forget the press.
     assert!(win.start_system_move());
+    // SAFETY: `hwnd` is the live window of `win` (still alive), messaged from its own thread with
+    // integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
     }
@@ -251,11 +268,15 @@ fn ending_an_ime_composition_clears_the_preedit() {
             .filter(|e| matches!(e, WindowSystemEvent::InputMethod { .. }))
             .count()
     };
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_IME_COMPOSITION, 0, 0);
         SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
     }
     assert_eq!(count(), 0, "lparam 0 and an unstarted end send nothing");
+    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
+    // own thread with integer parameters only.
     unsafe {
         SendMessageW(hwnd, WM_IME_STARTCOMPOSITION, 0, 0);
         SendMessageW(hwnd, WM_IME_ENDCOMPOSITION, 0, 0);
