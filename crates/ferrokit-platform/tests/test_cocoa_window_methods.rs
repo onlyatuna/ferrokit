@@ -373,11 +373,16 @@ fn a_transient_parent_that_would_make_a_cycle_is_refused() {
     b.set_transient_parent(Some(a.native_handle()));
     c.set_transient_parent(Some(b.native_handle()));
 
-    // `a` above its own grandchild and `b` above its child would be cycles: nothing is sent.
+    // `a` above its own grandchild and `b` above its child would be cycles: no window is
+    // attached to or detached from anything.
     mock.clear_calls();
     a.set_transient_parent(Some(c.native_handle()));
     b.set_transient_parent(Some(c.native_handle()));
-    assert!(selectors(mock, c.ns_window()).is_empty());
+    for w in [a.ns_window(), b.ns_window(), c.ns_window()] {
+        assert!(!selectors(mock, w)
+            .iter()
+            .any(|s| s == "addChildWindow:ordered:" || s == "removeChildWindow:"));
+    }
     assert_eq!(a.transient_parent(), None);
     assert_eq!(b.transient_parent(), Some(a.native_handle()));
 
