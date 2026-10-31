@@ -70,12 +70,15 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
     // Call update() from a background worker thread
     let widget_ptr = &widget as *const EmptyWidget as usize;
     let handle = std::thread::spawn(move || {
-        // SAFETY: `widget_ptr` is the address of `widget`, which outlives this thread: the main
-        // thread joins it right below, so `widget` is neither moved nor dropped meanwhile. The
-        // main thread does nothing else during the join, so this thread is the only one
-        // touching `widget` (including its `Cell` fields that `update` writes), and spawn/join
-        // order the accesses. Only `&self` access is made; the registry pointer taken above is
-        // not used for writing meanwhile, and no callback of `widget` runs on any thread.
+        // SAFETY: `widget_ptr` is the address of `widget`, which outlives this thread (joined
+        // right below, so `widget` is neither moved nor dropped meanwhile). `update` writes state
+        // that is not `Sync`: the `dirty` `Cell`, and `is_visible_in_tree` upgrades the `Weak`
+        // parent and takes `RefCell` borrows. That is race-free here only because ALL of these
+        // hold: the main thread is blocked in `join()` (spawn/join order the accesses), `widget`
+        // has no parent and no window (so no other object's `RefCell` or `Weak` is reached), and
+        // nothing else touches it (the registry pointer is not used for writing, and no callback
+        // of `widget` runs on any thread). Only `&self` access is made. This is a property of this
+        // test, not of the API: `Widget::update` must be called on the widget's own thread.
         let w = unsafe { &*(widget_ptr as *const EmptyWidget) };
         w.update();
     });
@@ -112,11 +115,14 @@ fn worker_thread_calling_unregistered_widget_update_posts_to_widget_affinity_thr
     // Worker thread calls update()
     let widget_ptr = &widget as *const EmptyWidget as usize;
     let handle = std::thread::spawn(move || {
-        // SAFETY: `widget_ptr` is the address of `widget`, which outlives this thread: the main
-        // thread joins it right below, so `widget` is neither moved nor dropped meanwhile. The
-        // main thread does nothing else during the join, so this thread is the only one
-        // touching `widget` (including its `Cell` fields that `update` writes), and spawn/join
-        // order the accesses. Only `&self` access is made, as `widget` is not borrowed mutably.
+        // SAFETY: `widget_ptr` is the address of `widget`, which outlives this thread (joined
+        // right below, so `widget` is neither moved nor dropped meanwhile). `update` writes state
+        // that is not `Sync`: the `dirty` `Cell`, and `is_visible_in_tree` upgrades the `Weak`
+        // parent and takes `RefCell` borrows. That is race-free here only because ALL of these
+        // hold: the main thread is blocked in `join()` (spawn/join order the accesses), `widget`
+        // has no parent and no window (so no other object's `RefCell` or `Weak` is reached), and
+        // nothing else touches it. Only `&self` access is made. This is a property of this test,
+        // not of the API: `Widget::update` must be called on the widget's own thread.
         let w = unsafe { &*(widget_ptr as *const EmptyWidget) };
         w.update();
     });

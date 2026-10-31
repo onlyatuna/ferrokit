@@ -83,6 +83,8 @@ mod macos {
     }
 
     fn on_os_main_thread() -> bool {
+        // SAFETY: `pthread_main_np` takes no arguments, has no preconditions and only returns
+        // whether the calling thread is the process's main thread.
         unsafe { pthread_main_np() == 1 }
     }
 
@@ -242,6 +244,12 @@ mod macos {
         if let Some(data) = check_event_data(event) {
             SENT.lock().push(data);
         }
+        // SAFETY: `ORIGINAL_SEND_EVENT` holds the previous implementation of
+        // `-[NSApplication sendEvent:]`, whose signature is `(Id, Sel, Id)` with no result, the
+        // type transmuted to. It is stored on the main thread right after the replacement is
+        // installed and before `exec` starts the run loop, which is what calls `sendEvent:`, so
+        // it is non-zero whenever this function runs. [inferred: that `sendEvent:` is only
+        // called from the run loop on the main thread; it cannot be run here.]
         let original: extern "C" fn(Id, appkit::Sel, Id) =
             unsafe { std::mem::transmute(ORIGINAL_SEND_EVENT.load(Ordering::SeqCst)) };
         original(this, cmd, event);
@@ -441,17 +449,30 @@ mod appkit {
 
     fn sel(name: &str) -> Sel {
         let name = CString::new(name).unwrap();
+        // SAFETY: `name` is a `CString` that outlives the call, so the pointer is a valid
+        // NUL-terminated string; `sel_registerName` only reads it (it copies the name).
         unsafe { sel_registerName(name.as_ptr()) }
     }
 
     fn class(name: &str) -> Id {
         let name = CString::new(name).unwrap();
+        // SAFETY: `name` is a `CString` that outlives the call, so the pointer is a valid
+        // NUL-terminated string; `objc_getClass` only reads it and returns null for an unknown
+        // class, which is asserted below.
         let class = unsafe { objc_getClass(name.as_ptr()) };
         assert!(!class.is_null(), "class {name:?}");
         class
     }
 
     pub fn send<R>(receiver: Id, selector: &str) -> R {
+        // SAFETY: the `transmute` turns `objc_msgSend`'s address into a function type taking the
+        // receiver and selector and returning `R`, which is how it is called. This is sound only
+        // if `R` is the declared return type of the method and `receiver` is nil or an object
+        // that responds to it; the function is not `unsafe`, so that is a contract on its callers
+        // that the compiler does not check. The callers in this file use the scalar results of
+        // `type` (`usize`), `subtype` (`i16`), `data1` (`isize`) on a non-null `NSEvent`
+        // (`check_event_data` rejects null), and `sharedApplication` (`Id`) on `NSApplication`.
+        // [inferred from the AppKit headers; it cannot be run here.]
         unsafe {
             let f: extern "C" fn(Id, Sel) -> R = std::mem::transmute(objc_msgSend as *const ());
             f(receiver, sel(selector))
@@ -460,6 +481,11 @@ mod appkit {
 
     /// Installs `imp` as `class`'s `selector` and returns the previous implementation.
     pub fn replace_instance_method(class_name: &str, selector: &str, imp: *const ()) -> *const () {
+        // SAFETY: `class(class_name)` is a non-null class (asserted there) and `sel(selector)` a
+        // registered selector; `method` is asserted non-null. `imp` must have the C signature of
+        // the method it replaces; the only caller passes `recording_send_event`, whose
+        // `(Id, Sel, Id)` signature with no result matches `-[NSApplication sendEvent:]`.
+        // [inferred from the AppKit headers.]
         unsafe {
             let method = class_getInstanceMethod(class(class_name), sel(selector));
             assert!(!method.is_null(), "-[{class_name} {selector}]");
@@ -469,6 +495,15 @@ mod appkit {
 
     /// `[NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined …] atStart:NO]`.
     pub fn post_application_defined_event(subtype: i16, data1: isize) {
+        // SAFETY: each `transmute` turns the address of `objc_msgSend` into the function type of
+        // the one message sent, which is the way `objc_msgSend` must be called. The argument and
+        // result types are written to match the Objective-C signatures
+        // `+[NSEvent otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:]`
+        // (NSEventType/NSUInteger -> `usize`, `NSPoint` -> the `#[repr(C)]` `NSPoint`,
+        // NSTimeInterval -> `f64`, NSInteger -> `isize`, `NSGraphicsContext *` null, `short` ->
+        // `i16`) and `-[NSApplication postEvent:atStart:]` (`BOOL` -> `i8`). `class(..)` is a
+        // non-null class, `event` is asserted non-null, and `app` comes from `sharedApplication`.
+        // [inferred from the AppKit headers; it cannot be compiled or run here.]
         unsafe {
             let make: extern "C" fn(
                 Id,
@@ -506,6 +541,13 @@ mod appkit {
 
     /// A one-shot `CFRunLoopTimer` on the main run loop's default mode, `delay` seconds from now.
     pub fn add_main_run_loop_timer(delay: f64, callback: TimerCallback) -> CFTypeRef {
+        // SAFETY: `CFRunLoopTimerCreate` gets the default allocator (null), plain numeric
+        // arguments, a null context, and `callback`, an `extern "C" fn(CFTypeRef, *mut c_void)`
+        // that matches `CFRunLoopTimerCallBack`; its result is checked non-null before use.
+        // `CFRunLoopGetMain` takes no arguments, and `kCFRunLoopDefaultMode` is the framework's
+        // exported constant, linked by the `CoreFoundation` block above. The timer is owned by
+        // us (Create rule) until `remove_run_loop_timer`. [inferred from the Core Foundation
+        // headers; it cannot be compiled here.]
         unsafe {
             let fire = CFAbsoluteTimeGetCurrent() + delay;
             let timer = CFRunLoopTimerCreate(
@@ -524,6 +566,12 @@ mod appkit {
     }
 
     pub fn remove_run_loop_timer(timer: CFTypeRef) {
+        // SAFETY: `timer` is the timer `add_main_run_loop_timer` returned (non-null, asserted
+        // there) and the caller passes it here once, so the `CFRelease` balances the single
+        // reference that `CFRunLoopTimerCreate` gave us (the run loop holds its own reference
+        // while the timer is added). `CFRunLoopTimerInvalidate` is valid on a timer that already
+        // fired and was invalidated. [inferred: Core Foundation's Create/Release ownership rule;
+        // it cannot be run here.]
         unsafe {
             CFRunLoopTimerInvalidate(timer);
             CFRelease(timer);

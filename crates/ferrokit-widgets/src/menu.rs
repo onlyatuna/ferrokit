@@ -889,8 +889,9 @@ impl Menu {
         // handle of `window`, which lives until after this block (it is dropped below), and
         // `LoadCursorW(null, IDC_ARROW)` loads a shared system cursor that needs no release.
         // Dispatched messages run this thread's window procedures: the popup window's handler
-        // only touches an `Rc<Cell<bool>>` and posts a message, and `self` is borrowed `&mut`
-        // for the whole call, so no other code can reach it through the dispatch.
+        // only touches an `Rc<Cell<bool>>` and posts a message. Any access to the menu from
+        // dispatched code must go through the `&mut` borrow of `self`, which is held for the
+        // whole loop.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is

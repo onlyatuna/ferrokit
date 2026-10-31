@@ -44,10 +44,13 @@ struct Factory {
 }
 
 // SAFETY: `Send`/`Sync` require that every field may be used from any thread. `base`
-// (`IDWriteFactory`, `IDWriteFactory2`) and `loader` (`IDWriteInMemoryFontFileLoader`) are
-// objects of the shared (`DWRITE_FACTORY_TYPE_SHARED`) DirectWrite factory, which Microsoft
-// documents as free-threaded; `bgr` is a plain `bool` written once in `FACTORY`'s initializer,
-// before any other thread can see the value.
+// (`IDWriteFactory`, `IDWriteFactory2`) and `loader` (`IDWriteInMemoryFontFileLoader`) come
+// from the shared (`DWRITE_FACTORY_TYPE_SHARED`) DirectWrite factory. [inferred from the
+// documentation pages "IDWriteFactory interface" (free-threaded) and "IDWriteInMemoryFontFileLoader
+// interface"; the latter page does not state thread safety, so for `loader` this is an
+// assumption that its methods, like the factory's, may be called from several threads.] `bgr`
+// is a plain `bool` written once in `FACTORY`'s initializer, before any other thread can see
+// the value.
 unsafe impl Send for Factory {}
 // SAFETY: as for `Send` above: all shared access goes through free-threaded DirectWrite
 // interfaces, and `bgr` is never mutated after initialization.
@@ -222,8 +225,10 @@ impl DirectWriteFace {
         // SAFETY: `run` and `transform` are live locals; the pointers in `run` (`glyphIndices`,
         // `glyphAdvances`, `glyphOffsets`) point to `glyph_index`, `glyph_advance` and
         // `glyph_offset`, each valid for the one glyph (`glyphCount: 1`), and `run.fontFace`
-        // holds a live face (the clone made above). All of them outlive this call, and
-        // DirectWrite does not keep the pointers after returning.
+        // holds a live face (the clone made above). All of them outlive this call. [inferred
+        // from the `IDWriteFactory2::CreateGlyphRunAnalysis` documentation, which does not say
+        // that the run's pointers are kept after the call; they stay valid for the whole
+        // function either way.]
         let analysis = unsafe {
             factory.factory2.CreateGlyphRunAnalysis(
                 &run,

@@ -152,10 +152,11 @@ mod outside {
             }
             let (ready, installed) = mpsc::channel();
             // SAFETY: the closure runs on the new thread. The hook procedures `mouse_hook` and
-            // `keyboard_hook` have the `HOOKPROC` signature; for a low-level hook the module handle
-            // may be null and the thread id 0 (global), as the procedure lives in this process and
-            // this thread pumps messages in the `GetMessageW` loop below, which the system needs to
-            // call a low-level hook. `SetTimer` with a null window and a null callback only makes
+            // `keyboard_hook` have the `HOOKPROC` signature. A null module handle with thread id 0
+            // works only because the hook procedures live in this process (the form the
+            // documentation shows asks for the module handle of the code containing them). The
+            // low-level hooks need this thread to pump messages, which the `GetMessageW` loop
+            // below provides. `SetTimer` with a null window and a null callback only makes
             // the thread post `WM_TIMER` to its own queue, and the `SetTimer` call also creates
             // that queue before the id is sent. `msg` is a live zeroed `MSG` (all-zero is valid)
             // and the only pointer passed to `GetMessageW`. Each hook handle is checked non-null
