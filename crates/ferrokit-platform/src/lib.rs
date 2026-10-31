@@ -63,6 +63,10 @@ pub mod window_cocoa;
 pub mod window_cocoa_input;
 #[cfg(windows)]
 mod window_region;
+// Window handle -> shared state routing for window procedures (the tray's); platform neutral so
+// Miri can check its protocol off Windows.
+#[cfg(any(windows, test))]
+mod window_registry;
 pub mod window_system_interface;
 pub mod window_wayland;
 pub mod window_x11;

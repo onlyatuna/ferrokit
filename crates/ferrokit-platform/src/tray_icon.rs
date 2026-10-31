@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 #[cfg(windows)]
+use crate::menu::PlatformMenu;
+#[cfg(windows)]
 use crate::win32_handles::{create_dib_section, IconHandle, MemDc, OwnedBitmap, OwnedMenu};
+#[cfg(windows)]
+use crate::window_registry::SharedRegistry;
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 #[cfg(windows)]
 use ferrokit_gui::geometry::primitives::Rect;
 #[cfg(windows)]
 use ferrokit_gui::paint::Pixmap;
-#[allow(unused_imports)]
-use std::collections::HashMap;
+#[cfg(windows)]
+use std::cell::{Cell, RefCell};
 #[allow(unused_imports)]
 use std::ptr;
-#[allow(unused_imports)]
-use std::sync::{Mutex, Once};
+#[cfg(windows)]
+use std::rc::Rc;
+#[cfg(windows)]
+use std::sync::Once;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(windows)]
@@ -268,51 +274,45 @@ pub enum TrayActivation {
 #[cfg(windows)]
 static TRAY_WINDOW_CLASS_ONCE: Once = Once::new();
 #[cfg(windows)]
-static TRAY_INSTANCES: Mutex<Option<HashMap<isize, usize>>> = Mutex::new(None);
+thread_local! {
+    /// Window handle -> the shared state of that tray window's procedure. Thread-local because
+    /// the window, its procedure and its `TrayIcon` (`!Send`) all belong to the creating thread;
+    /// it holds `Weak` handles, so it neither owns the state nor points into the `TrayIcon`
+    /// (see `TrayShared` and `window_registry`).
+    static TRAY_INSTANCES: SharedRegistry<TrayShared> = SharedRegistry::new();
+}
 #[cfg(windows)]
 const TRAY_WINDOW_CLASS_NAME: &[u16] = &[
     'Q' as u16, 't' as u16, 'R' as u16, 'u' as u16, 's' as u16, 't' as u16, 'T' as u16, 'r' as u16,
     'a' as u16, 'y' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 0,
 ];
 
-/// Whether the tray registered for `hwnd` at `addr` is still alive. A slot may drop the icon
-/// (a "Quit" entry) while the window procedure is still inside one of its signals.
+/// The shared state of the tray registered for `hwnd`, as an owned handle: it stays valid for the
+/// whole message even if a slot drops the `TrayIcon` meanwhile. `None` when no tray is registered
+/// (not yet, or already unregistered by `Drop`, or during thread teardown).
 #[cfg(windows)]
-fn tray_is_alive(hwnd: HWND, addr: usize) -> bool {
+fn lookup_tray(hwnd: HWND) -> Option<Rc<TrayShared>> {
     TRAY_INSTANCES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|m| m.get(&(hwnd as isize)).copied())
-        == Some(addr)
+        .try_with(|registry| registry.lookup(hwnd as isize))
+        .ok()
+        .flatten()
 }
 
+/// The window procedure's body. It reaches the tray only through its `TrayShared` (an owned
+/// `Rc` from the registry) and never forms a reference to the `TrayIcon` itself, so it cannot
+/// alias a `&mut TrayIcon` that is live further up this thread's stack (a `Shell_NotifyIconW`
+/// call in a `&mut self` method may deliver a message to this window). The `RefCell` rule of
+/// `TrayShared` applies to everything done here.
 #[cfg(windows)]
 unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let tray_ptr = {
-        let guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .as_ref()
-            .and_then(|m| m.get(&(hwnd as isize)).copied())
-    };
-
-    if let Some(addr) = tray_ptr {
-        // Shared access only: this procedure re-enters itself (the context menu's modal loop
-        // pumps this very window), so a `&mut TrayIcon` here would alias. Nothing below mutates
-        // the icon except through `Cell`s, and no reference is kept across an emit: a slot may
-        // drop the icon, so the pointer is re-validated before every later use.
-        // SAFETY: `addr` came from `TRAY_INSTANCES` for this `hwnd`; the entry is registered in
-        // `with_icon` from the returned `Box<TrayIcon>` and removed in `Drop` before the window is
-        // destroyed, so while it is present the `TrayIcon` allocation is live. The icon is `!Send`
-        // and this procedure runs on the creating thread; only shared access is formed here (see
-        // the comment above), and the closure re-derives the reference per use rather than
-        // keeping one across an emit. Overlap with a live `&mut self` method is the unverified
-        // limit documented at the registration in `with_icon`.
-        let tray = || &*(addr as *const TrayIcon);
-        if msg == tray().taskbar_created_msg {
-            tray().rebuild_icon_from_source();
-            if tray().visible {
-                let _ = tray().send_notify_icon_message(NIM_ADD);
+    if let Some(shared) = lookup_tray(hwnd) {
+        // `shared` is this invocation's own strong handle: a slot may drop the `TrayIcon` (a
+        // "Quit" entry), which destroys the window and unregisters it but cannot free the state
+        // under us. After any emit, `shared.closed` says whether that happened.
+        if msg == shared.taskbar_created_msg {
+            shared.rebuild_icon_from_source();
+            if shared.visible.get() {
+                let _ = shared.send_notify_icon_message(NIM_ADD);
             }
             return 0;
         } else if msg == WM_TRAY_CALLBACK {
@@ -324,17 +324,15 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 NIN_SELECT | NIN_KEYSELECT => {
                     // The release that ends a double click is not a click (Qt:
                     // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
-                    if tray().ignore_next_release.replace(false) {
+                    if shared.ignore_next_release.replace(false) {
                         return 0;
                     }
-                    let activated = tray().on_activated.clone();
-                    activated.emit(&TrayActivation::Trigger);
+                    shared.on_activated.emit(&TrayActivation::Trigger);
                     return 0;
                 }
                 WM_LBUTTONDBLCLK => {
-                    tray().ignore_next_release.set(true);
-                    let activated = tray().on_activated.clone();
-                    activated.emit(&TrayActivation::DoubleClick);
+                    shared.ignore_next_release.set(true);
+                    shared.on_activated.emit(&TrayActivation::DoubleClick);
                     return 0;
                 }
                 WM_CONTEXTMENU => {
@@ -346,29 +344,26 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                         ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
                     );
                     let pos = crate::screen::native_cursor_to_logical(native);
-                    let requested = tray().on_context_menu_requested.clone();
-                    let activated = tray().on_activated.clone();
-                    let has_menu = tray().menu.is_some();
-                    requested.emit(&pos);
-                    if !tray_is_alive(hwnd, addr) {
+                    // `try_borrow`: busy while `TrayIcon::with_menu_mut` runs; then no menu.
+                    let has_menu = shared.menu.try_borrow().is_ok_and(|m| m.is_some());
+                    shared.on_context_menu_requested.emit(&pos);
+                    if shared.closed.get() {
                         return 0;
                     }
-                    activated.emit(&TrayActivation::Context);
-                    if has_menu && tray_is_alive(hwnd, addr) {
-                        tray().show_context_menu_at(pos);
+                    shared.on_activated.emit(&TrayActivation::Context);
+                    if has_menu && !shared.closed.get() {
+                        shared.show_context_menu_at(pos);
                     }
                     return 0;
                 }
                 0x0405 => {
                     // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
-                    let clicked = tray().on_message_clicked.clone();
-                    clicked.emit(&());
+                    shared.on_message_clicked.emit(&());
                     return 0;
                 }
                 WM_MBUTTONUP => {
                     // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
-                    let activated = tray().on_activated.clone();
-                    activated.emit(&TrayActivation::MiddleClick);
+                    shared.on_activated.emit(&TrayActivation::MiddleClick);
                     return 0;
                 }
                 _ => {}
@@ -387,8 +382,7 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 _ => None,
             };
             if let Some(event) = power_event {
-                let power = tray().on_power_event.clone();
-                power.emit(&event);
+                shared.on_power_event.emit(&event);
             }
             return 1;
         }
@@ -442,26 +436,171 @@ fn ensure_tray_window_class_registered() {
     });
 }
 
+/// Everything the tray window procedure reads or writes, in its own allocation.
+///
+/// The window procedure runs whenever the thread dispatches a message to the tray window, which
+/// includes the middle of a `&mut self` method of [`TrayIcon`]: `Shell_NotifyIconW` is a
+/// cross-process call and may dispatch sent messages while it waits. So the procedure must never
+/// form a reference to the `TrayIcon` (that would alias the live `&mut`); it reaches this state
+/// instead, through an `Rc<TrayShared>` it looks up in `TRAY_INSTANCES` by window handle. The
+/// `TrayIcon` holds the other `Rc`; its moves and `&mut` borrows never touch this allocation.
+/// Everything here is therefore accessed through `&TrayShared` only, with interior mutability.
+///
+/// **`RefCell` rule.** A call out (`Shell_NotifyIconW`, `DestroyWindow`, a menu's modal loop, any
+/// signal emission, dropping an `Icon` or a menu) can run the procedure, which can borrow the
+/// same cell again. So every borrow is one statement that calls nothing foreign: the value
+/// needed (an `HICON`, a cloned `Icon`, a copy of the tooltip, a cloned `Rc` menu) is copied out
+/// and the guard dropped before anything is called, and replaced values are dropped after the
+/// guard. No borrow is then live when the procedure re-enters, so the borrows cannot conflict
+/// (and the plain `borrow`/`borrow_mut` never fail). A new use of these fields must keep this;
+/// where a borrow could not be kept that short, use `try_borrow` and skip.
 #[cfg(windows)]
-pub struct TrayIcon {
+struct TrayShared {
     hwnd: HWND,
+    taskbar_created_msg: u32,
     /// The icon shown and whether the tray owns it (an owned one is destroyed when replaced or
     /// with the tray; an `HICON` passed to `new` or `set_icon` stays the caller's).
-    /// `RefCell`: `TaskbarCreated` replaces the icon from the window procedure, which only has
-    /// shared access (see `tray_window_proc_inner`); borrows are never held across a call out.
-    icon: std::cell::RefCell<IconHandle>,
+    /// `TaskbarCreated` replaces the icon from the window procedure.
+    icon: RefCell<IconHandle>,
     /// The icon `icon` was made from, when the tray was given an [`Icon`]
     /// (`QWindowsSystemTrayIcon::m_icon`): `TaskbarCreated` builds the `HICON` again from it.
-    source: Option<ferrokit_gui::image::Icon>,
-    /// The icon of the last balloon message, kept as `QWindowsSystemTrayIcon::m_hMessageIcon`.
-    balloon_icon: Option<IconHandle>,
-    tooltip: String,
-    visible: bool,
-    taskbar_created_msg: u32,
+    source: RefCell<Option<ferrokit_gui::image::Icon>>,
+    /// The tooltip sent with the icon (also on `TaskbarCreated`). `TrayIcon::tooltip` keeps its
+    /// own copy because it returns a `&str`.
+    tooltip: RefCell<String>,
+    visible: Cell<bool>,
     /// Set by a double click: the release that ends it must not count as a click.
-    ignore_next_release: std::cell::Cell<bool>,
-    menu: Option<Box<dyn crate::menu::PlatformMenu>>,
+    ignore_next_release: Cell<bool>,
+    /// Set by `TrayIcon::drop` once the window is going away: a slot that dropped the icon while
+    /// the procedure was inside one of its signals leaves this behind for the procedure to see.
+    closed: Cell<bool>,
+    /// The context menu. An `Rc`, so the modal loop keeps the menu alive even if a slot replaces
+    /// it meanwhile.
+    menu: RefCell<Option<Rc<dyn PlatformMenu>>>,
+    /// Handles to the same signals as the public fields of `TrayIcon` (a `Signal` clone shares
+    /// its connections): the procedure emits through these.
+    on_activated: Signal<TrayActivation>,
+    on_menu_action: Signal<u32>,
+    on_message_clicked: Signal<()>,
+    on_power_event: Signal<crate::window_system_interface::PowerEvent>,
+    on_context_menu_requested: Signal<Point>,
+}
 
+#[cfg(windows)]
+impl TrayShared {
+    fn send_notify_icon_message(&self, msg: u32) -> Result<(), &'static str> {
+        // SAFETY: `NOTIFYICONDATAW` is a C struct of integers, raw pointers and arrays, for which
+        // all-zero is a valid value (null handles, empty strings); `cbSize` is set right below.
+        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = self.hwnd;
+        nid.uID = 1;
+        // Under NOTIFYICON_VERSION_4 the shell shows no tooltip without `NIF_SHOWTIP`.
+        nid.uFlags = NIF_SHOWTIP;
+
+        if msg != NIM_DELETE {
+            nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAY_CALLBACK;
+            nid.hIcon = self.icon.borrow().as_raw();
+
+            let wide_tip: Vec<u16> = self.tooltip.borrow().encode_utf16().collect();
+            let copy_len = wide_tip.len().min(127);
+            nid.szTip[..copy_len].copy_from_slice(&wide_tip[..copy_len]);
+            nid.szTip[copy_len] = 0;
+        }
+
+        // No `RefCell` borrow is live across the calls below: they may run the window procedure.
+        // SAFETY: `nid` is fully initialised with `cbSize` set to its size; `hWnd` is this tray's
+        // own window (created in `with_icon`, destroyed only in `Drop`); `hIcon` is the handle
+        // `self.icon` holds; `szTip` is NUL-terminated (`copy_len <= 127` of 128 elements). `nid`
+        // outlives the call, and the shell only reads it.
+        let res = unsafe { Shell_NotifyIconW(msg, &nid) };
+        if res == 0 {
+            // SAFETY: `cls` is a NUL-terminated UTF-16 vector that lives to the end of the block;
+            // the null window name is documented as allowed by `FindWindowW`.
+            let tray_wnd = unsafe {
+                let cls: Vec<u16> = "Shell_TrayWnd"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(cls.as_ptr(), ptr::null())
+            };
+            if tray_wnd.is_null() {
+                return Ok(());
+            }
+            return Err("Shell_NotifyIconW call failed");
+        }
+
+        if msg == windows_sys::Win32::UI::Shell::NIM_ADD {
+            nid.Anonymous.uVersion = windows_sys::Win32::UI::Shell::NOTIFYICON_VERSION_4;
+            // Without version 4 the shell sends callbacks in the old layout, which the window
+            // procedure would misread, so the icon is taken off again and the add fails
+            // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
+            // SAFETY: as for the first call: `nid` is initialised, `cbSize` set, `hWnd` is this
+            // tray's live window, and `uVersion` is set just above as `NIM_SETVERSION` requires.
+            if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) }
+                == 0
+            {
+                // SAFETY: as above: `nid` is initialised and `hWnd` is this tray's live window;
+                // `NIM_DELETE` reads only `hWnd` and `uID`.
+                unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+                return Err("Shell_NotifyIconW (NIM_SETVERSION) failed");
+            }
+        }
+        Ok(())
+    }
+
+    /// The `TaskbarCreated` half of `QWindowsSystemTrayIcon::winEvent`: the resolution or DPI
+    /// may have changed, so the `HICON` is built again from the kept [`Icon`] before the icon is
+    /// added to the new taskbar. Without a kept icon the `HICON` stays as it is.
+    fn rebuild_icon_from_source(&self) {
+        // Cloned out: the borrow must not span the (GDI) calls that build the icon.
+        let source = self.source.borrow().clone();
+        let Some(icon) = source else { return };
+        let Ok(new) = TrayIcon::hicon_for_small_icon(&icon) else {
+            return;
+        };
+        // The shell has no icon of ours any more (it was re-created); an old owned icon is ours
+        // and is destroyed when `old` drops.
+        let old = self.icon.borrow_mut().replace(IconHandle::owned(new));
+        drop(old);
+    }
+
+    /// Runs the context menu's modal loop at `screen_pos` and emits the chosen command.
+    fn show_context_menu_at(&self, screen_pos: Point) {
+        // The modal loop runs slots, one of which may replace the menu or drop the icon: the loop
+        // runs on a handle of its own (and the emit through this state's own signal handle), with
+        // no borrow held.
+        // `try_borrow`: `TrayIcon::with_menu_mut` holds the cell while its closure runs, and a
+        // message dispatched from there finds it busy; no menu is shown then.
+        let menu = self.menu.try_borrow().ok().and_then(|m| m.clone());
+        if let Some(menu) = menu {
+            if let Some(cmd_id) = menu.exec_popup(screen_pos) {
+                self.on_menu_action.emit(&cmd_id);
+            }
+        }
+    }
+}
+
+/// A Windows tray icon.
+///
+/// The window procedure of the tray window reaches the icon's state through `TrayShared`, not
+/// through this struct, so the `TrayIcon` may be moved freely and borrowed `&mut` while the shell
+/// is called. The public signals are handles that share their connections with the ones the
+/// procedure emits through; they must not be replaced by assignment.
+#[cfg(windows)]
+pub struct TrayIcon {
+    shared: Rc<TrayShared>,
+    /// The icon of the last balloon message, kept as `QWindowsSystemTrayIcon::m_hMessageIcon`.
+    /// Not used by the window procedure.
+    balloon_icon: Option<IconHandle>,
+    /// A copy of `shared.tooltip`, which `tooltip` can lend as a `&str`; `set_tooltip` updates
+    /// both.
+    tooltip: String,
+
+    // These are handles to the signals the window procedure emits through (a `Signal` clone
+    // shares its connections). Connect to them; do not replace them by assignment, which would
+    // leave the procedure emitting through the old ones.
     pub on_activated: Signal<TrayActivation>,
     pub on_menu_action: Signal<u32>,
     pub on_message_clicked: Signal<()>,
@@ -469,9 +608,9 @@ pub struct TrayIcon {
     pub on_context_menu_requested: Signal<Point>,
 }
 
-// Deliberately neither `Send` nor `Sync` (raw `HWND`/`HICON`): the tray window, its window
-// procedure (which reaches the icon through a raw pointer) and `DestroyWindow` in `Drop` all
-// belong to the thread that created the icon.
+// Deliberately neither `Send` nor `Sync` (`Rc`, raw `HWND`/`HICON`): the tray window, its window
+// procedure (which reaches the state through the thread-local registry) and `DestroyWindow` in
+// `Drop` all belong to the thread that created the icon.
 #[cfg(windows)]
 impl TrayIcon {
     pub fn new(tooltip: impl Into<String>, hicon: HICON) -> Result<Box<Self>, &'static str> {
@@ -533,145 +672,100 @@ impl TrayIcon {
             );
         }
 
-        let mut tray = Box::new(Self {
+        let tooltip = tooltip.into();
+        let on_activated = Signal::new();
+        let on_menu_action = Signal::new();
+        let on_message_clicked = Signal::new();
+        let on_power_event = Signal::new();
+        let on_context_menu_requested = Signal::new();
+        let shared = Rc::new(TrayShared {
             hwnd,
-            icon: std::cell::RefCell::new(icon),
-            source: None,
-            balloon_icon: None,
-            tooltip: tooltip.into(),
-            visible: false,
             taskbar_created_msg,
-            ignore_next_release: std::cell::Cell::new(false),
-            menu: None,
-            on_activated: Signal::new(),
-            on_menu_action: Signal::new(),
-            on_message_clicked: Signal::new(),
-            on_power_event: Signal::new(),
-            on_context_menu_requested: Signal::new(),
+            icon: RefCell::new(icon),
+            source: RefCell::new(None),
+            tooltip: RefCell::new(String::clone(&tooltip)),
+            visible: Cell::new(false),
+            ignore_next_release: Cell::new(false),
+            closed: Cell::new(false),
+            menu: RefCell::new(None),
+            on_activated: on_activated.clone(),
+            on_menu_action: on_menu_action.clone(),
+            on_message_clicked: on_message_clicked.clone(),
+            on_power_event: on_power_event.clone(),
+            on_context_menu_requested: on_context_menu_requested.clone(),
         });
 
-        // Register into global HWND router table.
-        //
-        // Known limits of this registration (Windows-only, so Miri does not check either):
-        // (a) `tray_window_proc_inner` forms a `&TrayIcon` from this address while `&mut self`
-        //     methods (`show`, `hide`, `set_icon`, `replace_icon`, `show_message`, ...) call
-        //     `Shell_NotifyIconW`. If that call dispatched a sent message to this window on this
-        //     thread, the window procedure's shared read would overlap the live `&mut self`.
-        //     This has not been observed, but it is not ruled out.
-        // (b) The address is taken from `&mut *tray` of a `Box` that is then moved out and
-        //     returned; under Stacked Borrows that retag may invalidate the stored pointer.
-        // A fix would register the `Box::into_raw` pointer (re-boxing it in `Drop`) and keep the
-        // state the window procedure reads outside fields mutated through `&mut`.
-        {
-            let mut guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.is_none() {
-                *guard = Some(HashMap::new());
-            }
-            guard
-                .as_mut()
-                .unwrap()
-                .insert(hwnd as isize, &mut *tray as *mut TrayIcon as usize);
-        }
+        // Route the window's messages to the shared state (not to the `TrayIcon`, which the
+        // caller is about to move and later borrow `&mut`). `Drop` unregisters the window before
+        // it destroys it.
+        TRAY_INSTANCES.with(|registry| registry.register(hwnd as isize, &shared));
 
-        Ok(tray)
+        // Boxed as the public API returns it (and `PlatformTrayIcon` is used as a trait object);
+        // nothing depends on the address.
+        Ok(Box::new(Self {
+            shared,
+            balloon_icon: None,
+            tooltip,
+            on_activated,
+            on_menu_action,
+            on_message_clicked,
+            on_power_event,
+            on_context_menu_requested,
+        }))
     }
 
-    pub fn set_menu(&mut self, menu: Box<dyn crate::menu::PlatformMenu>) {
-        self.menu = Some(menu);
+    pub fn set_menu(&mut self, menu: Box<dyn PlatformMenu>) {
+        // `Rc::from(Box<dyn _>)` moves the menu into a new allocation; the old one drops after
+        // the borrow.
+        let old = self.shared.menu.replace(Some(Rc::from(menu)));
+        drop(old);
     }
 
-    pub fn menu(&self) -> Option<&dyn crate::menu::PlatformMenu> {
-        self.menu.as_deref()
+    pub fn menu(&self) -> Option<&dyn PlatformMenu> {
+        let menu: *const dyn PlatformMenu = Rc::as_ptr(self.shared.menu.borrow().as_ref()?);
+        // SAFETY: `menu` points at the value inside the `Rc` held by `shared.menu`, which is
+        // alive: the slot is replaced only by `set_menu(&mut self)` (and freed with `shared`,
+        // which `self` keeps alive), and the returned reference borrows `self`, so neither can
+        // run while it lives. The window procedure only clones that `Rc` and calls `&self`
+        // methods of the menu, which is shared access like this one.
+        Some(unsafe { &*menu })
     }
 
-    pub fn menu_mut(&mut self) -> Option<&mut (dyn crate::menu::PlatformMenu + 'static)> {
-        self.menu.as_deref_mut()
-    }
-
-    fn send_notify_icon_message(&self, msg: u32) -> Result<(), &'static str> {
-        // SAFETY: `NOTIFYICONDATAW` is a C struct of integers, raw pointers and arrays, for which
-        // all-zero is a valid value (null handles, empty strings); `cbSize` is set right below.
-        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = self.hwnd;
-        nid.uID = 1;
-        // Under NOTIFYICON_VERSION_4 the shell shows no tooltip without `NIF_SHOWTIP`.
-        nid.uFlags = NIF_SHOWTIP;
-
-        if msg != NIM_DELETE {
-            nid.uFlags |= NIF_MESSAGE | NIF_ICON | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAY_CALLBACK;
-            nid.hIcon = self.icon.borrow().as_raw();
-
-            let wide_tip: Vec<u16> = self.tooltip.encode_utf16().collect();
-            let copy_len = wide_tip.len().min(127);
-            nid.szTip[..copy_len].copy_from_slice(&wide_tip[..copy_len]);
-            nid.szTip[copy_len] = 0;
-        }
-
-        // SAFETY: `nid` is fully initialised with `cbSize` set to its size; `hWnd` is this tray's
-        // own window (created in `with_icon`, destroyed only in `Drop`); `hIcon` is the handle
-        // `self.icon` holds; `szTip` is NUL-terminated (`copy_len <= 127` of 128 elements). `nid`
-        // outlives the call, and the shell only reads it.
-        let res = unsafe { Shell_NotifyIconW(msg, &nid) };
-        if res == 0 {
-            // SAFETY: `cls` is a NUL-terminated UTF-16 vector that lives to the end of the block;
-            // the null window name is documented as allowed by `FindWindowW`.
-            let tray_wnd = unsafe {
-                let cls: Vec<u16> = "Shell_TrayWnd"
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
-                windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(cls.as_ptr(), ptr::null())
-            };
-            if tray_wnd.is_null() {
-                return Ok(());
-            }
-            return Err("Shell_NotifyIconW call failed");
-        }
-
-        if msg == windows_sys::Win32::UI::Shell::NIM_ADD {
-            nid.Anonymous.uVersion = windows_sys::Win32::UI::Shell::NOTIFYICON_VERSION_4;
-            // Without version 4 the shell sends callbacks in the old layout, which the window
-            // procedure would misread, so the icon is taken off again and the add fails
-            // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
-            // SAFETY: as for the first call: `nid` is initialised, `cbSize` set, `hWnd` is this
-            // tray's live window, and `uVersion` is set just above as `NIM_SETVERSION` requires.
-            if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) }
-                == 0
-            {
-                // SAFETY: as above: `nid` is initialised and `hWnd` is this tray's live window;
-                // `NIM_DELETE` reads only `hWnd` and `uID`.
-                unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
-                return Err("Shell_NotifyIconW (NIM_SETVERSION) failed");
-            }
-        }
-        Ok(())
+    /// Runs `f` with exclusive access to the menu; `None` when there is no menu or a context
+    /// menu is being shown (its modal loop holds a second handle). The menu cell stays borrowed
+    /// while `f` runs: if `f` dispatches messages, a context menu request meanwhile finds the cell
+    /// busy and shows nothing (`TrayShared::show_context_menu_at`).
+    pub fn with_menu_mut<R>(&mut self, f: impl FnOnce(&mut dyn PlatformMenu) -> R) -> Option<R> {
+        let mut slot = self.shared.menu.borrow_mut();
+        let menu = Rc::get_mut(slot.as_mut()?)?;
+        Some(f(menu))
     }
 
     pub fn show(&mut self) -> Result<(), &'static str> {
-        if self.visible {
+        if self.shared.visible.get() {
             return Ok(());
         }
-        self.send_notify_icon_message(NIM_ADD)?;
-        self.visible = true;
+        self.shared.send_notify_icon_message(NIM_ADD)?;
+        self.shared.visible.set(true);
         Ok(())
     }
 
     pub fn hide(&mut self) -> Result<(), &'static str> {
         self.set_balloon_icon(None);
-        if !self.visible {
+        if !self.shared.visible.get() {
             return Ok(());
         }
-        self.send_notify_icon_message(NIM_DELETE)?;
-        self.visible = false;
+        self.shared.send_notify_icon_message(NIM_DELETE)?;
+        self.shared.visible.set(false);
         Ok(())
     }
 
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) -> Result<(), &'static str> {
         self.tooltip = tooltip.into();
-        if self.visible {
-            self.send_notify_icon_message(NIM_MODIFY)?;
+        let old = self.shared.tooltip.replace(self.tooltip.clone());
+        drop(old);
+        if self.shared.visible.get() {
+            self.shared.send_notify_icon_message(NIM_MODIFY)?;
         }
         Ok(())
     }
@@ -683,10 +777,11 @@ impl TrayIcon {
     }
 
     fn replace_icon(&mut self, new: IconHandle) -> Result<(), &'static str> {
-        let old = self.icon.borrow_mut().replace(new);
-        self.source = None;
-        let result = if self.visible {
-            self.send_notify_icon_message(NIM_MODIFY)
+        let old = self.shared.icon.borrow_mut().replace(new);
+        let old_source = self.shared.source.replace(None);
+        drop(old_source);
+        let result = if self.shared.visible.get() {
+            self.shared.send_notify_icon_message(NIM_MODIFY)
         } else {
             Ok(())
         };
@@ -696,7 +791,7 @@ impl TrayIcon {
     }
 
     pub fn icon(&self) -> HICON {
-        self.icon.borrow().as_raw()
+        self.shared.icon.borrow().as_raw()
     }
 
     /// A tray icon showing `icon` at the size of a small icon (`QSystemTrayIcon(const QIcon &)`).
@@ -707,8 +802,9 @@ impl TrayIcon {
     ) -> Result<Box<Self>, &'static str> {
         let hicon = IconHandle::owned(Self::hicon_for_small_icon(icon)?);
         // If the tray cannot be created the guard destroys the icon.
-        let mut tray = Self::with_icon(tooltip, hicon)?;
-        tray.source = Some(icon.clone());
+        let tray = Self::with_icon(tooltip, hicon)?;
+        let old = tray.shared.source.replace(Some(icon.clone()));
+        drop(old);
         Ok(tray)
     }
 
@@ -717,7 +813,8 @@ impl TrayIcon {
         let hicon = Self::hicon_for_small_icon(icon)?;
         let result = self.replace_icon(IconHandle::owned(hicon));
         // Kept even when the shell refused the change: the `HICON` is shown from now on.
-        self.source = Some(icon.clone());
+        let old = self.shared.source.replace(Some(icon.clone()));
+        drop(old);
         result
     }
 
@@ -739,22 +836,8 @@ impl TrayIcon {
         Self::create_hicon_from_pixmap(&icon.pixmap(size, IconMode::Normal, IconState::Off))
     }
 
-    /// The `TaskbarCreated` half of `QWindowsSystemTrayIcon::winEvent`: the resolution or DPI
-    /// may have changed, so the `HICON` is built again from the kept [`Icon`] before the icon is
-    /// added to the new taskbar. Without a kept icon the `HICON` stays as it is.
-    fn rebuild_icon_from_source(&self) {
-        let Some(icon) = &self.source else { return };
-        let Ok(new) = Self::hicon_for_small_icon(icon) else {
-            return;
-        };
-        // The shell has no icon of ours any more (it was re-created); an old owned icon is ours
-        // and is destroyed when `old` drops.
-        let old = self.icon.borrow_mut().replace(IconHandle::owned(new));
-        drop(old);
-    }
-
     pub fn is_visible(&self) -> bool {
-        self.visible
+        self.shared.visible.get()
     }
 
     /// The tooltip (`QSystemTrayIcon::toolTip`).
@@ -775,14 +858,14 @@ impl TrayIcon {
         use windows_sys::Win32::Graphics::Gdi::{
             GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         };
-        if !self.visible {
+        if !self.shared.visible.get() {
             return None;
         }
         // SAFETY: `NOTIFYICONIDENTIFIER` is a C struct of integers, a `GUID` and an `HWND`, for
         // which all-zero is a valid value; `cbSize` is set right below.
         let mut id: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
         id.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
-        id.hWnd = self.hwnd;
+        id.hWnd = self.shared.hwnd;
         id.uID = 1;
         let mut rect = windows_sys::Win32::Foundation::RECT {
             left: 0,
@@ -803,7 +886,7 @@ impl TrayIcon {
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         // SAFETY: `MonitorFromWindow` takes the window handle by value and validates it; with
         // `MONITOR_DEFAULTTONEAREST` it always returns a monitor handle, which needs no cleanup.
-        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        let monitor = unsafe { MonitorFromWindow(self.shared.hwnd, MONITOR_DEFAULTTONEAREST) };
         // SAFETY: `info` is a live `MONITORINFO` with `cbSize` set to its size, as the call
         // requires; `GetMonitorInfoW` validates `monitor`, and on failure leaves `info` zeroed (the
         // result is deliberately ignored).
@@ -833,7 +916,7 @@ impl TrayIcon {
     }
 
     pub fn hwnd(&self) -> HWND {
-        self.hwnd
+        self.shared.hwnd
     }
 
     pub fn show_message(
@@ -844,7 +927,7 @@ impl TrayIcon {
         duration_ms: u32,
     ) -> Result<(), &'static str> {
         // `QSystemTrayIcon::showMessage` (both overloads) does nothing while the icon is hidden.
-        if !self.visible || !self.supports_messages() {
+        if !self.shared.visible.get() || !self.supports_messages() {
             return Ok(());
         }
         // The previous message's icon is freed before this one is made.
@@ -976,7 +1059,7 @@ impl TrayIcon {
         icon: &ferrokit_gui::image::Icon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        if !self.visible || !self.supports_messages() {
+        if !self.shared.visible.get() || !self.supports_messages() {
             return Ok(());
         }
         if icon.is_null() {
@@ -1042,7 +1125,7 @@ impl TrayIcon {
         // all-zero is a valid value (null handles, empty strings); `cbSize` is set right below.
         let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = self.hwnd;
+        nid.hWnd = self.shared.hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_INFO | NIF_SHOWTIP;
 
@@ -1089,6 +1172,9 @@ impl TrayIcon {
         Ok(())
     }
 
+    /// Shows the context menu at the cursor and emits `on_menu_action` with the chosen command;
+    /// does nothing when there is no menu. (It cannot run during `with_menu_mut`: that holds
+    /// `&mut self`.)
     pub fn show_context_menu(&self) {
         let mut pt = POINT { x: 0, y: 0 };
         // SAFETY: `GetCursorPos` writes one `POINT` through the pointer; `pt` is a live local.
@@ -1100,15 +1186,9 @@ impl TrayIcon {
         )));
     }
 
+    /// Shows the context menu at `screen_pos`; otherwise as `show_context_menu`.
     pub fn show_context_menu_at(&self, screen_pos: Point) {
-        if let Some(menu) = &self.menu {
-            // The menu's modal loop runs slots, one of which may drop this icon: emit through a
-            // handle that does not live in `self`.
-            let action = self.on_menu_action.clone();
-            if let Some(cmd_id) = menu.exec_popup(screen_pos) {
-                action.emit(&cmd_id);
-            }
-        }
+        self.shared.show_context_menu_at(screen_pos);
     }
 
     pub fn create_hicon_from_pixmap(pixmap: &Pixmap) -> Result<HICON, &'static str> {
@@ -1279,21 +1359,18 @@ fn enable_balloon_tips() -> u32 {
 impl Drop for TrayIcon {
     fn drop(&mut self) {
         let _ = self.hide();
-
-        {
-            let mut guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(map) = guard.as_mut() {
-                map.remove(&(self.hwnd as isize));
-            }
-        }
-
-        if !self.hwnd.is_null() {
-            // SAFETY: `self.hwnd` is non-null (checked above), was created by this thread in
-            // `with_icon` and is destroyed only here; it was removed from `TRAY_INSTANCES` just
-            // above, so the messages `DestroyWindow` sends reach `tray_window_proc` with no tray to
-            // dereference and take the `DefWindowProcW` path.
+        let hwnd = self.shared.hwnd;
+        // Unrouted first: the messages `DestroyWindow` sends then take the `DefWindowProcW` path.
+        // `try_with`: during thread teardown the table may already be gone (nothing to remove).
+        let _ = TRAY_INSTANCES.try_with(|registry| registry.unregister(hwnd as isize));
+        // A window procedure still running a slot of this tray (one that dropped it) holds its own
+        // `Rc` to the state and checks this flag after the emit.
+        self.shared.closed.set(true);
+        if !hwnd.is_null() {
+            // SAFETY: `hwnd` is non-null (checked above), was created by this thread in
+            // `with_icon` (`TrayIcon` is `!Send`) and is destroyed only here, once.
             unsafe {
-                DestroyWindow(self.hwnd);
+                DestroyWindow(hwnd);
             }
         }
     }
@@ -1487,26 +1564,29 @@ mod tests {
     }
 
     #[test]
-    fn create_tray_icon_keeps_router_address_and_owns_icon() {
-        use crate::integration::{PlatformIntegration, Win32PlatformIntegration};
+    fn the_tray_window_is_routed_to_its_state_until_the_tray_is_dropped() {
         let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");
         pixmap.fill(Color::from_rgba8(1, 2, 3, 255));
-        let tray = Win32PlatformIntegration::default()
-            .create_tray_icon(
-                "Router Test",
-                &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
-            )
-            .expect("create_tray_icon");
-        let addr =
-            &*tray as *const dyn crate::platform_tray::PlatformTrayIcon as *const () as usize;
-        {
-            let guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
-            assert!(
-                guard.as_ref().unwrap().values().any(|&a| a == addr),
-                "router table must point at the returned allocation"
-            );
-        }
+        let tray = TrayIcon::from_icon(
+            "Router Test",
+            &ferrokit_gui::image::Icon::from_pixmap(&pixmap),
+        )
+        .expect("from_icon");
+        // Moved out of its first place, as callers do: the route does not depend on the address.
+        let moved = vec![tray];
+        let tray = moved.into_iter().next().unwrap();
+        let hwnd = tray.hwnd();
+        let routed = lookup_tray(hwnd).expect("the window is routed while the tray lives");
+        assert!(
+            Rc::ptr_eq(&routed, &tray.shared),
+            "to this tray's own state"
+        );
+        drop(routed);
         drop(tray);
+        assert!(
+            lookup_tray(hwnd).is_none(),
+            "unrouted once the tray is dropped"
+        );
     }
 
     /// `set_icon` with the handle the tray already shows must not change who owns it: an icon
@@ -1956,7 +2036,7 @@ mod tests {
         // SAFETY: same window and thread as above; `wParam` and `lParam` are 0, so no pointers
         // cross the call.
         unsafe {
-            SendMessageW(tray.hwnd(), tray.taskbar_created_msg, 0, 0);
+            SendMessageW(tray.hwnd(), tray.shared.taskbar_created_msg, 0, 0);
         }
 
         TrayIcon::destroy_hicon(hicon);
