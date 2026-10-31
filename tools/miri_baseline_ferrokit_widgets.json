@@ -43,6 +43,7 @@
     "test_mouse_attributes_parity",
     "test_nested_layout_maximum",
     "test_per_monitor_dpi_sync",
+    "test_progress_bar_drop_in_callback",
     "test_qss_min_max_box",
     "test_reentrancy_and_deferred",
     "test_scroll_area_content_resize",
@@ -119,7 +120,9 @@
     "test_menu_exec_popup": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_window_raise_activate": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
   },
-  "negative_controls": [],
+  "negative_controls": [
+    "test_progress_bar_drop_in_callback::control_a_pointer_registered_bar_dropped_by_its_own_slot"
+  ],
   "isolation_allowlist": {
     "test_application_layers::about_to_quit_emitted_inside_exit_before_exec_returns": {
       "reason": "CoreApplication::new queries std::env::current_exe() via readlink(/proc/self/exe), which Miri blocks under isolation; aliasing checks (SB/TB) stay enabled.",
@@ -650,6 +653,12 @@
     "test_nested_layout_maximum::nested_vertical_box_max_is_sum_of_heights_and_max_of_widths::TB": "pass",
     "test_per_monitor_dpi_sync::test_per_monitor_v2_dpi_drag_propagation::SB": "unsupported",
     "test_per_monitor_dpi_sync::test_per_monitor_v2_dpi_drag_propagation::TB": "unsupported",
+    "test_progress_bar_drop_in_callback::an_owned_bar_dropped_by_its_own_slot_is_freed_after_the_callback::SB": "pass",
+    "test_progress_bar_drop_in_callback::an_owned_bar_dropped_by_its_own_slot_is_freed_after_the_callback::TB": "pass",
+    "test_progress_bar_drop_in_callback::control_a_pointer_registered_bar_dropped_by_its_own_slot::SB": "UB",
+    "test_progress_bar_drop_in_callback::control_a_pointer_registered_bar_dropped_by_its_own_slot::TB": "UB",
+    "test_progress_bar_drop_in_callback::the_parent_of_an_owned_bar_dropped_by_a_slot_of_the_bar_frees_it_after_the_callback::SB": "pass",
+    "test_progress_bar_drop_in_callback::the_parent_of_an_owned_bar_dropped_by_a_slot_of_the_bar_frees_it_after_the_callback::TB": "pass",
     "test_qss_min_max_box::test_button_min_max_include_padding_and_border::SB": "unsupported",
     "test_qss_min_max_box::test_button_min_max_include_padding_and_border::TB": "unsupported",
     "test_qss_min_max_box::test_frame_min_max_include_padding_and_border::SB": "pass",

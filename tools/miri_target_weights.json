@@ -632,6 +632,10 @@
       "SB": 1,
       "TB": 1
     },
+    "test_progress_bar_drop_in_callback": {
+      "SB": 2,
+      "TB": 3
+    },
     "test_qss_min_max_box": {
       "SB": 7,
       "TB": 9

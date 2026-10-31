@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Controls for the Miri runs: each test uses the registry in a way that breaks Rust's aliasing
 //! rules, and Miri must report undefined behavior for it under both Stacked Borrows and Tree
-//! Borrows. A control that passes under Miri means the check has stopped seeing the problem, not
-//! that the use is sound. A control failing under Miri is the expected result, not a failure of
-//! the code under test.
+//! Borrows (a control whose own documentation names one model is reported by that model only). A
+//! control that passes under Miri means the check has stopped seeing the problem, not that the
+//! use is sound. A control failing under Miri is the expected result, not a failure of the code
+//! under test.
 //!
 //! They show the limits of the registration functions kept for existing callers
-//! (`register_qobject`, `register_boxed_qobject`) and of a pointer made from a reference. They are
-//! not run on a normal build, where the undefined behavior would go unnoticed.
+//! (`register_qobject`, `register_boxed_qobject`) and of a pointer made from a reference, and that
+//! a registered child freed before it is unregistered is reported. They are not run on a normal
+//! build, where the undefined behavior would go unnoticed.
 //!
 //! Every control uses a concrete type. Miri does not check the uniqueness of `&mut` or `Box` to a
 //! `!Unpin` type, and `dyn QObject` is not `Unpin`, so the same misuse through a `Box<dyn QObject>`
@@ -16,12 +18,13 @@
 // The controls call the deprecated registration functions on purpose.
 #![allow(deprecated)]
 
+use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_boxed_qobject, register_qobject, register_qobject_ptr, unregister_qobject,
-    with_object_mut, ObjectData, ObjectId, QObject,
+    register_boxed_qobject, register_qobject, register_qobject_ptr, set_parent_by_id,
+    unregister_qobject, with_object_mut, ObjectData, ObjectId, QObject,
 };
 
 struct Node {
@@ -114,4 +117,64 @@ fn a_pointer_made_from_a_reference_then_use_of_the_variable() {
     use_directly(&mut node);
     // SAFETY: no callback runs.
     unsafe { unregister_qobject(id) };
+}
+
+/// A read of the variable between callbacks is not allowed either when the registered pointer was
+/// made from a reference. (A pointer taken by `&raw mut x` survives such a read, see
+/// `test_pointer_registration_between_callbacks`.) Expected: undefined behavior under Tree
+/// Borrows only. The reference is a unique one there: the read through the variable freezes it,
+/// and the next write through the registry is forbidden. Stacked Borrows only discards the
+/// registered pointer on a write through the variable, so this passes under it, as does a read
+/// that goes through a shared reference.
+#[test]
+#[cfg_attr(
+    not(miri),
+    ignore = "Miri control: expected to be reported as undefined behavior under Miri"
+)]
+fn a_pointer_made_from_a_reference_then_a_read_of_the_variable() {
+    let mut node = Node::new();
+    let id = node.data.id();
+    let ptr = NonNull::from(&mut node as &mut dyn QObject);
+    // SAFETY: `node` stays here until it is unregistered below.
+    unsafe { register_qobject_ptr(ptr) };
+    touch(id);
+    assert_eq!(node.n, 1);
+    touch(id);
+    assert_eq!(node.n, 2);
+    // SAFETY: no callback runs.
+    unsafe { unregister_qobject(id) };
+}
+
+/// The memory of a registered child is freed without its drop running, so it is never
+/// unregistered. Destroying the parent then reaches the freed child through the registry (the
+/// parent's `delete_children` borrows each child it lists), a use after free that Miri reports.
+#[test]
+#[cfg_attr(
+    not(miri),
+    ignore = "Miri control: expected to be reported as undefined behavior under Miri"
+)]
+fn a_registered_child_freed_before_it_is_unregistered_then_the_parent_is_destroyed() {
+    let parent = Node::new();
+    let parent_id = parent.data.id();
+    let parent_ptr = Box::into_raw(Box::new(parent));
+    // SAFETY: the parent stays at this address, and is used only through this pointer, until it
+    // is dropped below.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(parent_ptr)) };
+
+    let child = Node::new();
+    let child_id = child.data.id();
+    let child_ptr = Box::into_raw(Box::new(child));
+    // SAFETY: this breaks the contract on purpose, below: the child is registered by this pointer,
+    // and its memory stays valid only until it is freed.
+    unsafe { register_qobject_ptr(NonNull::new_unchecked(child_ptr)) };
+    set_parent_by_id(child_id, Some(parent_id)).expect("both are registered");
+
+    // SAFETY: `child_ptr` came from `Box::into_raw` above. `ManuallyDrop` frees the allocation
+    // without running `Node`'s drop, which would have unregistered the child: the registry now
+    // holds a pointer to freed memory.
+    drop(unsafe { Box::from_raw(child_ptr.cast::<ManuallyDrop<Node>>()) });
+
+    // The parent's drop borrows the child through the registry to release it.
+    // SAFETY: `parent_ptr` came from `Box::into_raw` above and is dropped once.
+    drop(unsafe { Box::from_raw(parent_ptr) });
 }
