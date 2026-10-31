@@ -440,6 +440,26 @@ fn qt_glyph_metrics(
     Some(metrics)
 }
 
+/// Whether `c` has no width in Qt in any font, whatever glyph a font has for it (measured with
+/// PySide6 6.11.2, oracle font and Arial: `QFontMetricsF::horizontalAdvance` of each is 0 and
+/// `"a" + c + "b"` is as wide as `"ab"`): the default ignorable characters (the soft hyphen, the
+/// Arabic letter mark, the zero width space and joiners, the direction marks, embeddings,
+/// overrides and isolates, the word joiner and invisible operators, the variation selectors, the
+/// byte order mark) and the line and paragraph separators.
+pub(crate) fn is_zero_width(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{61c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+    )
+}
+
 impl GlyphLayout {
     /// Creates an empty layout.
     pub fn empty() -> Self {
@@ -574,29 +594,87 @@ impl GlyphLayout {
     /// Whether `text` holds a sequence that Qt shapes in an emoji font as one item even when the
     /// primary font has a glyph for every character of it (the keycap `1` U+FE0F U+20E3 is
     /// all Arial characters): `QTextEngine::itemize` splits emoji sequences off with its emoji
-    /// segmenter. Such text needs the fallback fonts loaded.
+    /// segmenter. Such text needs the fallback fonts loaded. Only real emoji sequences count: a
+    /// ZWJ next to a pictograph (a skin tone or variation selector may sit between them), U+FE0F
+    /// after a character that has an emoji form, a keycap U+20E3 after `0`-`9`, `#` or `*`, a
+    /// pair of regional indicators (a flag) and a pictograph followed by a tag character (the
+    /// subdivision flags, U+1F3F4 and tags U+E0020..U+E007F). The ZWJ of Arabic, Persian or Indic
+    /// text is not one.
     pub(crate) fn has_emoji_sequence(text: &str) -> bool {
-        text.contains(['\u{200d}', '\u{fe0f}', '\u{20e3}'])
+        // The last character that is neither a variation selector nor a skin tone modifier: what
+        // a following selector, keycap, tag or ZWJ attaches to.
+        let mut base: Option<char> = None;
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            let sequence = match c {
+                '\u{200d}' => {
+                    base.is_some_and(Self::is_pictographic)
+                        || chars.peek().copied().is_some_and(Self::is_pictographic)
+                }
+                '\u{fe0f}' => base.is_some_and(Self::is_emoji_base),
+                '\u{20e3}' => base.is_some_and(|b| matches!(b, '0'..='9' | '#' | '*')),
+                '\u{e0020}'..='\u{e007f}' => base.is_some_and(Self::is_pictographic),
+                c if Self::is_regional_indicator(c) => chars
+                    .peek()
+                    .copied()
+                    .is_some_and(Self::is_regional_indicator),
+                _ => false,
+            };
+            if sequence {
+                return true;
+            }
+            if !matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}')
+            {
+                base = Some(c);
+            }
+        }
+        false
     }
 
-    /// Whether `c` can start an emoji sequence: a pictograph or symbol block character, or a
-    /// keycap base.
+    /// Whether `c` is a regional indicator letter, two of which make a flag.
+    fn is_regional_indicator(c: char) -> bool {
+        ('\u{1f1e6}'..='\u{1f1ff}').contains(&c)
+    }
+
+    /// Whether `c` is in the blocks of the `Extended_Pictographic` characters (an approximation
+    /// without the Unicode emoji tables: the pictograph, symbol and arrow blocks and the few
+    /// pictographs outside them; regional indicators and skin tone modifiers are not).
+    fn is_pictographic(c: char) -> bool {
+        matches!(
+            c as u32,
+            0xA9 | 0xAE
+                | 0x203C
+                | 0x2049
+                | 0x2122
+                | 0x2139
+                | 0x2194..=0x2199
+                | 0x21A9..=0x21AA
+                | 0x231A..=0x23FF
+                | 0x24C2
+                | 0x25A0..=0x27BF
+                | 0x2934..=0x2935
+                | 0x2B05..=0x2B55
+                | 0x3030
+                | 0x303D
+                | 0x3297
+                | 0x3299
+                | 0x1F000..=0x1F1E5
+                | 0x1F200..=0x1F3FA
+                | 0x1F400..=0x1FAFF
+                | 0x1FC00..=0x1FFFD
+        )
+    }
+
+    /// Whether `c` can start an emoji sequence: a pictograph or a keycap base.
     fn is_emoji_base(c: char) -> bool {
-        let cp = c as u32;
-        cp >= 0x1F000
-            || (0x2190..=0x2BFF).contains(&cp)
-            || matches!(
-                cp,
-                0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x3030 | 0x303D | 0x3297 | 0x3299
-            )
-            || matches!(c, '0'..='9' | '#' | '*')
+        Self::is_pictographic(c) || matches!(c, '0'..='9' | '#' | '*')
     }
 
     /// Qt shapes an emoji sequence (a ZWJ family, a keycap, a character with the emoji variation
-    /// selector) as one item in an emoji font. A per-character choice would cut it at every
-    /// character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so each
-    /// grapheme cluster that is such a sequence gets the first fallback font with emoji glyphs
-    /// that covers all of it.
+    /// selector, a flag) as one item in an emoji font. A per-character choice would cut it at
+    /// every character the primary font happens to cover (U+200D, U+FE0F, the keycap base), so
+    /// each grapheme cluster that is such a sequence gets the first fallback font with emoji
+    /// glyphs that covers all of it.
     fn keep_emoji_sequences_in_one_font(
         text: &str,
         engines: &[FontEngine],
@@ -607,16 +685,14 @@ impl GlyphLayout {
             return;
         }
         // Characters that need no glyph of their own in the font that shapes the sequence.
-        let joiner = |c: char| c == '\u{200d}' || ('\u{fe00}'..='\u{fe0f}').contains(&c);
+        let joiner =
+            |c: char| matches!(c, '\u{200d}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0020}'..='\u{e007f}');
         let mut at = 0;
         for cluster in text.graphemes(true) {
             let n = cluster.chars().count();
             let chars = &mut resolved[at..at + n];
             at += n;
-            if n < 2
-                || !Self::has_emoji_sequence(cluster)
-                || !cluster.chars().any(Self::is_emoji_base)
-            {
+            if n < 2 || !Self::has_emoji_sequence(cluster) {
                 continue;
             }
             let font = engines.iter().enumerate().skip(1).find(|(_, e)| {
@@ -645,12 +721,20 @@ impl GlyphLayout {
         let mut last_fallback_idx = 0usize;
 
         for ch in text.chars() {
+            // A character of no width never takes a fallback font: whatever glyph one has for it
+            // is not shown (Qt gives it no advance in any font), and switching fonts would cut
+            // the run (and its kerning) around it. It stays with the font before it.
+            if is_zero_width(ch) {
+                let previous = char_engine_indices.last().map_or(0, |&(_, idx)| idx);
+                char_engine_indices.push((ch, previous));
+                continue;
+            }
             let mut resolved_idx = 0usize;
             let gid = primary.glyph_index(ch);
 
             // Qt parity: if primary engine has no glyph (0) and character is not whitespace/ignorable,
             // query fallback engines.
-            if gid == 0 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' && ch != '\u{200b}' {
+            if gid == 0 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' {
                 let mut found = false;
 
                 // Locality heuristic (Qt `lastFallback` in `stringToCMap`):
@@ -785,10 +869,18 @@ impl GlyphLayout {
                     legacy_kern.as_ref(),
                 );
 
+                // A character of no width is hidden as HarfBuzz hides default ignorables: the
+                // space glyph, no advance, whatever glyph or advance the font has for it.
+                let hidden_glyph = rb_face.glyph_index(' ').map_or(0, |g| g.0);
                 for (i, (info, pos)) in infos.iter().zip(positions.iter()).enumerate() {
+                    let hidden = text[run_offset + info.cluster as usize..]
+                        .chars()
+                        .next()
+                        .is_some_and(is_zero_width);
                     // `engine_metrics` is Qt's own advance and x offset in 26.6 pixels; without a
                     // font engine advance HarfBuzz's design values stand.
                     let (adv, x_offset) = match &engine_metrics {
+                        _ if hidden => (0.0, 0.0),
                         Some(m) => (m[i].0 as f32 / 64.0, m[i].1 as f32 / 64.0),
                         None => (
                             (pos.x_advance as f32) * scale,
@@ -809,7 +901,11 @@ impl GlyphLayout {
                         advance += spacing;
                     }
                     glyphs.push(PositionedGlyph {
-                        glyph_id: info.glyph_id as u16,
+                        glyph_id: if hidden {
+                            hidden_glyph
+                        } else {
+                            info.glyph_id as u16
+                        },
                         font_index: run.engine_index as u8,
                         x,
                         y,
@@ -832,10 +928,18 @@ impl GlyphLayout {
                     None
                 };
 
+                let hidden_glyph = engine.face.glyph_index(' ');
                 for (byte, ch) in run.text.char_indices() {
-                    let gid = engine.face.glyph_index(ch);
+                    let hidden = is_zero_width(ch);
+                    let gid = if hidden {
+                        hidden_glyph
+                    } else {
+                        engine.face.glyph_index(ch)
+                    };
                     let metrics = engine.face.metrics(ch, font.size);
-                    let adv_x = if ch.is_ascii_digit() && run.engine_index == 0 {
+                    let adv_x = if hidden {
+                        0.0
+                    } else if ch.is_ascii_digit() && run.engine_index == 0 {
                         tnum_width.unwrap_or(metrics.advance_width)
                     } else {
                         engine
@@ -881,6 +985,62 @@ mod tests {
         let data = raw.as_slice().to_vec();
         let face = parse_face(&SharedFontData::from_vec(data.clone()), 0).unwrap();
         (Arc::new(data), face)
+    }
+
+    /// A face without OpenType data (the macOS system fallback faces) is measured glyph by glyph
+    /// from its own metrics; a character of no width must still get no advance and no visible
+    /// glyph, whatever glyph the face has for it (Qt: 0 in every font).
+    #[test]
+    fn zero_width_characters_have_no_advance_without_opentype_data() {
+        let data =
+            SharedFontData::from_vec(include_bytes!("../../tests/data/oracle_text.ttf").to_vec());
+        let face = parse_face(&data, 0).unwrap();
+        // No font data on the font: the engine has no OpenType data to shape with.
+        let font = Font::new("FerrokitOracleText", 16.0);
+        let ab = GlyphLayout::shape_with_face("ab", &font, Arc::clone(&face)).width;
+        let space = face.glyph_index(' ');
+        let mut wrong = Vec::new();
+        for c in [
+            '\u{ad}', '\u{61c}', '\u{202e}', '\u{2066}', '\u{fe0f}', '\u{2029}', '\u{feff}',
+        ] {
+            let layout = GlyphLayout::shape_with_face(&format!("a{c}b"), &font, Arc::clone(&face));
+            let hidden = &layout.glyphs[1];
+            if layout.width != ab || hidden.advance != 0.0 || hidden.glyph_id != space {
+                wrong.push(format!("{c:?}: {layout:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn only_real_emoji_sequences_need_the_emoji_fallback() {
+        for text in [
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", // family
+            "\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}",         // skin tone before the ZWJ
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}",           // VS16 before the ZWJ
+            "x\u{200D}\u{1F525}",                          // ZWJ before a pictograph
+            "\u{2764}\u{FE0F}",                            // emoji presentation
+            "1\u{FE0F}\u{20E3}",                           // keycap
+            "#\u{20E3}",                                   // keycap without VS16
+            "a \u{2600}\u{FE0F} b",
+            "\u{1F1F9}\u{1F1FC}", // a flag: two regional indicators
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}", // tag sequence
+        ] {
+            assert!(GlyphLayout::has_emoji_sequence(text), "{text:?}");
+        }
+        for text in [
+            "plain",
+            "\u{0645}\u{200D}",                 // Arabic joining
+            "\u{0645}\u{06CC}\u{200C}\u{200D}", // Persian
+            "\u{0915}\u{094D}\u{200D}\u{0937}", // Devanagari half form
+            "a\u{FE0F}",                        // no emoji form
+            "x\u{20E3}",                        // not a keycap base
+            "\u{1F3FB}\u{200D}a",               // a lone modifier is no pictograph
+            "\u{1F1F9} x",                      // a lone regional indicator
+            "a\u{E0067}\u{E007F}",              // tags after a letter
+        ] {
+            assert!(!GlyphLayout::has_emoji_sequence(text), "{text:?}");
+        }
     }
 
     #[test]

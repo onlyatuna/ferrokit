@@ -8,7 +8,7 @@ use ferrokit_gui::application::LayoutDirection;
 use ferrokit_gui::geometry::primitives::{PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::qss_box::{draw_qss_box, QssBorder};
 use ferrokit_gui::paint::{Painter, Pen};
-use ferrokit_gui::text::{Font, FontMetrics, TextDocument, TextLayout, WrapMode};
+use ferrokit_gui::text::{Font, FontMetrics, TextDocument, TextFragment, TextLayout, WrapMode};
 use ferrokit_gui::tiny_skia::Color;
 use ferrokit_gui::Alignment;
 
@@ -208,12 +208,15 @@ impl Label {
 
     /// The plain text as `QLabel` measures and draws it (`qt_format_text`): a carriage return in
     /// front of a line feed has no width, any other one is as wide as a space (measured: `"a\rb"` is
-    /// as wide as `"a b"`, `"a\r\nb"` and `"a\r\r\nb"` are two lines of `"a"` and `"b"`).
+    /// as wide as `"a b"`, `"a\r\nb"` and `"a\r\r\nb"` are two lines of `"a"` and `"b"`). The line
+    /// separator U+2028 ends a line like a line feed. The paragraph separator U+2029 stays: the
+    /// layout gives it no width and lets a line break after it, as Qt's does.
     fn plain_text(&self) -> std::borrow::Cow<'_, str> {
-        if !self.text.contains('\r') {
+        if !self.text.contains(['\r', '\u{2028}']) {
             return std::borrow::Cow::Borrowed(&self.text);
         }
-        let mut lines: Vec<&str> = self.text.split('\n').collect();
+        let text = self.text.replace('\u{2028}', "\n");
+        let mut lines: Vec<&str> = text.split('\n').collect();
         let last = lines.len() - 1;
         for line in &mut lines[..last] {
             *line = line.trim_end_matches('\r');
@@ -233,7 +236,7 @@ impl Label {
         let mut doc = if self.rich {
             TextDocument::from_html(&self.text)
         } else {
-            TextDocument::from_plain_text(self.plain_text().as_ref())
+            Self::plain_document(&self.plain_text())
         };
         if !self.rich {
             doc.set_tab_stop_distance(Self::tab_stop_distance(font));
@@ -242,6 +245,24 @@ impl Label {
         // `QLabel` lays its text out with `QTextOption::WordWrap`: a word wider than the label is
         // not broken, it overflows (`QTextDocument`'s own default would cut it).
         doc.set_wrap_mode(WrapMode::WordWrap);
+        doc
+    }
+
+    /// A document of one block per line of the plain text. `qt_format_text` lays the text out
+    /// as one `QTextLayout`, in which only the line separators end a line; a document would also
+    /// start a paragraph at U+2029. So the separator is held by a vertical tab (one grapheme, as
+    /// U+2029 is, so the block positions stay right) while the document splits the lines, and the
+    /// blocks then get their own text back.
+    fn plain_document(text: &str) -> TextDocument {
+        if !text.contains('\u{2029}') {
+            return TextDocument::from_plain_text(text);
+        }
+        let mut doc = TextDocument::from_plain_text(text.replace('\u{2029}', "\u{b}"));
+        for (index, line) in text.split('\n').enumerate() {
+            if let Some(block) = doc.block_at_mut(index) {
+                *block.fragments_mut() = vec![TextFragment::plain(line)];
+            }
+        }
         doc
     }
 
@@ -275,7 +296,8 @@ impl Label {
     }
 
     /// Draws one line of plain text with its baseline at `baseline`: through the layout when it
-    /// has tabs (which the painter's plain text drawing does not expand), else as it always was.
+    /// has tabs (which the painter's plain text drawing does not expand) or a paragraph separator
+    /// (which it would draw as a missing glyph), else as it always was.
     fn draw_line(
         painter: &mut Painter,
         x: f32,
@@ -284,7 +306,7 @@ impl Label {
         font: &Font,
         color: Color,
     ) {
-        if line.contains('\t') {
+        if line.contains(['\t', '\u{2029}']) {
             let layout = Self::unwrapped_line(line, font);
             let ascent = layout.line_at(0).map_or(0.0, |l| l.ascent());
             layout.draw_with_color(painter, PointF::new(x, baseline - ascent), &[], color);

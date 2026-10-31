@@ -208,18 +208,15 @@ impl TextDocument {
 
     /// Lays out one block at the document's text width (`setTextWidth` wrap).
     pub(crate) fn block_layout(&self, block: &TextBlock) -> TextLayout {
-        let mut layout = block.create_layout(&self.default_font);
-        let custom_tabs = self.tab_stop_distance != DEFAULT_TAB_STOP_DISTANCE;
-        if custom_tabs {
+        let mut layout = block.unlaid_layout(&self.default_font);
+        if self.tab_stop_distance != DEFAULT_TAB_STOP_DISTANCE {
             layout.set_tab_stop_distance(self.tab_stop_distance);
         }
         if let Some(w) = self.page_size.map(|s| s.width) {
             layout.set_wrap_mode(self.wrap_mode);
             layout.set_wrap_width(Some(w));
-            layout.do_layout();
-        } else if custom_tabs {
-            layout.do_layout();
         }
+        layout.do_layout();
         layout
     }
 

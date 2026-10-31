@@ -11,7 +11,6 @@ use crate::text::fragment::TextFragment;
 use crate::text::layout::TextLayout;
 use crate::text::position::{byte_to_grapheme, grapheme_count};
 use std::sync::Arc;
-use unicode_segmentation::UnicodeSegmentation;
 
 /// Paragraph block model (`QTextBlock`).
 #[derive(Debug, Clone)]
@@ -185,32 +184,6 @@ impl TextBlock {
         self.additional_formats = formats;
     }
 
-    /// Returns the fragments with the overlay merged in: each fragment is split where the overlay
-    /// changes and overlay formats are merged over the user format.
-    pub fn effective_fragments(&self) -> Vec<TextFragment> {
-        let overlay = self.additional_formats();
-        if overlay.is_empty() {
-            return self.fragments.clone();
-        }
-        let mut out: Vec<TextFragment> = Vec::new();
-        let mut index = 0usize;
-        for frag in &self.fragments {
-            for g in frag.text().graphemes(true) {
-                let mut fmt = frag.char_format().clone();
-                for r in overlay {
-                    if index >= r.start && index < r.start + r.length {
-                        fmt.merge(&r.format);
-                    }
-                }
-                match out.last_mut() {
-                    Some(prev) if prev.format == fmt => prev.text.push_str(g),
-                    _ => out.push(TextFragment::new(g, fmt)),
-                }
-                index += 1;
-            }
-        }
-        out
-    }
     /// Returns custom user data attached to this block (`QTextBlock::userData`).
     #[inline]
     pub fn user_data(&self) -> Option<Arc<dyn TextBlockUserData>> {
@@ -225,13 +198,19 @@ impl TextBlock {
 
     /// Converts this block into a laid-out `TextLayout`.
     pub fn create_layout(&self, base_font: &Font) -> TextLayout {
-        let text = self.text();
-        let mut layout = TextLayout::new(text, base_font.clone());
+        let mut layout = self.unlaid_layout(base_font);
+        layout.do_layout();
+        layout
+    }
+
+    /// The block's text, alignment and formats in a `TextLayout` that is not laid out yet, so a
+    /// caller that still sets a wrap width or tab stops lays out once.
+    pub(crate) fn unlaid_layout(&self, base_font: &Font) -> TextLayout {
+        let mut layout = TextLayout::new(self.text(), base_font.clone());
         layout.set_alignment(self.block_format.alignment);
         let mut formats = self.format_ranges();
         formats.extend_from_slice(self.additional_formats());
         layout.set_formats(formats);
-        layout.do_layout();
         layout
     }
 

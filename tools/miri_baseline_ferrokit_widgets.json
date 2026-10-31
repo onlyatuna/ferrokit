@@ -96,6 +96,7 @@
     "test_window_activate_in_show_handler",
     "test_key_sequence_hotkey",
     "test_label_carriage_return",
+    "test_label_separators",
     "test_label_tabs"
   ],
   "excluded": {
@@ -1258,6 +1259,10 @@
     "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::SB": "unsupported",
     "test_label_tabs::several_tabs_size_an_unwrapped_label_as_in_qt::TB": "unsupported",
     "lib::tooltip::tests::a_hide_during_window_creation_applies_to_the_new_tip::SB": "unsupported",
-    "lib::tooltip::tests::a_hide_during_window_creation_applies_to_the_new_tip::TB": "unsupported"
+    "lib::tooltip::tests::a_hide_during_window_creation_applies_to_the_new_tip::TB": "unsupported",
+    "test_label_separators::line_and_paragraph_separators_size_a_label_as_qt_does::SB": "unsupported",
+    "test_label_separators::line_and_paragraph_separators_size_a_label_as_qt_does::TB": "unsupported",
+    "test_label_separators::two_line_separators_make_an_empty_line::SB": "unsupported",
+    "test_label_separators::two_line_separators_make_an_empty_line::TB": "unsupported"
   }
 }
