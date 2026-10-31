@@ -107,8 +107,9 @@ mod linux_epoll {
 
     impl Poller {
         pub fn new() -> Option<Self> {
-            // SAFETY: plain syscalls; every descriptor created here is closed on failure or in
-            // `Drop`.
+            // SAFETY: only descriptors and a live local `ev` (a valid `epoll_event` that
+            // `epoll_ctl` only reads) are passed. Each descriptor created here is closed on
+            // every failing path below, or stored in `Self`, whose `Drop` closes it.
             unsafe {
                 let epoll_fd = libc::epoll_create1(libc::EPOLL_CLOEXEC);
                 if epoll_fd < 0 {
@@ -135,8 +136,10 @@ mod linux_epoll {
         /// Makes a blocked or later `wait` return.
         pub fn wake(&self) {
             let one: u64 = 1;
-            // SAFETY: writes the 8 bytes of a live local to the eventfd. A full counter
-            // (`EAGAIN`) already means "readable", so the result is not needed.
+            // SAFETY: `one` is a live local of exactly the 8 bytes written (an eventfd write
+            // takes a u64); `wake_fd` is the eventfd created in `new`, open while `&self`
+            // exists. A full counter (`EAGAIN`) already means "readable", so the result is
+            // not needed.
             unsafe {
                 libc::write(self.wake_fd, (&one as *const u64).cast(), 8);
             }
@@ -144,7 +147,10 @@ mod linux_epoll {
 
         fn drain_wake(&self) {
             let mut value: u64 = 0;
-            // SAFETY: reads 8 bytes into a live local; the descriptor is non-blocking.
+            // SAFETY: `value` is a live, writable local of exactly the 8 bytes passed as the
+            // count (an eventfd read requires a buffer of at least 8 bytes); `wake_fd` is the
+            // eventfd created in `new`, open while `&self` exists, and non-blocking, so the
+            // read cannot hang when the counter is already zero.
             unsafe {
                 libc::read(self.wake_fd, (&mut value as *mut u64).cast(), 8);
             }
@@ -152,8 +158,11 @@ mod linux_epoll {
 
         /// Sets the events reported for `fd`: none removes it from the set.
         pub fn set_interest(&self, fd: SocketDescriptor, events: u32) {
-            // SAFETY: `epoll_ctl` only reads `ev`; a descriptor that is invalid or already
-            // closed makes it fail, which leaves the set as it was.
+            // SAFETY: `epoll_fd` is open (created in `new`, owned by `self`). The `ev` pointer
+            // is a live local that `epoll_ctl` only reads, and the DEL call passes null, which
+            // the epoll_ctl documentation permits for `EPOLL_CTL_DEL`. A descriptor that is
+            // invalid or already closed makes the call fail with an errno and leaves the set
+            // unchanged; it cannot cause memory unsafety.
             unsafe {
                 if events == 0 {
                     libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
@@ -176,7 +185,10 @@ mod linux_epoll {
         /// `(descriptor, events)` pairs.
         pub fn wait(&self, timeout_ms: c_int) -> (bool, Vec<(SocketDescriptor, u32)>) {
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; 64];
-            // SAFETY: `events` has room for the 64 entries passed as the maximum.
+            // SAFETY: `events.as_mut_ptr()` points at the 64 initialised `epoll_event`s of the
+            // local array and `events.len() as c_int` (64) is the maximum passed, so the kernel
+            // writes at most within the array; `epoll_fd` is the descriptor created in `new`
+            // and owned by `self`, so it is open while `&self` exists.
             let count = unsafe {
                 libc::epoll_wait(
                     self.epoll_fd,
@@ -205,7 +217,9 @@ mod linux_epoll {
 
     impl Drop for Poller {
         fn drop(&mut self) {
-            // SAFETY: both descriptors are owned by this value and closed once.
+            // SAFETY: `epoll_fd` and `wake_fd` were created by `new` and are stored only in this
+            // `Poller` (never copied out or closed elsewhere), and `drop` runs once, so each
+            // descriptor is closed exactly once; `close` takes no pointers.
             unsafe {
                 libc::close(self.wake_fd);
                 libc::close(self.epoll_fd);

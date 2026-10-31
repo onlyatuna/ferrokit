@@ -200,6 +200,8 @@ fn start_timer_fires_timer_event() {
         ticks.load(Ordering::SeqCst)
     );
     obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    // SAFETY: `obj` (created above in this fn) is alive and unmoved until it drops at the end of the fn, this
+    // is the registration thread, and no pump runs here, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -229,6 +231,8 @@ fn kill_timer_stops_firing() {
         snapshot,
         "killed object timer must stop"
     );
+    // SAFETY: `obj` (created above in this fn) is alive and unmoved until it drops at the end of the fn, this
+    // is the registration thread, and no pump runs here, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -251,6 +255,8 @@ fn zero_interval_object_timer_fires_repeatedly() {
         ticks.load(Ordering::SeqCst)
     );
     obj.with_mut(|o| o.kill_timer(id)).unwrap();
+    // SAFETY: `obj` (created above in this fn) is alive and unmoved until it drops at the end of the fn, this
+    // is the registration thread, and no pump runs here, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -338,6 +344,8 @@ fn timer_event_passes_event_filter() {
     // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
     // object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
+    // SAFETY: same contract as the registration above: `filter` stays owned on this thread until
+    // it is unregistered below, and nothing touches it while one of its callbacks runs.
     let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), false)) };
     let filter_id = filter.with(|f| f.object_data().id()).unwrap();
     obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
@@ -358,6 +366,10 @@ fn timer_event_passes_event_filter() {
         seen.load(Ordering::SeqCst),
         ticks.load(Ordering::SeqCst)
     );
+    // SAFETY: `unregister_qobject` needs both objects alive and unmoved until it returns, and to run on
+    // the registration thread with no callback of them active. `obj` and `filter` are owners
+    // created in this fn, still in scope, and neither is dropped before this block ends; this is
+    // the registering thread and no pump (`el`) is running, so no callback is active.
     unsafe {
         unregister_qobject(obj.with(|o| o.object_data().id()).unwrap());
         unregister_qobject(filter.with(|f| f.object_data().id()).unwrap());
@@ -384,6 +396,8 @@ fn timer_event_reaches_event_override() {
         "QObject::event must receive Timer; got {} Timer events",
         timers.load(Ordering::SeqCst)
     );
+    // SAFETY: `obj` (created above in this fn) is alive and unmoved until it drops at the end of the fn, this
+    // is the registration thread, and no pump runs here, so no callback of it is active.
     unsafe { unregister_qobject(obj.with(|o| o.object_data().id()).unwrap()) };
 }
 
@@ -399,6 +413,8 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
     // SAFETY: both owners stay on this thread until the unregisters below; nothing touches either
     // object while a callback of it runs.
     let mut obj = unsafe { register_owned_qobject(TickObject::new(Arc::clone(&ticks))) };
+    // SAFETY: same contract as the registration above: `filter` stays owned on this thread until
+    // it is unregistered below, and nothing touches it while one of its callbacks runs.
     let filter = unsafe { register_owned_qobject(FilterSpy::new(Arc::clone(&seen), true)) };
     let filter_id = filter.with(|f| f.object_data().id()).unwrap();
     obj.with_mut(|o| o.object_data_mut().install_event_filter(filter_id))
@@ -421,6 +437,10 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
         0,
         "a consuming filter must stop the tick reaching timer_event"
     );
+    // SAFETY: `unregister_qobject` needs both objects alive and unmoved until it returns, and to run on
+    // the registration thread with no callback of them active. `obj` and `filter` are owners
+    // created in this fn, still in scope, and neither is dropped before this block ends; this is
+    // the registering thread and no pump (`el`) is running, so no callback is active.
     unsafe {
         unregister_qobject(obj.with(|o| o.object_data().id()).unwrap());
         unregister_qobject(filter.with(|f| f.object_data().id()).unwrap());

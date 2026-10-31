@@ -36,8 +36,10 @@ impl Parent {
     }
 
     fn build(log: Option<Log>) -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+        // runs. The owner is used on this thread only (no `spawn` in this file), and `Parent` has no
+        // callbacks that touch itself. Dropping the owner while a callback of the object runs is
+        // permitted by that function's docs (deferred free).
         unsafe {
             register_owned_qobject(Self {
                 data: ObjectData::new(ObjectId::next()),
@@ -118,7 +120,12 @@ impl QObject for Child {
 }
 
 fn attach(parent_id: ObjectId, child: Box<Child>) -> ObjectId {
-    // SAFETY: the parent owns the Box from here on and is dropped on this thread.
+    // SAFETY: `add_owned_child` needs the child to keep its heap address while owned, to be used
+    // on its registration thread, and not to be accessed outside while one of its callbacks runs.
+    // The `Box` moves into the parent's owner and keeps its address, and every caller drops its own
+    // handles to the child (`child.data.id()` was copied out first). Parent and child were made
+    // on this thread, the only one in this file. Dropping the parent from the child's callback is
+    // the deferred destruction that `add_owned_child` documents.
     unsafe { add_owned_child(parent_id, child) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"))
 }
@@ -259,9 +266,14 @@ fn a_child_that_is_not_running_is_freed_with_its_parent() {
 /// A handle that lets a closure that must be `Send + Sync` hold a thread-bound value. Every use
 /// in this file is on one thread.
 struct ThreadBound<T>(T);
-// SAFETY: the wrapped value is only ever created, used and dropped on the test's own thread (see
-// the type's documentation); `Send + Sync` only satisfies the bounds of the slot closures.
+// SAFETY: `Send` is only needed to satisfy the `Send + Sync + 'static` bounds of `connect`; the
+// wrapped value is created, cloned, used and dropped only on the test's own thread: the file
+// has no `spawn`, and slots run directly in `emit` on that thread, so the `Rc` inside is never
+// touched from two threads. This is not sound for arbitrary `T` and arbitrary use, which is
+// why the type is private to this file.
 unsafe impl<T> Send for ThreadBound<T> {}
+// SAFETY: `Sync` has the same premise as `Send` above: a `&ThreadBound` is only ever used on the
+// thread that owns it.
 unsafe impl<T> Sync for ThreadBound<T> {}
 impl<T> ThreadBound<T> {
     fn get(&self) -> &T {

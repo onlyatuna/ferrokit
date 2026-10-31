@@ -30,7 +30,8 @@ use ferrokit_core::timer::{start_object_timer, TimerType};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: The probes hold `Arc` handles and plain fields, which are `Send`.
+    // SAFETY: the probes hold `Arc` handles, `Mutex`es and plain fields (`Send`); none has an
+    // `Rc`, a `Cell` shared with a handle left behind, or thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -70,8 +71,10 @@ impl Owner {
             }
             let ok = finished();
             for id in owned {
-                // SAFETY: after the move this thread is each object's registration thread, and
-                // the test thread keeps the objects alive until `outcome` has been received.
+                // SAFETY: the test moved each object here before `go` was sent, so this thread is
+                // its registration thread, and its loop has stopped turning, so no callback of
+                // it runs. The objects are locals (or owned children of locals) of the test
+                // thread, which is blocked in `finish()` until `outcome` is sent below.
                 unsafe { unregister_qobject(id) };
             }
             outcome_tx.send(ok).unwrap();
@@ -223,7 +226,9 @@ fn timers_of_moved_object_keep_firing_on_the_target_thread() {
     let probe_id = probe.data.id();
     // The timer is armed in this thread's registry, so this thread needs a timer context.
     let _source_loop = EventLoop::new();
-    // SAFETY: `probe` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `probe` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its timer callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
     assert!(start_object_timer(probe_id, 5, TimerType::Precise).is_valid());
 
@@ -260,7 +265,9 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         seen: Arc::clone(&root_seen),
     };
     let root_id = root.data.id();
-    // SAFETY: `root` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `root` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     let child = Box::new(AffinityProbe {
@@ -268,7 +275,10 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         seen: Arc::clone(&child_seen),
     });
     let child_id = child.data.id();
-    // SAFETY: `child` is boxed and owned by `root` at a stable address.
+    // SAFETY: `child` is a fresh `Box` created on this thread (root's thread), moved into the
+    // call; no reference to it is held (only `child_id`, read before) and afterwards it is reached
+    // only through the registry and `root`. Its callbacks run on its registration thread, which
+    // follows `root` in the move.
     let _ = unsafe { add_owned_child(root_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
     let grand = Box::new(AffinityProbe {
@@ -276,7 +286,10 @@ fn thread_change_precedes_affinity_flip_and_reaches_the_subtree() {
         seen: Arc::clone(&grand_seen),
     });
     let grand_id = grand.data.id();
-    // SAFETY: `grand` is boxed and owned by `child` at a stable address.
+    // SAFETY: `grand` is a fresh `Box` created on this thread (child's thread), moved into the
+    // call; no reference to it is held (only `grand_id`, read before) and afterwards it is reached
+    // only through the registry and `child`. Its callbacks run on its registration thread, which
+    // follows the subtree in the move.
     let _ = unsafe { add_owned_child(child_id, grand) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
@@ -313,7 +326,9 @@ fn zero_interval_timer_of_moved_object_ticks_at_most_once_per_turn() {
     };
     let probe_id = probe.data.id();
     let _source_loop = EventLoop::new();
-    // SAFETY: `probe` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `probe` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its timer callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
     assert!(start_object_timer(probe_id, 0, TimerType::Precise).is_valid());
 
@@ -341,11 +356,16 @@ fn queued_events_of_moved_subtree_wait_for_target_loop_in_order() {
 
     let mut root = Plain::new();
     let root_id = root.data.id();
-    // SAFETY: `root` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `root` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
     let child = Box::new(Plain::new());
     let child_id = child.data.id();
-    // SAFETY: `child` is boxed and owned by `root` at a stable address.
+    // SAFETY: `child` is a fresh `Box` created on this thread (root's thread), moved into the
+    // call; no reference to it is held (only `child_id`, read before) and afterwards it is reached
+    // only through the registry and `root`. Its callbacks run on its registration thread, which
+    // follows `root` in the move.
     let _ = unsafe { add_owned_child(root_id, child) }
         .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
 
@@ -378,7 +398,9 @@ fn transferred_events_preserve_priority_ordering() {
 
     let mut root = Plain::new();
     let root_id = root.data.id();
-    // SAFETY: root stays on this thread and alive until owner unregisters it.
+    // SAFETY: `root` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut root)) };
 
     // Post low priority then high priority while on source thread
@@ -412,7 +434,9 @@ fn post_through_stale_handle_is_forwarded_to_the_owner_thread() {
 
     let mut plain = Plain::new();
     let id = plain.data.id();
-    // SAFETY: `plain` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `plain` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. After
+    // the move its callbacks run on the owner thread, and this thread uses only the id.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut plain)) };
 
     let watched = Arc::clone(&ran);
@@ -437,7 +461,10 @@ fn auto_connection_follows_receiver_thread_after_move() {
     let source = ThreadId::current();
     let mut receiver = Plain::new();
     let receiver_id = receiver.data.id();
-    // SAFETY: `receiver` stays on this thread and alive until the owner has unregistered it.
+    // SAFETY: `receiver` is a local that stays unmoved and alive until the owner thread has
+    // unregistered it (the test waits in `owner.finish()`); the pointer comes from `&raw mut`. The
+    // `&receiver` in `connect_to` below is a short shared borrow that ends before any callback,
+    // and after the move the callbacks run on the owner thread while this thread uses only ids.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
 
     let signal: Signal<i32> = Signal::new();
@@ -476,7 +503,9 @@ fn send_event_from_foreign_thread_is_rejected_without_running_the_owner_callback
         calls: Arc::clone(&calls),
     };
     let id = obj.data.id();
-    // SAFETY: `obj` stays on this thread and alive until it is unregistered below.
+    // SAFETY: `obj` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut` and `obj` is not used directly afterwards. The
+    // foreign thread gets only `id`, and its `send_event` is rejected before any callback runs.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut obj)) };
 
     let (result_tx, result_rx) = channel();
@@ -498,6 +527,8 @@ fn send_event_from_foreign_thread_is_rejected_without_running_the_owner_callback
         0,
         "the owner callback must not run on a foreign thread"
     );
-    // SAFETY: the foreign sender has finished, and this thread is the registration thread.
+    // SAFETY: `obj` is a local that outlives this call and is unmoved. The foreign thread has
+    // been joined and its `send_event` was rejected, so no callback of `obj` ran or is running;
+    // this thread never moved it, so it is still the registration thread.
     unsafe { unregister_qobject(id) };
 }

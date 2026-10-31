@@ -23,7 +23,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Node` holds nothing but its `ObjectData`.
+    // SAFETY: `Node` holds an `ObjectData` and a `Vec<String>`, both `Send`; no `Rc`, no `Cell`
+    // shared with a handle left behind, no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -41,8 +42,9 @@ impl Node {
     }
 
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread until it is dropped, which unregisters the node;
-        // the tests touch the node only between callbacks.
+        // SAFETY: the returned owner is used only through `with`/`with_mut` and dropped by the
+        // test on this thread (or, for `Remote`, on the thread that made it); no callback of the
+        // node runs concurrently with those uses, and the tests never touch the node inside one.
         unsafe { register_owned_qobject(Self::new()) }
     }
 }
@@ -239,7 +241,9 @@ fn the_check_compares_the_current_affinities_not_the_creating_threads() {
 fn an_owned_child_is_not_moved_to_a_parent_in_another_thread() {
     let owner = Node::registered();
     let owner_id = owner.with(|o| o.data.id()).unwrap();
-    // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
+    // SAFETY: the `Box::new(Node::new())` is a fresh allocation moved into the call, on the
+    // parent's thread (`expect("same thread")` checks it was accepted); no reference to it is held
+    // and the parent owns it afterwards.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
@@ -288,7 +292,9 @@ fn a_refused_owned_child_can_still_be_moved_to_a_parent_in_its_own_thread() {
     let owner_id = owner.with(|o| o.data.id()).unwrap();
     let other = Node::registered();
     let other_id = other.with(|o| o.data.id()).unwrap();
-    // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
+    // SAFETY: the `Box::new(Node::new())` is a fresh allocation moved into the call, on the
+    // parent's thread (`expect("same thread")` checks it was accepted); no reference to it is held
+    // and the parent owns it afterwards.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
@@ -324,7 +330,10 @@ fn an_owned_child_built_for_another_thread_is_handed_back() {
     });
     let child_id = child.data.id();
 
-    // SAFETY: the Box comes back with the error, so nothing stays attached to the owner.
+    // SAFETY: `child` is a fresh `Box` whose `ObjectData` is bound to another thread's affinity;
+    // `add_owned_child` checks the affinity first and returns the `Box` in the error without
+    // registering it (asserted below: `DifferentThread`, no parent link), so no pointer to it is
+    // kept and no reference was held across the call (only `child_id` was read before).
     let result = unsafe { add_owned_child(owner_id, child) };
 
     match result {
@@ -393,7 +402,9 @@ fn the_owned_refusal_case_for_the_silence_test() {
     }
     let owner = Node::registered();
     let owner_id = owner.with(|o| o.data.id()).unwrap();
-    // SAFETY: the Box is handed to the owner, which keeps it at this address until it is dropped.
+    // SAFETY: the `Box::new(Node::new())` is a fresh allocation moved into the call, on the
+    // parent's thread (`expect("same thread")` checks it was accepted); no reference to it is held
+    // and the parent owns it afterwards.
     let child_id = unsafe { add_owned_child(owner_id, Box::new(Node::new())) }
         .map_err(|(error, _)| error)
         .expect("same thread");
@@ -409,7 +420,9 @@ fn the_owned_refusal_case_for_the_silence_test() {
         data: ObjectData::with_thread(ObjectId::next(), elsewhere),
         seen: Vec::new(),
     });
-    // SAFETY: the Box comes back with the error.
+    // SAFETY: `foreign` is a fresh `Box` made here; `add_owned_child` checks the child's thread
+    // affinity against the parent's first and, on `DifferentThread`, returns the `Box` in the
+    // error without registering it (asserted on the next line), so no pointer to it is kept.
     let refused = unsafe { add_owned_child(owner_id, foreign) };
     assert!(matches!(refused, Err((ReparentError::DifferentThread, _))));
 }

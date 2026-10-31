@@ -116,7 +116,10 @@ fn pump_until(el: &EventLoop, what: &str, mut done: impl FnMut() -> bool) {
 fn direct_and_auto_on_owner_thread_invoke_immediately() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The `Direct`/`Auto` invocations below run in place on `w`
+    // (no registry callback) between callbacks; they are `&mut self` calls, the rule 7 case Miri
+    // was seen to accept [inferred for these calls].
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let direct =
@@ -124,7 +127,8 @@ fn direct_and_auto_on_owner_thread_invoke_immediately() {
     let auto = w.invoke_method_with_type(ADD_WIDTH, &[Variant::from(2i32)], ConnectionType::Auto);
     let width = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; the direct invocations have
+    // returned and no event loop ran, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(direct.map(|v| v.to_value::<i32>()), Ok(Some(5)));
@@ -137,7 +141,11 @@ fn queued_on_owner_thread_is_deferred_until_loop_runs() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The queued invoke (a `&mut self` call on `w`, the rule 7
+    // case Miri was seen to accept [inferred]) posts an event that runs as a callback in
+    // `pump_until` on this thread; `width_of` reads through the registry, so no reference to `w`
+    // is held across it, and the `w.width` reads happen between callbacks.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let posted =
@@ -146,7 +154,8 @@ fn queued_on_owner_thread_is_deferred_until_loop_runs() {
     pump_until(&el, "queued invoke", || width_of(id) == Some(3));
     let width_after = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; `pump_until` has returned and
+    // with it the last `process_events`, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(
@@ -165,7 +174,10 @@ fn queued_on_owner_thread_is_deferred_until_loop_runs() {
 fn blocking_queued_on_owner_thread_is_refused_without_hanging() {
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The `&mut self` call below that is on the registration
+    // thread and, being a blocking call to its own thread, is refused instead of running a callback
+    // (rule 7 caveat: that call is the `&mut` use Miri was seen to accept [inferred]).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let result = w.invoke_method_with_type(
@@ -175,7 +187,8 @@ fn blocking_queued_on_owner_thread_is_refused_without_hanging() {
     );
     let width = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; the refused blocking call
+    // ran no callback and nothing is queued, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert!(
@@ -190,7 +203,10 @@ fn queued_rejects_unknown_member_and_bad_arity_synchronously() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The `&mut self` call `invoke_method_with_type` on `w` is
+    // the case rule 7 says Miri accepted [inferred for these calls]; it only posts, and the
+    // callback (if one were wrongly posted) would run in `process_events` with no reference held.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let unknown = w.invoke_method_with_type("nonExistent()", &[], ConnectionType::Queued);
@@ -199,7 +215,8 @@ fn queued_rejects_unknown_member_and_bad_arity_synchronously() {
     el.process_events(false);
     let width = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; `process_events` has
+    // returned, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(unknown, Err(InvokeError::MethodNotFound));
@@ -229,8 +246,10 @@ fn cross_thread_blocking_queued_returns_owner_thread_result() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
-    // the receiver id and the static MetaObject, never the object itself.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The worker thread gets only `id` and a `'static`
+    // `MetaObject`, never a reference to `w`; its blocking call runs as a callback on this (the
+    // registration) thread inside `el.process_events`, where this test holds no reference to `w`.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
@@ -260,7 +279,8 @@ fn cross_thread_blocking_queued_returns_owner_thread_result() {
     worker.join().expect("worker thread must not panic");
     let width = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; the worker is joined and the
+    // answered blocking call has returned, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(result.map(|v| v.to_value::<i32>()), Ok(Some(4)));
@@ -272,8 +292,11 @@ fn cross_thread_queued_returns_at_once_and_applies_on_owner_loop() {
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_widget(id);
-    // SAFETY: `w` stays on this thread and alive until unregistered below; the worker only uses
-    // the receiver id and the static MetaObject, never the object itself.
+    // SAFETY: `w` is a local on this thread, not moved or dropped before the unregistration below;
+    // the pointer comes from `&raw mut`. The worker thread gets only `id` and a `'static`
+    // `MetaObject`, never a reference to `w`; its call is queued and runs as a callback on this
+    // (the registration) thread, in `pump_until`, where the test holds no reference to `w`
+    // (`width_of` reads through the registry). `w.width` reads are between callbacks (rule 7).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut w)) };
 
     let (tx, rx) = mpsc::channel();
@@ -298,7 +321,8 @@ fn cross_thread_queued_returns_at_once_and_applies_on_owner_loop() {
     });
     let width_after = w.width;
 
-    // SAFETY: `w` was registered above and is still alive.
+    // SAFETY: `w` is a local that outlives this call and is unmoved; the loop's `process_events`
+    // and the worker's `invoke_method_on_thread` have finished, so no callback of `w` runs.
     unsafe { unregister_qobject(id) };
 
     assert_eq!(returned, Ok(Variant::Invalid));

@@ -51,8 +51,10 @@ fn ticker(panic_on_tick: bool) -> (OwnedObject<Ticker>, ObjectId, Arc<AtomicUsiz
     let ticks = Arc::new(AtomicUsize::new(0));
     let data = ObjectData::new(ObjectId::next());
     let id = data.id();
-    // SAFETY: the owner stays on this thread and nothing touches the object while a callback of
-    // it runs.
+    // SAFETY: the returned owner is a test local on this thread. The tests never use the owner
+    // while a `timer_event` callback runs (it is held unused, or dropped after
+    // `process_events`/`send_timer_events` has returned), and no callback drops it. A callback
+    // that panics unwinds out of the dispatcher before the owner is dropped.
     let owner = unsafe {
         register_owned_qobject(Ticker {
             data,
@@ -245,7 +247,10 @@ fn single_shot_callback_runs_when_a_filter_consumes_the_tick() {
     let seen = Arc::new(AtomicUsize::new(0));
     let data = ObjectData::new(ObjectId::next());
     let filter_id = data.id();
-    // SAFETY: the owner stays on this thread and nothing touches the object during a callback.
+    // SAFETY: `_filter` is a local owner on this thread that the test never uses; the only code
+    // that touches the object is its `event_filter` callback, run from `pump_until` on this thread.
+    // The owner is dropped at the end of the test, after `remove_application_event_filter`, so
+    // no callback is running then.
     let _filter = unsafe {
         register_owned_qobject(ConsumeTimers {
             data,

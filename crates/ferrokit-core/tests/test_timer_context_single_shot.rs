@@ -18,7 +18,8 @@ use ferrokit_core::timer::Timer;
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Ctx` holds `Arc` handles and plain fields, which are `Send`.
+    // SAFETY: `Ctx` holds nothing but its `ObjectData`, which is `Send`; no `Rc`, no shared `Cell`,
+    // no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -44,7 +45,10 @@ impl QObject for Ctx {
 }
 
 fn new_ctx() -> OwnedObject<Ctx> {
-    // SAFETY: the owner is dropped by one thread at a time and no object callback runs here.
+    // SAFETY: the returned owner is a test local, used only for its id and dropped by the test.
+    // `Ctx` has no callbacks of its own and no event is sent to it. After `move_to_thread_by_id`
+    // the drop happens on a non-registration thread, where `OwnedObject::drop` forwards the
+    // destruction to the registration thread (see `destroy_owned`); the tests assert exactly that.
     unsafe {
         register_owned_qobject(Ctx {
             data: movable_data(ObjectId::next()),

@@ -24,7 +24,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Node` holds nothing but its `ObjectData`.
+    // SAFETY: `Node` holds nothing but its `ObjectData`, which is `Send`; no `Rc`, no shared
+    // `Cell`, no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -59,8 +60,11 @@ impl QObject for Node {
 }
 
 fn registered() -> OwnedObject<Node> {
-    // SAFETY: the owner stays on its registration thread until a move, and is dropped when no
-    // callback of the object runs.
+    // SAFETY: the returned owner is a test local, used only for its id and dropped by the test,
+    // either on the registration thread or, after a move, from this thread, where
+    // `OwnedObject::drop` forwards the destruction to the registration thread (see
+    // `destroy_owned`). `Node` has no callbacks of its own, and the `with_object_mut` closures in
+    // these tests touch only ids.
     unsafe { register_owned_qobject(Node::new()) }
 }
 
@@ -133,14 +137,18 @@ fn a_child_linked_before_registration_and_before_its_parent_is_found_through_the
     let mut child = Node::new();
     // Neither is registered: the link is accepted and only the child's own data has it.
     child.data.set_parent(Some(parent_id)).unwrap();
-    // SAFETY: as in `registered`.
+    // SAFETY: as in `registered`: a local owner, used only for its id and dropped by the test
+    // (from this non-registration thread after the move, where `OwnedObject::drop` forwards the
+    // destruction to the registration thread, see `destroy_owned`); `Node` has no callbacks.
     let child = unsafe { register_owned_qobject(child) };
     let child_id = id_of(&child);
     check();
     assert_eq!(query_object_parent(child_id), Some(Some(parent_id)));
 
     // The parent is registered afterwards, under the id the child names.
-    // SAFETY: as in `registered`.
+    // SAFETY: as in `registered`: a local owner, used only for its id and dropped by the test
+    // (from this non-registration thread after the move, where `OwnedObject::drop` forwards the
+    // destruction to the registration thread, see `destroy_owned`); `Node` has no callbacks.
     let parent = unsafe { register_owned_qobject(Node::with_id(parent_id)) };
     check();
 
@@ -179,7 +187,9 @@ fn owned_children_moved_between_parents_are_indexed_under_the_new_parent() {
     let first = registered();
     let second = registered();
     let (first_id, second_id) = (id_of(&first), id_of(&second));
-    // SAFETY: the child is not used through the `Box` afterwards, and stays on this thread.
+    // SAFETY: `Box::new(Node::new())` is a fresh allocation moved into the call on the parent's
+    // thread; no reference to it is held and nothing else points to it, so the parent owns it
+    // exclusively afterwards.
     let child_id = unsafe { add_owned_child(first_id, Box::new(Node::new())) }
         .ok()
         .unwrap();

@@ -31,8 +31,10 @@ impl Node {
     }
 
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: the returned owner is used only through `with`/`OwnedObject::object_id` (which
+        // refuse or ignore callbacks), and is dropped by the test on this thread. A drop inside a
+        // child's callback (first test) is the documented exception: `OwnedObject::drop`
+        // unregisters at once and frees after the callback returns.
         unsafe { register_owned_qobject(Self::new()) }
     }
 }
@@ -96,14 +98,17 @@ fn attach_probe(parent: ObjectId, hook: Hook) -> (ObjectId, Rc<Cell<u32>>) {
         reads_while_running: Rc::clone(&reads),
         hook: Some(hook),
     });
-    // SAFETY: the parent owns the child from here on and is dropped on this thread.
+    // SAFETY: `probe` is a fresh `Box` created here on the parent's thread and moved into the
+    // call; the test keeps no reference to it (only the returned id and the `Rc` counter), so
+    // nothing aliases it when its callback runs. The parent owns it from now on.
     let id = unsafe { add_owned_child(parent, probe) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"));
     (id, reads)
 }
 
 fn attach_node(parent: ObjectId) -> ObjectId {
-    // SAFETY: as in `attach_probe`.
+    // SAFETY: as in `attach_probe`: a fresh `Box<Node>` created on this thread, moved into the
+    // call, never referenced by the test afterwards.
     unsafe { add_owned_child(parent, Box::new(Node::new())) }
         .unwrap_or_else(|(err, _)| panic!("attach refused: {err:?}"))
 }

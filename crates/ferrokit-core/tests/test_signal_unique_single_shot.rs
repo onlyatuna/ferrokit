@@ -34,7 +34,9 @@ fn unique_to_rejects_duplicate_receiver_slot_pair() {
     let mut rcv = Receiver {
         data: ObjectData::new(id),
     };
-    // SAFETY: `rcv` stays on this thread and alive until unregistered below.
+    // SAFETY: `rcv` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut`, and the `&rcv` taken later is a short shared
+    // borrow (a read) that ends before any callback.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
@@ -51,7 +53,8 @@ fn unique_to_rejects_duplicate_receiver_slot_pair() {
         "slot must run exactly once"
     );
 
-    // SAFETY: `rcv` was registered above and is still alive.
+    // SAFETY: `rcv` is a local that outlives this call and is unmoved; the emit has returned and
+    // `Receiver` has no event handler, so no callback of it runs.
     unsafe { unregister_qobject(id) };
 }
 
@@ -92,7 +95,9 @@ fn single_shot_to_receiver_fires_once() {
     let mut rcv = Receiver {
         data: ObjectData::new(id),
     };
-    // SAFETY: `rcv` stays on this thread and alive until unregistered below.
+    // SAFETY: `rcv` is a local on this thread, not moved or dropped before the unregistration
+    // below; the pointer comes from `&raw mut`, and the `&rcv` taken later is a short shared
+    // borrow (a read) that ends before any callback.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut rcv)) };
 
     let signal: Signal<i32> = Signal::new();
@@ -107,7 +112,8 @@ fn single_shot_to_receiver_fires_once() {
         "receiver slot must run once (value 3)"
     );
 
-    // SAFETY: `rcv` was registered above and is still alive.
+    // SAFETY: `rcv` is a local that outlives this call and is unmoved; both emits have returned
+    // and `Receiver` has no event handler, so no callback of it runs.
     unsafe { unregister_qobject(id) };
 }
 

@@ -18,7 +18,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Node` holds nothing but its `ObjectData`.
+    // SAFETY: `Node` holds an `ObjectData` and a `Vec<String>`, both `Send`; no `Rc`, no `Cell`
+    // shared with a handle left behind, no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -29,8 +30,10 @@ struct Node {
 
 impl Node {
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: the returned owner is a test local on this thread, used only through
+        // `with`/`with_mut`/`object_id` and dropped by the test; where a callback drops another
+        // owner (`Reactor`), `OwnedObject::drop` parks the allocation until the callback returns
+        // (see `destroy_owned`), and the test touches no owner during a callback.
         unsafe {
             register_owned_qobject(Self {
                 data: movable_data(ObjectId::next()),
@@ -182,7 +185,10 @@ struct Reactor {
 
 impl Reactor {
     fn registered(victim: Rc<RefCell<Option<OwnedObject<Node>>>>) -> OwnedObject<Self> {
-        // SAFETY: as in `Node::registered`.
+        // SAFETY: the returned owner is a test local on this thread, handed to the caller; its
+        // callback (`dispatch_to_object`) runs while the caller holds no reference to it, and
+        // dropping its victim inside that callback is the case `OwnedObject::drop` parks (see
+        // `destroy_owned`).
         unsafe {
             register_owned_qobject(Self {
                 data: ObjectData::new(ObjectId::next()),
@@ -294,7 +300,9 @@ impl QObject for Adopter {
 #[test]
 fn a_child_attached_while_its_parent_was_borrowed_goes_with_the_parent() {
     let adopted = Rc::new(RefCell::new(Node::registered()));
-    // SAFETY: as in `Node::registered`.
+    // SAFETY: the returned owner is a test local on this thread; the `Adopter`'s callback runs
+    // from `dispatch_to_object` and uses only ids and the `adopted` handle, while the test does
+    // not touch the parent. The owner is dropped by the test after the dispatch returned.
     let parent = unsafe {
         register_owned_qobject(Adopter {
             data: ObjectData::new(ObjectId::next()),
@@ -333,7 +341,9 @@ fn unregistering_a_parent_ends_its_children_links_like_dropping_it() {
     reparent(&mut child, Some(parent_id)).unwrap();
     assert_eq!(parent_of(&child), Some(parent_id));
 
-    // SAFETY: no callback is active on this thread.
+    // SAFETY: `parent` (the owner) is alive and unmoved until the end of the test, so the memory
+    // stays valid; no callback of it is active (`dispatch_to_object` returned long before and no
+    // loop runs), and this is its registration thread.
     unsafe { unregister_qobject(parent_id) };
 
     assert_eq!(parent_of(&child), None);

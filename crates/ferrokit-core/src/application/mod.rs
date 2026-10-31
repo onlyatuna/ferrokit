@@ -530,7 +530,10 @@ impl Drop for CoreApplication {
         *APP_THREAD.write().unwrap() = None;
         IN_EXEC.store(false, Ordering::SeqCst);
         ABOUT_TO_QUIT_EMITTED.store(false, Ordering::SeqCst);
-        // SAFETY: Drop is on the application object's owning thread after dispatch ends.
+        // SAFETY: `unregister_qobject` is memory-neutral per its documentation: it works from the
+        // registry and thread records for `self.data.id()`, which is all `Drop` needs here, and
+        // `&mut self` means no callback of the application runs. It must run on the registration
+        // thread, the thread that built the application; nothing in the type enforces that [inferred].
         unsafe { unregister_qobject(self.data.id()) };
         let _ = LOCAL_EVENT_LOOP.try_with(|el| {
             *el.borrow_mut() = None;

@@ -11,7 +11,8 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Counter` holds plain fields only.
+    // SAFETY: `Counter` holds an `ObjectData` and a `u32`: both `Send`, with no `Rc`, no `Cell`
+    // shared with a handle left behind, and no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -74,7 +75,9 @@ fn the_owner_has_no_deref() {
 /// reference stays the only one.
 #[test]
 fn the_owner_is_refused_inside_a_callback_of_its_object() {
-    // SAFETY: the owner is used only through `with` and `with_mut`.
+    // SAFETY: the owner is a local on this thread, used only through `with`/`with_mut`/
+    // `is_borrowed`, which take or read the callback-borrow flag. The callback (`with_object_mut`)
+    // holds that flag, so the owner's calls inside it are refused without touching the object.
     let mut owner = unsafe { register_owned_qobject(Counter::new()) };
     let id = OwnedObject::object_id(&owner);
     let ran = with_object_mut(id, |obj| {
@@ -102,7 +105,9 @@ fn the_owner_is_refused_inside_a_callback_of_its_object() {
 /// Positive control: the owner between callbacks, and callbacks between uses of the owner.
 #[test]
 fn the_owner_between_callbacks_reads_and_writes() {
-    // SAFETY: the owner is used only through `with` and `with_mut`.
+    // SAFETY: the owner is a local on this thread, used only through `with`/`with_mut`, which take
+    // the callback-borrow flag; each `with_object_mut` here is a registry callback that runs to
+    // completion before the next owner access, so none overlap.
     let mut owner = unsafe { register_owned_qobject(Counter::new()) };
     let id = OwnedObject::object_id(&owner);
     assert_eq!(owner.with_mut(|c| c.hits += 1), Some(()));
@@ -115,7 +120,9 @@ fn the_owner_between_callbacks_reads_and_writes() {
 /// A callback cannot start while the owner's closure runs, and the borrow ends with the closure.
 #[test]
 fn a_callback_is_refused_while_the_owner_has_the_object() {
-    // SAFETY: the owner is used only through `with` and `with_mut`.
+    // SAFETY: the owner is a local on this thread, used only through `with`/`with_mut`, which
+    // take the callback-borrow flag; the test's `with_object*` calls are the callbacks and they
+    // overlap an owner closure only to be refused.
     let mut owner = unsafe { register_owned_qobject(Counter::new()) };
     let id = OwnedObject::object_id(&owner);
     let outcome = owner.with_mut(|c| {
@@ -138,7 +145,9 @@ fn a_callback_is_refused_while_the_owner_has_the_object() {
 /// Nested access of the same owner is refused, not aliased.
 #[test]
 fn nested_access_of_one_object_is_refused() {
-    // SAFETY: the owner is used only through `with`.
+    // SAFETY: the owner is a local on this thread used only through `with`; the nested `with` is
+    // refused by the borrow flag instead of aliasing, which is what the test checks. No callback
+    // of the object runs.
     let owner = unsafe { register_owned_qobject(Counter::new()) };
     let outer = owner.with(|_| owner.with(|c| c.hits));
     assert_eq!(outer, Some(None));
@@ -163,7 +172,10 @@ fn the_owner_is_refused_while_its_object_is_registered_on_another_thread() {
 
     let here = ThreadId::current();
     let _el = EventLoop::new();
-    // SAFETY: the owner is used only through `with` and `with_mut`.
+    // SAFETY: the owner is a local on this thread, used only through `with`/`with_mut`, which
+    // refuse on another thread. The object moves with `move_to_thread_by_id` (opt-in in
+    // `movable_data`); the owner is dropped on this thread at the end, after the object is back
+    // here, so `OwnedObject::drop` destroys it in place. No callback runs in between.
     let mut owner = unsafe { register_owned_qobject(Counter::new()) };
     let id = OwnedObject::object_id(&owner);
     assert_eq!(owner.with_mut(|c| c.hits += 1), Some(()));
@@ -218,7 +230,9 @@ fn nested_access_of_an_unregistered_owner_is_refused() {
 fn a_panic_in_the_closure_releases_the_borrow() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    // SAFETY: the owner is used only through `with` and `with_mut`.
+    // SAFETY: the returned owner is a local on this thread, used only through `with`/`with_mut`
+    // (which take the borrow flag, and release it on panic, as the test checks); no event loop
+    // runs, so the registry delivers no callback except the explicit `with_object` below.
     let mut registered = unsafe { register_owned_qobject(Counter::new()) };
     let id = OwnedObject::object_id(&registered);
     let outcome = catch_unwind(AssertUnwindSafe(|| {

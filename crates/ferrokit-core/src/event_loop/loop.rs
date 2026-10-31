@@ -1792,7 +1792,9 @@ mod tests {
         let q_clone = Arc::clone(event_loop.queue());
 
         let mut widget = LivelockWidget::new(ObjectId::next(), q_clone);
-        // SAFETY: this test keeps the widget on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         {
@@ -1813,7 +1815,8 @@ mod tests {
         assert_eq!(widget.call_count, 2);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 1);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: both `send_posted_events` calls have returned, so no callback of `widget` runs;
+        // `widget` is still alive and this is the registration thread.
         unsafe { unregister_qobject(widget.object_data().id()) };
     }
 
@@ -1854,7 +1857,9 @@ mod tests {
         let q_clone = Arc::clone(event_loop.queue());
 
         let mut widget = ReentrantWidget::new(ObjectId::next(), q_clone);
-        // SAFETY: this test keeps the widget on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         event_loop.post_event(
@@ -1867,7 +1872,8 @@ mod tests {
         assert!(widget.received);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 1);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `send_posted_events` has returned, so no callback of `widget` runs; `widget` is
+        // still alive and this is the registration thread.
         unsafe { unregister_qobject(widget.object_data().id()) };
     }
 
@@ -1906,7 +1912,9 @@ mod tests {
 
         let event_loop = EventLoop::new();
         let mut widget = DeleteWidget::new(ObjectId::next());
-        // SAFETY: this test keeps the widget on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the end of the test, the pointer comes from `&raw mut`, the variable is only
+        // read or used through `&self` afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         // delete_later stamps (loop 1, scope 0), promoted to scope 1 (qobject.cpp:2558-2559).
@@ -1925,7 +1933,9 @@ mod tests {
         assert_eq!(event_loop.queue().lock().unwrap().len(), 0);
         ThreadContext::set_current_loop_level(0);
 
-        // SAFETY: the deferred-delete callback has returned.
+        // SAFETY: `process_events` has returned, so no callback of `widget` runs; the delivered
+        // `DeferredDelete` already unregistered it (`destroy_deferred`), so this finds no record
+        // and is a no-op; `widget` is still alive on the registration thread.
         unsafe { unregister_qobject(widget.object_data().id()) };
     }
 
@@ -1991,7 +2001,9 @@ mod tests {
             call_count: 0,
             received_quit: false,
         };
-        // SAFETY: this test keeps the widget on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         event_loop.post_event(
@@ -2009,7 +2021,8 @@ mod tests {
         assert!(widget.received_quit);
         assert_eq!(event_loop.loop_level(), 0);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `exec` has returned, so no callback of `widget` runs; `widget` is still alive
+        // and this is the registration thread.
         unsafe { unregister_qobject(widget.object_data().id()) };
     }
 
@@ -2069,7 +2082,9 @@ mod tests {
 
         let event_loop = EventLoop::new();
         let mut mock = MockObject::new(ObjectId::next());
-        // SAFETY: this test keeps the object on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `mock` is a local that stays unmoved until
+        // the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the variable is
+        // only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut mock)) };
 
         event_loop.post_event(
@@ -2083,7 +2098,8 @@ mod tests {
         assert_eq!(mock.counter, 1);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 0);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `process_events` has returned, so no callback of `mock` runs; `mock` is still
+        // alive and this is the registration thread.
         unsafe { unregister_qobject(mock.object_data().id()) };
     }
 
@@ -2124,7 +2140,9 @@ mod tests {
         let handle = event_loop.handle();
 
         let mut relay = RelayObject::new(ObjectId::next(), handle);
-        // SAFETY: this test keeps the relay on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `relay` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
 
         event_loop.post_event(
@@ -2138,7 +2156,8 @@ mod tests {
         assert_eq!(relay.call_count, 1);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 1);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `process_events` has returned, so no callback of `relay` runs; `relay` is still
+        // alive and this is the registration thread.
         unsafe { unregister_qobject(relay.object_data().id()) };
     }
 
@@ -2177,7 +2196,9 @@ mod tests {
 
         let event_loop = EventLoop::new();
         let mut widget = PaintWidget::new(ObjectId::next());
-        // SAFETY: this test keeps the widget on this thread and alive through unregister.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read afterwards, and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         let id = widget.object_data().id();
@@ -2193,7 +2214,8 @@ mod tests {
         assert_eq!(widget.paint_count, 1);
         assert_eq!(event_loop.queue().lock().unwrap().len(), 0);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `process_events` has returned, so no callback of `widget` runs; `widget` is
+        // still alive and this is the registration thread.
         unsafe { unregister_qobject(id) };
     }
 
@@ -2233,8 +2255,10 @@ mod tests {
         let event_loop = EventLoop::new();
         let handle = event_loop.handle();
         let mut widget = WakeupWidget::new(ObjectId::next());
-        // SAFETY: this test keeps the widget alive but event is posted cross-thread.
-        // QObject callback dispatch remains on this registration thread.
+        // SAFETY: per `register_qobject_ptr`'s contract: `widget` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, and no
+        // callback runs yet. The spawned thread only posts through `handle`; callbacks are
+        // dispatched by `exec` on this thread, the registration thread.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
         let id = widget.object_data().id();
@@ -2254,7 +2278,8 @@ mod tests {
         assert!(elapsed >= Duration::from_millis(15));
         assert_eq!(event_loop.loop_level(), 0);
 
-        // SAFETY: the event loop has finished all callbacks for this test object.
+        // SAFETY: `exec` has returned, so no callback of `widget` runs; `widget` is still alive
+        // and this is the registration thread.
         unsafe { unregister_qobject(id) };
     }
 
@@ -2347,8 +2372,9 @@ mod tests {
         // variable after that would invalidate it.
         target.object_data_mut().install_event_filter(obj_filter_id);
         let app_filter_ptr = &raw mut app_filter;
-        // SAFETY: the three objects stay on this thread, unmoved and alive, until unregistered
-        // below; the variables are not written to after this, only `app_filter_ptr` is.
+        // SAFETY: per `register_qobject_ptr`'s contract: the three locals stay on this thread,
+        // unmoved, until unregistered below; the pointers come from `&raw mut`, the variables are
+        // not written to after this (only `app_filter_ptr` is), and no callback runs yet.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(app_filter_ptr));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
@@ -2370,7 +2396,9 @@ mod tests {
         assert!(handled2);
         assert_eq!(*trace.lock().unwrap(), vec!["app_filter", "target_event"]);
 
-        // SAFETY: no callback is active, and `app_filter_ptr` is the pointer that was registered.
+        // SAFETY: `app_filter_ptr` is the `&raw mut` pointer that was registered for `app_filter`
+        // (a live local), so writing through it keeps the registry's pointer valid; no callback of
+        // the filter runs because the previous `send_event` has returned.
         unsafe { (*app_filter_ptr).intercept = true };
         trace.lock().unwrap().clear();
         let mut event3 = Event::new(EventKind::UpdateRequest);
@@ -2379,7 +2407,8 @@ mod tests {
         assert_eq!(*trace.lock().unwrap(), vec!["app_filter"]);
 
         clear_application_event_filters();
-        // SAFETY: the event-loop callback has returned and these registrations are owner-thread.
+        // SAFETY: the last `send_event` has returned, so no callback runs; the three locals are
+        // still alive and this is the registration thread.
         unsafe {
             unregister_qobject(app_filter_id);
             unregister_qobject(obj_filter_id);
@@ -2473,8 +2502,9 @@ mod tests {
                 obj.object_data_mut().remove_event_filter(later_id);
             });
         }));
-        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
-        // variables are not used again.
+        // SAFETY: per `register_qobject_ptr`'s contract: the three locals stay unmoved until
+        // unregistered below, pointers come from `&raw mut`, the variables are not used again
+        // (the `install_event_filter` calls ran before this), and no callback runs yet.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
@@ -2485,7 +2515,8 @@ mod tests {
         assert!(send_event(target_id, &mut event));
         assert_eq!(*trace.lock().unwrap(), vec!["earlier", "target"]);
 
-        // SAFETY: the dispatch above has returned; no callback is active.
+        // SAFETY: `send_event` has returned, so no callback runs; the three locals are still alive
+        // and this is the registration thread.
         unsafe {
             unregister_qobject(target_id);
             unregister_qobject(earlier_id);
@@ -2509,8 +2540,9 @@ mod tests {
         earlier.on_event = Some(Box::new(move |_: ObjectId, _: ObjectId| {
             remove_application_event_filter(later_id);
         }));
-        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
-        // variables are not used again.
+        // SAFETY: per `register_qobject_ptr`'s contract: the three locals stay unmoved until
+        // unregistered below, pointers come from `&raw mut`, the variables are not used again, and
+        // no callback runs yet (nothing is dispatched before `send_event`).
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut earlier));
@@ -2524,7 +2556,8 @@ mod tests {
         assert_eq!(*trace.lock().unwrap(), vec!["earlier", "target"]);
 
         clear_application_event_filters();
-        // SAFETY: the dispatch above has returned; no callback is active.
+        // SAFETY: `send_event` has returned, so no callback runs; the three locals are still alive
+        // and this is the registration thread.
         unsafe {
             unregister_qobject(target_id);
             unregister_qobject(earlier_id);
@@ -2557,8 +2590,9 @@ mod tests {
                 });
             }
         }));
-        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
-        // variables are not used again.
+        // SAFETY: per `register_qobject_ptr`'s contract: the three locals stay unmoved until
+        // unregistered below, pointers come from `&raw mut`, the variables are not used again
+        // (`install_event_filter` ran before this), and no callback runs yet.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
@@ -2574,7 +2608,8 @@ mod tests {
         assert!(send_event(target_id, &mut next_event));
         assert_eq!(*trace.lock().unwrap(), vec!["added", "first", "target"]);
 
-        // SAFETY: the dispatches above have returned; no callback is active.
+        // SAFETY: both `send_event` calls have returned, so no callback runs; the three locals are
+        // still alive and this is the registration thread.
         unsafe {
             unregister_qobject(target_id);
             unregister_qobject(first_id);
@@ -2603,8 +2638,9 @@ mod tests {
                 install_application_event_filter(added_id);
             }
         }));
-        // SAFETY: all three stay on this thread and unmoved until unregistered below, and the
-        // variables are not used again.
+        // SAFETY: per `register_qobject_ptr`'s contract: the three locals stay unmoved until
+        // unregistered below, pointers come from `&raw mut`, the variables are not used again, and
+        // no callback runs yet (nothing is dispatched before `send_event`).
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut first));
@@ -2622,7 +2658,8 @@ mod tests {
         assert_eq!(*trace.lock().unwrap(), vec!["added", "first", "target"]);
 
         clear_application_event_filters();
-        // SAFETY: the dispatches above have returned; no callback is active.
+        // SAFETY: both `send_event` calls have returned, so no callback runs; the three locals are
+        // still alive and this is the registration thread.
         unsafe {
             unregister_qobject(target_id);
             unregister_qobject(first_id);
@@ -2656,7 +2693,9 @@ mod tests {
 
         let event_loop = EventLoop::new();
         let mut target = MockTarget::new(ObjectId::next());
-        // SAFETY: target stays on this thread and alive until the test ends.
+        // SAFETY: per `register_qobject_ptr`'s contract: `target` is a local that stays unmoved
+        // until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the variable
+        // is only read afterwards (`object_data().id()`) and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut target)) };
 
         let id = target.object_data().id();
@@ -2674,7 +2713,8 @@ mod tests {
 
         assert_eq!(event_loop.queue().lock().unwrap().len(), 2);
 
-        // SAFETY: no callback is active and this runs on the registration thread.
+        // SAFETY: nothing was dispatched, so no callback of `target` runs; `target` is still alive
+        // and this is the registration thread.
         unsafe { unregister_qobject(id) };
     }
 
@@ -2719,7 +2759,9 @@ mod tests {
             order: Arc::clone(&execution_order),
             loop_handle: event_loop.handle(),
         };
-        // SAFETY: relay stays on this thread and alive until the test ends.
+        // SAFETY: per `register_qobject_ptr`'s contract: `relay` is a local that stays unmoved until
+        // the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the variable is
+        // only read afterwards (`data.id()`) and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
         let id = relay.data.id();
 
@@ -2748,7 +2790,8 @@ mod tests {
             vec!["initial_event_1", "initial_event_2", "high_priority_event"]
         );
 
-        // SAFETY: no callback is active and this runs on the registration thread.
+        // SAFETY: both `send_posted_events` calls have returned, so no callback of `relay` runs;
+        // `relay` is still alive and this is the registration thread.
         unsafe { unregister_qobject(id) };
     }
 
@@ -2801,7 +2844,9 @@ mod tests {
             order: Arc::clone(&execution_order),
             loop_handle: event_loop.handle(),
         };
-        // SAFETY: relay stays on this thread and alive until the test ends.
+        // SAFETY: per `register_qobject_ptr`'s contract: `relay` is a local that stays unmoved until
+        // the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the variable is
+        // only read afterwards (`data.id()`) and no callback runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut relay)) };
         let id = relay.data.id();
 
@@ -2826,7 +2871,8 @@ mod tests {
             vec!["A", "B", "Y", "X", "H", "L", "M"]
         );
 
-        // SAFETY: no callback is active and this runs on the registration thread.
+        // SAFETY: the last `send_posted_events` has returned, so no callback of `relay` runs;
+        // `relay` is still alive and this is the registration thread.
         unsafe { unregister_qobject(id) };
     }
     #[test]
@@ -3029,7 +3075,9 @@ mod tests {
         let mut target = Target(ObjectData::new(ObjectId::next()));
         let target_id = target.0.id();
         target.0.install_event_filter(filter_id);
-        // SAFETY: both objects stay on this thread, unmoved, until unregistered below.
+        // SAFETY: per `register_qobject_ptr`'s contract: both are locals that stay unmoved until
+        // unregistered below, pointers come from `&raw mut`, `install_event_filter` ran before this
+        // (no write through the variables afterwards) and no callback runs yet.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut target));
@@ -3046,7 +3094,8 @@ mod tests {
             crate::object::qobject::registration_thread_of(target_id).is_some(),
             "a consumed DeferredDelete must not destroy the object"
         );
-        // SAFETY: registered above, unregistered once.
+        // SAFETY: `process_events` has returned, so no callback runs; this is the registration
+        // thread and `filter` and `target` are still alive locals.
         unsafe {
             crate::object::unregister_qobject(target_id);
             crate::object::unregister_qobject(filter_id);
@@ -3111,7 +3160,10 @@ mod tests {
         let mut outer = Plain(ObjectData::new(ObjectId::next()));
         let outer_id = outer.0.id();
         outer.0.install_event_filter(nester_id);
-        // SAFETY: the objects stay on this thread, unmoved, until unregistered below.
+        // SAFETY: per `register_qobject_ptr`'s contract: all four are locals of this test that stay
+        // unmoved until unregistered below, pointers come from `&raw mut`, they are only read
+        // through the variables afterwards (`install_event_filter` ran before this), and no
+        // callback runs yet.
         unsafe {
             register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
             register_qobject_ptr(NonNull::new_unchecked(&raw mut shielded));
@@ -3130,7 +3182,9 @@ mod tests {
             crate::object::qobject::registration_thread_of(outer_id).is_none(),
             "the outer object must be destroyed"
         );
-        // SAFETY: registered above, unregistered once.
+        // SAFETY: the `send_posted_events` pump has returned, so no callback runs; this is the
+        // registration thread and the locals are still alive. `outer` was already unregistered by
+        // its delivered `DeferredDelete`; unregistering an id twice is a no-op on the registry.
         unsafe {
             crate::object::unregister_qobject(shielded_id);
             crate::object::unregister_qobject(nester_id);
@@ -3170,8 +3224,10 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
             deleted: Arc::clone(&deleted),
         };
-        // SAFETY: the object stays on this thread and alive until the pump unregisters it after
-        // delivering its deferred delete.
+        // SAFETY: per `register_qobject_ptr`'s contract: `object` is a local that stays unmoved
+        // until the test ends, the pointer comes from `&raw mut`, it is only read through the
+        // variable afterwards, and no callback runs yet. The delivered `DeferredDelete` unregisters
+        // it (`destroy_deferred`), which is memory-neutral.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut object)) };
         let object_addr = &object as *const Deletable as usize;
 
@@ -3180,7 +3236,9 @@ mod tests {
             let deleted = Arc::clone(&deleted);
             let deleted_during_nested = Arc::clone(&deleted_during_nested);
             post_current(meta_call(move || {
-                // SAFETY: `object` is alive and not moved while this test's event pumps run.
+                // SAFETY: `object` is a local of the test that outlives every pump below and is not
+                // moved; the pump unregisters it but never frees it. The closure is a posted
+                // meta-call, not a callback of `object`, and only calls `delete_later(&self)`.
                 let object = unsafe { &*(object_addr as *const Deletable) };
                 // Requested inside a handler: stamped at loop level 1, scope level 1 (qobject.cpp:2558-2559).
                 object.delete_later();
@@ -3235,8 +3293,12 @@ mod tests {
             fn event(&mut self, event: &mut Event) -> bool {
                 match event.kind {
                     EventKind::MouseButtonPress { .. } => {
-                        // SAFETY: the victim is boxed in the test and alive until the test ends;
-                        // only the outer delivery unregisters it.
+                        // SAFETY: `victim_data` is the address of the `ObjectData` inside the
+                        // victim's heap allocation (`OwnedObject`), taken in the test body. The
+                        // `victim` owner is a local that outlives `exec`, so the memory stays valid,
+                        // and `destroy_deferred` never frees an object whose owner it cannot
+                        // reach, only unregisters it. `delete_later` takes `&ObjectData`, and no
+                        // callback of the victim runs during this driver callback.
                         let victim = unsafe { &*(self.victim_data as *const ObjectData) };
                         victim.delete_later();
                         let handle =
@@ -3271,14 +3333,17 @@ mod tests {
         let survived_nested = Arc::new(Mutex::new(None));
         let deleted_by_outer = Arc::new(Mutex::new(None));
         let el = EventLoop::new();
-        // SAFETY: the owner stays on this thread and alive for the whole test.
+        // SAFETY: per `register_owned_qobject`'s contract: no callback of the new object runs
+        // (nothing is dispatched before `exec`), and the owner is used and dropped only on this
+        // test's thread, after `exec` has returned.
         let victim = unsafe {
             register_owned_qobject(Victim {
                 data: ObjectData::new(ObjectId::next()),
             })
         };
         let victim_id = crate::object::OwnedObject::object_id(&victim);
-        // SAFETY: as above.
+        // SAFETY: same as for `victim`: `driver` is used only on this thread and dropped at the end
+        // of the test, and `victim.with` above runs between callbacks (nothing is dispatched yet).
         let driver = unsafe {
             register_owned_qobject(Driver {
                 data: ObjectData::new(ObjectId::next()),
@@ -3312,7 +3377,8 @@ mod tests {
             Some(true),
             "delete_later target was not delivered by the outer loop after the handler returned"
         );
-        // SAFETY: the driver is no longer delivered to once exec has returned.
+        // SAFETY: `exec` has returned, so no callback of the driver runs, and this is the
+        // registration thread; the `driver` owner is still alive here, so its memory stays valid.
         unsafe { unregister_qobject(driver_id) };
     }
 
@@ -3425,7 +3491,9 @@ mod tests {
             let mut q = el.queue().lock().unwrap();
             q.insertion_offset = q.events.len();
         }
-        // SAFETY: `a` was never registered; the call only purges its posted events.
+        // SAFETY: `a` is a fresh id that was never registered, so `unregister_qobject` finds no
+        // registry record and no object memory is involved (it is memory-neutral per its
+        // documentation); it only purges the posted events queued for `a` on this thread.
         unsafe { unregister_qobject(a) };
         let q = el.queue().lock().unwrap();
         assert_eq!(q.events.len(), 2);
@@ -3442,6 +3510,9 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id();
+        // SAFETY: per `register_qobject_ptr`'s contract: `probe` is a local that stays unmoved until
+        // the `unregister_qobject` below, the pointer comes from `&raw mut`, the variable is only
+        // read (`data.id()` above) and no callback of it runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         let ran = Arc::new(AtomicBool::new(false));
         let ran_clone = Arc::clone(&ran);
@@ -3450,6 +3521,8 @@ mod tests {
             id,
             meta_call(move || ran_clone.store(true, Ordering::SeqCst)),
         );
+        // SAFETY: only a posted call is queued, nothing was dispatched, so no callback of `probe`
+        // runs; `probe` is still alive and this is the registration thread.
         unsafe { unregister_qobject(id) };
         assert_eq!(el.send_posted_events(), 0);
         assert!(
@@ -3465,9 +3538,14 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id();
+        // SAFETY: per `register_qobject_ptr`'s contract: `probe` is a local that stays unmoved until
+        // the `unregister_qobject` below, the pointer comes from `&raw mut`, the variable is only
+        // read (`data.id()` above) and no callback of it runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         post_event_to_thread(ThreadId::current(), id, meta_call(|| {}));
         assert_eq!(queued_for_current_thread(), 1);
+        // SAFETY: nothing was dispatched, so no callback of `probe` runs; `probe` is still alive and
+        // this is the registration thread.
         unsafe { unregister_qobject(id) };
         assert_eq!(queued_for_current_thread(), 0);
     }
@@ -3494,6 +3572,9 @@ mod tests {
             data: ObjectData::new(ObjectId::next()),
         };
         let id = probe.data.id();
+        // SAFETY: per `register_qobject_ptr`'s contract: `probe` is a local of this test that stays
+        // unmoved until the `unregister_qobject` at the end, the pointer comes from `&raw mut`, the
+        // variable is only read (`data.id()` above) and no callback of it runs yet.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut probe)) };
         let ran = Arc::new(AtomicBool::new(false));
         let ran_clone = Arc::clone(&ran);
@@ -3519,6 +3600,8 @@ mod tests {
             "call must be delivered once the borrow ends"
         );
         assert!(ran.load(Ordering::SeqCst));
+        // SAFETY: the `with_object_mut` closure and both `send_posted_events` calls have returned,
+        // so no callback of `probe` runs; `probe` is a live local on the registration thread.
         unsafe { unregister_qobject(id) };
     }
 

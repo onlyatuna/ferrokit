@@ -19,7 +19,9 @@ use ferrokit_core::object::{
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
-    // SAFETY: `Root` and `Leaf` hold plain fields, a `Cell<Option<ObjectId>>` and an `Arc`, which are `Send`.
+    // SAFETY: `Root` holds an `ObjectData` and a `Cell<Option<ObjectId>>`, and `Leaf` an
+    // `ObjectData` and an `Arc<AtomicUsize>`: all `Send`, and the `Cell` is not shared with any
+    // handle left behind (it is read only by `Root::event`). No `Rc`, no thread-local state.
     unsafe { ObjectData::new(id).with_thread_moves_allowed() }
 }
 
@@ -83,8 +85,10 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
     let root_id = root.data.id();
     let root_ptr = Box::into_raw(Box::new(root));
     let late_ptr = &raw mut late;
-    // SAFETY: both objects stay at these addresses until unregistered below; nothing touches them
-    // directly while a callback runs.
+    // SAFETY: `late` is a local, not moved or dropped before the unregistration below, and its
+    // pointer comes from `&raw mut`; `root_ptr` is a `Box::into_raw` allocation freed only below.
+    // Neither is touched directly afterwards (`late.data.id()` was read before registering). Their
+    // callbacks (the `ThreadChange` events) run on this thread inside `move_to_thread_by_id`.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(root_ptr));
         register_qobject_ptr(NonNull::new_unchecked(late_ptr));
@@ -105,7 +109,11 @@ fn a_child_attached_by_a_thread_change_handler_moves_with_its_parent() {
         "the attached child gets its own ThreadChange (Qt setThreadData_helper)"
     );
 
-    // SAFETY: no callback runs; the root was made by `Box::into_raw` above.
+    // SAFETY: the move finished and the target thread has already exited, so no callback of either
+    // object can run. `late` is a local still in place; `root_ptr` came from `Box::into_raw` above
+    // and is freed exactly once here, after its unregistration. Using the objects from this thread
+    // after the move is outside the "registration thread" rule only in that the target thread is
+    // gone (the join in the test orders its end before this); no timers exist for unregistration to stop.
     unsafe {
         unregister_qobject(late_id);
         unregister_qobject(root_id);
@@ -145,8 +153,10 @@ fn an_unmovable_child_attached_by_a_handler_stops_the_move() {
     let root_id = root.data.id();
     let root_ptr = Box::into_raw(Box::new(root));
     let late_ptr = &raw mut late;
-    // SAFETY: both objects stay at these addresses until unregistered below; nothing touches them
-    // directly while a callback runs.
+    // SAFETY: `late` is a local, not moved or dropped before the unregistration below, and its
+    // pointer comes from `&raw mut`; `root_ptr` is a `Box::into_raw` allocation freed only below.
+    // Neither is touched directly afterwards (`late.data.id()` was read before registering). Their
+    // callbacks (the `ThreadChange` events) run on this thread inside `move_to_thread_by_id`.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(root_ptr));
         register_qobject_ptr(NonNull::new_unchecked(late_ptr));
@@ -163,7 +173,10 @@ fn an_unmovable_child_attached_by_a_handler_stops_the_move() {
     );
     assert_eq!(query_object_thread(late_id), Some(source));
 
-    // SAFETY: no callback runs; the root was made by `Box::into_raw` above.
+    // SAFETY: no callback runs: `move_to_thread_by_id` failed before changing anything and both
+    // objects are still registered to this (the source) thread. `late` is a local still in
+    // place; `root_ptr` came from `Box::into_raw` above, is freed exactly once here, after its
+    // unregistration, and nothing else holds it.
     unsafe {
         unregister_qobject(late_id);
         unregister_qobject(root_id);

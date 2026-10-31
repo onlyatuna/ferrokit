@@ -73,7 +73,10 @@ fn spawn(mode: &str, arg: Option<&str>) -> Process {
 /// CPU time of this process in milliseconds and its voluntary context switches (Unix only).
 #[cfg(unix)]
 fn cpu() -> (f64, Option<u64>) {
-    // SAFETY: `usage` is a valid out-pointer for `getrusage`.
+    // SAFETY: `mem::zeroed::<libc::rusage>()` is valid because `rusage` is a plain C struct of
+    // integers and `timeval`s, for which all-zero is a valid value; `&mut usage` is a live local
+    // valid for the write of one `rusage`, which is what `getrusage` fills in. `RUSAGE_SELF` is a
+    // valid `who`; the return code is ignored, so on failure the zeroed values are used.
     let usage = unsafe {
         let mut usage = std::mem::zeroed::<libc::rusage>();
         libc::getrusage(libc::RUSAGE_SELF, &mut usage);
@@ -95,7 +98,10 @@ fn cpu() -> (f64, Option<u64>) {
         dwHighDateTime: 0,
     };
     let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY: the pseudo handle of the current process and four valid out-pointers.
+    // SAFETY: `GetCurrentProcess` returns the pseudo handle of the calling process, which needs no
+    // closing and is valid for `GetProcessTimes` (Win32 docs); the four `FILETIME` out-parameters
+    // are live locals, each valid for the write of one `FILETIME`. The return value is ignored,
+    // so a failure leaves the zeroed values in place.
     unsafe {
         GetProcessTimes(
             GetCurrentProcess(),

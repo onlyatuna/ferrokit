@@ -21,7 +21,8 @@ struct Pipe {
 impl Pipe {
     fn new() -> Self {
         let mut fds = [0 as c_int; 2];
-        // SAFETY: `fds` has room for the two descriptors `pipe2` returns.
+        // SAFETY: `fds` is a local `[c_int; 2]`, exactly the two-element array `pipe2` writes
+        // through the pointer; `fds` is not read before `pipe2` returns.
         let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) };
         assert_eq!(rc, 0, "pipe2 failed");
         Self {
@@ -37,7 +38,10 @@ impl Pipe {
 
 fn write_byte(fd: c_int) {
     let byte = 1u8;
-    // SAFETY: writes one byte from a live local; a full pipe (`EAGAIN`) is as good as data.
+    // SAFETY: `byte` is a live local, so the pointer is valid for the 1 byte read; `fd` is the
+    // write end of a `Pipe` that outlives every caller (the writer thread is joined before the
+    // `Pipe` drops). A full non-blocking pipe makes `write` fail with `EAGAIN`, which the result
+    // ignoring tolerates.
     unsafe {
         libc::write(fd, (&byte as *const u8).cast(), 1);
     }
@@ -45,7 +49,9 @@ fn write_byte(fd: c_int) {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        // SAFETY: both descriptors are owned by this value.
+        // SAFETY: `read` and `write` are the descriptors `pipe2` returned in `Pipe::new`; this
+        // value is their only owner (the writer thread of the test only holds a copy of the number
+        // and is joined before the `Pipe` is dropped), and `drop` runs once, so each is closed once.
         unsafe {
             libc::close(self.read);
             libc::close(self.write);

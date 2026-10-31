@@ -134,6 +134,11 @@ impl StorageInfo {
             wide.push(0);
         }
 
+        // SAFETY: `wide` is NUL-terminated (a terminator is pushed above if missing) and
+        // outlives every call. The out-pointers (`free_avail`, `total`, `free_total`, `flags`)
+        // are live locals; `volume_name` and `fs_name` are local `[u16; 260]` buffers and the
+        // sizes passed are their exact lengths. The two optional out-parameters (serial number,
+        // max component length) are null, which `GetVolumeInformationW` documents as allowed.
         unsafe {
             let mut free_avail: u64 = 0;
             let mut total: u64 = 0;
@@ -187,6 +192,10 @@ impl StorageInfo {
         use windows_sys::Win32::Storage::FileSystem::GetLogicalDriveStringsW;
 
         let mut buffer = [0u16; 512];
+        // SAFETY: `buffer` is a live local array and `buffer.len() as u32` is exactly its
+        // length in `u16` units, which is the capacity `GetLogicalDriveStringsW` is told it
+        // may write; the call returns the needed size instead of overrunning when too small
+        // (handled by the `len` check below).
         let len = unsafe { GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr()) };
         if len == 0 || len > buffer.len() as u32 {
             return vec![Self::root()];
@@ -227,8 +236,11 @@ impl StorageInfo {
             self.is_valid = false;
             return;
         };
-        // SAFETY: `path` is NUL-terminated and `buf` is a properly sized out-parameter.
+        // SAFETY: `libc::statvfs` is a plain C struct of integer fields (no references or
+        // niches), for which all-zero bytes are a valid value.
         let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is a `CString`, so NUL-terminated and alive until after the call,
+        // and `&mut buf` points to the initialised local `statvfs` the call fills in.
         let ok = unsafe { libc::statvfs(path.as_ptr(), &mut buf) } == 0;
         self.is_ready = ok;
         self.is_valid = ok;

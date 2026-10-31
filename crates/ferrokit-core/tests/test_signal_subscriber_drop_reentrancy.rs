@@ -49,7 +49,9 @@ fn finishes(case: impl FnOnce() + Send + 'static) -> bool {
 }
 
 fn node() -> OwnedObject<Node> {
-    // SAFETY: the owner stays on this thread and no callback of the node runs.
+    // SAFETY: the returned owner is a local of the thread closure that creates it, used only
+    // through `with`/`object_id` and dropped there; `Node` has no event handler and no event is
+    // sent to it, so no callback of it runs.
     unsafe {
         register_owned_qobject(Node {
             data: ObjectData::new(ObjectId::next()),
@@ -102,7 +104,8 @@ fn unregistering_a_receiver_drops_its_subscribers_outside_the_lock() {
                 })
             })
             .unwrap();
-        // SAFETY: no callback of the receiver runs.
+        // SAFETY: `receiver` is a local owner that outlives this call, so the memory stays valid;
+        // no callback of it runs (nothing is emitted or dispatched at this point).
         unsafe { unregister_qobject(receiver_id) };
         assert_eq!(signal.subscriber_count(), 0);
     }));
@@ -126,7 +129,9 @@ fn unregistering_from_a_later_slot_of_the_emission_does_not_hang() {
             .unwrap();
         // The first subscriber has run and is no longer held by the emission when this slot
         // removes it.
-        // SAFETY: no callback of the receiver runs.
+        // SAFETY: this slot runs inside `signal.emit` on this thread, the registration thread of
+        // `receiver`, a local owner of this closure that outlives the emit, so the memory stays
+        // valid; no callback of the receiver runs (the stack holds only the emit).
         signal.connect(move |_| unsafe { unregister_qobject(receiver_id) });
         signal.emit(&());
         assert_eq!(signal.subscriber_count(), 1);

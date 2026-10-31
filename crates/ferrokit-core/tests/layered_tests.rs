@@ -126,7 +126,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
         data: ObjectData::new(id_b),
         intercept: true, // Intercept
     };
-    // SAFETY: both objects remain alive and unmoved on this thread until unregistered below.
+    // SAFETY: `filter_b_obj` is a local on this thread that is not moved or dropped before the
+    // `unregister_qobject(id_b)` at the end; the pointer comes from `&raw mut`, and the variable
+    // is not used again (rule 1/7).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter_b_obj)) };
 
     let mut target = TargetWidget {
@@ -137,7 +139,9 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     // the registry's pointer.
     target.object_data_mut().install_event_filter(id_b);
     let target_ptr = &raw mut target;
-    // SAFETY: target remains alive and unmoved on this thread until unregistered below.
+    // SAFETY: `target` is a local on this thread that is not moved or dropped before it is
+    // unregistered at the end; `target_ptr` comes from `&raw mut` so no reference is made, and the
+    // filter is installed before this call so no write through the variable follows (rule 7).
     unsafe { register_qobject_ptr(NonNull::new_unchecked(target_ptr)) };
 
     let mut ev = Event::new(EventKind::UpdateRequest);
@@ -150,11 +154,15 @@ fn test_level1_event_filter_lifo_intercept_and_tombstone() {
     assert!(!target.event_called, "Target event() must not be called");
 
     // 2.3 Tombstone test: remove_event_filter() inside filter callback should not crash iteration
-    // SAFETY: no callback of `target` runs; `target_ptr` is the registered pointer.
+    // SAFETY: `target_ptr` is the `&raw mut target` pointer that was registered, `target` is still
+    // alive and unmoved, and no callback of it runs here (`send_event` has returned), so the write
+    // through the registered pointer does not overlap a callback or invalidate it.
     unsafe { (*target_ptr).object_data_mut().remove_event_filter(id_b) };
     assert_eq!(target.object_data().event_filters().snapshot(), vec![]);
 
-    // SAFETY: the callbacks have returned and these registrations are owner-thread.
+    // SAFETY: `filter_b_obj` and `target` are locals registered on this thread above and still in
+    // place; no callback runs (`send_event` has returned), so unregistering them is not concurrent
+    // with a callback. Reading `target.data.id()` is a read through the variable, which is allowed.
     unsafe {
         unregister_qobject(id_b);
         unregister_qobject(target.data.id());
@@ -233,7 +241,10 @@ fn test_level2_loop_livelock_protection() {
         counter: Arc::clone(&counter),
         loop_handle: event_loop.handle(),
     };
-    // SAFETY: receiver remains alive and unmoved on this thread until unregistered below.
+    // SAFETY: `receiver` is a local that is not moved or dropped before the `unregister_qobject`
+    // at the end; the pointer comes from `&raw mut` (no reference is made), and the test only reads
+    // `receiver.data` through the variable between callbacks (allowed, rule 7). Callbacks run on
+    // this thread, the registration thread.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver)) };
     let r_id = receiver.data.id();
 
@@ -249,7 +260,8 @@ fn test_level2_loop_livelock_protection() {
         "Livelock cutoff must ensure only current batch is drained"
     );
 
-    // SAFETY: all event callbacks have returned on the registration thread.
+    // SAFETY: `receiver` is a local on this thread that was registered by `&raw mut` above and
+    // not moved or dropped since; `send_posted_events` has returned, so no callback of it runs.
     unsafe { unregister_qobject(r_id) };
 }
 

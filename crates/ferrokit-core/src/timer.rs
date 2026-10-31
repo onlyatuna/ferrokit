@@ -445,6 +445,9 @@ fn arm_single_shot(ctx: &ThreadTimerContext, receiver: ObjectId, interval_ms: u6
 #[cfg(windows)]
 pub(crate) fn kill_native(hwnd: HWND, id: TimerId) {
     if !precise::disarm(id) {
+        // SAFETY: `KillTimer` is given a window handle and integers only, no pointers; a `hwnd`
+        // or id that does not name a live timer (including a null or already destroyed
+        // window) makes it return 0, which is ignored.
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::KillTimer(hwnd, id.0 as usize);
         }
@@ -707,6 +710,11 @@ pub(crate) fn arm_native(hwnd: HWND, timer_id: TimerId, interval_ms: u64, timer_
     if precise::wanted(timer_type, interval_ms) && precise::arm(hwnd, timer_id, interval_ms) {
         return;
     }
+    // SAFETY: `SetTimer` is given a window handle and integers only (a `None` callback, so
+    // it posts `WM_TIMER` to that window; no pointers are passed), and its failure is
+    // reported by a 0 return that is deliberately ignored: the timer then simply never fires.
+    // Callers pass the dispatcher window of the calling thread (or null, which `SetTimer`
+    // accepts, creating a thread timer), so no handle can dangle into our memory.
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::SetTimer(
             hwnd,
@@ -1135,9 +1143,13 @@ impl Timer {
             data,
             control: Rc::clone(&control),
         };
-        // SAFETY: the owner is private to `Timer`, which is `!Send` and never forms a reference
-        // to the object. While a callback of the object runs it is not accessed or freed by the
-        // owner: dropping the owner parks the memory (`TimerRoot::drop`).
+        // SAFETY: `register_owned_qobject` boxes `core`, so the object keeps one address until
+        // the owner is dropped. The owner lives only in `TimerRoot` inside this `Timer`, which is
+        // `!Send` (so the registration thread is also where it is dropped), and `Timer` never
+        // forms a reference to the object (see the type docs). The object does not opt in to
+        // thread moves. While a callback of the object runs, `TimerRoot::drop` does not free
+        // it: it hands the owner to `destroy_when_released`, which unregisters at once and frees
+        // the memory only after the callback returns.
         let owner = unsafe { crate::object::register_owned_qobject(core) };
         Self {
             _root: TimerRoot { owner: Some(owner) },
@@ -2585,7 +2597,11 @@ mod receiver_index_tests {
         let held = Timer::new();
         let data = ObjectData::new(ObjectId::next());
         let receiver = data.id();
-        // SAFETY: the owner is used on this thread only and no callback of it runs.
+        // SAFETY: `register_owned_qobject` boxes the `TimerOwner`, so it stays at one address
+        // until `owner` is dropped (which unregisters it). The test reaches it only through
+        // `owner.with_mut`/`with`, which refuse while a callback of the object runs, never
+        // through a reference held across a call. The object's `ObjectData` does not opt in to
+        // thread moves, so every callback runs on this test thread, the registering one.
         let mut owner = unsafe { crate::object::register_owned_qobject(TimerOwner { data }) };
 
         // Killed through the id `start_timer` returned, which the re-id made stale.

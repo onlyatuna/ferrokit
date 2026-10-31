@@ -43,7 +43,10 @@ impl Owner {
 
     /// An owner that the registry knows, held by an owner of its own.
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the `OwnedObject` stays on this thread; no callback of the owner runs.
+        // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it
+        // runs. The owner is used on this thread only through `with`, which refuses during a
+        // callback, and `Owner` has no event handler of its own, so no callback touches it. Its
+        // `ObjectData` does not opt in to thread moves, so it stays on this thread.
         unsafe { register_owned_qobject(Self::new()) }
     }
 }
@@ -72,7 +75,9 @@ impl QObject for Receiver {
 }
 
 fn receiver() -> OwnedObject<Receiver> {
-    // SAFETY: the `OwnedObject` stays on this thread; no callback of the receiver runs.
+    // SAFETY: `register_owned_qobject` needs no access to the object while a callback of it runs.
+    // The owner is used on this thread only, and `Receiver` has no callbacks that touch itself.
+    // `ObjectData::with_auto_id()` does not opt in to thread moves, so the object stays here.
     unsafe {
         register_owned_qobject(Receiver {
             data: ObjectData::with_auto_id(),
@@ -259,9 +264,14 @@ fn a_queued_call_posted_while_the_owner_was_alive_is_still_delivered_after_it_is
 /// A slot that is meant to run in the middle of an emission and drop the owner it belongs to. The
 /// closure must be `Send + Sync` and holds a thread-bound value; every use is on one thread.
 struct Dropper(Rc<Cell<Option<OwnedObject<Owner>>>>);
-// SAFETY: the `Rc` is only ever created, used and dropped on the test's own thread (see the
-// type's documentation); `Send + Sync` only satisfies the bounds of the slot closure.
+// SAFETY: `Send` is only needed to satisfy the `Send + Sync + 'static` bounds of `connect`; the
+// wrapped `Rc` is created, used and dropped only on the test's own thread: the only test that
+// builds a `Dropper` calls the slot through `handle.emit` on that same thread, and the
+// `spawn`ing tests in this file never touch a `Dropper`. This is not sound for arbitrary use,
+// which is why the type is private to this file.
 unsafe impl Send for Dropper {}
+// SAFETY: `Sync` has the same premise as `Send` above: a `&Dropper` is only ever used on the
+// thread that owns it.
 unsafe impl Sync for Dropper {}
 
 impl Dropper {
@@ -362,8 +372,14 @@ fn an_emission_from_another_thread_after_the_owner_was_dropped_calls_no_slot() {
 /// the variable between callbacks.
 macro_rules! register_in_place {
     ($owner:ident) => {
-        // SAFETY: the variable stays where it is until the test ends, no callback of the object
-        // runs, and the pointer is taken without making a reference.
+        // SAFETY: `register_qobject_ptr` needs the object alive and unmoved until it is
+        // unregistered, with no direct writes through the variable invalidating the pointer
+        // before a callback. Each caller passes a local `$owner` that is not moved or dropped
+        // before the end of the test (the tests unregister it or let it live to the end), the
+        // pointer comes from `&raw mut`, so no reference is made, and this is the registering
+        // thread. No registry callback (event) reaches the object in these tests: they only emit
+        // signals, whose slots are closures, so later writes through the variable (rule 7) are
+        // never followed by a callback through the registered pointer.
         unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut $owner)) }
     };
 }
@@ -380,7 +396,10 @@ fn unregistering_an_owner_that_still_exists_silences_its_signal() {
     owner.changed.emit(&1);
     assert_eq!(n.load(Ordering::SeqCst), 1, "registered: the slot runs");
 
-    // SAFETY: no callback of the owner runs.
+    // SAFETY: `unregister_qobject` is memory-neutral (it never reads or forms a reference to the
+    // object, per its docs) and needs no callback of the object active. `owner` is a local
+    // registered by `register_in_place!`, in scope until the end of the test, on this
+    // registration thread; only signals were emitted so far, and no event was dispatched to it.
     unsafe { unregister_qobject(id) };
     owner.changed.emit(&2);
 
@@ -406,7 +425,9 @@ fn an_owner_that_was_never_registered_emits_and_unregistering_an_unknown_id_chan
     let (n, slot) = counter();
     owner.changed.connect(slot);
 
-    // SAFETY: no object has this id, so there is no callback to overlap.
+    // SAFETY: `owner` was never registered, so the registry has no record under this id and the
+    // call finds nothing to remove; it never reads or forms a reference to an object (per its
+    // docs), so there is no memory to keep valid and no callback of any object to overlap.
     unsafe { unregister_qobject(owner.data.id()) };
     owner.changed.emit(&1);
 
@@ -423,7 +444,10 @@ fn an_unregistered_object_stays_retired_when_it_is_registered_again() {
     register_in_place!(owner);
     let (n, slot) = counter();
     owner.changed.connect(slot);
-    // SAFETY: no callback of the owner runs.
+    // SAFETY: `unregister_qobject` is memory-neutral (it never reads or forms a reference to the
+    // object, per its docs) and needs no callback of the object active. `owner` is a local
+    // registered by `register_in_place!`, in scope until the end of the test, on this
+    // registration thread; nothing here dispatches an event to it.
     unsafe { unregister_qobject(id) };
 
     register_in_place!(owner);
@@ -431,7 +455,10 @@ fn an_unregistered_object_stays_retired_when_it_is_registered_again() {
 
     assert_eq!(n.load(Ordering::SeqCst), 0);
     assert!(!owner.data.is_alive());
-    // SAFETY: no callback of the owner runs.
+    // SAFETY: `unregister_qobject` is memory-neutral (it never reads or forms a reference to the
+    // object, per its docs) and needs no callback of the object active. `owner` is a local in
+    // scope until the end of the test, on this registration thread, and nothing dispatches an
+    // event to it. The second call finds no record and changes nothing.
     unsafe { unregister_qobject(id) };
 }
 
@@ -444,7 +471,11 @@ fn a_slot_that_unregisters_its_owner_ends_the_emission() {
     let (later_runs, later) = counter();
     owner.changed.connect(move |value| {
         first_counter(value);
-        // SAFETY: the slot is not a callback of the owner, so no callback of it runs.
+        // SAFETY: `unregister_qobject` is memory-neutral (it never reads or forms a reference to
+        // the object, per its docs), so the `&owner.changed` that the running `emit` holds stays
+        // valid. A slot of a signal is not a registry callback of the owner, and the test never
+        // dispatches an event to `owner`, so no callback of it is active. `owner` is a local in
+        // scope until the end of the test, on this registration thread.
         unsafe { unregister_qobject(id) };
     });
     owner.changed.connect(later);
@@ -473,7 +504,10 @@ fn an_emission_started_inside_a_slot_on_an_unregistered_owner_ends_there_and_the
     register_in_place!(retired);
     let (retired_runs, slot) = counter();
     retired.changed.connect(slot);
-    // SAFETY: no callback of the owner runs.
+    // SAFETY: `unregister_qobject` is memory-neutral (it works from the registry record and never
+    // reads or forms a reference to the object, per its docs) and needs no callback of the object
+    // active. `retired` is a local registered by `register_in_place!`, in scope until the end of
+    // the test, on this registration thread; nothing here dispatches an event to it.
     unsafe { unregister_qobject(retired_id) };
 
     let (second_runs, second) = counter();
@@ -506,7 +540,10 @@ fn an_emission_from_another_thread_after_the_unregistration_calls_no_slot() {
     register_in_place!(owner);
     let (n, slot) = counter();
     owner.changed.connect(slot);
-    // SAFETY: no callback of the owner runs.
+    // SAFETY: `unregister_qobject` is memory-neutral (it works from the registry record and never
+    // reads or forms a reference to the object, per its docs) and needs no callback of the object
+    // active. `owner` is a local registered by `register_in_place!`, in scope until the end of the
+    // test, on this registration thread; nothing here dispatches an event to it.
     unsafe { unregister_qobject(id) };
 
     let handle = owner.changed.clone();

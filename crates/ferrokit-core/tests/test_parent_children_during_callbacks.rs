@@ -17,8 +17,10 @@ struct Node {
 
 impl Node {
     fn registered() -> OwnedObject<Self> {
-        // SAFETY: the owner stays on this thread and is dropped, which unregisters the object,
-        // when no callback of it runs.
+        // SAFETY: the returned owner is a test local on this thread, used only through `with` and
+        // `object_id` and dropped by the test. The `with_object_mut` callbacks in these tests
+        // are empty closures that call `set_parent_by_id` on other objects; none touches an
+        // owner.
         unsafe {
             register_owned_qobject(Self {
                 data: ObjectData::new(ObjectId::next()),

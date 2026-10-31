@@ -108,12 +108,20 @@ unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
 impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: this guard exists only while `inner` records the mutex as locked by it
+        // (set in `lock`/`try_lock`/`try_lock_until`, cleared only by `Drop`), so no other
+        // thread has access to `data`; the returned `&T` borrows `self`, which keeps the
+        // guard (and so the lock) alive, and `mutex` outlives the guard (`'a`).
         unsafe { &*self.mutex.data.get() }
     }
 }
 
 impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this guard exists only while `inner` records the mutex as locked by it
+        // (set in `lock`/`try_lock`/`try_lock_until`, cleared only by `Drop`), so no other guard
+        // exists. `&mut self` rules out another reference through this guard, hence this
+        // `&mut T` is the only live access to `data`; `mutex` outlives the guard (`'a`).
         unsafe { &mut *self.mutex.data.get() }
     }
 }
@@ -316,6 +324,11 @@ unsafe impl<T: ?Sized + Sync> Sync for RecursiveMutexGuard<'_, T> {}
 impl<T: ?Sized> Deref for RecursiveMutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
+        // SAFETY: a guard exists only while `state.owner` is this thread (set in `lock`,
+        // `try_lock` and `try_lock_until` before `new` is called, cleared by `Drop` when the
+        // count reaches 0), and the guard is `!Send`, so every guard of the lock lives on the
+        // owning thread. No `&mut T` is ever created (the guard has no `DerefMut`), so only
+        // shared references to `data` exist while any guard does; `&self` keeps `mutex` alive.
         unsafe { &*self.mutex.data.get() }
     }
 }

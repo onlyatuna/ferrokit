@@ -265,6 +265,10 @@ fn is_process_alive(pid: u32) -> bool {
         };
         const STILL_ACTIVE: u32 = 259;
 
+        // SAFETY: `OpenProcess` takes integers only. Its returned handle is checked for null
+        // (failure) before use, so `GetExitCodeProcess` receives an open process handle with
+        // the query right requested here and a pointer to the live local `exit_code`, and
+        // `CloseHandle` closes that handle exactly once on the only path that reaches it.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
@@ -283,7 +287,9 @@ fn is_process_alive(pid: u32) -> bool {
         let Ok(pid) = libc::pid_t::try_from(pid) else {
             return false;
         };
-        // SAFETY: signal 0 performs only the existence and permission check.
+        // SAFETY: `kill` takes a plain pid and a signal number and touches no memory of ours;
+        // signal 0 sends nothing and only performs the existence and permission check
+        // (per the POSIX `kill` documentation), and `pid` was range-checked into `pid_t` above.
         if unsafe { libc::kill(pid, 0) } == 0 {
             return true;
         }

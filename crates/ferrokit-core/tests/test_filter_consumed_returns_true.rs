@@ -75,6 +75,11 @@ fn application_filter_consumed_event_returns_true() {
     let mut filter = ConsumingFilter::new();
     let mut receiver = Receiver::new(Arc::clone(&reached));
 
+    // SAFETY: `filter` and `receiver` are locals that stay here, unmoved, until unregistered below.
+    // The pointers come from `&raw mut`, so no reference exists for a later callback to invalidate;
+    // the test only reads `.data.id()` of the variables afterwards, which rule 7 allows between
+    // callbacks. The callbacks run inside `send_event` on this thread, the registration thread,
+    // and the test holds no reference to either object meanwhile.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
@@ -85,6 +90,9 @@ fn application_filter_consumed_event_returns_true() {
     let handled = send_event(receiver.data.id(), &mut event);
 
     clear_application_event_filters();
+    // SAFETY: `filter` and `receiver` are locals, unmoved and undropped until after this block,
+    // which is `unregister_qobject`'s requirement on their memory. `send_event` has returned, so
+    // no callback of either object is running; no timers exist [inferred].
     unsafe {
         unregister_qobject(filter.data.id());
         unregister_qobject(receiver.data.id());
@@ -112,6 +120,12 @@ fn object_filter_consumed_event_returns_true() {
     receiver
         .object_data_mut()
         .install_event_filter(filter.data.id());
+    // SAFETY: `filter` and `receiver` are locals that stay here, unmoved, until unregistered below.
+    // The pointers come from `&raw mut`, so no reference exists for a later callback to invalidate,
+    // and after this block the test only reads `filter.data.id()` / `receiver.data.id()`, which
+    // rule 7 allows between callbacks (the filter install above ran before registration). The
+    // callbacks (`event_filter`, `event`) run inside `send_event` on this thread, which is the
+    // registration thread, and the test holds no reference to either object meanwhile.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut receiver));
@@ -120,6 +134,9 @@ fn object_filter_consumed_event_returns_true() {
     let mut event = Event::new(EventKind::UpdateRequest);
     let handled = send_event(receiver.data.id(), &mut event);
 
+    // SAFETY: `filter` and `receiver` are locals, unmoved and undropped until after this block,
+    // which is `unregister_qobject`'s requirement on their memory. `send_event` has returned, so
+    // no callback of either object is running; no timers exist [inferred].
     unsafe {
         unregister_qobject(filter.data.id());
         unregister_qobject(receiver.data.id());
