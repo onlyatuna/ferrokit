@@ -152,6 +152,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # macos-latest is arm64; lint the x86_64-only `cfg` paths (e.g. the objc_msgSend_stret
+      # sends) too. The Apple toolchain on the runner builds for both architectures.
+      - name: Clippy (x86_64-apple-darwin)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo clippy --workspace --all-targets --locked --target x86_64-apple-darwin -- -D warnings
+
   # Not in the protect-main required checks.
   fmt:
     name: Rustfmt check

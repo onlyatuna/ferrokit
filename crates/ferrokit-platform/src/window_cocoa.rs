@@ -141,9 +141,11 @@ pub struct CocoaNativeWindow {
 
 /// The `ns_window` of every live `CocoaNativeWindow`, added in `new` and removed in `Drop` before
 /// the window is released. Windows are created on the main thread (`new` asserts it) and, not
-/// being `Send`, used and dropped there. A handle handed to `set_transient_parent` is only
-/// messaged once it is found here, since any integer can be passed there. A process-wide set
-/// rather than a thread-local one, so it outlives every window, even one dropped at thread exit.
+/// being `Send`, used and dropped there. A handle handed to `set_transient_parent`, and a
+/// window's `parentWindow` or child window, is only messaged once it is found here, since any
+/// integer can be passed there and AppKit may link windows ferrokit did not make [inferred]. A
+/// process-wide set rather than a thread-local one, so it outlives every window, even one dropped
+/// at thread exit.
 static LIVE_WINDOWS: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
 
 fn live_windows() -> MutexGuard<'static, HashSet<usize>> {
@@ -822,7 +824,9 @@ impl PlatformWindow for CocoaNativeWindow {
     /// stays above it, and is hidden, miniaturized and ordered out with it (what Qt does for a
     /// popup or tool window with a transient parent). `None` detaches it. The parent is the
     /// `native_handle` of another live `CocoaNativeWindow`; any other handle is ignored, and a
-    /// window is never its own parent. Dropping either window ends the attachment.
+    /// window is never its own parent. Dropping either window ends the attachment. A parent
+    /// AppKit set itself (not a ferrokit window) is never messaged, so it is not detached; the
+    /// cycle check only covers ferrokit links.
     fn set_transient_parent(&mut self, parent: Option<isize>) {
         let me = self.ns_window;
         let wanted = parent
@@ -839,9 +843,17 @@ impl PlatformWindow for CocoaNativeWindow {
         }
         // `addChildWindow:` with a window that is already a descendant of `me` would make a
         // cycle, which AppKit may answer with an Objective-C exception [inferred]; an exception
-        // unwinding into Rust is undefined behaviour, so such a parent is refused.
+        // unwinding into Rust is undefined behaviour, so such a parent is refused. Only ferrokit
+        // links can lead back to `me`, so the walk follows live windows only and stops at the
+        // first ancestor that is not one (e.g. a parent AppKit set itself), which is never
+        // messaged. A chain of distinct live windows is at most as long as their count, which
+        // bounds the walk even if AppKit ever reported a cycle.
+        let live_count = live_windows().len();
         let mut ancestor = wanted;
-        while !ancestor.is_nil() {
+        for _ in 0..live_count {
+            if ancestor.is_nil() || !is_live_window(ancestor.0 as usize) {
+                break;
+            }
             if ancestor == me {
                 eprintln!(
                     "ferrokit: set_transient_parent: {:#x} is a transient child of this window; \
@@ -850,46 +862,59 @@ impl PlatformWindow for CocoaNativeWindow {
                 );
                 return;
             }
-            // SAFETY: `ancestor` is `wanted` (just checked live) or the `parentWindow` of a
-            // window on this chain; a parent link is only ever made by this method to a live
-            // `CocoaNativeWindow`, and a window's `Drop` detaches its children, so every link is
-            // live. `parentWindow` takes no arguments and returns an object. The chain is
-            // finite: this check keeps it free of cycles.
+            // SAFETY: `ancestor` was just found in `LIVE_WINDOWS`, so it is the `ns_window` of a
+            // live `CocoaNativeWindow` of this thread (windows leave the set before they are
+            // released). `parentWindow` takes no arguments and returns an object.
             ancestor = unsafe { ObjcMsg::send_id_prop(ancestor, Sel::register("parentWindow")) };
         }
-        // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`. `parentWindow` is nil or
-        // a window this method attached `me` to, which was a live `CocoaNativeWindow` then and
-        // still is: its `Drop` detaches every child before releasing it. `wanted` is nil or (just
-        // checked) the window of a live `CocoaNativeWindow` of this thread. `removeChildWindow:`
-        // takes one window and `addChildWindow:ordered:` a window and an `NSWindowOrderingMode`
-        // (NSInteger).
-        unsafe {
-            let current = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
-            if current == wanted {
-                return;
+        // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`; `parentWindow` takes no
+        // arguments and returns an object, which is only compared here.
+        let current = unsafe { ObjcMsg::send_id_prop(me, Sel::register("parentWindow")) };
+        if current == wanted {
+            return;
+        }
+        if !current.is_nil() {
+            if is_live_window(current.0 as usize) {
+                // SAFETY: `current` was just found in `LIVE_WINDOWS`, so it is the live window
+                // of a `CocoaNativeWindow` of this thread, and `me` is live;
+                // `removeChildWindow:` takes one window.
+                unsafe {
+                    ObjcMsg::send_id_logged(current, Sel::register("removeChildWindow:"), me)
+                };
+            } else {
+                // Not a ferrokit link, so its lifetime is not known here and it is not messaged.
+                eprintln!(
+                    "ferrokit: set_transient_parent: the current parent {:#x} is not a live \
+                     CocoaNativeWindow; it is left alone",
+                    current.0 as usize
+                );
             }
-            if !current.is_nil() {
-                ObjcMsg::send_id_logged(current, Sel::register("removeChildWindow:"), me);
-            }
-            if !wanted.is_nil() {
+        }
+        // Checked again: `removeChildWindow:` above may run AppKit callbacks [inferred].
+        if !wanted.is_nil() && is_live_window(wanted.0 as usize) {
+            // SAFETY: `wanted` was just found in `LIVE_WINDOWS`, so it is the live window of a
+            // `CocoaNativeWindow` of this thread, and `me` is live.
+            // `addChildWindow:ordered:` takes a window and an `NSWindowOrderingMode` (NSInteger).
+            unsafe {
                 ObjcMsg::send_id_int_logged(
                     wanted,
                     Sel::register("addChildWindow:ordered:"),
                     me,
                     NS_WINDOW_ABOVE,
-                );
-            }
+                )
+            };
         }
     }
 
     /// The handle of the live `CocoaNativeWindow` this window is attached to: a parent detaches
-    /// its children when it is dropped, so the handle never outlives its window.
+    /// its children when it is dropped, so the handle never outlives its window. A parent that
+    /// is not a ferrokit window (one AppKit set itself) is not reported.
     fn transient_parent(&self) -> Option<isize> {
         // SAFETY: `ns_window` is created in `new` and released only in `Drop`, so it is live;
         // `parentWindow` takes no arguments and returns an object.
         let parent =
             unsafe { ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow")) };
-        (!parent.is_nil()).then_some(parent.0 as isize)
+        (!parent.is_nil() && is_live_window(parent.0 as usize)).then_some(parent.0 as isize)
     }
 
     /// Where the input method shows its candidate window (view coordinates), and a note to the
@@ -1105,27 +1130,42 @@ impl Drop for CocoaNativeWindow {
         let me = self.ns_window;
         // No handle may name this window once it is released: it leaves the set of live
         // windows first, so `set_transient_parent` refuses it from here on.
-        let others: Vec<usize> = {
-            let mut live = live_windows();
-            live.remove(&(me.0 as usize));
-            live.iter().copied().collect()
-        };
+        live_windows().remove(&(me.0 as usize));
         // A child window is attached to its parent, which retains it and may still be alive.
-        // SAFETY: `me` is alive until the releases below; `parentWindow` is nil or the live
-        // window `set_transient_parent` attached `me` to (a parent detaches its children below
-        // before it is released); `removeChildWindow:` takes one window.
-        unsafe {
-            let parent = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
-            if !parent.is_nil() {
-                ObjcMsg::send_id_logged(parent, Sel::register("removeChildWindow:"), me);
-            }
+        // SAFETY: `me` is alive until the releases below; `parentWindow` takes no arguments and
+        // returns an object, which is only compared and looked up here.
+        let parent = unsafe { ObjcMsg::send_id_prop(me, Sel::register("parentWindow")) };
+        // A parent that is not a live ferrokit window (one AppKit set itself [inferred]) is not
+        // messaged: its lifetime is not known here.
+        if !parent.is_nil() && is_live_window(parent.0 as usize) {
+            // SAFETY: `parent` was just found in `LIVE_WINDOWS`, so it is the live window of a
+            // `CocoaNativeWindow` of this thread, and `me` is alive; `removeChildWindow:` takes
+            // one window.
+            unsafe { ObjcMsg::send_id_logged(parent, Sel::register("removeChildWindow:"), me) };
         }
         // The windows attached to this one are detached too: AppKit does not document clearing
         // a child's `parentWindow` when its parent is deallocated [inferred: unverified either
-        // way], and the children's `transient_parent`, `set_transient_parent` and `Drop` message
-        // that window.
-        for handle in others {
-            // A window dropped meanwhile (by a callback of the messages below) is skipped.
+        // way], and the children's `transient_parent`, `set_transient_parent` and `Drop` read
+        // or message that window. The handles are copied out first, so detaching cannot change
+        // the array being read.
+        // SAFETY: `me` is alive; `childWindows` takes no arguments and returns an NSArray of
+        // windows or nil (a nil array makes `count` return 0), which is autoreleased and so
+        // valid for this block, in which no pool is drained [inferred: AppKit documentation].
+        // `count` returns an NSUInteger, and `objectAtIndex:` takes one NSUInteger, called only
+        // for `index < count` so it does not raise. The items are only copied as handles.
+        let children: Vec<usize> = unsafe {
+            let array = ObjcMsg::send_id_prop(me, Sel::register("childWindows"));
+            let count = ObjcMsg::send_usize_return(array, Sel::register("count"));
+            (0..count)
+                .map(|index| {
+                    ObjcMsg::send_id_with_usize(array, Sel::register("objectAtIndex:"), index).0
+                        as usize
+                })
+                .collect()
+        };
+        for handle in children {
+            // Only ferrokit windows are detached; one dropped meanwhile (by a callback of the
+            // messages below) is skipped.
             if !is_live_window(handle) {
                 continue;
             }

@@ -464,14 +464,18 @@ mod appkit {
         class
     }
 
+    // `send` and `replace_instance_method` are safe wrappers whose soundness rests on their
+    // callers, all in this example's `macos` module (which is why they stay `pub`): `send` needs a
+    // receiver that is nil or a live object responding to the selector, and `R` must be the
+    // method's declared return type; `replace_instance_method` needs `imp` to have the C
+    // signature of the method it replaces. All of it runs on the main thread. They are not library
+    // API; making them `unsafe fn` would only move the same argument to each call site.
     pub fn send<R>(receiver: Id, selector: &str) -> R {
         // SAFETY: the `transmute` turns `objc_msgSend`'s address into a function type taking the
-        // receiver and selector and returning `R`, which is how it is called. This is sound only
-        // if `R` is the declared return type of the method and `receiver` is nil or an object
-        // that responds to it; the function is not `unsafe`, so that is a contract on its callers
-        // that the compiler does not check. The callers in this file use the scalar results of
-        // `type` (`usize`), `subtype` (`i16`), `data1` (`isize`) on a non-null `NSEvent`
-        // (`check_event_data` rejects null), and `sharedApplication` (`Id`) on `NSApplication`.
+        // receiver and selector and returning `R`, which is how it is called; the callers
+        // guarantee the contract above. They use the scalar results of `type` (`usize`),
+        // `subtype` (`i16`), `data1` (`isize`) on a non-null `NSEvent` (`check_event_data`
+        // rejects null), and `sharedApplication` (`Id`) on `NSApplication`.
         // [inferred from the AppKit headers; it cannot be run here.]
         unsafe {
             let f: extern "C" fn(Id, Sel) -> R = std::mem::transmute(objc_msgSend as *const ());
