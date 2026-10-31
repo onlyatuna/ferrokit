@@ -194,9 +194,17 @@ impl CocoaStatusItem {
             return;
         };
         // Qt observes only a status item that has an NSMenu; a menu that is not a `CocoaMenu`
-        // has none (and nil would observe every menu of the application).
-        let menu_id = crate::menu::cocoa_menu::ns_menu_of(&**menu);
+        // has none (and nil would observe every menu of the application). `set_menu` already
+        // logged such a menu as ignored (`ns_menu_of`); this logs what it costs here.
+        let handle = menu.native_handle();
+        let menu_id = crate::menu::cocoa_menu::known_ns_menu(handle);
         if menu_id.is_nil() {
+            if handle != 0 {
+                eprintln!(
+                    "ferrokit: menu handle {handle:#x} is not a CocoaMenu; opening it does not \
+                     report a tray activation"
+                );
+            }
             return;
         }
         let handlers = Rc::clone(&self.handlers);
@@ -212,7 +220,7 @@ impl CocoaStatusItem {
         // SAFETY: `center` is the shared notification centre (a nil class is a no-op);
         // `addObserver:selector:name:object:` takes (observer, selector, NSString name, object),
         // matching `send_add_observer_logged`. `target` is a live ActionTarget implementing the
-        // selector and `menu_id` is the live NSMenu of `self.menu` (`ns_menu_of`); the observer
+        // selector and `menu_id` is the live NSMenu of `self.menu` (`known_ns_menu`); the observer
         // is removed in `remove_menu_observer` before `target` is dropped, so the centre never
         // holds a freed observer. (The centre does not retain observers: documented AppKit
         // behaviour [inferred].)

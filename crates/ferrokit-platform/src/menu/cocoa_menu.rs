@@ -17,9 +17,19 @@ static NS_MENUS: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default)
 /// The `NSMenu` of `menu` if it is a [`CocoaMenu`], nil otherwise. Any code can implement
 /// `PlatformMenu`, so a `native_handle` is only sent messages (or handed to AppKit) once it is
 /// known to be one of the live menus above; anything else is treated as no menu, which is
-/// also what the default `native_handle` of 0 means.
+/// also what the default `native_handle` of 0 means. A non-zero handle that is not one is
+/// logged.
 pub(crate) fn ns_menu_of(menu: &dyn PlatformMenu) -> Id {
     let handle = menu.native_handle();
+    let ns_menu = known_ns_menu(handle);
+    if ns_menu.is_nil() && handle != 0 {
+        eprintln!("ferrokit: menu handle {handle:#x} is not a CocoaMenu; it is ignored");
+    }
+    ns_menu
+}
+
+/// [`ns_menu_of`] for a `native_handle`, without logging.
+pub(crate) fn known_ns_menu(handle: isize) -> Id {
     if handle == 0 {
         return Id::NIL;
     }
@@ -30,7 +40,6 @@ pub(crate) fn ns_menu_of(menu: &dyn PlatformMenu) -> Id {
     if known {
         Id(handle as *mut std::ffi::c_void)
     } else {
-        eprintln!("ferrokit: menu handle {handle:#x} is not a CocoaMenu; it is ignored");
         Id::NIL
     }
 }
@@ -268,6 +277,10 @@ impl PlatformMenuItem for CocoaMenuItem {
     }
 }
 
+/// An `NSMenu` and its items. The `NSMenu` (+1 from `new`) is never released, not even when the
+/// `CocoaMenu` is dropped: `NS_MENUS` is never pruned and vouches that every address in it is a
+/// live menu, which `ns_menu_of` relies on before messaging a handle. Adding a release (e.g. in
+/// a `Drop`) requires removing the address from `NS_MENUS` first, before the menu can be freed.
 pub struct CocoaMenu {
     ns_menu: Id,
     title: Mutex<String>,

@@ -162,6 +162,28 @@ fn mock_property(receiver: Id, sel: Sel) -> Option<MockValue> {
     MockObjcRuntime::instance().property(receiver, &mock_selector_name(sel))
 }
 
+/// `-[NSWindow childWindows]` as the mock keeps it: a new `NSArray` of the windows whose
+/// `parentWindow` (set by `addChildWindow:ordered:`, cleared by `removeChildWindow:`) is `parent`.
+#[cfg(not(target_os = "macos"))]
+fn mock_child_windows(parent: Id) -> Id {
+    let mut children: Vec<usize> = mock_state()
+        .properties
+        .iter()
+        .filter(|((_, selector), value)| {
+            selector == "parentWindow" && **value == MockValue::Id(parent)
+        })
+        .map(|((object, _), _)| *object)
+        .collect();
+    children.sort_unstable();
+    let runtime = MockObjcRuntime::instance();
+    let array = runtime.allocate_object("NSArray");
+    runtime.update_object(array, |data| {
+        data.children
+            .extend(children.iter().map(|&child| Id(child as *mut c_void)))
+    });
+    array
+}
+
 // ---------------------------------------------------------------------------
 // Typed messages
 // ---------------------------------------------------------------------------
@@ -404,7 +426,8 @@ impl ObjcMsg {
 
     /// `-[receiver sel]` returning an object that is state of the receiver (`-[NSWindow
     /// parentWindow]`, `-[NSEvent window]`). The mock returns the property of that name, nil if
-    /// unset (unlike `send_0`, which returns the receiver itself).
+    /// unset (unlike `send_0`, which returns the receiver itself), and for `childWindows` an
+    /// `NSArray` of the windows whose `parentWindow` is the receiver.
     ///
     /// # Safety
     /// See [`ObjcMsg`].
@@ -420,6 +443,9 @@ impl ObjcMsg {
 
         #[cfg(not(target_os = "macos"))]
         {
+            if mock_selector_name(sel) == "childWindows" {
+                return mock_child_windows(receiver);
+            }
             match mock_property(receiver, sel) {
                 Some(MockValue::Id(id)) => id,
                 _ => Id::NIL,
@@ -494,7 +520,11 @@ impl ObjcMsg {
             // The properties some of these selectors change, as the mock keeps them.
             match mock_selector_name(sel).as_str() {
                 "removeChildWindow:" => {
-                    MockObjcRuntime::instance().clear_property(arg, "parentWindow");
+                    // AppKit ignores a window that is not a child of the receiver.
+                    let mock = MockObjcRuntime::instance();
+                    if mock.property(arg, "parentWindow") == Some(MockValue::Id(receiver)) {
+                        mock.clear_property(arg, "parentWindow");
+                    }
                     return receiver;
                 }
                 // Nothing else of `send_id`'s mock applies to these selectors.
