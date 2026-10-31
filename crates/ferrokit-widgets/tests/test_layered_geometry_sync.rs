@@ -27,7 +27,11 @@ const WM_EXITSIZEMOVE: u32 = 0x0232;
 type R4 = (i32, i32, u32, u32);
 
 fn rect_of(hwnd: HWND) -> R4 {
+    // SAFETY: `RECT` consists of four `i32`, for which the all-zero bit pattern is valid.
     let mut r: RECT = unsafe { std::mem::zeroed() };
+    // SAFETY: `hwnd` is only passed to `GetWindowRect`, which fails (leaving `r` zeroed) on an
+    // invalid handle instead of writing; `&mut r` points to the live local `RECT` above, the
+    // size the API writes.
     unsafe { GetWindowRect(hwnd, &mut r) };
     (
         r.left,
@@ -72,7 +76,8 @@ fn run(frame_flags: WindowFlags, n: i32) -> Vec<Iter> {
 
     resize_trace::set_enabled(true);
     resize_trace::clear();
-    // SAFETY: valid HWND.
+    // SAFETY: `hwnd` is the handle of `win`, created above on this thread and alive until `run`
+    // returns; `WM_ENTERSIZEMOVE` takes no parameters and the call passes no pointer.
     unsafe { SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0) };
 
     let mut iters = Vec::new();
@@ -92,7 +97,10 @@ fn run(frame_flags: WindowFlags, n: i32) -> Vec<Iter> {
             (origin.2 as i32 + dw) as u32,
             (origin.3 as i32 + dh) as u32,
         );
-        // SAFETY: valid HWND owned by this thread. WM_SIZE (and the render) run inside.
+        // SAFETY: `hwnd` is the handle of `win`, alive until `run` returns and owned by this
+        // thread, so the synchronous `WM_SIZE` and render run on this thread; the call passes
+        // integers and a null "insert after" handle (allowed with `SWP_NOZORDER`), no pointer
+        // into our memory.
         let ok = unsafe {
             SetWindowPos(
                 hwnd,
@@ -138,7 +146,9 @@ fn run(frame_flags: WindowFlags, n: i32) -> Vec<Iter> {
         all.extend(entries);
         iters.push(it);
     }
-    // SAFETY: valid HWND.
+    // SAFETY: `hwnd` is the handle of `win`, which is still alive here (it is dropped when `run`
+    // returns) and was created on this thread; `WM_EXITSIZEMOVE` takes no parameters and the
+    // call passes no pointer.
     unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
     el.process_events(false);
     drop(all);

@@ -532,6 +532,8 @@ mod window_level {
     }
 
     fn visible(win: &Window) -> bool {
+        // SAFETY: `IsWindowVisible` takes only a window handle and has no out-pointer; `win` is
+        // alive here, and even a stale handle would just return 0.
         unsafe { IsWindowVisible(hwnd(win)) != 0 }
     }
 
@@ -544,6 +546,10 @@ mod window_level {
         assert!(visible(&win));
         log.borrow_mut().clear();
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_CLOSE` carries no parameters. The message is handled synchronously on this thread
+        // through thread-local registries, not through a reference into `win`; `log` was
+        // cleared above and is not borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_CLOSE, 0, 0) };
 
         assert!(!visible(&win), "an accepted close event hides the window");
@@ -557,6 +563,10 @@ mod window_level {
         let mut win = window_with_root(root);
         win.show();
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_CLOSE` carries no parameters. The message is handled synchronously on this thread
+        // through thread-local registries, not through a reference into `win`; `log` is not
+        // borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_CLOSE, 0, 0) };
 
         assert!(
@@ -587,6 +597,10 @@ mod window_level {
         });
         win.show();
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_CLOSE` carries no parameters. The message is handled synchronously on this thread
+        // through thread-local registries and the handler closure (which takes no borrow of
+        // `win`).
         unsafe { SendMessageW(hwnd(&win), WM_CLOSE, 0, 0) };
 
         assert!(visible(&win));
@@ -741,6 +755,10 @@ mod window_level {
         win.show();
         let pos = (60 & 0xffff) | ((40 & 0xffff) << 16);
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `pos` is the packed client coordinates the mouse messages expect in `lParam`, not a
+        // pointer. Both messages are handled synchronously on this thread, and the window handler
+        // only touches the `Rc` `sink`, which is not borrowed across the calls.
         unsafe {
             SendMessageW(hwnd(&win), WM_LBUTTONDBLCLK, 0, pos);
             SendMessageW(hwnd(&win), WM_LBUTTONUP, 0, pos);
@@ -769,6 +787,10 @@ mod window_level {
         win.show();
         let pos = (60 & 0xffff) | ((40 & 0xffff) << 16);
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `pos` is the packed client coordinates `WM_RBUTTONUP` expects in `lParam`, not a
+        // pointer. The message is handled synchronously on this thread, and the context-menu
+        // handler only touches the `Rc` `sink`, which is not borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_RBUTTONUP, 0, pos) };
 
         assert_eq!(
@@ -797,6 +819,10 @@ mod window_level {
         win.show();
         let pos = (60 & 0xffff) | ((40 & 0xffff) << 16);
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `pos` is the packed client coordinates `WM_RBUTTONUP` expects in `lParam`, not a
+        // pointer. The message is handled synchronously on this thread, and the context-menu
+        // handler only touches the `Rc` `sink`, which is not borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_RBUTTONUP, 0, pos) };
 
         assert_eq!(
@@ -822,6 +848,10 @@ mod window_level {
         win.show();
         let pos = (60 & 0xffff) | ((40 & 0xffff) << 16);
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `pos` is the packed client coordinates `WM_LBUTTONDBLCLK` expects in `lParam`, not a
+        // pointer. The message is handled synchronously on this thread, and the press handler only
+        // touches the `Rc` `sink`, which is not borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_LBUTTONDBLCLK, 0, pos) };
 
         assert_eq!(*pressed.borrow(), vec![Point::new(60, 40)]);
@@ -874,6 +904,10 @@ mod window_level {
         win.show();
         seen.borrow_mut().clear();
 
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_SYSCOMMAND` takes the `SC_MINIMIZE` command code and no pointer. The message is
+        // handled synchronously on this thread; the handler closure only touches the `Rc`
+        // `sink`, and `seen` is not borrowed across the call.
         unsafe { SendMessageW(hwnd(&win), WM_SYSCOMMAND, SC_MINIMIZE as usize, 0) };
         assert!(
             win.is_visible(),
@@ -886,6 +920,8 @@ mod window_level {
         );
 
         seen.borrow_mut().clear();
+        // SAFETY: as for the `SC_MINIMIZE` call above, with `SC_RESTORE`: `win` is alive on this
+        // thread, no pointer is passed, and the handler closure only touches the `Rc` `sink`.
         unsafe { SendMessageW(hwnd(&win), WM_SYSCOMMAND, SC_RESTORE as usize, 0) };
         assert!(win.is_visible());
         assert_eq!(
@@ -905,6 +941,10 @@ mod window_level {
         let mut win = window_with_root(root);
         win.show();
         let before = win.geometry();
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_SYSCOMMAND` takes the `SC_MINIMIZE` command code and no pointer. The message is
+        // handled synchronously on this thread, through thread-local registries, not through a
+        // reference into `win`.
         unsafe { SendMessageW(hwnd(&win), WM_SYSCOMMAND, SC_MINIMIZE as usize, 0) };
         let after = win.geometry();
         assert_eq!(
@@ -931,6 +971,10 @@ mod window_level {
         });
         win.show();
         moves.borrow_mut().clear();
+        // SAFETY: `hwnd(&win)` is the handle of `win`, alive and created on this thread;
+        // `WM_SYSCOMMAND` takes the `SC_MINIMIZE` command code and no pointer. The message is
+        // handled synchronously on this thread, through thread-local registries and the handler
+        // closure, not through a reference into `win`.
         unsafe { SendMessageW(hwnd(&win), WM_SYSCOMMAND, SC_MINIMIZE as usize, 0) };
         assert!(
             moves

@@ -76,7 +76,9 @@ fn pump_idle(fx: &mut Fixture) {
 
 fn native_resize(fx: &Fixture, i: i32) {
     // Each step has a distinct size, so every WM_SIZE is a real size change.
-    // SAFETY: valid HWND owned by this thread.
+    // SAFETY: `fx.hwnd` is the handle of `fx.win`, which the fixture owns and keeps alive and
+    // which was created on this thread, so the synchronous `WM_SIZE` runs on this thread; the
+    // call passes integers and a null insert-after handle, no pointer into our memory.
     let ok = unsafe {
         SetWindowPos(
             fx.hwnd,
@@ -105,7 +107,8 @@ fn drag(interactive: bool, n: i32) -> Delta {
     let cb_before = fx.callbacks.load(Ordering::SeqCst);
 
     if interactive {
-        // SAFETY: valid HWND.
+        // SAFETY: `fx.hwnd` is the handle of `fx.win`, which the fixture owns and keeps alive,
+        // created on this thread; `WM_ENTERSIZEMOVE` takes no parameters and no pointer is passed.
         unsafe { SendMessageW(fx.hwnd, WM_ENTERSIZEMOVE, 0, 0) };
     }
     for i in 1..=n {
@@ -114,7 +117,8 @@ fn drag(interactive: bool, n: i32) -> Delta {
     // The modal loop keeps pumping posted events while the drag is in progress.
     pump_idle(&mut fx);
     if interactive {
-        // SAFETY: valid HWND.
+        // SAFETY: `fx.hwnd` is the handle of `fx.win`, which the fixture owns and keeps alive,
+        // created on this thread; `WM_EXITSIZEMOVE` takes no parameters and no pointer is passed.
         unsafe { SendMessageW(fx.hwnd, WM_EXITSIZEMOVE, 0, 0) };
         pump_idle(&mut fx);
     }

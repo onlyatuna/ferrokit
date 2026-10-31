@@ -444,6 +444,11 @@ mod close_quit {
             let mut win =
                 Window::new("w", Rect::new(0, 0, 100, 100), WindowFlags::NORMAL).expect("window");
             win.show();
+            // SAFETY: `win.native_handle()` is the `HWND` of `win`, a window created and shown
+            // on this thread that is alive for the call (it is forgotten only afterwards).
+            // `SendMessageW` takes integers only (`WM_CLOSE` ignores both parameters) and runs
+            // `native_window_proc` synchronously on this thread, which reaches window state
+            // through thread-local registries, not through a pointer into `win`.
             unsafe { SendMessageW(win.native_handle() as _, WM_CLOSE, 0, 0) };
             std::mem::forget(win); // keep it alive so only the close path can end exec
         });
@@ -463,6 +468,10 @@ mod close_quit {
             let mut win =
                 Window::new("w", Rect::new(0, 0, 100, 100), WindowFlags::NORMAL).expect("window");
             win.show();
+            // SAFETY: as for the first `WM_CLOSE` test above: `win` is a live window of this
+            // thread, the call takes integers only (`WM_CLOSE` ignores both parameters), and the
+            // synchronous `native_window_proc` reaches window state through thread-local
+            // registries, not through a pointer into `win`, which is only read again afterwards.
             unsafe { SendMessageW(win.native_handle() as _, WM_CLOSE, 0, 0) };
             assert!(!win.is_visible(), "accepted close hides the window");
             std::mem::forget(win);
