@@ -334,6 +334,10 @@
       "SB": 6,
       "TB": 8
     },
+    "test_font_line_metrics_oracle": {
+      "SB": 5,
+      "TB": 5
+    },
     "test_font_memory_face_cache": {
       "SB": 1,
       "TB": 1
@@ -549,6 +553,10 @@
       "TB": 3
     },
     "test_label_focus_policy": {
+      "SB": 1,
+      "TB": 1
+    },
+    "test_label_font_metrics_oracle": {
       "SB": 1,
       "TB": 1
     },

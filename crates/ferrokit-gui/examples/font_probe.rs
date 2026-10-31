@@ -14,7 +14,7 @@
 //! Run it by hand or from a CI job on every OS.
 use ferrokit_gui::text::font::{Font, FontWeight};
 use ferrokit_gui::text::font_database::{
-    primary_face_vertical_metrics, set_application_device_pixel_ratio, with_global_font_database,
+    primary_face_metrics, set_application_device_pixel_ratio, with_global_font_database,
 };
 use ferrokit_gui::text::font_metrics::FontMetrics;
 
@@ -181,9 +181,9 @@ fn main() {
         let m = FontMetrics::from_font(&font);
         let bold = font.clone().with_weight(FontWeight::Bold);
         println!(
-            "{family:?} 14px: layout_height={} ascent/descent={:?} advance(\"SESSION 5H\")={:.3} bold={:.3}",
+            "{family:?} 14px: layout_height={} (line metrics, average char width)={:?} advance(\"SESSION 5H\")={:.3} bold={:.3}",
             FontMetrics::layout_height(&font),
-            primary_face_vertical_metrics(&font),
+            primary_face_metrics(&font),
             m.horizontal_advance_exact("SESSION 5H", &font),
             m.horizontal_advance_exact("SESSION 5H", &bold),
         );

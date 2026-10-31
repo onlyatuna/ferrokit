@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::text::font::{Font, FontStyle, SharedFontData};
-use crate::text::glyph_face::{parse_face, SharedGlyphFace};
+use crate::text::glyph_face::{parse_face, LineMetrics, SharedGlyphFace};
 use crate::text::glyph_layout::FontEngine;
 
 use rustybuzz::ttf_parser::name::Table as NameTable;
@@ -165,6 +165,17 @@ pub fn uses_directwrite_engine() -> bool {
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()
 }
 
+/// `QFontEngine::supportsSubPixelPositions` of the engine Qt lays text out with, which decides
+/// whether its line metrics stay fractional or are rounded to whole pixels
+/// ([`LineMetrics::rounded`]): DirectWrite positions glyphs at sub-pixel offsets unless it hints
+/// fully (the default at a device pixel ratio of 1, `determineHinting`, qwindowsfontenginedirectwrite.cpp:167-183;
+/// measured: 12.5 + 3.5 at 1.25, 13 + 4 with a leading of -1 at 1), CoreText always does
+/// (qfontengine_coretext_p.h:60). FreeType's depends on the hint style fontconfig reports, which is
+/// not modelled: it follows the DirectWrite rule here, as the advances do. [inferred]
+pub fn engine_has_subpixel_positions() -> bool {
+    cfg!(target_os = "macos") || uses_directwrite_engine()
+}
+
 /// Process-wide font database shared by the painter and font-selection widgets.
 static GLOBAL_FONT_DATABASE: Mutex<Option<FontDatabase>> = Mutex::new(None);
 
@@ -184,13 +195,20 @@ pub fn resolve_font_engines_global(font: &Font) -> Vec<FontEngine> {
     with_global_font_database(|db| db.resolve_font_engines(font))
 }
 
-/// Ascent and descent in pixels of the face `font` resolves to (see [`GlyphFace::vertical_metrics`]).
+/// What the primary face of `font` reports at its size: its [`LineMetrics`] and
+/// `QFontEngine::averageCharWidth` (see [`GlyphFace::line_metrics`] and
+/// [`GlyphFace::average_char_width`]). A font carrying in-memory data is measured from that data,
+/// whichever platform backend parsed it. Both are `None` when no face resolves.
 ///
-/// [`GlyphFace::vertical_metrics`]: crate::text::glyph_face::GlyphFace::vertical_metrics
-pub fn primary_face_vertical_metrics(font: &Font) -> Option<(f32, f32)> {
-    with_global_font_database(|db| {
-        db.load_font_styled(&font.family, FaceStyle::of(font))
-            .and_then(|face| face.vertical_metrics(font.size))
+/// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
+/// [`GlyphFace::average_char_width`]: crate::text::glyph_face::GlyphFace::average_char_width
+pub fn primary_face_metrics(font: &Font) -> (Option<LineMetrics>, Option<f32>) {
+    with_global_font_database(|db| match db.primary_face(font) {
+        Some(face) => (
+            face.line_metrics(font.size),
+            face.average_char_width(font.size),
+        ),
+        None => (None, None),
     })
 }
 
@@ -484,26 +502,7 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data {
-            self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
-            let key = (shared.as_slice().as_ptr() as usize, shared.len());
-            let cached = self
-                .memory_faces
-                .iter()
-                .find(|(k, _)| *k == key)
-                .and_then(|(_, f)| f.upgrade());
-            let face = match cached {
-                Some(face) => Some(face),
-                None => parse_face(shared, 0).ok().inspect(|face| {
-                    // Each parse re-registers the font with the platform rasterizer, so remember it.
-                    self.memory_faces.push((key, Arc::downgrade(face)));
-                }),
-            };
-            if let Some(face) = face {
-                self.recent_memory_faces.retain(|f| !Arc::ptr_eq(f, &face));
-                if self.recent_memory_faces.len() >= RECENT_MEMORY_FACES {
-                    self.recent_memory_faces.remove(0);
-                }
-                self.recent_memory_faces.push(face.clone());
+            if let Some(face) = self.memory_face(shared) {
                 engines.push(
                     FontEngine::new(face)
                         .with_raw_data(shared.clone())
@@ -517,6 +516,41 @@ impl FontDatabase {
             self.try_add_engine(&mut engines, &font.family, FaceStyle::of(font));
         }
         engines
+    }
+
+    /// The face built from in-memory font data, parsed once per buffer and remembered (see
+    /// `memory_faces`); `None` when the data does not parse.
+    fn memory_face(&mut self, shared: &SharedFontData) -> Option<SharedGlyphFace> {
+        self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
+        let key = (shared.as_slice().as_ptr() as usize, shared.len());
+        let cached = self
+            .memory_faces
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, f)| f.upgrade());
+        let face = match cached {
+            Some(face) => Some(face),
+            None => parse_face(shared, 0).ok().inspect(|face| {
+                // Each parse re-registers the font with the platform rasterizer, so remember it.
+                self.memory_faces.push((key, Arc::downgrade(face)));
+            }),
+        }?;
+        self.recent_memory_faces.retain(|f| !Arc::ptr_eq(f, &face));
+        if self.recent_memory_faces.len() >= RECENT_MEMORY_FACES {
+            self.recent_memory_faces.remove(0);
+        }
+        self.recent_memory_faces.push(face.clone());
+        Some(face)
+    }
+
+    /// The face of the font `font` itself asks for: its in-memory data, else the family it names.
+    fn primary_face(&mut self, font: &Font) -> Option<SharedGlyphFace> {
+        if let Some(shared) = &font.font_data {
+            if let Some(face) = self.memory_face(shared) {
+                return Some(face);
+            }
+        }
+        self.load_font_styled(&font.family, FaceStyle::of(font))
     }
 
     /// Appends the platform's fallback fonts in priority order: CJK first, then emoji/symbols.

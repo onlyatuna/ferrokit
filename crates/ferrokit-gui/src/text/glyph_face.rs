@@ -24,6 +24,33 @@ pub struct GlyphMetrics {
     pub advance_height: f32,
 }
 
+/// Ascent, descent and leading of a font engine in pixels at the requested size: Qt's
+/// `QFontEngine::ascent`, `descent` and `leading` (`m_ascent`, `m_descent`, `m_leading` of
+/// `initializeHeightMetrics`), each a 26.6 value (`QFixed::fromReal` truncates toward zero).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+    pub leading: f32,
+}
+
+impl LineMetrics {
+    /// The values an engine that does not position glyphs at sub-pixel offsets reports
+    /// (`QFontEngine::initializeHeightMetrics`, qfontengine.cpp:439-444): ascent and descent
+    /// rounded to whole pixels, the leading absorbing the rounding of the whole line height
+    /// (so it can be negative: a 12.5 + 3.5 line is 13 + 4 with a leading of -1).
+    pub fn rounded(self) -> Self {
+        let ascent = (self.ascent + 0.5).floor();
+        let descent = (self.descent + 0.5).floor();
+        let line = (self.ascent + self.descent + self.leading + 0.5).floor();
+        Self {
+            ascent,
+            descent,
+            leading: line - ascent - descent,
+        }
+    }
+}
+
 /// One face of a font as seen by the rasterizer.
 pub trait GlyphFace: Send + Sync {
     /// Glyph index for `ch`, or 0 when the face has no glyph for it.
@@ -60,10 +87,16 @@ pub trait GlyphFace: Send + Sync {
         self.metrics_indexed(self.glyph_index(ch), px)
     }
 
-    /// Unrounded `(ascent, descent)` in pixels at `px` per em, both positive, as the platform
-    /// font engine reports them (Qt's `QFontEngine::ascent` / `descent` before rounding), or
-    /// `None` when the backend has no such data.
-    fn vertical_metrics(&self, _px: f32) -> Option<(f32, f32)> {
+    /// The engine's line metrics at `px` per em as Qt's `QFontEngine` holds them after
+    /// `initializeHeightMetrics`, before the whole-pixel rounding that an engine without sub-pixel
+    /// positions applies (see [`LineMetrics`]), or `None` when the backend has no such data.
+    fn line_metrics(&self, _px: f32) -> Option<LineMetrics> {
+        None
+    }
+
+    /// `QFontEngine::averageCharWidth` at `px` per em, a 26.6 value in pixels, or `None` when the
+    /// backend has no font tables to derive it from.
+    fn average_char_width(&self, _px: f32) -> Option<f32> {
         None
     }
 

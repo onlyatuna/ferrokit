@@ -13,6 +13,10 @@ use ferrokit_widgets::{Label, Widget};
 
 /// (width, number of lines of the font's line height).
 fn hint(text: &str, word_wrap: bool) -> (i32, i32) {
+    // Qt's DirectWrite engine (any device pixel ratio but 1) gives this font 12.5 + 3.5 = 16 px
+    // lines; at a ratio of 1 its GDI-style rounding makes them 17 px with a leading of -1, which
+    // spaces the lines 16 apart (measured), so whole lines of the one-line height only hold here.
+    ferrokit_gui::text::font_database::set_application_device_pixel_ratio(1.25);
     let mut l = Label::new(text);
     l.set_font(
         Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
@@ -59,9 +63,15 @@ fn carriage_returns_size_a_label_as_qt_does() {
     }
 }
 
-/// A word-wrapped label with an empty line is a pixel short of whole lines in ferrokit, with or
-/// without carriage returns (`"a\n\nb"` too), so this case is checked unwrapped only.
+/// An empty line is a whole line in a word-wrapped label too (it was a pixel short of one when the
+/// line height was guessed).
 #[test]
 fn a_carriage_return_line_feed_pair_alone_on_a_line_is_an_empty_line() {
-    assert_eq!(hint("a\r\n\r\nb", false), (8, 3));
+    for word_wrap in [false, true] {
+        assert_eq!(
+            hint("a\r\n\r\nb", word_wrap),
+            (8, 3),
+            "word_wrap={word_wrap}"
+        );
+    }
 }

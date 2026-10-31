@@ -12,9 +12,9 @@
 //! `tests/test_outline_face_parity.rs`).
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{exceeds_glyph_budget, GlyphFace, GlyphMetrics};
+use crate::text::glyph_face::{exceeds_glyph_budget, GlyphFace, GlyphMetrics, LineMetrics};
 use ab_glyph_rasterizer::{point, Point, Rasterizer};
-use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder};
+use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder, Tag};
 
 /// A font face read straight from the font file bytes.
 pub struct OutlineFace {
@@ -51,18 +51,114 @@ impl OutlineFace {
         })
     }
 
-    /// Unrounded `(ascent, descent)` at `px`: DirectWrite's (`windows` = true) are the OS/2
-    /// typographic or Windows metrics, FreeType's are the `hhea` ones.
-    pub(crate) fn line_metrics(&self, px: f32, windows: bool) -> (f32, f32) {
-        let (asc, desc) = match self.face.tables().os2 {
-            Some(os2) if windows && os2.use_typographic_metrics() => {
-                (os2.typographic_ascender(), os2.typographic_descender())
+    /// `QFontEngine::initializeHeightMetrics` (qfontengine.cpp:419-448) from the font's own tables,
+    /// which Qt 6 uses on every platform instead of the system's values: the `hhea` ascender,
+    /// descender and line gap, replaced by the OS/2 typographic ones when `fsSelection` has
+    /// `USE_TYPO_METRICS` (bit 7) and by the OS/2 Windows ascent and descent (with no leading)
+    /// otherwise. Invalid values (both of a pair zero) leave the earlier ones. Each is
+    /// `QFixed::fromReal(value * px / unitsPerEm)`, truncated to 1/64 px. Read straight from the
+    /// table bytes, as Qt does, so the result does not depend on a platform shaper.
+    ///
+    /// A font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) keeps its platform's values in Qt;
+    /// those are the `hhea` ones here (CoreText's and FreeType's, the DirectWrite ones differ).
+    /// macOS has no override at all: CoreText reports the `hhea` values (`CTFontGetAscent`,
+    /// `CTFontGetDescent`, `CTFontGetLeading`, qfontengine_coretext.mm:401-411) unless the
+    /// application asks for `QFont::PreferTypoLineMetrics`.
+    ///
+    /// `None` when neither pair is usable.
+    pub(crate) fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
+        let raw = self.face.raw_face();
+        let upem = f64::from(self.units_per_em);
+        let px = f64::from(px);
+        // `QFixed::fromReal`: truncated toward zero to 1/64.
+        let fixed = |design: f64| ((design * px / upem) * 64.0).trunc() / 64.0;
+        // Qt gives up on values that do not fit a `QFixed` (`limitForQFixed`).
+        let limit = f64::from(i32::MAX >> 6) / px;
+        let fits = |design: i16| f64::from(design) <= limit;
+        let (mut ascent, mut descent, mut leading) = (0.0f64, 0.0f64, 0.0f64);
+
+        if let Some(hhea) = raw
+            .table(Tag::from_bytes(b"hhea"))
+            .filter(|t| t.len() >= 10)
+        {
+            let (a, d, l) = (be_i16(hhea, 4), be_i16(hhea, 6), be_i16(hhea, 8));
+            if !(a == 0 && d == 0) && fits(a) && fits(d) && fits(l) {
+                ascent = fixed(f64::from(a));
+                descent = -fixed(f64::from(d));
+                leading = fixed(f64::from(l));
             }
-            Some(os2) if windows => (os2.windows_ascender(), os2.windows_descender()),
-            _ => (self.face.ascender(), self.face.descender()),
-        };
-        let scale = px / self.units_per_em;
-        (asc as f32 * scale, (-(desc as f32)).max(0.0) * scale)
+        }
+        let bitmaps = [b"EBLC", b"CBLC", b"bdat"]
+            .iter()
+            .any(|tag| raw.table(Tag::from_bytes(tag)).is_some());
+        if !cfg!(target_os = "macos") && !bitmaps {
+            if let Some(os2) = raw
+                .table(Tag::from_bytes(b"OS/2"))
+                .filter(|t| t.len() >= 78)
+            {
+                const USE_TYPO_METRICS: u16 = 0x80;
+                if be_u16(os2, 62) & USE_TYPO_METRICS != 0 {
+                    let (a, d, l) = (be_i16(os2, 68), be_i16(os2, 70), be_i16(os2, 72));
+                    if !(a == 0 && d == 0) && fits(a) && fits(d) && fits(l) {
+                        ascent = fixed(f64::from(a));
+                        descent = -fixed(f64::from(d));
+                        leading = fixed(f64::from(l));
+                    }
+                } else {
+                    let (a, d) = (be_u16(os2, 74), be_u16(os2, 76));
+                    if !(a == 0 && d == 0) && f64::from(a) <= limit && f64::from(d) <= limit {
+                        ascent = fixed(f64::from(a));
+                        descent = fixed(f64::from(d));
+                        leading = 0.0;
+                    }
+                }
+            }
+        }
+        (ascent != 0.0 || descent != 0.0).then_some(LineMetrics {
+            ascent: ascent as f32,
+            descent: descent as f32,
+            leading: leading as f32,
+        })
+    }
+
+    /// The advance of the glyph for `x` as DirectWrite reports it (`GetDesignGlyphMetrics`), in
+    /// pixels at `px` per em converted as Qt's `DESIGN_TO_LOGICAL` does: a 26.6 value truncated
+    /// toward zero. This is `QFontEngine::averageCharWidth` for Qt's Windows engines
+    /// (`boundingBox('x').xoff`, qfontengine.cpp:246-251; measured with PySide6 6.11.2 as the
+    /// `QFontMetricsF::averageCharWidth` of every font tried, hinted and unhinted), and the
+    /// fallback of the other platforms' engines for a font with no OS/2 average width.
+    pub(crate) fn x_advance(&self, px: f32) -> Option<f32> {
+        let gid = self.face.glyph_index('x').unwrap_or(GlyphId(0));
+        let design = f64::from(self.face.glyph_hor_advance(gid)?);
+        let pixels = design / f64::from(self.units_per_em) * f64::from(px);
+        Some(((pixels * 64.0).trunc() / 64.0) as f32)
+    }
+
+    /// The OS/2 `xAvgCharWidth` at `px` per em as Qt's FreeType and CoreText engines scale it
+    /// (`QFontEngineFT::averageCharWidth`, qfontengine_ft.cpp:2167-2178;
+    /// `QCoreTextFontEngine`, qfontengine_coretext.mm:240-251, 427-430), or the advance of `x`
+    /// when the font has none. FreeType: `QFixed(xAvgCharWidth * x_ppem) / emSquareSize()`, a
+    /// 26.6 quotient rounded half up (`x_ppem` being the pixel size rounded, which FreeType
+    /// holds for the strike). CoreText: `abs(xAvgCharWidth) * pixelSize / unitsPerEm`,
+    /// truncated to 26.6 (`abs` for fonts like Lucida Grande that store a negative width).
+    fn os2_average_char_width(&self, px: f32) -> Option<f32> {
+        let raw = self.face.raw_face();
+        let avg = raw
+            .table(Tag::from_bytes(b"OS/2"))
+            .filter(|t| t.len() >= 10)
+            .map_or(0, |t| be_i16(t, 2));
+        if avg == 0 {
+            return self.x_advance(px);
+        }
+        let upem = i64::from(self.face.units_per_em());
+        if cfg!(target_os = "macos") {
+            let width = f64::from(avg.unsigned_abs());
+            return Some(((width * f64::from(px) / upem as f64 * 64.0).trunc() / 64.0) as f32);
+        }
+        // `QFixed(i) / QFixed(j)`: ((i * 64) << 6 + (j * 64) / 2) / (j * 64), in 1/64 units.
+        let ppem = f64::from(px).round() as i64;
+        let (a, b) = (i64::from(avg) * ppem * 64, upem * 64);
+        Some((((a << 6) + (b >> 1)) / b) as f32 / 64.0)
     }
 
     /// Placement of `glyph_id` at `px`, plus the sub-pixel offsets the outline is drawn with.
@@ -119,14 +215,28 @@ fn fract(x: f32) -> f32 {
     x - x.trunc()
 }
 
+/// Big-endian `i16` at `offset` of a table whose length the caller has checked.
+fn be_i16(table: &[u8], offset: usize) -> i16 {
+    i16::from_be_bytes([table[offset], table[offset + 1]])
+}
+
+/// Big-endian `u16` at `offset` of a table whose length the caller has checked.
+fn be_u16(table: &[u8], offset: usize) -> u16 {
+    u16::from_be_bytes([table[offset], table[offset + 1]])
+}
+
 impl GlyphFace for OutlineFace {
     fn glyph_index(&self, ch: char) -> u16 {
         self.face.glyph_index(ch).map_or(0, |g| g.0)
     }
 
-    /// FreeType's view: the `hhea` ascender and descender.
-    fn vertical_metrics(&self, px: f32) -> Option<(f32, f32)> {
-        Some(self.line_metrics(px, false))
+    /// FreeType's and CoreText's view: the font's own tables (see [`OutlineFace::line_metrics`]).
+    fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
+        OutlineFace::line_metrics(self, px)
+    }
+
+    fn average_char_width(&self, px: f32) -> Option<f32> {
+        self.os2_average_char_width(px)
     }
 
     fn cap_height(&self, px: f32) -> Option<f32> {
