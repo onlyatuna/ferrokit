@@ -641,9 +641,11 @@ def work_units(targets, planned, weights):
 def assign_units(seconds, count):
     """Shard index (0-based) of each unit: the units, in order, are laid end to end on a line of
     total length sum(seconds), which is cut into `count` equal parts; a unit goes to the part that
-    holds its midpoint. Every shard gets one contiguous run of units, within half the heaviest
-    unit of an even split, and a target is cut at most `count - 1` times over all shards. When
-    there are at least `count` units, no shard is left empty.
+    holds its midpoint. Every shard gets one contiguous run of units; the units whose midpoints
+    fall in a part add at most half a unit at each end, so a shard is within one heaviest unit of
+    an even split, except where the step below (no empty shard) moves a unit over when a few
+    units outweigh a part. A target is cut at most `count - 1` times over all shards. When there
+    are at least `count` units, no shard is left empty.
     """
     n = len(seconds)
     seconds = [usable_seconds(s) or 0 for s in seconds]

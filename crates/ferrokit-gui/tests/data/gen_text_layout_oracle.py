@@ -4,7 +4,8 @@
 
 The fixture is what PySide6's real QTextLayout / QTextLine measure; the file header records the
 version, platform and font engine. Run it on Windows (the DirectWrite engine the Rust side
-reproduces) with fontTools installed:
+reproduces) with fontTools installed, from cmd.exe or PowerShell 7 (the `>` of Windows
+PowerShell 5 writes UTF-16):
 
     python gen_text_layout_oracle.py > text_layout_oracle.txt
 
@@ -202,10 +203,11 @@ CURSOR_CASES = [
     ("syn_carriage_return_end", "syn", "ab\r"),
     ("arial_carriage_return", "arial", "ab\rcd"),
     ("arial_crlf", "arial", "ab\r\ncd"),
-    # ligatures: caret positions inside them (f_l has a GDEF caret, the others divide evenly)
+    # ligatures: caret positions inside them. f_l has a GDEF caret, but Qt's DirectWrite path
+    # ignores LigatureCaretByPos, so it too divides evenly
     ("syn_liga_fi", "syn", "fi"),
     ("syn_liga_ffi", "syn", "ffi"),
-    ("syn_liga_fl_caret", "syn", "afla"),
+    ("syn_liga_fl_even_split", "syn", "afla"),
     ("syn_liga_run", "syn", "off file ffi flat"),
     # combining marks: one grapheme each, zero advance
     ("syn_combining_acute", "syn", "a\u0301e\u0301b"),
