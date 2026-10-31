@@ -402,7 +402,19 @@ impl Default for ProgressBar {
 impl Drop for ProgressBar {
     fn drop(&mut self) {
         // Registry cleanup only touches thread-locals through `try_with`.
-        // SAFETY: Drop runs on the registration thread; no callbacks are active at this point.
+        // SAFETY: `unregister_qobject` needs this memory to stay valid until every running
+        // callback of the bar has returned. A bar can be dropped while one of its callbacks runs
+        // (from one of its own slots, or with its parent), and what makes that sound depends on
+        // who registered it:
+        // - an `OwnedObject` (`register_owned_qobject`, `add_owned_child`) unregisters the bar
+        //   when it is dropped and parks the allocation until the running callback returns, so
+        //   this drop runs after the callback, and `unregister_qobject` finds nothing left to do;
+        // - a bar registered with `register_qobject_ptr` (or the deprecated functions) is dropped
+        //   by an owner whose registration contract forbids dropping it during a callback of it,
+        //   on the registration thread;
+        // - a bar that was never registered has nothing to unregister.
+        // `test_progress_bar_drop_in_callback` runs the first case, and shows by a Miri control
+        // that the second must not be dropped in a callback.
         unsafe { ferrokit_core::object::unregister_qobject(self.base.object_data.id()) };
     }
 }
