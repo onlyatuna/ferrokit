@@ -56,6 +56,8 @@ mod theme_portal;
 mod thread_affinity;
 pub mod tray;
 pub mod tray_icon;
+#[cfg(windows)]
+pub(crate) mod win32_handles;
 pub mod window;
 pub mod window_cocoa;
 pub mod window_cocoa_input;
