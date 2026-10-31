@@ -774,6 +774,8 @@
     "test_text_system::test_a_paragraph_separator_is_not_wrapped_off_as_in_qt::SB": "unsupported",
     "test_text_system::test_a_paragraph_separator_is_not_wrapped_off_as_in_qt::TB": "unsupported",
     "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::SB": "unsupported",
-    "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::TB": "unsupported"
+    "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::TB": "unsupported",
+    "lib::text::glyph_layout::tests::zero_width_characters_have_no_advance_without_opentype_data::SB": "pass",
+    "lib::text::glyph_layout::tests::zero_width_characters_have_no_advance_without_opentype_data::TB": "pass"
   }
 }

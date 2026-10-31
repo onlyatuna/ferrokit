@@ -253,21 +253,9 @@ impl FontMetrics {
                 self.average_char_width * 1.05
             } else {
                 match ch {
-                    // Default ignorable characters (zero width space and joiners, direction
-                    // marks, embeddings, overrides and isolates, the Arabic letter mark, word
-                    // joiner, invisible operators, variation selectors, the soft hyphen, the byte
-                    // order mark) and the line and paragraph separators have no width in Qt in
-                    // any font (measured: `QFontMetricsF::horizontalAdvance` of each is 0, and
-                    // `"a" + c + "b"` is as wide as `"ab"`). Text made of them alone shapes to no
-                    // width and lands here.
-                    '\u{ad}'
-                    | '\u{61c}'
-                    | '\u{200b}'..='\u{200f}'
-                    | '\u{2028}'..='\u{202e}'
-                    | '\u{2060}'..='\u{2064}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{fe00}'..='\u{fe0f}'
-                    | '\u{feff}' => 0.0,
+                    // No width in Qt in any font; text made of such characters alone shapes to
+                    // no width and lands here.
+                    ch if crate::text::glyph_layout::is_zero_width(ch) => 0.0,
                     ' ' => self.average_char_width * 0.5,
                     '.' | ',' | ':' | ';' | '!' | '|' | '\'' | '`' => {
                         self.average_char_width * 0.35
@@ -490,8 +478,10 @@ mod tests {
 
     /// Default ignorable characters and the line and paragraph separators have no width in Qt
     /// (PySide6 6.11.2, oracle font and Arial: `QFontMetricsF::horizontalAdvance(c)` is 0 and
-    /// `"a" + c + "b"` is as wide as `"ab"` for every character here). Text made of them alone
-    /// shapes to no width and falls back to the heuristic, which must not give them one either.
+    /// `"a" + c + "b"` is as wide as `"ab"` for every character here), whatever glyph a fallback
+    /// font of the platform has for them. Text made of them alone shapes to no width and falls
+    /// back to the heuristic, which must not give them one either. Every failing character is
+    /// reported at once.
     #[test]
     fn zero_width_characters_have_no_width_as_in_qt() {
         let font = Font::new("FerrokitOracleText", 16.0).with_font_data(
@@ -501,24 +491,37 @@ mod tests {
         );
         let metrics = FontMetrics::from_font(&font);
         let ab = metrics.horizontal_advance_exact("ab", &font);
+        let ab_graphemes = metrics.grapheme_advances("ab", &font);
+        let mut wrong = Vec::new();
         for c in [
             '\u{2029}', '\u{2028}', '\u{61c}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
             '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{fe00}', '\u{fe0f}',
             '\u{ad}', '\u{200b}', '\u{200d}', '\u{2060}', '\u{feff}',
         ] {
             let alone = c.to_string();
-            assert_eq!(metrics.horizontal_advance(&alone, &font), 0.0, "{c:?}");
-            assert_eq!(
-                metrics.horizontal_advance_exact(&alone, &font),
-                0.0,
-                "{c:?}"
-            );
-            assert_eq!(
-                metrics.horizontal_advance_exact(&format!("a{c}b"), &font),
-                ab,
-                "{c:?}"
-            );
+            let between = format!("a{c}b");
+            let heuristic = metrics.horizontal_advance(&alone, &font);
+            let exact = metrics.horizontal_advance_exact(&alone, &font);
+            let exact_between = metrics.horizontal_advance_exact(&between, &font);
+            let graphemes = metrics.grapheme_advances(&between, &font);
+            // A joiner or variation selector extends the `a` into one grapheme.
+            let expected_graphemes = if graphemes.len() == 2 {
+                ab_graphemes.clone()
+            } else {
+                vec![ab_graphemes[0], 0.0, ab_graphemes[1]]
+            };
+            if heuristic != 0.0
+                || exact != 0.0
+                || exact_between != ab
+                || graphemes != expected_graphemes
+            {
+                wrong.push(format!(
+                    "{c:?}: heuristic {heuristic}, exact {exact}, exact a_b {exact_between} \
+                     (ab {ab}), grapheme advances {graphemes:?} (want {expected_graphemes:?})"
+                ));
+            }
         }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         assert!(metrics.horizontal_advance("a", &font) > 0.0);
     }
 

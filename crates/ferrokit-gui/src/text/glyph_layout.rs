@@ -440,6 +440,26 @@ fn qt_glyph_metrics(
     Some(metrics)
 }
 
+/// Whether `c` has no width in Qt in any font, whatever glyph a font has for it (measured with
+/// PySide6 6.11.2, oracle font and Arial: `QFontMetricsF::horizontalAdvance` of each is 0 and
+/// `"a" + c + "b"` is as wide as `"ab"`): the default ignorable characters (the soft hyphen, the
+/// Arabic letter mark, the zero width space and joiners, the direction marks, embeddings,
+/// overrides and isolates, the word joiner and invisible operators, the variation selectors, the
+/// byte order mark) and the line and paragraph separators.
+pub(crate) fn is_zero_width(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{61c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+    )
+}
+
 impl GlyphLayout {
     /// Creates an empty layout.
     pub fn empty() -> Self {
@@ -701,12 +721,20 @@ impl GlyphLayout {
         let mut last_fallback_idx = 0usize;
 
         for ch in text.chars() {
+            // A character of no width never takes a fallback font: whatever glyph one has for it
+            // is not shown (Qt gives it no advance in any font), and switching fonts would cut
+            // the run (and its kerning) around it. It stays with the font before it.
+            if is_zero_width(ch) {
+                let previous = char_engine_indices.last().map_or(0, |&(_, idx)| idx);
+                char_engine_indices.push((ch, previous));
+                continue;
+            }
             let mut resolved_idx = 0usize;
             let gid = primary.glyph_index(ch);
 
             // Qt parity: if primary engine has no glyph (0) and character is not whitespace/ignorable,
             // query fallback engines.
-            if gid == 0 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' && ch != '\u{200b}' {
+            if gid == 0 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' {
                 let mut found = false;
 
                 // Locality heuristic (Qt `lastFallback` in `stringToCMap`):
@@ -841,10 +869,18 @@ impl GlyphLayout {
                     legacy_kern.as_ref(),
                 );
 
+                // A character of no width is hidden as HarfBuzz hides default ignorables: the
+                // space glyph, no advance, whatever glyph or advance the font has for it.
+                let hidden_glyph = rb_face.glyph_index(' ').map_or(0, |g| g.0);
                 for (i, (info, pos)) in infos.iter().zip(positions.iter()).enumerate() {
+                    let hidden = text[run_offset + info.cluster as usize..]
+                        .chars()
+                        .next()
+                        .is_some_and(is_zero_width);
                     // `engine_metrics` is Qt's own advance and x offset in 26.6 pixels; without a
                     // font engine advance HarfBuzz's design values stand.
                     let (adv, x_offset) = match &engine_metrics {
+                        _ if hidden => (0.0, 0.0),
                         Some(m) => (m[i].0 as f32 / 64.0, m[i].1 as f32 / 64.0),
                         None => (
                             (pos.x_advance as f32) * scale,
@@ -865,7 +901,11 @@ impl GlyphLayout {
                         advance += spacing;
                     }
                     glyphs.push(PositionedGlyph {
-                        glyph_id: info.glyph_id as u16,
+                        glyph_id: if hidden {
+                            hidden_glyph
+                        } else {
+                            info.glyph_id as u16
+                        },
                         font_index: run.engine_index as u8,
                         x,
                         y,
@@ -888,10 +928,18 @@ impl GlyphLayout {
                     None
                 };
 
+                let hidden_glyph = engine.face.glyph_index(' ');
                 for (byte, ch) in run.text.char_indices() {
-                    let gid = engine.face.glyph_index(ch);
+                    let hidden = is_zero_width(ch);
+                    let gid = if hidden {
+                        hidden_glyph
+                    } else {
+                        engine.face.glyph_index(ch)
+                    };
                     let metrics = engine.face.metrics(ch, font.size);
-                    let adv_x = if ch.is_ascii_digit() && run.engine_index == 0 {
+                    let adv_x = if hidden {
+                        0.0
+                    } else if ch.is_ascii_digit() && run.engine_index == 0 {
                         tnum_width.unwrap_or(metrics.advance_width)
                     } else {
                         engine
@@ -937,6 +985,31 @@ mod tests {
         let data = raw.as_slice().to_vec();
         let face = parse_face(&SharedFontData::from_vec(data.clone()), 0).unwrap();
         (Arc::new(data), face)
+    }
+
+    /// A face without OpenType data (the macOS system fallback faces) is measured glyph by glyph
+    /// from its own metrics; a character of no width must still get no advance and no visible
+    /// glyph, whatever glyph the face has for it (Qt: 0 in every font).
+    #[test]
+    fn zero_width_characters_have_no_advance_without_opentype_data() {
+        let data =
+            SharedFontData::from_vec(include_bytes!("../../tests/data/oracle_text.ttf").to_vec());
+        let face = parse_face(&data, 0).unwrap();
+        // No font data on the font: the engine has no OpenType data to shape with.
+        let font = Font::new("FerrokitOracleText", 16.0);
+        let ab = GlyphLayout::shape_with_face("ab", &font, Arc::clone(&face)).width;
+        let space = face.glyph_index(' ');
+        let mut wrong = Vec::new();
+        for c in [
+            '\u{ad}', '\u{61c}', '\u{202e}', '\u{2066}', '\u{fe0f}', '\u{2029}', '\u{feff}',
+        ] {
+            let layout = GlyphLayout::shape_with_face(&format!("a{c}b"), &font, Arc::clone(&face));
+            let hidden = &layout.glyphs[1];
+            if layout.width != ab || hidden.advance != 0.0 || hidden.glyph_id != space {
+                wrong.push(format!("{c:?}: {layout:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     #[test]
