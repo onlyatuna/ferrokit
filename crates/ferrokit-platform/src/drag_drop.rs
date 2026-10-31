@@ -213,10 +213,14 @@ pub mod win32_ole {
         if ppv_object.is_null() {
             return E_NOINTERFACE;
         }
+        // SAFETY: `ppv_object` is non-null (checked above); per the `QueryInterface` contract it
+        // points to a writable pointer slot, valid for the duration of the call.
         *ppv_object = std::ptr::null_mut();
         if riid.is_null() {
             return E_NOINTERFACE;
         }
+        // SAFETY: `riid` is non-null (checked above); per the `QueryInterface` contract it points
+        // to a GUID valid for the duration of the call.
         let riid = &*riid;
         // Only the two interfaces this object implements: answering anything else would let OLE
         // call foreign vtable slots (IMarshal, IDropTargetHelper, ...) on an `IDropTarget` vtable.
@@ -237,13 +241,19 @@ pub mod win32_ole {
 
     unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
         let target = this as *mut OleDropTarget;
+        // SAFETY: `this` is a live `OleDropTarget` while any reference is outstanding; the caller
+        // owns one, so the allocation has not been freed. Only the atomic `ref_count` is touched.
         (*target).ref_count.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     unsafe extern "system" fn release(this: *mut c_void) -> u32 {
         let target = this as *mut OleDropTarget;
+        // SAFETY: `this` is a live `OleDropTarget` while any reference is outstanding; the caller
+        // (OLE or `DropTargetRegistration::drop`) owns one, so the allocation has not been freed.
         let count = (*target).ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
         if count == 0 {
+            // SAFETY: the count reached 0, so this was the last reference; `target` came from
+            // `Box::into_raw` in `OleDropTarget::new`, and no one else can use it after this.
             let _ = Box::from_raw(target);
         }
         count
@@ -303,6 +313,8 @@ pub mod win32_ole {
 
     /// Whether `data_object` offers `cf` as global memory.
     unsafe fn has_format(data_object: *mut c_void, cf: u16) -> bool {
+        // SAFETY: `data_object` is a live `IDataObject*` (caller contract), whose first word is
+        // its vtable pointer, so reading it as `*const *const IDataObjectVtbl` is a pointer read.
         let vtbl = *(data_object as *const *const IDataObjectVtbl);
         let fmt = format_etc(cf);
         ((*vtbl).query_get_data)(data_object, &fmt as *const _ as *const c_void) == S_OK
@@ -310,6 +322,8 @@ pub mod win32_ole {
 
     /// The bytes of the `cf` global-memory block of `data_object`.
     unsafe fn read_format(data_object: *mut c_void, cf: u16) -> Option<Vec<u8>> {
+        // SAFETY: `data_object` is a live `IDataObject*` (caller contract), whose first word is
+        // its vtable pointer, so reading it as `*const *const IDataObjectVtbl` is a pointer read.
         let vtbl = *(data_object as *const *const IDataObjectVtbl);
         let fmt = format_etc(cf);
         let mut medium = StgMedium {
@@ -330,6 +344,10 @@ pub mod win32_ole {
             let size = GlobalSize(medium.h_global);
             let ptr = GlobalLock(medium.h_global) as *const u8;
             if !ptr.is_null() {
+                // SAFETY: `GlobalLock` succeeded (`ptr` non-null), so `ptr` addresses the locked
+                // block, which per the `GlobalSize` documentation is at least `size` bytes; the
+                // block stays locked (and owned by `medium`) until `GlobalUnlock` and
+                // `ReleaseStgMedium` below, after the bytes are copied out.
                 bytes = Some(std::slice::from_raw_parts(ptr, size).to_vec());
                 GlobalUnlock(medium.h_global);
             }
@@ -421,11 +439,15 @@ pub mod win32_ole {
         if pdw_effect.is_null() || !has_formats {
             return DROPEFFECT_NONE;
         }
+        // SAFETY: `pdw_effect` is non-null (checked above); per the `IDropTarget` documentation it
+        // points to the DWORD of allowed effects, valid for the duration of the call.
         proposed_effect(key_state, *pdw_effect)
     }
 
     unsafe fn write_effect(pdw_effect: *mut u32, effect: u32) {
         if !pdw_effect.is_null() {
+            // SAFETY: `pdw_effect` is non-null (checked above); per the `IDropTarget` documentation
+            // it points to a writable DWORD, valid for the duration of the call.
             *pdw_effect = effect;
         }
     }
@@ -448,6 +470,8 @@ pub mod win32_ole {
         if pdw_effect.is_null() {
             DROPEFFECT_NONE
         } else {
+            // SAFETY: `pdw_effect` is non-null (checked above); per the `IDropTarget` documentation
+            // it points to the DWORD of allowed effects, valid for the duration of the call.
             *pdw_effect
         }
     }
@@ -459,6 +483,8 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
+        // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
+        // shared reference is formed.
         let target = &*(this as *mut OleDropTarget);
         let formats = data_object_formats(p_data_obj);
         let has_formats = !formats.is_empty();
@@ -484,6 +510,8 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
+        // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
+        // shared reference is formed.
         let target = &*(this as *mut OleDropTarget);
         let has_formats = target.accepts.load(Ordering::SeqCst);
         let allowed = incoming_effects(pdw_effect);
@@ -500,6 +528,8 @@ pub mod win32_ole {
     }
 
     unsafe extern "system" fn drag_leave(this: *mut c_void) -> HRESULT {
+        // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
+        // shared reference is formed.
         let target = &*(this as *mut OleDropTarget);
         target.accepts.store(false, Ordering::SeqCst);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -515,6 +545,10 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
+        // SAFETY: `this` is the `IDropTarget*` OLE got from `RegisterDragDrop` in
+        // `register_drop_target`, i.e. our `OleDropTarget` (`vtbl` is its first `repr(C)` field);
+        // OLE holds a reference until it releases it after `RevokeDragDrop`, so the allocation is
+        // live. Only a shared reference is formed (fields are atomics or read-only).
         let target = &*(this as *mut OleDropTarget);
         target.accepts.store(false, Ordering::SeqCst);
         let formats = data_object_formats(p_data_obj);

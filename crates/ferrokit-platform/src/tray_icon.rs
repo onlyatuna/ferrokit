@@ -301,6 +301,13 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         // pumps this very window), so a `&mut TrayIcon` here would alias. Nothing below mutates
         // the icon except through `Cell`s, and no reference is kept across an emit: a slot may
         // drop the icon, so the pointer is re-validated before every later use.
+        // SAFETY: `addr` came from `TRAY_INSTANCES` for this `hwnd`; the entry is registered in
+        // `with_icon` from the returned `Box<TrayIcon>` and removed in `Drop` before the window is
+        // destroyed, so while it is present the `TrayIcon` allocation is live. The icon is `!Send`
+        // and this procedure runs on the creating thread; only shared access is formed here (see
+        // the comment above), and the closure re-derives the reference per use rather than
+        // keeping one across an emit. Overlap with a live `&mut self` method is the unverified
+        // limit documented at the registration in `with_icon`.
         let tray = || &*(addr as *const TrayIcon);
         if msg == tray().taskbar_created_msg {
             tray().rebuild_icon_from_source();
@@ -543,7 +550,18 @@ impl TrayIcon {
             on_context_menu_requested: Signal::new(),
         });
 
-        // Register into global HWND router table
+        // Register into global HWND router table.
+        //
+        // Known limits of this registration (Windows-only, so Miri does not check either):
+        // (a) `tray_window_proc_inner` forms a `&TrayIcon` from this address while `&mut self`
+        //     methods (`show`, `hide`, `set_icon`, `replace_icon`, `show_message`, ...) call
+        //     `Shell_NotifyIconW`. If that call dispatched a sent message to this window on this
+        //     thread, the window procedure's shared read would overlap the live `&mut self`.
+        //     This has not been observed, but it is not ruled out.
+        // (b) The address is taken from `&mut *tray` of a `Box` that is then moved out and
+        //     returned; under Stacked Borrows that retag may invalidate the stored pointer.
+        // A fix would register the `Box::into_raw` pointer (re-boxing it in `Drop`) and keep the
+        // state the window procedure reads outside fields mutated through `&mut`.
         {
             let mut guard = TRAY_INSTANCES.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {

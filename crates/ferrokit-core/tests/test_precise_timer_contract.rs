@@ -265,9 +265,10 @@ fn a_timer_moved_to_another_thread_is_armed_on_the_target_and_released_there() {
                 >= 3
         });
         let while_running = native_handle(timer).is_some();
-        // SAFETY: the object was moved to this thread by `move_to_thread_by_id` before the loop
-        // here ran, so this thread is its registration thread; `pump_until` has returned, so no
-        // callback of it runs. The probe is leaked, so the memory stays valid.
+        // SAFETY: the object was moved to this thread by `move_to_thread_by_id` before `pump_until`
+        // returned (its three ticks on this thread come after the move), so this thread is its
+        // registration thread; `pump_until` has returned, so no callback of it runs. The probe is
+        // leaked, so the memory stays valid.
         unsafe { unregister_qobject(id) };
         report_tx
             .send((ticking, while_running, native_handle(timer).is_some()))

@@ -1148,6 +1148,10 @@ unsafe fn native_window_proc_inner(
         WM_NCCALCSIZE => {
             crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
             if wparam != 0 {
+                // SAFETY: for WM_NCCALCSIZE with `wParam != 0`, `lParam` points to an
+                // `NCCALCSIZE_PARAMS` owned by the sender and valid for the duration of the message
+                // (per the WM_NCCALCSIZE documentation); it is dereferenced only here, on this
+                // thread, and the exclusive reference does not outlive this arm.
                 let ncp = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
                 let client_rect = &mut ncp.rgrc[0];
 
@@ -1225,6 +1229,10 @@ unsafe fn native_window_proc_inner(
         WM_GETMINMAXINFO => {
             use windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
             if let Some(limits) = get_window_size_limits(hwnd) {
+                // SAFETY: for WM_GETMINMAXINFO `lParam` points to a `MINMAXINFO` owned by the
+                // sender and valid for the duration of the message (per the WM_GETMINMAXINFO
+                // documentation); it is dereferenced only here, on this thread, and the exclusive
+                // reference does not outlive this arm.
                 let mmi = &mut *(lparam as *mut MINMAXINFO);
                 // The limits are logical; the window's own ratio at this moment (after
                 // `WM_DPICHANGED` it is already the new one) makes them native, and a bound that
@@ -1449,6 +1457,9 @@ unsafe fn native_window_proc_inner(
             );
             let rect_ptr = lparam as *const RECT;
             if !rect_ptr.is_null() {
+                // SAFETY: `rect_ptr` is non-null (checked above); for WM_DPICHANGED `lParam` points
+                // to the suggested new window RECT, valid for the duration of the message (per the
+                // WM_DPICHANGED documentation); `RECT` is `Copy`, so this reads a value out.
                 let r = *rect_ptr;
                 let width = (r.right - r.left).max(0);
                 let height = (r.bottom - r.top).max(0);
@@ -2296,7 +2307,8 @@ impl NativeWindow {
 
     pub fn hide(&self) {
         if !self.hwnd.is_null() {
-            // SAFETY: as in `show`: `self.hwnd` is this window's own live handle; no pointers.
+            // SAFETY: as in `show`: `self.hwnd` is this window's own handle (live, or stale after
+            // WM_CLOSE destroyed it, which user32 rejects); no pointers.
             unsafe {
                 ShowWindow(self.hwnd, SW_HIDE);
             }
@@ -2452,8 +2464,9 @@ impl NativeWindow {
 
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
-            // SAFETY: as in `start_system_move`: `self.hwnd` is this window's own live handle and no
-            // pointer arguments are involved.
+            // SAFETY: as in `start_system_move`: `self.hwnd` is this window's own handle (live, or
+            // stale after WM_CLOSE destroyed it, which user32 rejects) and no pointer arguments are
+            // involved.
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
                 release_capture_for_system_loop();

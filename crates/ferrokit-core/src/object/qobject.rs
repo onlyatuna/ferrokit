@@ -1473,8 +1473,9 @@ pub unsafe fn register_qobject_ptr(ptr: NonNull<dyn QObject>) {
 /// While a callback of the object runs, nothing outside it accesses the object, not even to read
 /// it (the owner's `with` and `with_mut` refuse then). Dropping the owner while a callback of the object runs is
 /// allowed: [`OwnedObject::drop`] unregisters the object at once and frees its memory only after
-/// the running callback returns. The owner is used and dropped on the registration thread. The
-/// thread rules of [`crate::object`] apply.
+/// the running callback returns. The owner is used on the registration thread; it may be dropped on
+/// another thread, which forwards the destruction to the registration thread (see
+/// `destroy_owned`). The thread rules of [`crate::object`] apply.
 pub unsafe fn register_owned_qobject<T: QObject + 'static>(obj: T) -> OwnedObject<T> {
     let owned = OwnedObject::new(obj);
     let ptr: NonNull<dyn QObject> = OwnedObject::<T>::as_non_null(&owned);
@@ -8031,8 +8032,8 @@ mod tests {
     // while `set_parent_by_id` holds that object's borrow. The contract of the registration
     // functions forbids dropping an object while a callback of it runs, except through
     // `OwnedObject`'s deferred destruction (see the `crate::object` module documentation). That is
-    // broken on purpose, to check that the registry copes; whether Miri reports it has not been
-    // checked. The other `unsafe` blocks of the test are covered by the narrow `allow` too.
+    // broken on purpose, to check that the registry copes. Miri passes it under both Stacked and
+    // Tree Borrows. The other `unsafe` blocks of the test are covered by the narrow `allow` too.
     #[allow(clippy::undocumented_unsafe_blocks)]
     fn test_reentrant_new_parent_deletion_direct_pointer_path_a() {
         let _serial = serial();
@@ -8113,11 +8114,12 @@ mod tests {
 
     #[test]
     // This test hands the registry an object that it then drops by hand (`drop_in_place`, `dealloc`
-    // in the event callback) while `set_parent` holds that object's borrow. The contract of the
-    // registration functions forbids dropping an object while a callback of it runs, except through
-    // `OwnedObject`'s deferred destruction (see the `crate::object` module documentation). That is
-    // broken on purpose, to check that the registry copes; whether Miri reports it has not been
-    // checked. The other `unsafe` blocks are covered by the narrow `allow` too.
+    // in the event callback) while `set_owned_parent` (`set_parent`) holds that object's borrow. The
+    // contract of the registration functions forbids dropping an object while a callback of it
+    // runs, except through `OwnedObject`'s deferred destruction (see the `crate::object` module
+    // documentation). That is broken on purpose, to check that the registry copes. Miri passes it
+    // under both Stacked and Tree Borrows. The other `unsafe` blocks are covered by the narrow
+    // `allow` too.
     #[allow(clippy::undocumented_unsafe_blocks)]
     fn test_set_parent_reentrant_new_parent_deletion_clears_local_state() {
         let _serial = serial();
