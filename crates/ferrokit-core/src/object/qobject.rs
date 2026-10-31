@@ -267,6 +267,11 @@ impl Drop for ObjectBorrowGuard {
                 let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
                 if let Some((new_parent, target_liveness)) = sync {
                     if !self.borrow_state.memory_destroyed.load(Ordering::Acquire) {
+                        // SAFETY: as above: this guard still holds the borrow flag (`_release`),
+                        // so no callback of the object is running, and the object's memory is not
+                        // freed before the guard has released the flag and returned from `drop`
+                        // (`destroy_here` frees only after it wins the flag, or parks the
+                        // allocation for `run_parked` below). `self.ptr` is the registered pointer.
                         let mut data = unsafe { (*self.ptr).object_data_mut() };
                         let raw = data.raw_data_mut();
                         raw.parent = new_parent;
@@ -1222,6 +1227,8 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
 )]
 pub unsafe fn register_qobject(obj: &mut dyn QObject) {
     let ptr = obj as *mut dyn QObject;
+    // SAFETY: `ptr` was just made from the live `obj`, and the shared reference lives only until
+    // `object_data` returns; `register_object_metadata` copies what it keeps.
     let data = unsafe { &*ptr }.object_data();
     register_object_metadata(data, ptr);
 }
@@ -1363,7 +1370,11 @@ fn register_record(
 /// mutable/shared aliases exist while a callback runs, and that the owner makes no direct use of
 /// the object between callbacks.
 pub unsafe fn register_pinned_qobject(mut obj: std::pin::Pin<&mut dyn QObject>) {
+    // SAFETY: only the pointer is taken, nothing is moved out of the pin; the caller promises (see
+    // `# Safety`) that the object stays at its pinned address while it is registered.
     let ptr = unsafe { obj.as_mut().get_unchecked_mut() as *mut dyn QObject };
+    // SAFETY: `ptr` comes from the live pinned object; the shared reference ends with
+    // `object_data`'s use in the call below, which copies what it keeps.
     let data = unsafe { (*ptr).object_data() };
     register_object_metadata(data, ptr);
 }
@@ -2050,6 +2061,8 @@ impl ObjectData {
     /// # Safety
     /// Follows [`unregister_qobject`] requirements; no callback may be active for this object.
     pub unsafe fn unregister(&mut self) {
+        // SAFETY: the caller upholds this method's `# Safety` section, which is the contract of
+        // `unregister_qobject`; `self.id` is this object's own id.
         unsafe { unregister_qobject(self.id) };
     }
 
@@ -2802,7 +2815,12 @@ fn release_child(child_id: ObjectId, parent_id: ObjectId) {
                 .store(true, Ordering::Release);
         }
     }
-    // whoever owns it frees it, and the callback's guard keeps its own `Arc` to the record.
+    // SAFETY: `unregister_qobject` works from the registry record and ids and never reads or
+    // forms a reference to the object's memory. `child_id` is registered, so its memory is valid
+    // until it is unregistered (the registration contract); a callback still running in it keeps
+    // its own `Arc` to the record, and whoever owns the child frees it only after that callback
+    // returns (`destroy_when_released`, `run_parked`). A child shares its parent's thread
+    // (`set_parent` refuses a parent of another thread affinity), and this runs on that thread.
     unsafe { unregister_qobject(child_id) };
 }
 
@@ -3017,6 +3035,12 @@ pub(crate) fn sync_child_local_parent(
         .is_ok()
     {
         let _release = ReleaseBorrowFlag(&child_record.borrow_state);
+        // SAFETY: the CAS above made the borrow flag ours (`_release` frees it), so no callback of
+        // the child runs and none can start. `memory_destroyed` was false, and the memory is
+        // freed only by `destroy_here`, which runs on the registration thread (this thread:
+        // `set_parent_by_id` got the record from `registered_ptr`, which checks it) and frees
+        // only after it wins the flag we hold. The owner makes no direct use of the object
+        // between callbacks (registration contract), so the `&mut` borrowed here has no alias.
         let mut data = unsafe { (*child_record.ptr.0).object_data_mut() };
         let raw = data.raw_data_mut();
         raw.parent = current_reg_parent;
