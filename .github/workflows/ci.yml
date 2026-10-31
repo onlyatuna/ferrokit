@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A manual run of this workflow does not start Miri: dispatch miri.yml for that.
   workflow_dispatch:
   schedule:
     # The whole suite every night, whatever changed (miri.yml runs its own full sweep).

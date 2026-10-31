@@ -248,6 +248,8 @@
     "lib::tooltip::tests::an_event_filter_sees_the_tool_tip_event::TB": "pass",
     "lib::tooltip::tests::set_palette_and_font_survive_a_busy_tip_slot::SB": "pass",
     "lib::tooltip::tests::set_palette_and_font_survive_a_busy_tip_slot::TB": "pass",
+    "lib::tooltip::tests::failing_window_creation_restores_the_previous_integration::SB": "pass",
+    "lib::tooltip::tests::failing_window_creation_restores_the_previous_integration::TB": "pass",
     "lib::tooltip::tests::a_hide_that_re_enters_while_the_tip_is_shown_is_not_lost::SB": "unsupported",
     "lib::tooltip::tests::a_hide_that_re_enters_while_the_tip_is_shown_is_not_lost::TB": "unsupported",
     "lib::tooltip::tests::a_re_entrant_show_text_leaves_exactly_one_visible_tip::SB": "unsupported",
