@@ -540,6 +540,12 @@ pub trait Widget: QObject + 'static {
     }
     fn is_enabled(&self) -> bool;
 
+    /// `QWidget::update()`. Call it on the widget's own thread only: the widget is not `Sync`
+    /// and `update` touches non-atomic state (see [`WidgetBase::update_rect`]), so calling it
+    /// concurrently from another thread is not safe. To request a repaint from another thread,
+    /// post an `EventKind::UpdateRequest` to the widget's thread with
+    /// `ferrokit_core::event_loop::post_event_to_thread`; no dedicated cross-thread update API
+    /// exists yet.
     fn update(&self);
     /// `QWidget::update(const QRect &)` (`qwidget.cpp:11340`).
     fn update_rect(&self, rect: Rect) {
@@ -1902,6 +1908,8 @@ impl WidgetBase {
         true
     }
 
+    /// Schedules a repaint of the whole widget; see [`WidgetBase::update_rect`] for the
+    /// thread rule: own thread only.
     pub fn update(&self) {
         let g = self.geometry.get();
         self.update_rect(Rect::new(0, 0, g.width, g.height));
@@ -1909,6 +1917,13 @@ impl WidgetBase {
 
     /// `QWidget::update(const QRect &)`: adds `rect` (widget coordinates) to the pending dirty
     /// region. Pending dirt accumulates; a smaller rect never replaces a larger pending one.
+    ///
+    /// Call it on the widget's own thread only. It reads and writes state that is not `Sync`
+    /// (`dirty` is a `Cell`, the parent chain is walked through `Weak` upgrades and `RefCell`
+    /// borrows), so calling it from another thread while the widget is in use is a data race.
+    /// To request a repaint from another thread, post an `EventKind::UpdateRequest` to the
+    /// widget's thread with `ferrokit_core::event_loop::post_event_to_thread`; no dedicated
+    /// cross-thread update API exists yet.
     pub fn update_rect(&self, rect: Rect) {
         // `QWidgetPrivate::update` ignores a widget that is not visible (qwidget.cpp:11367-11368).
         if !self.is_visible_in_tree() {

@@ -233,6 +233,10 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
     menu.add_action(Action::new_ref("Third row"));
 
     // The popup's own loop reads these in FIFO order and stops on the WM_CANCELMODE.
+    // SAFETY: `PostThreadMessageW` takes integers only (this thread's id from
+    // `GetCurrentThreadId`, message ids and parameters), no pointer and no handle; the id is
+    // that of the running thread, which has a message queue as soon as it runs a loop, and a
+    // failed post would only make the assertion below fail.
     unsafe {
         PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, usize::from(VK_DOWN), 0);
         if open_sub {

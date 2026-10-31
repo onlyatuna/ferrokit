@@ -844,6 +844,10 @@ mod real_windows {
                 right: 0,
                 bottom: 0,
             };
+            // SAFETY: `&mut saved` and `&mut r` point to the live `POINT` and `RECT` locals above,
+            // the types `GetCursorPos` and `GetWindowRect` write; `hwnd` is the handle of the
+            // fixture window (a stale handle only makes `GetWindowRect` fail, leaving `r` zero).
+            // `SetCursorPos` takes integers only.
             unsafe {
                 GetCursorPos(&mut saved);
                 GetWindowRect(hwnd as _, &mut r);
@@ -855,6 +859,8 @@ mod real_windows {
 
     impl Drop for CursorOver {
         fn drop(&mut self) {
+            // SAFETY: `SetCursorPos` takes two integers and no pointer; it restores the cursor
+            // position saved in `CursorOver::new`.
             unsafe { SetCursorPos(self.0.x, self.0.y) };
         }
     }
@@ -879,6 +885,11 @@ mod real_windows {
 
     /// How the desktop looks to the scenario, for the report of a failure with no interference.
     fn snapshot(hwnd: isize) -> String {
+        // SAFETY: every out-pointer (`&mut pid`, `&mut r`, `&mut at`) points to a live local of
+        // the type the call writes, and `GetWindowThreadProcessId` is called only for a non-null
+        // handle. `hwnd` is the handle of the scenario window; a stale handle only makes
+        // `GetWindowRect`, `IsWindow` and `IsWindowVisible` fail or return 0. The remaining
+        // calls take no arguments.
         unsafe {
             let fg = GetForegroundWindow();
             let mut pid = 0u32;
@@ -913,6 +924,8 @@ mod real_windows {
 
     /// The window at a screen point and the process it belongs to (0 for none).
     fn window_at(at: POINT) -> (usize, u32) {
+        // SAFETY: `WindowFromPoint` takes the point by value; `&mut pid` points to the live `u32`
+        // local above, and `GetWindowThreadProcessId` is called only for a non-null handle.
         unsafe {
             let top = WindowFromPoint(at);
             let mut pid = 0u32;
@@ -931,6 +944,11 @@ mod real_windows {
     /// a scenario destroys or hides it, so another program did not, and whatever the foreground is
     /// then says nothing about who is to blame.
     fn interference(hwnd: isize) -> Result<String, String> {
+        // SAFETY: `hwnd` is the handle of the scenario window; a stale handle only makes
+        // `IsWindow`/`IsWindowVisible`/`GetWindowRect` fail or return 0. Every out-pointer
+        // (`&mut pid`, `&mut r`, `&mut at`) points to a live local of the type the call writes,
+        // and `GetWindowThreadProcessId` is called only for a non-null handle. The remaining
+        // calls take no pointers.
         unsafe {
             if IsWindow(hwnd as _) == 0 || IsWindowVisible(hwnd as _) == 0 {
                 return Err(snapshot(hwnd));
@@ -1033,6 +1051,8 @@ mod real_windows {
             cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
             dwTime: 0,
         };
+        // SAFETY: `&mut info` points to the live `LASTINPUTINFO` local above, whose `cbSize` is
+        // set to its size as the API requires, so the call writes only inside it.
         unsafe { GetLastInputInfo(&mut info) };
         info.dwTime
     }
@@ -1111,6 +1131,8 @@ mod real_windows {
     }
 
     fn foreground() -> isize {
+        // SAFETY: `GetForegroundWindow` takes no arguments and has no preconditions; the handle
+        // is only converted to an integer, never dereferenced.
         unsafe { GetForegroundWindow() as isize }
     }
 
@@ -1118,6 +1140,12 @@ mod real_windows {
     /// with the synthetic Alt press that lets a background process take it; and sharing the input
     /// queue of the current foreground thread. `false` if the session refused all of them.
     fn take_foreground(hwnd: isize) -> bool {
+        // SAFETY: every call takes handles and integers, except the one out-pointer
+        // (`GetWindowThreadProcessId`'s process id) which is null, an allowed value that skips it.
+        // `hwnd` is the handle of a fixture window and `current` comes from
+        // `GetForegroundWindow`; a stale handle only makes a call fail. `keybd_event` and
+        // `AttachThreadInput` take integers only, and the attachment made here is undone by the
+        // matching call with 0 in the same block.
         unsafe {
             SetForegroundWindow(hwnd as _);
             if foreground() != hwnd {
@@ -1148,6 +1176,9 @@ mod real_windows {
             hwndTrack: 0 as _,
             dwHoverTime: 0,
         };
+        // SAFETY: `&mut tme` points to the live `TRACKMOUSEEVENT` local above, whose `cbSize` is
+        // its size and whose `dwFlags` is `TME_QUERY`, so the call only reads the request back
+        // into that struct.
         let queried = unsafe { TrackMouseEvent(&mut tme) } != 0;
         queried && tme.dwFlags & TME_LEAVE != 0 && tme.hwndTrack as isize == hwnd
     }
@@ -1160,12 +1191,16 @@ mod real_windows {
     /// Let every move arrive, then cancel the wake-up they started the way a user would: a click.
     fn settle(el: &mut EventLoop, f: &Fixture) {
         let mut at = POINT { x: 0, y: 0 };
+        // SAFETY: `&mut at` points to the live `POINT` local above, the only pointer passed and
+        // the one `GetCursorPos` writes.
         unsafe { GetCursorPos(&mut at) };
         pump_for(el, 100);
         for dx in [1, 0, 1, 0, 1, 0] {
             if tracks_the_cursor(f.hwnd) {
                 break;
             }
+            // SAFETY: `SetCursorPos` takes two integers and no pointer; it only moves the real
+            // cursor, which is what this test setup is for.
             unsafe { SetCursorPos(at.x + dx, at.y) };
             pump_for(el, 200);
         }
@@ -1175,6 +1210,10 @@ mod real_windows {
             "precondition: Windows never tracked the cursor as inside the window"
         );
         let at = ((50u32 << 16) | 50) as isize;
+        // SAFETY: `f.hwnd` is the handle of the fixture window (kept alive by `f`, created on this
+        // thread); `at` packs client coordinates as the mouse messages expect in `lParam` and is
+        // not a pointer. Both messages are handled synchronously on this thread through the
+        // platform layer's thread-local state, not through a reference into `f`.
         unsafe {
             SendMessageW(f.hwnd as _, WM_LBUTTONDOWN, MK_LBUTTON, at);
             SendMessageW(f.hwnd as _, WM_LBUTTONUP, 0, at);
@@ -1191,12 +1230,21 @@ mod real_windows {
     /// A `WM_MOUSEMOVE` at the client position `(x, y)` (physical pixels).
     fn mouse_move(f: &Fixture, x: i32, y: i32, wparam: usize) {
         let lparam = ((y as u32 & 0xffff) << 16 | (x as u32 & 0xffff)) as isize;
+        // SAFETY: `f.hwnd` is the handle of the fixture window (kept alive by `f`, created on this
+        // thread); `lparam` packs client coordinates as `WM_MOUSEMOVE` expects and `wparam` is
+        // the key-state flags, neither is a pointer. The message is handled synchronously on this
+        // thread through the platform layer's thread-local state, not through a reference into
+        // `f`.
         unsafe { SendMessageW(f.hwnd as _, WM_MOUSEMOVE, wparam, lparam) };
     }
 
     /// The real cursor position in `f`'s client coordinates (physical pixels).
     fn cursor_in_client(f: &Fixture) -> (i32, i32) {
         let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: `&mut pt` points to the live `POINT` local above, the only pointer passed to
+        // both calls; `GetCursorPos` fills it and `ScreenToClient` rewrites it in place. `f.hwnd`
+        // is the handle of the fixture window, which `f` keeps alive, and a stale handle would
+        // only make the call fail.
         unsafe {
             GetCursorPos(&mut pt);
             ScreenToClient(f.hwnd as _, &mut pt);
@@ -1270,6 +1318,8 @@ mod real_windows {
             // test.
             let dpr = f.win.device_pixel_ratio();
             let mut pt = POINT { x: 0, y: 0 };
+            // SAFETY: `&mut pt` points to the live `POINT` local above, the only pointer passed
+            // and the one `GetCursorPos` writes.
             unsafe { GetCursorPos(&mut pt) };
             let cursor =
                 ferrokit_platform::high_dpi::from_native_point(Point::new(pt.x, pt.y), dpr);

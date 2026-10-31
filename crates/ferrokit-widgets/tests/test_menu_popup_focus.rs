@@ -31,6 +31,10 @@ fn get_popup_hwnd() -> HWND {
     let mut found = 0 as HWND;
     for _ in 0..50 {
         thread::sleep(Duration::from_millis(10));
+        // SAFETY: `EnumWindows` calls `find_process_window` synchronously, before it returns. The
+        // `lparam` passed is the address of the live local `found`, whose type (`HWND`) is what
+        // the callback casts it back to and writes; `found` is not otherwise accessed during the
+        // call.
         unsafe {
             EnumWindows(Some(find_process_window), &mut found as *mut _ as isize);
         }
@@ -65,6 +69,10 @@ fn test_popup_exits_on_kill_focus() {
     let bg = thread::spawn(move || {
         let hwnd = get_popup_hwnd();
         assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
+        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_KILLFOCUS` takes
+        // `wParam` = 0 (no window receiving focus). `hwnd` is a window of this process found by
+        // `get_popup_hwnd` (asserted non-null), and posting to a handle that has meanwhile been
+        // destroyed only fails.
         unsafe {
             PostMessageW(hwnd, WM_KILLFOCUS, 0, 0);
         }
@@ -91,6 +99,10 @@ fn test_popup_exits_on_activateapp_deactivated() {
     let bg = thread::spawn(move || {
         let hwnd = get_popup_hwnd();
         assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
+        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_ACTIVATEAPP` takes
+        // `wParam` = 0 (deactivated). `hwnd` is a window of this process found by
+        // `get_popup_hwnd` (asserted non-null), and posting to a handle that has meanwhile been
+        // destroyed only fails.
         unsafe {
             // wParam = 0 (FALSE / Deactivated)
             PostMessageW(hwnd, WM_ACTIVATEAPP, 0, 0);
@@ -116,6 +128,10 @@ fn test_popup_exits_on_capture_changed() {
     let bg = thread::spawn(move || {
         let hwnd = get_popup_hwnd();
         assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
+        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_CAPTURECHANGED`
+        // takes `lParam` = 0 here (a window handle, not a pointer that is dereferenced by us).
+        // `hwnd` is a window of this process found by `get_popup_hwnd` (asserted non-null), and
+        // posting to a handle that has meanwhile been destroyed only fails.
         unsafe {
             // lParam = 0 (another window took capture)
             PostMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
@@ -141,6 +157,9 @@ fn test_popup_exits_on_cancel_mode() {
     let bg = thread::spawn(move || {
         let hwnd = get_popup_hwnd();
         assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
+        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_CANCELMODE` has no
+        // parameters. `hwnd` is a window of this process found by `get_popup_hwnd` (asserted
+        // non-null), and posting to a handle that has meanwhile been destroyed only fails.
         unsafe {
             PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
         }

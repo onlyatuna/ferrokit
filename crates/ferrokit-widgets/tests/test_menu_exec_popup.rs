@@ -15,7 +15,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// `PostThreadMessageW` needs the thread's message queue to exist; a peek creates it.
 fn ensure_queue() {
+    // SAFETY: `MSG` consists of integers and raw pointers, for which the all-zero bit pattern is
+    // valid.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
+    // SAFETY: `&mut msg` points to the live `MSG` local above, which `PeekMessageW` may fill;
+    // a null window handle means all windows of this thread, and no other pointer is passed.
     unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
 }
 
@@ -24,6 +28,9 @@ const VK_RETURN: usize = 0x0D;
 
 fn post_key(vk: usize) {
     ensure_queue();
+    // SAFETY: `PostThreadMessageW` takes integers only (this thread's id from
+    // `GetCurrentThreadId`, `WM_KEYDOWN`, the key code), no pointer and no handle; the queue
+    // exists because `ensure_queue` ran just above.
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, vk, 0) };
 }
 
@@ -60,12 +67,19 @@ fn a_quit_posted_while_the_menu_is_open_survives_it() {
     let menu = Menu::new_ref("m");
     menu.borrow_mut().add_new_action("Go");
     ensure_queue();
+    // SAFETY: `PostQuitMessage` takes an integer exit code only and posts `WM_QUIT` to the
+    // calling thread's queue; it touches no memory of ours.
     unsafe { PostQuitMessage(7) };
 
     let chosen = Menu::exec_popup(&menu, Point::new(50, 50));
 
     assert!(chosen.is_none());
+    // SAFETY: `MSG` consists of integers and raw pointers, for which the all-zero bit pattern is
+    // valid.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
+    // SAFETY: `&mut msg` points to the live `MSG` local above, which `GetMessageW` fills; a null
+    // window handle means all windows of this thread, and no other pointer is passed. Waiting is
+    // bounded: the quit re-posted by `exec_popup` is already in this thread's queue.
     let got = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
     assert_eq!(got, 0, "the quit is still pending");
     assert_eq!(msg.wParam, 7);

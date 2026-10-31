@@ -30,6 +30,9 @@ fn meta_call(f: impl FnOnce() + Send + 'static) -> Event {
 }
 
 fn cancel_menu(thread_id: u32) {
+    // SAFETY: `PostThreadMessageW` takes integers only (`thread_id`, `WM_CANCELMODE`, zero
+    // parameters), no pointer; every caller passes the id of this test's own thread, and a post
+    // to an id that no longer exists only fails.
     unsafe { PostThreadMessageW(thread_id, WM_CANCELMODE, 0, 0) };
 }
 
@@ -78,12 +81,18 @@ mod outside {
 
     /// The foreground window if it belongs to another process.
     fn foreign_foreground() -> Option<(isize, u32)> {
+        // SAFETY: `GetForegroundWindow` takes no arguments and has no preconditions; the
+        // returned handle is only stored and passed on as a handle, never dereferenced.
         let fg = unsafe { GetForegroundWindow() } as isize;
         if fg == 0 {
             return None;
         }
         let mut pid = 0u32;
+        // SAFETY: `&mut pid` points to the live `u32` local, which is the one out-pointer the
+        // call writes; `fg` is a handle value only, and if that window has just been destroyed
+        // the call fails and leaves `pid` untouched.
         unsafe { GetWindowThreadProcessId(fg as _, &mut pid) };
+        // SAFETY: `GetCurrentProcessId` takes no arguments and cannot fail.
         (pid != unsafe { GetCurrentProcessId() }).then_some((fg, pid))
     }
 
@@ -106,14 +115,25 @@ mod outside {
         {
             note(format!("a mouse button went down (message {wparam:#x})"));
         }
+        // SAFETY: `CallNextHookEx` ignores its first argument (the hook handle, null here) and
+        // passes `code`, `wparam` and `lparam` on exactly as the system gave them to this hook
+        // procedure, so any pointer in `lparam` is forwarded with the validity the system
+        // established for it.
         unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
     }
 
     unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code == HC_ACTION as i32 && matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN) {
+            // SAFETY: for `WH_KEYBOARD_LL` and `code == HC_ACTION` (checked above), the system
+            // documents `lparam` as a pointer to a `KBDLLHOOKSTRUCT` that is valid for the
+            // duration of this call, so the read of `vkCode` is within a live object.
             let vk = unsafe { (*(lparam as *const KBDLLHOOKSTRUCT)).vkCode };
             note(format!("a key went down (virtual key {vk:#x})"));
         }
+        // SAFETY: `CallNextHookEx` ignores its first argument (the hook handle, null here) and
+        // passes `code`, `wparam` and `lparam` on exactly as the system gave them to this hook
+        // procedure, so any pointer in `lparam` is forwarded with the validity the system
+        // established for it.
         unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
     }
 
@@ -131,6 +151,16 @@ mod outside {
                 LAST_FOREIGN_FOREGROUND.store(fg, Ordering::SeqCst);
             }
             let (ready, installed) = mpsc::channel();
+            // SAFETY: the closure runs on the new thread. The hook procedures `mouse_hook` and
+            // `keyboard_hook` have the `HOOKPROC` signature. A null module handle with thread id 0
+            // works only because the hook procedures live in this process (the form the
+            // documentation shows asks for the module handle of the code containing them). The
+            // low-level hooks need this thread to pump messages, which the `GetMessageW` loop
+            // below provides. `SetTimer` with a null window and a null callback only makes
+            // the thread post `WM_TIMER` to its own queue, and the `SetTimer` call also creates
+            // that queue before the id is sent. `msg` is a live zeroed `MSG` (all-zero is valid)
+            // and the only pointer passed to `GetMessageW`. Each hook handle is checked non-null
+            // before the single `UnhookWindowsHookEx` call, after the loop has ended.
             let thread = thread::spawn(move || unsafe {
                 let mouse =
                     SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), std::ptr::null_mut(), 0);
@@ -190,6 +220,9 @@ mod outside {
 
     impl Drop for Watch {
         fn drop(&mut self) {
+            // SAFETY: `PostThreadMessageW` takes integers only, no pointer. `thread_id` is the id
+            // of the watch thread, which keeps running its `GetMessageW` loop until it receives
+            // this `WM_QUIT` (it is joined right below), so the id is not stale here.
             unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) };
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
@@ -211,6 +244,7 @@ enum Attempt {
 fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
     watch.begin_attempt();
     let main_thread = ThreadId::current();
+    // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
     let native_thread = unsafe { GetCurrentThreadId() };
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
     let menu_closed = Arc::new(AtomicBool::new(false));
@@ -257,6 +291,7 @@ fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
                         return;
                     }
                     log.lock().unwrap().push("posted");
+                    // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
                     cancel_menu(unsafe { GetCurrentThreadId() });
                 }),
             );
@@ -313,6 +348,10 @@ fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
 
 /// Removes the `WM_CANCELMODE`s still queued for this thread.
 fn drain_cancel_messages() {
+    // SAFETY: `msg` is a live `MSG` local, zero-initialized (all-zero is valid for integers and
+    // raw pointers), and the only pointer passed, as the out-parameter `PeekMessageW` fills; a
+    // null window handle means all windows of this thread. Removing only `WM_CANCELMODE`
+    // entries touches nothing else in the queue.
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while PeekMessageW(

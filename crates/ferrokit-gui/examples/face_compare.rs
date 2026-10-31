@@ -61,8 +61,13 @@ extern "system" {
 }
 #[cfg(windows)]
 fn commit_mb() -> f64 {
+    // SAFETY: `Pmc` consists only of integers, for which the all-zero bit pattern is valid.
     let mut m: Pmc = unsafe { std::mem::zeroed() };
     m.cb = std::mem::size_of::<Pmc>() as u32;
+    // SAFETY: `GetCurrentProcess` takes no input and returns the pseudo-handle of this process,
+    // which needs no closing. `&mut m` points to a live `Pmc`, a `#[repr(C)]` mirror of
+    // `PROCESS_MEMORY_COUNTERS` (two `u32` then eight `usize`), and `m.cb` is its size as the
+    // API requires, so the callee writes only inside `m`.
     unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m, m.cb) };
     m.pagefile as f64 / 1048576.0
 }

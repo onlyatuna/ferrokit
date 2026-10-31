@@ -177,6 +177,9 @@ struct CaptureGuard;
 #[cfg(windows)]
 impl Drop for CaptureGuard {
     fn drop(&mut self) {
+        // SAFETY: `ReleaseCapture` takes no arguments and only clears the calling thread's mouse
+        // capture; the guard is created and dropped on the popup loop's own thread, which is the
+        // thread that called `SetCapture`, so it releases exactly that capture.
         unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
     }
 }
@@ -844,6 +847,10 @@ impl Menu {
         };
 
         let hwnd = window.native_handle() as HWND;
+        // SAFETY: `hwnd` is the native handle of `window`, which is alive until the end of this
+        // function, and `window` was created on this thread, so it is a window of the calling
+        // thread as `SetCapture` requires (an invalid handle would only make the call fail).
+        // Both calls take integer/handle arguments only and touch no memory of ours.
         unsafe {
             SetForegroundWindow(hwnd);
             SetCapture(hwnd);
@@ -856,10 +863,15 @@ impl Menu {
         // window's deactivation flags it and wakes the loop.
         let dismissed = Rc::new(std::cell::Cell::new(false));
         let flag = Rc::clone(&dismissed);
+        // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
         let thread = unsafe { GetCurrentThreadId() };
         window.set_window_event_handler(move |ev: &mut Event| {
             if matches!(ev.kind, EventKind::WindowDeactivate) {
                 flag.set(true);
+                // SAFETY: `PostThreadMessageW` takes integers only (`thread`, `WM_NULL`, zero
+                // parameters); no pointer is involved. `thread` is the id of the thread that
+                // owns `window` and runs this handler, and if the thread id were stale the call
+                // would just fail, which is ignored.
                 unsafe { PostThreadMessageW(thread, WM_NULL, 0, 0) };
             }
         });
@@ -869,6 +881,17 @@ impl Menu {
         let mut chosen = None;
         let mut quit = None;
         // The cursor position is a native desktop position: it maps through the screen it is on.
+        // SAFETY: this is the modal message loop of the calling thread. `msg` and `discard_msg`
+        // are live `MSG` locals, for which the all-zero pattern is valid (integers and raw
+        // pointers), and every Win32 call below gets a pointer to one of them; `GetMessageW` and
+        // `PeekMessageW` fill them and `TranslateMessage`/`DispatchMessageW` only read the `msg`
+        // just filled. A null window handle means "all windows of this thread". `hwnd` is the
+        // handle of `window`, which lives until after this block (it is dropped below), and
+        // `LoadCursorW(null, IDC_ARROW)` loads a shared system cursor that needs no release.
+        // Dispatched messages run this thread's window procedures: the popup window's handler
+        // only touches an `Rc<Cell<bool>>` and posts a message. Any access to the menu from
+        // dispatched code must go through the `&mut` borrow of `self`, which is held for the
+        // whole loop.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
@@ -1012,6 +1035,8 @@ impl Menu {
         // Destroying the popup window may pump messages; the quit is re-posted after that.
         drop(window);
         if let Some(code) = quit {
+            // SAFETY: `PostQuitMessage` takes an integer exit code only and posts `WM_QUIT` to the
+            // calling thread's queue; it touches no memory of ours and has no precondition.
             unsafe { PostQuitMessage(code) };
         }
         chosen

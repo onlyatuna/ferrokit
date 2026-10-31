@@ -27,16 +27,23 @@ fn hwnd(win: &Window) -> HWND {
 }
 
 fn foreground() -> HWND {
+    // SAFETY: `GetForegroundWindow` takes no arguments, has no preconditions and returns a handle
+    // value (possibly null) that is only compared, never dereferenced.
     unsafe { GetForegroundWindow() }
 }
 
 /// Whether `upper` is above `lower` in the system z-order.
 fn is_above(upper: HWND, lower: HWND) -> bool {
+    // SAFETY: `GetWindow` takes a window handle and an integer relation and no pointer. `upper`
+    // comes from `hwnd(&win)` of windows that are alive in the test; even a stale handle only
+    // makes the call return null, never touches memory of ours.
     let mut cur = unsafe { GetWindow(upper, GW_HWNDNEXT) };
     while !cur.is_null() {
         if cur == lower {
             return true;
         }
+        // SAFETY: as for the first `GetWindow` call above: `cur` was just returned by the system,
+        // and a window destroyed by another process in the meantime makes the call return null.
         cur = unsafe { GetWindow(cur, GW_HWNDNEXT) };
     }
     false

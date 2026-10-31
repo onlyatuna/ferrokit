@@ -17,3 +17,6 @@ windows-sys = { workspace = true }
 
 [dev-dependencies]
 parking_lot = "0.12"
+
+[lints]
+workspace = true

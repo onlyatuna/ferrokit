@@ -43,10 +43,25 @@ struct Factory {
     bgr: bool,
 }
 
-// SAFETY: the shared DirectWrite factory and the objects created from it are free-threaded.
+// SAFETY: `Send`/`Sync` require that every field may be used from any thread. `base`
+// (`IDWriteFactory`, `IDWriteFactory2`) and `loader` (`IDWriteInMemoryFontFileLoader`) come
+// from the shared (`DWRITE_FACTORY_TYPE_SHARED`) DirectWrite factory. [inferred from the
+// documentation pages "IDWriteFactory interface" (free-threaded) and "IDWriteInMemoryFontFileLoader
+// interface"; the latter page does not state thread safety, so for `loader` this is an
+// assumption that its methods, like the factory's, may be called from several threads.] `bgr`
+// is a plain `bool` written once in `FACTORY`'s initializer, before any other thread can see
+// the value.
 unsafe impl Send for Factory {}
+// SAFETY: as for `Send` above: all shared access goes through free-threaded DirectWrite
+// interfaces, and `bgr` is never mutated after initialization.
 unsafe impl Sync for Factory {}
 
+// SAFETY: every call needs live COM objects and valid out-pointers. The factory chain is
+// created by `DWriteCreateFactory` and owned by the locals/`Factory` here; each call receives
+// references to those owned objects only, and the failure of any step returns `None` instead of
+// using an object that was not created. `RegisterFontFileLoader` gets a loader this closure just
+// created; the `Factory` lives in a `static` and is never dropped, so the registered loader
+// outlives every font file created from it.
 static FACTORY: LazyLock<Option<Factory>> = LazyLock::new(|| unsafe {
     let factory5: IDWriteFactory5 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
     let loader = factory5.CreateInMemoryFontFileLoader().ok()?;
@@ -78,8 +93,15 @@ pub struct DirectWriteFace {
     upem: f32,
 }
 
-// SAFETY: `IDWriteFontFace` is free-threaded, and `OutlineFace` is plain immutable data.
+// SAFETY: `Send` requires that the value may move to another thread. `face` is an
+// `IDWriteFontFace`, which DirectWrite documents as free-threaded; `base` (`OutlineFace`) is
+// owned data (`Face` over the immutable shared font bytes plus a `Mutex`-guarded cache); `upem`
+// is a plain `f32`.
 unsafe impl Send for DirectWriteFace {}
+// SAFETY: `Sync` requires that `&DirectWriteFace` may be used from several threads. Every
+// `IDWriteFontFace` method called through `&self` (`GetMetrics`, `GetDesignGlyphMetrics`,
+// `GetGdiCompatibleGlyphMetrics`, glyph-run creation) is thread-safe on a free-threaded face;
+// `OutlineFace` is only read, apart from its `Mutex`-guarded cache; `upem` is never mutated.
 unsafe impl Sync for DirectWriteFace {}
 
 impl DirectWriteFace {
@@ -87,6 +109,13 @@ impl DirectWriteFace {
     pub fn new(data: SharedFontData, face_index: u32) -> Result<Self, String> {
         let base = OutlineFace::new(data.clone(), face_index)?;
         let factory = FACTORY.as_ref().ok_or("DirectWrite is unavailable")?;
+        // SAFETY: the in-memory font file reference stores the raw pointer without owning the
+        // bytes (no owner object is passed), so the bytes must outlive the file and the face
+        // created from it. They do: `data.as_slice()` is kept alive by `base`, which holds a clone
+        // of the `SharedFontData` and is dropped after `face` (field order of `DirectWriteFace`),
+        // and the file reference itself is moved into `CreateFontFace`. `data.len()` is the length
+        // of that same slice; `supported`, `file_type`, `face_type` and `faces` are live locals
+        // used as out-pointers, and `face_index < faces` is checked before `CreateFontFace`.
         let face = unsafe {
             // The bytes stay valid for as long as `base` (which owns a clone of `data`) lives.
             let file = factory
@@ -124,6 +153,8 @@ impl DirectWriteFace {
                 .map_err(|e| format!("CreateFontFace: {e}"))?
         };
         let mut fm = DWRITE_FONT_METRICS::default();
+        // SAFETY: `face` was just created and is live; `&mut fm` is a live local that receives
+        // one `DWRITE_FONT_METRICS`.
         unsafe { face.GetMetrics(&mut fm) };
         let upem = fm.designUnitsPerEm as f32;
         Ok(Self { face, base, upem })
@@ -191,6 +222,13 @@ impl DirectWriteFace {
             dy: 0.0,
         };
         let (mode, measuring) = Self::rendering_mode(size, scale);
+        // SAFETY: `run` and `transform` are live locals; the pointers in `run` (`glyphIndices`,
+        // `glyphAdvances`, `glyphOffsets`) point to `glyph_index`, `glyph_advance` and
+        // `glyph_offset`, each valid for the one glyph (`glyphCount: 1`), and `run.fontFace`
+        // holds a live face (the clone made above). All of them outlive this call. [inferred
+        // from the `IDWriteFactory2::CreateGlyphRunAnalysis` documentation, which does not say
+        // that the run's pointers are kept after the call; they stay valid for the whole
+        // function either way.]
         let analysis = unsafe {
             factory.factory2.CreateGlyphRunAnalysis(
                 &run,
@@ -204,9 +242,15 @@ impl DirectWriteFace {
             )
         };
         // Release the reference taken for the run now that the analysis owns what it needs.
+        // SAFETY: `ManuallyDrop::take` is valid only on a not-yet-dropped value that is never
+        // used again. `run.fontFace` was initialized with the clone above and is taken exactly
+        // once, here; `run` is not read afterwards and, being `ManuallyDrop`, is not dropped
+        // again with the struct, so the clone's reference is released exactly once.
         drop(unsafe { ManuallyDrop::take(&mut run.fontFace) });
         let analysis = analysis.ok()?;
 
+        // SAFETY: `analysis` is a live `IDWriteGlyphRunAnalysis` (the `Err` case returned
+        // above); the texture type is a valid enum value and the call has no other inputs.
         let bounds =
             unsafe { analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }.ok()?;
         let (width, height) = (
@@ -219,6 +263,10 @@ impl DirectWriteFace {
         }
 
         let mut texture = vec![0u8; width * height * 3];
+        // SAFETY: `analysis` is the live analysis created above from this `bounds`' texture
+        // type. `texture` has `width * height * 3` bytes where `width`/`height` are `bounds`'
+        // extent (zero-sized and over-budget cases returned earlier), which is the size
+        // DirectWrite requires for a `CLEARTYPE_3x1` texture of `bounds`.
         unsafe { analysis.CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut texture) }
             .ok()?;
 
@@ -261,6 +309,9 @@ impl DirectWriteFace {
         }
         let mut metric = DWRITE_GLYPH_METRICS::default();
         if direct_write {
+            // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16`
+            // and the glyph count passed is 1, and `&mut metric` is a live local receiving
+            // exactly one `DWRITE_GLYPH_METRICS`.
             unsafe {
                 self.face
                     .GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false)
@@ -269,6 +320,9 @@ impl DirectWriteFace {
             let pixels = f64::from(metric.advanceWidth) / f64::from(self.upem) * f64::from(size);
             return Some(((pixels * 64.0).trunc() / 64.0) as f32);
         }
+        // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16` and
+        // the glyph count passed is 1, and `&mut metric` is a live local receiving exactly one
+        // `DWRITE_GLYPH_METRICS`; the optional transform is `None` (no pointer is passed).
         unsafe {
             self.face.GetGdiCompatibleGlyphMetrics(
                 size,
@@ -383,6 +437,9 @@ mod tests {
             {
                 let glyph = face.glyph_index(ch);
                 let mut metric = DWRITE_GLYPH_METRICS::default();
+                // SAFETY: `face.face` is the live `IDWriteFontFace` of `face`; `&glyph` points to
+                // one `u16` and the glyph count passed is 1, and `&mut metric` is a live local
+                // that receives exactly one `DWRITE_GLYPH_METRICS`.
                 unsafe {
                     face.face
                         .GetDesignGlyphMetrics(&glyph, 1, &mut metric, false)

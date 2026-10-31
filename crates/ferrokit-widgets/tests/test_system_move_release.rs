@@ -65,14 +65,18 @@ fn fixture() -> Fixture {
 
 fn cursor() -> POINT {
     let mut pt = POINT { x: 0, y: 0 };
-    // SAFETY: valid out pointer.
+    // SAFETY: `&mut pt` points to the live `POINT` local above, the only pointer passed and the
+    // one `GetCursorPos` writes.
     unsafe { GetCursorPos(&mut pt) };
     pt
 }
 
 /// Moves the window (physical px, size kept) so its top-left is at `(x, y)`.
 fn place(fx: &Fixture, x: i32, y: i32) {
-    // SAFETY: valid HWND owned by this thread.
+    // SAFETY: `fx.hwnd` is the handle of the fixture's window (`_win`), kept alive by `fx` and
+    // created on this thread, so the window's synchronous move notifications run on this thread;
+    // the call passes integers and a null insert-after handle (allowed with `SWP_NOZORDER`), no
+    // pointer into our memory.
     let ok = unsafe {
         SetWindowPos(
             fx.hwnd,
@@ -103,17 +107,23 @@ fn lparam(x: i32, y: i32) -> isize {
 }
 
 fn press(fx: &Fixture) {
-    // SAFETY: valid HWND.
+    // SAFETY: `fx.hwnd` is the handle of the fixture's window (`_win`), kept alive by `fx` and
+    // created on this thread; `lparam(20, 20)` packs client coordinates as `WM_LBUTTONDOWN`
+    // expects, it is not a pointer.
     unsafe { SendMessageW(fx.hwnd, WM_LBUTTONDOWN, 1, lparam(20, 20)) };
 }
 
 fn real_release(fx: &Fixture) {
-    // SAFETY: valid HWND.
+    // SAFETY: `fx.hwnd` is the handle of the fixture's window (`_win`), kept alive by `fx` and
+    // created on this thread; `lparam(20, 20)` packs client coordinates as `WM_LBUTTONUP`
+    // expects, it is not a pointer.
     unsafe { SendMessageW(fx.hwnd, WM_LBUTTONUP, 0, lparam(20, 20)) };
 }
 
 fn move_loop(fx: &mut Fixture) {
-    // SAFETY: valid HWND.
+    // SAFETY: `fx.hwnd` is the handle of the fixture's window (`_win`), which the fixture keeps
+    // alive and which was created on this thread; the messages take no parameters and no pointer
+    // is passed.
     unsafe {
         SendMessageW(fx.hwnd, WM_ENTERSIZEMOVE, 0, 0);
         SendMessageW(fx.hwnd, WM_EXITSIZEMOVE, 0, 0);

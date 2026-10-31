@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Widget::update() posts to the widget's thread affinity, not ThreadId::current().
+//! A repaint request reaches the widget's own thread.
 //!
 //! Qt reference:
-//! - `widgets/kernel/qwidget.cpp:11367-11420`:
-//!   `QWidget::update` posts `UpdateRequest` via `QCoreApplication::postEvent`,
-//!   which posts to the receiver's thread (`d->threadData`), never the caller's thread.
+//! - `widgets/kernel/qwidget.cpp:11367-11420`: `QWidget::update` posts `UpdateRequest` via
+//!   `QCoreApplication::postEvent`, which posts to the receiver's thread (`d->threadData`).
+//! - A `QWidget` is not reentrant: another thread does not call `update()` on it but posts the
+//!   request (`QCoreApplication::postEvent`). In ferrokit a widget is `!Sync`, so another thread
+//!   cannot call `Widget::update` at all; it posts an `UpdateRequest` with `post_event_to_thread`.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::EventLoop;
+use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+    query_object_thread, register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget};
 
@@ -47,7 +49,7 @@ impl QObject for SpyFilter {
 }
 
 #[test]
-fn worker_thread_calling_widget_update_posts_to_widget_thread() {
+fn an_update_request_posted_from_a_worker_thread_reaches_the_widget_on_its_thread() {
     let el = EventLoop::new();
 
     let mut widget = EmptyWidget::new();
@@ -61,61 +63,56 @@ fn worker_thread_calling_widget_update_posts_to_widget_thread() {
     // Set up before registering, as the module documentation of `ferrokit_core::object` advises
     // (rule 7): a use of the variable after that can invalidate the pointer the registry holds.
     widget.object_data_mut().install_event_filter(filter_id);
-    // SAFETY: both stay on this thread, unmoved, until unregistered below.
+    // SAFETY: both pointers are taken with `&raw mut` from locals that stay on this thread,
+    // unmoved and not used directly, until they are unregistered below.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(&raw mut widget));
         register_qobject_ptr(NonNull::new_unchecked(&raw mut filter));
     }
 
-    // Call update() from a background worker thread
-    let widget_ptr = &widget as *const EmptyWidget as usize;
-    let handle = std::thread::spawn(move || {
-        let w = unsafe { &*(widget_ptr as *const EmptyWidget) };
-        w.update();
-    });
-    handle.join().unwrap();
+    // The worker only has the id: it looks up the widget's thread and posts the request there.
+    std::thread::spawn(move || {
+        let thread = query_object_thread(widget_id).expect("the widget is registered");
+        post_event_to_thread(thread, widget_id, Event::new(EventKind::UpdateRequest));
+    })
+    .join()
+    .unwrap();
 
-    // Process events on the main thread
     el.process_events(false);
+    let updated_on_widget_thread = seen.load(Ordering::SeqCst);
 
-    let updated_on_main = seen.load(Ordering::SeqCst);
-
+    // SAFETY: both objects are registered above, still alive and unmoved here, and no callback of
+    // either runs (the event queue is drained); the filter is unregistered first, then the
+    // widget, before either is dropped.
     unsafe {
         unregister_qobject(filter_id);
         unregister_qobject(widget_id);
     }
 
     assert!(
-        updated_on_main,
-        "Widget::update() from worker thread must reach the widget's thread event loop (qwidget.cpp:11367-11420)"
+        updated_on_widget_thread,
+        "an UpdateRequest posted from another thread must be delivered on the widget's thread"
     );
 }
 
 #[test]
-fn worker_thread_calling_unregistered_widget_update_posts_to_widget_affinity_thread() {
+fn update_of_an_unregistered_widget_without_a_window_posts_to_its_affinity_thread() {
     let el = EventLoop::new();
 
-    // An unregistered widget created on the main thread has object_data.thread_id() = main_thread
+    // Not registered and in no window: `update` cannot use a window's render state and falls back
+    // to posting `UpdateRequest` to the widget's thread affinity (this thread).
     let widget = EmptyWidget::new();
     widget.set_visible(true);
     let widget_id = widget.id();
 
-    // Worker thread calls update()
-    let widget_ptr = &widget as *const EmptyWidget as usize;
-    let handle = std::thread::spawn(move || {
-        let w = unsafe { &*(widget_ptr as *const EmptyWidget) };
-        w.update();
-    });
-    handle.join().unwrap();
+    widget.update();
 
-    // Check whether the main thread queue received the UpdateRequest
     let has_event =
         el.queue().lock().unwrap().events().iter().any(|pe| {
             pe.receiver == widget_id && matches!(pe.event.kind, EventKind::UpdateRequest)
         });
-
     assert!(
         has_event,
-        "Unregistered widget update() from worker thread must post to widget's thread affinity"
+        "update() of an unregistered widget must post UpdateRequest to its thread affinity"
     );
 }

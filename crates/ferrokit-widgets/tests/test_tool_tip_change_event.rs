@@ -187,6 +187,11 @@ fn set_tool_tip_on_a_pointer_registered_widget_goes_through_filters_then_event()
     probe.object_data_mut().install_event_filter(filter_id);
     let id = probe.id();
     let probe_ptr = &raw mut probe;
+    // SAFETY: `probe_ptr` comes from `&raw mut probe`, so it carries write permission to
+    // `probe`; `probe` is on this stack frame, is not moved, and outlives the registration
+    // (unregistered at the end of this test). All setup (`install_event_filter`, `id`) happened
+    // before this call, nothing touches `probe` except through `probe_ptr` from here on, and no
+    // callback of it runs while this block executes.
     unsafe {
         register_qobject_ptr(NonNull::new_unchecked(probe_ptr));
     }
@@ -196,6 +201,9 @@ fn set_tool_tip_on_a_pointer_registered_widget_goes_through_filters_then_event()
     w.set_tool_tip("Hello Tooltip");
     assert_eq!(w.tool_tip(), "Hello Tooltip");
     assert_eq!(entries(&log), ["filter", "event:Hello Tooltip"]);
+    // SAFETY: `id` is the registration made above; `probe` is alive, unmoved and not used after
+    // this point, and no callback of it runs, so the object's memory stays valid until the
+    // unregistration completes.
     unsafe {
         unregister_qobject(id);
     }

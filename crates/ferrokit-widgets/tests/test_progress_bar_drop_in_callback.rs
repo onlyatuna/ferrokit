@@ -135,18 +135,25 @@ fn the_parent_of_an_owned_bar_dropped_by_a_slot_of_the_bar_frees_it_after_the_ca
     not(miri),
     ignore = "Miri control: expected to be reported as undefined behavior under Miri"
 )]
+// Deliberate contract violation, so the `register_qobject_ptr` and `Box::from_raw` blocks below
+// carry no safety argument and are exempt from the lint on this function only. The contract
+// broken on purpose is the one of `register_qobject_ptr`: an owner that is not an
+// `OwnedObject` must not drop or free the object while a callback of it runs (here the slot
+// frees the `Box` that `set_value` is still using). Miri reports it as undefined behavior (a
+// Stacked Borrows / Tree Borrows use-after-free), which is what this control checks.
+#[allow(clippy::undocumented_unsafe_blocks)]
 fn control_a_pointer_registered_bar_dropped_by_its_own_slot() {
     let raw = Box::into_non_null(Box::new(ProgressBar::new()));
     // SAFETY: `raw` is a live, unmoved allocation made just above.
     let id = unsafe { raw.as_ref() }.id();
-    // SAFETY: this breaks the contract on purpose; see the documentation of this test.
+    // Contract violation on purpose; see the documentation of this test and the `allow` above.
     unsafe { register_qobject_ptr(raw) };
     // SAFETY: no callback of the bar runs.
     unsafe { raw.as_ref() }
         .value_changed
         .connect_direct_object(id, |_| {
             let raw = RAW_BAR.take().expect("set before the callback");
-            // SAFETY: none; this is the violation the control shows.
+            // Contract violation on purpose: the bar is freed while its own callback runs.
             drop(unsafe { Box::from_raw(raw.as_ptr()) });
         });
     RAW_BAR.set(Some(raw));

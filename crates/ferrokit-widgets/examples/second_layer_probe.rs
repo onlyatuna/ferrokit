@@ -32,6 +32,9 @@ mod probe {
 
     pub fn main() {
         // Same awareness as a typical application (per-monitor v2); without it DWM bitmap-scales the window.
+        // SAFETY: `-4` is the documented pseudo-handle value `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`,
+        // not a pointer that is dereferenced; the call is made first in `main`, before any window
+        // exists, as the process DPI awareness must be set before windows are created.
         unsafe { SetProcessDpiAwarenessContext(-4) };
         if std::env::var("SLTRACE").is_ok() {
             ferrokit_platform::resize_trace::set_enabled(true);

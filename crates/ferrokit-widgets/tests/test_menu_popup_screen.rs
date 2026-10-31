@@ -182,6 +182,9 @@ fn popup_rect(secondary: Rect, pos: Point) -> (Rect, (i32, i32)) {
     menu.add_action(Action::new_ref("Second"));
     let size = menu.size_hint();
     // The popup's own loop ends on the first `WM_CANCELMODE` it reads.
+    // SAFETY: `PostThreadMessageW` takes integers only (this thread's id from
+    // `GetCurrentThreadId`, `WM_CANCELMODE`, zero parameters), no pointer and no handle; a failed
+    // post would only make the popup loop below wait, which the test would report as a hang.
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0) };
     assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), pos).is_none());
 
