@@ -27,3 +27,6 @@ windows-sys = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Future dependencies: objc2, objc2-app-kit
+
+[lints]
+workspace = true
