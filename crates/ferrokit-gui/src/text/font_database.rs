@@ -552,7 +552,8 @@ impl FontDatabase {
                 let covered = !engines.is_empty()
                     && !crate::text::glyph_layout::GlyphLayout::has_emoji_sequence(text)
                     && text.chars().all(|ch| {
-                        matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{200b}')
+                        matches!(ch, ' ' | '\t' | '\n' | '\r')
+                            || crate::text::glyph_layout::is_zero_width(ch)
                             || engines.iter().any(|e| e.face.glyph_index(ch) != 0)
                     });
                 if covered {

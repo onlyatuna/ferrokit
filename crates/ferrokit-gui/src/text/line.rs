@@ -58,9 +58,11 @@ pub struct TextLine {
     /// The x that [`cursor_to_x`](Self::cursor_to_x) never exceeds: the right end of the wrap
     /// width, past which the spaces that hang over it are not shown (Qt clamps to the line width).
     pub(crate) right_limit: f32,
-    /// The bidi embedding level of every grapheme of the line, in logical order; empty when the
-    /// line is left to right all through.
-    pub(crate) levels: Vec<u8>,
+    /// The bidi runs of the line from left to right (rule L2), each with its left edge, built
+    /// once with the line by [`visual_runs`]; empty when the line is left to right all through.
+    /// A line is never changed after it is built (a new layout builds new lines), so they stay
+    /// valid.
+    pub(crate) runs: Vec<VisualRun>,
     /// Whether the text of the layout reads right to left as a whole.
     pub(crate) base_rtl: bool,
     /// Whether this is the last line of its layout.
@@ -87,7 +89,7 @@ impl Default for TextLine {
             natural_width: 0.0,
             advance_width: 0.0,
             right_limit: f32::INFINITY,
-            levels: Vec::new(),
+            runs: Vec::new(),
             base_rtl: false,
             is_last: true,
             grapheme_x_advances: vec![0.0],
@@ -223,7 +225,7 @@ impl TextLine {
         }
 
         let local_pos = cursor_pos.min(self.text_length);
-        if !self.levels.is_empty() {
+        if !self.runs.is_empty() {
             return self.bidi_cursor_to_x(local_pos, edge).min(self.right_limit);
         }
         // A line a separator ends has no entry for the end (the separator has no width): its end
@@ -285,8 +287,9 @@ impl TextLine {
     /// then the grapheme in it, counted from the run's leading edge. `None` when no run reaches
     /// as far as `rel_x`.
     fn x_to_cursor_in_text(&self, rel_x: f32, mode: CursorPosition) -> Option<usize> {
-        let visual = if self.levels.is_empty() {
-            vec![VisualRun {
+        let ltr;
+        let visual: &[VisualRun] = if self.runs.is_empty() {
+            ltr = [VisualRun {
                 run: LevelRun {
                     start: 0,
                     end: self.text_length,
@@ -294,9 +297,10 @@ impl TextLine {
                 },
                 left: 0.0,
                 width: self.advance_between(0, self.text_length),
-            }]
+            }];
+            &ltr
         } else {
-            self.visual_runs()
+            &self.runs
         };
         if visual.is_empty() {
             return Some(0);
@@ -347,37 +351,54 @@ pub(crate) struct VisualRun {
     pub width: f32,
 }
 
+/// The runs of a line from left to right (rule L2), each with its left edge, given the bidi
+/// level of each of its graphemes in logical order and the cumulative advances of
+/// [`TextLine::grapheme_x_advances`]. Empty when every level is 0 (a left to right line).
+pub(crate) fn visual_runs(levels: &[u8], x_advances: &[f32]) -> Vec<VisualRun> {
+    #[cfg(test)]
+    tests::VISUAL_RUN_BUILDS.with(|c| c.set(c.get() + 1));
+    if levels.iter().all(|&l| l == 0) {
+        return Vec::new();
+    }
+    let at = |i: usize| advance_at(x_advances, i);
+    let runs = level_runs(levels);
+    let run_levels: Vec<u8> = runs.iter().map(|r| r.level).collect();
+    let mut left = 0.0;
+    visual_order(&run_levels)
+        .into_iter()
+        .map(|i| {
+            let run = runs[i];
+            let width = at(run.end) - at(run.start);
+            let visual = VisualRun { run, left, width };
+            left += width;
+            visual
+        })
+        .collect()
+}
+
+/// The pen position before the line's grapheme `i`: past the last entry (the separator that ends
+/// a line has none, it has no width) it is where the pen stopped.
+fn advance_at(x_advances: &[f32], i: usize) -> f32 {
+    x_advances
+        .get(i)
+        .or_else(|| x_advances.last())
+        .copied()
+        .unwrap_or(0.0)
+}
+
 impl TextLine {
     /// The advance of the graphemes `start..end` of the line.
     fn advance_between(&self, start: usize, end: usize) -> f32 {
-        let at = |i: usize| self.grapheme_x_advances.get(i).copied().unwrap_or(0.0);
-        at(end) - at(start)
-    }
-
-    /// The runs of the line from left to right (rule L2), each with its left edge. Only for lines
-    /// with right to left text; a left to right line is one run starting at 0.
-    pub(crate) fn visual_runs(&self) -> Vec<VisualRun> {
-        let runs = level_runs(&self.levels);
-        let levels: Vec<u8> = runs.iter().map(|r| r.level).collect();
-        let mut left = 0.0;
-        visual_order(&levels)
-            .into_iter()
-            .map(|i| {
-                let run = runs[i];
-                let width = self.advance_between(run.start, run.end);
-                let visual = VisualRun { run, left, width };
-                left += width;
-                visual
-            })
-            .collect()
+        advance_at(&self.grapheme_x_advances, end) - advance_at(&self.grapheme_x_advances, start)
     }
 
     /// The left edge, from the line's own left edge, of the visual run holding the line's
     /// grapheme `at`, and that run's graphemes.
     pub(crate) fn run_left_of(&self, at: usize) -> Option<VisualRun> {
-        self.visual_runs()
-            .into_iter()
+        self.runs
+            .iter()
             .find(|v| v.run.start <= at && at < v.run.end)
+            .copied()
     }
 
     /// The `(x, width)` pieces of the line covered by the layout graphemes `start..end` (clipped
@@ -390,12 +411,12 @@ impl TextLine {
         if start >= end {
             return Vec::new();
         }
-        if self.levels.is_empty() {
+        if self.runs.is_empty() {
             let x = self.position.x + self.advance_between(0, start);
             return vec![(x, self.advance_between(start, end))];
         }
-        self.visual_runs()
-            .into_iter()
+        self.runs
+            .iter()
             .filter_map(|v| {
                 let (a, b) = (start.max(v.run.start), end.min(v.run.end));
                 if a >= b {
@@ -418,39 +439,39 @@ impl TextLine {
     /// different direction goes to the run that reads in the paragraph's direction (left to
     /// right), and inside a right to left run the leading edge of a grapheme is its right edge.
     fn bidi_cursor_to_x(&self, pos: usize, edge: Edge) -> f32 {
-        let runs = level_runs(&self.levels);
-        let Some(last) = runs.len().checked_sub(1) else {
-            return self.position.x;
-        };
-        let containing = |at: usize| runs.iter().position(|r| r.start <= at && at < r.end);
-        let mut item = if pos >= self.text_length {
-            containing(self.text_length.saturating_sub(1)).unwrap_or(last)
+        // The runs are kept in visual order; their logical neighbours are found by offset.
+        let run_with = |f: &dyn Fn(&LevelRun) -> bool| self.runs.iter().find(|v| f(&v.run));
+        let at = if pos >= self.text_length {
+            self.text_length.saturating_sub(1)
         } else {
-            containing(pos).unwrap_or(last)
+            pos
+        };
+        // A position in no run goes to the logically last one.
+        let Some(mut item) = run_with(&|r| r.start <= at && at < r.end)
+            .or_else(|| self.runs.iter().max_by_key(|v| v.run.start))
+        else {
+            return self.position.x;
         };
         // Between two runs of different direction the cursor goes to the one that reads in the
         // direction of the text.
-        if runs[item].is_rtl() != self.base_rtl {
-            let mut neighbor = item;
-            if item > 0 && runs[item].start == pos {
-                neighbor -= 1;
-            } else if item < last && runs[item].end == pos {
-                neighbor += 1;
-            }
-            if neighbor != item && runs[neighbor].level != runs[item].level {
+        if item.run.is_rtl() != self.base_rtl {
+            let neighbor = if item.run.start > 0 && item.run.start == pos {
+                run_with(&|r| r.end == pos)
+            } else if item.run.end == pos {
+                run_with(&|r| r.start == pos)
+            } else {
+                None
+            };
+            if let Some(neighbor) = neighbor.filter(|n| n.run.level != item.run.level) {
                 item = neighbor;
             }
         }
-        let run = runs[item];
+        let run = item.run;
         let mut inside = pos.clamp(run.start, run.end);
         if edge == Edge::Trailing && inside < run.end {
             inside += 1;
         }
-        let left = self
-            .visual_runs()
-            .into_iter()
-            .find(|v| v.run == run)
-            .map_or(0.0, |v| v.left);
+        let left = item.left;
         let within = if run.is_rtl() {
             self.advance_between(inside, run.end)
         } else {
@@ -462,3 +483,73 @@ impl TextLine {
 
 /// Canonical Qt alias.
 pub type QTextLine = TextLine;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::font::{Font, SharedFontData};
+    use crate::text::layout::TextLayout;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// `visual_runs` calls on this thread.
+        pub(super) static VISUAL_RUN_BUILDS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn mixed_layout(text: &str) -> TextLayout {
+        let font = Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(
+            include_bytes!("../../tests/data/oracle_text.ttf").to_vec(),
+        ));
+        let mut layout = TextLayout::new(text, font);
+        layout.do_layout();
+        layout
+    }
+
+    #[test]
+    fn bidi_runs_are_built_once_per_line_not_per_query() {
+        VISUAL_RUN_BUILDS.with(|c| c.set(0));
+        let layout = mixed_layout("ab \u{5d0}\u{5d1}\u{5d2} cd");
+        assert_eq!(layout.line_count(), 1);
+        let built = VISUAL_RUN_BUILDS.with(Cell::get);
+        assert_eq!(built, 1, "one line, one build");
+        let line = layout.line_at(0).unwrap();
+        assert_eq!(line.runs.len(), 3, "ltr, rtl, ltr");
+        for i in 0..=line.text_length() {
+            line.cursor_to_x(i, Edge::Leading);
+            line.cursor_to_x(i, Edge::Trailing);
+            line.x_to_cursor(i as f32 * 4.0, CursorPosition::CursorBetweenCharacters);
+            line.selection_spans(0, i);
+        }
+        assert_eq!(VISUAL_RUN_BUILDS.with(Cell::get), built);
+    }
+
+    #[test]
+    fn bidi_runs_follow_a_new_layout() {
+        let mut layout = mixed_layout("\u{5d0}\u{5d1} ab");
+        let before = layout.line_at(0).unwrap().runs.clone();
+        layout.set_text("ab \u{5d0}\u{5d1}\u{5d2} cd");
+        layout.do_layout();
+        let line = layout.line_at(0).unwrap();
+        assert_ne!(line.runs, before);
+        let levels = [0, 0, 0, 1, 1, 1, 0, 0, 0];
+        assert_eq!(line.runs, visual_runs(&levels, &line.grapheme_x_advances));
+    }
+
+    /// The separator that ends a line has no advance entry; the bidi run holding it ends where
+    /// the pen stopped, so no run is negative and a selection of the whole line covers its text.
+    #[test]
+    fn a_line_separator_ends_its_bidi_run_where_the_pen_stopped() {
+        for text in ["\u{5d0}\u{5d1}\u{2028}x", "ab \u{5d0}\u{5d1}\u{2028}x"] {
+            let layout = mixed_layout(text);
+            let line = layout.line_at(0).unwrap();
+            assert!(!line.runs.is_empty(), "{text:?}");
+            assert!(line.runs.iter().all(|r| r.width >= 0.0), "{text:?}");
+            let total: f32 = line.runs.iter().map(|r| r.width).sum();
+            assert_eq!(total, line.horizontal_advance(), "{text:?}");
+            let spans = line.selection_spans(0, line.text_length());
+            let covered: f32 = spans.iter().map(|&(_, w)| w).sum();
+            assert_eq!(covered, line.horizontal_advance(), "{text:?}");
+            assert!(spans.iter().all(|&(x, w)| x >= 0.0 && w >= 0.0), "{text:?}");
+        }
+    }
+}
