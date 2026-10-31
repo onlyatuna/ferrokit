@@ -51,7 +51,14 @@ pub struct CocoaLayerSurface {
 }
 
 impl CocoaLayerSurface {
-    pub fn new(layer_id: usize, width: u32, height: u32) -> Result<Self, &'static str> {
+    /// A `width` x `height` frame shown in the `CALayer` at address `layer_id` (0: none).
+    ///
+    /// # Safety
+    /// On macOS `layer_id` is 0 or the address of a `CALayer` that stays alive for as long as
+    /// the surface presents (every `present*` and [`commit_to_layer`](Self::commit_to_layer)
+    /// sends it messages). The mock runtime of other targets never dereferences it, so there any
+    /// value will do.
+    pub unsafe fn new(layer_id: usize, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {
             return Err("Width and height must be greater than 0");
         }
@@ -85,20 +92,20 @@ impl CocoaLayerSurface {
         }
 
         #[cfg(target_os = "macos")]
-        // SAFETY: `layer` is non-nil (checked above) and is the content view's backing layer,
-        // captured by `CocoaNativeWindow::new` and owned by that view, which outlives the
-        // surface's `present` calls [inferred: the layer keeps the same identity for the view's
-        // life]. Every Core Graphics/CoreFoundation object here is created in this block and
-        // released once after its last use: `data` (checked non-null before `CFRelease`, and
-        // before `CFDataSetLength`/`CFDataGetMutableBytePtr`; the slice is `len` bytes because
-        // `CFDataSetLength(data, len)` just sized it), `provider`, `cg_image` and `color_space`
-        // (each null-checked before release; Core Graphics accepts NULL arguments by returning
-        // NULL [inferred: Core Graphics documentation]). `CGImageCreate` is given the buffer
-        // dimensions, whose `pixel_buffer` size equals `width * height * 4` (`buffer_len`),
-        // matching bytes-per-row `width * 4`; the provider holds its own retained copy, so the
-        // image never reads `pixel_buffer` after the call. `setContents:` takes an object and a
-        // `CGImageRef` is accepted there; `contentsAreFlipped` returns BOOL; `CATransaction`
-        // `begin`/`commit` take no arguments.
+        // SAFETY: `layer` is non-nil (checked above) and, by the contract of `new`, a live
+        // CALayer (the content view's backing layer for `CocoaNativeWindow`, owned by that view,
+        // which outlives the surface's `present` calls [inferred: the layer keeps the same
+        // identity for the view's life]). Every Core Graphics/CoreFoundation object here is
+        // created in this block and released once after its last use: `data` (checked non-null
+        // before `CFRelease`, and before `CFDataSetLength`/`CFDataGetMutableBytePtr`; the slice
+        // is `len` bytes because `CFDataSetLength(data, len)` just sized it), `provider`,
+        // `cg_image` and `color_space` (each null-checked before release; Core Graphics accepts
+        // NULL arguments by returning NULL [inferred: Core Graphics documentation]).
+        // `CGImageCreate` is given the buffer dimensions, whose `pixel_buffer` size equals
+        // `width * height * 4` (`buffer_len`), matching bytes-per-row `width * 4`; the provider
+        // holds its own retained copy, so the image never reads `pixel_buffer` after the call.
+        // `setContents:` takes an object and a `CGImageRef` is accepted there;
+        // `contentsAreFlipped` returns BOOL; `CATransaction` `begin`/`commit` take no arguments.
         unsafe {
             use core_graphics::*;
             let color_space = CGColorSpaceCreateDeviceRGB();
@@ -158,11 +165,7 @@ impl CocoaLayerSurface {
                 true,
             );
 
-            ObjcMsg::send_id(
-                layer,
-                Sel::register("setContents:"),
-                Id(cg_image as *mut std::ffi::c_void),
-            );
+            ObjcMsg::send_id(layer, Sel::register("setContents:"), Id(cg_image));
             ObjcMsg::send_class_0(ca_transaction, Sel::register("commit"));
 
             if !cg_image.is_null() {

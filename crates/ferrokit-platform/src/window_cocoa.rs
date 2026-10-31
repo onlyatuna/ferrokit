@@ -3,8 +3,9 @@ use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Pixmap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use crate::backdrop::BackdropState;
 use crate::cursor::{CocoaCursor, CursorShape};
@@ -138,6 +139,23 @@ pub struct CocoaNativeWindow {
 // Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
 // thread, and the boxed `WindowSystemEventHandler` has no thread-safety bound.
 
+/// The `ns_window` of every live `CocoaNativeWindow`, added in `new` and removed in `Drop` before
+/// the window is released. Windows are created on the main thread (`new` asserts it) and, not
+/// being `Send`, used and dropped there. A handle handed to `set_transient_parent` is only
+/// messaged once it is found here, since any integer can be passed there. A process-wide set
+/// rather than a thread-local one, so it outlives every window, even one dropped at thread exit.
+static LIVE_WINDOWS: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
+
+fn live_windows() -> MutexGuard<'static, HashSet<usize>> {
+    // Only single inserts and removes happen under the lock, so the set is valid after a panic.
+    LIVE_WINDOWS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether `handle` is the `ns_window` of a live `CocoaNativeWindow` (see `LIVE_WINDOWS`).
+fn is_live_window(handle: usize) -> bool {
+    live_windows().contains(&handle)
+}
+
 /// Backing-surface extent for a window dimension. Qt accepts empty and negative window sizes,
 /// so they get a 1px surface (the buffer cannot be empty) instead of failing after the NSWindow
 /// is already allocated.
@@ -269,11 +287,16 @@ impl CocoaNativeWindow {
             };
         }
 
-        let surface = match CocoaLayerSurface::new(
-            layer.as_ptr() as usize,
-            surface_dim(rect.width),
-            surface_dim(rect.height),
-        ) {
+        // SAFETY: `layer` is nil or the backing layer of `ns_view`, which owns it; the view is
+        // released only in `Drop`, after the last use of `surface`, which this window owns
+        // [inferred: the layer keeps the same identity for the view's life].
+        let surface = match unsafe {
+            CocoaLayerSurface::new(
+                layer.as_ptr() as usize,
+                surface_dim(rect.width),
+                surface_dim(rect.height),
+            )
+        } {
             Ok(surface) => surface,
             Err(err) => {
                 // Nothing owns the window yet: undo the `alloc`/`init` and the view's +1.
@@ -290,6 +313,9 @@ impl CocoaNativeWindow {
         // From here AppKit may call the view's methods, which find their window by this slot.
         input::register_view(ns_view, ns_window);
         input::update_tracking_area(ns_view);
+        if !ns_window.is_nil() {
+            live_windows().insert(ns_window.0 as usize);
+        }
 
         Ok(Self {
             ns_window,
@@ -795,21 +821,28 @@ impl PlatformWindow for CocoaNativeWindow {
     /// `-[NSWindow addChildWindow:ordered:]`: the window follows its parent when it moves,
     /// stays above it, and is hidden, miniaturized and ordered out with it (what Qt does for a
     /// popup or tool window with a transient parent). `None` detaches it. The parent is the
-    /// `native_handle` of another `CocoaNativeWindow`, which must outlive the attachment or
-    /// detach it first, like an owner `HWND`; a window is never its own parent.
+    /// `native_handle` of another live `CocoaNativeWindow`; any other handle is ignored, and a
+    /// window is never its own parent. Dropping either window ends the attachment.
     fn set_transient_parent(&mut self, parent: Option<isize>) {
         let me = self.ns_window;
         let wanted = parent
             .filter(|&handle| handle != 0 && handle != me.0 as isize)
             .map(|handle| Id(handle as *mut std::ffi::c_void))
             .unwrap_or(Id::NIL);
-        // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`; `parentWindow` is AppKit's
-        // own link, so the current parent is a live window or nil, and a window that is removed
-        // from it is alive for the call. `wanted` is non-nil only when the caller supplied
-        // another window's `native_handle`; the trait contract on this method (documented above:
-        // the parent must outlive the attachment) is what makes it live. Nothing in this code can
-        // check that, so it is a caller obligation. `removeChildWindow:` takes one window and
-        // `addChildWindow:ordered:` a window and an `NSWindowOrderingMode` (NSInteger).
+        if !wanted.is_nil() && !is_live_window(wanted.0 as usize) {
+            eprintln!(
+                "ferrokit: set_transient_parent: {:#x} is not a live CocoaNativeWindow; it is \
+                 ignored",
+                wanted.0 as usize
+            );
+            return;
+        }
+        // SAFETY: `me` is `self.ns_window`, live from `new` to `Drop`. `parentWindow` is nil or
+        // a window this method attached `me` to, which was a live `CocoaNativeWindow` then and
+        // still is: its `Drop` detaches every child before releasing it. `wanted` is nil or (just
+        // checked) the window of a live `CocoaNativeWindow` of this thread. `removeChildWindow:`
+        // takes one window and `addChildWindow:ordered:` a window and an `NSWindowOrderingMode`
+        // (NSInteger).
         unsafe {
             let current = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
             if current == wanted {
@@ -829,6 +862,8 @@ impl PlatformWindow for CocoaNativeWindow {
         }
     }
 
+    /// The handle of the live `CocoaNativeWindow` this window is attached to: a parent detaches
+    /// its children when it is dropped, so the handle never outlives its window.
     fn transient_parent(&self) -> Option<isize> {
         // SAFETY: `ns_window` is created in `new` and released only in `Drop`, so it is live;
         // `parentWindow` takes no arguments and returns an object.
@@ -1047,18 +1082,42 @@ impl PlatformWindow for CocoaNativeWindow {
 impl Drop for CocoaNativeWindow {
     /// Qt's `~QCocoaWindow` takes the window off screen and releases its views and the window.
     fn drop(&mut self) {
+        let me = self.ns_window;
+        // No handle may name this window once it is released: it leaves the set of live
+        // windows first, so `set_transient_parent` refuses it from here on.
+        let others: Vec<usize> = {
+            let mut live = live_windows();
+            live.remove(&(me.0 as usize));
+            live.iter().copied().collect()
+        };
         // A child window is attached to its parent, which retains it and may still be alive.
-        // SAFETY: `ns_window` is alive until the releases below; `parentWindow` is AppKit's own
-        // link, cleared when the parent goes away first [inferred: AppKit documentation], so a
-        // non-nil `parent` is live; `removeChildWindow:` takes one window.
+        // SAFETY: `me` is alive until the releases below; `parentWindow` is nil or the live
+        // window `set_transient_parent` attached `me` to (a parent detaches its children below
+        // before it is released); `removeChildWindow:` takes one window.
         unsafe {
-            let parent = ObjcMsg::send_id_prop(self.ns_window, Sel::register("parentWindow"));
+            let parent = ObjcMsg::send_id_prop(me, Sel::register("parentWindow"));
             if !parent.is_nil() {
-                ObjcMsg::send_id_logged(
-                    parent,
-                    Sel::register("removeChildWindow:"),
-                    self.ns_window,
-                );
+                ObjcMsg::send_id_logged(parent, Sel::register("removeChildWindow:"), me);
+            }
+        }
+        // The windows attached to this one are detached too: AppKit does not document clearing
+        // a child's `parentWindow` when its parent is deallocated [inferred: unverified either
+        // way], and the children's `transient_parent`, `set_transient_parent` and `Drop` message
+        // that window.
+        for handle in others {
+            // A window dropped meanwhile (by a callback of the messages below) is skipped.
+            if !is_live_window(handle) {
+                continue;
+            }
+            let child = Id(handle as *mut std::ffi::c_void);
+            // SAFETY: `child` is the window of a live `CocoaNativeWindow` (checked just above;
+            // windows leave the set before they are released) and `me` is still alive;
+            // `parentWindow` takes no arguments and returns an object, `removeChildWindow:`
+            // takes one window.
+            unsafe {
+                if ObjcMsg::send_id_prop(child, Sel::register("parentWindow")) == me {
+                    ObjcMsg::send_id_logged(me, Sel::register("removeChildWindow:"), child);
+                }
             }
         }
         // From here AppKit callbacks must not find the window: the slot goes first, and takes

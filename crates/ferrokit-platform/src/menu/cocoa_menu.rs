@@ -2,12 +2,38 @@
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::geometry::primitives::Point;
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use super::{PlatformMenu, PlatformMenuItem};
 use crate::objc_runtime::{
     ActionTarget, Class, Id, ObjcMsg, Sel, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON,
 };
+
+/// Addresses of the `NSMenu`s [`CocoaMenu::new`] created. Their +1 is never released, so an
+/// address in here names a live `NSMenu` for the rest of the process.
+static NS_MENUS: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
+
+/// The `NSMenu` of `menu` if it is a [`CocoaMenu`], nil otherwise. Any code can implement
+/// `PlatformMenu`, so a `native_handle` is only sent messages (or handed to AppKit) once it is
+/// known to be one of the live menus above; anything else is treated as no menu, which is
+/// also what the default `native_handle` of 0 means.
+pub(crate) fn ns_menu_of(menu: &dyn PlatformMenu) -> Id {
+    let handle = menu.native_handle();
+    if handle == 0 {
+        return Id::NIL;
+    }
+    let known = NS_MENUS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&(handle as usize));
+    if known {
+        Id(handle as *mut std::ffi::c_void)
+    } else {
+        eprintln!("ferrokit: menu handle {handle:#x} is not a CocoaMenu; it is ignored");
+        Id::NIL
+    }
+}
 
 pub struct CocoaMenuItem {
     id: u32,
@@ -160,11 +186,13 @@ impl CocoaMenuItem {
         }
     }
 
+    /// Makes `menu` the item's submenu. A `menu` that is not a [`CocoaMenu`] has no `NSMenu`
+    /// AppKit could show, so the item gets none.
     pub fn set_submenu(&self, menu: Box<dyn PlatformMenu>) {
-        let sub_id = Id(menu.native_handle() as *mut std::ffi::c_void);
-        // SAFETY: `self.ns_item` is live (never released); `sub_id` is the NSMenu handle of
-        // `menu`, which is stored in `self.submenu` right below and so outlives the item's use
-        // of it; `setSubmenu:` takes one NSMenu.
+        let sub_id = ns_menu_of(&*menu);
+        // SAFETY: `self.ns_item` is live (never released); `sub_id` is nil or one of the live
+        // NSMenus `CocoaMenu::new` created and never releases (`ns_menu_of`); `setSubmenu:`
+        // takes one NSMenu or nil.
         unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setSubmenu:"), sub_id) };
         *self.submenu.lock().unwrap() = Some(menu);
     }
@@ -262,6 +290,12 @@ impl CocoaMenu {
         // `ns_menu` is live for the life of this value.
         let ns_menu =
             unsafe { ObjcMsg::send_str(ns_menu_alloc, Sel::register("initWithTitle:"), "") };
+        if !ns_menu.is_nil() {
+            NS_MENUS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(ns_menu.0 as usize);
+        }
 
         Self {
             ns_menu,

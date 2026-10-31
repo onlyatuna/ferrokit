@@ -1718,8 +1718,10 @@ fn test_platform_parity_gaps_verification() {
         use ferrokit_gui::paint::Pixmap;
         use ferrokit_platform::surface::macos::CocoaLayerSurface;
         use ferrokit_platform::surface::PlatformSurface;
-        let mut surface =
-            CocoaLayerSurface::new(1234, 100, 100).expect("failed to create CocoaLayerSurface");
+        // SAFETY: off macOS the surface runs on the mock runtime, which never dereferences the
+        // layer id.
+        let mut surface = unsafe { CocoaLayerSurface::new(1234, 100, 100) }
+            .expect("failed to create CocoaLayerSurface");
         let mut pixmap = Pixmap::new(100, 100).expect("failed to create pixmap");
         pixmap.fill(Color::from_rgba8(255, 0, 0, 255));
         surface

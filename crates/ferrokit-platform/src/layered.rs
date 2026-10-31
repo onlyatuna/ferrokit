@@ -159,8 +159,10 @@ mod tests {
         wayland.resize(120, 90).unwrap();
         assert_eq!(wayland.width(), 120);
 
+        // SAFETY: this test is built only for Windows, where `CocoaLayerSurface` runs on the
+        // mock runtime, which never dereferences the layer id.
         let mut macos: Box<dyn PlatformSurface> =
-            Box::new(CocoaLayerSurface::new(3001, 80, 60).unwrap());
+            Box::new(unsafe { CocoaLayerSurface::new(3001, 80, 60) }.unwrap());
         assert_eq!(macos.width(), 80);
         macos.resize(140, 100).unwrap();
         assert_eq!(macos.width(), 140);

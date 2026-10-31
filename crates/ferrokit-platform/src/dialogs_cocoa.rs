@@ -4,8 +4,8 @@
 //! The dialog logic ([`CocoaDialogs`]) is written against the small [`DialogRuntime`] message
 //! interface instead of calling Objective-C directly, so the exact message sequence (which
 //! selectors, which arguments, which objects are released) is unit-tested on every OS with a
-//! recording implementation. [`NativeRuntime`] (macOS only) forwards the interface to the
-//! Objective-C runtime through [`ObjcMsg`].
+//! recording implementation. `NativeRuntime` (macOS only, crate-private) forwards the interface
+//! to the Objective-C runtime through [`ObjcMsg`].
 //!
 //! Ownership rules the logic follows: every object it creates is either autoreleased by its
 //! factory (`openPanel`, `savePanel`, `array`, `ns_string`) and lives until the enclosing
@@ -419,8 +419,10 @@ impl<R: DialogRuntime + Send + Sync> PlatformDialogs for CocoaDialogs<R> {
     }
 }
 
+// Crate-private: its methods message whatever `Id` they are given, which is sound only for the
+// objects `CocoaDialogs` creates and passes, so no code outside the crate may call them.
 #[cfg(target_os = "macos")]
-pub use native::NativeRuntime;
+pub(crate) use native::NativeRuntime;
 
 #[cfg(target_os = "macos")]
 mod native {
@@ -431,7 +433,7 @@ mod native {
 
     /// [`DialogRuntime`] over the real Objective-C runtime.
     #[derive(Debug, Default, Clone, Copy)]
-    pub struct NativeRuntime;
+    pub(crate) struct NativeRuntime;
 
     fn class_id(name: &str) -> Id {
         Id(objc_get_class(name).0)

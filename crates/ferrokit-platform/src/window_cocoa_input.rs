@@ -587,13 +587,20 @@ fn button_number(event: Id) -> u16 {
 /// or an event with nothing to report); the caller then lets AppKit's default handling run.
 ///
 /// Must run on the main thread, like every AppKit callback.
-pub fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
+///
+/// # Safety
+/// `event` is nil or a live `NSEvent` of the kind `kind` names: the event AppKit passed to the
+/// `QNSView` method `kind` stands for (`mouseDown:` for [`NsEventKind::MouseDown`], `keyDown:`
+/// for [`NsEventKind::KeyDown`], ...), since each kind sends the selectors defined only for its
+/// events. `view` needs no guarantee: it is only used once found in the table of live views.
+/// The mock runtime of other targets never dereferences an `Id`, so there any value will do.
+pub unsafe fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
     ThreadContext::assert_main_thread("handle_ns_event");
     if with_slot(view, |_| ()).is_none() || event.is_nil() {
         return false;
     }
-    // SAFETY: `event` is the non-nil NSEvent AppKit passed to the view method (checked above);
-    // `modifierFlags` is defined for every NSEvent and returns NSUInteger, matching
+    // SAFETY: `event` is a non-nil live NSEvent (checked above; the rest is this function's
+    // contract); `modifierFlags` is defined for every NSEvent and returns NSUInteger, matching
     // `send_nsuinteger_return`.
     let flags = unsafe { ObjcMsg::send_nsuinteger_return(event, sel("modifierFlags")) };
     let modifiers = qt_modifiers_from_ns_flags(flags);
@@ -833,10 +840,14 @@ fn utf16_len(text: &str) -> usize {
 }
 
 /// `-insertText:replacementRange:` with an `NSString` or `NSAttributedString`.
-pub fn text_input_insert(view: Id, text: Id) {
-    // SAFETY: `text` is the argument AppKit passed to `insertText:replacementRange:`: an
-    // NSString or NSAttributedString (or nil), live for this call [inferred: NSTextInputClient
-    // documentation]; `ns_text_to_string` accepts exactly that.
+///
+/// # Safety
+/// `text` is nil or a live `NSString` or `NSAttributedString`, as AppKit passes to
+/// `insertText:replacementRange:`. The mock runtime of other targets never dereferences an
+/// `Id`, so there any value will do.
+pub unsafe fn text_input_insert(view: Id, text: Id) {
+    // SAFETY: `text` is nil or a live NSString or NSAttributedString (this function's contract);
+    // `ns_text_to_string` accepts exactly that.
     if let Some(text) = unsafe { appkit::ns_text_to_string(text) } {
         text_input_insert_str(view, &text);
     }
@@ -872,10 +883,14 @@ pub fn text_input_insert_str(view: Id, text: &str) {
 }
 
 /// `-setMarkedText:selectedRange:replacementRange:`: the composition changed.
-pub fn text_input_set_marked(view: Id, text: Id, selected: NSRange) {
-    // SAFETY: `text` is the argument AppKit passed to `setMarkedText:...`: an NSString or
-    // NSAttributedString (or nil), live for this call [inferred: NSTextInputClient
-    // documentation]; `ns_text_to_string` accepts exactly that.
+///
+/// # Safety
+/// `text` is nil or a live `NSString` or `NSAttributedString`, as AppKit passes to
+/// `setMarkedText:selectedRange:replacementRange:`. The mock runtime of other targets never
+/// dereferences an `Id`, so there any value will do.
+pub unsafe fn text_input_set_marked(view: Id, text: Id, selected: NSRange) {
+    // SAFETY: `text` is nil or a live NSString or NSAttributedString (this function's contract);
+    // `ns_text_to_string` accepts exactly that.
     let text = unsafe { appkit::ns_text_to_string(text) }.unwrap_or_default();
     text_input_set_marked_str(view, &text, selected);
 }
