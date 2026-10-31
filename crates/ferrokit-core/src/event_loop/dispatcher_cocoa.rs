@@ -156,18 +156,44 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| unsafe {
     }
 });
 
+/// `[receiver sel]` through `objc_msgSend` cast to `R (Id, Sel)`.
+///
+/// # Safety
+/// `receiver` is nil or a live object (or class) that responds to `sel`, and the method `sel`
+/// names takes no arguments and returns `R` under the C calling convention: `R` is `()` for a
+/// void method, or a type of the same size and register class as the return type (an object
+/// pointer, integer, `BOOL` as `i8`, ...), never a struct that needs `objc_msgSend_stret`. The
+/// thread rules of the receiver (AppKit: main thread) apply.
 unsafe fn send0<R>(receiver: Id, sel: Sel) -> R {
+    // SAFETY: `objc_msgSend` is a trampoline that jumps to the method implementation with the
+    // registers it was called with, so calling it through the method's own signature is how it
+    // is meant to be used; the caller guarantees that `(Id, Sel) -> R` is that signature (this
+    // function's contract). The transmute turns the function's address (`*const ()`) into a
+    // function pointer of the same size, which is defined; the call is sound by the contract.
     let f: unsafe extern "C" fn(Id, Sel) -> R = std::mem::transmute(ffi::objc_msgSend as *const ());
     f(receiver, sel)
 }
 
+/// `[receiver sel:a]` through `objc_msgSend` cast to `R (Id, Sel, A)`.
+///
+/// # Safety
+/// As [`send0`], for a method taking one argument whose C type matches `A` (same size and
+/// register class, passed by value).
 unsafe fn send1<A, R>(receiver: Id, sel: Sel, a: A) -> R {
+    // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A) -> R` is the signature of the
+    // method `sel` names on `receiver`.
     let f: unsafe extern "C" fn(Id, Sel, A) -> R =
         std::mem::transmute(ffi::objc_msgSend as *const ());
     f(receiver, sel, a)
 }
 
+/// `[receiver sel:a with:b]` through `objc_msgSend` cast to `R (Id, Sel, A, B)`.
+///
+/// # Safety
+/// As [`send0`], for a method taking two arguments whose C types match `A` and `B`.
 unsafe fn send2<A, B, R>(receiver: Id, sel: Sel, a: A, b: B) -> R {
+    // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A, B) -> R` is the signature of
+    // the method `sel` names on `receiver`.
     let f: unsafe extern "C" fn(Id, Sel, A, B) -> R =
         std::mem::transmute(ffi::objc_msgSend as *const ());
     f(receiver, sel, a, b)
@@ -306,8 +332,10 @@ extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
 /// (Qt's `postedEventsSource`, :786-801).
 struct WakeSource(CFTypeRef);
 
-// SAFETY: CFRunLoopSourceSignal, CFRunLoopWakeUp and CFRunLoopSourceInvalidate are thread-safe.
+// SAFETY: the wrapped run loop source is only passed to CFRunLoopSourceSignal, CFRunLoopWakeUp
+// and CFRunLoopSourceInvalidate, which are thread-safe; moving the reference is fine.
 unsafe impl Send for WakeSource {}
+// SAFETY: as for `Send`: shared use only calls the thread-safe functions above.
 unsafe impl Sync for WakeSource {}
 
 impl WakeSource {

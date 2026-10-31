@@ -283,7 +283,11 @@ fn set_win10_accent(
 ///
 /// `backdrop_view` is the window's effect view slot: set when an effect view is added and
 /// taken when `BackdropType::None` removes it.
-pub fn set_cocoa_window_backdrop(
+///
+/// Crate-private, and safe only because its one caller (`CocoaNativeWindow::set_backdrop`)
+/// passes its own live window, content view and slot: `ns_window` and `ns_view` must each be nil
+/// or live, and `backdrop_view` must hold nothing but an effect view this function created.
+pub(crate) fn set_cocoa_window_backdrop(
     ns_window: crate::objc_runtime::Id,
     ns_view: crate::objc_runtime::Id,
     backdrop: BackdropType,

@@ -14,10 +14,10 @@ use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_platform::objc_runtime::appkit::{MockValue, NSRange, NS_NOT_FOUND};
 use ferrokit_platform::window_cocoa_input::{
-    cursor_update, handle_ns_event, qt_key_for_event, qt_modifiers_from_ns_flags,
-    reset_cursor_rects, text_input_first_rect, text_input_has_marked_text, text_input_insert,
-    text_input_insert_str, text_input_marked_range, text_input_set_marked_str, text_input_unmark,
-    update_tracking_area, NsEventKind, IME_LINE_HEIGHT,
+    self as input, cursor_update, qt_key_for_event, qt_modifiers_from_ns_flags, reset_cursor_rects,
+    text_input_first_rect, text_input_has_marked_text, text_input_insert_str,
+    text_input_marked_range, text_input_set_marked_str, text_input_unmark, update_tracking_area,
+    NsEventKind, IME_LINE_HEIGHT,
 };
 use ferrokit_platform::{
     CGPoint, ClosureWindowEventHandler, CocoaNativeWindow, CursorShape, Id, KeyboardModifiers,
@@ -47,6 +47,19 @@ fn window() -> (CocoaNativeWindow, Log) {
 
 fn ns_event(properties: &[(&str, MockValue)]) -> Id {
     MockObjcRuntime::instance().object_with("NSEvent", properties)
+}
+
+/// [`input::handle_ns_event`] on the mock runtime.
+fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
+    // SAFETY: this file only builds for the mock runtime (`cfg(not(target_os = "macos"))`),
+    // which never dereferences an `Id`, so any `event` meets the contract.
+    unsafe { input::handle_ns_event(view, kind, event) }
+}
+
+/// [`input::text_input_insert`] on the mock runtime.
+fn text_input_insert(view: Id, text: Id) {
+    // SAFETY: as in `handle_ns_event` above: the mock runtime never dereferences `text`.
+    unsafe { input::text_input_insert(view, text) }
 }
 
 /// A mouse event at `(x, y)` in window coordinates (origin bottom left).

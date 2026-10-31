@@ -256,7 +256,14 @@ mod objc {
         fn objc_setExceptionPreprocessor(f: Preprocessor) -> Option<Preprocessor>;
     }
 
+    // `send`, `send1` and `send2` are safe wrappers whose soundness rests on their callers, all in
+    // this example: each passes a live object (or nil) and a selector whose Objective-C signature
+    // is exactly the Rust argument and return types, on the main thread. They are not library API;
+    // making them `unsafe fn` would only move the same argument to every one of ~150 call sites.
     pub fn send<R>(receiver: Id, sel: &str) -> R {
+        // SAFETY: `objc_msgSend` is a trampoline that must be called through the selector's real
+        // signature; the callers in this file guarantee that `(Id, Sel) -> R` is it and that the
+        // receiver is live (see above).
         unsafe {
             let f: extern "C" fn(Id, Sel) -> R = std::mem::transmute(objc_msgSend as *const ());
             f(receiver, Sel::register(sel))
@@ -264,6 +271,7 @@ mod objc {
     }
 
     pub fn send2<A, B, R>(receiver: Id, sel: &str, a: A, b: B) -> R {
+        // SAFETY: as in `send`, with the signature `(Id, Sel, A, B) -> R`.
         unsafe {
             let f: extern "C" fn(Id, Sel, A, B) -> R =
                 std::mem::transmute(objc_msgSend as *const ());
@@ -272,6 +280,7 @@ mod objc {
     }
 
     pub fn send1<A, R>(receiver: Id, sel: &str, arg: A) -> R {
+        // SAFETY: as in `send`, with the signature `(Id, Sel, A) -> R`.
         unsafe {
             let f: extern "C" fn(Id, Sel, A) -> R = std::mem::transmute(objc_msgSend as *const ());
             f(receiver, Sel::register(sel), arg)

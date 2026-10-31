@@ -993,7 +993,13 @@ mod native {
     macro_rules! ns_event_imp {
         ($name:ident, $kind:expr) => {
             extern "C" fn $name(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
-                let handled = guarded(true, || input::handle_ns_event(Id(this), $kind, Id(event)));
+                // SAFETY: AppKit sends this method (installed for `$kind`'s selector) with the
+                // `NSEvent` it is dispatching, nil or live for the call, so `event` is an event
+                // of the kind `$kind` names [inferred: AppKit documentation of the NSResponder
+                // event methods].
+                let handled = guarded(true, || unsafe {
+                    input::handle_ns_event(Id(this), $kind, Id(event))
+                });
                 if !handled {
                     // SAFETY: `sup` lives across the call and names `this` (the receiver AppKit
                     // is dispatching to) with `NSView` as the class where lookup starts, which
@@ -1105,7 +1111,12 @@ mod native {
         text: *mut c_void,
         _replacement: NSRange,
     ) {
-        guarded((), || input::text_input_insert(Id(this), Id(text)));
+        // SAFETY: `text` is the argument AppKit passed to `insertText:replacementRange:`: an
+        // NSString or NSAttributedString (or nil), live for this call [inferred:
+        // NSTextInputClient documentation].
+        guarded((), || unsafe {
+            input::text_input_insert(Id(this), Id(text))
+        });
     }
 
     extern "C" fn set_marked_text(
@@ -1115,7 +1126,10 @@ mod native {
         selected: NSRange,
         _replacement: NSRange,
     ) {
-        guarded((), || {
+        // SAFETY: `text` is the argument AppKit passed to `setMarkedText:...`: an NSString or
+        // NSAttributedString (or nil), live for this call [inferred: NSTextInputClient
+        // documentation].
+        guarded((), || unsafe {
             input::text_input_set_marked(Id(this), Id(text), selected)
         });
     }

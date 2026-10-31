@@ -185,9 +185,12 @@ fn explicit_mouse_grab_needs_a_visible_window_and_a_pressed_button_is_an_implici
             ],
         )
     };
-    handle_ns_event(win.ns_view(), NsEventKind::MouseDown, press(0));
+    // SAFETY: this file only builds for the mock runtime (`cfg(not(target_os = "macos"))`), which
+    // never dereferences an `Id`; the events are mock mouse events besides.
+    unsafe { handle_ns_event(win.ns_view(), NsEventKind::MouseDown, press(0)) };
     assert!(win.has_mouse_grab());
-    handle_ns_event(win.ns_view(), NsEventKind::MouseUp, press(0));
+    // SAFETY: as for the press above.
+    unsafe { handle_ns_event(win.ns_view(), NsEventKind::MouseUp, press(0)) };
     assert!(!win.has_mouse_grab());
 }
 
@@ -334,6 +337,59 @@ fn transient_parent_attaches_the_window_as_a_child_window() {
     assert!(mock.get_object_data(p).is_some());
     assert!(!mock.was_over_released(p));
     parent.set_transient_parent(None);
+}
+
+#[test]
+fn transient_parent_ignores_foreign_handles_and_ends_with_the_parent() {
+    let mock = MockObjcRuntime::instance();
+    let parent = window(WindowFlags::NORMAL);
+    let mut child = window(WindowFlags::TOOL);
+    // A handle that is not a live `CocoaNativeWindow` is never sent a message: it is ignored,
+    // which neither attaches nor detaches the window.
+    let foreign = mock.allocate_object("NSWindow");
+    child.set_transient_parent(Some(foreign.0 as isize));
+    assert_eq!(child.transient_parent(), None);
+    assert!(selectors(mock, foreign).is_empty());
+    child.set_transient_parent(Some(parent.native_handle()));
+    child.set_transient_parent(Some(foreign.0 as isize));
+    assert_eq!(child.transient_parent(), Some(parent.native_handle()));
+    assert!(selectors(mock, foreign).is_empty());
+
+    // A parent that is dropped detaches its children first, so the handle never outlives it,
+    // and is refused like any other handle from then on.
+    let parent_handle = parent.native_handle();
+    drop(parent);
+    assert_eq!(child.transient_parent(), None);
+    child.set_transient_parent(Some(parent_handle));
+    assert_eq!(child.transient_parent(), None);
+}
+
+#[test]
+fn a_transient_parent_that_would_make_a_cycle_is_refused() {
+    let mock = MockObjcRuntime::instance();
+    let mut a = window(WindowFlags::NORMAL);
+    let mut b = window(WindowFlags::TOOL);
+    let mut c = window(WindowFlags::TOOL);
+    b.set_transient_parent(Some(a.native_handle()));
+    c.set_transient_parent(Some(b.native_handle()));
+
+    // `a` above its own grandchild and `b` above its child would be cycles: no window is
+    // attached to or detached from anything.
+    mock.clear_calls();
+    a.set_transient_parent(Some(c.native_handle()));
+    b.set_transient_parent(Some(c.native_handle()));
+    for w in [a.ns_window(), b.ns_window(), c.ns_window()] {
+        assert!(!selectors(mock, w)
+            .iter()
+            .any(|s| s == "addChildWindow:ordered:" || s == "removeChildWindow:"));
+    }
+    assert_eq!(a.transient_parent(), None);
+    assert_eq!(b.transient_parent(), Some(a.native_handle()));
+
+    // A window outside the chain is still accepted.
+    let d = window(WindowFlags::NORMAL);
+    a.set_transient_parent(Some(d.native_handle()));
+    assert_eq!(a.transient_parent(), Some(d.native_handle()));
 }
 
 fn solid(width: u32, height: u32) -> Pixmap {

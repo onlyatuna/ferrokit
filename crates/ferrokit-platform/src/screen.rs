@@ -542,13 +542,17 @@ pub mod cocoa_screen {
     }
 
     impl CocoaScreen {
-        pub fn from_nsscreen(screen: Id, is_primary: bool, primary_height: i32) -> Self {
+        /// The screen `screen` describes. Private, and safe only because its callers
+        /// (`primary`, `screens`) pass an element of `[NSScreen screens]`: `screen` must be nil
+        /// or a live `NSScreen`.
+        fn from_nsscreen(screen: Id, is_primary: bool, primary_height: i32) -> Self {
             let sel_frame = Sel::register("frame");
             let sel_visible_frame = Sel::register("visibleFrame");
             let sel_scale = Sel::register("backingScaleFactor");
 
-            // SAFETY: `screen` is an NSScreen (nil gives a no-op returning zeros) per the caller's
-            // contract [inferred: not checked here]; `frame` returns an NSRect, matching `send_rect_return`.
+            // SAFETY: `screen` is nil (a no-op returning zeros) or an element of `[NSScreen
+            // screens]`, which the callers in this impl hold for the call; `frame` returns an
+            // NSRect, matching `send_rect_return`.
             let frame = unsafe { ObjcMsg::send_rect_return(screen, sel_frame) };
             // SAFETY: as above; `visibleFrame` returns an NSRect, matching `send_rect_return`.
             let visible_frame = unsafe { ObjcMsg::send_rect_return(screen, sel_visible_frame) };

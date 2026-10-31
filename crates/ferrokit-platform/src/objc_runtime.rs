@@ -166,6 +166,9 @@ pub const NS_STATUS_WINDOW_LEVEL: NSInteger = 25; // System status bar window le
 mod native_bindings {
     use super::*;
 
+    // One `#[link]` per library is how several libraries are linked; the lint reads the repeated
+    // `kind = "framework"` as a duplicate.
+    #[allow(clippy::duplicated_attributes)]
     #[link(name = "objc")]
     #[link(name = "AppKit", kind = "framework")]
     #[link(name = "CoreFoundation", kind = "framework")]

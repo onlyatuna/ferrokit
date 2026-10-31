@@ -193,7 +193,12 @@ impl CocoaStatusItem {
         let Some(menu) = &self.menu else {
             return;
         };
-        let menu_id = Id(menu.native_handle() as *mut std::ffi::c_void);
+        // Qt observes only a status item that has an NSMenu; a menu that is not a `CocoaMenu`
+        // has none (and nil would observe every menu of the application).
+        let menu_id = crate::menu::cocoa_menu::ns_menu_of(&**menu);
+        if menu_id.is_nil() {
+            return;
+        }
         let handlers = Rc::clone(&self.handlers);
         let Ok(target) = ActionTarget::new(move || {
             let activation = handlers.borrow().activation.clone();
@@ -207,10 +212,10 @@ impl CocoaStatusItem {
         // SAFETY: `center` is the shared notification centre (a nil class is a no-op);
         // `addObserver:selector:name:object:` takes (observer, selector, NSString name, object),
         // matching `send_add_observer_logged`. `target` is a live ActionTarget implementing the
-        // selector and `menu_id` is the menu of `self.menu`; the observer is removed in
-        // `remove_menu_observer` before `target` is dropped, so the centre never holds a freed
-        // observer. (The centre does not retain observers: documented AppKit behaviour
-        // [inferred].)
+        // selector and `menu_id` is the live NSMenu of `self.menu` (`ns_menu_of`); the observer
+        // is removed in `remove_menu_observer` before `target` is dropped, so the centre never
+        // holds a freed observer. (The centre does not retain observers: documented AppKit
+        // behaviour [inferred].)
         unsafe {
             let center = ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter"));
             ObjcMsg::send_add_observer_logged(
@@ -356,12 +361,12 @@ impl PlatformTrayIcon for CocoaStatusItem {
         // Qt removes the observer of the previous menu before replacing it
         // (QCocoaSystemTrayIcon::updateMenu).
         self.remove_menu_observer();
-        // [status_item setMenu:ns_menu]
-        let menu_id = Id(menu.native_handle() as *mut std::ffi::c_void);
+        // [status_item setMenu:ns_menu]; a menu that is not a `CocoaMenu` has no NSMenu, so the
+        // status item gets none.
+        let menu_id = crate::menu::cocoa_menu::ns_menu_of(&*menu);
         // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`); `menu_id`
-        // is the NSMenu handle of `menu`, which is stored in `self.menu` right below and so
-        // outlives the status item's use of it (the status item retains its menu [inferred]);
-        // `setMenu:` takes one NSMenu.
+        // is nil or a live NSMenu that `CocoaMenu::new` created and never releases
+        // (`ns_menu_of`); `setMenu:` takes one NSMenu or nil.
         unsafe { ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), menu_id) };
         self.menu = Some(menu);
         self.observe_menu_tracking();
@@ -371,7 +376,7 @@ impl PlatformTrayIcon for CocoaStatusItem {
     /// the status item button sends its action on left, right and other mouse down, and a status
     /// item that has a menu reports through the menu's `NSMenuDidBeginTrackingNotification`
     /// instead; either way the reason comes from `[NSApp currentEvent]`
-    /// ([`activation_reason_for_event`]).
+    /// (`activation_reason_for_event`).
     ///
     /// **Not run on macOS.** It is type-checked for `aarch64-apple-darwin` and tested against
     /// the mock Objective-C runtime; no real status bar item has been clicked.
@@ -548,16 +553,19 @@ pub fn activation_reason(
 /// as click count 0 and button 0, so it is a `Trigger`, exactly as Qt's messages to nil are.
 /// Qt reads `clickCount` and `buttonNumber` without looking at the event type, which raises for
 /// a non-mouse event; here such an event is `Unknown` instead.
-pub fn activation_reason_for_event(event: Id) -> TrayActivation {
+///
+/// Private, and safe only because every caller passes `current_event()`: `event` must be nil
+/// or a live `NSEvent`.
+fn activation_reason_for_event(event: Id) -> TrayActivation {
     if event.is_nil() {
         return TrayActivation::Trigger;
     }
-    // SAFETY: `event` is non-nil (checked above) and is the NSEvent given by the caller
-    // (`[NSApp currentEvent]` or the one AppKit is delivering), live for this call. `type` is
-    // defined for every NSEvent and returns NSEventType (NSUInteger), read here as an `isize` of
-    // the same size; `clickCount` and `buttonNumber` are only read after `is_mouse_event`
-    // established a mouse type (AppKit raises for the others), per the NSEvent documentation
-    // [inferred].
+    // SAFETY: `event` is non-nil (checked above) and is `[NSApp currentEvent]`, which every
+    // caller in this module passes (the mock tests pass mock events, never dereferenced), live
+    // for this call. `type` is defined for every NSEvent and returns NSEventType (NSUInteger),
+    // read here as an `isize` of the same size; `clickCount` and `buttonNumber` are only read
+    // after `is_mouse_event` established a mouse type (AppKit raises for the others), per the
+    // NSEvent documentation [inferred].
     let event_type = unsafe { ObjcMsg::send_isize_return(event, Sel::register("type")) };
     if !is_mouse_event(event_type) {
         return TrayActivation::Unknown;
