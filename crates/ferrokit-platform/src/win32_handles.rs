@@ -264,9 +264,10 @@ impl Drop for OwnedBitmap {
         if self.0.is_null() {
             return;
         }
-        // SAFETY: `self.0` is a bitmap created by GDI that this guard solely owns. It is not
-        // selected into any DC here: `DibTarget` is the only holder that selects one and it
-        // restores the previous object before dropping this field.
+        // SAFETY: `self.0` is a bitmap created by GDI that this guard solely owns. Within this
+        // module only `DibTarget` selects an `OwnedBitmap` into a DC, and it restores the
+        // previous object (or selects a replacement) before the old bitmap drops; callers
+        // elsewhere only create bitmaps they never select (cursor and icon builders).
         unsafe { DeleteObject(self.0) };
     }
 }
@@ -348,8 +349,14 @@ impl DibTarget {
     }
 
     /// Replaces the bitmap: restores the previous object, deletes the old bitmap, then selects
-    /// the new one.
+    /// the new one. If there is no previous object to restore (the original selection failed),
+    /// the old bitmap may still be selected and cannot be deleted safely first, so this falls
+    /// back to [`Self::replace_selecting`].
     pub(crate) fn replace_deselecting(&mut self, bitmap: OwnedBitmap, bits: *mut u8) {
+        if self.previous.is_null() {
+            self.replace_selecting(bitmap, bits);
+            return;
+        }
         self.restore_previous();
         let old = std::mem::replace(&mut self.bitmap, bitmap);
         drop(old);

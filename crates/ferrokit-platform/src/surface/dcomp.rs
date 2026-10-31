@@ -604,7 +604,10 @@ impl DCompSurface {
 
     /// The staged (about to be presented) pixel at `(x, y)` as `[b, g, r, a]`, for tests.
     pub fn staged_pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
-        if x >= self.width.min(self.staging_w) || y >= self.height.min(self.staging_h) {
+        if self.staging_bits().is_null()
+            || x >= self.width.min(self.staging_w)
+            || y >= self.height.min(self.staging_h)
+        {
             return None;
         }
         let off = (y as usize * self.staging_w as usize + x as usize) * 4;
@@ -723,9 +726,14 @@ impl DCompSurface {
             let resize_fn: PfnResizeBuffers = std::mem::transmute(*sc_vtbl.add(13));
             // Allocate the new staging DIB first: if it fails nothing has changed yet (the swap
             // chain keeps its size, the old DIB stays selected).
-            let Some((new_bmp, bits)) = create_dib_section(self.staging_dc(), alloc_w, alloc_h)
-            else {
-                return Err("CreateDIBSection failed for the staging DIB");
+            // The mock surface has no staging DIB, so none is allocated for it.
+            let new_dib = if self.staging.is_some() {
+                match create_dib_section(self.staging_dc(), alloc_w, alloc_h) {
+                    Some(dib) => Some(dib),
+                    None => return Err("CreateDIBSection failed for the staging DIB"),
+                }
+            } else {
+                None
             };
 
             let hr = resize_fn(
@@ -746,12 +754,12 @@ impl DCompSurface {
             self.stats.resize_buffers_count += 1;
 
             // Swap the staging DIB: restore the previous object, delete the old DIB, select the
-            // new one.
-            if let Some(staging) = &mut self.staging {
+            // new one. The mock surface has no staging DIB and keeps its (empty) staging size.
+            if let (Some(staging), Some((new_bmp, bits))) = (&mut self.staging, new_dib) {
                 staging.replace_deselecting(new_bmp, bits);
+                self.staging_w = alloc_w;
+                self.staging_h = alloc_h;
             }
-            self.staging_w = alloc_w;
-            self.staging_h = alloc_h;
             self.alloc_w = alloc_w;
             self.alloc_h = alloc_h;
             // Fresh buffers + staging: the next present must repaint everything visible.

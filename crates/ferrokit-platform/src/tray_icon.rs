@@ -623,8 +623,8 @@ impl TrayIcon {
         Ok(())
     }
 
-    /// Shows `hicon`, which stays owned by the caller (it is not destroyed with the tray icon).
-    /// Passing the handle the tray already shows changes nothing about who owns it.
+    /// Shows `hicon`, which stays owned by the caller (it is not destroyed with the tray icon),
+    /// unless it is the handle the tray already owns: that one stays the tray's.
     pub fn set_icon(&mut self, hicon: HICON) -> Result<(), &'static str> {
         self.replace_icon(IconHandle::shared(hicon))
     }
