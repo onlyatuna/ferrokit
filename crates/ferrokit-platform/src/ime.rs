@@ -24,6 +24,8 @@ pub struct Win32InputContext {
 /// that still has its default context initializes the process' text services, which measured
 /// ~800 ms inside `DefWindowProc(WM_ACTIVATE)` on a machine with Chinese IMEs installed, even for a bare Win32 window.
 #[cfg(windows)]
+// `hwnd` is passed only to `ImmAssociateContextEx`, which validates it; nothing dereferences it.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn set_window_ime_enabled(hwnd: windows_sys::Win32::Foundation::HWND, enabled: bool) {
     use windows_sys::Win32::UI::Input::Ime::{ImmAssociateContextEx, IACE_DEFAULT};
     let _t =

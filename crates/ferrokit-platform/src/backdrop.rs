@@ -116,6 +116,9 @@ impl BackdropState {
 /// `LAYERED` and `TOOLTIP` windows as frameless), and it knows nothing of a window this crate
 /// did not create: for those, `None` writes `dark_mode` like every other backdrop.
 #[cfg(windows)]
+// `hwnd` is a window handle passed only to DWM and user32, which validate it (a stale or foreign
+// handle makes the calls fail); nothing here dereferences it.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn set_window_backdrop(
     hwnd: windows_sys::Win32::Foundation::HWND,
     backdrop: BackdropType,

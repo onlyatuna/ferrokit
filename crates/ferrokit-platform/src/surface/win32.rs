@@ -153,6 +153,8 @@ pub struct Win32LayeredSurface {
 
 impl Win32LayeredSurface {
     /// Creates layered surface for given window and dimensions.
+    // `hwnd` is passed only to user32 and GDI, which validate it; nothing here dereferences it.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self, &'static str> {
         if width == 0 || height == 0 {
             return Err("Width and height must be greater than 0");

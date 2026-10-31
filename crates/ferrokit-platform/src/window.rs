@@ -283,6 +283,8 @@ static WINDOW_SYSTEM_EVENT_QUEUE: Mutex<Option<Vec<(isize, WindowSystemEvent)>>>
 const WM_FLUSH_WINDOW_SYSTEM_EVENTS: u32 =
     windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 0x1F;
 
+// `hwnd` is a key into this crate's maps and is passed to `PostMessageW`, which takes any value.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn post_window_system_event(hwnd: HWND, event: WindowSystemEvent) {
     {
         let mut queue = WINDOW_SYSTEM_EVENT_QUEUE
@@ -1058,6 +1060,8 @@ fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
 }
 
 #[cfg(windows)]
+// `hwnd` is passed only to `GetDpiForWindow`, which returns 0 for an invalid handle.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_window_dpr(hwnd: HWND) -> f32 {
     unsafe {
         let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd);

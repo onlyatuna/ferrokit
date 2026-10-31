@@ -195,6 +195,9 @@ impl Menu {
     }
 
     #[cfg(windows)]
+    // `hwnd` is passed only to user32 (`SetForegroundWindow`, `TrackPopupMenuEx`), which
+    // validates it; nothing here dereferences it.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn track_popup_at(
         &self,
         hwnd: HWND,
@@ -1144,6 +1147,9 @@ impl TrayIcon {
         }
     }
 
+    // `DestroyIcon` validates the handle and fails for one that is not an icon. Destroying an
+    // icon that someone else still uses is an ownership error, not memory unsafety here.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn destroy_hicon(hicon: HICON) {
         if !hicon.is_null() {
             unsafe {
