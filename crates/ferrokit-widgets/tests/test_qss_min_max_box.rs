@@ -115,3 +115,43 @@ fn test_progress_bar_min_max_include_padding_and_border() {
     p.set_style_sheet("QProgressBar { border: none; min-height: 5px; max-height: 5px; }");
     assert_eq!(sizes(&p), ([0, 5], [MAX, 5]), "PySide6 P1");
 }
+
+#[test]
+fn test_styled_widgets_respect_explicit_minimum_and_maximum_size() {
+    use ferrokit_gui::geometry::primitives::Size;
+
+    // QLabel
+    let lbl = Label::new("Hello");
+    assert_eq!(lbl.minimum_size(), Size::new(0, 0));
+    lbl.set_minimum_size(Size::new(100, 50));
+    assert_eq!(lbl.minimum_size(), Size::new(100, 50));
+    lbl.set_style_sheet("QLabel { min-width: 120px; min-height: 60px; }");
+    assert_eq!(lbl.minimum_size(), Size::new(120, 60));
+    lbl.set_style_sheet("QLabel { min-width: 80px; min-height: 30px; }");
+    assert_eq!(lbl.minimum_size(), Size::new(100, 50));
+
+    lbl.set_maximum_size(Size::new(200, 150));
+    assert_eq!(lbl.maximum_size(), Size::new(200, 150));
+    lbl.set_style_sheet("QLabel { max-width: 180px; max-height: 120px; }");
+    assert_eq!(lbl.maximum_size(), Size::new(180, 120));
+
+    // QPushButton
+    let btn = Button::new("Click");
+    assert_eq!(btn.minimum_size(), Size::new(0, 0));
+    btn.set_minimum_size(Size::new(75, 25));
+    assert_eq!(btn.minimum_size(), Size::new(75, 25));
+    btn.set_maximum_size(Size::new(150, 40));
+    assert_eq!(btn.maximum_size(), Size::new(150, 40));
+
+    // QFrame
+    let frame = Frame::new();
+    assert_eq!(frame.minimum_size(), Size::new(0, 0));
+    frame.set_minimum_size(Size::new(50, 50));
+    assert_eq!(frame.minimum_size(), Size::new(50, 50));
+
+    // QProgressBar
+    let pb = ProgressBar::new();
+    assert_eq!(pb.minimum_size(), Size::new(0, 0));
+    pb.set_minimum_size(Size::new(60, 20));
+    assert_eq!(pb.minimum_size(), Size::new(60, 20));
+}

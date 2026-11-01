@@ -528,14 +528,17 @@ impl Widget for Label {
 
     fn minimum_size(&self) -> Size {
         let style = self.resolved_style();
-        let (w, h) = style.min_box_size();
-        Size::new(w, h)
+        let (style_w, style_h) = style.min_box_size();
+        let explicit = self.widget_base().min_size.get();
+        Size::new(style_w.max(explicit.width), style_h.max(explicit.height))
     }
 
-    /// `QLabel::minimumSizeHint` (qlabel.cpp:809-833): the height of one line (`sizeForWidth` of
-    /// an unbounded width, never above the size hint's) by the width of the widest word
-    /// (`sizeForWidth(0)`). A label that does not wrap is as wide as its text either way, so this
-    /// is its size hint.
+    fn maximum_size(&self) -> Size {
+        let style = self.resolved_style();
+        let (style_w, style_h) = style.max_box_size();
+        let explicit = self.widget_base().max_size.get();
+        Size::new(style_w.min(explicit.width), style_h.min(explicit.height))
+    }
     fn minimum_size_hint(&self) -> Size {
         let hint = self.size_hint();
         if !self.is_text_label || !self.word_wrap {
@@ -544,12 +547,6 @@ impl Widget for Label {
         let one_line = self.size_for_width(Some(WIDGET_SIZE_MAX));
         let narrowest = self.size_for_width(Some(0));
         Size::new(narrowest.width, one_line.height.min(hint.height))
-    }
-
-    fn maximum_size(&self) -> Size {
-        let style = self.resolved_style();
-        let (w, h) = style.max_box_size();
-        Size::new(w, h)
     }
 
     fn is_visible(&self) -> bool {
