@@ -366,42 +366,14 @@ fn expand_flag(policy: Policy) -> bool {
     matches!(policy, Policy::Expanding | Policy::MinimumExpanding)
 }
 
-/// `qSmartMinSize`/`qSmartMaxSize`'s explicit bounds (`QWidget::setMinimumSize`): per axis, a
-/// non-zero explicit minimum wins, else the widget's own minimum (`minimum_size`).
+/// Effective minimum size for layout (`QWidget::minimumSize`, combining explicit and styled limits).
 pub fn effective_minimum_size(widget: &dyn Widget) -> Size {
-    let explicit = widget.widget_base().min_size.get();
-    let own = widget.minimum_size();
-    Size::new(
-        if explicit.width > 0 {
-            explicit.width
-        } else {
-            own.width
-        },
-        if explicit.height > 0 {
-            explicit.height
-        } else {
-            own.height
-        },
-    )
+    widget.minimum_size()
 }
 
-/// Explicit `QWidget::setMaximumSize` bound per axis (unless `WIDGET_SIZE_MAX`), else the widget's
-/// own maximum (`maximum_size`).
+/// Effective maximum size for layout (`QWidget::maximumSize`, combining explicit and styled limits).
 pub fn effective_maximum_size(widget: &dyn Widget) -> Size {
-    let explicit = widget.widget_base().max_size.get();
-    let own = widget.maximum_size();
-    Size::new(
-        if explicit.width != WIDGET_SIZE_MAX {
-            explicit.width
-        } else {
-            own.width
-        },
-        if explicit.height != WIDGET_SIZE_MAX {
-            explicit.height
-        } else {
-            own.height
-        },
-    )
+    widget.maximum_size()
 }
 
 /// `qSmartMinSize(sizeHint, minSizeHint, minSize, maxSize, sizePolicy)` for `widget`.

@@ -674,6 +674,8 @@
     "test_qss_min_max_box::test_label_size_hint_is_expanded_to_minimum_size_and_ignores_max_height::TB": "unsupported",
     "test_qss_min_max_box::test_progress_bar_min_max_include_padding_and_border::SB": "pass",
     "test_qss_min_max_box::test_progress_bar_min_max_include_padding_and_border::TB": "pass",
+    "test_qss_min_max_box::test_styled_widgets_respect_explicit_minimum_and_maximum_size::SB": "unsupported",
+    "test_qss_min_max_box::test_styled_widgets_respect_explicit_minimum_and_maximum_size::TB": "unsupported",
     "test_reentrancy_and_deferred::test_command_queue_deduplication::SB": "pass",
     "test_reentrancy_and_deferred::test_command_queue_deduplication::TB": "pass",
     "test_reentrancy_and_deferred::test_multilevel_layout_traversal_with_cell::SB": "pass",

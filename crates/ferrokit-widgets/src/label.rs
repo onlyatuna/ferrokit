@@ -426,12 +426,10 @@ impl Label {
         let vextra = box_t + box_b + v_indent;
         let (text_w, text_h) = self.text_size(&font, &metrics, hextra, width);
         // `expandedTo(q->minimumSize())`: the style sheet's `min-*` and the explicit minimum size.
-        let (style_w, style_h) = style.min_box_size();
-        let explicit = self.widget_base().min_size.get();
-        let (min_w, min_h) = (style_w.max(explicit.width), style_h.max(explicit.height));
+        let min = self.minimum_size();
         Size::new(
-            (text_w.ceil() as i32 + hextra.round() as i32).max(min_w),
-            (text_h.ceil() as i32 + vextra.round() as i32).max(min_h),
+            (text_w.ceil() as i32 + hextra.round() as i32).max(min.width),
+            (text_h.ceil() as i32 + vextra.round() as i32).max(min.height),
         )
     }
 
@@ -528,11 +526,19 @@ impl Widget for Label {
 
     fn minimum_size(&self) -> Size {
         let style = self.resolved_style();
-        let (w, h) = style.min_box_size();
-        Size::new(w, h)
+        let (style_w, style_h) = style.min_box_size();
+        let explicit = self.widget_base().min_size.get();
+        Size::new(style_w.max(explicit.width), style_h.max(explicit.height))
     }
 
-    /// `QLabel::minimumSizeHint` (qlabel.cpp:809-833): the height of one line (`sizeForWidth` of
+    fn maximum_size(&self) -> Size {
+        let style = self.resolved_style();
+        let (style_w, style_h) = style.max_box_size();
+        let explicit = self.widget_base().max_size.get();
+        Size::new(style_w.min(explicit.width), style_h.min(explicit.height))
+    }
+
+    /// `QLabel::minimumSizeHint` (`qlabel.cpp:809-833`): the height of one line (`sizeForWidth` of
     /// an unbounded width, never above the size hint's) by the width of the widest word
     /// (`sizeForWidth(0)`). A label that does not wrap is as wide as its text either way, so this
     /// is its size hint.
@@ -544,12 +550,6 @@ impl Widget for Label {
         let one_line = self.size_for_width(Some(WIDGET_SIZE_MAX));
         let narrowest = self.size_for_width(Some(0));
         Size::new(narrowest.width, one_line.height.min(hint.height))
-    }
-
-    fn maximum_size(&self) -> Size {
-        let style = self.resolved_style();
-        let (w, h) = style.max_box_size();
-        Size::new(w, h)
     }
 
     fn is_visible(&self) -> bool {

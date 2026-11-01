@@ -409,7 +409,7 @@ impl IccProfile {
             a.named == b.named
                 && match (a.tf, b.tf) {
                     (TransferFunction::Gamma(x), TransferFunction::Gamma(y)) => {
-                        (x - y).abs() <= 1e-4 * x.abs().max(y.abs())
+                        (x - y).abs() <= (1.0 / 512.0)
                     }
                     (x, y) => x == y,
                 }
@@ -811,6 +811,54 @@ mod tests {
                 primaries: Primaries::Srgb,
                 tf: |t| *t == TransferFunction::Srgb,
                 converts_with: None,
+            },
+            Case {
+                name: "srgb_26_entry_table",
+                colorants: SRGB_D50,
+                curve: {
+                    let mut t = vec![0u16; 26];
+                    t[25] = 65535;
+                    t[6] = 3062;
+                    t[12] = 12824;
+                    t[18] = 31237;
+                    curv_table(&t)
+                },
+                named: Some(ColorSpace::srgb()),
+                primaries: Primaries::Srgb,
+                tf: |t| *t == TransferFunction::Srgb,
+                converts_with: None,
+            },
+            Case {
+                name: "srgb_4096_entry_table",
+                colorants: SRGB_D50,
+                curve: {
+                    let mut t = vec![0u16; 4096];
+                    t[4095] = 65535;
+                    t[515] = 960;
+                    t[1025] = 3342;
+                    t[2051] = 14079;
+                    curv_table(&t)
+                },
+                named: Some(ColorSpace::srgb()),
+                primaries: Primaries::Srgb,
+                tf: |t| *t == TransferFunction::Srgb,
+                converts_with: None,
+            },
+            Case {
+                name: "srgb_26_entry_mismatch",
+                colorants: SRGB_D50,
+                curve: {
+                    let mut t = vec![0u16; 26];
+                    t[25] = 65535;
+                    t[6] = 3063; // mismatch
+                    t[12] = 12824;
+                    t[18] = 31237;
+                    curv_table(&t)
+                },
+                named: None,
+                primaries: Primaries::Srgb,
+                tf: |t| *t == TransferFunction::Custom,
+                converts_with: Some(|_| true),
             },
             Case {
                 name: "srgb_two_entry_identity_table",
