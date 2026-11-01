@@ -1286,10 +1286,10 @@ impl ObjcMsg {
             let runtime = MockObjcRuntime::instance();
             let sel_name = mock_selector_name(sel);
 
-            if sel_name == "isFlipped" {
-                if let Some(obj) = runtime.get_object_data(receiver) {
-                    return obj.is_flipped;
-                }
+            if sel_name == "isFlipped"
+                && let Some(obj) = runtime.get_object_data(receiver)
+            {
+                return obj.is_flipped;
             } else if sel_name == "isKeyWindow"
                 && let Some(obj) = runtime.get_object_data(receiver)
             {
@@ -1619,48 +1619,48 @@ impl ObjcMsg {
         height: usize,
         rgba: &[u8],
     ) -> Id {
-        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+        let len = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(4))
+            .filter(|&n| n != 0 && rgba.len() >= n);
+        let Some(len) = len else {
+            // Consume the +1 `alloc`: an uninitialized object must still be released.
+            // SAFETY: caller guarantees receiver responds to release.
+            unsafe { Self::send_0(receiver, Sel::register("release")) };
+            return Id::NIL;
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            MockObjcRuntime::instance().update_object(receiver, |data| {
+                data.pixels = rgba[..len].to_vec();
+                data.frame = CGRect::new(0.0, 0.0, width as f64, height as f64);
+            });
+            receiver
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            if receiver.is_nil() {
-                return Id::NIL;
-            }
-            let len = width
-                .checked_mul(height)
-                .and_then(|n| n.checked_mul(4))
-                .filter(|&n| n != 0 && rgba.len() >= n);
-            let Some(len) = len else {
-                // Consume the +1 `alloc`: an uninitialized object must still be released.
-                Self::send_0(receiver, Sel::register("release"));
-                return Id::NIL;
-            };
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                MockObjcRuntime::instance().update_object(receiver, |data| {
-                    data.pixels = rgba[..len].to_vec();
-                    data.frame = CGRect::new(0.0, 0.0, width as f64, height as f64);
-                });
-                receiver
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                let color_space = nsstring_from_str("NSDeviceRGBColorSpace");
-                let msg_send: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    *mut *mut u8,
-                    NSInteger,
-                    NSInteger,
-                    NSInteger,
-                    NSInteger,
-                    BOOL,
-                    BOOL,
-                    *mut c_void,
-                    NSInteger,
-                    NSInteger,
-                ) -> *mut c_void = msg_send_fn();
-                let rep = Id(msg_send(
+            let color_space = nsstring_from_str("NSDeviceRGBColorSpace");
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut *mut u8,
+                NSInteger,
+                NSInteger,
+                NSInteger,
+                NSInteger,
+                BOOL,
+                BOOL,
+                *mut c_void,
+                NSInteger,
+                NSInteger,
+            ) -> *mut c_void = msg_send_fn();
+            let rep = Id(msg_send(
                 receiver.0,
                 Sel::register(
                     "initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:",
@@ -1677,20 +1677,19 @@ impl ObjcMsg {
                 (width * 4) as NSInteger,
                 32,
             ));
-                Self::send_0(color_space, Sel::register("release"));
-                if rep.is_nil() {
-                    return Id::NIL;
-                }
-                let data = Self::send_0(rep, Sel::register("bitmapData")).0 as *mut u8;
-                if data.is_null() {
-                    Self::send_0(rep, Sel::register("release"));
-                    return Id::NIL;
-                }
-                // SAFETY: `bitmapData` points at `bytesPerRow * height == len` bytes owned by `rep`,
-                // and `rgba` holds at least `len` bytes (checked above); the buffers are distinct.
-                std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len);
-                rep
+            Self::send_0(color_space, Sel::register("release"));
+            if rep.is_nil() {
+                return Id::NIL;
             }
+            let data = Self::send_0(rep, Sel::register("bitmapData")).0 as *mut u8;
+            if data.is_null() {
+                Self::send_0(rep, Sel::register("release"));
+                return Id::NIL;
+            }
+            // SAFETY: `bitmapData` points at `bytesPerRow * height == len` bytes owned by `rep`,
+            // and `rgba` holds at least `len` bytes (checked above); the buffers are distinct.
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len);
+            rep
         }
     }
 }

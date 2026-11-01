@@ -312,97 +312,93 @@ fn lookup_tray(hwnd: HWND) -> Option<Rc<TrayShared>> {
 /// As for [`tray_window_proc`].
 #[cfg(windows)]
 unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // SAFETY: caller guarantees hwnd, msg, wparam, lparam are valid Win32 message parameters.
-    unsafe {
-        if let Some(shared) = lookup_tray(hwnd) {
-            // `shared` is this invocation's own strong handle: a slot may drop the `TrayIcon` (a
-            // "Quit" entry), which destroys the window and unregisters it but cannot free the state
-            // under us. After any emit, `shared.closed` says whether that happened.
-            if msg == shared.taskbar_created_msg {
-                shared.rebuild_icon_from_source();
-                if shared.visible.get() {
-                    let _ = shared.send_notify_icon_message(NIM_ADD);
-                }
-                return 0;
-            } else if msg == WM_TRAY_CALLBACK {
-                let event_type = (lparam & 0xFFFF) as u32;
-                match event_type {
-                    // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
-                    // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
-                    // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
-                    NIN_SELECT | NIN_KEYSELECT => {
-                        // The release that ends a double click is not a click (Qt:
-                        // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
-                        if shared.ignore_next_release.replace(false) {
-                            return 0;
-                        }
-                        shared.on_activated.emit(&TrayActivation::Trigger);
-                        return 0;
-                    }
-                    WM_LBUTTONDBLCLK => {
-                        shared.ignore_next_release.set(true);
-                        shared.on_activated.emit(&TrayActivation::DoubleClick);
-                        return 0;
-                    }
-                    WM_CONTEXTMENU => {
-                        // Under NOTIFYICON_VERSION_4 `wParam` holds the anchor point in physical
-                        // desktop pixels (Qt: `GET_X_LPARAM(message.wParam)`), not where the cursor
-                        // is by now, and not the cursor at all for a menu opened with the keyboard.
-                        let native = Point::new(
-                            (wparam & 0xFFFF) as u16 as i16 as i32,
-                            ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
-                        );
-                        let pos = crate::screen::native_cursor_to_logical(native);
-                        shared.on_activated.emit(&TrayActivation::Context);
-                        if shared.closed.get() {
-                            return 0;
-                        }
-                        shared.on_context_menu_requested.emit(&pos);
-                        if shared.closed.get() {
-                            return 0;
-                        }
-                        // Re-evaluate shared.menu dynamically in case a slot attached or removed it.
-                        if !shared.closed.get()
-                            && shared.menu.try_borrow().is_ok_and(|m| m.is_some())
-                        {
-                            shared.show_context_menu_at(pos);
-                        }
-                        return 0;
-                    }
-                    0x0405 => {
-                        // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
-                        shared.on_message_clicked.emit(&());
-                        return 0;
-                    }
-                    WM_MBUTTONUP => {
-                        // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
-                        shared.on_activated.emit(&TrayActivation::MiddleClick);
-                        return 0;
-                    }
-                    _ => {}
-                }
-            } else if msg == WM_CLOSE {
-                // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
-                // `taskkill` without force) -> `handleApplicationTermination`, which sends the
-                // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
-                ferrokit_core::application::CoreApplication::quit();
-            } else if msg == 0x0218 {
-                // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
-                // in qwindowscontext.cpp); this is a ferrokit extension.
-                let power_event = match wparam as u32 {
-                    0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
-                    0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
-                    _ => None,
-                };
-                if let Some(event) = power_event {
-                    shared.on_power_event.emit(&event);
-                }
-                return 1;
+    if let Some(shared) = lookup_tray(hwnd) {
+        // `shared` is this invocation's own strong handle: a slot may drop the `TrayIcon` (a
+        // "Quit" entry), which destroys the window and unregisters it but cannot free the state
+        // under us. After any emit, `shared.closed` says whether that happened.
+        if msg == shared.taskbar_created_msg {
+            shared.rebuild_icon_from_source();
+            if shared.visible.get() {
+                let _ = shared.send_notify_icon_message(NIM_ADD);
             }
+            return 0;
+        } else if msg == WM_TRAY_CALLBACK {
+            let event_type = (lparam & 0xFFFF) as u32;
+            match event_type {
+                // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
+                // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
+                // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
+                NIN_SELECT | NIN_KEYSELECT => {
+                    // The release that ends a double click is not a click (Qt:
+                    // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
+                    if shared.ignore_next_release.replace(false) {
+                        return 0;
+                    }
+                    shared.on_activated.emit(&TrayActivation::Trigger);
+                    return 0;
+                }
+                WM_LBUTTONDBLCLK => {
+                    shared.ignore_next_release.set(true);
+                    shared.on_activated.emit(&TrayActivation::DoubleClick);
+                    return 0;
+                }
+                WM_CONTEXTMENU => {
+                    // Under NOTIFYICON_VERSION_4 `wParam` holds the anchor point in physical
+                    // desktop pixels (Qt: `GET_X_LPARAM(message.wParam)`), not where the cursor
+                    // is by now, and not the cursor at all for a menu opened with the keyboard.
+                    let native = Point::new(
+                        (wparam & 0xFFFF) as u16 as i16 as i32,
+                        ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
+                    );
+                    let pos = crate::screen::native_cursor_to_logical(native);
+                    shared.on_activated.emit(&TrayActivation::Context);
+                    if shared.closed.get() {
+                        return 0;
+                    }
+                    shared.on_context_menu_requested.emit(&pos);
+                    if shared.closed.get() {
+                        return 0;
+                    }
+                    // Re-evaluate shared.menu dynamically in case a slot attached or removed it.
+                    if !shared.closed.get() && shared.menu.try_borrow().is_ok_and(|m| m.is_some()) {
+                        shared.show_context_menu_at(pos);
+                    }
+                    return 0;
+                }
+                0x0405 => {
+                    // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
+                    shared.on_message_clicked.emit(&());
+                    return 0;
+                }
+                WM_MBUTTONUP => {
+                    // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
+                    shared.on_activated.emit(&TrayActivation::MiddleClick);
+                    return 0;
+                }
+                _ => {}
+            }
+        } else if msg == WM_CLOSE {
+            // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
+            // `taskkill` without force) -> `handleApplicationTermination`, which sends the
+            // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
+            ferrokit_core::application::CoreApplication::quit();
+        } else if msg == 0x0218 {
+            // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
+            // in qwindowscontext.cpp); this is a ferrokit extension.
+            let power_event = match wparam as u32 {
+                0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
+                0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
+                _ => None,
+            };
+            if let Some(event) = power_event {
+                shared.on_power_event.emit(&event);
+            }
+            return 1;
         }
-
-        DefWindowProcW(hwnd, msg, wparam, lparam)
     }
+
+    // SAFETY: unhandled tray messages fall back to DefWindowProcW with parameters provided by Windows.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 /// Tray window procedure. Unwinding out of an `extern "system"` callback aborts the process, so a

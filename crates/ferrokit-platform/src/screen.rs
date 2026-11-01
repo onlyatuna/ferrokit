@@ -326,19 +326,17 @@ pub mod win32_screen {
                     _rect: *mut RECT,
                     lparam: LPARAM,
                 ) -> BOOL {
-                    unsafe {
-                        // SAFETY: `lparam` is the `&mut Vec<Win32Screen>` passed by `all_screens` to
-                        // EnumDisplayMonitors, valid and exclusive for the duration of this synchronous callback.
-                        let list_ref = &mut *(lparam as *mut Vec<Win32Screen>);
-                        if let Some(screen) = Win32Screen::from_hmonitor(h_monitor) {
-                            if screen.is_primary {
-                                list_ref.insert(0, screen);
-                            } else {
-                                list_ref.push(screen);
-                            }
+                    // SAFETY: `lparam` is the `&mut Vec<Win32Screen>` passed by `all_screens` to
+                    // EnumDisplayMonitors, valid and exclusive for the duration of this synchronous callback.
+                    let list_ref = unsafe { &mut *(lparam as *mut Vec<Win32Screen>) };
+                    if let Some(screen) = Win32Screen::from_hmonitor(h_monitor) {
+                        if screen.is_primary {
+                            list_ref.insert(0, screen);
+                        } else {
+                            list_ref.push(screen);
                         }
-                        1
                     }
+                    1
                 }
 
                 EnumDisplayMonitors(

@@ -1144,9 +1144,16 @@ unsafe extern "system" fn native_window_proc(
             native_window_proc_inner(hwnd, msg, wparam, lparam)
         })) {
             Ok(result) => result,
-            Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+            Err(_) => def_wnd_proc(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+#[cfg(windows)]
+#[inline]
+fn def_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: forwards unhandled or default messages to DefWindowProcW with parameters provided by Windows.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 /// The body of [`native_window_proc`], whose panics that function contains.
@@ -1160,23 +1167,22 @@ unsafe fn native_window_proc_inner(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: caller guarantees hwnd, msg, wparam, lparam are valid Win32 message parameters.
-    unsafe {
-        match msg {
-            WM_FLUSH_WINDOW_SYSTEM_EVENTS => {
-                flush_window_system_events();
-                0
-            }
-            WM_NCCALCSIZE => {
-                crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
-                if wparam != 0 {
-                    // SAFETY: for WM_NCCALCSIZE with `wParam != 0`, `lParam` points to an
-                    // `NCCALCSIZE_PARAMS` owned by the sender and valid for the duration of the message
-                    // (per the WM_NCCALCSIZE documentation); it is dereferenced only here, on this
-                    // thread, and the exclusive reference does not outlive this arm.
-                    let ncp = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
-                    let client_rect = &mut ncp.rgrc[0];
-
+    match msg {
+        WM_FLUSH_WINDOW_SYSTEM_EVENTS => {
+            flush_window_system_events();
+            0
+        }
+        WM_NCCALCSIZE => {
+            crate::resize_debug::count(crate::resize_debug::Count::NcCalcSize);
+            if wparam != 0 {
+                // SAFETY: for WM_NCCALCSIZE with `wParam != 0`, `lParam` points to an
+                // `NCCALCSIZE_PARAMS` owned by the sender and valid for the duration of the message
+                // (per the WM_NCCALCSIZE documentation); it is dereferenced only here, on this
+                // thread, and the exclusive reference does not outlive this arm.
+                let ncp = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
+                let client_rect = &mut ncp.rgrc[0];
+                // SAFETY: IsZoomed, MonitorFromWindow, and GetMonitorInfoW validate hwnd and use valid local struct.
+                let _is_zoomed = unsafe {
                     if IsZoomed(hwnd) != 0 {
                         let mut monitor_info: MONITORINFO = std::mem::zeroed();
                         monitor_info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
@@ -1186,225 +1192,228 @@ unsafe fn native_window_proc_inner(
                         {
                             *client_rect = monitor_info.rcWork;
                         }
+                        true
+                    } else {
+                        false
                     }
-                    return 0;
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                };
+                return 0;
             }
-            WM_NCHITTEST => {
-                if let Some(config) = get_window_frameless_config(hwnd) {
-                    let x = get_x_lparam(lparam);
-                    let y = get_y_lparam(lparam);
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_NCHITTEST => {
+            if let Some(config) = get_window_frameless_config(hwnd) {
+                let x = get_x_lparam(lparam);
+                let y = get_y_lparam(lparam);
 
+                // SAFETY: GetWindowRect writes to valid local RECT; IsZoomed takes valid HWND.
+                let (window_rect, is_zoomed) = unsafe {
                     let mut window_rect: RECT = std::mem::zeroed();
                     GetWindowRect(hwnd, &mut window_rect);
+                    (window_rect, IsZoomed(hwnd) != 0)
+                };
+                let border = if is_zoomed { 0 } else { config.resize_border };
 
-                    let is_zoomed = IsZoomed(hwnd) != 0;
-                    let border = if is_zoomed { 0 } else { config.resize_border };
+                // An axis whose minimum equals its maximum cannot change size, so it offers no
+                // resize zone: the cursor would promise a resize the tracking limits refuse. The
+                // tracking limits do not do this by themselves; Qt has its own rule for a window
+                // with a native frame (`QWindowsWindow::handleNonClientHitTest`,
+                // qwindowswindow.cpp:3493-3525, QTBUG-32663). This zone is ferrokit' own (Qt's
+                // frameless windows resize through `startSystemResize`), so only the criterion
+                // (`SizeLimits::fixed_axes`) is Qt's.
+                let (fixed_w, fixed_h) = get_window_size_limits(hwnd)
+                    .map_or((false, false), |limits| limits.fixed_axes());
+                let on_left = !fixed_w && x >= window_rect.left && x < window_rect.left + border;
+                let on_right = !fixed_w && x <= window_rect.right && x > window_rect.right - border;
+                let on_top = !fixed_h && y >= window_rect.top && y < window_rect.top + border;
+                let on_bottom =
+                    !fixed_h && y <= window_rect.bottom && y > window_rect.bottom - border;
 
-                    // An axis whose minimum equals its maximum cannot change size, so it offers no
-                    // resize zone: the cursor would promise a resize the tracking limits refuse. The
-                    // tracking limits do not do this by themselves; Qt has its own rule for a window
-                    // with a native frame (`QWindowsWindow::handleNonClientHitTest`,
-                    // qwindowswindow.cpp:3493-3525, QTBUG-32663). This zone is ferrokit' own (Qt's
-                    // frameless windows resize through `startSystemResize`), so only the criterion
-                    // (`SizeLimits::fixed_axes`) is Qt's.
-                    let (fixed_w, fixed_h) = get_window_size_limits(hwnd)
-                        .map_or((false, false), |limits| limits.fixed_axes());
-                    let on_left =
-                        !fixed_w && x >= window_rect.left && x < window_rect.left + border;
-                    let on_right =
-                        !fixed_w && x <= window_rect.right && x > window_rect.right - border;
-                    let on_top = !fixed_h && y >= window_rect.top && y < window_rect.top + border;
-                    let on_bottom =
-                        !fixed_h && y <= window_rect.bottom && y > window_rect.bottom - border;
-
-                    if on_top && on_left {
-                        return HTTOPLEFT as LRESULT;
-                    }
-                    if on_top && on_right {
-                        return HTTOPRIGHT as LRESULT;
-                    }
-                    if on_bottom && on_left {
-                        return HTBOTTOMLEFT as LRESULT;
-                    }
-                    if on_bottom && on_right {
-                        return HTBOTTOMRIGHT as LRESULT;
-                    }
-                    if on_left {
-                        return HTLEFT as LRESULT;
-                    }
-                    if on_right {
-                        return HTRIGHT as LRESULT;
-                    }
-                    if on_top {
-                        return HTTOP as LRESULT;
-                    }
-                    if on_bottom {
-                        return HTBOTTOM as LRESULT;
-                    }
-
-                    if y < window_rect.top + config.caption_height {
-                        return HTCAPTION as LRESULT;
-                    }
-
-                    return HTCLIENT as LRESULT;
+                if on_top && on_left {
+                    return HTTOPLEFT as LRESULT;
                 }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_GETMINMAXINFO => {
-                use windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
-                if let Some(limits) = get_window_size_limits(hwnd) {
-                    // SAFETY: for WM_GETMINMAXINFO `lParam` points to a `MINMAXINFO` owned by the
-                    // sender and valid for the duration of the message (per the WM_GETMINMAXINFO
-                    // documentation); it is dereferenced only here, on this thread, and the exclusive
-                    // reference does not outlive this arm.
-                    let mmi = &mut *(lparam as *mut MINMAXINFO);
-                    // The limits are logical; the window's own ratio at this moment (after
-                    // `WM_DPICHANGED` it is already the new one) makes them native, and a bound that
-                    // is not set leaves the system's value in place
-                    // (`QWindowsGeometryHint::applyToMinMaxInfo`, qwindowswindow.cpp:1238-1262).
-                    let track = limits.native_track(get_window_dpr(hwnd));
-                    if let Some(x) = track.min.0 {
-                        mmi.ptMinTrackSize.x = x;
-                    }
-                    if let Some(y) = track.min.1 {
-                        mmi.ptMinTrackSize.y = y;
-                    }
-                    if let Some(x) = track.max.0 {
-                        mmi.ptMaxTrackSize.x = x;
-                    }
-                    if let Some(y) = track.max.1 {
-                        mmi.ptMaxTrackSize.y = y;
-                    }
-                    return 0;
+                if on_top && on_right {
+                    return HTTOPRIGHT as LRESULT;
                 }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                if on_bottom && on_left {
+                    return HTBOTTOMLEFT as LRESULT;
+                }
+                if on_bottom && on_right {
+                    return HTBOTTOMRIGHT as LRESULT;
+                }
+                if on_left {
+                    return HTLEFT as LRESULT;
+                }
+                if on_right {
+                    return HTRIGHT as LRESULT;
+                }
+                if on_top {
+                    return HTTOP as LRESULT;
+                }
+                if on_bottom {
+                    return HTBOTTOM as LRESULT;
+                }
+
+                if y < window_rect.top + config.caption_height {
+                    return HTCAPTION as LRESULT;
+                }
+
+                return HTCLIENT as LRESULT;
             }
-            WM_ERASEBKGND => 1,
-            WM_CLOSE => {
-                // Widgets see exactly one Close: the window handler turns this request into
-                // `close(true)`, so nothing is posted to the bound receiver on top of it.
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_GETMINMAXINFO => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
+            if let Some(limits) = get_window_size_limits(hwnd) {
+                // SAFETY: for WM_GETMINMAXINFO `lParam` points to a `MINMAXINFO` owned by the
+                // sender and valid for the duration of the message (per the WM_GETMINMAXINFO
+                // documentation); it is dereferenced only here, on this thread, and the exclusive
+                // reference does not outlive this arm.
+                let mmi = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+                // The limits are logical; the window's own ratio at this moment (after
+                // `WM_DPICHANGED` it is already the new one) makes them native, and a bound that
+                // is not set leaves the system's value in place
+                // (`QWindowsGeometryHint::applyToMinMaxInfo`, qwindowswindow.cpp:1238-1262).
+                let track = limits.native_track(get_window_dpr(hwnd));
+                if let Some(x) = track.min.0 {
+                    mmi.ptMinTrackSize.x = x;
+                }
+                if let Some(y) = track.min.1 {
+                    mmi.ptMinTrackSize.y = y;
+                }
+                if let Some(x) = track.max.0 {
+                    mmi.ptMaxTrackSize.x = x;
+                }
+                if let Some(y) = track.max.1 {
+                    mmi.ptMaxTrackSize.y = y;
+                }
+                return 0;
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_ERASEBKGND => 1,
+        WM_CLOSE => {
+            // Widgets see exactly one Close: the window handler turns this request into
+            // `close(true)`, so nothing is posted to the bound receiver on top of it.
+            dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::CloseRequest);
+            0
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_ENTERSIZEMOVE => {
+            crate::resize_debug::enter_size_move();
+            set_interactive_resize_flag(hwnd, true);
+            // Per-HWND: delivered to this window's own event handler.
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::InteractiveResizeStart,
+            );
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
+            set_interactive_resize_flag(hwnd, false);
+            // SAFETY: hwnd is valid window receiving WM_ENTERSIZEMOVE on calling thread.
+            unsafe { sync_mouse_buttons_after_move_loop(hwnd) };
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::InteractiveResizeEnd,
+            );
+            crate::resize_debug::exit_size_move();
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_DESTROY => {
+            set_interactive_resize_flag(hwnd, false);
+            unregister_window_event_binding(hwnd);
+            crate::dark_mode::window_destroyed(hwnd);
+            // A window destroyed other than through `close()` (with its parent, or by a foreign
+            // `DestroyWindow`) must give up OLE's drop-target reference while it still exists.
+            crate::drag_drop::win32_ole::revoke_on_destroy(hwnd);
+            0
+        }
+        WM_SIZE => {
+            // Qt: `SIZE_MINIMIZED` only changes the window state and leaves the geometry alone
+            // (`QWindowsWindow::handleResized`, qwindowswindow.cpp:2370-2377). The 0x0 client size
+            // Windows reports while iconic must not reach the geometry or the widget tree.
+            if wparam as u32 == SIZE_MINIMIZED {
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
-                    WindowSystemEvent::CloseRequest,
+                    WindowSystemEvent::Minimize { minimized: true },
                 );
-                0
+                return def_wnd_proc(hwnd, msg, wparam, lparam);
             }
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_ENTERSIZEMOVE => {
-                crate::resize_debug::enter_size_move();
-                set_interactive_resize_flag(hwnd, true);
-                // Per-HWND: delivered to this window's own event handler.
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::InteractiveResizeStart,
-                );
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
-                set_interactive_resize_flag(hwnd, false);
-                sync_mouse_buttons_after_move_loop(hwnd);
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::InteractiveResizeEnd,
-                );
-                crate::resize_debug::exit_size_move();
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_DESTROY => {
-                set_interactive_resize_flag(hwnd, false);
-                unregister_window_event_binding(hwnd);
-                crate::dark_mode::window_destroyed(hwnd);
-                // A window destroyed other than through `close()` (with its parent, or by a foreign
-                // `DestroyWindow`) must give up OLE's drop-target reference while it still exists.
-                crate::drag_drop::win32_ole::revoke_on_destroy(hwnd);
-                0
-            }
-            WM_SIZE => {
-                // Qt: `SIZE_MINIMIZED` only changes the window state and leaves the geometry alone
-                // (`QWindowsWindow::handleResized`, qwindowswindow.cpp:2370-2377). The 0x0 client size
-                // Windows reports while iconic must not reach the geometry or the widget tree.
-                if wparam as u32 == SIZE_MINIMIZED {
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::Minimize { minimized: true },
-                    );
-                    return DefWindowProcW(hwnd, msg, wparam, lparam);
-                }
-                let dpr = get_window_dpr(hwnd);
-                let phys_w = (lparam as usize & 0xffff) as i32;
-                let phys_h = ((lparam as usize >> 16) & 0xffff) as i32;
-                crate::resize_debug::wm_size_begin(hwnd as isize, phys_w, phys_h);
-                let logical_size = crate::high_dpi::from_native_size(
-                    ferrokit_gui::geometry::primitives::Size::new(phys_w, phys_h),
-                    dpr,
-                );
-                crate::resize_trace::record(
-                    crate::resize_trace::TraceKind::WmSize,
-                    hwnd as usize,
-                    (logical_size.width as u32, logical_size.height as u32),
-                    (phys_w as u32, phys_h as u32),
-                );
-                // `fromNativeWindowGeometry` for a top-level window: the position maps against its
-                // screen's native top-left (`qwindowsysteminterface.cpp:298`,
-                // `qhighdpiscaling_p.h:254-260`).
-                // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
+            let dpr = get_window_dpr(hwnd);
+            let phys_w = (lparam as usize & 0xffff) as i32;
+            let phys_h = ((lparam as usize >> 16) & 0xffff) as i32;
+            crate::resize_debug::wm_size_begin(hwnd as isize, phys_w, phys_h);
+            let logical_size = crate::high_dpi::from_native_size(
+                ferrokit_gui::geometry::primitives::Size::new(phys_w, phys_h),
+                dpr,
+            );
+            crate::resize_trace::record(
+                crate::resize_trace::TraceKind::WmSize,
+                hwnd as usize,
+                (logical_size.width as u32, logical_size.height as u32),
+                (phys_w as u32, phys_h as u32),
+            );
+            // `fromNativeWindowGeometry` for a top-level window: the position maps against its
+            // screen's native top-left (`qwindowsysteminterface.cpp:298`,
+            // `qhighdpiscaling_p.h:254-260`).
+            // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
+            // SAFETY: RECT is a plain integer struct; GetWindowRect writes to valid local RECT.
+            let (x, y) = unsafe {
                 let mut r: RECT = std::mem::zeroed();
-                // SAFETY: `hwnd` is the window this message was dispatched to (validated by user32); `r`
-                // is a local RECT, a valid out pointer for the call; a 0 return is handled below.
-                let (x, y) = if GetWindowRect(hwnd, &mut r) != 0 {
+                if GetWindowRect(hwnd, &mut r) != 0 {
                     let logical_pt = window_global_position(hwnd, Point::new(r.left, r.top), dpr);
                     (logical_pt.x, logical_pt.y)
                 } else {
                     (0, 0)
-                };
-                let logical_rect = Rect::new(x, y, logical_size.width, logical_size.height);
-                crate::resize_debug::note(|| {
-                    format!(
-                        "WM_SIZE phys {}x{} dpr {} -> logical {}x{} (wparam={})",
-                        phys_w, phys_h, dpr, logical_size.width, logical_size.height, wparam
-                    )
-                });
+                }
+            };
+            let logical_rect = Rect::new(x, y, logical_size.width, logical_size.height);
+            crate::resize_debug::note(|| {
+                format!(
+                    "WM_SIZE phys {}x{} dpr {} -> logical {}x{} (wparam={})",
+                    phys_w, phys_h, dpr, logical_size.width, logical_size.height, wparam
+                )
+            });
 
-                // The single canonical resize delivery: WindowSystemEvent::Resize (geometry, widget
-                // Resize, callback, layout, render). No second `EventKind::Resize` is posted to the
-                // bound QObject; it used to re-run the callback and a synchronous render.
-                handle_geometry_change(Delivery::Default, hwnd, logical_rect);
-                // Qt restores the state after the geometry (`QWindowsWindow::handleResized`,
-                // qwindowswindow.cpp:2385-2395). The widget layer dedupes repeated restores.
-                if wparam as u32 == SIZE_RESTORED || wparam as u32 == SIZE_MAXIMIZED {
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::Minimize { minimized: false },
-                    );
-                }
-                crate::resize_debug::wm_size_end(hwnd as isize);
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+            // The single canonical resize delivery: WindowSystemEvent::Resize (geometry, widget
+            // Resize, callback, layout, render). No second `EventKind::Resize` is posted to the
+            // bound QObject; it used to re-run the callback and a synchronous render.
+            handle_geometry_change(Delivery::Default, hwnd, logical_rect);
+            // Qt restores the state after the geometry (`QWindowsWindow::handleResized`,
+            // qwindowswindow.cpp:2385-2395). The widget layer dedupes repeated restores.
+            if wparam as u32 == SIZE_RESTORED || wparam as u32 == SIZE_MAXIMIZED {
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::Minimize { minimized: false },
+                );
             }
-            WM_MOVE => {
-                // Qt ignores a move while iconic: `QWindowsWindow::handleMoved` only runs the geometry
-                // change when `!IsIconic` (qwindowswindow.cpp:2328-2333). Windows reports the iconic
-                // position as (-32000, -32000), which must not reach the geometry or the event receiver.
-                // SAFETY: `hwnd` is the window this message was dispatched to; IsIconic takes only the
-                // handle and validates it.
-                if IsIconic(hwnd) != 0 {
-                    return DefWindowProcW(hwnd, msg, wparam, lparam);
-                }
-                crate::resize_debug::wm_move_begin(hwnd as isize);
-                let dpr = get_window_dpr(hwnd);
-                let phys_x = get_x_lparam(lparam);
-                let phys_y = get_y_lparam(lparam);
-                let pos = window_global_position(hwnd, Point::new(phys_x, phys_y), dpr);
-                // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
+            crate::resize_debug::wm_size_end(hwnd as isize);
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_MOVE => {
+            // Qt ignores a move while iconic: `QWindowsWindow::handleMoved` only runs the geometry
+            // change when `!IsIconic` (qwindowswindow.cpp:2328-2333). Windows reports the iconic
+            // position as (-32000, -32000), which must not reach the geometry or the event receiver.
+            // SAFETY: `hwnd` is the window this message was dispatched to; IsIconic takes only the
+            // handle and validates it.
+            // SAFETY: IsIconic validates hwnd.
+            if unsafe { IsIconic(hwnd) } != 0 {
+                return def_wnd_proc(hwnd, msg, wparam, lparam);
+            }
+            crate::resize_debug::wm_move_begin(hwnd as isize);
+            let dpr = get_window_dpr(hwnd);
+            let phys_x = get_x_lparam(lparam);
+            let phys_y = get_y_lparam(lparam);
+            let pos = window_global_position(hwnd, Point::new(phys_x, phys_y), dpr);
+            // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
+            // SAFETY: RECT is plain integer struct; GetWindowRect writes to valid local RECT.
+            let (w, h) = unsafe {
                 let mut r: RECT = std::mem::zeroed();
-                // SAFETY: as for WM_SIZE: `hwnd` is the window receiving WM_MOVE and `r` is a local
-                // out pointer valid for the call.
-                let (w, h) = if GetWindowRect(hwnd, &mut r) != 0 {
+                if GetWindowRect(hwnd, &mut r) != 0 {
                     let logical_size = crate::high_dpi::from_native_size(
                         ferrokit_gui::geometry::primitives::Size::new(
                             r.right - r.left,
@@ -1415,84 +1424,86 @@ unsafe fn native_window_proc_inner(
                     (logical_size.width, logical_size.height)
                 } else {
                     (0, 0)
-                };
-                let logical_rect = Rect::new(pos.x, pos.y, w, h);
-                handle_geometry_change(Delivery::Default, hwnd, logical_rect);
+                }
+            };
+            let logical_rect = Rect::new(pos.x, pos.y, w, h);
+            handle_geometry_change(Delivery::Default, hwnd, logical_rect);
 
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::Move {
-                            x: pos.x,
-                            y: pos.y,
-                            old_x: 0,
-                            old_y: 0,
-                        }),
-                    );
-                }
-                crate::resize_debug::wm_move_end(hwnd as isize);
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_SHOWWINDOW => {
-                let shown = wparam != 0;
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    let kind = if shown {
-                        EventKind::Show
-                    } else {
-                        EventKind::Hide
-                    };
-                    handle.post_event(receiver, Event::new_spontaneous(kind));
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_PAINT => {
-                crate::resize_debug::count(crate::resize_debug::Count::WmPaint);
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(receiver, Event::new_spontaneous(EventKind::Expose));
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_SETFOCUS => {
-                dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusIn);
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::FocusIn {
-                            reason: ferrokit_core::event::FocusReason::ActiveWindow,
-                        }),
-                    );
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_KILLFOCUS => {
-                dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusOut);
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::FocusOut {
-                            reason: ferrokit_core::event::FocusReason::ActiveWindow,
-                        }),
-                    );
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_DPICHANGED => {
-                let dpi_x = (wparam as u32) & 0xffff;
-                let dpi_y = ((wparam as u32) >> 16) & 0xffff;
-
-                // Qt sends the screen/DPI change before applying the suggested rect
-                // (qwindowswindow.cpp:2164-2191), so the handler still sees the old geometry and the
-                // resulting WM_MOVE/WM_SIZE are processed with the new ratio already in place.
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::DpiChanged { dpi_x, dpi_y },
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::Move {
+                        x: pos.x,
+                        y: pos.y,
+                        old_x: 0,
+                        old_y: 0,
+                    }),
                 );
-                let rect_ptr = lparam as *const RECT;
-                if !rect_ptr.is_null() {
-                    // SAFETY: `rect_ptr` is non-null (checked above); for WM_DPICHANGED `lParam` points
-                    // to the suggested new window RECT, valid for the duration of the message (per the
-                    // WM_DPICHANGED documentation); `RECT` is `Copy`, so this reads a value out.
+            }
+            crate::resize_debug::wm_move_end(hwnd as isize);
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_SHOWWINDOW => {
+            let shown = wparam != 0;
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                let kind = if shown {
+                    EventKind::Show
+                } else {
+                    EventKind::Hide
+                };
+                handle.post_event(receiver, Event::new_spontaneous(kind));
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_PAINT => {
+            crate::resize_debug::count(crate::resize_debug::Count::WmPaint);
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(receiver, Event::new_spontaneous(EventKind::Expose));
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_SETFOCUS => {
+            dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusIn);
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::FocusIn {
+                        reason: ferrokit_core::event::FocusReason::ActiveWindow,
+                    }),
+                );
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_KILLFOCUS => {
+            dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusOut);
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::FocusOut {
+                        reason: ferrokit_core::event::FocusReason::ActiveWindow,
+                    }),
+                );
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_DPICHANGED => {
+            let dpi_x = (wparam as u32) & 0xffff;
+            let dpi_y = ((wparam as u32) >> 16) & 0xffff;
+
+            // Qt sends the screen/DPI change before applying the suggested rect
+            // (qwindowswindow.cpp:2164-2191), so the handler still sees the old geometry and the
+            // resulting WM_MOVE/WM_SIZE are processed with the new ratio already in place.
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::DpiChanged { dpi_x, dpi_y },
+            );
+            let rect_ptr = lparam as *const RECT;
+            if !rect_ptr.is_null() {
+                // SAFETY: `rect_ptr` is non-null (checked above); for WM_DPICHANGED `lParam` points
+                // to the suggested new window RECT, valid for the duration of the message (per the
+                // SAFETY: rect_ptr points to suggested RECT from Windows; SetWindowPos uses valid parameters.
+                unsafe {
                     let r = *rect_ptr;
                     let width = (r.right - r.left).max(0);
                     let height = (r.bottom - r.top).max(0);
@@ -1506,523 +1517,514 @@ unsafe fn native_window_proc_inner(
                         SWP_NOZORDER | SWP_NOACTIVATE,
                     );
                 }
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::DpiChanged { dpi_x, dpi_y }),
-                    );
-                }
-                0
             }
-            WM_DISPLAYCHANGE => {
-                crate::integration::platform().screen_changed().emit(&());
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_SETTINGCHANGE | WM_THEMECHANGED => {
-                crate::integration::platform().theme().refresh();
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_SETCURSOR => {
-                let hit_test = (lparam & 0xFFFF) as u32;
-                if hit_test == HTCLIENT {
-                    // The application override cursor beats the window's own (`QWindowsWindow::applyCursor`,
-                    // qwindowswindow.cpp:3762-3767).
-                    let shape = crate::cursor::win32_cursor::Win32Cursor::override_shape()
-                        .or_else(|| window_cursor_shape(hwnd))
-                        .unwrap_or_else(
-                            crate::cursor::win32_cursor::Win32Cursor::current_global_shape,
-                        );
-                    crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
-                    return 1;
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
-                track_button_press(msg);
-                capture_on_press(hwnd);
-                let dpr = get_window_dpr(hwnd);
-                let phys_x = get_x_lparam(lparam);
-                let phys_y = get_y_lparam(lparam);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
-                    dpr,
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::DpiChanged { dpi_x, dpi_y }),
                 );
-                let phys_global = get_cursor_global_pos();
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    phys_global,
-                    hwnd as isize,
-                );
-                let button = match msg {
-                    WM_LBUTTONDOWN => MouseButton::Left,
-                    WM_RBUTTONDOWN => MouseButton::Right,
-                    WM_MBUTTONDOWN => MouseButton::Middle,
-                    _ => MouseButton::None,
+            }
+            0
+        }
+        WM_DISPLAYCHANGE => {
+            crate::integration::platform().screen_changed().emit(&());
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_SETTINGCHANGE | WM_THEMECHANGED => {
+            crate::integration::platform().theme().refresh();
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_SETCURSOR => {
+            let hit_test = (lparam & 0xFFFF) as u32;
+            if hit_test == HTCLIENT {
+                // The application override cursor beats the window's own (`QWindowsWindow::applyCursor`,
+                // qwindowswindow.cpp:3762-3767).
+                let shape = crate::cursor::win32_cursor::Win32Cursor::override_shape()
+                    .or_else(|| window_cursor_shape(hwnd))
+                    .unwrap_or_else(crate::cursor::win32_cursor::Win32Cursor::current_global_shape);
+                crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
+                return 1;
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            track_button_press(msg);
+            capture_on_press(hwnd);
+            let dpr = get_window_dpr(hwnd);
+            let phys_x = get_x_lparam(lparam);
+            let phys_y = get_y_lparam(lparam);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
+                dpr,
+            );
+            let phys_global = get_cursor_global_pos();
+            let global_pos =
+                crate::screen::win32_screen::from_native_global_point(phys_global, hwnd as isize);
+            let button = match msg {
+                WM_LBUTTONDOWN => MouseButton::Left,
+                WM_RBUTTONDOWN => MouseButton::Right,
+                WM_MBUTTONDOWN => MouseButton::Middle,
+                _ => MouseButton::None,
+            };
+            let modifiers = query_keyboard_modifiers();
+
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::MousePress {
+                    pos,
+                    global_pos,
+                    button,
+                    modifiers,
+                    // `QWindowsContext` stamps mouse messages with `GetMessageTime()` (qwindowscontext.cpp:836).
+                    // SAFETY: GetMessageTime takes no arguments and reads the time of the message
+                    // this thread is currently handling (we are inside its wndproc).
+                    // SAFETY: GetMessageTime reads time of current message handled on this thread.
+                    timestamp: unsafe { GetMessageTime() } as u32,
+                },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                let btn_code = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Right => 2,
+                    MouseButton::Middle => 3,
+                    _ => 0,
                 };
-                let modifiers = query_keyboard_modifiers();
-
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::MousePress {
-                        pos,
-                        global_pos,
-                        button,
-                        modifiers,
-                        // `QWindowsContext` stamps mouse messages with `GetMessageTime()` (qwindowscontext.cpp:836).
-                        // SAFETY: GetMessageTime takes no arguments and reads the time of the message
-                        // this thread is currently handling (we are inside its wndproc).
-                        timestamp: GetMessageTime() as u32,
-                    },
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::MouseButtonPress {
+                        x: pos.x,
+                        y: pos.y,
+                        button: btn_code,
+                    }),
                 );
-
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    let btn_code = match button {
-                        MouseButton::Left => 1,
-                        MouseButton::Right => 2,
-                        MouseButton::Middle => 3,
-                        _ => 0,
-                    };
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::MouseButtonPress {
-                            x: pos.x,
-                            y: pos.y,
-                            button: btn_code,
-                        }),
-                    );
-                }
-                0
             }
-            WM_LBUTTONDBLCLK | WM_RBUTTONDBLCLK | WM_MBUTTONDBLCLK => {
-                track_button_press(msg);
-                capture_on_press(hwnd);
-                let dpr = get_window_dpr(hwnd);
-                let phys_x = get_x_lparam(lparam);
-                let phys_y = get_y_lparam(lparam);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
-                    dpr,
-                );
-                let phys_global = get_cursor_global_pos();
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    phys_global,
-                    hwnd as isize,
-                );
-                let button = match msg {
-                    WM_LBUTTONDBLCLK => MouseButton::Left,
-                    WM_RBUTTONDBLCLK => MouseButton::Right,
-                    WM_MBUTTONDBLCLK => MouseButton::Middle,
-                    _ => MouseButton::None,
+            0
+        }
+        WM_LBUTTONDBLCLK | WM_RBUTTONDBLCLK | WM_MBUTTONDBLCLK => {
+            track_button_press(msg);
+            capture_on_press(hwnd);
+            let dpr = get_window_dpr(hwnd);
+            let phys_x = get_x_lparam(lparam);
+            let phys_y = get_y_lparam(lparam);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
+                dpr,
+            );
+            let phys_global = get_cursor_global_pos();
+            let global_pos =
+                crate::screen::win32_screen::from_native_global_point(phys_global, hwnd as isize);
+            let button = match msg {
+                WM_LBUTTONDBLCLK => MouseButton::Left,
+                WM_RBUTTONDBLCLK => MouseButton::Right,
+                WM_MBUTTONDBLCLK => MouseButton::Middle,
+                _ => MouseButton::None,
+            };
+            let modifiers = query_keyboard_modifiers();
+
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::MouseDoubleClick {
+                    pos,
+                    global_pos,
+                    button,
+                    modifiers,
+                },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                let btn_code = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Right => 2,
+                    MouseButton::Middle => 3,
+                    _ => 0,
                 };
-                let modifiers = query_keyboard_modifiers();
-
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::MouseDoubleClick {
-                        pos,
-                        global_pos,
-                        button,
-                        modifiers,
-                    },
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::MouseButtonDblClick {
+                        x: pos.x,
+                        y: pos.y,
+                        button: btn_code,
+                    }),
                 );
-
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    let btn_code = match button {
-                        MouseButton::Left => 1,
-                        MouseButton::Right => 2,
-                        MouseButton::Middle => 3,
-                        _ => 0,
-                    };
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::MouseButtonDblClick {
-                            x: pos.x,
-                            y: pos.y,
-                            button: btn_code,
-                        }),
-                    );
-                }
-                0
             }
-            WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
-                track_button_release(msg);
-                release_capture_when_idle(hwnd);
-                let dpr = get_window_dpr(hwnd);
-                let phys_x = get_x_lparam(lparam);
-                let phys_y = get_y_lparam(lparam);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
-                    dpr,
-                );
-                let phys_global = get_cursor_global_pos();
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    phys_global,
-                    hwnd as isize,
-                );
-                let button = match msg {
-                    WM_LBUTTONUP => MouseButton::Left,
-                    WM_RBUTTONUP => MouseButton::Right,
-                    WM_MBUTTONUP => MouseButton::Middle,
-                    _ => MouseButton::None,
+            0
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
+            track_button_release(msg);
+            release_capture_when_idle(hwnd);
+            let dpr = get_window_dpr(hwnd);
+            let phys_x = get_x_lparam(lparam);
+            let phys_y = get_y_lparam(lparam);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
+                dpr,
+            );
+            let phys_global = get_cursor_global_pos();
+            let global_pos =
+                crate::screen::win32_screen::from_native_global_point(phys_global, hwnd as isize);
+            let button = match msg {
+                WM_LBUTTONUP => MouseButton::Left,
+                WM_RBUTTONUP => MouseButton::Right,
+                WM_MBUTTONUP => MouseButton::Middle,
+                _ => MouseButton::None,
+            };
+            let modifiers = query_keyboard_modifiers();
+
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::MouseRelease {
+                    pos,
+                    global_pos,
+                    button,
+                    modifiers,
+                },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                let btn_code = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Right => 2,
+                    MouseButton::Middle => 3,
+                    _ => 0,
                 };
-                let modifiers = query_keyboard_modifiers();
-
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::MouseRelease {
-                        pos,
-                        global_pos,
-                        button,
-                        modifiers,
-                    },
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::MouseButtonRelease {
+                        x: pos.x,
+                        y: pos.y,
+                        button: btn_code,
+                    }),
                 );
-
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    let btn_code = match button {
-                        MouseButton::Left => 1,
-                        MouseButton::Right => 2,
-                        MouseButton::Middle => 3,
-                        _ => 0,
-                    };
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::MouseButtonRelease {
-                            x: pos.x,
-                            y: pos.y,
-                            button: btn_code,
-                        }),
-                    );
-                }
-                0
             }
-            WM_MOUSEMOVE => {
-                let mut tme = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                TrackMouseEvent(&mut tme);
+            0
+        }
+        WM_MOUSEMOVE => {
+            let mut tme = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            // SAFETY: tme points to initialized TRACKMOUSEEVENT struct.
+            unsafe { TrackMouseEvent(&mut tme) };
 
-                if is_repeated_buttonless_move(hwnd, wparam, lparam) {
-                    return 0;
-                }
-
-                let dpr = get_window_dpr(hwnd);
-                let phys_x = get_x_lparam(lparam);
-                let phys_y = get_y_lparam(lparam);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
-                    dpr,
-                );
-                let phys_global = get_cursor_global_pos();
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    phys_global,
-                    hwnd as isize,
-                );
-
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::MouseMove {
-                        pos,
-                        global_pos,
-                        buttons: mouse_buttons_from_mk(wparam),
-                    },
-                );
-
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::MouseMove { x: pos.x, y: pos.y }),
-                    );
-                }
-                0
+            if is_repeated_buttonless_move(hwnd, wparam, lparam) {
+                return 0;
             }
-            WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                let horizontal = msg == WM_MOUSEHWHEEL;
-                let dpr = get_window_dpr(hwnd);
-                let global_x = get_x_lparam(lparam);
-                let global_y = get_y_lparam(lparam);
-                let phys_global =
-                    ferrokit_gui::geometry::primitives::Point::new(global_x, global_y);
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    phys_global,
-                    hwnd as isize,
-                );
 
-                let mut pt = windows_sys::Win32::Foundation::POINT {
-                    x: global_x,
-                    y: global_y,
-                };
-                windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
-                    dpr,
-                );
-                let (delta_x, delta_y) = wheel_deltas(horizontal, (wparam >> 16) as i16 as i32);
-                let modifiers = query_keyboard_modifiers();
+            let dpr = get_window_dpr(hwnd);
+            let phys_x = get_x_lparam(lparam);
+            let phys_y = get_y_lparam(lparam);
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(phys_x, phys_y),
+                dpr,
+            );
+            let phys_global = get_cursor_global_pos();
+            let global_pos =
+                crate::screen::win32_screen::from_native_global_point(phys_global, hwnd as isize);
 
-                dispatch_window_system_event(
-                    Delivery::Default,
-                    hwnd,
-                    WindowSystemEvent::Wheel {
-                        pos,
-                        global_pos,
-                        delta: WheelDelta {
-                            y: delta_y,
-                            x: delta_x,
-                        },
-                        modifiers,
-                    },
-                );
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::MouseMove {
+                    pos,
+                    global_pos,
+                    buttons: mouse_buttons_from_mk(wparam),
+                },
+            );
 
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::Wheel {
-                            x: pos.x,
-                            y: pos.y,
-                            pixel_delta_x: 0,
-                            pixel_delta_y: 0,
-                            angle_delta_x: delta_x,
-                            angle_delta_y: delta_y,
-                            modifiers: modifiers.bits(),
-                        }),
-                    );
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::MouseMove { x: pos.x, y: pos.y }),
+                );
             }
-            WM_CANCELMODE => {
-                // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
-                // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
+            0
+        }
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            let horizontal = msg == WM_MOUSEHWHEEL;
+            let dpr = get_window_dpr(hwnd);
+            let global_x = get_x_lparam(lparam);
+            let global_y = get_y_lparam(lparam);
+            let phys_global = ferrokit_gui::geometry::primitives::Point::new(global_x, global_y);
+            let global_pos =
+                crate::screen::win32_screen::from_native_global_point(phys_global, hwnd as isize);
+
+            let mut pt = windows_sys::Win32::Foundation::POINT {
+                x: global_x,
+                y: global_y,
+            };
+            // SAFETY: hwnd is valid window and pt is valid POINT struct.
+            unsafe { windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt) };
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
+                dpr,
+            );
+            let (delta_x, delta_y) = wheel_deltas(horizontal, (wparam >> 16) as i16 as i32);
+            let modifiers = query_keyboard_modifiers();
+
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::Wheel {
+                    pos,
+                    global_pos,
+                    delta: WheelDelta {
+                        y: delta_y,
+                        x: delta_x,
+                    },
+                    modifiers,
+                },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::Wheel {
+                        x: pos.x,
+                        y: pos.y,
+                        pixel_delta_x: 0,
+                        pixel_delta_y: 0,
+                        angle_delta_x: delta_x,
+                        angle_delta_y: delta_y,
+                        modifiers: modifiers.bits(),
+                    }),
+                );
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_CANCELMODE => {
+            // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
+            // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
+            let _ = APP_MOUSE_BUTTONS
+                .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_CAPTURECHANGED => {
+            // `lparam` is the window gaining the capture. Capture moving to another window of
+            // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
+            // lost to another thread or to nothing swallows their releases.
+            let new_owner = lparam as HWND;
+            set_auto_capture_flag(hwnd as isize, false);
+            let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
+                .try_with(|f| f.get())
+                .unwrap_or(false);
+            if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
                 let _ = APP_MOUSE_BUTTONS
                     .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
-                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            WM_CAPTURECHANGED => {
-                // `lparam` is the window gaining the capture. Capture moving to another window of
-                // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
-                // lost to another thread or to nothing swallows their releases.
-                let new_owner = lparam as HWND;
-                set_auto_capture_flag(hwnd as isize, false);
-                let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
-                    .try_with(|f| f.get())
-                    .unwrap_or(false);
-                if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
-                    let _ = APP_MOUSE_BUTTONS
-                        .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
-                }
-                if new_owner != hwnd {
-                    // Alt-Tab, a popup or the system move loop took the capture: the widget layer
-                    // reconciles an explicit `grabMouse` that no longer has a native grab behind it.
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::MouseGrabLost,
-                    );
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            WM_MOUSELEAVE => {
-                LAST_MOUSE_MOVE.with(|last| {
-                    if matches!(last.get(), Some((h, ..)) if h == hwnd as isize) {
-                        last.set(None);
-                    }
-                });
+            if new_owner != hwnd {
+                // Alt-Tab, a popup or the system move loop took the capture: the widget layer
+                // reconciles an explicit `grabMouse` that no longer has a native grab behind it.
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
-                    WindowSystemEvent::MouseLeave,
+                    WindowSystemEvent::MouseGrabLost,
                 );
-                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            WM_CONTEXTMENU => {
-                // lParam -1 is the menu key / Shift+F10: no pointer position, so the cursor is the
-                // hint when it is over the window and the window centre otherwise (the receiver
-                // positions a keyboard menu itself).
-                let keyboard = lparam as u32 == u32::MAX;
-                let (global_x, global_y) = if keyboard {
-                    let mut cursor = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSELEAVE => {
+            LAST_MOUSE_MOVE.with(|last| {
+                if matches!(last.get(), Some((h, ..)) if h == hwnd as isize) {
+                    last.set(None);
+                }
+            });
+            dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::MouseLeave);
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_CONTEXTMENU => {
+            // lParam -1 is the menu key / Shift+F10: no pointer position, so the cursor is the
+            // hint when it is over the window and the window centre otherwise (the receiver
+            // positions a keyboard menu itself).
+            let keyboard = lparam as u32 == u32::MAX;
+            let (global_x, global_y) = if keyboard {
+                // SAFETY: GetCursorPos and GetWindowRect write to valid local structs.
+                let (cursor, rect) = unsafe {
+                    let mut cursor: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
                     GetCursorPos(&mut cursor);
                     let mut rect: RECT = std::mem::zeroed();
                     GetWindowRect(hwnd, &mut rect);
-                    if cursor.x >= rect.left
-                        && cursor.x < rect.right
-                        && cursor.y >= rect.top
-                        && cursor.y < rect.bottom
-                    {
-                        (cursor.x, cursor.y)
-                    } else {
-                        ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
-                    }
+                    (cursor, rect)
+                };
+                if cursor.x >= rect.left
+                    && cursor.x < rect.right
+                    && cursor.y >= rect.top
+                    && cursor.y < rect.bottom
+                {
+                    (cursor.x, cursor.y)
                 } else {
-                    (get_x_lparam(lparam), get_y_lparam(lparam))
-                };
-                let mut pt = windows_sys::Win32::Foundation::POINT {
-                    x: global_x,
-                    y: global_y,
-                };
-                windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-                let pos = crate::high_dpi::from_native_point(
-                    ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
-                    get_window_dpr(hwnd),
-                );
-                let global_pos = crate::screen::win32_screen::from_native_global_point(
-                    ferrokit_gui::geometry::primitives::Point::new(global_x, global_y),
-                    hwnd as isize,
-                );
-
-                if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                    handle.post_event(
-                        receiver,
-                        Event::new_spontaneous(EventKind::ContextMenu {
-                            x: pos.x,
-                            y: pos.y,
-                            global_x: global_pos.x,
-                            global_y: global_pos.y,
-                            reason: if keyboard {
-                                ferrokit_core::event::ContextMenuReason::Keyboard
-                            } else {
-                                ferrokit_core::event::ContextMenuReason::Mouse
-                            },
-                        }),
-                    );
+                    ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
                 }
-                0
-            }
-            WM_KEYDOWN | WM_SYSKEYDOWN => {
-                let key = wparam as u32;
-                let is_repeat = (lparam & (1 << 30)) != 0;
-                let modifiers = query_keyboard_modifiers();
+            } else {
+                (get_x_lparam(lparam), get_y_lparam(lparam))
+            };
+            let mut pt = windows_sys::Win32::Foundation::POINT {
+                x: global_x,
+                y: global_y,
+            };
+            // SAFETY: hwnd is valid window and pt is valid POINT struct.
+            unsafe { windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt) };
+            let pos = crate::high_dpi::from_native_point(
+                ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
+                get_window_dpr(hwnd),
+            );
+            let global_pos = crate::screen::win32_screen::from_native_global_point(
+                ferrokit_gui::geometry::primitives::Point::new(global_x, global_y),
+                hwnd as isize,
+            );
 
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::ContextMenu {
+                        x: pos.x,
+                        y: pos.y,
+                        global_x: global_pos.x,
+                        global_y: global_pos.y,
+                        reason: if keyboard {
+                            ferrokit_core::event::ContextMenuReason::Keyboard
+                        } else {
+                            ferrokit_core::event::ContextMenuReason::Mouse
+                        },
+                    }),
+                );
+            }
+            0
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let key = wparam as u32;
+            let is_repeat = (lparam & (1 << 30)) != 0;
+            let modifiers = query_keyboard_modifiers();
+
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::KeyPress {
+                    key,
+                    modifiers,
+                    is_repeat,
+                },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::KeyPress {
+                        key,
+                        modifiers: modifiers.bits(),
+                        is_repeat,
+                    }),
+                );
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_KEYUP | WM_SYSKEYUP => {
+            let key = wparam as u32;
+            let modifiers = query_keyboard_modifiers();
+            dispatch_window_system_event(
+                Delivery::Default,
+                hwnd,
+                WindowSystemEvent::KeyRelease { key, modifiers },
+            );
+
+            if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
+                handle.post_event(
+                    receiver,
+                    Event::new_spontaneous(EventKind::KeyRelease {
+                        key,
+                        modifiers: modifiers.bits(),
+                    }),
+                );
+            }
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
+            let _ = IME_COMPOSING.try_with(|c| c.borrow_mut().insert(hwnd as isize));
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
+            let mut ime_ctx = crate::ime::Win32InputContext::new(hwnd);
+            let (commit_opt, preedit_opt, cursor_pos) = ime_ctx.handle_composition(lparam);
+
+            let commit_string = commit_opt.unwrap_or_default();
+            let preedit_string = preedit_opt.unwrap_or_default();
+
+            if !commit_string.is_empty() || !preedit_string.is_empty() {
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
-                    WindowSystemEvent::KeyPress {
-                        key,
-                        modifiers,
-                        is_repeat,
+                    WindowSystemEvent::InputMethod {
+                        commit_string: commit_string.clone(),
+                        preedit_string: preedit_string.clone(),
+                        cursor_position: cursor_pos,
                     },
                 );
 
                 if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                     handle.post_event(
                         receiver,
-                        Event::new_spontaneous(EventKind::KeyPress {
-                            key,
-                            modifiers: modifiers.bits(),
-                            is_repeat,
+                        Event::new_spontaneous(EventKind::InputMethod {
+                            commit_string,
+                            preedit_string,
+                            cursor_position: cursor_pos,
                         }),
                     );
                 }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
-            WM_KEYUP | WM_SYSKEYUP => {
-                let key = wparam as u32;
-                let modifiers = query_keyboard_modifiers();
+            def_wnd_proc(hwnd, msg, wparam, lparam)
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
+            // `QWindowsInputContext::endComposition`: a composition that was running is closed
+            // with an empty event so a cancelled preedit is cleared.
+            let was_composing = IME_COMPOSING
+                .try_with(|c| c.borrow_mut().remove(&(hwnd as isize)))
+                .unwrap_or(false);
+            if was_composing {
                 dispatch_window_system_event(
                     Delivery::Default,
                     hwnd,
-                    WindowSystemEvent::KeyRelease { key, modifiers },
+                    WindowSystemEvent::InputMethod {
+                        commit_string: String::new(),
+                        preedit_string: String::new(),
+                        cursor_position: 0,
+                    },
                 );
-
                 if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                     handle.post_event(
                         receiver,
-                        Event::new_spontaneous(EventKind::KeyRelease {
-                            key,
-                            modifiers: modifiers.bits(),
-                        }),
-                    );
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
-                let _ = IME_COMPOSING.try_with(|c| c.borrow_mut().insert(hwnd as isize));
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
-                let mut ime_ctx = crate::ime::Win32InputContext::new(hwnd);
-                let (commit_opt, preedit_opt, cursor_pos) = ime_ctx.handle_composition(lparam);
-
-                let commit_string = commit_opt.unwrap_or_default();
-                let preedit_string = preedit_opt.unwrap_or_default();
-
-                if !commit_string.is_empty() || !preedit_string.is_empty() {
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::InputMethod {
-                            commit_string: commit_string.clone(),
-                            preedit_string: preedit_string.clone(),
-                            cursor_position: cursor_pos,
-                        },
-                    );
-
-                    if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                        handle.post_event(
-                            receiver,
-                            Event::new_spontaneous(EventKind::InputMethod {
-                                commit_string,
-                                preedit_string,
-                                cursor_position: cursor_pos,
-                            }),
-                        );
-                    }
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
-                // `QWindowsInputContext::endComposition`: a composition that was running is closed
-                // with an empty event so a cancelled preedit is cleared.
-                let was_composing = IME_COMPOSING
-                    .try_with(|c| c.borrow_mut().remove(&(hwnd as isize)))
-                    .unwrap_or(false);
-                if was_composing {
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::InputMethod {
+                        Event::new_spontaneous(EventKind::InputMethod {
                             commit_string: String::new(),
                             preedit_string: String::new(),
                             cursor_position: 0,
-                        },
-                    );
-                    if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
-                        handle.post_event(
-                            receiver,
-                            Event::new_spontaneous(EventKind::InputMethod {
-                                commit_string: String::new(),
-                                preedit_string: String::new(),
-                                cursor_position: 0,
-                            }),
-                        );
-                    }
-                }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-            0x0218 => {
-                // WM_POWERBROADCAST. Qt itself only handles PBT_POWERSETTINGCHANGE (qwindowscontext.cpp,
-                // qWindowsPowerWindowProc); it has no suspend/resume event, so this is a ferrokit extension.
-                let power_event = match wparam as u32 {
-                    0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
-                    0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
-                    _ => None,
-                };
-                if let Some(event) = power_event {
-                    dispatch_window_system_event(
-                        Delivery::Default,
-                        hwnd,
-                        WindowSystemEvent::Power { event },
+                        }),
                     );
                 }
-                1
             }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
+        0x0218 => {
+            // WM_POWERBROADCAST. Qt itself only handles PBT_POWERSETTINGCHANGE (qwindowscontext.cpp,
+            // qWindowsPowerWindowProc); it has no suspend/resume event, so this is a ferrokit extension.
+            let power_event = match wparam as u32 {
+                0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
+                0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
+                _ => None,
+            };
+            if let Some(event) = power_event {
+                dispatch_window_system_event(
+                    Delivery::Default,
+                    hwnd,
+                    WindowSystemEvent::Power { event },
+                );
+            }
+            1
+        }
+        _ => def_wnd_proc(hwnd, msg, wparam, lparam),
     }
 }
 

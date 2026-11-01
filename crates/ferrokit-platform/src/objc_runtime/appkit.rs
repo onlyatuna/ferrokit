@@ -521,40 +521,38 @@ impl ObjcMsg {
     /// # Safety
     /// See [`ObjcMsg`].
     pub unsafe fn send_id_logged(receiver: Id, sel: Sel, arg: Id) -> Id {
-        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
-        unsafe {
-            if receiver.is_nil() {
-                return Id::NIL;
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                record(receiver, sel, vec![MockValue::Id(arg)]);
-                // The properties some of these selectors change, as the mock keeps them.
-                match mock_selector_name(sel).as_str() {
-                    "removeChildWindow:" => {
-                        // AppKit ignores a window that is not a child of the receiver.
-                        let mock = MockObjcRuntime::instance();
-                        if mock.property(arg, "parentWindow") == Some(MockValue::Id(receiver)) {
-                            mock.clear_property(arg, "parentWindow");
-                        }
-                        return receiver;
-                    }
-                    // Nothing else of `send_id`'s mock applies to these selectors.
-                    "addTrackingArea:"
-                    | "removeTrackingArea:"
-                    | "invalidateCursorRectsForView:"
-                    | "setMask:"
-                    | "setPath:"
-                    | "interpretKeyEvents:"
-                    | "setDelegate:"
-                    | "makeFirstResponder:" => return receiver,
-                    _ => {}
-                }
-            }
-
-            Self::send_id(receiver, sel, arg)
+        if receiver.is_nil() {
+            return Id::NIL;
         }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(receiver, sel, vec![MockValue::Id(arg)]);
+            // The properties some of these selectors change, as the mock keeps them.
+            match mock_selector_name(sel).as_str() {
+                "removeChildWindow:" => {
+                    // AppKit ignores a window that is not a child of the receiver.
+                    let mock = MockObjcRuntime::instance();
+                    if mock.property(arg, "parentWindow") == Some(MockValue::Id(receiver)) {
+                        mock.clear_property(arg, "parentWindow");
+                    }
+                    return receiver;
+                }
+                // Nothing else of `send_id`'s mock applies to these selectors.
+                "addTrackingArea:"
+                | "removeTrackingArea:"
+                | "invalidateCursorRectsForView:"
+                | "setMask:"
+                | "setPath:"
+                | "interpretKeyEvents:"
+                | "setDelegate:"
+                | "makeFirstResponder:" => return receiver,
+                _ => {}
+            }
+        }
+
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_id(receiver, sel, arg) }
     }
 
     /// `-[receiver sel:BOOL]`, logged (`setHidesOnDeactivate:`, `setAcceptsMouseMovedEvents:`,
@@ -563,14 +561,12 @@ impl ObjcMsg {
     /// # Safety
     /// See [`ObjcMsg`].
     pub unsafe fn send_bool_logged(receiver: Id, sel: Sel, val: bool) -> Id {
-        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
-        unsafe {
-            #[cfg(not(target_os = "macos"))]
-            if !receiver.is_nil() {
-                record(receiver, sel, vec![MockValue::Bool(val)]);
-            }
-            Self::send_bool(receiver, sel, val)
+        #[cfg(not(target_os = "macos"))]
+        if !receiver.is_nil() {
+            record(receiver, sel, vec![MockValue::Bool(val)]);
         }
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_bool(receiver, sel, val) }
     }
 
     /// `-[receiver sel:NSInteger]`, logged (`setLevel:`, `setState:`, ...).
@@ -578,14 +574,12 @@ impl ObjcMsg {
     /// # Safety
     /// See [`ObjcMsg`].
     pub unsafe fn send_int_logged(receiver: Id, sel: Sel, val: NSInteger) -> Id {
-        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
-        unsafe {
-            #[cfg(not(target_os = "macos"))]
-            if !receiver.is_nil() {
-                record(receiver, sel, vec![MockValue::Int(val as i64)]);
-            }
-            Self::send_int(receiver, sel, val)
+        #[cfg(not(target_os = "macos"))]
+        if !receiver.is_nil() {
+            record(receiver, sel, vec![MockValue::Int(val as i64)]);
         }
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_int(receiver, sel, val) }
     }
 
     /// `-[receiver sel]` returning an object, logged (`set`, `discardCursorRects`,
@@ -594,14 +588,12 @@ impl ObjcMsg {
     /// # Safety
     /// See [`ObjcMsg`].
     pub unsafe fn send_0_logged(receiver: Id, sel: Sel) -> Id {
-        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
-        unsafe {
-            #[cfg(not(target_os = "macos"))]
-            if !receiver.is_nil() {
-                record(receiver, sel, Vec::new());
-            }
-            Self::send_0(receiver, sel)
+        #[cfg(not(target_os = "macos"))]
+        if !receiver.is_nil() {
+            record(receiver, sel, Vec::new());
         }
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_0(receiver, sel) }
     }
 
     /// `-[receiver sel:id ordered:NSInteger]` (`-[NSWindow addChildWindow:ordered:]`), logged. The

@@ -86,32 +86,30 @@ unsafe extern "system" fn internal_wnd_proc(
 }
 
 unsafe fn internal_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // SAFETY: internal window procedure handling timers, wakeup and DefWindowProcW fallback.
-    unsafe {
-        if msg == WM_TIMER {
-            let timer_id = wparam as u32;
-            if crate::timer::has_thread_timer_context() {
-                dispatch_thread_timer(timer_id, hwnd);
-            } else {
-                PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(timer_id));
-            }
-            return 0;
+    if msg == WM_TIMER {
+        let timer_id = wparam as u32;
+        if crate::timer::has_thread_timer_context() {
+            dispatch_thread_timer(timer_id, hwnd);
+        } else {
+            PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(timer_id));
         }
-
-        if msg == WM_FERROKIT_WAKEUP {
-            // Reached only when a native modal loop (e.g. sizing) dispatches the wake-up
-            // message itself; the regular `process_events` consumes it via PeekMessage.
-            let _ = WAKEUP_FLAGS.try_with(|flags| {
-                if let Some(flag) = flags.borrow().get(&(hwnd as usize)) {
-                    flag.store(false, Ordering::Release);
-                }
-            });
-            let _ = crate::event_loop::pump_posted_events_modal();
-            return 0;
-        }
-
-        DefWindowProcW(hwnd, msg, wparam, lparam)
+        return 0;
     }
+
+    if msg == WM_FERROKIT_WAKEUP {
+        // Reached only when a native modal loop (e.g. sizing) dispatches the wake-up
+        // message itself; the regular `process_events` consumes it via PeekMessage.
+        let _ = WAKEUP_FLAGS.try_with(|flags| {
+            if let Some(flag) = flags.borrow().get(&(hwnd as usize)) {
+                flag.store(false, Ordering::Release);
+            }
+        });
+        let _ = crate::event_loop::pump_posted_events_modal();
+        return 0;
+    }
+
+    // SAFETY: unhandled messages fall back to DefWindowProcW with parameters provided by Windows.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 /// Restores `in_timer_event` (and the single-shot/KillTimer bookkeeping) on every exit path,

@@ -554,27 +554,35 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
-        unsafe {
-            // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
-            // shared reference is formed.
-            let target = &*(this as *mut OleDropTarget);
-            let formats = data_object_formats(p_data_obj);
-            let has_formats = !formats.is_empty();
-            target.accepts.store(has_formats, Ordering::SeqCst);
-            let allowed = incoming_effects(pdw_effect);
-            let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
-            // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
-            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (target.callback)(DropEvent::Enter {
-                    pos: logical_client_pos(target.hwnd, pt),
-                    formats,
-                    effect: proposed,
-                })
-            }))
-            .unwrap_or(DROPEFFECT_NONE);
-            write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
-            S_OK
-        }
+        // SAFETY: `this` is our live `OleDropTarget` held by OLE's reference; p_data_obj is valid.
+        let (target, formats) = unsafe {
+            (
+                &*(this as *mut OleDropTarget),
+                data_object_formats(p_data_obj),
+            )
+        };
+        let has_formats = !formats.is_empty();
+        target.accepts.store(has_formats, Ordering::SeqCst);
+        // SAFETY: pdw_effect is provided by OLE per IDropTarget contract; pt is handled via ScreenToClient.
+        let (allowed, proposed, pos) = unsafe {
+            (
+                incoming_effects(pdw_effect),
+                allowed_effect(pdw_effect, has_formats, grf_key_state),
+                logical_client_pos(target.hwnd, pt),
+            )
+        };
+        // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (target.callback)(DropEvent::Enter {
+                pos,
+                formats,
+                effect: proposed,
+            })
+        }))
+        .unwrap_or(DROPEFFECT_NONE);
+        // SAFETY: writes the agreed effect to pdw_effect.
+        unsafe { write_effect(pdw_effect, reported_effect(has_formats, reply, allowed)) };
+        S_OK
     }
 
     /// `IDropTarget::DragOver`.
@@ -588,23 +596,27 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
-        unsafe {
-            // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
-            // shared reference is formed.
-            let target = &*(this as *mut OleDropTarget);
-            let has_formats = target.accepts.load(Ordering::SeqCst);
-            let allowed = incoming_effects(pdw_effect);
-            let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
-            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (target.callback)(DropEvent::Over {
-                    pos: logical_client_pos(target.hwnd, pt),
-                    effect: proposed,
-                })
-            }))
-            .unwrap_or(DROPEFFECT_NONE);
-            write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
-            S_OK
-        }
+        // SAFETY: `this` is our live `OleDropTarget` held by OLE's reference; only a shared reference is formed.
+        let target = unsafe { &*(this as *mut OleDropTarget) };
+        let has_formats = target.accepts.load(Ordering::SeqCst);
+        // SAFETY: pdw_effect is provided by OLE per IDropTarget::DragOver contract; pt is handled via ScreenToClient.
+        let (allowed, proposed, pos) = unsafe {
+            (
+                incoming_effects(pdw_effect),
+                allowed_effect(pdw_effect, has_formats, grf_key_state),
+                logical_client_pos(target.hwnd, pt),
+            )
+        };
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (target.callback)(DropEvent::Over {
+                pos,
+                effect: proposed,
+            })
+        }))
+        .unwrap_or(DROPEFFECT_NONE);
+        // SAFETY: writes the agreed effect to pdw_effect.
+        unsafe { write_effect(pdw_effect, reported_effect(has_formats, reply, allowed)) };
+        S_OK
     }
 
     /// `IDropTarget::DragLeave`.
@@ -612,16 +624,13 @@ pub mod win32_ole {
     /// # Safety
     /// As OLE calls it: `this` must be a live `OleDropTarget` the caller holds a reference to.
     unsafe extern "system" fn drag_leave(this: *mut c_void) -> HRESULT {
-        unsafe {
-            // SAFETY: as in `drop`: `this` is our live `OleDropTarget` held by OLE's reference; only a
-            // shared reference is formed.
-            let target = &*(this as *mut OleDropTarget);
-            target.accepts.store(false, Ordering::SeqCst);
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (target.callback)(DropEvent::Leave)
-            }));
-            S_OK
-        }
+        // SAFETY: `this` is our live `OleDropTarget` held by OLE's reference; only a shared reference is formed.
+        let target = unsafe { &*(this as *mut OleDropTarget) };
+        target.accepts.store(false, Ordering::SeqCst);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (target.callback)(DropEvent::Leave)
+        }));
+        S_OK
     }
 
     /// `IDropTarget::Drop`.
@@ -637,30 +646,36 @@ pub mod win32_ole {
         pt: POINTL,
         pdw_effect: *mut u32,
     ) -> HRESULT {
-        unsafe {
-            // SAFETY: `this` is the `IDropTarget*` OLE got from `RegisterDragDrop` in
-            // `register_drop_target`, i.e. our `OleDropTarget` (`vtbl` is its first `repr(C)` field);
-            // OLE holds a reference until it releases it after `RevokeDragDrop`, so the allocation is
-            // live. Only a shared reference is formed (fields are atomics or read-only).
-            let target = &*(this as *mut OleDropTarget);
-            target.accepts.store(false, Ordering::SeqCst);
-            let formats = data_object_formats(p_data_obj);
-            let data = data_object_payload(p_data_obj);
-            let has_formats = !formats.is_empty();
-            let allowed = incoming_effects(pdw_effect);
-            let proposed = allowed_effect(pdw_effect, has_formats, grf_key_state);
-            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (target.callback)(DropEvent::Drop {
-                    pos: logical_client_pos(target.hwnd, pt),
-                    formats,
-                    data,
-                    effect: proposed,
-                })
-            }))
-            .unwrap_or(DROPEFFECT_NONE);
-            write_effect(pdw_effect, reported_effect(has_formats, reply, allowed));
-            S_OK
-        }
+        // SAFETY: `this` is the live OleDropTarget; p_data_obj is null or live IDataObject.
+        let (target, formats, data) = unsafe {
+            (
+                &*(this as *mut OleDropTarget),
+                data_object_formats(p_data_obj),
+                data_object_payload(p_data_obj),
+            )
+        };
+        target.accepts.store(false, Ordering::SeqCst);
+        let has_formats = !formats.is_empty();
+        // SAFETY: pdw_effect is provided by OLE per IDropTarget::Drop contract; pt is handled via ScreenToClient.
+        let (allowed, proposed, pos) = unsafe {
+            (
+                incoming_effects(pdw_effect),
+                allowed_effect(pdw_effect, has_formats, grf_key_state),
+                logical_client_pos(target.hwnd, pt),
+            )
+        };
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (target.callback)(DropEvent::Drop {
+                pos,
+                formats,
+                data,
+                effect: proposed,
+            })
+        }))
+        .unwrap_or(DROPEFFECT_NONE);
+        // SAFETY: writes the agreed effect to pdw_effect.
+        unsafe { write_effect(pdw_effect, reported_effect(has_formats, reply, allowed)) };
+        S_OK
     }
 
     static OLE_DROP_TARGET_VTBL: IDropTargetVtbl = IDropTargetVtbl {

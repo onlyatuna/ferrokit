@@ -183,25 +183,27 @@ pub struct DCompStats {
 /// # Safety
 /// `clip_visual` must be a live `IDCompositionVisual*`.
 unsafe fn set_clip_rect(clip_visual: *mut c_void, w: u32, h: u32) -> HRESULT {
+    #[repr(C)]
+    struct D2dRectF {
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    }
+    type PfnSetClipRect =
+        unsafe extern "system" fn(this: *mut c_void, rect: *const D2dRectF) -> HRESULT;
+
+    let rect = D2dRectF {
+        left: 0.0,
+        top: 0.0,
+        right: w as f32,
+        bottom: h as f32,
+    };
+
     // SAFETY: caller guarantees clip_visual is a live IDCompositionVisual*.
     unsafe {
-        #[repr(C)]
-        struct D2dRectF {
-            left: f32,
-            top: f32,
-            right: f32,
-            bottom: f32,
-        }
-        type PfnSetClipRect =
-            unsafe extern "system" fn(this: *mut c_void, rect: *const D2dRectF) -> HRESULT;
         let vtbl = *(clip_visual as *mut *mut usize);
         let f: PfnSetClipRect = std::mem::transmute(*vtbl.add(14));
-        let rect = D2dRectF {
-            left: 0.0,
-            top: 0.0,
-            right: w as f32,
-            bottom: h as f32,
-        };
         f(clip_visual, &rect)
     }
 }

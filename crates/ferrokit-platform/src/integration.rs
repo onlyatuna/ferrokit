@@ -668,14 +668,37 @@ mod unreachable_display_tests {
     use crate::window::WindowFlags;
     use ferrokit_gui::geometry::primitives::Rect;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                // SAFETY: restores environment variable state on test exit or unwind.
+                unsafe {
+                    match v {
+                        Some(v) => std::env::set_var(k, v),
+                        None => std::env::remove_var(k),
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn bogus_display_falls_back_to_a_working_window() {
-        let saved = (
-            std::env::var_os("DISPLAY"),
-            std::env::var_os("WAYLAND_DISPLAY"),
-            std::env::var_os("WAYLAND_SOCKET"),
-        );
-        // SAFETY: test-only environment variable mutation under single-threaded test runner.
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard {
+            saved: vec![
+                ("DISPLAY", std::env::var_os("DISPLAY")),
+                ("WAYLAND_DISPLAY", std::env::var_os("WAYLAND_DISPLAY")),
+                ("WAYLAND_SOCKET", std::env::var_os("WAYLAND_SOCKET")),
+            ],
+        };
+        // SAFETY: test-only environment variable mutation under ENV_LOCK synchronization.
         unsafe {
             std::env::set_var("DISPLAY", "localhost:7777.0");
             std::env::set_var("WAYLAND_DISPLAY", "ferrokit-bogus-wayland");
@@ -687,19 +710,6 @@ mod unreachable_display_tests {
             Rect::new(0, 0, 100, 100),
             WindowFlags::default(),
         );
-        for (k, v) in [
-            ("DISPLAY", saved.0),
-            ("WAYLAND_DISPLAY", saved.1),
-            ("WAYLAND_SOCKET", saved.2),
-        ] {
-            // SAFETY: restores saved environment variable state.
-            unsafe {
-                match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
         assert_eq!(kind, DisplayServerKind::Generic);
         assert!(win.is_ok());
     }
