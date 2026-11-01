@@ -2,7 +2,7 @@
 //! Blending of glyph coverage into a premultiplied RGBA pixel, after Qt's text blit routines
 //! (`qt_alphamapblit_*` for grey-scale masks, `qt_alphargbblit_argb32` for LCD masks).
 
-use crate::text::smoothing::{blend_linear, TrcLut};
+use crate::text::smoothing::{TrcLut, blend_linear};
 use tiny_skia::{
     BlendMode, Color, FilterQuality, Paint, Pattern, PixmapMut, PixmapRef, Rect, Shader,
     SpreadMode, Transform,

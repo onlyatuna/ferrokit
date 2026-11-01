@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::any::{Any, TypeId};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use ferrokit_core::meta::{register_meta_type, MetaType, MetaTypeId};
+use ferrokit_core::meta::{MetaType, MetaTypeId, register_meta_type};
 use ferrokit_core::object::ObjectId;
 use ferrokit_core::signal::Signal;
 use ferrokit_core::types::*;
@@ -288,10 +288,11 @@ fn test_signal_emission_with_custom_variant() {
     let received_clone = Arc::clone(&received);
 
     sig.connect(move |val| {
-        if let Some(user) = val.downcast_ref::<UserProfile>() {
-            if user.username == "SignalUser" && user.age == 42 {
-                received_clone.store(true, Ordering::SeqCst);
-            }
+        if let Some(user) = val.downcast_ref::<UserProfile>()
+            && user.username == "SignalUser"
+            && user.age == 42
+        {
+            received_clone.store(true, Ordering::SeqCst);
         }
     });
 

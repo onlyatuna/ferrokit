@@ -8,7 +8,7 @@
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{ContextMenuReason, Event, EventKind, MouseButtons};
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_widgets::hit_test::EventTreeDispatcher;
 use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};

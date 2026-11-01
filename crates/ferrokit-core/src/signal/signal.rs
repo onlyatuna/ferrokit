@@ -4,7 +4,7 @@
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -620,13 +620,11 @@ impl<T> Signal<T> {
     }
 
     fn emit_impl(&self, value: &T, honor_owner_state: bool) {
-        if honor_owner_state {
-            if let Some(emitter) = &self.emitter {
-                if emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire)
-                {
-                    return;
-                }
-            }
+        if honor_owner_state
+            && let Some(emitter) = &self.emitter
+            && (emitter.blocked.load(Ordering::Acquire) || !emitter.alive.load(Ordering::Acquire))
+        {
+            return;
         }
         let emitter_id = self.emitter_id();
         let owner_alive = self
@@ -651,11 +649,11 @@ impl<T> Signal<T> {
             }
             // A slot bound to another thread is skipped, not consumed: the single-shot removal
             // below must not happen for an emission that cannot run it.
-            if let Some(bound) = &sub.thread_bound {
-                if bound.owner != current_thread {
-                    let _ = catch_unwind(AssertUnwindSafe(|| (bound.on_skip)()));
-                    continue;
-                }
+            if let Some(bound) = &sub.thread_bound
+                && bound.owner != current_thread
+            {
+                let _ = catch_unwind(AssertUnwindSafe(|| (bound.on_skip)()));
+                continue;
             }
             // Qt `doActivate` removes a single-shot connection before invoking it; a re-entrant
             // emit then cannot reach the slot again. `disconnect` also retires the registry entry.
@@ -714,7 +712,9 @@ impl<T: 'static> Signal<T> {
 
     /// The disconnect step of a [`ScopedConnection`] of this signal. It holds the signal weakly,
     /// so a scoped connection does not keep its signal alive.
-    pub(super) fn scoped_disconnector(&self) -> impl FnOnce(ConnectionId) + Send + 'static {
+    pub(super) fn scoped_disconnector(
+        &self,
+    ) -> impl FnOnce(ConnectionId) + Send + 'static + use<T> {
         let signal_weak = Arc::downgrade(&self.inner);
         move |conn_id| {
             if let Some(inner_arc) = signal_weak.upgrade() {
@@ -877,14 +877,13 @@ impl<T: Clone + Send + 'static> Signal<T> {
         F: Fn(&T) + Send + Sync + 'static,
     {
         let mut inner = self.inner.lock();
-        if let Some(key) = unique {
-            if inner
+        if let Some(key) = unique
+            && inner
                 .subscribers
                 .iter()
                 .any(|sub| sub.receiver_id == Some(receiver_id) && sub.slot_key == Some(key))
-            {
-                return None;
-            }
+        {
+            return None;
         }
         let id = ConnectionId::next();
 
@@ -1069,8 +1068,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
 mod tests {
     use super::*;
     use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn test_connection_type_defaults_and_predicates() {

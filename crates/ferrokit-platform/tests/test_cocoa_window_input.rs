@@ -12,12 +12,12 @@ use std::rc::Rc;
 use ferrokit_core::event::MouseButtons;
 use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::geometry::primitives::{Point, Rect};
-use ferrokit_platform::objc_runtime::appkit::{MockValue, NSRange, NS_NOT_FOUND};
+use ferrokit_platform::objc_runtime::appkit::{MockValue, NS_NOT_FOUND, NSRange};
 use ferrokit_platform::window_cocoa_input::{
-    self as input, cursor_update, qt_key_for_event, qt_modifiers_from_ns_flags, reset_cursor_rects,
-    text_input_first_rect, text_input_has_marked_text, text_input_insert_str,
-    text_input_marked_range, text_input_set_marked_str, text_input_unmark, update_tracking_area,
-    NsEventKind, IME_LINE_HEIGHT,
+    self as input, IME_LINE_HEIGHT, NsEventKind, cursor_update, qt_key_for_event,
+    qt_modifiers_from_ns_flags, reset_cursor_rects, text_input_first_rect,
+    text_input_has_marked_text, text_input_insert_str, text_input_marked_range,
+    text_input_set_marked_str, text_input_unmark, update_tracking_area,
 };
 use ferrokit_platform::{
     CGPoint, ClosureWindowEventHandler, CocoaNativeWindow, CursorShape, Id, KeyboardModifiers,
@@ -758,10 +758,11 @@ fn tracking_area_is_installed_replaced_and_released() {
         mock.get_object_data(first).is_none(),
         "the replaced area leaked"
     );
-    assert!(mock
-        .calls_for(view)
-        .iter()
-        .any(|c| c.selector == "removeTrackingArea:" && c.args[0] == MockValue::Id(first)));
+    assert!(
+        mock.calls_for(view)
+            .iter()
+            .any(|c| c.selector == "removeTrackingArea:" && c.args[0] == MockValue::Id(first))
+    );
 
     drop(win);
     assert!(

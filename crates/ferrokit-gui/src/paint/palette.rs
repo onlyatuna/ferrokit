@@ -103,10 +103,10 @@ impl Palette {
             return *c;
         }
         // Fall back to Active group if specified group not set
-        if group != ColorGroup::Active {
-            if let Some(c) = self.colors.get(&(ColorGroup::Active, role)) {
-                return *c;
-            }
+        if group != ColorGroup::Active
+            && let Some(c) = self.colors.get(&(ColorGroup::Active, role))
+        {
+            return *c;
         }
         // Fallback default
         Color::BLACK

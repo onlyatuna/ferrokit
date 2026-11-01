@@ -10,8 +10,8 @@ use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{
-    invoke_method_on_thread, register_qobject_ptr, unregister_qobject, with_object, ObjectData,
-    ObjectId, QObject,
+    ObjectData, ObjectId, QObject, invoke_method_on_thread, register_qobject_ptr,
+    unregister_qobject, with_object,
 };
 use ferrokit_core::signal::ConnectionType;
 use ferrokit_core::variant::Variant;

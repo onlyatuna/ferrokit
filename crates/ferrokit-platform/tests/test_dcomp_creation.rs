@@ -5,8 +5,8 @@
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::tiny_skia::Color;
-use ferrokit_platform::surface::dcomp::DCompSurface;
 use ferrokit_platform::surface::PlatformSurface;
+use ferrokit_platform::surface::dcomp::DCompSurface;
 use ferrokit_platform::window::{NativeWindow, WindowFlags};
 
 /// A machine without a usable Direct3D 11 device may refuse to create the surface; a wrong IID

@@ -23,7 +23,7 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 use ferrokit_platform::WindowFlags;
-use ferrokit_widgets::tooltip::{expire_time_ms, place_tip, CURSOR_SIZE, FALL_ASLEEP_DELAY_MS};
+use ferrokit_widgets::tooltip::{CURSOR_SIZE, FALL_ASLEEP_DELAY_MS, expire_time_ms, place_tip};
 use ferrokit_widgets::*;
 
 /// Every test in this binary drives process-wide state (the tip, and for the real windows the
@@ -813,20 +813,20 @@ fn a_multi_line_tip_is_as_tall_as_its_lines() {
 mod real_windows {
     use super::*;
     use std::cell::Cell;
-    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
     use windows_sys::Win32::System::Threading::{
         AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, GetLastInputInfo, TrackMouseEvent, KEYEVENTF_KEYUP, LASTINPUTINFO, TME_LEAVE,
-        TME_QUERY, TRACKMOUSEEVENT, VK_MENU,
+        GetLastInputInfo, KEYEVENTF_KEYUP, LASTINPUTINFO, TME_LEAVE, TME_QUERY, TRACKMOUSEEVENT,
+        TrackMouseEvent, VK_MENU, keybd_event,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, GetCursorPos, GetForegroundWindow, GetWindowRect,
         GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageW, SetCursorPos,
-        SetForegroundWindow, WindowFromPoint, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        SetForegroundWindow, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WindowFromPoint,
     };
 
     /// Puts the real cursor over a window for as long as it lives, then puts it back. A native
@@ -1030,7 +1030,7 @@ mod real_windows {
     /// `assert!(cond, ...)` for a check that outside interference could also fail: `$hwnd` is the
     /// window the cursor was put over.
     macro_rules! ensure {
-        ($hwnd:expr, $cond:expr, $($message:tt)+) => {
+        ($hwnd:expr_2021, $cond:expr_2021, $($message:tt)+) => {
             if !$cond {
                 fail(interference($hwnd), format!($($message)+));
             }
@@ -1420,8 +1420,8 @@ mod real_windows {
 #[test]
 fn a_timer_still_fires_after_it_is_moved_following_connect() {
     use ferrokit_core::timer::Timer;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let _serial = serial();
     let mut el = EventLoop::new();

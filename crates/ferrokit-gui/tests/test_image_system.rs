@@ -481,7 +481,7 @@ fn test_ico_palette_and_32bpp_alpha_frames() {
 fn test_ico_rejects_malformed_data() {
     assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 0, 0]).is_err()); // zero frames
     assert!(ImageReader::read_from_memory(&[0, 0, 1, 0, 5, 0]).is_err()); // truncated directory
-                                                                          // Frame pointing past the end of the file.
+    // Frame pointing past the end of the file.
     let mut ico = build_ico(&[(2, 2, vec![0; 4])]);
     ico[6 + 8..6 + 12].copy_from_slice(&1000u32.to_le_bytes());
     assert!(ImageReader::read_from_memory(&ico).is_err());

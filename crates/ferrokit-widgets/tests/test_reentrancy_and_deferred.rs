@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoopHandle;
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_widgets::button::Button;
-use ferrokit_widgets::command::{delete_widget_later, WidgetCommand, WidgetCommandQueue};
+use ferrokit_widgets::command::{WidgetCommand, WidgetCommandQueue, delete_widget_later};
 use ferrokit_widgets::frame::Frame;
 use ferrokit_widgets::hit_test::EventTreeDispatcher;
 use ferrokit_widgets::layout::{BoxLayout, Direction, Layout};
-use ferrokit_widgets::widget::{set_widget_enabled, EmptyWidget, WidgetRef};
+use ferrokit_widgets::widget::{EmptyWidget, WidgetRef, set_widget_enabled};
 
 thread_local! {
     static TEST1_BTN: RefCell<Option<WidgetRef>> = const { RefCell::new(None) };

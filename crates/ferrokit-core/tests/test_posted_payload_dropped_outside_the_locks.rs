@@ -4,10 +4,10 @@
 //! locks again on the same thread.
 
 use ferrokit_core::event::{Event, EventCompressor, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{ObjectId, ThreadId};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 /// Merges every event into the one queued for the same receiver.

@@ -21,8 +21,8 @@
 
 use crate::theme::ColorScheme;
 use crate::tray::dbus_connection::{
-    DbusConnection, DbusMessage, Reader, DBUS_MESSAGE_TYPE_ERROR, DBUS_MESSAGE_TYPE_METHOD_RETURN,
-    DBUS_MESSAGE_TYPE_SIGNAL,
+    DBUS_MESSAGE_TYPE_ERROR, DBUS_MESSAGE_TYPE_METHOD_RETURN, DBUS_MESSAGE_TYPE_SIGNAL,
+    DbusConnection, DbusMessage, Reader,
 };
 
 pub(crate) const PORTAL_SERVICE: &str = "org.freedesktop.portal.Desktop";
@@ -205,7 +205,7 @@ fn wait_readable(
         events: i16,
         revents: i16,
     }
-    extern "C" {
+    unsafe extern "C" {
         fn poll(fds: *mut PollFd, nfds: std::ffi::c_ulong, timeout: i32) -> i32;
     }
     const POLLIN: i16 = 0x001;
@@ -230,8 +230,8 @@ fn wait_readable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tray::dbus_connection::scripted::{ScriptedDbusBus, ScriptedDbusTransport};
     use crate::tray::dbus_connection::DBUS_MESSAGE_TYPE_METHOD_CALL;
+    use crate::tray::dbus_connection::scripted::{ScriptedDbusBus, ScriptedDbusTransport};
 
     fn session() -> (PortalSession, ScriptedDbusBus) {
         let (transport, bus) = ScriptedDbusTransport::new(":1.7");

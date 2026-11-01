@@ -2,7 +2,7 @@
 //! Line break opportunities of a text, as `QTextEngine` takes them from `QUnicodeTools`
 //! (UAX #14).
 
-use unicode_linebreak::{break_property, linebreaks, BreakClass, BreakOpportunity};
+use unicode_linebreak::{BreakClass, BreakOpportunity, break_property, linebreaks};
 
 /// For every grapheme of `text` (`starts` are their byte offsets followed by `text.len()`),
 /// whether a line may break in front of it, then one entry for the end of the text.

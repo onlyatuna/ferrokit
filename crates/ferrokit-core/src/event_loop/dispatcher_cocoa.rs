@@ -50,7 +50,7 @@ mod ffi {
     pub type TimerCallback = extern "C" fn(CFTypeRef, *mut c_void);
 
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         pub static kCFRunLoopCommonModes: *const c_void;
         pub fn CFRunLoopGetMain() -> CFTypeRef;
         pub fn CFRunLoopWakeUp(run_loop: CFTypeRef);
@@ -78,15 +78,15 @@ mod ffi {
     }
 
     #[link(name = "Foundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         pub static NSDefaultRunLoopMode: Id;
     }
 
     #[link(name = "AppKit", kind = "framework")]
-    extern "C" {}
+    unsafe extern "C" {}
 
     #[link(name = "objc")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn objc_getClass(name: *const c_char) -> Id;
         pub fn sel_registerName(name: *const c_char) -> Sel;
         pub fn objc_msgSend();
@@ -170,8 +170,11 @@ unsafe fn send0<R>(receiver: Id, sel: Sel) -> R {
     // is meant to be used; the caller guarantees that `(Id, Sel) -> R` is that signature (this
     // function's contract). The transmute turns the function's address (`*const ()`) into a
     // function pointer of the same size, which is defined; the call is sound by the contract.
-    let f: unsafe extern "C" fn(Id, Sel) -> R = std::mem::transmute(ffi::objc_msgSend as *const ());
-    f(receiver, sel)
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel) -> R =
+            std::mem::transmute(ffi::objc_msgSend as *const ());
+        f(receiver, sel)
+    }
 }
 
 /// `[receiver sel:a]` through `objc_msgSend` cast to `R (Id, Sel, A)`.
@@ -182,9 +185,11 @@ unsafe fn send0<R>(receiver: Id, sel: Sel) -> R {
 unsafe fn send1<A, R>(receiver: Id, sel: Sel, a: A) -> R {
     // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A) -> R` is the signature of the
     // method `sel` names on `receiver`.
-    let f: unsafe extern "C" fn(Id, Sel, A) -> R =
-        std::mem::transmute(ffi::objc_msgSend as *const ());
-    f(receiver, sel, a)
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, A) -> R =
+            std::mem::transmute(ffi::objc_msgSend as *const ());
+        f(receiver, sel, a)
+    }
 }
 
 /// `[receiver sel:a with:b]` through `objc_msgSend` cast to `R (Id, Sel, A, B)`.
@@ -194,9 +199,11 @@ unsafe fn send1<A, R>(receiver: Id, sel: Sel, a: A) -> R {
 unsafe fn send2<A, B, R>(receiver: Id, sel: Sel, a: A, b: B) -> R {
     // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A, B) -> R` is the signature of
     // the method `sel` names on `receiver`.
-    let f: unsafe extern "C" fn(Id, Sel, A, B) -> R =
-        std::mem::transmute(ffi::objc_msgSend as *const ());
-    f(receiver, sel, a, b)
+    unsafe {
+        let f: unsafe extern "C" fn(Id, Sel, A, B) -> R =
+            std::mem::transmute(ffi::objc_msgSend as *const ());
+        f(receiver, sel, a, b)
+    }
 }
 
 /// An Objective-C autorelease pool for the scope (Qt's `QMacAutoReleasePool`).

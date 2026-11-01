@@ -10,8 +10,8 @@ use ferrokit_core::animation::{
 };
 use ferrokit_core::fs::FileSystemWatcher;
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_thread, register_owned_qobject, ObjectData, ObjectId,
-    OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, move_to_thread_by_id,
+    query_object_thread, register_owned_qobject,
 };
 use ferrokit_core::settings::Settings;
 use ferrokit_core::signal::Signal;
@@ -131,9 +131,10 @@ fn test_qobject_dynamic_properties_and_events() {
     let r_absent = obj.set_property("absent_prop", Variant::Invalid);
     assert!(!r_absent);
     assert_eq!(obj.property("absent_prop"), None);
-    assert!(!obj
-        .dynamic_property_names()
-        .contains(&"absent_prop".to_string()));
+    assert!(
+        !obj.dynamic_property_names()
+            .contains(&"absent_prop".to_string())
+    );
     assert_eq!(*count.lock().unwrap(), 2);
 
     // Setting Variant::Invalid on existing dynamic property removes it, emits DynamicPropertyChange, and returns false (qobject.cpp:4554-4574)

@@ -12,21 +12,21 @@
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{
-    get_thread_event_sender, post_event_to_thread, post_event_to_thread_with_priority, EventLoop,
+    EventLoop, get_thread_event_sender, post_event_to_thread, post_event_to_thread_with_priority,
 };
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, query_object_thread, register_qobject_ptr, send_event,
-    unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    ObjectData, ObjectId, QObject, ThreadId, add_owned_child, move_to_thread_by_id,
+    query_object_thread, register_qobject_ptr, send_event, unregister_qobject,
 };
 use ferrokit_core::signal::Signal;
-use ferrokit_core::timer::{start_object_timer, TimerType};
+use ferrokit_core::timer::{TimerType, start_object_timer};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {

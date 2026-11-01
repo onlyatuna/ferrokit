@@ -6,7 +6,7 @@
 #![cfg(windows)]
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{ObjectId, ThreadId};
 use ferrokit_core::timer::Timer;
 use ferrokit_gui::geometry::primitives::Point;
@@ -18,11 +18,10 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, PeekMessageW,
-    PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION,
-    KBDLLHOOKSTRUCT, MSG, PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_CANCELMODE, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER,
-    WM_XBUTTONDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HC_ACTION,
+    KBDLLHOOKSTRUCT, MSG, PM_REMOVE, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_CANCELMODE, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
 };
 
 fn meta_call(f: impl FnOnce() + Send + 'static) -> Event {
@@ -54,7 +53,7 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(3);
 mod outside {
     use super::*;
     use std::sync::atomic::AtomicU64;
-    use std::sync::{mpsc, LazyLock};
+    use std::sync::{LazyLock, mpsc};
 
     const GRACE: Duration = Duration::from_millis(500);
     const MAX_NOTES: usize = 64;
@@ -97,12 +96,12 @@ mod outside {
     }
 
     fn note_foreign_foreground() {
-        if let Some((fg, pid)) = foreign_foreground() {
-            if LAST_FOREIGN_FOREGROUND.swap(fg, Ordering::SeqCst) != fg {
-                note(format!(
-                    "the foreground changed to window {fg:#x} of process {pid}"
-                ));
-            }
+        if let Some((fg, pid)) = foreign_foreground()
+            && LAST_FOREIGN_FOREGROUND.swap(fg, Ordering::SeqCst) != fg
+        {
+            note(format!(
+                "the foreground changed to window {fg:#x} of process {pid}"
+            ));
         }
     }
 
@@ -307,11 +306,13 @@ fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
 
             let mut menu = Menu::new("PostedEventsTest");
             menu.add_action(Action::new_ref("First"));
-            assert!(Menu::exec_popup(
-                &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-                Point::new(100, 100)
-            )
-            .is_none());
+            assert!(
+                Menu::exec_popup(
+                    &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+                    Point::new(100, 100)
+                )
+                .is_none()
+            );
             menu_closed.store(true, Ordering::SeqCst);
             log.lock().unwrap().push("menu closed");
         });

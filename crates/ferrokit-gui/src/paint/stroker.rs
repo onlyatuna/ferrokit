@@ -29,8 +29,8 @@
 
 use super::path::{FillRule, PainterPath, PathElementPoint, PathElementType};
 use super::qpath_geom::{
-    curves_for_arc, fixed_eq, fuzzy_compare, fuzzy_is_null, point_eq, Bezier, Intersection, Line,
-    Rc, KAPPA, P,
+    Bezier, Intersection, KAPPA, Line, P, Rc, curves_for_arc, fixed_eq, fuzzy_compare,
+    fuzzy_is_null, point_eq,
 };
 
 /// `Qt::PenCapStyle`.

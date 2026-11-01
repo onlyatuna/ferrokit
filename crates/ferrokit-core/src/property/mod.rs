@@ -50,10 +50,9 @@ fn mark_property_dirty_recursive(id: PropertyId, visited: &mut HashSet<PropertyI
         return;
     }
     let notifier = {
-        if let Ok(map) = PROPERTY_DIRTY_NOTIFIERS.read() {
-            map.get(&id).cloned()
-        } else {
-            None
+        match PROPERTY_DIRTY_NOTIFIERS.read() {
+            Ok(map) => map.get(&id).cloned(),
+            _ => None,
         }
     };
     if let Some(n) = notifier {
@@ -116,10 +115,9 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
 
         let notifier: PropertyNotifier = Arc::new(move |visited| {
             dirty_clone.store(true, Ordering::Release);
-            let deps: Vec<PropertyId> = if let Ok(d) = dependents_clone.read() {
-                d.iter().copied().collect()
-            } else {
-                Vec::new()
+            let deps: Vec<PropertyId> = match dependents_clone.read() {
+                Ok(d) => d.iter().copied().collect(),
+                _ => Vec::new(),
             };
             for dep in deps {
                 mark_property_dirty_recursive(dep, visited);
@@ -164,12 +162,11 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
     /// If evaluated inside another property's binding, automatically records dependency.
     pub fn get(&self) -> T {
         CURRENT_BINDING_STACK.with(|stack| {
-            if let Some(&evaluating_id) = stack.borrow().last() {
-                if evaluating_id != self.id {
-                    if let Ok(mut deps) = self.dependents.write() {
-                        deps.insert(evaluating_id);
-                    }
-                }
+            if let Some(&evaluating_id) = stack.borrow().last()
+                && evaluating_id != self.id
+                && let Ok(mut deps) = self.dependents.write()
+            {
+                deps.insert(evaluating_id);
             }
         });
 
@@ -251,10 +248,9 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
     }
 
     fn notify(&self) {
-        let deps: Vec<PropertyId> = if let Ok(d) = self.dependents.read() {
-            d.iter().copied().collect()
-        } else {
-            Vec::new()
+        let deps: Vec<PropertyId> = match self.dependents.read() {
+            Ok(d) => d.iter().copied().collect(),
+            _ => Vec::new(),
         };
         for dep in deps {
             mark_property_dirty(dep);

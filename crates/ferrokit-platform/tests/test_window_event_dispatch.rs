@@ -27,7 +27,10 @@ fn name(ev: &WindowSystemEvent) -> &'static str {
     }
 }
 
-fn recorder(log: &Log, id: usize) -> Box<ClosureWindowEventHandler<impl FnMut(WindowSystemEvent)>> {
+fn recorder(
+    log: &Log,
+    id: usize,
+) -> Box<ClosureWindowEventHandler<impl FnMut(WindowSystemEvent) + use<>>> {
     let log = Rc::clone(log);
     Box::new(ClosureWindowEventHandler::new(move |ev| {
         log.borrow_mut().push((id, name(&ev)));

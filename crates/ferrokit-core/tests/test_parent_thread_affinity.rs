@@ -9,16 +9,16 @@
 //! and `add_owned_child` refuse without changing anything and without printing the warning: the
 //! owner keeps the child it had, and a refused new child is handed back.
 
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
 #[allow(deprecated)] // the test exercises the deprecated `move_to_thread`
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread, move_to_thread_by_id, query_object_parent,
-    register_owned_qobject, reparent_owned_object, set_parent, set_parent_by_id, ObjectData,
-    ObjectId, OwnedObject, QObject, ReparentError, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId, add_owned_child,
+    move_to_thread, move_to_thread_by_id, query_object_parent, register_owned_qobject,
+    reparent_owned_object, set_parent, set_parent_by_id,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.

@@ -136,10 +136,10 @@ impl NativeEventFilterChain {
         for filter in &snapshot {
             // A filter already running further up this thread's stack (a nested loop reached it
             // from inside its own callback) is skipped rather than blocking on its lock.
-            if let Some(mut filter) = filter.try_lock() {
-                if filter.native_event_filter(event_type, msg, result) {
-                    return true;
-                }
+            if let Some(mut filter) = filter.try_lock()
+                && filter.native_event_filter(event_type, msg, result)
+            {
+                return true;
             }
         }
         false
@@ -271,13 +271,12 @@ mod tests {
                 msg: &NativeMessage,
                 result: &mut isize,
             ) -> bool {
-                if event_type == "windows_generic_MSG" {
-                    if let NativeMessage::Windows(m) = msg {
-                        if m.message == WM_HOTKEY {
-                            *result = 42;
-                            return true;
-                        }
-                    }
+                if event_type == "windows_generic_MSG"
+                    && let NativeMessage::Windows(m) = msg
+                    && m.message == WM_HOTKEY
+                {
+                    *result = 42;
+                    return true;
                 }
                 false
             }

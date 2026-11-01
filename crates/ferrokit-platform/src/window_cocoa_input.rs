@@ -22,9 +22,9 @@ use std::collections::{HashMap, VecDeque};
 use ferrokit_core::object::ThreadContext;
 use ferrokit_gui::geometry::primitives::Point;
 
-use crate::objc_runtime::appkit::{self, NSRange, NS_NOT_FOUND};
+use crate::objc_runtime::appkit::{self, NS_NOT_FOUND, NSRange};
 use crate::objc_runtime::{CGFloat, CGPoint, CGRect, Id, NSUInteger, ObjcMsg, Sel};
-use crate::window_cocoa::{qt_mac_primary_screen_height, CocoaNativeEvent};
+use crate::window_cocoa::{CocoaNativeEvent, qt_mac_primary_screen_height};
 use crate::window_system_interface::{
     KeyboardModifiers, MouseButton, PressedButtons, WheelDelta, WindowSystemEvent,
     WindowSystemEventHandler,

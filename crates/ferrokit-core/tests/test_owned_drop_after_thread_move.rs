@@ -26,17 +26,17 @@
 //!   deterministic. Owner and callback on one thread, where the borrow flag decides the order.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_thread, register_owned_qobject, with_object_mut, ObjectData,
-    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, move_to_thread_by_id,
+    query_object_thread, register_owned_qobject, with_object_mut,
 };
-use ferrokit_core::timer::{start_object_timer, with_thread_timer_context, TimerType};
+use ferrokit_core::timer::{TimerType, start_object_timer, with_thread_timer_context};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {
@@ -263,7 +263,9 @@ fn the_owner_drop_does_not_overlap_a_callback_that_starts_during_it() {
     drop(job_tx);
     worker.join().unwrap();
 
-    eprintln!("iterations={iterations} missed={missed} parked={parked} destroyed_during_callback={destroyed}");
+    eprintln!(
+        "iterations={iterations} missed={missed} parked={parked} destroyed_during_callback={destroyed}"
+    );
     assert_eq!(
         destroyed, 0,
         "the owner destroyed the object while a callback of it was running on the registration \

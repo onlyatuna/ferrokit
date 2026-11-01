@@ -68,14 +68,14 @@ impl<K: Ord, V> MultiMap<K, V> {
     where
         V: PartialEq,
     {
-        if let Some(values) = self.0.get_mut(key) {
-            if let Some(pos) = values.iter().position(|v| v == value) {
-                values.remove(pos);
-                if values.is_empty() {
-                    self.0.remove(key);
-                }
-                return true;
+        if let Some(values) = self.0.get_mut(key)
+            && let Some(pos) = values.iter().position(|v| v == value)
+        {
+            values.remove(pos);
+            if values.is_empty() {
+                self.0.remove(key);
             }
+            return true;
         }
         false
     }
@@ -207,14 +207,14 @@ impl<K: Eq + Hash, V> MultiHash<K, V> {
     where
         V: PartialEq,
     {
-        if let Some(values) = self.0.get_mut(key) {
-            if let Some(pos) = values.iter().position(|v| v == value) {
-                values.remove(pos);
-                if values.is_empty() {
-                    self.0.remove(key);
-                }
-                return true;
+        if let Some(values) = self.0.get_mut(key)
+            && let Some(pos) = values.iter().position(|v| v == value)
+        {
+            values.remove(pos);
+            if values.is_empty() {
+                self.0.remove(key);
             }
+            return true;
         }
         false
     }

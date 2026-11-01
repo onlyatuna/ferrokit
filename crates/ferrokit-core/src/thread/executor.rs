@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread::{self, Thread as StdThread};
 
 use crate::thread::pool::{
-    enter_blocking, poll_noting_awaited_jobs, steal_awaited_job, ThreadPool,
+    ThreadPool, enter_blocking, poll_noting_awaited_jobs, steal_awaited_job,
 };
 use crate::thread::task::TaskHandle;
 
@@ -33,33 +33,41 @@ impl ThreadWaker {
 
 fn create_thread_waker(waker: Arc<ThreadWaker>) -> Waker {
     unsafe fn clone_waker(data: *const ()) -> RawWaker {
-        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`. The
-        // `Arc` is leaked back with `forget` after one extra count is created (also forgotten)
-        // for the new `RawWaker`, so the original keeps its count.
-        let arc = Arc::from_raw(data as *const ThreadWaker);
-        std::mem::forget(Arc::clone(&arc));
-        std::mem::forget(arc);
-        RawWaker::new(data, &VTABLE)
+        unsafe {
+            // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`. The
+            // `Arc` is leaked back with `forget` after one extra count is created (also forgotten)
+            // for the new `RawWaker`, so the original keeps its count.
+            let arc = Arc::from_raw(data as *const ThreadWaker);
+            std::mem::forget(Arc::clone(&arc));
+            std::mem::forget(arc);
+            RawWaker::new(data, &VTABLE)
+        }
     }
 
     unsafe fn wake(data: *const ()) {
-        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of the `Waker` being
-        // consumed; this `Arc` takes over its strong count and releases it when dropped.
-        let arc = Arc::from_raw(data as *const ThreadWaker);
-        arc.wake();
+        unsafe {
+            // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of the `Waker` being
+            // consumed; this `Arc` takes over its strong count and releases it when dropped.
+            let arc = Arc::from_raw(data as *const ThreadWaker);
+            arc.wake();
+        }
     }
 
     unsafe fn wake_by_ref(data: *const ()) {
-        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`, which
-        // holds a strong count for the duration of this by-ref call; no count is consumed.
-        let arc = &*(data as *const ThreadWaker);
-        arc.wake();
+        unsafe {
+            // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer of a live `Waker`, which
+            // holds a strong count for the duration of this by-ref call; no count is consumed.
+            let arc = &*(data as *const ThreadWaker);
+            arc.wake();
+        }
     }
 
     unsafe fn drop_waker(data: *const ()) {
-        // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer given to `RawWaker::new`
-        // (or a clone of it from `clone_waker`); each `Waker` owns one strong count, released here.
-        drop(Arc::from_raw(data as *const ThreadWaker));
+        unsafe {
+            // SAFETY: [vtable contract] `data` is the `Arc::into_raw` pointer given to `RawWaker::new`
+            // (or a clone of it from `clone_waker`); each `Waker` owns one strong count, released here.
+            drop(Arc::from_raw(data as *const ThreadWaker));
+        }
     }
 
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);

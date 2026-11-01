@@ -4,7 +4,7 @@
 //! Encapsulates chromaticity primaries (Red, Green, Blue, White Point),
 //! transfer functions (gamma, sRGB, ProPhoto, linear, PQ, HLG), and color transformations.
 
-use super::color_transform::{chromatic_adaptation, ColorTransform};
+use super::color_transform::{ColorTransform, chromatic_adaptation};
 use crate::geometry::PointF;
 
 /// Predefined standard color spaces.

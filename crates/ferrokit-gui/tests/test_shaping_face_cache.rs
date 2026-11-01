@@ -6,8 +6,8 @@
 //! string does not parse the font's GSUB/GPOS tables again.
 
 use ferrokit_gui::text::font::Font;
-use ferrokit_gui::text::font_database::{resolve_font_engines_for_text_global, FontDatabase};
-use ferrokit_gui::text::glyph_layout::{shaping_face_parse_count, FontEngine, GlyphLayout};
+use ferrokit_gui::text::font_database::{FontDatabase, resolve_font_engines_for_text_global};
+use ferrokit_gui::text::glyph_layout::{FontEngine, GlyphLayout, shaping_face_parse_count};
 use std::path::Path;
 
 /// A font file with OpenType tables on each CI platform.

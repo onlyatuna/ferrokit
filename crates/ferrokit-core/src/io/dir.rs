@@ -561,11 +561,11 @@ impl Iterator for DirIterator {
 
             // No pending entries, expand next directory from dirs_to_visit
             if let Some(next_dir) = self.dirs_to_visit.pop() {
-                if next_dir.is_dir() {
-                    if let Ok(entries) = fs::read_dir(&next_dir) {
-                        for entry in entries.flatten() {
-                            self.pending_entries.push(entry.path());
-                        }
+                if next_dir.is_dir()
+                    && let Ok(entries) = fs::read_dir(&next_dir)
+                {
+                    for entry in entries.flatten() {
+                        self.pending_entries.push(entry.path());
                     }
                 }
             } else {

@@ -13,8 +13,8 @@ use ferrokit_platform::window_system_interface::{
     KeyboardModifiers, WindowSystemEvent, WindowSystemEventHandler,
 };
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, MouseButton, PlatformIntegration,
-    WindowFlags,
+    GenericPlatformIntegration, MouseButton, PlatformIntegration, WindowFlags,
+    set_platform_integration,
 };
 use ferrokit_widgets::*;
 use std::cell::RefCell;

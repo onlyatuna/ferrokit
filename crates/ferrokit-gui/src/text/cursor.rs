@@ -111,12 +111,12 @@ fn visual_line_edge(doc: &TextDocument, pos: usize, end: bool) -> usize {
     }
     let mut local = line.text_start() + line.text_length();
     // A wrapped (non-last) line ends before the space that caused the break.
-    if local > 0 && line.line_number() + 1 < layout.line_count() {
-        if let Some(g) = b.text().graphemes(true).nth(local - 1) {
-            if g.chars().all(char::is_whitespace) {
-                local -= 1;
-            }
-        }
+    if local > 0
+        && line.line_number() + 1 < layout.line_count()
+        && let Some(g) = b.text().graphemes(true).nth(local - 1)
+        && g.chars().all(char::is_whitespace)
+    {
+        local -= 1;
     }
     b.position + local.min(block_len)
 }

@@ -7,8 +7,8 @@ use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn test_widget_hierarchy_and_geometry() {

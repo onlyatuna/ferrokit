@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::Pixmap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +11,11 @@ use crate::backdrop::BackdropState;
 use crate::cursor::{CocoaCursor, CursorShape};
 use crate::objc_runtime::appkit;
 use crate::objc_runtime::{
-    CGFloat, CGRect, CGSize, Class, Id, NSInteger, NSUInteger, ObjcMsg, Sel,
-    NS_BACKING_STORE_BUFFERED, NS_FLOATING_WINDOW_LEVEL, NS_MODAL_PANEL_WINDOW_LEVEL,
-    NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL, NS_WINDOW_STYLE_MASK_BORDERLESS,
-    NS_WINDOW_STYLE_MASK_CLOSABLE, NS_WINDOW_STYLE_MASK_MINIATURIZABLE,
-    NS_WINDOW_STYLE_MASK_RESIZABLE, NS_WINDOW_STYLE_MASK_TITLED,
+    CGFloat, CGRect, CGSize, Class, Id, NS_BACKING_STORE_BUFFERED, NS_FLOATING_WINDOW_LEVEL,
+    NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL,
+    NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
+    NS_WINDOW_STYLE_MASK_MINIATURIZABLE, NS_WINDOW_STYLE_MASK_RESIZABLE,
+    NS_WINDOW_STYLE_MASK_TITLED, NSInteger, NSUInteger, ObjcMsg, Sel,
 };
 use crate::platform_window::PlatformWindow;
 use crate::surface::{CocoaLayerSurface, PlatformSurface};

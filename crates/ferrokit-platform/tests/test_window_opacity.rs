@@ -3,16 +3,16 @@
 //! (Qt: `qwindowswindow.cpp:494-530` for standard windows, `qwindowsbackingstore.cpp:66` for layered ones).
 #![cfg(windows)]
 
-use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::tiny_skia::Color;
+use ferrokit_platform::PlatformWindow;
 use ferrokit_platform::presenter::WindowsPresenter;
 use ferrokit_platform::surface::dcomp::convert_rgba_to_staging_bgra;
 use ferrokit_platform::window::{NativeWindow, WindowFlags};
-use ferrokit_platform::PlatformWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetLayeredWindowAttributes, GetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WS_EX_LAYERED,
+    GWL_EXSTYLE, GetLayeredWindowAttributes, GetWindowLongPtrW, LWA_ALPHA, WS_EX_LAYERED,
 };
 
 fn is_layered(hwnd: isize) -> bool {

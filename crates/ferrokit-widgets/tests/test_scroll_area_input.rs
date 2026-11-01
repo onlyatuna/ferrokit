@@ -6,7 +6,7 @@
 
 use ferrokit_core::event::{Event, EventKind, MouseButtons};
 use ferrokit_gui::geometry::primitives::{Point, Rect};
-use ferrokit_widgets::hit_test::{hit_path, EventTreeDispatcher};
+use ferrokit_widgets::hit_test::{EventTreeDispatcher, hit_path};
 use ferrokit_widgets::scroll::{ScrollArea, ScrollBarPolicy};
 use ferrokit_widgets::widget::{EmptyWidget, Widget, WidgetRef};
 use std::cell::RefCell;

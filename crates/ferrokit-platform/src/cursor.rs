@@ -120,20 +120,20 @@ pub trait PlatformCursor: Send + Sync {
 #[cfg(windows)]
 pub mod win32_cursor {
     use super::*;
-    use crate::win32_handles::{create_dib_section, OwnedBitmap};
+    use crate::win32_handles::{OwnedBitmap, create_dib_section};
     use ferrokit_gui::geometry::primitives::Point;
-    use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateIconIndirect, GetCursorPos, GetSystemMetrics, LoadCursorW, SetCursor, SetCursorPos,
-        HCURSOR, ICONINFO, IDC_APPSTARTING, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP, IDC_IBEAM,
-        IDC_NO, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_UPARROW,
-        IDC_WAIT, SM_CXCURSOR,
+        CreateIconIndirect, GetCursorPos, GetSystemMetrics, HCURSOR, ICONINFO, IDC_APPSTARTING,
+        IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP, IDC_IBEAM, IDC_NO, IDC_SIZEALL, IDC_SIZENESW,
+        IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_UPARROW, IDC_WAIT, LoadCursorW, SM_CXCURSOR,
+        SetCursor, SetCursorPos,
     };
 
     /// `OVERRIDE_SHAPE` value while no override cursor is set.

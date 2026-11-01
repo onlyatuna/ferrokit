@@ -5,8 +5,8 @@
 //! Borrows) to check that no overlap is left.
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_owned_qobject, with_object, with_object_mut, ObjectData,
-    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, move_to_thread_by_id,
+    register_owned_qobject, with_object, with_object_mut,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -228,7 +228,7 @@ fn nested_access_of_an_unregistered_owner_is_refused() {
 /// A panic in the closure releases the borrow, for a registered and for an unregistered owner.
 #[test]
 fn a_panic_in_the_closure_releases_the_borrow() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     // SAFETY: the returned owner is a local on this thread, used only through `with`/`with_mut`
     // (which take the borrow flag, and release it on panic, as the test checks); no event loop

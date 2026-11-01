@@ -19,7 +19,7 @@ struct Pmc {
 }
 #[cfg(windows)]
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetCurrentProcess() -> isize;
     fn K32GetProcessMemoryInfo(p: isize, c: *mut Pmc, cb: u32) -> i32;
 }

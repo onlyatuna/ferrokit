@@ -3,16 +3,16 @@
 //! destruction to the registration thread (like `deleteLater`).
 
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_thread, register_owned_qobject, with_object, ObjectData,
-    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, move_to_thread_by_id,
+    query_object_thread, register_owned_qobject, with_object,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.

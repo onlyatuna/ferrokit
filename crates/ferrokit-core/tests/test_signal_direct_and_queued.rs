@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadId,
+    ObjectData, ObjectId, QObject, ThreadId, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::signal::{ConnectionId, ConnectionType, QueuedSignal, Signal};
 use std::cell::RefCell;

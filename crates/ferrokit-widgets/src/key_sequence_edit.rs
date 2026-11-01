@@ -8,7 +8,7 @@ use std::str::FromStr;
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_core::signal::Signal;
-use ferrokit_core::timer::{kill_object_timer, TimerId, TimerType};
+use ferrokit_core::timer::{TimerId, TimerType, kill_object_timer};
 use ferrokit_gui::geometry::primitives::{Point, PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
 use ferrokit_gui::paint::{Brush, Painter, Pen, RenderHint};

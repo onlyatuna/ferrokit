@@ -6,13 +6,13 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_gui::geometry::primitives::{Rect, Size};
 use ferrokit_platform::window_system_interface::Delivery;
-use ferrokit_platform::{handle_geometry_change, WindowFlags};
+use ferrokit_platform::{WindowFlags, handle_geometry_change};
 use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};
 use ferrokit_widgets::window::Window;
 
@@ -403,7 +403,7 @@ fn destroyed_window_deferred_render_is_a_noop() {
 // Native interactive sizing loop (WM_ENTERSIZEMOVE .. WM_EXITSIZEMOVE)
 // ---------------------------------------------------------------------------
 
-use ferrokit_platform::{dispatch_window_system_event, WindowSystemEvent};
+use ferrokit_platform::{WindowSystemEvent, dispatch_window_system_event};
 
 fn interactive(fx: &Fixture, start: bool) {
     let ev = if start {

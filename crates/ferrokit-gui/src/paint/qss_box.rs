@@ -58,10 +58,10 @@ pub fn draw_qss_box(
             radius,
         );
     }
-    if let Some(border) = border {
-        if border.width > 0.0 {
-            draw_border(painter, rect, border, radius);
-        }
+    if let Some(border) = border
+        && border.width > 0.0
+    {
+        draw_border(painter, rect, border, radius);
     }
     painter.restore();
 }

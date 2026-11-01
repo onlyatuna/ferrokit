@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::Event;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject, unregister_qobject,
 };
 use ferrokit_core::signal::{ConnectionId, Signal};
 

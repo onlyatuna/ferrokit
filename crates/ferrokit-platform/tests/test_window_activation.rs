@@ -19,11 +19,11 @@ fn rect() -> Rect {
 mod win32 {
     use super::*;
     use ferrokit_platform::NativeWindow;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_MENU, keybd_event};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongW, IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE,
-        GWL_STYLE, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-        WS_POPUP,
+        GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetWindowLongW, IsWindowVisible,
+        SetForegroundWindow, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
     };
 
     fn ex_style(w: &NativeWindow) -> u32 {
@@ -196,7 +196,7 @@ mod win32 {
 
     #[test]
     fn raise_puts_the_window_above_another_without_activating_it() {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GW_HWNDNEXT};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GW_HWNDNEXT, GetWindow};
         // Whether `upper` is above `lower` in the system z-order.
         let is_above = |upper: &NativeWindow, lower: &NativeWindow| {
             // SAFETY: `upper.hwnd()` is the live handle of the borrowed window; `GetWindow` only

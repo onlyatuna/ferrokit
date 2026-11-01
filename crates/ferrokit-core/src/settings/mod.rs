@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::io::{LockError, LockFile};
 use crate::variant::Variant;
@@ -176,10 +176,10 @@ impl Settings {
 
         let mut keys = Vec::new();
         for k in self.entries.keys() {
-            if let Some(sub) = k.strip_prefix(&prefix) {
-                if !sub.contains('/') {
-                    keys.push(sub.to_string());
-                }
+            if let Some(sub) = k.strip_prefix(&prefix)
+                && !sub.contains('/')
+            {
+                keys.push(sub.to_string());
             }
         }
         keys.sort();
@@ -197,10 +197,10 @@ impl Settings {
 
         let mut groups = std::collections::HashSet::new();
         for k in self.entries.keys() {
-            if let Some(sub) = k.strip_prefix(&prefix) {
-                if let Some((grp, _)) = sub.split_once('/') {
-                    groups.insert(grp.to_string());
-                }
+            if let Some(sub) = k.strip_prefix(&prefix)
+                && let Some((grp, _)) = sub.split_once('/')
+            {
+                groups.insert(grp.to_string());
             }
         }
         let mut list: Vec<String> = groups.into_iter().collect();
@@ -455,14 +455,10 @@ impl Drop for Settings {
     /// so it is reported once on stderr and the changes are lost; call `sync` explicitly to
     /// handle the error.
     fn drop(&mut self) {
-        if self.dirty {
-            if let Err(error) = self.sync() {
-                report_failed_sync_on_drop(
-                    &mut std::io::stderr(),
-                    self.file_path.as_deref(),
-                    &error,
-                );
-            }
+        if self.dirty
+            && let Err(error) = self.sync()
+        {
+            report_failed_sync_on_drop(&mut std::io::stderr(), self.file_path.as_deref(), &error);
         }
     }
 }
@@ -622,24 +618,23 @@ fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
     if let Some(encoded) = raw
         .strip_prefix("@Variant(")
         .and_then(|s| s.strip_suffix(')'))
+        && encoded.len() % 2 == 0
     {
-        if encoded.len() % 2 == 0 {
-            let bytes = encoded.as_bytes();
-            let decoded = bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|pair| {
-                    let high = (pair[0] as char).to_digit(16)?;
-                    let low = (pair[1] as char).to_digit(16)?;
-                    Some(((high << 4) | low) as u8)
-                })
-                .collect::<Option<Vec<_>>>();
-            if let Some(decoded) = decoded {
-                if let Ok(value) = Variant::from_bytes(&decoded) {
-                    return value;
-                }
-            }
+        let bytes = encoded.as_bytes();
+        let decoded = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                let high = (pair[0] as char).to_digit(16)?;
+                let low = (pair[1] as char).to_digit(16)?;
+                Some(((high << 4) | low) as u8)
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(decoded) = decoded
+            && let Ok(value) = Variant::from_bytes(&decoded)
+        {
+            return value;
         }
     }
 
@@ -662,20 +657,21 @@ fn parse_variant_value(raw: &str, escaped: bool) -> Variant {
     }
 
     // Check Hex Color #RRGGBBAA
-    if raw.starts_with('#') && (raw.len() == 9 || raw.len() == 7) {
-        if let Ok(hex) = u32::from_str_radix(&raw[1..], 16) {
-            if raw.len() == 9 {
-                let r = ((hex >> 24) & 0xFF) as u8;
-                let g = ((hex >> 16) & 0xFF) as u8;
-                let b = ((hex >> 8) & 0xFF) as u8;
-                let a = (hex & 0xFF) as u8;
-                return Variant::Color(r, g, b, a);
-            } else {
-                let r = ((hex >> 16) & 0xFF) as u8;
-                let g = ((hex >> 8) & 0xFF) as u8;
-                let b = (hex & 0xFF) as u8;
-                return Variant::Color(r, g, b, 255);
-            }
+    if raw.starts_with('#')
+        && (raw.len() == 9 || raw.len() == 7)
+        && let Ok(hex) = u32::from_str_radix(&raw[1..], 16)
+    {
+        if raw.len() == 9 {
+            let r = ((hex >> 24) & 0xFF) as u8;
+            let g = ((hex >> 16) & 0xFF) as u8;
+            let b = ((hex >> 8) & 0xFF) as u8;
+            let a = (hex & 0xFF) as u8;
+            return Variant::Color(r, g, b, a);
+        } else {
+            let r = ((hex >> 16) & 0xFF) as u8;
+            let g = ((hex >> 8) & 0xFF) as u8;
+            let b = (hex & 0xFF) as u8;
+            return Variant::Color(r, g, b, 255);
         }
     }
 

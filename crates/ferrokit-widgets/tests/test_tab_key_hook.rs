@@ -10,7 +10,7 @@ use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_widgets::focus::FocusPolicy;
 use ferrokit_widgets::hit_test::EventTreeDispatcher;
-use ferrokit_widgets::key_sequence_edit::{key_modifier, qt_key, KeyCombination, KeySequenceEdit};
+use ferrokit_widgets::key_sequence_edit::{KeyCombination, KeySequenceEdit, key_modifier, qt_key};
 use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};
 use probe_widget::{Log, ProbeWidget};
 use std::cell::RefCell;

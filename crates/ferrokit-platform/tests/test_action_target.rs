@@ -8,8 +8,8 @@
 
 use ferrokit_platform::{ActionTarget, Id};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Lets a test move a target to another thread to drop it there, as a holder with an
 /// `unsafe impl Send` (the theme's observer) may.

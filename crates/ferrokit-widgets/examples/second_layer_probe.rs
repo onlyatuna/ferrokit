@@ -11,11 +11,11 @@ mod probe {
     use ferrokit_gui::paint::Brush;
     use ferrokit_gui::tiny_skia::Color;
     use ferrokit_platform::WindowFlags;
-    use ferrokit_widgets::window::Window;
     use ferrokit_widgets::EmptyWidget;
+    use ferrokit_widgets::window::Window;
 
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SetProcessDpiAwarenessContext(value: isize) -> i32;
     }
 

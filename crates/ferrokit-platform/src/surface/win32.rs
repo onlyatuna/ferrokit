@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use crate::resize_trace::{record as trace_record, TraceKind};
+use crate::resize_trace::{TraceKind, record as trace_record};
 
 #[inline]
 fn trace_record_at(kind: TraceKind, hwnd: usize, pos: (i32, i32), physical: (u32, u32)) {
     crate::resize_trace::record_at(kind, hwnd, pos, (0, 0), physical);
 }
 use crate::surface::PlatformSurface;
-use crate::win32_handles::{create_dib_section, DibTarget, MemDc, WindowDc};
+use crate::win32_handles::{DibTarget, MemDc, WindowDc, create_dib_section};
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
 use std::ptr;
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HDC};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, UpdateLayeredWindow,
-    UpdateLayeredWindowIndirect, GWL_EXSTYLE, ULW_ALPHA, UPDATELAYEREDWINDOWINFO, WS_EX_LAYERED,
+    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, ULW_ALPHA,
+    UPDATELAYEREDWINDOWINFO, UpdateLayeredWindow, UpdateLayeredWindowIndirect, WS_EX_LAYERED,
 };
 
 /// Largest capacity (in pixels) the interactive-resize headroom may allocate (128 MiB of BGRA).
@@ -534,8 +534,8 @@ impl Win32LayeredSurface {
                 // and traced on demand, never printed.
                 crate::resize_debug::note(|| {
                     format!(
-                    "UpdateLayeredWindowIndirect failed (GetLastError = {err}), falling back to UpdateLayeredWindow"
-                )
+                        "UpdateLayeredWindowIndirect failed (GetLastError = {err}), falling back to UpdateLayeredWindow"
+                    )
                 });
                 self.stats.ulw_fallback_count += 1;
                 let fallback_res = UpdateLayeredWindow(

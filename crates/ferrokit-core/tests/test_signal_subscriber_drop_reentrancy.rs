@@ -9,11 +9,11 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject,
-    QObject,
-};
 use ferrokit_core::Signal;
+use ferrokit_core::object::{
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, register_owned_qobject,
+    unregister_qobject,
+};
 
 struct Node {
     data: ObjectData,

@@ -83,7 +83,7 @@ impl Drop for SingleInstanceGuard {
         {
             if self.mutex_handle != 0 {
                 #[link(name = "kernel32")]
-                extern "system" {
+                unsafe extern "system" {
                     fn CloseHandle(hObject: isize) -> i32;
                 }
                 // SAFETY: `mutex_handle` is the non-zero handle returned by `CreateMutexW` in
@@ -98,10 +98,10 @@ impl Drop for SingleInstanceGuard {
         {
             self.listener_stop.store(true, Ordering::SeqCst);
             // Join so no callback fires after the guard is gone (skip if dropped from a callback).
-            if let Some(t) = self.listener_thread.take() {
-                if t.thread().id() != std::thread::current().id() {
-                    let _ = t.join();
-                }
+            if let Some(t) = self.listener_thread.take()
+                && t.thread().id() != std::thread::current().id()
+            {
+                let _ = t.join();
             }
             if let Some(sock) = &self.socket_path {
                 let _ = std::fs::remove_file(sock);
@@ -137,7 +137,7 @@ impl SingleInstance {
         use std::os::windows::ffi::OsStrExt;
 
         #[link(name = "kernel32")]
-        extern "system" {
+        unsafe extern "system" {
             fn CreateMutexW(
                 lpMutexAttributes: *const std::ffi::c_void,
                 bInitialOwner: i32,
@@ -147,7 +147,7 @@ impl SingleInstance {
             fn CloseHandle(hObject: isize) -> i32;
         }
         #[link(name = "user32")]
-        extern "system" {
+        unsafe extern "system" {
             fn RegisterWindowMessageW(lpString: *const u16) -> u32;
             fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
         }
@@ -200,7 +200,7 @@ impl SingleInstance {
         use std::os::unix::io::AsRawFd;
         use std::os::unix::net::{UnixListener, UnixStream};
 
-        extern "C" {
+        unsafe extern "C" {
             fn flock(fd: i32, operation: i32) -> i32;
         }
         const LOCK_EX: i32 = 2;
@@ -291,12 +291,12 @@ impl SingleInstance {
                             let _ = stream
                                 .set_read_timeout(Some(std::time::Duration::from_millis(500)));
                             let mut buf = [0u8; 1];
-                            if stream.read_exact(&mut buf).is_ok() {
-                                if let Some(cmd) = SingleInstanceCommand::from_u8(buf[0]) {
-                                    let cbs = callbacks.lock().unwrap();
-                                    for cb in cbs.iter() {
-                                        cb(cmd);
-                                    }
+                            if stream.read_exact(&mut buf).is_ok()
+                                && let Some(cmd) = SingleInstanceCommand::from_u8(buf[0])
+                            {
+                                let cbs = callbacks.lock().unwrap();
+                                for cb in cbs.iter() {
+                                    cb(cmd);
                                 }
                             }
                         }

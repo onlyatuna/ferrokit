@@ -6,20 +6,19 @@
 #![cfg(not(target_os = "macos"))]
 
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_platform::backdrop::BackdropType;
 use ferrokit_platform::objc_runtime::appkit::MockValue;
 use ferrokit_platform::window_cocoa::cocoa_style_mask;
-use ferrokit_platform::window_cocoa_input::{handle_ns_event, NsEventKind};
+use ferrokit_platform::window_cocoa_input::{NsEventKind, handle_ns_event};
 use ferrokit_platform::{
     CGPoint, CGRect, ClosureWindowEventHandler, CocoaNativeWindow, Id, MockObjcRuntime,
-    PlatformSurface, PlatformWindow, WindowFlags, NS_FLOATING_WINDOW_LEVEL,
-    NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL,
-    NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
+    NS_FLOATING_WINDOW_LEVEL, NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL,
+    NS_SCREEN_SAVER_WINDOW_LEVEL, NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
     NS_WINDOW_STYLE_MASK_MINIATURIZABLE, NS_WINDOW_STYLE_MASK_RESIZABLE,
-    NS_WINDOW_STYLE_MASK_TITLED,
+    NS_WINDOW_STYLE_MASK_TITLED, PlatformSurface, PlatformWindow, WindowFlags,
 };
 
 fn window(flags: WindowFlags) -> CocoaNativeWindow {
@@ -129,10 +128,11 @@ fn window_created_with_flags_gets_the_same_style_and_tool_behaviour() {
     assert_eq!(data.style_mask, cocoa_style_mask(win.flags()));
     assert_eq!(data.style_mask, NS_WINDOW_STYLE_MASK_BORDERLESS);
     assert_eq!(data.level, NS_FLOATING_WINDOW_LEVEL);
-    assert!(mock
-        .calls_for(win.ns_window())
-        .iter()
-        .any(|c| c.selector == "setHidesOnDeactivate:" && c.args[0] == MockValue::Bool(true)));
+    assert!(
+        mock.calls_for(win.ns_window())
+            .iter()
+            .any(|c| c.selector == "setHidesOnDeactivate:" && c.args[0] == MockValue::Bool(true))
+    );
 }
 
 #[test]
@@ -140,9 +140,12 @@ fn the_content_view_becomes_first_responder_and_the_window_accepts_moved_events(
     let mock = MockObjcRuntime::instance();
     let win = window(WindowFlags::NORMAL);
     let calls = mock.calls_for(win.ns_window());
-    assert!(calls
-        .iter()
-        .any(|c| c.selector == "makeFirstResponder:" && c.args[0] == MockValue::Id(win.ns_view())));
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.selector == "makeFirstResponder:"
+                && c.args[0] == MockValue::Id(win.ns_view()))
+    );
     assert!(
         calls
             .iter()
@@ -248,15 +251,21 @@ fn mask_clips_the_content_layer_to_the_region_and_makes_the_window_see_through()
     assert_eq!(path, expected);
     assert!(path.contains(&MockValue::Rect(CGRect::new(10.0, 370.0, 100.0, 10.0))));
     let window_calls = mock.calls_for(ns_window);
-    assert!(window_calls
-        .iter()
-        .any(|c| c.selector == "setOpaque:" && c.args[0] == MockValue::Bool(false)));
-    assert!(window_calls
-        .iter()
-        .any(|c| c.selector == "setBackgroundColor:"));
-    assert!(window_calls
-        .iter()
-        .any(|c| c.selector == "invalidateShadow"));
+    assert!(
+        window_calls
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args[0] == MockValue::Bool(false))
+    );
+    assert!(
+        window_calls
+            .iter()
+            .any(|c| c.selector == "setBackgroundColor:")
+    );
+    assert!(
+        window_calls
+            .iter()
+            .any(|c| c.selector == "invalidateShadow")
+    );
 
     // A geometry-flipped layer takes top-left coordinates as they are.
     mock.set_property(layer, "isGeometryFlipped", MockValue::Bool(true));
@@ -274,9 +283,11 @@ fn mask_clips_the_content_layer_to_the_region_and_makes_the_window_see_through()
         .expect("setMask:");
     assert_eq!(removal.args[0], MockValue::Id(Id::NIL));
     let window_calls = mock.calls_for(ns_window);
-    assert!(window_calls
-        .iter()
-        .any(|c| c.selector == "setOpaque:" && c.args[0] == MockValue::Bool(true)));
+    assert!(
+        window_calls
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args[0] == MockValue::Bool(true))
+    );
 }
 
 #[test]
@@ -379,9 +390,11 @@ fn a_transient_parent_that_would_make_a_cycle_is_refused() {
     a.set_transient_parent(Some(c.native_handle()));
     b.set_transient_parent(Some(c.native_handle()));
     for w in [a.ns_window(), b.ns_window(), c.ns_window()] {
-        assert!(!selectors(mock, w)
-            .iter()
-            .any(|s| s == "addChildWindow:ordered:" || s == "removeChildWindow:"));
+        assert!(
+            !selectors(mock, w)
+                .iter()
+                .any(|s| s == "addChildWindow:ordered:" || s == "removeChildWindow:")
+        );
     }
     assert_eq!(a.transient_parent(), None);
     assert_eq!(b.transient_parent(), Some(a.native_handle()));

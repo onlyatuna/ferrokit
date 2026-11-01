@@ -15,7 +15,7 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_platform::window_system_interface::Delivery;
-use ferrokit_platform::{dispatch_window_system_event, WindowFlags, WindowSystemEvent};
+use ferrokit_platform::{WindowFlags, WindowSystemEvent, dispatch_window_system_event};
 use ferrokit_widgets::application::Application;
 use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};
 use ferrokit_widgets::window::Window;

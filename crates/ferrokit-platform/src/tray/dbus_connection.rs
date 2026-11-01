@@ -10,8 +10,8 @@ use ferrokit_core::event_loop::{
 };
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const DBUS_MESSAGE_TYPE_METHOD_CALL: u8 = 1;
 pub const DBUS_MESSAGE_TYPE_METHOD_RETURN: u8 = 2;
@@ -533,10 +533,11 @@ impl DbusMessage {
     /// needed, `Err` when the stream cannot be a D-Bus message (bad endianness marker or version,
     /// or lengths over the protocol limits).
     pub fn frame_len(data: &[u8]) -> Result<Option<usize>, &'static str> {
-        if let Some(&marker) = data.first() {
-            if marker != b'l' && marker != b'B' {
-                return Err("Invalid D-Bus endianness marker");
-            }
+        if let Some(&marker) = data.first()
+            && marker != b'l'
+            && marker != b'B'
+        {
+            return Err("Invalid D-Bus endianness marker");
         }
         if data.len() < 16 {
             return Ok(None);
@@ -1101,10 +1102,10 @@ impl DbusConnection {
         // Decode before reporting a read failure: messages that arrived whole are delivered, and
         // the error surfaces on the next call (the connection is closed).
         let mut error = self.decode_frames().err();
-        if error.is_none() {
-            if let Some(e) = read_error {
-                error = Some(self.close(e));
-            }
+        if error.is_none()
+            && let Some(e) = read_error
+        {
+            error = Some(self.close(e));
         }
         match error {
             Some(e) if self.inbox.is_empty() => Err(e),
@@ -1718,19 +1719,21 @@ mod tests {
         use ferrokit_core::event_loop::UnixEventDispatcher;
         let (conn, bus) = connect(":1.2");
         let mut dispatcher = UnixEventDispatcher::new();
-        assert!(conn
-            .bind_event_dispatcher(&mut dispatcher)
-            .unwrap()
-            .is_none());
+        assert!(
+            conn.bind_event_dispatcher(&mut dispatcher)
+                .unwrap()
+                .is_none()
+        );
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
             let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
             bus.set_socket_fd(stream.as_raw_fd());
-            assert!(conn
-                .bind_event_dispatcher(&mut dispatcher)
-                .unwrap()
-                .is_some());
+            assert!(
+                conn.bind_event_dispatcher(&mut dispatcher)
+                    .unwrap()
+                    .is_some()
+            );
         }
         // Where the dispatcher does not poll descriptors, the bus socket would never be read:
         // registering fails instead of leaving a notifier that never fires.

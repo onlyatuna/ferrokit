@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Parity test for `QGuiApplication::lastWindowClosed` and `focusWindowChanged` (`qguiapplication.cpp:3939 / 2417`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_platform::WindowFlags;

@@ -6,16 +6,16 @@
 //! that is already dead: no registry access reaches it.
 
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::time::Duration;
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, register_owned_qobject, set_parent_by_id, with_object,
-    with_object_mut, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, add_owned_child,
+    move_to_thread_by_id, register_owned_qobject, set_parent_by_id, with_object, with_object_mut,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 
@@ -81,7 +81,7 @@ fn owned(name: &'static str, log: &Log) -> OwnedObject<Probe> {
 }
 
 /// A slot that logs `label` with the id it received, and checks the dying object is out of reach.
-fn log_id(log: &Log, label: &'static str) -> impl Fn(&ObjectId) + Send + Sync + 'static {
+fn log_id(log: &Log, label: &'static str) -> impl Fn(&ObjectId) + Send + Sync + 'static + use<> {
     let log = Arc::clone(log);
     move |id: &ObjectId| {
         assert!(

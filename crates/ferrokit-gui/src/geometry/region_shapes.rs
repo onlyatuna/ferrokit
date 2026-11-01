@@ -734,12 +734,12 @@ fn polygon_region(pts: &[Point], rule: FillRule) -> Option<Region> {
     let mut y = ymin;
     while y < ymax {
         let mut loaded = false;
-        if let Some(&(sl, head)) = scan.peek() {
-            if sl == y {
-                aet.load(head);
-                scan.next();
-                loaded = true;
-            }
+        if let Some(&(sl, head)) = scan.peek()
+            && sl == y
+        {
+            aet.load(head);
+            scan.next();
+            loaded = true;
         }
         match rule {
             FillRule::OddEven => {

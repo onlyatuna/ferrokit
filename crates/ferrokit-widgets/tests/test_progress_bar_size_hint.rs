@@ -4,9 +4,9 @@
 //! Expected numbers are PySide6 measurements (cases P4-P15) taken
 //! with explicit `font-family`/`font-size` so they do not depend on the application font.
 #![cfg(windows)]
+use ferrokit_widgets::Widget;
 use ferrokit_widgets::progress_bar::ProgressBar;
 use ferrokit_widgets::scroll::Orientation;
-use ferrokit_widgets::Widget;
 
 fn hints(qss: &str, vertical: bool) -> ([i32; 2], [i32; 2]) {
     // the PySide6 numbers are from a DPR 1.25 screen (DirectWrite text engine)
@@ -23,11 +23,31 @@ fn hints(qss: &str, vertical: bool) -> ([i32; 2], [i32; 2]) {
 #[test]
 fn test_progress_bar_hint_follows_font_and_box() {
     let cases = [
-        ("P4", "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 12px; }", ([87, 24], [87, 18])),
-        ("P5", "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 20px; }", ([107, 35], [107, 29])),
-        ("P6", "QProgressBar { font-family: 'Segoe UI'; font-size: 12px; border: 1px solid #888; padding: 2px 3px; }", ([95, 30], [95, 18])),
-        ("P7", "QProgressBar { font-family: 'Segoe UI'; min-width: 50px; max-width: 200px; font-size: 12px; border: none; }", ([87, 24], [87, 18])),
-        ("P10", "QProgressBar { font-family: 'Segoe UI'; font-size: 14px; border: none; }", ([95, 27], [95, 21])),
+        (
+            "P4",
+            "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 12px; }",
+            ([87, 24], [87, 18]),
+        ),
+        (
+            "P5",
+            "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 20px; }",
+            ([107, 35], [107, 29]),
+        ),
+        (
+            "P6",
+            "QProgressBar { font-family: 'Segoe UI'; font-size: 12px; border: 1px solid #888; padding: 2px 3px; }",
+            ([95, 30], [95, 18]),
+        ),
+        (
+            "P7",
+            "QProgressBar { font-family: 'Segoe UI'; min-width: 50px; max-width: 200px; font-size: 12px; border: none; }",
+            ([87, 24], [87, 18]),
+        ),
+        (
+            "P10",
+            "QProgressBar { font-family: 'Segoe UI'; font-size: 14px; border: none; }",
+            ([95, 27], [95, 21]),
+        ),
     ];
     for (name, qss, expected) in cases {
         assert_eq!(hints(qss, false), expected, "PySide6 {name}");
@@ -63,7 +83,10 @@ fn test_progress_bar_hint_is_clamped_to_content_box_min_max() {
 fn test_vertical_progress_bar_hint_is_transposed_before_the_style() {
     // PySide6 P11: vertical, `min-width: 5px; max-width: 5px` -> hint 5x91, minimumSizeHint 17x91.
     assert_eq!(
-        hints("QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 12px; min-width: 5px; max-width: 5px; }", true),
+        hints(
+            "QProgressBar { font-family: 'Segoe UI'; border: none; font-size: 12px; min-width: 5px; max-width: 5px; }",
+            true
+        ),
         ([5, 87], [18, 87])
     );
 }
@@ -111,12 +134,16 @@ const NONE: i32 = 16777215;
 fn test_width_and_height_do_not_become_min_and_max() {
     // PySide6 P8
     assert_eq!(
-        limits("QProgressBar { font-family: 'Segoe UI'; width: 120px; height: 9px; border: none; font-size: 12px; }"),
+        limits(
+            "QProgressBar { font-family: 'Segoe UI'; width: 120px; height: 9px; border: none; font-size: 12px; }"
+        ),
         ([0, 0], [NONE, NONE], [120, 9], [120, 18])
     );
     // PySide6 P9
     assert_eq!(
-        limits("QProgressBar { font-family: 'Segoe UI'; height: 9px; padding: 2px; border: 1px solid #888; font-size: 12px; }"),
+        limits(
+            "QProgressBar { font-family: 'Segoe UI'; height: 9px; padding: 2px; border: 1px solid #888; font-size: 12px; }"
+        ),
         ([0, 0], [NONE, NONE], [93, 15], [93, 18])
     );
 }

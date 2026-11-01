@@ -7,7 +7,7 @@
 //! `QPushButton:disabled` and `QProgressBar:disabled` all apply once the widget is disabled.
 
 use ferrokit_gui::tiny_skia::Color;
-use ferrokit_widgets::{set_widget_enabled, Button, Frame, Label, ProgressBar, Widget, WidgetRef};
+use ferrokit_widgets::{Button, Frame, Label, ProgressBar, Widget, WidgetRef, set_widget_enabled};
 use std::cell::RefCell;
 use std::rc::Rc;
 

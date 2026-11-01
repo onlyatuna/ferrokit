@@ -53,16 +53,18 @@ thread_local! {
 }
 
 unsafe extern "system" fn callback(_id: u32, _msg: u32, user: usize, _dw1: usize, _dw2: usize) {
-    // SAFETY: `user` is the address of the boxed `Posted` passed to `timeSetEvent` in `arm`. The
-    // box outlives every callback: `Active::drop` calls `timeKillEvent` with
-    // `TIME_KILL_SYNCHRONOUS` (it waits for a running callback) before the box is freed, and
-    // the callback only takes a shared reference to `Posted`, whose mutable state is atomic.
-    let posted = &*(user as *const Posted);
-    if !posted.queued.swap(true, Ordering::AcqRel)
-        && PostMessageW(posted.hwnd as HWND, WM_TIMER, posted.id as usize, 0) == 0
-    {
-        // Not queued after all (quota exhausted or window gone): allow the next tick to post.
-        posted.queued.store(false, Ordering::Release);
+    unsafe {
+        // SAFETY: `user` is the address of the boxed `Posted` passed to `timeSetEvent` in `arm`. The
+        // box outlives every callback: `Active::drop` calls `timeKillEvent` with
+        // `TIME_KILL_SYNCHRONOUS` (it waits for a running callback) before the box is freed, and
+        // the callback only takes a shared reference to `Posted`, whose mutable state is atomic.
+        let posted = &*(user as *const Posted);
+        if !posted.queued.swap(true, Ordering::AcqRel)
+            && PostMessageW(posted.hwnd as HWND, WM_TIMER, posted.id as usize, 0) == 0
+        {
+            // Not queued after all (quota exhausted or window gone): allow the next tick to post.
+            posted.queued.store(false, Ordering::Release);
+        }
     }
 }
 

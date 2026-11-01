@@ -21,7 +21,7 @@ use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::window::Window;
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, SendMessageW, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    GetCursorPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos,
     WM_LBUTTONDOWN, WM_LBUTTONUP,
 };
 

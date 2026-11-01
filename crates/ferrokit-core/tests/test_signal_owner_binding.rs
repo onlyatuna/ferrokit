@@ -10,14 +10,14 @@
 //!   so this behaviour is ferrokit's own requirement.
 
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, SignalBlocker,
+    ObjectData, ObjectId, QObject, SignalBlocker, register_qobject_ptr, unregister_qobject,
 };
-use ferrokit_core::signal::{sender, Signal};
+use ferrokit_core::signal::{Signal, sender};
 use ferrokit_core::variant::Variant;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A QObject owner whose signal is bound to its own `ObjectData`.
 struct Owner {

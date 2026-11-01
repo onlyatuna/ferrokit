@@ -8,13 +8,13 @@
 
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_thread, register_qobject_ptr, set_parent_by_id,
-    unregister_qobject, MoveByIdError, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
+    MoveByIdError, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId, move_to_thread_by_id,
+    query_object_thread, register_qobject_ptr, set_parent_by_id, unregister_qobject,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -38,10 +38,10 @@ impl QObject for Root {
         ObjectDataMut::new(&mut self.data)
     }
     fn event(&mut self, event: &mut Event) -> bool {
-        if matches!(event.kind, EventKind::ThreadChange) {
-            if let Some(late) = self.late.take() {
-                set_parent_by_id(late, Some(self.data.id())).expect("attach in the handler");
-            }
+        if matches!(event.kind, EventKind::ThreadChange)
+            && let Some(late) = self.late.take()
+        {
+            set_parent_by_id(late, Some(self.data.id())).expect("attach in the handler");
         }
         false
     }

@@ -9,8 +9,8 @@
 //! `FRAMELESS` windows, so a native frame does not change the client size.
 
 use ferrokit_gui::geometry::primitives::{Rect, Size};
-use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::WindowFlags;
+use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_widgets::{BoxLayout, EmptyWidget, Layout, SizeConstraint, WidgetRef, Window};
 use std::cell::RefCell;
 use std::rc::Rc;

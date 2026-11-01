@@ -7,22 +7,14 @@ use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 /// Matches `QHighDpi::fromNativePixels`.
 #[inline]
 pub fn from_native_pixels(val: f32, dpr: f32) -> f32 {
-    if dpr > 0.0 {
-        val / dpr
-    } else {
-        val
-    }
+    if dpr > 0.0 { val / dpr } else { val }
 }
 
 /// Converts device-independent logical pixels (DIPs) to native physical pixels.
 /// Matches `QHighDpi::toNativePixels`.
 #[inline]
 pub fn to_native_pixels(val: f32, dpr: f32) -> f32 {
-    if dpr > 0.0 {
-        val * dpr
-    } else {
-        val
-    }
+    if dpr > 0.0 { val * dpr } else { val }
 }
 
 /// Converts a physical point to a logical point, relative to the window.

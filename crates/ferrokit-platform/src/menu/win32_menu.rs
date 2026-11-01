@@ -6,8 +6,8 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, PostMessageW, SetForegroundWindow, TrackPopupMenu, HMENU, MF_CHECKED, MF_GRAYED,
-    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    AppendMenuW, HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    PostMessageW, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
 };
 
 use super::{PlatformMenu, PlatformMenuItem};
@@ -140,7 +140,8 @@ impl Win32Menu {
             match entry {
                 MenuEntry::Item(item) => {
                     if item.is_separator() {
-                        AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
+                        // SAFETY: hmenu is a live menu and separator requires no string.
+                        unsafe { AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null()) };
                         continue;
                     }
 
@@ -160,12 +161,15 @@ impl Win32Menu {
                     let wide_text: Vec<u16> =
                         text.encode_utf16().chain(std::iter::once(0)).collect();
 
-                    if AppendMenuW(
-                        hmenu.as_raw(),
-                        flags,
-                        item.id() as usize,
-                        wide_text.as_ptr(),
-                    ) == 0
+                    // SAFETY: hmenu is a live menu and wide_text is NUL-terminated.
+                    if unsafe {
+                        AppendMenuW(
+                            hmenu.as_raw(),
+                            flags,
+                            item.id() as usize,
+                            wide_text.as_ptr(),
+                        )
+                    } == 0
                     {
                         return Err("AppendMenuW failed to add item");
                     }
@@ -187,12 +191,15 @@ impl Win32Menu {
                         text.encode_utf16().chain(std::iter::once(0)).collect();
                     // On failure both guards destroy their menu; on success the parent owns the
                     // submenu.
-                    if AppendMenuW(
-                        hmenu.as_raw(),
-                        MF_POPUP | MF_STRING,
-                        sub_hmenu.as_raw() as usize,
-                        wide_text.as_ptr(),
-                    ) == 0
+                    // SAFETY: hmenu and sub_hmenu are live menus and wide_text is NUL-terminated.
+                    if unsafe {
+                        AppendMenuW(
+                            hmenu.as_raw(),
+                            MF_POPUP | MF_STRING,
+                            sub_hmenu.as_raw() as usize,
+                            wide_text.as_ptr(),
+                        )
+                    } == 0
                     {
                         return Err("AppendMenuW failed to add submenu");
                     }

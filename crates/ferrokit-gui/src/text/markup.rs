@@ -74,20 +74,21 @@ pub fn might_be_rich_text(text: &str) -> bool {
         }
         open += 1;
     }
-    if open < n && chars[open] == '<' {
-        if let Some(close) = (open..n).find(|&i| chars[i] == '>') {
-            let mut tag = String::new();
-            for (i, &c) in chars.iter().enumerate().take(close).skip(open + 1) {
-                if c.is_numeric() || c.is_alphabetic() {
-                    tag.extend(c.to_lowercase());
-                } else if !tag.is_empty() && (c.is_whitespace() || (c == '/' && i + 1 == close)) {
-                    break;
-                } else if !c.is_whitespace() && (!tag.is_empty() || c != '!') {
-                    return false;
-                }
+    if open < n
+        && chars[open] == '<'
+        && let Some(close) = (open..n).find(|&i| chars[i] == '>')
+    {
+        let mut tag = String::new();
+        for (i, &c) in chars.iter().enumerate().take(close).skip(open + 1) {
+            if c.is_numeric() || c.is_alphabetic() {
+                tag.extend(c.to_lowercase());
+            } else if !tag.is_empty() && (c.is_whitespace() || (c == '/' && i + 1 == close)) {
+                break;
+            } else if !c.is_whitespace() && (!tag.is_empty() || c != '!') {
+                return false;
             }
-            return RICH_TEXT_ELEMENTS.binary_search(&tag.as_str()).is_ok();
         }
+        return RICH_TEXT_ELEMENTS.binary_search(&tag.as_str()).is_ok();
     }
     false
 }
@@ -336,10 +337,10 @@ impl HtmlImporter {
         let mut preformatted = false;
         if block_level {
             self.start_block(true);
-            if let Some(align) = attr("align") {
-                if let Some(a) = parse_alignment(align) {
-                    self.current.block_format.alignment = a;
-                }
+            if let Some(align) = attr("align")
+                && let Some(a) = parse_alignment(align)
+            {
+                self.current.block_format.alignment = a;
             }
         }
         match name.as_str() {
@@ -450,11 +451,11 @@ impl HtmlImporter {
 
     fn flush_current(&mut self) {
         let mut block = std::mem::take(&mut self.current);
-        if self.pre_depth == 0 {
-            if let Some(last) = block.fragments.last_mut() {
-                let trimmed = last.text.trim_end_matches(' ').len();
-                last.text.truncate(trimmed);
-            }
+        if self.pre_depth == 0
+            && let Some(last) = block.fragments.last_mut()
+        {
+            let trimmed = last.text.trim_end_matches(' ').len();
+            last.text.truncate(trimmed);
         }
         block.normalize_fragments();
         self.blocks.push(block);
@@ -960,13 +961,13 @@ fn write_html_fragment(html: &mut String, f: &TextFragment) {
         VerticalAlignment::AlignSubScript => open(html, "<sub>", "</sub>"),
         _ => {}
     }
-    if let Some(fg) = fmt.foreground {
-        if !(in_link && fg == link_color()) {
-            html.push_str("<font color=\"");
-            html.push_str(&color_hex(fg));
-            html.push_str("\">");
-            close.push("</font>");
-        }
+    if let Some(fg) = fmt.foreground
+        && !(in_link && fg == link_color())
+    {
+        html.push_str("<font color=\"");
+        html.push_str(&color_hex(fg));
+        html.push_str("\">");
+        close.push("</font>");
     }
     if let Some(bg) = fmt.background {
         html.push_str("<span style=\"background-color:");
@@ -1206,24 +1207,26 @@ fn parse_inline_at(text: &str, fmt: &TextCharFormat, out: &mut Vec<TextFragment>
                 let next = rest[run..].chars().next();
                 let left_flanking = next.is_some_and(|n| !n.is_whitespace());
                 let intraword = c == '_' && prev.is_some_and(char::is_alphanumeric);
-                if usable && left_flanking && !intraword {
-                    if let Some(close) = find_closing(&rest[run..], c, run) {
-                        push_fragment(out, &mut buf, fmt);
-                        let mut inner = fmt.clone();
-                        match (c, run) {
-                            ('~', _) => inner.font_strikeout = true,
-                            (_, 1) => inner.font_italic = Some(true),
-                            (_, 2) => inner.font_weight = Some(FontWeight::Bold),
-                            _ => {
-                                inner.font_weight = Some(FontWeight::Bold);
-                                inner.font_italic = Some(true);
-                            }
+                if usable
+                    && left_flanking
+                    && !intraword
+                    && let Some(close) = find_closing(&rest[run..], c, run)
+                {
+                    push_fragment(out, &mut buf, fmt);
+                    let mut inner = fmt.clone();
+                    match (c, run) {
+                        ('~', _) => inner.font_strikeout = true,
+                        (_, 1) => inner.font_italic = Some(true),
+                        (_, 2) => inner.font_weight = Some(FontWeight::Bold),
+                        _ => {
+                            inner.font_weight = Some(FontWeight::Bold);
+                            inner.font_italic = Some(true);
                         }
-                        parse_inline_at(&rest[run..run + close], &inner, out, depth + 1);
-                        prev = Some(c);
-                        i += run + close + run;
-                        continue;
                     }
+                    parse_inline_at(&rest[run..run + close], &inner, out, depth + 1);
+                    prev = Some(c);
+                    i += run + close + run;
+                    continue;
                 }
                 buf.push_str(&rest[..run * c.len_utf8()]);
                 prev = Some(c);

@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{
-    clear_application_event_filters, install_application_event_filter, EventLoop,
+    EventLoop, clear_application_event_filters, install_application_event_filter,
 };
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, query_object_thread, register_qobject_ptr,
-    unregister_qobject, ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId, add_owned_child, move_to_thread_by_id,
+    query_object_thread, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::timer::TimerId;
 

@@ -6,8 +6,8 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    query_object_thread, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
-    ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, query_object_thread,
+    register_owned_qobject,
 };
 
 struct Victim {

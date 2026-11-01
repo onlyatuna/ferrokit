@@ -389,9 +389,9 @@ mod win {
     use super::*;
     use std::sync::{Arc, LazyLock, Mutex};
     use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
     use windows_sys::Win32::System::LibraryLoader::{
-        GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+        GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
     };
 
     /// `DWMWA_USE_IMMERSIVE_DARK_MODE` before Windows 10 20H1 (build 18985).
@@ -1320,8 +1320,8 @@ mod tests {
 
     #[test]
     fn concurrent_requests_end_on_the_latest_scheme() {
-        use std::sync::atomic::{AtomicU8, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU8, Ordering};
         let c = Arc::new(Coalescer::default());
         let scheme = Arc::new(AtomicU8::new(ColorScheme::Light as u8));
         let last_applied = Arc::new(AtomicU8::new(ColorScheme::Unknown as u8));

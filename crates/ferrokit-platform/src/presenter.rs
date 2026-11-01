@@ -5,9 +5,9 @@
 //! presentation mechanisms (such as Win32 `UpdateLayeredWindowIndirect`, GDI `BitBlt`,
 //! DirectComposition, or Wayland/Cocoa surface presentation).
 
+use ferrokit_gui::geometry::Region;
 #[allow(unused_imports)]
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_gui::geometry::Region;
 use ferrokit_gui::paint::Pixmap;
 
 /// Unified abstraction for presenting surface pixels to the native window system.
@@ -32,7 +32,7 @@ pub trait SurfacePresenter {
 #[cfg(windows)]
 pub mod win32 {
     use super::*;
-    use crate::win32_handles::{create_dib_section, DibTarget, MemDc, WindowDc};
+    use crate::win32_handles::{DibTarget, MemDc, WindowDc, create_dib_section};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::Graphics::Gdi::{BitBlt, SRCCOPY};
     /// Presenter for standard Win32 windows using GDI `GetDC` + `BitBlt`.
