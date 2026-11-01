@@ -3,9 +3,9 @@
 //! `started`/`finished` signals, and requested priority. Every blocking call goes through
 //! `with_watchdog` or a `recv_timeout`, so a regression fails instead of hanging.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event::{Event, EventKind};
@@ -358,7 +358,7 @@ mod swallowed_exit {
     use ferrokit_core::event::{Event, EventKind};
     use ferrokit_core::event_loop::install_application_event_filter;
     use ferrokit_core::object::{
-        register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject,
+        ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, register_owned_qobject,
     };
 
     /// Consumes the posted calls after the first `pass` of them, as an application filter on

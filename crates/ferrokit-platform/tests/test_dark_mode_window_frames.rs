@@ -8,10 +8,10 @@
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_platform::backdrop::{set_window_backdrop, BackdropType};
+use ferrokit_platform::backdrop::{BackdropType, set_window_backdrop};
 use ferrokit_platform::window::{NativeWindow, WindowFlags};
-use ferrokit_platform::{platform, ColorScheme, PlatformWindow};
-use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+use ferrokit_platform::{ColorScheme, PlatformWindow, platform};
+use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmGetWindowAttribute};
 
 fn frame_is_dark(window: &NativeWindow) -> bool {
     let mut value: i32 = -1;

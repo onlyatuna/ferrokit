@@ -101,11 +101,7 @@ impl SizeLimits {
     pub fn bound_size(&self, w: i32, h: i32) -> (i32, i32) {
         let axis = |v: i32, min: i32, max: i32| {
             let v = v.min(max);
-            if min > 0 {
-                v.max(min)
-            } else {
-                v
-            }
+            if min > 0 { v.max(min) } else { v }
         };
         (
             axis(w, self.min.0, self.max.0),

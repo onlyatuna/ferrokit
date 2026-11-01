@@ -6,8 +6,8 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, PostMessageW, SetForegroundWindow, TrackPopupMenu, HMENU, MF_CHECKED, MF_GRAYED,
-    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    AppendMenuW, HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
+    PostMessageW, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_NULL,
 };
 
 use super::{PlatformMenu, PlatformMenuItem};
@@ -134,74 +134,77 @@ impl Win32Menu {
     /// The caller must ensure that Win32 API functions can be safely executed on the current thread
     /// and that the returned `HMENU` handle is properly destroyed when no longer needed.
     pub unsafe fn build_hmenu(&self) -> Result<HMENU, &'static str> {
-        let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
+        // SAFETY: caller guarantees Win32 menu APIs can be safely executed on this thread.
+        unsafe {
+            let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
 
-        for entry in &self.entries {
-            match entry {
-                MenuEntry::Item(item) => {
-                    if item.is_separator() {
-                        AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
-                        continue;
-                    }
+            for entry in &self.entries {
+                match entry {
+                    MenuEntry::Item(item) => {
+                        if item.is_separator() {
+                            AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
+                            continue;
+                        }
 
-                    let mut flags = MF_STRING;
-                    if !item.is_enabled() {
-                        flags |= MF_GRAYED;
-                    }
-                    if item.is_checkable() {
-                        if item.is_checked() {
-                            flags |= MF_CHECKED;
-                        } else {
-                            flags |= MF_UNCHECKED;
+                        let mut flags = MF_STRING;
+                        if !item.is_enabled() {
+                            flags |= MF_GRAYED;
+                        }
+                        if item.is_checkable() {
+                            if item.is_checked() {
+                                flags |= MF_CHECKED;
+                            } else {
+                                flags |= MF_UNCHECKED;
+                            }
+                        }
+
+                        let text = item.text();
+                        let wide_text: Vec<u16> =
+                            text.encode_utf16().chain(std::iter::once(0)).collect();
+
+                        if AppendMenuW(
+                            hmenu.as_raw(),
+                            flags,
+                            item.id() as usize,
+                            wide_text.as_ptr(),
+                        ) == 0
+                        {
+                            return Err("AppendMenuW failed to add item");
                         }
                     }
-
-                    let text = item.text();
-                    let wide_text: Vec<u16> =
-                        text.encode_utf16().chain(std::iter::once(0)).collect();
-
-                    if AppendMenuW(
-                        hmenu.as_raw(),
-                        flags,
-                        item.id() as usize,
-                        wide_text.as_ptr(),
-                    ) == 0
-                    {
-                        return Err("AppendMenuW failed to add item");
+                    MenuEntry::SubMenu { text, menu } => {
+                        // A failed build leaves nothing to free here; `hmenu` drops on the way out.
+                        let raw = menu.build_native_menu()?;
+                        if raw == 0 {
+                            // A submenu from another back end (the trait default returns 0) has no
+                            // native menu: appending `MF_POPUP` with a null menu would fail, so the
+                            // item is skipped and the rest of the menu is still built.
+                            eprintln!(
+                                "ferrokit: submenu {text:?} has no native Win32 menu; it is left out"
+                            );
+                            continue;
+                        }
+                        let sub_hmenu = OwnedMenu::from_raw(raw as HMENU);
+                        let wide_text: Vec<u16> =
+                            text.encode_utf16().chain(std::iter::once(0)).collect();
+                        // On failure both guards destroy their menu; on success the parent owns the
+                        // submenu.
+                        if AppendMenuW(
+                            hmenu.as_raw(),
+                            MF_POPUP | MF_STRING,
+                            sub_hmenu.as_raw() as usize,
+                            wide_text.as_ptr(),
+                        ) == 0
+                        {
+                            return Err("AppendMenuW failed to add submenu");
+                        }
+                        let _ = sub_hmenu.into_raw();
                     }
-                }
-                MenuEntry::SubMenu { text, menu } => {
-                    // A failed build leaves nothing to free here; `hmenu` drops on the way out.
-                    let raw = menu.build_native_menu()?;
-                    if raw == 0 {
-                        // A submenu from another back end (the trait default returns 0) has no
-                        // native menu: appending `MF_POPUP` with a null menu would fail, so the
-                        // item is skipped and the rest of the menu is still built.
-                        eprintln!(
-                            "ferrokit: submenu {text:?} has no native Win32 menu; it is left out"
-                        );
-                        continue;
-                    }
-                    let sub_hmenu = OwnedMenu::from_raw(raw as HMENU);
-                    let wide_text: Vec<u16> =
-                        text.encode_utf16().chain(std::iter::once(0)).collect();
-                    // On failure both guards destroy their menu; on success the parent owns the
-                    // submenu.
-                    if AppendMenuW(
-                        hmenu.as_raw(),
-                        MF_POPUP | MF_STRING,
-                        sub_hmenu.as_raw() as usize,
-                        wide_text.as_ptr(),
-                    ) == 0
-                    {
-                        return Err("AppendMenuW failed to add submenu");
-                    }
-                    let _ = sub_hmenu.into_raw();
                 }
             }
-        }
 
-        Ok(hmenu.into_raw())
+            Ok(hmenu.into_raw())
+        }
     }
 
     /// Finds Win32MenuItem by ID (including within submenus).

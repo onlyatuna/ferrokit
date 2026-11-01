@@ -17,7 +17,7 @@ mod core_graphics {
     pub const K_CG_RENDERING_INTENT_DEFAULT: u32 = 0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn CGColorSpaceCreateDeviceRGB() -> CGColorSpaceRef;
         pub fn CGColorSpaceRelease(space: CGColorSpaceRef);
         pub fn CFDataCreateMutable(allocator: *const c_void, capacity: isize) -> *mut c_void;

@@ -3,19 +3,19 @@
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::{Point, Rect};
-use ferrokit_platform::drag_drop::win32_ole::{IDropTargetVtbl, OleDropTarget};
 use ferrokit_platform::drag_drop::DropEvent;
+use ferrokit_platform::drag_drop::win32_ole::{IDropTargetVtbl, OleDropTarget};
 use ferrokit_platform::integration::platform;
 use ferrokit_platform::window::WindowFlags;
 use parking_lot::Mutex;
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use windows_sys::core::GUID;
+use std::sync::atomic::Ordering;
 use windows_sys::Win32::Foundation::{HWND, POINT, POINTL};
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows_sys::core::GUID;
 
 const S_OK: i32 = 0;
 const E_NOINTERFACE: i32 = 0x8000_4002_u32 as i32;
@@ -155,10 +155,13 @@ fn supported(this: &MockData, fmt: &FormatEtc) -> bool {
 /// # Safety
 /// `this` must point to a live `MockData` and `fmt` to a `FormatEtc`.
 unsafe extern "system" fn m_query(this: *mut c_void, fmt: *const FormatEtc) -> i32 {
-    if supported(&*(this as *const MockData), &*fmt) {
-        S_OK
-    } else {
-        DV_E_FORMATETC
+    // SAFETY: caller guarantees this points to MockData and fmt to FormatEtc.
+    unsafe {
+        if supported(&*(this as *const MockData), &*fmt) {
+            S_OK
+        } else {
+            DV_E_FORMATETC
+        }
     }
 }
 
@@ -172,39 +175,42 @@ unsafe extern "system" fn m_get(
     fmt: *const FormatEtc,
     out: *mut StgMedium,
 ) -> i32 {
-    let this = &*(this as *const MockData);
-    let fmt = &*fmt;
-    if !supported(this, fmt) {
-        return DV_E_FORMATETC;
-    }
-    let bytes: Vec<u8> = if fmt.cf_format == CF_UNICODETEXT {
-        this.text
-            .unwrap()
-            .encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
-    } else {
-        // DROPFILES: pFiles = 20, pt, fNC, fWide = 1; then UTF-16 names, double NUL.
-        let mut b = Vec::new();
-        b.extend_from_slice(&20u32.to_le_bytes());
-        b.extend_from_slice(&[0u8; 8]);
-        b.extend_from_slice(&0i32.to_le_bytes());
-        b.extend_from_slice(&1i32.to_le_bytes());
-        for f in this.files.unwrap() {
-            for u in f.encode_utf16().chain([0]) {
-                b.extend_from_slice(&u.to_le_bytes());
-            }
+    // SAFETY: caller guarantees this points to MockData, fmt to FormatEtc, out to writable StgMedium.
+    unsafe {
+        let this = &*(this as *const MockData);
+        let fmt = &*fmt;
+        if !supported(this, fmt) {
+            return DV_E_FORMATETC;
         }
-        b.extend_from_slice(&0u16.to_le_bytes());
-        b
-    };
-    *out = StgMedium {
-        tymed: 1,
-        h_global: block(&bytes),
-        p_unk: std::ptr::null_mut(),
-    };
-    S_OK
+        let bytes: Vec<u8> = if fmt.cf_format == CF_UNICODETEXT {
+            this.text
+                .unwrap()
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        } else {
+            // DROPFILES: pFiles = 20, pt, fNC, fWide = 1; then UTF-16 names, double NUL.
+            let mut b = Vec::new();
+            b.extend_from_slice(&20u32.to_le_bytes());
+            b.extend_from_slice(&[0u8; 8]);
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.extend_from_slice(&1i32.to_le_bytes());
+            for f in this.files.unwrap() {
+                for u in f.encode_utf16().chain([0]) {
+                    b.extend_from_slice(&u.to_le_bytes());
+                }
+            }
+            b.extend_from_slice(&0u16.to_le_bytes());
+            b
+        };
+        *out = StgMedium {
+            tymed: 1,
+            h_global: block(&bytes),
+            p_unk: std::ptr::null_mut(),
+        };
+        S_OK
+    }
 }
 
 static MOCK_VTBL: MockVtbl = MockVtbl {
@@ -231,9 +237,9 @@ fn a_drop_delivers_the_text_of_the_data_object() {
     let (t, vtbl) = target_with(std::ptr::null_mut(), &events);
     let mut obj = data_object(Some("héllo wörld"), None);
     let mut effect = 3u32; // copy | move offered
-                           // SAFETY: `t` is the live target from `target_with` (sole reference, released at the end of
-                           // this block); `this` is that pointer and `o` points at `obj`, which outlives the block and is
-                           // a `MockData` whose vtable (`MOCK_VTBL`) the mock slots read. `effect` is a live `u32`.
+    // SAFETY: `t` is the live target from `target_with` (sole reference, released at the end of
+    // this block); `this` is that pointer and `o` points at `obj`, which outlives the block and is
+    // a `MockData` whose vtable (`MOCK_VTBL`) the mock slots read. `effect` is a live `u32`.
     unsafe {
         let this = t as *mut c_void;
         let o = &mut obj as *mut MockData as *mut c_void;

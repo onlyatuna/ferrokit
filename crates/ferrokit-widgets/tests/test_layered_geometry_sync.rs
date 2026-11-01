@@ -13,12 +13,12 @@ use std::ptr::null_mut;
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_platform::resize_trace::{self, TraceEntry, TraceKind};
 use ferrokit_platform::WindowFlags;
+use ferrokit_platform::resize_trace::{self, TraceEntry, TraceKind};
 use ferrokit_widgets::window::Window;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SendMessageW, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetWindowPos,
 };
 
 const WM_ENTERSIZEMOVE: u32 = 0x0231;
@@ -201,7 +201,9 @@ fn layered_window_content_rect_equals_hwnd_rect_every_iteration() {
             i.requested.map(|r| (r.2, r.3)) != Some((i.set_window_pos.2, i.set_window_pos.3))
         })
         .count();
-    println!("WM_SIZE-count != 1 iterations={nested}, ferrokit size != HWND size iterations={size_vs_requested}");
+    println!(
+        "WM_SIZE-count != 1 iterations={nested}, ferrokit size != HWND size iterations={size_vs_requested}"
+    );
     let mut lat: Vec<u128> = iters
         .iter()
         .filter_map(|i| Some(i.t_ulw_end?.duration_since(i.t_wm_size?).as_micros()))

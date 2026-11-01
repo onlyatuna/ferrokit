@@ -170,9 +170,11 @@ fn transform2d_tiny_scale_is_invertible() {
 #[test]
 fn transform2d_singular_still_rejected() {
     assert!(Transform2D::from_scale(0.0, 1.0).inverted().is_none());
-    assert!(Transform2D::from_row_matrix(1.0, 2.0, 2.0, 4.0, 0.0, 0.0)
-        .inverted()
-        .is_none());
+    assert!(
+        Transform2D::from_row_matrix(1.0, 2.0, 2.0, 4.0, 0.0, 0.0)
+            .inverted()
+            .is_none()
+    );
     assert!(
         Transform2D::from_row_matrix(1e-5, 2e-5, 2e-5, 4e-5, 0.0, 0.0)
             .inverted()
@@ -245,14 +247,16 @@ fn matrix4x4_mixed_magnitude_diagonal_is_invertible() {
 
 #[test]
 fn matrix4x4_singular_still_rejected() {
-    assert!(Matrix4x4::from_array([
-        1.0, 2.0, 3.0, 4.0, //
-        5.0, 6.0, 7.0, 8.0, //
-        9.0, 10.0, 11.0, 12.0, //
-        13.0, 14.0, 15.0, 16.0,
-    ])
-    .inverted()
-    .is_none());
+    assert!(
+        Matrix4x4::from_array([
+            1.0, 2.0, 3.0, 4.0, //
+            5.0, 6.0, 7.0, 8.0, //
+            9.0, 10.0, 11.0, 12.0, //
+            13.0, 14.0, 15.0, 16.0,
+        ])
+        .inverted()
+        .is_none()
+    );
     let mut z = Matrix4x4::identity();
     z.scale(1.0, 0.0, 1.0);
     assert!(z.inverted().is_none());
@@ -264,9 +268,11 @@ fn matrix4x4_singular_still_rejected() {
 #[test]
 fn f32_rounded_singular_matrices_are_rejected() {
     // Rank 1 in exact arithmetic; the f32 roundings of 0.1/0.2/0.3/0.6 leave ~1e-8 relative noise.
-    assert!(Transform2D::from_row_matrix(0.1, 0.2, 0.3, 0.6, 0.0, 0.0)
-        .inverted()
-        .is_none());
+    assert!(
+        Transform2D::from_row_matrix(0.1, 0.2, 0.3, 0.6, 0.0, 0.0)
+            .inverted()
+            .is_none()
+    );
     let t = Transform {
         m11: 0.1,
         m12: 0.2,

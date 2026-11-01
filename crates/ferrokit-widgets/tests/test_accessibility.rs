@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_widgets::{
-    set_widget_enabled, AccessibleAction, AccessibleId, AccessibleNode, AccessibleRole,
-    AccessibleState, AccessibleTree, Button, Widget, WidgetRef,
+    AccessibleAction, AccessibleId, AccessibleNode, AccessibleRole, AccessibleState,
+    AccessibleTree, Button, Widget, WidgetRef, set_widget_enabled,
 };
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,13 +32,17 @@ fn accessible_invoke_activates_button_once_and_respects_enabled_state() {
     });
     let widget: WidgetRef = std::rc::Rc::new(RefCell::new(Box::new(button)));
 
-    assert!(widget
-        .borrow_mut()
-        .perform_accessible_action(AccessibleAction::Invoke));
+    assert!(
+        widget
+            .borrow_mut()
+            .perform_accessible_action(AccessibleAction::Invoke)
+    );
     set_widget_enabled(&widget, false);
-    assert!(!widget
-        .borrow_mut()
-        .perform_accessible_action(AccessibleAction::Invoke));
+    assert!(
+        !widget
+            .borrow_mut()
+            .perform_accessible_action(AccessibleAction::Invoke)
+    );
     assert_eq!(activations.load(Ordering::SeqCst), 1);
 }
 
@@ -49,25 +53,28 @@ fn accessible_tree_preserves_hierarchy_and_rejects_cycles() {
     let button = AccessibleId(3);
     let mut tree = AccessibleTree::new();
 
-    assert!(tree
-        .set_root(AccessibleNode::new(
+    assert!(
+        tree.set_root(AccessibleNode::new(
             root,
             AccessibleRole::Window,
             "Main window"
         ))
-        .is_ok());
-    assert!(tree
-        .insert(
+        .is_ok()
+    );
+    assert!(
+        tree.insert(
             panel,
             AccessibleNode::new(button, AccessibleRole::Button, "Save")
         )
-        .is_err());
-    assert!(tree
-        .insert(
+        .is_err()
+    );
+    assert!(
+        tree.insert(
             root,
             AccessibleNode::new(panel, AccessibleRole::Group, "Editor")
         )
-        .is_ok());
+        .is_ok()
+    );
 
     let mut save = AccessibleNode::new(button, AccessibleRole::Button, "Save");
     save.actions.push(AccessibleAction::Invoke);
@@ -77,10 +84,11 @@ fn accessible_tree_preserves_hierarchy_and_rejects_cycles() {
     assert_eq!(tree.root(), Some(root));
     assert_eq!(tree.parent(button), Some(panel));
     assert_eq!(tree.children(panel), &[button]);
-    assert!(tree
-        .node(button)
-        .unwrap()
-        .supports_action(AccessibleAction::Invoke));
+    assert!(
+        tree.node(button)
+            .unwrap()
+            .supports_action(AccessibleAction::Invoke)
+    );
     assert!(!tree.reparent(panel, button));
     assert!(tree.reparent(button, root));
     assert_eq!(tree.parent(button), Some(root));

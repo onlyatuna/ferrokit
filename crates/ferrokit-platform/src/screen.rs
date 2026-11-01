@@ -136,13 +136,13 @@ mod logical_to_native_tests {
 pub mod win32_screen {
     use super::*;
     use std::ptr;
-    use windows_sys::core::BOOL;
     use windows_sys::Win32::Foundation::{LPARAM, POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR,
-        MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST,
+        MONITOR_DEFAULTTONULL, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow,
     };
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows_sys::core::BOOL;
 
     /// The monitor's effective DPI as a ratio, at least 1.0.
     fn monitor_dpr(h_monitor: HMONITOR) -> f32 {
@@ -283,8 +283,8 @@ pub mod win32_screen {
             // SPI_GETWORKAREA `pvParam` must be a `RECT*` with `uiParam` 0, as passed.
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    GetSystemMetrics, SystemParametersInfoW, SM_CXSCREEN, SM_CYSCREEN,
-                    SPI_GETWORKAREA,
+                    GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SPI_GETWORKAREA,
+                    SystemParametersInfoW,
                 };
                 let width = GetSystemMetrics(SM_CXSCREEN);
                 let height = GetSystemMetrics(SM_CYSCREEN);
@@ -326,17 +326,19 @@ pub mod win32_screen {
                     _rect: *mut RECT,
                     lparam: LPARAM,
                 ) -> BOOL {
-                    // SAFETY: `lparam` is the `&mut Vec<Win32Screen>` passed by `all_screens` to
-                    // EnumDisplayMonitors, valid and exclusive for the duration of this synchronous callback.
-                    let list_ref = &mut *(lparam as *mut Vec<Win32Screen>);
-                    if let Some(screen) = Win32Screen::from_hmonitor(h_monitor) {
-                        if screen.is_primary {
-                            list_ref.insert(0, screen);
-                        } else {
-                            list_ref.push(screen);
+                    unsafe {
+                        // SAFETY: `lparam` is the `&mut Vec<Win32Screen>` passed by `all_screens` to
+                        // EnumDisplayMonitors, valid and exclusive for the duration of this synchronous callback.
+                        let list_ref = &mut *(lparam as *mut Vec<Win32Screen>);
+                        if let Some(screen) = Win32Screen::from_hmonitor(h_monitor) {
+                            if screen.is_primary {
+                                list_ref.insert(0, screen);
+                            } else {
+                                list_ref.push(screen);
+                            }
                         }
+                        1
                     }
-                    1
                 }
 
                 EnumDisplayMonitors(

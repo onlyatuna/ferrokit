@@ -7,18 +7,18 @@
 //! composition bottleneck on high-resolution screens.
 
 use crate::surface::PlatformSurface;
-use crate::win32_handles::{create_dib_section, DibTarget, MemDc};
+use crate::win32_handles::{DibTarget, MemDc, create_dib_section};
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
 use std::ffi::c_void;
 use std::ptr;
-use windows_sys::core::{GUID, HRESULT};
 use windows_sys::Win32::Foundation::{HMODULE, HWND, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::HDC;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+use windows_sys::core::{GUID, HRESULT};
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn FreeLibrary(hLibModule: HMODULE) -> i32;
 }
 // -----------------------------------------------------------------------------
@@ -136,11 +136,14 @@ type PfnDCompositionCreateDevice = unsafe extern "system" fn(
 /// `ptr` must be null or a live COM interface pointer whose reference the caller owns and gives
 /// up here; the caller must not use that reference afterwards.
 unsafe fn com_release(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        let vtbl = *(ptr as *mut *mut usize);
-        let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
-            std::mem::transmute(*vtbl.add(2));
-        release_fn(ptr);
+    // SAFETY: caller guarantees ptr is null or a live COM interface pointer.
+    unsafe {
+        if !ptr.is_null() {
+            let vtbl = *(ptr as *mut *mut usize);
+            let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
+                std::mem::transmute(*vtbl.add(2));
+            release_fn(ptr);
+        }
     }
 }
 
@@ -180,24 +183,27 @@ pub struct DCompStats {
 /// # Safety
 /// `clip_visual` must be a live `IDCompositionVisual*`.
 unsafe fn set_clip_rect(clip_visual: *mut c_void, w: u32, h: u32) -> HRESULT {
-    #[repr(C)]
-    struct D2dRectF {
-        left: f32,
-        top: f32,
-        right: f32,
-        bottom: f32,
+    // SAFETY: caller guarantees clip_visual is a live IDCompositionVisual*.
+    unsafe {
+        #[repr(C)]
+        struct D2dRectF {
+            left: f32,
+            top: f32,
+            right: f32,
+            bottom: f32,
+        }
+        type PfnSetClipRect =
+            unsafe extern "system" fn(this: *mut c_void, rect: *const D2dRectF) -> HRESULT;
+        let vtbl = *(clip_visual as *mut *mut usize);
+        let f: PfnSetClipRect = std::mem::transmute(*vtbl.add(14));
+        let rect = D2dRectF {
+            left: 0.0,
+            top: 0.0,
+            right: w as f32,
+            bottom: h as f32,
+        };
+        f(clip_visual, &rect)
     }
-    type PfnSetClipRect =
-        unsafe extern "system" fn(this: *mut c_void, rect: *const D2dRectF) -> HRESULT;
-    let vtbl = *(clip_visual as *mut *mut usize);
-    let f: PfnSetClipRect = std::mem::transmute(*vtbl.add(14));
-    let rect = D2dRectF {
-        left: 0.0,
-        top: 0.0,
-        right: w as f32,
-        bottom: h as f32,
-    };
-    f(clip_visual, &rect)
 }
 
 /// Visual tree: `Target -> ClipVisual (clip = visible rect) -> ContentVisual (swap chain)`.

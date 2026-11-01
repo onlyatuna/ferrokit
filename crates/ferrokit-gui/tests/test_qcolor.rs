@@ -9,7 +9,7 @@
 //! `reference` below is a second, independent transcription of `QColor::toHsl()` and the HSL branch
 //! of `QColor::toRgb()` from `qcolor.cpp` (v6.11.2, lines 2293-2339 and 2422-2470).
 
-use ferrokit_gui::color::{darker, lighter, Color, ColorSpec, GlobalColor, NameFormat, QColor};
+use ferrokit_gui::color::{Color, ColorSpec, GlobalColor, NameFormat, QColor, darker, lighter};
 
 const ORACLE: &str = include_str!("data/qcolor_oracle.txt");
 

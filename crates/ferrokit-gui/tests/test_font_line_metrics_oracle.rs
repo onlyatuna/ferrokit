@@ -149,7 +149,7 @@ fn linux_and_macos_engines_keep_fractional_metrics_at_a_ratio_of_one() {
 #[test]
 fn default_hint_style_switch_controls_sub_pixel_rounding() {
     use ferrokit_gui::text::font_database::{
-        default_hint_style, set_default_hint_style, HintStyle,
+        HintStyle, default_hint_style, set_default_hint_style,
     };
     struct HintGuard(HintStyle);
     impl Drop for HintGuard {

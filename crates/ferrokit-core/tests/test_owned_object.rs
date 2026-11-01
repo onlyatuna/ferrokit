@@ -12,9 +12,9 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, register_qobject_ptr,
-    reparent_owned_object, set_parent_by_id, unregister_qobject, with_object, with_object_mut,
-    ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, add_owned_child, dispatch_to_object,
+    register_owned_qobject, register_qobject_ptr, reparent_owned_object, set_parent_by_id,
+    unregister_qobject, with_object, with_object_mut,
 };
 
 // Miri does not check the uniqueness of `&mut` to a `!Unpin` type; the scenarios rely on it

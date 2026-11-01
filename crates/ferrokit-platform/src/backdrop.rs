@@ -22,11 +22,7 @@ pub enum BackdropType {
 
 /// Gradient colour (`0xAABBGGRR` accent format) shared by the `Acrylic` and `FlatTint` accents.
 pub fn accent_tint_color(dark_mode: bool) -> u32 {
-    if dark_mode {
-        0x99161a22
-    } else {
-        0x99f0f2f8
-    }
+    if dark_mode { 0x99161a22 } else { 0x99f0f2f8 }
 }
 
 /// Tracks a window's requested backdrop and whether its Acrylic blur is suspended.
@@ -125,8 +121,8 @@ pub fn set_window_backdrop(
     dark_mode: bool,
 ) -> bool {
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmEnableBlurBehindWindow, DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE, DWM_BB_ENABLE,
-        DWM_BLURBEHIND,
+        DWM_BB_ENABLE, DWM_BLURBEHIND, DWMWA_SYSTEMBACKDROP_TYPE, DwmEnableBlurBehindWindow,
+        DwmSetWindowAttribute,
     };
     // unused import removed
 
@@ -372,7 +368,7 @@ pub(crate) fn set_cocoa_window_backdrop(
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material) };
             // SAFETY: as above; `setBlendingMode:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) }; // BehindWindow
-                                                                                             // SAFETY: as above; `setState:` takes one NSInteger, matching `send_int`.
+            // SAFETY: as above; `setState:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) }; // Active
 
             let app_name = if dark_mode {
@@ -449,7 +445,7 @@ pub(crate) fn set_cocoa_window_backdrop(
 
 #[cfg(test)]
 mod backdrop_state_tests {
-    use super::{accent_tint_color, BackdropState, BackdropType};
+    use super::{BackdropState, BackdropType, accent_tint_color};
 
     #[test]
     fn tint_color_matches_the_hud_accent() {

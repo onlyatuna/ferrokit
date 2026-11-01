@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,

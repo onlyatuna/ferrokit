@@ -26,7 +26,7 @@ use ferrokit_gui::text::might_be_rich_text;
 
 use crate::label::Label;
 use crate::widget::{Widget, WidgetRef, WidgetWeak};
-use crate::window::{window_shows_tool_tips, Window};
+use crate::window::{Window, window_shows_tool_tips};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{filters_consume, notify_borrowed};
 use ferrokit_core::object::ObjectId;
@@ -590,17 +590,17 @@ fn finish_place(
     // `set_palette` / `set_font` skip a tip that is taken out: catch up here.
     let palette = c.custom_palette.borrow().clone();
     let font = c.custom_font.borrow().clone();
-    if let Ok(mut label) = tip.label.try_borrow_mut() {
-        if let Some(lbl) = label.as_any_mut().downcast_mut::<Label>() {
-            if let Some(palette) = palette {
-                lbl.set_background_color(Some(
-                    palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
-                ));
-                lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
-            }
-            if let Some(font) = font {
-                lbl.set_font(font);
-            }
+    if let Ok(mut label) = tip.label.try_borrow_mut()
+        && let Some(lbl) = label.as_any_mut().downcast_mut::<Label>()
+    {
+        if let Some(palette) = palette {
+            lbl.set_background_color(Some(
+                palette.color(ColorGroup::Inactive, ColorRole::ToolTipBase),
+            ));
+            lbl.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
+        }
+        if let Some(font) = font {
+            lbl.set_font(font);
         }
     }
     if pending == PendingHide::Now {
@@ -841,9 +841,9 @@ impl ToolTip {
 mod tests {
     use super::*;
     use crate::widget::EmptyWidget;
-    use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, QObject};
+    use ferrokit_core::object::{ObjectData, ObjectId, QObject, register_owned_qobject};
     use std::cell::RefCell;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
@@ -1214,10 +1214,10 @@ mod tests {
 
     fn leave_failing(installed: &mut FailingInstalled) {
         installed.0 -= 1;
-        if installed.0 == 0 {
-            if let Some(previous) = installed.1.take() {
-                ferrokit_platform::integration::set_platform_integration(previous);
-            }
+        if installed.0 == 0
+            && let Some(previous) = installed.1.take()
+        {
+            ferrokit_platform::integration::set_platform_integration(previous);
         }
     }
 

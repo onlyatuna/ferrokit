@@ -7,19 +7,19 @@
 //! forwarded drops. A test that asserts only the answer of a move would pass with a wrong index
 //! that happens to give the same subtree.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, child_index_entries_read, move_to_thread_by_id, query_object_parent,
-    query_object_thread, register_owned_qobject, reparent_owned_object, set_parent_by_id,
-    verify_parent_link_index, with_object_mut, ObjectData, ObjectDataMut, ObjectId, OwnedObject,
-    QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, add_owned_child,
+    child_index_entries_read, move_to_thread_by_id, query_object_parent, query_object_thread,
+    register_owned_qobject, reparent_owned_object, set_parent_by_id, verify_parent_link_index,
+    with_object_mut,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -196,9 +196,11 @@ fn owned_children_moved_between_parents_are_indexed_under_the_new_parent() {
     check();
     assert_eq!(query_object_parent(child_id), Some(Some(first_id)));
 
-    assert!(reparent_owned_object(child_id, Some(second_id))
-        .unwrap()
-        .is_none());
+    assert!(
+        reparent_owned_object(child_id, Some(second_id))
+            .unwrap()
+            .is_none()
+    );
     check();
     assert_eq!(query_object_parent(child_id), Some(Some(second_id)));
 

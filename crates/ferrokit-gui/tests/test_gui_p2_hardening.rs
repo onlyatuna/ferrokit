@@ -4,12 +4,12 @@
 
 use ferrokit_gui::geometry::primitives::{Rect, Size};
 use ferrokit_gui::geometry::region::Region;
-use ferrokit_gui::image::icon::{Icon, IconMode, IconState};
-use ferrokit_gui::image::io::ImageReader;
 use ferrokit_gui::image::Image;
 use ferrokit_gui::image::ImageFormat;
-use ferrokit_gui::paint::pixmap::Pixmap;
+use ferrokit_gui::image::icon::{Icon, IconMode, IconState};
+use ferrokit_gui::image::io::ImageReader;
 use ferrokit_gui::paint::BackingStore;
+use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::text::cursor::TextCursor;
 use ferrokit_gui::text::document::TextDocument;
 

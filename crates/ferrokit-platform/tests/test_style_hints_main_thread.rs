@@ -12,7 +12,7 @@ use std::thread::ThreadId;
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_gui::application::{ColorScheme, GuiApplication};
-use ferrokit_platform::{install_style_hints_theme, GenericTheme, PlatformTheme};
+use ferrokit_platform::{GenericTheme, PlatformTheme, install_style_hints_theme};
 
 #[test]
 fn a_change_noticed_on_another_thread_is_emitted_on_the_main_thread() {

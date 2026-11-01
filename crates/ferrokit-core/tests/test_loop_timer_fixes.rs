@@ -3,19 +3,19 @@
 //! panic containment in timer delivery, ordered expiry, single-shot callbacks behind a filter,
 //! and the cost of draining a large posted-event queue.
 
+use ferrokit_core::EventDispatcher;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{
-    install_application_event_filter, remove_application_event_filter, EventLoop,
-    GenericEventDispatcher, UnixEventDispatcher,
+    EventLoop, GenericEventDispatcher, UnixEventDispatcher, install_application_event_filter,
+    remove_application_event_filter,
 };
 use ferrokit_core::object::{
-    register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, register_owned_qobject,
 };
 use ferrokit_core::timer::{
-    current_time_ms, kill_object_timer, start_object_timer, Timer, TimerRegistry, TimerType,
+    Timer, TimerRegistry, TimerType, current_time_ms, kill_object_timer, start_object_timer,
 };
-use ferrokit_core::EventDispatcher;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

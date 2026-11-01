@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::object::ThreadId;
 use ferrokit_core::object::{
-    add_owned_child, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, add_owned_child, register_owned_qobject,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 
@@ -32,7 +32,7 @@ fn seen(calls: &Calls) -> Vec<&'static str> {
 }
 
 /// Records that the slot `name` ran.
-fn record(calls: &Calls, name: &'static str) -> impl Fn(&String) + Send + Sync + 'static {
+fn record(calls: &Calls, name: &'static str) -> impl Fn(&String) + Send + Sync + 'static + use<> {
     let calls = Arc::clone(calls);
     move |_| calls.lock().unwrap().push(name)
 }
@@ -144,7 +144,7 @@ impl Sender {
         &self,
         calls: &Calls,
         name: &'static str,
-    ) -> impl Fn(&String) + Send + Sync + 'static {
+    ) -> impl Fn(&String) + Send + Sync + 'static + use<> {
         let owner = ThreadBound(Rc::clone(self.owner.get()));
         let calls = Arc::clone(calls);
         move |_| {
@@ -159,7 +159,7 @@ fn emit_then(
     calls: &Calls,
     name: &'static str,
     other: &Signal<String>,
-) -> impl Fn(&String) + Send + Sync + 'static {
+) -> impl Fn(&String) + Send + Sync + 'static + use<> {
     let calls = Arc::clone(calls);
     let other = other.clone();
     move |_| {
@@ -292,8 +292,8 @@ fn a_nested_emission_that_destroys_the_inner_sender_ends_only_the_inner_emission
 }
 
 #[test]
-fn a_slot_that_emits_its_own_signal_again_and_a_later_slot_that_destroys_the_sender_end_both_emissions(
-) {
+fn a_slot_that_emits_its_own_signal_again_and_a_later_slot_that_destroys_the_sender_end_both_emissions()
+ {
     let calls = calls();
     let sender = Sender::new();
     let again = Arc::new(AtomicBool::new(false));

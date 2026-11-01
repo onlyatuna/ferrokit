@@ -18,13 +18,13 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, OwnedObject,
-    QObject, ThreadId,
+    ObjectData, OwnedObject, QObject, ThreadId, register_owned_qobject, register_qobject_ptr,
+    unregister_qobject,
 };
 use ferrokit_core::signal::{ConnectionType, Signal, SlotId};
 

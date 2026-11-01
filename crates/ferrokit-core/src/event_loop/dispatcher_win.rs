@@ -3,7 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
@@ -12,10 +12,9 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WAIT_TIMEOUT, WPARAM
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, KillTimer,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW, RegisterClassExW, SetTimer,
-    TranslateMessage, HWND_MESSAGE, MSG, MWMO_ALERTABLE, PM_REMOVE, QS_ALLINPUT, WM_QUIT, WM_TIMER,
-    WNDCLASSEXW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, HWND_MESSAGE, KillTimer, MSG,
+    MWMO_ALERTABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
+    QS_ALLINPUT, RegisterClassExW, SetTimer, TranslateMessage, WM_QUIT, WM_TIMER, WNDCLASSEXW,
 };
 pub(crate) fn remove_posted_timer_event(hwnd: HWND, timer_id: u32) {
     if !hwnd.is_null() {
@@ -51,7 +50,7 @@ pub use crate::event_loop::dispatcher::DispatchResult;
 use crate::event_loop::dispatcher::{EventDispatcher, EventDispatcherHandle};
 use crate::object::{ObjectId, QObject};
 use crate::poison::lock_unpoisoned;
-use crate::timer::{calculate_next_timeout, current_time_ms, TimerEntry, TimerId, TimerRegistry};
+use crate::timer::{TimerEntry, TimerId, TimerRegistry, calculate_next_timeout, current_time_ms};
 
 thread_local! {
     static PENDING_WM_TIMERS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
@@ -75,38 +74,44 @@ unsafe extern "system" fn internal_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match catch_unwind(AssertUnwindSafe(|| {
-        internal_wnd_proc_inner(hwnd, msg, wparam, lparam)
-    })) {
-        Ok(result) => result,
-        Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+    // SAFETY: catches unwinding from internal_wnd_proc_inner and falls back to DefWindowProcW.
+    unsafe {
+        match catch_unwind(AssertUnwindSafe(|| {
+            internal_wnd_proc_inner(hwnd, msg, wparam, lparam)
+        })) {
+            Ok(result) => result,
+            Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 }
 
 unsafe fn internal_wnd_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_TIMER {
-        let timer_id = wparam as u32;
-        if crate::timer::has_thread_timer_context() {
-            dispatch_thread_timer(timer_id, hwnd);
-        } else {
-            PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(timer_id));
-        }
-        return 0;
-    }
-
-    if msg == WM_FERROKIT_WAKEUP {
-        // Reached only when a native modal loop (e.g. sizing) dispatches the wake-up
-        // message itself; the regular `process_events` consumes it via PeekMessage.
-        let _ = WAKEUP_FLAGS.try_with(|flags| {
-            if let Some(flag) = flags.borrow().get(&(hwnd as usize)) {
-                flag.store(false, Ordering::Release);
+    // SAFETY: internal window procedure handling timers, wakeup and DefWindowProcW fallback.
+    unsafe {
+        if msg == WM_TIMER {
+            let timer_id = wparam as u32;
+            if crate::timer::has_thread_timer_context() {
+                dispatch_thread_timer(timer_id, hwnd);
+            } else {
+                PENDING_WM_TIMERS.with(|q| q.borrow_mut().push(timer_id));
             }
-        });
-        let _ = crate::event_loop::pump_posted_events_modal();
-        return 0;
-    }
+            return 0;
+        }
 
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+        if msg == WM_FERROKIT_WAKEUP {
+            // Reached only when a native modal loop (e.g. sizing) dispatches the wake-up
+            // message itself; the regular `process_events` consumes it via PeekMessage.
+            let _ = WAKEUP_FLAGS.try_with(|flags| {
+                if let Some(flag) = flags.borrow().get(&(hwnd as usize)) {
+                    flag.store(false, Ordering::Release);
+                }
+            });
+            let _ = crate::event_loop::pump_posted_events_modal();
+            return 0;
+        }
+
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
 }
 
 /// Restores `in_timer_event` (and the single-shot/KillTimer bookkeeping) on every exit path,
@@ -193,41 +198,34 @@ fn dispatch_thread_timer_impl(
 
     crate::timer::with_thread_timer_context(|ctx| {
         let mut reg = lock_unpoisoned(&ctx.registry);
-        if let Some(entry) = reg.get_mut(id) {
-            if !entry.in_timer_event {
-                if precise && now_ms < entry.next_fire_ms {
-                    // A multimedia tick before the expiry: hold it if it is the tick of this
-                    // expiry, drop it if it is a grid point a late callback already consumed.
-                    if crate::timer::classify_early_tick(
-                        now_ms,
-                        entry.next_fire_ms,
-                        entry.interval_ms,
-                    ) == crate::timer::EarlyTick::Defer
-                    {
-                        crate::timer::defer_source(raw_id);
-                    }
-                } else if !precise && now_ms < entry.next_fire_ms {
-                    unexpired_elapse = Some(crate::timer::win32_timer_elapse(
-                        entry.next_fire_ms - now_ms,
-                    ));
+        if let Some(entry) = reg.get_mut(id)
+            && !entry.in_timer_event
+        {
+            if precise && now_ms < entry.next_fire_ms {
+                // A multimedia tick before the expiry: hold it if it is the tick of this
+                // expiry, drop it if it is a grid point a late callback already consumed.
+                if crate::timer::classify_early_tick(now_ms, entry.next_fire_ms, entry.interval_ms)
+                    == crate::timer::EarlyTick::Defer
+                {
+                    crate::timer::defer_source(raw_id);
+                }
+            } else if !precise && now_ms < entry.next_fire_ms {
+                unexpired_elapse = Some(crate::timer::win32_timer_elapse(
+                    entry.next_fire_ms - now_ms,
+                ));
+            } else {
+                entry.in_timer_event = true;
+                let (adjusted, next_fire) = if precise {
+                    crate::timer::next_grid_deadline(entry.interval_ms, entry.next_fire_ms, now_ms)
                 } else {
-                    entry.in_timer_event = true;
-                    let (adjusted, next_fire) = if precise {
-                        crate::timer::next_grid_deadline(
-                            entry.interval_ms,
-                            entry.next_fire_ms,
-                            now_ms,
-                        )
-                    } else {
-                        calculate_next_timeout(&mut entry.timer_type, entry.interval_ms, now_ms)
-                    };
-                    entry.interval_ms = adjusted;
-                    entry.next_fire_ms = next_fire;
-                    single_shot = entry.single_shot;
-                    receiver_opt = Some(entry.receiver);
-                    if single_shot {
-                        reg.unregister(id);
-                    }
+                    calculate_next_timeout(&mut entry.timer_type, entry.interval_ms, now_ms)
+                };
+                entry.interval_ms = adjusted;
+                entry.next_fire_ms = next_fire;
+                single_shot = entry.single_shot;
+                receiver_opt = Some(entry.receiver);
+                if single_shot {
+                    reg.unregister(id);
                 }
             }
         }
@@ -1005,7 +1003,7 @@ mod tests {
     #[test]
     fn test_register_timer_native_source_follows_the_timer_type() {
         use crate::object::ObjectId;
-        use crate::timer::{precise, TimerType};
+        use crate::timer::{TimerType, precise};
         use windows_sys::Win32::Media::timeKillEvent;
         use windows_sys::Win32::UI::WindowsAndMessaging::KillTimer;
 
@@ -1059,13 +1057,12 @@ mod tests {
                 msg: &NativeMessage,
                 _result: &mut isize,
             ) -> bool {
-                if event_type == "windows_generic_MSG" {
-                    if let NativeMessage::Windows(m) = msg {
-                        if m.message == WM_USER + 77 {
-                            self.intercepted.store(true, Ordering::Release);
-                            return true;
-                        }
-                    }
+                if event_type == "windows_generic_MSG"
+                    && let NativeMessage::Windows(m) = msg
+                    && m.message == WM_USER + 77
+                {
+                    self.intercepted.store(true, Ordering::Release);
+                    return true;
                 }
                 false
             }
@@ -1683,7 +1680,7 @@ mod tests {
 
     #[test]
     fn test_panicking_pending_tick_does_not_wedge_the_timer() {
-        use crate::object::{register_owned_qobject, ObjectData, ObjectDataMut, QObject};
+        use crate::object::{ObjectData, ObjectDataMut, QObject, register_owned_qobject};
         use crate::timer::{TimerRegistry, TimerType};
 
         struct Raiser {

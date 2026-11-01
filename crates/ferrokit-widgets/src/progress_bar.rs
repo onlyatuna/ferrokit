@@ -11,17 +11,17 @@ use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::event_loop::notify_borrowed;
 use ferrokit_core::object::QObject;
 use ferrokit_core::signal::Signal;
+use ferrokit_gui::Alignment;
 use ferrokit_gui::geometry::primitives::{PointF, Rect, RectF, Size};
 use ferrokit_gui::paint::brush::Brush;
 use ferrokit_gui::paint::painter::{Painter, Pen, RenderHint};
 use ferrokit_gui::text::{Font, FontMetrics};
 use ferrokit_gui::tiny_skia::Color;
-use ferrokit_gui::Alignment;
 
 use crate::focus::FocusPolicy;
 use crate::input_common;
 use crate::scroll::Orientation;
-use crate::size_policy::{transposed_policy, Policy, QSizePolicy};
+use crate::size_policy::{Policy, QSizePolicy, transposed_policy};
 use crate::widget::{Widget, WidgetBase};
 
 /// Reading direction of the text in a vertical progress bar (`QProgressBar::Direction`).

@@ -109,8 +109,8 @@ fn changing_the_size_policy_requests_a_parent_layout_and_an_unchanged_one_does_n
 #[test]
 fn label_and_button_text_font_and_alignment_setters_request_a_parent_layout() {
     use ferrokit_gui::text::font::Font;
-    use ferrokit_widgets::command::WidgetCommandQueue;
     use ferrokit_widgets::Alignment;
+    use ferrokit_widgets::command::WidgetCommandQueue;
     use std::cell::RefCell;
     use std::rc::Rc;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;

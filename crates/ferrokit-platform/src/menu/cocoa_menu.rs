@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use super::{PlatformMenu, PlatformMenuItem};
 use crate::objc_runtime::{
-    ActionTarget, Class, Id, ObjcMsg, Sel, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON,
+    ActionTarget, Class, Id, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON, ObjcMsg, Sel,
 };
 
 /// Addresses of the `NSMenu`s [`CocoaMenu::new`] created. Their +1 is never released, so an

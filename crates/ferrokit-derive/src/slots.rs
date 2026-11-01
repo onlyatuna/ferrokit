@@ -75,12 +75,13 @@ fn expand_impl(item: TokenStream) -> syn::Result<TokenStream> {
 
 /// The bare struct name of `self_ty`, used to name the generated invokers.
 fn self_type_ident(self_ty: &Type) -> syn::Result<Ident> {
-    if let Type::Path(type_path) = self_ty {
-        if type_path.qself.is_none() && type_path.path.segments.len() == 1 {
-            let segment = &type_path.path.segments[0];
-            if segment.arguments.is_empty() {
-                return Ok(segment.ident.clone());
-            }
+    if let Type::Path(type_path) = self_ty
+        && type_path.qself.is_none()
+        && type_path.path.segments.len() == 1
+    {
+        let segment = &type_path.path.segments[0];
+        if segment.arguments.is_empty() {
+            return Ok(segment.ident.clone());
         }
     }
     Err(Error::new_spanned(
@@ -121,7 +122,7 @@ fn slot_method(
             return Err(Error::new_spanned(
                 &sig.ident,
                 "`#[slot]` methods must take `&self` or `&mut self`",
-            ))
+            ));
         }
     }
 

@@ -368,20 +368,19 @@ fn parse_value(property: &QCssProperty, val_str: &str) -> QCssValue {
     }
 
     // Check padding / margin multi-values
-    if matches!(property, QCssProperty::Padding | QCssProperty::Margin) {
-        if let Some(edges) = parse_edges(val_str) {
-            return QCssValue::Edges(edges);
-        }
+    if matches!(property, QCssProperty::Padding | QCssProperty::Margin)
+        && let Some(edges) = parse_edges(val_str)
+    {
+        return QCssValue::Edges(edges);
     }
 
     // Try color
     if matches!(
         property,
         QCssProperty::BackgroundColor | QCssProperty::Color | QCssProperty::BorderColor
-    ) {
-        if let Some(c) = parse_color(val_str) {
-            return QCssValue::Color(c);
-        }
+    ) && let Some(c) = parse_color(val_str)
+    {
+        return QCssValue::Color(c);
     }
 
     // Try length / numeric

@@ -5,7 +5,7 @@
 //! a separate comparison script, which needs PySide6 and so cannot run here.
 #![cfg(windows)]
 
-use ferrokit_gui::text::directwrite_face::{is_available, DirectWriteFace};
+use ferrokit_gui::text::directwrite_face::{DirectWriteFace, is_available};
 use ferrokit_gui::text::font::SharedFontData;
 use ferrokit_gui::text::glyph_face::GlyphFace;
 use ferrokit_gui::text::outline_face::OutlineFace;

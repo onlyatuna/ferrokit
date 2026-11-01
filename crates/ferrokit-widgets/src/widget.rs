@@ -2,14 +2,14 @@
 use crate::accessibility::{AccessibleAction, AccessibleRole};
 use crate::focus::FocusPolicy;
 use crate::layout::Layout;
-use crate::layout_engine::{owner_layout_margin, WIDGET_LAYOUT_SPACING, WIDGET_SIZE_MAX};
+use crate::layout_engine::{WIDGET_LAYOUT_SPACING, WIDGET_SIZE_MAX, owner_layout_margin};
 pub use crate::size_policy::{Policy, QSizePolicy};
 use crate::style::stylesheet::QStyleSheetStyle;
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::event_loop::{filters_consume, notify_borrowed, post_event_to_thread};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
-use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
 use ferrokit_gui::paint::Painter;
 use ferrokit_platform::cursor::CursorShape;
 use std::cell::{Cell, RefCell, RefMut};
@@ -161,11 +161,12 @@ fn move_focus_off_hidden(widget: &WidgetRef) {
     while let Some(w) = stack.pop() {
         let Ok(g) = w.try_borrow() else { continue };
         let base = g.widget_base();
-        if let Some(focus) = base.focus_state.borrow().upgrade() {
-            if !focus.is_root(widget) && focus.lose_via(base.object_data.id(), anchor, true) {
-                base.has_focus.set(false);
-                notices.push(EnabledNotice::FocusLost(focus));
-            }
+        if let Some(focus) = base.focus_state.borrow().upgrade()
+            && !focus.is_root(widget)
+            && focus.lose_via(base.object_data.id(), anchor, true)
+        {
+            base.has_focus.set(false);
+            notices.push(EnabledNotice::FocusLost(focus));
         }
         stack.extend(g.children());
     }
@@ -359,13 +360,18 @@ pub fn apply_size_constraint<W: Widget + ?Sized>(owner: &W) {
 /// `&mut`, so the event is not delivered to it (a known limitation).
 pub fn style_changed_below(children: Vec<WidgetRef>) {
     for child in children {
-        if let Ok(mut widget) = child.try_borrow_mut() {
-            notify_borrowed(&mut **widget, &mut Event::new(EventKind::StyleChange));
-            widget.widget_base().style_changed();
-            style_changed_below(widget.children());
-        } else if let Ok(widget) = child.try_borrow() {
-            widget.widget_base().style_changed();
-            style_changed_below(widget.children());
+        match child.try_borrow_mut() {
+            Ok(mut widget) => {
+                notify_borrowed(&mut **widget, &mut Event::new(EventKind::StyleChange));
+                widget.widget_base().style_changed();
+                style_changed_below(widget.children());
+            }
+            _ => {
+                if let Ok(widget) = child.try_borrow() {
+                    widget.widget_base().style_changed();
+                    style_changed_below(widget.children());
+                }
+            }
         }
     }
 }
@@ -949,11 +955,16 @@ pub trait Widget: QObject + 'static {
             let mut ev = Event::new(EventKind::ChildPolished {
                 child_id: self.id(),
             });
-            if let Ok(mut p) = parent.try_borrow_mut() {
-                notify_borrowed(&mut **p, &mut ev);
-            } else if let Ok(p) = parent.try_borrow() {
-                // The parent is polishing its children right now: its filters still see it.
-                filters_consume(p.object_data(), &mut ev);
+            match parent.try_borrow_mut() {
+                Ok(mut p) => {
+                    notify_borrowed(&mut **p, &mut ev);
+                }
+                _ => {
+                    if let Ok(p) = parent.try_borrow() {
+                        // The parent is polishing its children right now: its filters still see it.
+                        filters_consume(p.object_data(), &mut ev);
+                    }
+                }
             }
         }
     }
@@ -1324,10 +1335,8 @@ fn restack<W: Widget + ?Sized>(w: &W, to_top: bool) {
     let Some(parent) = w.parent_widget().and_then(|p| p.upgrade()) else {
         // A window root has no siblings: raising it orders its window among the top-level windows
         // (`QWidget::raise` -> `QPlatformWindow::raise`). Lowering a window is not offered.
-        if to_top {
-            if let Some(window) = crate::window::window_id_if_root(w) {
-                crate::window::raise_window(window);
-            }
+        if to_top && let Some(window) = crate::window::window_id_if_root(w) {
+            crate::window::raise_window(window);
         }
         return;
     };
@@ -1386,10 +1395,15 @@ fn restack_in(parent: &WidgetRef, id: ObjectId, me: Option<&WidgetBase>, to_top:
     *p.widget_base().children.borrow_mut() = order;
     p.widget_base().update();
     drop(p);
-    if let Ok(mut m) = moved.try_borrow_mut() {
-        notify_borrowed(&mut **m, &mut Event::new(EventKind::ZOrderChange));
-    } else if let Ok(m) = moved.try_borrow() {
-        filters_consume(m.object_data(), &mut Event::new(EventKind::ZOrderChange));
+    match moved.try_borrow_mut() {
+        Ok(mut m) => {
+            notify_borrowed(&mut **m, &mut Event::new(EventKind::ZOrderChange));
+        }
+        _ => {
+            if let Ok(m) = moved.try_borrow() {
+                filters_consume(m.object_data(), &mut Event::new(EventKind::ZOrderChange));
+            }
+        }
     }
     true
 }
@@ -1741,17 +1755,17 @@ impl WidgetBase {
         if window_root.is_none() {
             // The area the mask now leaves out is repainted on the parent.
             let parent = self.parent.borrow().as_ref().and_then(|p| p.upgrade());
-            if let Some(parent) = parent {
-                if let Ok(parent) = parent.try_borrow() {
-                    let uncovered = Region::from_rect(rect).subtracted(region);
-                    for r in uncovered.rects() {
-                        parent.widget_base().update_rect(Rect::new(
-                            g.x + r.x,
-                            g.y + r.y,
-                            r.width,
-                            r.height,
-                        ));
-                    }
+            if let Some(parent) = parent
+                && let Ok(parent) = parent.try_borrow()
+            {
+                let uncovered = Region::from_rect(rect).subtracted(region);
+                for r in uncovered.rects() {
+                    parent.widget_base().update_rect(Rect::new(
+                        g.x + r.x,
+                        g.y + r.y,
+                        r.width,
+                        r.height,
+                    ));
                 }
             }
         }
@@ -1872,13 +1886,12 @@ impl WidgetBase {
         // Disabling the focus widget takes the focus away (qwidget.cpp:3442-3446). The flag and the
         // window's focus id change now; the events follow in `set_widget_enabled` or, when it
         // could not send them, `FocusManager::process_pending`.
-        if !enable {
-            if let Some(focus) = self.focus_state.borrow().upgrade() {
-                if focus.lose(self.object_data.id(), !parent_disabled) {
-                    self.has_focus.set(false);
-                    notices.push(EnabledNotice::FocusLost(focus));
-                }
-            }
+        if !enable
+            && let Some(focus) = self.focus_state.borrow().upgrade()
+            && focus.lose(self.object_data.id(), !parent_disabled)
+        {
+            self.has_focus.set(false);
+            notices.push(EnabledNotice::FocusLost(focus));
         }
         // The children are this widget's own and those of its layout, as `EmptyWidget::children`.
         let mut children = self.children.borrow().clone();
@@ -2019,10 +2032,10 @@ impl WidgetBase {
     /// Repaint, geometry update and layout invalidation.
     pub fn style_changed(&self) {
         self.update_geometry();
-        if let Ok(mut layout) = self.layout.try_borrow_mut() {
-            if let Some(layout) = layout.as_mut() {
-                layout.invalidate();
-            }
+        if let Ok(mut layout) = self.layout.try_borrow_mut()
+            && let Some(layout) = layout.as_mut()
+        {
+            layout.invalidate();
         }
     }
 
@@ -2399,10 +2412,11 @@ impl Widget for EmptyWidget {
             // QLayout::widgetEvent does on Resize, when the layout is already activated (qlayout.cpp:528-530).
             // A parentless widget is a window root, which Window lays out itself (window.rs:859-860);
             // fitting it here as well ran that pass twice (test_layout_metric_caching aligned container).
-            if let Some(mut layout) = self.layout_ref_mut() {
-                if has_parent && !layout.is_dirty() {
-                    layout.set_geometry(Rect::new(0, 0, rect.width, rect.height));
-                }
+            if let Some(mut layout) = self.layout_ref_mut()
+                && has_parent
+                && !layout.is_dirty()
+            {
+                layout.set_geometry(Rect::new(0, 0, rect.width, rect.height));
             }
             self.base.notify_parent_resized();
         }
@@ -2464,14 +2478,11 @@ impl Widget for EmptyWidget {
     }
 
     fn layout_ref_mut(&self) -> Option<RefMut<'_, Box<dyn Layout>>> {
-        if let Ok(borrow) = self.base.layout.try_borrow_mut() {
-            if borrow.is_some() {
+        match self.base.layout.try_borrow_mut() {
+            Ok(borrow) if borrow.is_some() => {
                 Some(RefMut::map(borrow, |opt| opt.as_mut().unwrap()))
-            } else {
-                None
             }
-        } else {
-            None
+            _ => None,
         }
     }
     fn set_layout(&mut self, mut layout: Box<dyn Layout>) {
@@ -2602,26 +2613,26 @@ impl Widget for EmptyWidget {
         }
     }
     fn show_event(&mut self) {
-        if let Ok(mut h) = self.show_handler.try_borrow_mut() {
-            if let Some(cb) = h.as_mut() {
-                cb();
-            }
+        if let Ok(mut h) = self.show_handler.try_borrow_mut()
+            && let Some(cb) = h.as_mut()
+        {
+            cb();
         }
     }
 
     fn hide_event(&mut self) {
-        if let Ok(mut h) = self.hide_handler.try_borrow_mut() {
-            if let Some(cb) = h.as_mut() {
-                cb();
-            }
+        if let Ok(mut h) = self.hide_handler.try_borrow_mut()
+            && let Some(cb) = h.as_mut()
+        {
+            cb();
         }
     }
 
     fn resize_event(&self, new_size: Size, old_size: Size) {
-        if let Ok(mut h) = self.resize_handler.try_borrow_mut() {
-            if let Some(cb) = h.as_mut() {
-                cb(new_size, old_size);
-            }
+        if let Ok(mut h) = self.resize_handler.try_borrow_mut()
+            && let Some(cb) = h.as_mut()
+        {
+            cb(new_size, old_size);
         }
     }
 

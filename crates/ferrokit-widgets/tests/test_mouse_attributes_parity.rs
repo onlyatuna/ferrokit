@@ -3,8 +3,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::ObjectId;

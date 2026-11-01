@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, set_parent_by_id, with_object_mut,
-    ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, add_owned_child, dispatch_to_object,
+    register_owned_qobject, set_parent_by_id, with_object_mut,
 };
 use ferrokit_core::signal::ConnectionType;
 

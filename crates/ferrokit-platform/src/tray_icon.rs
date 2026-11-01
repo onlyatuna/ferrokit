@@ -2,7 +2,7 @@
 #[cfg(windows)]
 use crate::menu::PlatformMenu;
 #[cfg(windows)]
-use crate::win32_handles::{create_dib_section, IconHandle, MemDc, OwnedBitmap, OwnedMenu};
+use crate::win32_handles::{IconHandle, MemDc, OwnedBitmap, OwnedMenu, create_dib_section};
 #[cfg(windows)]
 use crate::window_registry::SharedRegistry;
 use ferrokit_core::signal::Signal;
@@ -27,16 +27,16 @@ use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP,
-    NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_SELECT, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIN_SELECT, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-    GetCursorPos, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenuEx,
-    HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-    MF_UNCHECKED, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_CLOSE, WM_CONTEXTMENU,
-    WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
+    GetCursorPos, HICON, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, RegisterClassExW, RegisterWindowMessageW,
+    SetForegroundWindow, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx, WM_CLOSE,
+    WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_MBUTTONUP, WNDCLASSEXW,
 };
 
 /// `NIN_KEYSELECT` (`NIN_SELECT | NINF_KEY`): the icon was chosen with the keyboard.
@@ -143,58 +143,62 @@ impl Menu {
     /// # Safety
     /// The caller must destroy this handle with `DestroyMenu` when appropriate to prevent resource leaks.
     pub unsafe fn create_native_hmenu(&self) -> Result<HMENU, &'static str> {
-        let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
+        // SAFETY: caller guarantees Win32 menu APIs are valid on this thread.
+        unsafe {
+            let hmenu = OwnedMenu::create_popup().ok_or("CreatePopupMenu failed")?;
 
-        for item in &self.items {
-            if let Some(sub) = &item.submenu {
-                // A failed build leaves nothing to free here; `hmenu` drops on the way out.
-                let sub_hmenu = OwnedMenu::from_raw(sub.create_native_hmenu()?);
+            for item in &self.items {
+                if let Some(sub) = &item.submenu {
+                    // A failed build leaves nothing to free here; `hmenu` drops on the way out.
+                    let sub_hmenu = OwnedMenu::from_raw(sub.create_native_hmenu()?);
+                    let wide_text: Vec<u16> =
+                        item.text.encode_utf16().chain(std::iter::once(0)).collect();
+                    let mut sub_flags = MF_POPUP | MF_STRING;
+                    if !item.enabled {
+                        sub_flags |= MF_GRAYED | MF_DISABLED;
+                    }
+                    // On failure both guards destroy their menu; on success the parent owns the
+                    // submenu.
+                    if AppendMenuW(
+                        hmenu.as_raw(),
+                        sub_flags,
+                        sub_hmenu.as_raw() as usize,
+                        wide_text.as_ptr(),
+                    ) == 0
+                    {
+                        return Err("AppendMenuW failed to add submenu");
+                    }
+                    let _ = sub_hmenu.into_raw();
+                    continue;
+                }
+
+                if item.is_separator {
+                    AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
+                    continue;
+                }
+
+                let mut flags = MF_STRING;
+                if !item.enabled {
+                    flags |= MF_GRAYED | MF_DISABLED;
+                }
+                if let Some(c) = item.checked {
+                    if c {
+                        flags |= MF_CHECKED;
+                    } else {
+                        flags |= MF_UNCHECKED;
+                    }
+                }
+
                 let wide_text: Vec<u16> =
                     item.text.encode_utf16().chain(std::iter::once(0)).collect();
-                let mut sub_flags = MF_POPUP | MF_STRING;
-                if !item.enabled {
-                    sub_flags |= MF_GRAYED | MF_DISABLED;
-                }
-                // On failure both guards destroy their menu; on success the parent owns the
-                // submenu.
-                if AppendMenuW(
-                    hmenu.as_raw(),
-                    sub_flags,
-                    sub_hmenu.as_raw() as usize,
-                    wide_text.as_ptr(),
-                ) == 0
-                {
-                    return Err("AppendMenuW failed to add submenu");
-                }
-                let _ = sub_hmenu.into_raw();
-                continue;
-            }
 
-            if item.is_separator {
-                AppendMenuW(hmenu.as_raw(), MF_SEPARATOR, 0, ptr::null());
-                continue;
-            }
-
-            let mut flags = MF_STRING;
-            if !item.enabled {
-                flags |= MF_GRAYED | MF_DISABLED;
-            }
-            if let Some(c) = item.checked {
-                if c {
-                    flags |= MF_CHECKED;
-                } else {
-                    flags |= MF_UNCHECKED;
+                if AppendMenuW(hmenu.as_raw(), flags, item.id as usize, wide_text.as_ptr()) == 0 {
+                    return Err("AppendMenuW failed");
                 }
             }
 
-            let wide_text: Vec<u16> = item.text.encode_utf16().chain(std::iter::once(0)).collect();
-
-            if AppendMenuW(hmenu.as_raw(), flags, item.id as usize, wide_text.as_ptr()) == 0 {
-                return Err("AppendMenuW failed");
-            }
+            Ok(hmenu.into_raw())
         }
-
-        Ok(hmenu.into_raw())
     }
 
     #[cfg(windows)]
@@ -308,92 +312,97 @@ fn lookup_tray(hwnd: HWND) -> Option<Rc<TrayShared>> {
 /// As for [`tray_window_proc`].
 #[cfg(windows)]
 unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if let Some(shared) = lookup_tray(hwnd) {
-        // `shared` is this invocation's own strong handle: a slot may drop the `TrayIcon` (a
-        // "Quit" entry), which destroys the window and unregisters it but cannot free the state
-        // under us. After any emit, `shared.closed` says whether that happened.
-        if msg == shared.taskbar_created_msg {
-            shared.rebuild_icon_from_source();
-            if shared.visible.get() {
-                let _ = shared.send_notify_icon_message(NIM_ADD);
-            }
-            return 0;
-        } else if msg == WM_TRAY_CALLBACK {
-            let event_type = (lparam & 0xFFFF) as u32;
-            match event_type {
-                // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
-                // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
-                // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
-                NIN_SELECT | NIN_KEYSELECT => {
-                    // The release that ends a double click is not a click (Qt:
-                    // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
-                    if shared.ignore_next_release.replace(false) {
+    // SAFETY: caller guarantees hwnd, msg, wparam, lparam are valid Win32 message parameters.
+    unsafe {
+        if let Some(shared) = lookup_tray(hwnd) {
+            // `shared` is this invocation's own strong handle: a slot may drop the `TrayIcon` (a
+            // "Quit" entry), which destroys the window and unregisters it but cannot free the state
+            // under us. After any emit, `shared.closed` says whether that happened.
+            if msg == shared.taskbar_created_msg {
+                shared.rebuild_icon_from_source();
+                if shared.visible.get() {
+                    let _ = shared.send_notify_icon_message(NIM_ADD);
+                }
+                return 0;
+            } else if msg == WM_TRAY_CALLBACK {
+                let event_type = (lparam & 0xFFFF) as u32;
+                match event_type {
+                    // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
+                    // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
+                    // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
+                    NIN_SELECT | NIN_KEYSELECT => {
+                        // The release that ends a double click is not a click (Qt:
+                        // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
+                        if shared.ignore_next_release.replace(false) {
+                            return 0;
+                        }
+                        shared.on_activated.emit(&TrayActivation::Trigger);
                         return 0;
                     }
-                    shared.on_activated.emit(&TrayActivation::Trigger);
-                    return 0;
-                }
-                WM_LBUTTONDBLCLK => {
-                    shared.ignore_next_release.set(true);
-                    shared.on_activated.emit(&TrayActivation::DoubleClick);
-                    return 0;
-                }
-                WM_CONTEXTMENU => {
-                    // Under NOTIFYICON_VERSION_4 `wParam` holds the anchor point in physical
-                    // desktop pixels (Qt: `GET_X_LPARAM(message.wParam)`), not where the cursor
-                    // is by now, and not the cursor at all for a menu opened with the keyboard.
-                    let native = Point::new(
-                        (wparam & 0xFFFF) as u16 as i16 as i32,
-                        ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
-                    );
-                    let pos = crate::screen::native_cursor_to_logical(native);
-                    shared.on_activated.emit(&TrayActivation::Context);
-                    if shared.closed.get() {
+                    WM_LBUTTONDBLCLK => {
+                        shared.ignore_next_release.set(true);
+                        shared.on_activated.emit(&TrayActivation::DoubleClick);
                         return 0;
                     }
-                    shared.on_context_menu_requested.emit(&pos);
-                    if shared.closed.get() {
+                    WM_CONTEXTMENU => {
+                        // Under NOTIFYICON_VERSION_4 `wParam` holds the anchor point in physical
+                        // desktop pixels (Qt: `GET_X_LPARAM(message.wParam)`), not where the cursor
+                        // is by now, and not the cursor at all for a menu opened with the keyboard.
+                        let native = Point::new(
+                            (wparam & 0xFFFF) as u16 as i16 as i32,
+                            ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
+                        );
+                        let pos = crate::screen::native_cursor_to_logical(native);
+                        shared.on_activated.emit(&TrayActivation::Context);
+                        if shared.closed.get() {
+                            return 0;
+                        }
+                        shared.on_context_menu_requested.emit(&pos);
+                        if shared.closed.get() {
+                            return 0;
+                        }
+                        // Re-evaluate shared.menu dynamically in case a slot attached or removed it.
+                        if !shared.closed.get()
+                            && shared.menu.try_borrow().is_ok_and(|m| m.is_some())
+                        {
+                            shared.show_context_menu_at(pos);
+                        }
                         return 0;
                     }
-                    // Re-evaluate shared.menu dynamically in case a slot attached or removed it.
-                    if !shared.closed.get() && shared.menu.try_borrow().is_ok_and(|m| m.is_some()) {
-                        shared.show_context_menu_at(pos);
+                    0x0405 => {
+                        // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
+                        shared.on_message_clicked.emit(&());
+                        return 0;
                     }
-                    return 0;
+                    WM_MBUTTONUP => {
+                        // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
+                        shared.on_activated.emit(&TrayActivation::MiddleClick);
+                        return 0;
+                    }
+                    _ => {}
                 }
-                0x0405 => {
-                    // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
-                    shared.on_message_clicked.emit(&());
-                    return 0;
+            } else if msg == WM_CLOSE {
+                // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
+                // `taskkill` without force) -> `handleApplicationTermination`, which sends the
+                // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
+                ferrokit_core::application::CoreApplication::quit();
+            } else if msg == 0x0218 {
+                // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
+                // in qwindowscontext.cpp); this is a ferrokit extension.
+                let power_event = match wparam as u32 {
+                    0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
+                    0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
+                    _ => None,
+                };
+                if let Some(event) = power_event {
+                    shared.on_power_event.emit(&event);
                 }
-                WM_MBUTTONUP => {
-                    // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
-                    shared.on_activated.emit(&TrayActivation::MiddleClick);
-                    return 0;
-                }
-                _ => {}
+                return 1;
             }
-        } else if msg == WM_CLOSE {
-            // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
-            // `taskkill` without force) -> `handleApplicationTermination`, which sends the
-            // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
-            ferrokit_core::application::CoreApplication::quit();
-        } else if msg == 0x0218 {
-            // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
-            // in qwindowscontext.cpp); this is a ferrokit extension.
-            let power_event = match wparam as u32 {
-                0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
-                0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
-                _ => None,
-            };
-            if let Some(event) = power_event {
-                shared.on_power_event.emit(&event);
-            }
-            return 1;
         }
-    }
 
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
 }
 
 /// Tray window procedure. Unwinding out of an `extern "system"` callback aborts the process, so a
@@ -410,11 +419,14 @@ unsafe extern "system" fn tray_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tray_window_proc_inner(hwnd, msg, wparam, lparam)
-    })) {
-        Ok(result) => result,
-        Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+    // SAFETY: catches unwinding from tray_window_proc_inner and falls back to DefWindowProcW.
+    unsafe {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tray_window_proc_inner(hwnd, msg, wparam, lparam)
+        })) {
+            Ok(result) => result,
+            Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
     }
 }
 
@@ -584,10 +596,10 @@ impl TrayShared {
         // `try_borrow`: `TrayIcon::with_menu_mut` holds the cell while its closure runs, and a
         // message dispatched from there finds it busy; no menu is shown then.
         let menu = self.menu.try_borrow().ok().and_then(|m| m.clone());
-        if let Some(menu) = menu {
-            if let Some(cmd_id) = menu.exec_popup(screen_pos) {
-                self.on_menu_action.emit(&cmd_id);
-            }
+        if let Some(menu) = menu
+            && let Some(cmd_id) = menu.exec_popup(screen_pos)
+        {
+            self.on_menu_action.emit(&cmd_id);
         }
     }
 }
@@ -866,7 +878,7 @@ impl TrayIcon {
     /// Windows 11 a rectangle below the monitor).
     fn is_icon_shown(&self) -> Option<windows_sys::Win32::Foundation::RECT> {
         use windows_sys::Win32::Graphics::Gdi::{
-            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
         };
         if !self.shared.visible.get() {
             return None;
@@ -1012,7 +1024,7 @@ impl TrayIcon {
     /// `SHGSI_ICONLOCATION`, then `SHDefExtractIcon`). The caller destroys it.
     fn stock_icon(siid: i32) -> Option<HICON> {
         use windows_sys::Win32::UI::Shell::{
-            SHDefExtractIconW, SHGetStockIconInfo, SHGSI_ICONLOCATION, SHSTOCKICONINFO,
+            SHDefExtractIconW, SHGSI_ICONLOCATION, SHGetStockIconInfo, SHSTOCKICONINFO,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetSystemMetrics, SM_CXICON, SM_CXSMICON,
@@ -1331,7 +1343,7 @@ impl crate::platform_tray::PlatformTrayIcon for TrayIcon {
 #[cfg(windows)]
 fn enable_balloon_tips() -> u32 {
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced");
@@ -1790,7 +1802,7 @@ mod tests {
         // `QWindowsTheme::standardPixmap`: `LoadIcon(nullptr, IDI_INFORMATION / IDI_WARNING /
         // IDI_ERROR)` after the stock icon. The shell picks their size (40 px here, where
         // `SM_CXICON` is 32), so only that they exist and are square is checked.
-        use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+        use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetIconInfo, IDI_ERROR, IDI_INFORMATION, IDI_WARNING,
         };
@@ -1926,7 +1938,7 @@ mod tests {
     fn a_balloon_icon_is_made_at_the_actual_size_for_256_pixels() {
         // `QWindowsSystemTrayIcon::showMessage`: `icon.actualSize(QSize(256, 256))`.
         use ferrokit_gui::image::{Icon, IconMode, IconState};
-        use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+        use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
         use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
         let width_of = |sides: &[u32]| {
             let mut icon = Icon::new();
@@ -2046,8 +2058,8 @@ mod tests {
     }
     #[test]
     fn test_tray_signals_and_window_proc_dispatch() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
 
         let mut pixmap = Pixmap::new(16, 16).expect("failed to create pixmap");

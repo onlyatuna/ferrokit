@@ -151,13 +151,13 @@ mod imp {
 mod imp {
     use super::*;
     use std::collections::{HashMap, VecDeque};
-    use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+    use std::sync::{Arc, Mutex, MutexGuard, mpsc};
     use std::thread::{self, JoinHandle, ThreadId};
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetMessageW, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP, WM_HOTKEY, WM_QUIT,
+        GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_APP, WM_HOTKEY, WM_QUIT,
     };
 
     type Handler = Arc<dyn Fn(u32) + Send + Sync>;
@@ -260,10 +260,10 @@ mod imp {
                         Ok(())
                     }
                     Err(e) => {
-                        if let Some((old_mods, old_vk)) = old {
-                            if os_register(id, old_mods, old_vk).is_ok() {
-                                hotkeys.insert(id, (old_mods, old_vk));
-                            }
+                        if let Some((old_mods, old_vk)) = old
+                            && os_register(id, old_mods, old_vk).is_ok()
+                        {
+                            hotkeys.insert(id, (old_mods, old_vk));
                         }
                         Err(e)
                     }
@@ -484,8 +484,8 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::sync::mpsc::RecvTimeoutError;
         use std::sync::OnceLock;
+        use std::sync::mpsc::RecvTimeoutError;
         use std::time::Duration;
 
         const VK_F13: u32 = 0x7C;

@@ -4,9 +4,9 @@
 
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_platform::clipboard_cocoa::{
-    mime_for_pasteboard_type, pasteboard_type_for_mime, CocoaClipboard, PasteboardBackend,
+    CocoaClipboard, PasteboardBackend, mime_for_pasteboard_type, pasteboard_type_for_mime,
 };
-use ferrokit_platform::cursor_cocoa::{cursor_pos, set_cursor_pos, CursorServices};
+use ferrokit_platform::cursor_cocoa::{CursorServices, cursor_pos, set_cursor_pos};
 use ferrokit_platform::{MimeData, PlatformClipboard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

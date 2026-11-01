@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::ThreadId;
-use ferrokit_core::signal::{has_pending_local_retires, ConnectionId, Signal};
+use ferrokit_core::signal::{ConnectionId, Signal, has_pending_local_retires};
 
 fn assert_send_sync<X: Send + Sync>() {}
 
@@ -175,9 +175,11 @@ fn a_capture_that_connects_and_disconnects_local_slots_while_it_is_retired_does_
     });
 
     let remote = signal.clone();
-    assert!(std::thread::spawn(move || remote.disconnect(retired))
-        .join()
-        .unwrap());
+    assert!(
+        std::thread::spawn(move || remote.disconnect(retired))
+            .join()
+            .unwrap()
+    );
     assert!(event_loop.process_events(false), "the retire job runs here");
 
     signal.emit(&1);

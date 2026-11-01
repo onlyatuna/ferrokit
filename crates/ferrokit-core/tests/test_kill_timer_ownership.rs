@@ -5,7 +5,7 @@
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, register_owned_qobject,
 };
 use ferrokit_core::timer::TimerType;
 

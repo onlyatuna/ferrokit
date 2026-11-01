@@ -7,8 +7,8 @@
 //! when the callback returns. Inside that callback the list still shows the old state.
 
 use ferrokit_core::object::{
-    register_owned_qobject, set_parent_by_id, with_object_mut, ObjectData, ObjectId, OwnedObject,
-    QObject, ReparentError,
+    ObjectData, ObjectId, OwnedObject, QObject, ReparentError, register_owned_qobject,
+    set_parent_by_id, with_object_mut,
 };
 
 struct Node {

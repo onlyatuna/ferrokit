@@ -210,8 +210,8 @@ pub mod unix {
     use crate::platform_window::GenericWindow;
     use crate::theme::UnixTheme;
     use crate::tray::DbusStatusNotifierItem;
-    use crate::window_wayland::{WaylandNativeWindow, WAYLAND_CONNECT_FAILED};
-    use crate::window_x11::{X11NativeWindow, X11_CONNECT_FAILED};
+    use crate::window_wayland::{WAYLAND_CONNECT_FAILED, WaylandNativeWindow};
+    use crate::window_x11::{X11_CONNECT_FAILED, X11NativeWindow};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum DisplayServerKind {
@@ -419,7 +419,7 @@ pub mod cocoa {
     /// delegate, which activates the application once it has launched.
     #[cfg(target_os = "macos")]
     fn init_ns_application() {
-        use crate::objc_runtime::{objc_get_class, qcocoa_application_delegate, ObjcMsg, Sel};
+        use crate::objc_runtime::{ObjcMsg, Sel, objc_get_class, qcocoa_application_delegate};
         // SAFETY: `objc_get_class("NSApplication")` is the AppKit class object and
         // `sharedApplication` is a zero-argument class method returning an object, matching
         // `send_class_0`'s signature (AppKit is linked by this module's cocoa backend) [inferred].
@@ -465,11 +465,11 @@ pub mod cocoa {
     /// `int`. `None` if the key is absent or has another type.
     #[cfg(target_os = "macos")]
     fn info_plist_int(key: &str) -> Option<i64> {
-        use crate::objc_runtime::{nsstring_from_str, ObjcMsg, Sel};
-        use std::ffi::{c_char, c_void, CStr};
+        use crate::objc_runtime::{ObjcMsg, Sel, nsstring_from_str};
+        use std::ffi::{CStr, c_char, c_void};
 
         #[link(name = "CoreFoundation", kind = "framework")]
-        extern "C" {
+        unsafe extern "C" {
             fn CFBundleGetMainBundle() -> *mut c_void;
             fn CFBundleGetValueForInfoDictionaryKey(
                 bundle: *mut c_void,
@@ -663,8 +663,8 @@ pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
 
 #[cfg(all(test, target_os = "linux"))]
 mod unreachable_display_tests {
-    use super::unix::{DisplayServerKind, UnixPlatformIntegration};
     use super::PlatformIntegration;
+    use super::unix::{DisplayServerKind, UnixPlatformIntegration};
     use crate::window::WindowFlags;
     use ferrokit_gui::geometry::primitives::Rect;
 
@@ -675,9 +675,12 @@ mod unreachable_display_tests {
             std::env::var_os("WAYLAND_DISPLAY"),
             std::env::var_os("WAYLAND_SOCKET"),
         );
-        std::env::set_var("DISPLAY", "localhost:7777.0");
-        std::env::set_var("WAYLAND_DISPLAY", "ferrokit-bogus-wayland");
-        std::env::set_var("WAYLAND_SOCKET", "99");
+        // SAFETY: test-only environment variable mutation under single-threaded test runner.
+        unsafe {
+            std::env::set_var("DISPLAY", "localhost:7777.0");
+            std::env::set_var("WAYLAND_DISPLAY", "ferrokit-bogus-wayland");
+            std::env::set_var("WAYLAND_SOCKET", "99");
+        }
         let kind = UnixPlatformIntegration::detect_display_server();
         let win = UnixPlatformIntegration::default().create_window(
             "t",
@@ -689,9 +692,12 @@ mod unreachable_display_tests {
             ("WAYLAND_DISPLAY", saved.1),
             ("WAYLAND_SOCKET", saved.2),
         ] {
-            match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
+            // SAFETY: restores saved environment variable state.
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
             }
         }
         assert_eq!(kind, DisplayServerKind::Generic);

@@ -4,7 +4,7 @@
 //! and the round trip for every key `to_hotkey` accepts.
 
 use ferrokit_platform::hotkey::HotkeyModifiers;
-use ferrokit_widgets::key_sequence_edit::{key_modifier, qt_key, KeyCombination, KeySequence};
+use ferrokit_widgets::key_sequence_edit::{KeyCombination, KeySequence, key_modifier, qt_key};
 
 const VK_SPACE: u32 = 0x20;
 const VK_F10: u32 = 0x79;

@@ -10,7 +10,7 @@ use ferrokit_platform::platform_window::PlatformWindow;
 use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::{WindowSystemEvent, WindowSystemEventHandler};
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
+    GenericPlatformIntegration, PlatformIntegration, WindowFlags, set_platform_integration,
 };
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, MutexGuard};

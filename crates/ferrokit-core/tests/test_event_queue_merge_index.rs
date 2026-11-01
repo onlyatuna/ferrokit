@@ -10,9 +10,9 @@
 
 use ferrokit_core::event::{CoreCompressor, Event, EventCompressor, EventKind, MergeKey};
 use ferrokit_core::event_loop::EventLoop;
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CALLS: usize = if cfg!(miri) { 100 } else { 10_000 };
 

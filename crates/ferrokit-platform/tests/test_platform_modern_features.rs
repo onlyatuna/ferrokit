@@ -5,8 +5,8 @@ use ferrokit_platform::drag_drop::{DropAction, DropEvent};
 use ferrokit_platform::ime::CompositionContext;
 use ferrokit_platform::window_system_interface::{WindowSystemEvent, WindowSystemEventHandler};
 use ferrokit_platform::{PlatformWindow, WindowFlags};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn test_backdrop_type_variants() {
@@ -251,8 +251,8 @@ fn test_cross_platform_backdrop_and_click_through() {
 #[test]
 fn test_cross_platform_theme_and_dynamic_detection() {
     use ferrokit_platform::theme::{ColorScheme, PlatformTheme, UnixTheme};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // CocoaTheme against the mock runtime. On macOS (NSApplication's appearance):
     // examples/appkit_main_thread.rs (`theme_color_scheme`) on the main thread.
@@ -350,19 +350,25 @@ fn test_cross_platform_hotkeys() {
         let mut cocoa_mgr = cocoa_integration
             .create_hotkey_manager()
             .expect("Cocoa hotkey manager");
-        assert!(cocoa_mgr
-            .register_hotkey(9527, HotkeyModifiers::ALT, 8)
-            .is_err());
-        assert!(cocoa_mgr
-            .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 8)
-            .is_err());
+        assert!(
+            cocoa_mgr
+                .register_hotkey(9527, HotkeyModifiers::ALT, 8)
+                .is_err()
+        );
+        assert!(
+            cocoa_mgr
+                .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 8)
+                .is_err()
+        );
         assert!(cocoa_mgr.unregister_hotkey(9527).is_err());
         assert!(cocoa_mgr.unregister_hotkey(9528).is_err());
 
         let mut standalone_cocoa = CocoaHotkeyManager::new();
-        assert!(standalone_cocoa
-            .register_hotkey(1, HotkeyModifiers::ALT, 8)
-            .is_err());
+        assert!(
+            standalone_cocoa
+                .register_hotkey(1, HotkeyModifiers::ALT, 8)
+                .is_err()
+        );
         assert_eq!(standalone_cocoa.registered_ids().len(), 0);
     }
 
@@ -371,19 +377,25 @@ fn test_cross_platform_hotkeys() {
     let mut unix_mgr = unix_integration
         .create_hotkey_manager()
         .expect("Unix hotkey manager");
-    assert!(unix_mgr
-        .register_hotkey(9527, HotkeyModifiers::ALT, 67)
-        .is_err());
-    assert!(unix_mgr
-        .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
-        .is_err());
+    assert!(
+        unix_mgr
+            .register_hotkey(9527, HotkeyModifiers::ALT, 67)
+            .is_err()
+    );
+    assert!(
+        unix_mgr
+            .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
+            .is_err()
+    );
     assert!(unix_mgr.unregister_hotkey(9527).is_err());
     assert!(unix_mgr.unregister_hotkey(9528).is_err());
 
     let mut standalone_unix = UnixHotkeyManager::new();
-    assert!(standalone_unix
-        .register_hotkey(2, HotkeyModifiers::ALT, 67)
-        .is_err());
+    assert!(
+        standalone_unix
+            .register_hotkey(2, HotkeyModifiers::ALT, 67)
+            .is_err()
+    );
     assert_eq!(standalone_unix.registered_ids().len(), 0);
 }
 
@@ -507,9 +519,11 @@ fn test_platform_tray_messages() {
         GenericTrayIcon::new("Generic Tray", &ferrokit_gui::image::Icon::from_pixmap(&pm));
     assert!(generic_tray.supports_messages());
     assert_eq!(generic_tray.last_message(), None);
-    assert!(generic_tray
-        .show_message("Title", "Body", TrayMessageIcon::Information, 5000)
-        .is_ok());
+    assert!(
+        generic_tray
+            .show_message("Title", "Body", TrayMessageIcon::Information, 5000)
+            .is_ok()
+    );
     assert_eq!(
         generic_tray.last_message(),
         Some(("Title", "Body", TrayMessageIcon::Information, 5000))
@@ -522,9 +536,11 @@ fn test_platform_tray_messages() {
         let mut cocoa_tray = ferrokit_platform::CocoaStatusItem::new(101);
         assert!(cocoa_tray.supports_messages());
         assert_eq!(cocoa_tray.last_message(), None);
-        assert!(cocoa_tray
-            .show_message("ClaudeHUD", "Quota reached", TrayMessageIcon::Warning, 8000)
-            .is_ok());
+        assert!(
+            cocoa_tray
+                .show_message("ClaudeHUD", "Quota reached", TrayMessageIcon::Warning, 8000)
+                .is_ok()
+        );
         assert_eq!(
             cocoa_tray.last_message(),
             Some(("ClaudeHUD", "Quota reached", TrayMessageIcon::Warning, 8000))
@@ -535,9 +551,11 @@ fn test_platform_tray_messages() {
     let mut dbus_tray = DbusStatusNotifierItem::new("claude-hud", "ClaudeHUD");
     assert!(dbus_tray.supports_messages());
     assert_eq!(dbus_tray.last_message(), None);
-    assert!(dbus_tray
-        .show_message("Alert", "Memory trimmed", TrayMessageIcon::Critical, 0)
-        .is_ok());
+    assert!(
+        dbus_tray
+            .show_message("Alert", "Memory trimmed", TrayMessageIcon::Critical, 0)
+            .is_ok()
+    );
     assert_eq!(
         dbus_tray.last_message(),
         Some(("Alert", "Memory trimmed", TrayMessageIcon::Critical, 10000))
@@ -564,8 +582,8 @@ fn test_platform_tray_messages() {
 #[test]
 fn test_desktop_services() {
     use ferrokit_platform::{open_file, open_url, set_url_handler};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     // 1. Desktop services: custom URL handler interception
     let intercepted = Arc::new(AtomicBool::new(false));
@@ -597,8 +615,8 @@ fn test_power_events_and_screen_clamping() {
     ferrokit_core::object::ThreadContext::init_current(true, None);
     use ferrokit_gui::geometry::primitives::Rect;
     use ferrokit_platform::{
-        clamp_window_rect_to_screens, ensure_within_screens, GenericScreen, PlatformScreen,
-        PowerEvent, WindowSystemEvent,
+        GenericScreen, PlatformScreen, PowerEvent, WindowSystemEvent, clamp_window_rect_to_screens,
+        ensure_within_screens,
     };
 
     // 1. PowerEvent variants
@@ -756,17 +774,17 @@ fn test_event_delivery_policies() {
 fn test_surface_presenter_dc_and_layered_alignment() {
     #[cfg(windows)]
     {
-        use ferrokit_gui::geometry::primitives::Rect;
         use ferrokit_gui::geometry::Region;
+        use ferrokit_gui::geometry::primitives::Rect;
         use ferrokit_gui::paint::Pixmap;
         use ferrokit_gui::tiny_skia::Color;
+        use ferrokit_platform::PlatformWindow;
         use ferrokit_platform::presenter::{
             SurfacePresenter, Win32DcPresenter, Win32LayeredPresenter,
         };
         use ferrokit_platform::window::{NativeWindow, WindowFlags};
-        use ferrokit_platform::PlatformWindow;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED,
+            GWL_EXSTYLE, GetWindowLongPtrW, WS_EX_LAYERED,
         };
 
         // 1. Test Standard/DC Presenter:

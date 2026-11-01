@@ -21,12 +21,7 @@ fn main() {
         let hex: String = bitmap.iter().map(|b| format!("{b:02x}")).collect();
         println!(
             "{{\"cp\":{},\"gid\":{gid},\"xmin\":{},\"ymin\":{},\"w\":{},\"h\":{},\"adv\":{:.4},\"bits\":\"{hex}\"}}",
-            ch as u32,
-            m.xmin,
-            m.ymin,
-            m.width,
-            m.height,
-            m.advance_width
+            ch as u32, m.xmin, m.ymin, m.width, m.height, m.advance_width
         );
     }
 }

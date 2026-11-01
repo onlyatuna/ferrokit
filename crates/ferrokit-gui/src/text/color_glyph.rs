@@ -235,18 +235,17 @@ pub fn rasterize_color_glyph(
         if let Some(_bbox) = face.outline_glyph(
             rustybuzz::ttf_parser::GlyphId(layer.glyph_id),
             &mut skia_builder,
-        ) {
-            if let Some(path) = skia_builder.builder.finish() {
-                let mut paint = Paint::default();
-                paint.set_color_rgba8(
-                    layer.color[0],
-                    layer.color[1],
-                    layer.color[2],
-                    layer.color[3],
-                );
-                paint.anti_alias = true;
-                pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
-            }
+        ) && let Some(path) = skia_builder.builder.finish()
+        {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(
+                layer.color[0],
+                layer.color[1],
+                layer.color[2],
+                layer.color[3],
+            );
+            paint.anti_alias = true;
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
         }
     }
 

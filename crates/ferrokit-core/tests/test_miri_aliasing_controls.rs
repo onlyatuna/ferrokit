@@ -19,8 +19,8 @@ use std::ptr::NonNull;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_qobject_ptr, set_parent_by_id, unregister_qobject, with_object_mut, ObjectData,
-    ObjectId, QObject,
+    ObjectData, ObjectId, QObject, register_qobject_ptr, set_parent_by_id, unregister_qobject,
+    with_object_mut,
 };
 
 struct Node {

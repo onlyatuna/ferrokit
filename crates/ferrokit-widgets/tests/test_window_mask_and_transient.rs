@@ -7,15 +7,15 @@
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::QObject;
-use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::tiny_skia::Color;
 use ferrokit_platform::platform_window::PlatformWindow;
 use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::WindowSystemEventHandler;
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
+    GenericPlatformIntegration, PlatformIntegration, WindowFlags, set_platform_integration,
 };
 use ferrokit_widgets::application::Application;
 use ferrokit_widgets::widget::{EmptyWidget, WidgetAttribute, WidgetRef};
@@ -451,8 +451,8 @@ fn a_masked_child_receives_the_mouse_only_inside_its_mask() {
     let hit = |x, y| {
         let (widget, _) = ferrokit_widgets::hit_test::hit_test(&root, Point::new(x, y))
             .expect("inside the window");
-        let id = widget.borrow().id();
-        id
+
+        widget.borrow().id()
     };
     assert_eq!(hit(20, 20), child_id, "inside the mask");
     assert_eq!(

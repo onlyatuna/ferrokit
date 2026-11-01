@@ -11,7 +11,7 @@ use ferrokit_core::event_loop::{
     clear_application_event_filters, install_application_event_filter,
 };
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+    ObjectData, ObjectId, QObject, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::timer::Timer;
 

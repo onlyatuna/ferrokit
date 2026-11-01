@@ -6,11 +6,11 @@
 //! nothing here is shared with another test.
 
 use ferrokit_core::event_loop::EventLoop;
-use ferrokit_core::object::{register_owned_qobject, with_object, ObjectData, ObjectId, QObject};
+use ferrokit_core::object::{ObjectData, ObjectId, QObject, register_owned_qobject, with_object};
 use ferrokit_core::timer::{Timer, TimerType};
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 struct Node {
     data: ObjectData,

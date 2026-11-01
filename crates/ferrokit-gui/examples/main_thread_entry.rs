@@ -47,14 +47,14 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod macos {
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use ferrokit_core::application::CoreApplication;
     use ferrokit_core::event::{Event, EventKind, NativeEventFilter, NativeMessage};
     use ferrokit_core::event_loop::{
-        get_thread_event_sender, post_event_to_thread, CocoaEventDispatcher, UnixEventDispatcher,
+        CocoaEventDispatcher, UnixEventDispatcher, get_thread_event_sender, post_event_to_thread,
     };
     use ferrokit_core::object::{ObjectId, ThreadId};
     use ferrokit_core::timer::Timer;
@@ -78,7 +78,7 @@ mod macos {
     /// Subtype that marks the events this program posts.
     const CHECK_SUBTYPE: i16 = 0x5154;
 
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_main_np() -> std::os::raw::c_int;
     }
 
@@ -403,7 +403,7 @@ mod macos {
 /// The Objective-C and CoreFoundation calls the checks make.
 #[cfg(target_os = "macos")]
 mod appkit {
-    use std::ffi::{c_char, c_void, CString};
+    use std::ffi::{CString, c_char, c_void};
 
     pub type Id = *mut c_void;
     pub type Sel = *const c_void;
@@ -417,10 +417,10 @@ mod appkit {
     }
 
     #[link(name = "AppKit", kind = "framework")]
-    extern "C" {}
+    unsafe extern "C" {}
 
     #[link(name = "objc")]
-    extern "C" {
+    unsafe extern "C" {
         fn objc_getClass(name: *const c_char) -> Id;
         fn sel_registerName(name: *const c_char) -> Sel;
         fn objc_msgSend();
@@ -429,7 +429,7 @@ mod appkit {
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         static kCFRunLoopDefaultMode: *const c_void;
         fn CFRunLoopGetMain() -> CFTypeRef;
         fn CFAbsoluteTimeGetCurrent() -> f64;
@@ -524,7 +524,9 @@ mod appkit {
             ) -> Id = std::mem::transmute(objc_msgSend as *const ());
             let event = make(
                 class("NSEvent"),
-                sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+                sel(
+                    "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:",
+                ),
                 15,
                 NSPoint { x: 0.0, y: 0.0 },
                 0,

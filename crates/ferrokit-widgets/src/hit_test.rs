@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use crate::focus::{find_widget_by_id, FocusManager};
+use crate::focus::{FocusManager, find_widget_by_id};
 use crate::popup::PopupManager;
 use crate::widget::{Widget, WidgetRef, WidgetWeak};
 use ferrokit_core::event::FocusReason;
@@ -134,12 +134,14 @@ impl EventTreeDispatcher {
                     // No button is down, so a grab left behind means a release went missing.
                     self.held_buttons = 0;
                     self.press_grab = None;
-                } else if let Some((_, grab)) = self.press_grab.clone() {
-                    // Qt pickMouseReceiver (qapplication.cpp:2255-2283): with a button held, the
-                    // press target gets the move wherever the cursor is now.
-                    return deliver_with_propagation(&path_to(&grab, win_pos), |pos| {
-                        EventKind::MouseMove { x: pos.x, y: pos.y }
-                    });
+                } else {
+                    if let Some((_, grab)) = self.press_grab.clone() {
+                        // Qt pickMouseReceiver (qapplication.cpp:2255-2283): with a button held, the
+                        // press target gets the move wherever the cursor is now.
+                        return deliver_with_propagation(&path_to(&grab, win_pos), |pos| {
+                            EventKind::MouseMove { x: pos.x, y: pos.y }
+                        });
+                    }
                 }
 
                 if buttons.is_empty() {
@@ -147,13 +149,13 @@ impl EventTreeDispatcher {
                         // `QWidget::grabMouse`: the grabber gets the move wherever the cursor is.
                         return deliver_tracking_move(&path);
                     }
-                } else if self.press_grab.is_none() {
-                    if let Some(path) = grab_path(root, win_pos) {
-                        return deliver_with_propagation(&path, |pos| EventKind::MouseMove {
-                            x: pos.x,
-                            y: pos.y,
-                        });
-                    }
+                } else if self.press_grab.is_none()
+                    && let Some(path) = grab_path(root, win_pos)
+                {
+                    return deliver_with_propagation(&path, |pos| EventKind::MouseMove {
+                        x: pos.x,
+                        y: pos.y,
+                    });
                 }
 
                 let path = hit_path(root, win_pos);
@@ -187,24 +189,24 @@ impl EventTreeDispatcher {
                 let _dismissed = self.popup_manager.handle_mouse_press(win_pos);
 
                 // Check mouse grabber
-                if let Some(grabber_id) = self.popup_manager.mouse_grabber() {
-                    if let Some(grabber) = find_widget_by_id(root, grabber_id) {
-                        let g = grabber.borrow().geometry();
-                        let mut local_event = Event::new_spontaneous(EventKind::MouseButtonPress {
-                            x: win_pos.x - g.x,
-                            y: win_pos.y - g.y,
-                            button: *button,
-                        });
-                        return notify_widget(&grabber, &mut local_event);
-                    }
+                if let Some(grabber_id) = self.popup_manager.mouse_grabber()
+                    && let Some(grabber) = find_widget_by_id(root, grabber_id)
+                {
+                    let g = grabber.borrow().geometry();
+                    let mut local_event = Event::new_spontaneous(EventKind::MouseButtonPress {
+                        x: win_pos.x - g.x,
+                        y: win_pos.y - g.y,
+                        button: *button,
+                    });
+                    return notify_widget(&grabber, &mut local_event);
                 }
 
                 let path = grab_path(root, win_pos).unwrap_or_else(|| hit_path(root, win_pos));
                 self.note_press(*button, path.last());
-                if let Some(target) = path.last() {
-                    if *button == 1 {
-                        self.focus_manager.handle_mouse_click(root, &target.widget);
-                    }
+                if let Some(target) = path.last()
+                    && *button == 1
+                {
+                    self.focus_manager.handle_mouse_click(root, &target.widget);
                 }
                 let button = *button;
                 deliver_with_propagation(&path, |pos| EventKind::MouseButtonPress {
@@ -296,17 +298,16 @@ impl EventTreeDispatcher {
                 } else {
                     self.press_grab.clone()
                 };
-                if let Some(grabber_id) = self.popup_manager.mouse_grabber() {
-                    if let Some(grabber) = find_widget_by_id(root, grabber_id) {
-                        let g = grabber.borrow().geometry();
-                        let mut local_event =
-                            Event::new_spontaneous(EventKind::MouseButtonRelease {
-                                x: win_pos.x - g.x,
-                                y: win_pos.y - g.y,
-                                button: *button,
-                            });
-                        return notify_widget(&grabber, &mut local_event);
-                    }
+                if let Some(grabber_id) = self.popup_manager.mouse_grabber()
+                    && let Some(grabber) = find_widget_by_id(root, grabber_id)
+                {
+                    let g = grabber.borrow().geometry();
+                    let mut local_event = Event::new_spontaneous(EventKind::MouseButtonRelease {
+                        x: win_pos.x - g.x,
+                        y: win_pos.y - g.y,
+                        button: *button,
+                    });
+                    return notify_widget(&grabber, &mut local_event);
                 }
                 let button = *button;
                 let path = match &grab {
@@ -369,10 +370,10 @@ impl EventTreeDispatcher {
                 notify_widget(root, event)
             }
             EventKind::FocusOut { .. } => {
-                if let Some(focused_id) = self.focus_manager.focused_widget_id() {
-                    if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        notify_widget(&focused_widget, event);
-                    }
+                if let Some(focused_id) = self.focus_manager.focused_widget_id()
+                    && let Some(focused_widget) = find_widget_by_id(root, focused_id)
+                {
+                    notify_widget(&focused_widget, event);
                 }
                 notify_widget(root, event)
             }
@@ -407,32 +408,29 @@ impl EventTreeDispatcher {
                 }
 
                 // Route key event to focused widget first
-                if let Some(focused_id) = self.focus_manager.focused_widget_id() {
-                    if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if notify_widget(&focused_widget, event) {
-                            return true;
-                        }
-                    }
+                if let Some(focused_id) = self.focus_manager.focused_widget_id()
+                    && let Some(focused_widget) = find_widget_by_id(root, focused_id)
+                    && notify_widget(&focused_widget, event)
+                {
+                    return true;
                 }
                 notify_widget(root, event)
             }
             EventKind::KeyRelease { .. } => {
-                if let Some(focused_id) = self.focus_manager.focused_widget_id() {
-                    if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if notify_widget(&focused_widget, event) {
-                            return true;
-                        }
-                    }
+                if let Some(focused_id) = self.focus_manager.focused_widget_id()
+                    && let Some(focused_widget) = find_widget_by_id(root, focused_id)
+                    && notify_widget(&focused_widget, event)
+                {
+                    return true;
                 }
                 notify_widget(root, event)
             }
             EventKind::InputMethod { .. } => {
-                if let Some(focused_id) = self.focus_manager.focused_widget_id() {
-                    if let Some(focused_widget) = find_widget_by_id(root, focused_id) {
-                        if notify_widget(&focused_widget, event) {
-                            return true;
-                        }
-                    }
+                if let Some(focused_id) = self.focus_manager.focused_widget_id()
+                    && let Some(focused_widget) = find_widget_by_id(root, focused_id)
+                    && notify_widget(&focused_widget, event)
+                {
+                    return true;
                 }
                 notify_widget(root, event)
             }
@@ -467,11 +465,11 @@ impl EventTreeDispatcher {
             }
             EventKind::DragLeave => {
                 self.drag_formats.clear();
-                if let Some((_id, prev)) = self.drag_target.take() {
-                    if let Some(prev) = prev.upgrade() {
-                        let mut leave = Event::new_spontaneous(EventKind::DragLeave);
-                        let _ = notify_widget(&prev, &mut leave);
-                    }
+                if let Some((_id, prev)) = self.drag_target.take()
+                    && let Some(prev) = prev.upgrade()
+                {
+                    let mut leave = Event::new_spontaneous(EventKind::DragLeave);
+                    let _ = notify_widget(&prev, &mut leave);
                 }
                 true
             }
@@ -595,10 +593,10 @@ impl EventTreeDispatcher {
                     continue;
                 }
                 action = event_drop_action(&enter.kind).unwrap_or(drop_action);
-                if prev_id != Some(cand_id) {
-                    if let Some((_old_id, old_w)) = self.drag_target.take() {
-                        send_drag_leave(&old_w);
-                    }
+                if prev_id != Some(cand_id)
+                    && let Some((_old_id, old_w)) = self.drag_target.take()
+                {
+                    send_drag_leave(&old_w);
                 }
                 self.drag_target = Some((cand_id, Rc::downgrade(&step.widget)));
                 if is_enter {
@@ -619,10 +617,10 @@ impl EventTreeDispatcher {
                 return Some(event_drop_action(&mv.kind).unwrap_or(action));
             }
             // The current drag target rejected `DragMove`: send it `DragLeave` and continue up.
-            if self.drag_target.as_ref().map(|(id, _)| *id) == Some(cand_id) {
-                if let Some((_old_id, old_w)) = self.drag_target.take() {
-                    send_drag_leave(&old_w);
-                }
+            if self.drag_target.as_ref().map(|(id, _)| *id) == Some(cand_id)
+                && let Some((_old_id, old_w)) = self.drag_target.take()
+            {
+                send_drag_leave(&old_w);
             }
         }
         if let Some((_old_id, old_w)) = self.drag_target.take() {

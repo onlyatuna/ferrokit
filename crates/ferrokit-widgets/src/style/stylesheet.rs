@@ -197,17 +197,18 @@ fn selector_matches(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> b
     }
 
     // 2. ID match (e.g. `#CentralWidget`)
-    if let Some(id) = &selector.id {
-        if id != ctx.object_name {
-            return false;
-        }
+    if let Some(id) = &selector.id
+        && id != ctx.object_name
+    {
+        return false;
     }
 
     // 3. Type name match (e.g. `QLabel`, `QProgressBar`): the class or any class it inherits.
-    if let Some(elem) = &selector.element_name {
-        if elem != "*" && !node_name_equals(ctx.type_name, elem) {
-            return false;
-        }
+    if let Some(elem) = &selector.element_name
+        && elem != "*"
+        && !node_name_equals(ctx.type_name, elem)
+    {
+        return false;
     }
 
     // 4. Pseudo-states match (all selector pseudo-states must be active in ctx)

@@ -265,18 +265,18 @@ impl Drop for ObjectBorrowGuard {
                 .swap(false, Ordering::AcqRel)
             {
                 let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
-                if let Some((new_parent, target_liveness)) = sync {
-                    if !self.borrow_state.memory_destroyed.load(Ordering::Acquire) {
-                        // SAFETY: as above: this guard still holds the borrow flag (`_release`),
-                        // so no callback of the object is running, and the object's memory is not
-                        // freed before the guard has released the flag and returned from `drop`
-                        // (`destroy_here` frees only after it wins the flag, or parks the
-                        // allocation for `run_parked` below). `self.ptr` is the registered pointer.
-                        let mut data = unsafe { (*self.ptr).object_data_mut() };
-                        let raw = data.raw_data_mut();
-                        raw.parent = new_parent;
-                        raw.parent_liveness = target_liveness;
-                    }
+                if let Some((new_parent, target_liveness)) = sync
+                    && !self.borrow_state.memory_destroyed.load(Ordering::Acquire)
+                {
+                    // SAFETY: as above: this guard still holds the borrow flag (`_release`),
+                    // so no callback of the object is running, and the object's memory is not
+                    // freed before the guard has released the flag and returned from `drop`
+                    // (`destroy_here` frees only after it wins the flag, or parks the
+                    // allocation for `run_parked` below). `self.ptr` is the registered pointer.
+                    let mut data = unsafe { (*self.ptr).object_data_mut() };
+                    let raw = data.raw_data_mut();
+                    raw.parent = new_parent;
+                    raw.parent_liveness = target_liveness;
                 }
             }
         }
@@ -498,14 +498,14 @@ impl ParentLinkIndex {
         if self.parent_of.get(&child).copied() == parent {
             return;
         }
-        if let Some(old) = self.parent_of.remove(&child) {
-            if let Some(list) = self.children.get_mut(&old) {
-                if let Some(at) = list.iter().position(|&listed| listed == child) {
-                    list.remove(at);
-                }
-                if list.is_empty() {
-                    self.children.remove(&old);
-                }
+        if let Some(old) = self.parent_of.remove(&child)
+            && let Some(list) = self.children.get_mut(&old)
+        {
+            if let Some(at) = list.iter().position(|&listed| listed == child) {
+                list.remove(at);
+            }
+            if list.is_empty() {
+                self.children.remove(&old);
             }
         }
         if let Some(parent) = parent {
@@ -683,14 +683,12 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
 /// names itself and defers the rest.
 pub fn default_property<T: QObject + ?Sized>(obj: &T, name: &str) -> Option<Variant> {
     let mo = obj.meta_object();
-    if let Some(idx) = mo.index_of_property(name) {
-        if let Some(prop) = mo.property(idx) {
-            if let Some(any) = obj.as_qobject_any() {
-                if let Some(val) = prop.read(any) {
-                    return Some(val);
-                }
-            }
-        }
+    if let Some(idx) = mo.index_of_property(name)
+        && let Some(prop) = mo.property(idx)
+        && let Some(any) = obj.as_qobject_any()
+        && let Some(val) = prop.read(any)
+    {
+        return Some(val);
     }
     obj.object_data().property(name).cloned()
 }
@@ -698,16 +696,16 @@ pub fn default_property<T: QObject + ?Sized>(obj: &T, name: &str) -> Option<Vari
 /// `QObject::setProperty` as the trait default does it (see [`QObject::set_property`]).
 pub fn default_set_property<T: QObject + ?Sized>(obj: &mut T, name: &str, value: Variant) -> bool {
     let mo = obj.meta_object();
-    if let Some(idx) = mo.index_of_property(name) {
-        if let Some(prop) = mo.property(idx).cloned() {
-            if !prop.is_writable() {
-                return false;
-            }
-            if let Some(any_mut) = obj.as_qobject_any_mut() {
-                return prop.write(any_mut, value).is_ok();
-            }
+    if let Some(idx) = mo.index_of_property(name)
+        && let Some(prop) = mo.property(idx).cloned()
+    {
+        if !prop.is_writable() {
             return false;
         }
+        if let Some(any_mut) = obj.as_qobject_any_mut() {
+            return prop.write(any_mut, value).is_ok();
+        }
+        return false;
     }
 
     let changed = obj.object_data_mut().set_property(name, value);
@@ -755,10 +753,10 @@ pub(crate) fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
     if let Some(map) = lock.as_mut() {
         map.insert(id, thread_id);
     }
-    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(entry) = reg.get(&id) {
-            *write_unpoisoned(&entry.thread_id) = thread_id;
-        }
+    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
+        && let Some(entry) = reg.get(&id)
+    {
+        *write_unpoisoned(&entry.thread_id) = thread_id;
     }
 }
 
@@ -813,7 +811,7 @@ pub fn invoke_method_on_thread(
         ConnectionType::BlockingQueued => true,
         ConnectionType::Auto if thread != ThreadId::current() => false,
         ConnectionType::Auto | ConnectionType::Direct => {
-            return Err(crate::meta::InvokeError::TargetBorrowFailed)
+            return Err(crate::meta::InvokeError::TargetBorrowFailed);
         }
     };
 
@@ -853,10 +851,10 @@ pub fn invoke_method_on_thread(
 
 /// Moves an object's physical registration to `thread_id`. Only `move_to_thread` calls this.
 pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
-    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(entry) = reg.get(&id) {
-            *write_unpoisoned(&entry.registration_thread) = thread_id;
-        }
+    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
+        && let Some(entry) = reg.get(&id)
+    {
+        *write_unpoisoned(&entry.registration_thread) = thread_id;
     }
 }
 
@@ -1192,10 +1190,10 @@ pub fn query_object_parents_snapshot(
 }
 
 pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
-    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
-        if let Some(entry) = reg.get(&id) {
-            return Some(*read_unpoisoned(&entry.thread_id));
-        }
+    if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
+        && let Some(entry) = reg.get(&id)
+    {
+        return Some(*read_unpoisoned(&entry.thread_id));
     }
     if let Some(map) = read_unpoisoned(&GLOBAL_OBJECT_THREADS).as_ref() {
         return map.get(&id).copied();
@@ -1316,10 +1314,10 @@ fn register_record(
             }
         }
         lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, parent);
-        if let Some(list) = parent_list.as_mut() {
-            if !list.contains(&id) {
-                list.push(id);
-            }
+        if let Some(list) = parent_list.as_mut()
+            && !list.contains(&id)
+        {
+            list.push(id);
         }
     }
     register_object_thread(id, thread_id);
@@ -2610,10 +2608,10 @@ impl Drop for ObjectData {
         // runs, and `unregister_qobject` is memory-neutral: it works from the record and ids.
         unsafe { unregister_qobject(self.id) };
 
-        if let Some(payload) = held_panic {
-            if !std::thread::panicking() {
-                std::panic::resume_unwind(payload);
-            }
+        if let Some(payload) = held_panic
+            && !std::thread::panicking()
+        {
+            std::panic::resume_unwind(payload);
         }
     }
 }
@@ -2655,10 +2653,10 @@ pub fn delete_later(obj: &ObjectData) {
 /// Event filter callback (`QObject::eventFilter`, `qobject.cpp:2407-2423`).
 pub fn install_event_filter(target: &mut ObjectData, filter: ObjectId) -> bool {
     // Cross-thread check: filter and target must be in the same thread (qobject.cpp:2412-2415)
-    if let Some(filter_thread) = query_object_thread(filter) {
-        if filter_thread != target.thread_id {
-            return false;
-        }
+    if let Some(filter_thread) = query_object_thread(filter)
+        && filter_thread != target.thread_id
+    {
+        return false;
     }
 
     target.event_filters.install(filter);
@@ -2736,20 +2734,20 @@ fn release_child(child_id: ObjectId, parent_id: ObjectId) {
     if belongs_elsewhere == Some(true) {
         return;
     }
-    if belongs_elsewhere.is_none() {
-        if let Some((child_record, _)) = registered_ptr(child_id) {
-            // The child's own link cannot be read, but the registry's can: another parent there
-            // means the entry is stale. (A link already cleared, as `unregister_qobject` of the
-            // dying parent does before its object is freed, is this parent's child all the same.)
-            let linked_to = *read_unpoisoned(&child_record.parent);
-            if linked_to.is_some_and(|linked| linked != parent_id) {
-                return;
-            }
-            *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
-            child_record
-                .has_pending_parent_sync
-                .store(true, Ordering::Release);
+    if belongs_elsewhere.is_none()
+        && let Some((child_record, _)) = registered_ptr(child_id)
+    {
+        // The child's own link cannot be read, but the registry's can: another parent there
+        // means the entry is stale. (A link already cleared, as `unregister_qobject` of the
+        // dying parent does before its object is freed, is this parent's child all the same.)
+        let linked_to = *read_unpoisoned(&child_record.parent);
+        if linked_to.is_some_and(|linked| linked != parent_id) {
+            return;
         }
+        *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
+        child_record
+            .has_pending_parent_sync
+            .store(true, Ordering::Release);
     }
     // SAFETY: `unregister_qobject` works from the registry record and ids and never reads or
     // forms a reference to the object's memory. `child_id` is registered, so its memory is valid
@@ -3119,10 +3117,10 @@ pub fn set_parent_by_id(
     let registry = GLOBAL_OBJECT_REGISTRY
         .read()
         .map_err(|_| ReparentError::Busy)?;
-    if let Some(np) = requested_parent {
-        if would_create_cycle_in(&registry, child_id, np)? {
-            return Err(ReparentError::InvalidParent);
-        }
+    if let Some(np) = requested_parent
+        && would_create_cycle_in(&registry, child_id, np)?
+    {
+        return Err(ReparentError::InvalidParent);
     }
     #[cfg(test)]
     test_hooks::run(test_hooks::Point::AfterCycleCheck);
@@ -3256,16 +3254,13 @@ pub fn set_parent_by_id(
     };
     let _sync_status =
         sync_child_local_parent(child_id, &child_record, current_reg_parent, target_liveness);
-    if current_reg_parent != new_parent {
-        if let Some(np) = new_parent {
-            if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read() {
-                if let Some(rec) = reg.get(&np) {
-                    if let Ok(mut ch) = rec.children.write() {
-                        ch.retain(|&id| id != child_id);
-                    }
-                }
-            }
-        }
+    if current_reg_parent != new_parent
+        && let Some(np) = new_parent
+        && let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
+        && let Some(rec) = reg.get(&np)
+        && let Ok(mut ch) = rec.children.write()
+    {
+        ch.retain(|&id| id != child_id);
     }
 
     if let Some(target_parent_id) = current_reg_parent {
@@ -3344,10 +3339,10 @@ pub fn set_parent(
     let registry = GLOBAL_OBJECT_REGISTRY
         .read()
         .map_err(|_| ReparentError::Busy)?;
-    if let Some(np) = requested_parent {
-        if would_create_cycle_in(&registry, child_id, np)? {
-            return Err(ReparentError::InvalidParent);
-        }
+    if let Some(np) = requested_parent
+        && would_create_cycle_in(&registry, child_id, np)?
+    {
+        return Err(ReparentError::InvalidParent);
     }
     #[cfg(test)]
     test_hooks::run(test_hooks::Point::AfterCycleCheck);
@@ -3460,10 +3455,10 @@ pub fn set_parent(
             ParentLockPair::None => {}
         }
 
-        if let Some(mut p_guard) = child_parent_guard {
-            if let Some(record) = registry.get(&child_id) {
-                store_link(&registry, record, &mut p_guard, new_parent);
-            }
+        if let Some(mut p_guard) = child_parent_guard
+            && let Some(record) = registry.get(&child_id)
+        {
+            store_link(&registry, record, &mut p_guard, new_parent);
         }
     }
 
@@ -4188,12 +4183,11 @@ pub trait QObject: std::any::Any {
         for child in &self.object_data().owned_children {
             child.with(|c| {
                 let name_matches = target_name.is_empty() || c.object_name() == Some(target_name);
-                if name_matches {
-                    if let Some(any) = c.as_qobject_any() {
-                        if any.type_id() == type_id {
-                            visit(any);
-                        }
-                    }
+                if name_matches
+                    && let Some(any) = c.as_qobject_any()
+                    && any.type_id() == type_id
+                {
+                    visit(any);
                 }
                 c.find_children_any(name, type_id, visit);
             });
@@ -4201,12 +4195,11 @@ pub trait QObject: std::any::Any {
         for child_id in unowned_child_ids(self.object_data()) {
             with_object(child_id, |c| {
                 let name_matches = target_name.is_empty() || c.object_name() == Some(target_name);
-                if name_matches {
-                    if let Some(any) = c.as_qobject_any() {
-                        if any.type_id() == type_id {
-                            visit(any);
-                        }
-                    }
+                if name_matches
+                    && let Some(any) = c.as_qobject_any()
+                    && any.type_id() == type_id
+                {
+                    visit(any);
                 }
                 c.find_children_any(name, type_id, visit);
             });
@@ -4511,11 +4504,7 @@ impl<T: ?Sized> QPointer<T> {
 
     #[inline]
     pub fn id(&self) -> Option<ObjectId> {
-        if self.is_null() {
-            None
-        } else {
-            Some(self.id)
-        }
+        if self.is_null() { None } else { Some(self.id) }
     }
 
     pub fn clear(&mut self) {
@@ -5373,11 +5362,11 @@ mod tests {
             "a refused reparent changed something"
         );
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
-        assert!(p1
-            .0
-            .owned_children
-            .iter()
-            .any(|c| OwnedObject::object_id(c) == child_id));
+        assert!(
+            p1.0.owned_children
+                .iter()
+                .any(|c| OwnedObject::object_id(c) == child_id)
+        );
 
         // SAFETY: `p1` and `p2` are locals of this test, registered above and not moved since; no
         // callback of either runs, and this is their registration thread. `p1` still owns the
@@ -5445,11 +5434,11 @@ mod tests {
         );
 
         assert_eq!(query_object_parent(child_id), Some(Some(p1_id)));
-        assert!(p1
-            .0
-            .owned_children
-            .iter()
-            .any(|c| OwnedObject::object_id(c) == child_id));
+        assert!(
+            p1.0.owned_children
+                .iter()
+                .any(|c| OwnedObject::object_id(c) == child_id)
+        );
 
         // SAFETY: `p1` and `p2` are locals of this test, registered above and not moved since; the
         // only borrow of a child, `child_guard`, was dropped above, and no callback of either
@@ -5522,9 +5511,11 @@ mod tests {
         assert_eq!(res, Err(ReparentError::DifferentThread));
 
         assert_eq!(query_object_parent(child_id_attached), Some(Some(a_id)));
-        assert!(query_object_children(a_id)
-            .unwrap()
-            .contains(&child_id_attached));
+        assert!(
+            query_object_children(a_id)
+                .unwrap()
+                .contains(&child_id_attached)
+        );
         assert!(query_object_children(b_id).unwrap().is_empty());
         assert_eq!(a.with(|a| a.object_data().owned_children().len()), Some(1));
         drop(a);
@@ -7393,9 +7384,11 @@ mod tests {
 
         with_object_mut(child_id, |_| destroy_deferred(child_id)).unwrap();
 
-        assert!(parent
-            .with(|p| p.0.owned_children().is_empty() && p.0.children().is_empty())
-            .unwrap());
+        assert!(
+            parent
+                .with(|p| p.0.owned_children().is_empty() && p.0.children().is_empty())
+                .unwrap()
+        );
         assert!(with_object(child_id, |_| ()).is_none());
     }
 
@@ -7404,8 +7397,8 @@ mod tests {
     /// own `deleteLater` with an unreachable owner): the child is destroyed then, not when the
     /// parent's memory is freed.
     #[test]
-    fn test_deferred_delete_of_owned_child_is_finished_after_the_parent_is_unregistered_mid_callback(
-    ) {
+    fn test_deferred_delete_of_owned_child_is_finished_after_the_parent_is_unregistered_mid_callback()
+     {
         struct Tracked(ObjectData, Arc<AtomicBool>);
         impl QObject for Tracked {
             fn object_data(&self) -> &ObjectData {
@@ -7551,7 +7544,7 @@ mod tests {
         })
         .unwrap(); // b.parent = a, a.children = [b]
         b.with_mut(|b| reparent(&mut b.0, None, None)).unwrap(); // b's own link is cleared; a still lists b
-                                                                 // SAFETY: the owners are kept until they are dropped below, on this thread.
+        // SAFETY: the owners are kept until they are dropped below, on this thread.
         unsafe {
             register_qobject_ptr(OwnedObject::as_non_null(&a) as NonNull<dyn QObject>);
             register_qobject_ptr(OwnedObject::as_non_null(&b) as NonNull<dyn QObject>);
@@ -7716,8 +7709,8 @@ mod tests {
     /// be borrowed here: the answer is the documented `InvalidParent`, not `Busy`, and nothing
     /// changes.
     #[test]
-    fn test_reparent_owned_object_answers_invalid_parent_for_a_parent_of_another_registration_thread(
-    ) {
+    fn test_reparent_owned_object_answers_invalid_parent_for_a_parent_of_another_registration_thread()
+     {
         let affinity = ThreadId::current();
         let np_id = ObjectId::next();
         let there = side(

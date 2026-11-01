@@ -10,11 +10,11 @@
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, with_object, ObjectData, ObjectId, QObject,
+    ObjectData, ObjectId, QObject, register_owned_qobject, unregister_qobject, with_object,
 };
 use ferrokit_core::timer::{Timer, TimerType};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 fn counting_timer(interval_ms: u64, single_shot: bool) -> (Timer, Arc<AtomicU32>) {
@@ -424,7 +424,8 @@ fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {
         .with_mut(|o| o.start_timer(0, TimerType::Coarse))
         .unwrap();
     assert!(
-        pump_until(&mut el, Duration::from_secs(2), || seen.load(Ordering::SeqCst)
+        pump_until(&mut el, Duration::from_secs(2), || seen
+            .load(Ordering::SeqCst)
             >= 5),
         "zero-interval timer must keep repeating after a filter consumes ticks; filter saw {} Timer events",
         seen.load(Ordering::SeqCst)

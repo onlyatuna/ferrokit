@@ -70,16 +70,16 @@ impl TimerFd {
 
     pub fn check_and_fire(&self, now: Instant) -> bool {
         let mut next = self.next_fire.lock().unwrap();
-        if let Some(target) = *next {
-            if now >= target {
-                self.expirations.fetch_add(1, Ordering::SeqCst);
-                if self.single_shot {
-                    *next = None;
-                } else {
-                    *next = Some(now + self.interval);
-                }
-                return true;
+        if let Some(target) = *next
+            && now >= target
+        {
+            self.expirations.fetch_add(1, Ordering::SeqCst);
+            if self.single_shot {
+                *next = None;
+            } else {
+                *next = Some(now + self.interval);
             }
+            return true;
         }
         false
     }

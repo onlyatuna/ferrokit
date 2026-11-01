@@ -37,6 +37,6 @@ pub use thread::*;
 #[allow(deprecated)]
 pub use crate::object::move_to_thread;
 pub use crate::object::{
-    move_to_thread_by_id, query_object_thread, query_thread_sender, register_thread_sender,
-    unregister_thread_sender, EventSender, ThreadContext, ThreadId,
+    EventSender, ThreadContext, ThreadId, move_to_thread_by_id, query_object_thread,
+    query_thread_sender, register_thread_sender, unregister_thread_sender,
 };

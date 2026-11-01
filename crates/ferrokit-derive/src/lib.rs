@@ -3,7 +3,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Attribute, DeriveInput, Fields, Ident, LitStr, Type};
+use syn::{Attribute, DeriveInput, Fields, Ident, LitStr, Type, parse_macro_input};
 
 mod invoke;
 mod slots;
@@ -82,40 +82,43 @@ pub fn derive_qobject(input: TokenStream) -> TokenStream {
 
     let mut signals = Vec::new();
 
-    if let syn::Data::Struct(data_struct) = &input.data {
-        if let Fields::Named(fields_named) = &data_struct.fields {
-            for field in &fields_named.named {
-                let f_ident = field.ident.clone().unwrap();
-                let f_type = &field.ty;
+    if let syn::Data::Struct(data_struct) = &input.data
+        && let Fields::Named(fields_named) = &data_struct.fields
+    {
+        for field in &fields_named.named {
+            let f_ident = field.ident.clone().unwrap();
+            let f_type = &field.ty;
 
-                // Identify the ObjectData field (named `data` or with type ending in `ObjectData`)
-                if f_ident == "data" || is_object_data_type(f_type) {
-                    data_field_ident = Some(f_ident.clone());
+            // Identify the ObjectData field (named `data` or with type ending in `ObjectData`)
+            if f_ident == "data" || is_object_data_type(f_type) {
+                data_field_ident = Some(f_ident.clone());
+            }
+
+            // Check for #[property] attribute
+            for attr in &field.attrs {
+                if attr.path().is_ident("property") {
+                    let (is_readonly, notify) = match parse_property_attr(attr) {
+                        Ok(parsed) => parsed,
+                        Err(err) => return err.to_compile_error().into(),
+                    };
+                    let prop_name = f_ident.to_string();
+                    properties.push((
+                        f_ident.clone(),
+                        f_type.clone(),
+                        prop_name,
+                        is_readonly,
+                        notify,
+                    ));
                 }
+            }
 
-                // Check for #[property] attribute
-                for attr in &field.attrs {
-                    if attr.path().is_ident("property") {
-                        let (is_readonly, notify) = match parse_property_attr(attr) {
-                            Ok(parsed) => parsed,
-                            Err(err) => return err.to_compile_error().into(),
-                        };
-                        let prop_name = f_ident.to_string();
-                        properties.push((
-                            f_ident.clone(),
-                            f_type.clone(),
-                            prop_name,
-                            is_readonly,
-                            notify,
-                        ));
-                    }
-                }
-
-                for attr in &field.attrs {
-                    if attr.path().is_ident("signal") {
-                        if let Some(payload) = signal_payload_type(f_type) {
+            for attr in &field.attrs {
+                if attr.path().is_ident("signal") {
+                    match signal_payload_type(f_type) {
+                        Some(payload) => {
                             signals.push((f_ident.clone(), payload));
-                        } else {
+                        }
+                        _ => {
                             return syn::Error::new_spanned(
                                 f_type,
                                 "`#[signal]` fields must have type `Signal<T>`",
@@ -414,10 +417,10 @@ fn payload_elements(payload: &Type) -> Vec<Type> {
 }
 
 fn is_object_data_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "ObjectData";
-        }
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "ObjectData";
     }
     false
 }

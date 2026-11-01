@@ -126,26 +126,29 @@ impl WidgetCommandQueue {
     /// widget's `RefCell` is currently borrowed (e.g. inside its own event callback), the request
     /// is deferred to a queued task that runs once the borrow is released.
     pub fn delete_later(widget: &WidgetRef) {
-        if let Ok(w) = widget.try_borrow() {
-            set_deferred_delete_hook(on_deferred_delete);
-            let id = w.id();
-            PENDING_DELETES.with(|pending| {
-                let mut pending = pending.borrow_mut();
-                if !pending.iter().any(|e| e.id == id) {
-                    pending.push(PendingDelete {
-                        id,
-                        parent: w.parent_widget(),
-                    });
-                }
-            });
-            w.delete_later();
-        } else {
-            let weak = Rc::downgrade(widget);
-            Self::post_task(move || {
-                if let Some(w) = weak.upgrade() {
-                    WidgetCommandQueue::delete_later(&w);
-                }
-            });
+        match widget.try_borrow() {
+            Ok(w) => {
+                set_deferred_delete_hook(on_deferred_delete);
+                let id = w.id();
+                PENDING_DELETES.with(|pending| {
+                    let mut pending = pending.borrow_mut();
+                    if !pending.iter().any(|e| e.id == id) {
+                        pending.push(PendingDelete {
+                            id,
+                            parent: w.parent_widget(),
+                        });
+                    }
+                });
+                w.delete_later();
+            }
+            _ => {
+                let weak = Rc::downgrade(widget);
+                Self::post_task(move || {
+                    if let Some(w) = weak.upgrade() {
+                        WidgetCommandQueue::delete_later(&w);
+                    }
+                });
+            }
         }
     }
 

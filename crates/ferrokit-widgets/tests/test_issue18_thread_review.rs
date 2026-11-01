@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 use ferrokit_core::event::EventKind;
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    query_object_thread, register_qobject_ptr, ObjectId, QObject, ThreadId,
+    ObjectId, QObject, ThreadId, query_object_thread, register_qobject_ptr,
 };
 use ferrokit_widgets::menu::Menu;
 use ferrokit_widgets::progress_bar::ProgressBar;

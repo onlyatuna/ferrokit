@@ -16,8 +16,8 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::signal::Signal;
 use ferrokit_gui::application::{ColorScheme, GuiApplication};
 use ferrokit_platform::{
-    install_style_hints_theme, set_platform_integration, GenericPlatformIntegration,
-    PlatformIntegration, PlatformTheme,
+    GenericPlatformIntegration, PlatformIntegration, PlatformTheme, install_style_hints_theme,
+    set_platform_integration,
 };
 
 /// The tests share the application-wide style hints.

@@ -52,7 +52,7 @@ impl PressedButtons {
     }
 
     pub fn release(&mut self, button: MouseButton) {
-        self.0 = MouseButtons(self.0 .0 & !Self::bit(button).0);
+        self.0 = MouseButtons(self.0.0 & !Self::bit(button).0);
     }
 
     pub fn buttons(self) -> MouseButtons {

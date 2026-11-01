@@ -103,11 +103,7 @@ impl Widget for Probe {
         self.hfw
     }
     fn height_for_width(&self, width: i32) -> i32 {
-        if self.hfw {
-            1600 / width.max(1)
-        } else {
-            -1
-        }
+        if self.hfw { 1600 / width.max(1) } else { -1 }
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self

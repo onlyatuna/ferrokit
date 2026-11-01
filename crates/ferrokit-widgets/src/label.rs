@@ -5,13 +5,13 @@ use crate::widget::{Widget, WidgetBase, WidgetRef, WidgetWeak};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::notify_borrowed;
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
+use ferrokit_gui::Alignment;
 use ferrokit_gui::application::LayoutDirection;
 use ferrokit_gui::geometry::primitives::{PointF, Rect, RectF, Size};
-use ferrokit_gui::paint::qss_box::{draw_qss_box, QssBorder};
+use ferrokit_gui::paint::qss_box::{QssBorder, draw_qss_box};
 use ferrokit_gui::paint::{Painter, Pen};
 use ferrokit_gui::text::{Font, FontMetrics, TextDocument, TextFragment, TextLayout, WrapMode};
 use ferrokit_gui::tiny_skia::Color;
-use ferrokit_gui::Alignment;
 
 pub struct Label {
     pub base: WidgetBase,

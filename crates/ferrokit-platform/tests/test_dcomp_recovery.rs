@@ -5,11 +5,11 @@
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::tiny_skia::Color;
+use ferrokit_platform::PlatformWindow;
+use ferrokit_platform::surface::PlatformSurface;
 use ferrokit_platform::surface::dcomp::DCompSurface;
 use ferrokit_platform::surface::win32::Win32LayeredSurface;
-use ferrokit_platform::surface::PlatformSurface;
 use ferrokit_platform::window::{NativeWindow, WindowFlags};
-use ferrokit_platform::PlatformWindow;
 
 #[test]
 fn test_dcomp_surface_to_gdi_layered_transition_parity() {

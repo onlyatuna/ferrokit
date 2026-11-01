@@ -1096,7 +1096,7 @@ fn settings_sync_reclaims_a_stale_lock_file_and_releases_its_own() {
 #[test]
 fn settings_sync_waits_for_a_lock_held_by_another_process() {
     use ferrokit_core::settings::Settings;
-    use std::sync::mpsc::{channel, TryRecvError};
+    use std::sync::mpsc::{TryRecvError, channel};
     let dir = TemporaryDir::new().unwrap();
     let path = dir.path().join("held.ini");
     let mut lock_path = path.as_os_str().to_owned();
