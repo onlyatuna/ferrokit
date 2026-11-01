@@ -22,12 +22,13 @@ pub type ActivationReason = TrayActivation;
 pub type MessageIcon = TrayMessageIcon;
 
 /// Thread-affine wrapper enabling capturing `MenuRef` inside `Signal::connect` closure.
-///
-/// SAFETY: `SystemTrayIcon` is strictly thread-affine (`!Send + !Sync`), created and accessed
-/// only on the main thread (enforced by [`ThreadContext::assert_main_thread`]). The wrapped
-/// value is only accessed and dropped on the main thread.
 struct MainThread<T>(T);
+
+// SAFETY: `SystemTrayIcon` is strictly thread-affine (`!Send + !Sync`), created and accessed
+// only on the main thread (enforced by [`ThreadContext::assert_main_thread`]). The wrapped
+// value is only accessed and dropped on the main thread.
 unsafe impl<T> Send for MainThread<T> {}
+// SAFETY: Same as `Send`; access is restricted to the main thread.
 unsafe impl<T> Sync for MainThread<T> {}
 
 impl<T> MainThread<T> {
@@ -65,19 +66,20 @@ impl SystemTrayIcon {
     pub fn new() -> Result<Self, &'static str> {
         ThreadContext::assert_main_thread("SystemTrayIcon::new");
         let icon = default_blank_icon();
-        let platform_tray = TrayIcon::from_icon("", &icon)?;
+        let mut platform_tray = TrayIcon::from_icon("", &icon)?;
+        let _ = platform_tray.hide(); // Icons are initially invisible in Qt
         Self::with_tray(platform_tray)
     }
 
     /// Creates a system tray icon showing the given icon (`QSystemTrayIcon(const QIcon &)`).
     pub fn from_icon(icon: &Icon) -> Result<Self, &'static str> {
         ThreadContext::assert_main_thread("SystemTrayIcon::new");
-        let platform_tray = TrayIcon::from_icon("", icon)?;
+        let mut platform_tray = TrayIcon::from_icon("", icon)?;
+        let _ = platform_tray.hide(); // Icons are initially invisible in Qt
         let mut tray = Self::with_tray(platform_tray)?;
         tray.current_icon = Some(icon.clone());
         Ok(tray)
     }
-
     /// Wraps an existing platform tray icon.
     pub fn with_tray(platform_tray: Box<TrayIcon>) -> Result<Self, &'static str> {
         ThreadContext::assert_main_thread("SystemTrayIcon::new");

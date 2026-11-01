@@ -12,10 +12,9 @@ use ferrokit_gui::paint::Pixmap;
 use ferrokit_gui::tiny_skia::Color;
 use ferrokit_widgets::application::Application;
 use ferrokit_widgets::menu::{Menu, MenuRef};
-use ferrokit_widgets::system_tray::{
-    ActivationReason, MessageIcon, QSystemTrayIcon, SystemTrayIcon,
-};
-
+#[cfg(windows)]
+use ferrokit_widgets::system_tray::ActivationReason;
+use ferrokit_widgets::system_tray::{MessageIcon, QSystemTrayIcon, SystemTrayIcon};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 #[cfg(windows)]
@@ -39,7 +38,9 @@ fn create_test_icon() -> Icon {
 
 #[cfg(windows)]
 fn ensure_queue() {
+    // SAFETY: MSG struct is all-integer/pointer fields valid with zeroed memory.
     let mut msg: MSG = unsafe { std::mem::zeroed() };
+    // SAFETY: PeekMessageW with PM_NOREMOVE and null HWND safely creates the thread message queue.
     unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
 }
 
@@ -53,11 +54,13 @@ const VK_ESCAPE: usize = 0x1B;
 #[cfg(windows)]
 fn post_key(vk: usize) {
     ensure_queue();
+    // SAFETY: Posting WM_KEYDOWN with valid VK code to current thread message queue.
     unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, vk, 0) };
 }
 
 #[cfg(windows)]
 fn send_tray_event(hwnd: windows_sys::Win32::Foundation::HWND, event: u32) {
+    // SAFETY: Sending WM_TRAY_CALLBACK to the tray HWND owned by this thread.
     unsafe {
         SendMessageW(
             hwnd,
@@ -67,7 +70,6 @@ fn send_tray_event(hwnd: windows_sys::Win32::Foundation::HWND, event: u32) {
         );
     }
 }
-
 macro_rules! assert_not_send {
     ($($t:ty),+ $(,)?) => {$(
         const _: fn() = || {
@@ -101,7 +103,7 @@ assert_not_sync!(SystemTrayIcon);
 
 #[test]
 fn test_system_tray_main_thread_constraint() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     // Succeeds on main thread
@@ -124,7 +126,7 @@ fn test_system_tray_main_thread_constraint() {
 
 #[test]
 fn test_system_tray_properties_and_qt_parity() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray: QSystemTrayIcon = SystemTrayIcon::new().expect("tray creation");
@@ -157,7 +159,7 @@ fn test_system_tray_properties_and_qt_parity() {
 
 #[test]
 fn test_system_tray_activation_and_message_clicked_signals() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let tray = SystemTrayIcon::new().expect("tray");
@@ -196,7 +198,7 @@ fn test_system_tray_activation_and_message_clicked_signals() {
 
 #[test]
 fn test_system_tray_context_menu_set_get_clear() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray = SystemTrayIcon::new().expect("tray");
@@ -214,7 +216,7 @@ fn test_system_tray_context_menu_set_get_clear() {
 
 #[test]
 fn test_system_tray_context_menu_exec_popup_on_request() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray = SystemTrayIcon::new().expect("tray");
@@ -265,7 +267,7 @@ fn test_system_tray_context_menu_exec_popup_on_request() {
 
 #[test]
 fn test_system_tray_context_menu_action_trigger() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray = SystemTrayIcon::new().expect("tray");
@@ -296,7 +298,7 @@ fn test_system_tray_context_menu_action_trigger() {
 
 #[test]
 fn test_system_tray_context_menu_replace_disconnects_old() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray = SystemTrayIcon::new().expect("tray");
@@ -342,7 +344,7 @@ thread_local! {
 
 #[test]
 fn test_system_tray_short_borrow_rule() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let mut tray = SystemTrayIcon::new().expect("tray");
@@ -380,7 +382,7 @@ fn test_system_tray_short_borrow_rule() {
 
 #[test]
 fn test_system_tray_from_icon_and_with_tray() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let icon = create_test_icon();
@@ -396,7 +398,7 @@ fn test_system_tray_from_icon_and_with_tray() {
 
 #[test]
 fn test_system_tray_drop_with_menu_cleans_up_safely() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _app = setup_app();
 
     let menu = Menu::new_ref("Menu");
