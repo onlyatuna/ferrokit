@@ -23,6 +23,23 @@ pub fn forward_activations(
     tray.set_activation_handler(Box::new(move |reason| emitter.emit(&reason)));
 }
 
+/// Makes `tray` emit context menu requests on `signal`.
+pub fn forward_context_menu_requests(
+    tray: &mut dyn PlatformTrayIcon,
+    signal: &ferrokit_core::signal::Signal<ferrokit_gui::geometry::primitives::Point>,
+) {
+    let emitter = signal.clone();
+    tray.set_context_menu_handler(Box::new(move |pos| emitter.emit(&pos)));
+}
+
+/// Makes `tray` emit message clicks on `signal`.
+pub fn forward_message_clicks(
+    tray: &mut dyn PlatformTrayIcon,
+    signal: &ferrokit_core::signal::Signal<()>,
+) {
+    let emitter = signal.clone();
+    tray.set_message_clicked_handler(Box::new(move || emitter.emit(&())));
+}
 pub trait PlatformTrayIcon {
     /// Shows `icon` (`QSystemTrayIcon::setIcon`).
     fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str>;
@@ -42,6 +59,16 @@ pub trait PlatformTrayIcon {
         let _ = handler;
     }
 
+    fn set_context_menu_handler(
+        &mut self,
+        handler: Box<dyn Fn(ferrokit_gui::geometry::primitives::Point)>,
+    ) {
+        let _ = handler;
+    }
+
+    fn set_message_clicked_handler(&mut self, handler: Box<dyn Fn()>) {
+        let _ = handler;
+    }
     /// Reads and dispatches whatever the desktop sent to the icon since the last call, which
     /// may invoke the activation handler. The D-Bus back end receives `Activate`,
     /// `ContextMenu` and `SecondaryActivate` method calls, `org.freedesktop.DBus.Properties`

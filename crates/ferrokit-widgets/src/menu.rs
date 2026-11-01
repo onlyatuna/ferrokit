@@ -286,11 +286,14 @@ impl Menu {
     pub fn new_ref(title: impl Into<String>) -> MenuRef {
         Rc::new(RefCell::new(Self::new(title)))
     }
+    /// Returns whether the menu is visible (`QWidget::isVisible`).
+    pub fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
 
     pub fn title(&self) -> &str {
         &self.title
     }
-
     /// Sets the title and keeps the menu action text in sync.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();

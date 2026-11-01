@@ -93,6 +93,7 @@ pub struct DbusStatusNotifierItem {
     connection: Mutex<Option<DbusConnection>>,
     last_message: Option<(String, String, crate::platform_tray::TrayMessageIcon, u32)>,
     activation_handler: Option<Box<dyn Fn(TrayActivation)>>,
+    context_menu_handler: Option<Box<dyn Fn(ferrokit_gui::geometry::primitives::Point)>>,
     /// The notifier `bind_event_dispatcher` registered for the bus socket.
     notifier: Option<std::sync::Arc<SocketNotifier>>,
 }
@@ -128,6 +129,7 @@ impl DbusStatusNotifierItem {
             connection: Mutex::new(None),
             last_message: None,
             activation_handler: None,
+            context_menu_handler: None,
             notifier: None,
         }
     }
@@ -213,10 +215,12 @@ impl DbusStatusNotifierItem {
 
     /// What the host's `ContextMenu(x, y)` call does: [`TrayActivation::Context`]
     /// (`QStatusNotifierItemAdaptor::ContextMenu`).
-    pub fn context_menu(&mut self, _x: i32, _y: i32) {
+    pub fn context_menu(&mut self, x: i32, y: i32) {
         self.emit_activated(TrayActivation::Context);
+        if let Some(handler) = &self.context_menu_handler {
+            handler(ferrokit_gui::geometry::primitives::Point::new(x, y));
+        }
     }
-
     /// What the host's `SecondaryActivate(x, y)` call does: [`TrayActivation::MiddleClick`]
     /// (`QStatusNotifierItemAdaptor::SecondaryActivate`).
     pub fn secondary_activate(&mut self, _x: i32, _y: i32) {
@@ -513,6 +517,12 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.activation_handler = Some(handler);
     }
 
+    fn set_context_menu_handler(
+        &mut self,
+        handler: Box<dyn Fn(ferrokit_gui::geometry::primitives::Point)>,
+    ) {
+        self.context_menu_handler = Some(handler);
+    }
     /// Reads the messages that arrived on the bus socket and handles each: method calls to the
     /// item by [`handle_message`], the registration reply (which sets
     /// [`is_registered`](DbusStatusNotifierItem::is_registered)) and `NameOwnerChanged`

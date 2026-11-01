@@ -393,7 +393,7 @@ fn test_system_tray_from_icon_and_with_tray() {
     let platform_tray =
         ferrokit_platform::tray_icon::TrayIcon::from_icon("Custom", &icon).expect("platform tray");
     let custom_tray = SystemTrayIcon::with_tray(platform_tray).expect("with_tray");
-    assert_eq!(custom_tray.tooltip(), "");
+    assert_eq!(custom_tray.tooltip(), "Custom");
 }
 
 #[test]

@@ -21,21 +21,6 @@ pub type ActivationReason = TrayActivation;
 /// Type alias matching Qt's `QSystemTrayIcon::MessageIcon`.
 pub type MessageIcon = TrayMessageIcon;
 
-/// Thread-affine wrapper enabling capturing `MenuRef` inside `Signal::connect` closure.
-struct MainThread<T>(T);
-
-// SAFETY: `SystemTrayIcon` is strictly thread-affine (`!Send + !Sync`), created and accessed
-// only on the main thread (enforced by [`ThreadContext::assert_main_thread`]). The wrapped
-// value is only accessed and dropped on the main thread.
-unsafe impl<T> Send for MainThread<T> {}
-// SAFETY: Same as `Send`; access is restricted to the main thread.
-unsafe impl<T> Sync for MainThread<T> {}
-
-impl<T> MainThread<T> {
-    fn get(&self) -> &T {
-        &self.0
-    }
-}
 fn default_blank_icon() -> Icon {
     let mut pixmap = Pixmap::new(16, 16).expect("pixmap allocation");
     pixmap.fill(Color::TRANSPARENT);
@@ -73,18 +58,20 @@ impl SystemTrayIcon {
 
     /// Creates a system tray icon showing the given icon (`QSystemTrayIcon(const QIcon &)`).
     pub fn from_icon(icon: &Icon) -> Result<Self, &'static str> {
-        ThreadContext::assert_main_thread("SystemTrayIcon::new");
+        ThreadContext::assert_main_thread("SystemTrayIcon::from_icon");
         let mut platform_tray = TrayIcon::from_icon("", icon)?;
         let _ = platform_tray.hide(); // Icons are initially invisible in Qt
         let mut tray = Self::with_tray(platform_tray)?;
         tray.current_icon = Some(icon.clone());
         Ok(tray)
     }
+
     /// Wraps an existing platform tray icon.
     pub fn with_tray(platform_tray: Box<TrayIcon>) -> Result<Self, &'static str> {
-        ThreadContext::assert_main_thread("SystemTrayIcon::new");
+        ThreadContext::assert_main_thread("SystemTrayIcon::with_tray");
         let activated = platform_tray.on_activated.clone();
         let message_clicked = platform_tray.on_message_clicked.clone();
+        let tooltip = platform_tray.tooltip().to_string();
         Ok(Self {
             platform_tray,
             menu: None,
@@ -92,7 +79,7 @@ impl SystemTrayIcon {
             message_clicked,
             menu_connection: None,
             current_icon: None,
-            tooltip: String::new(),
+            tooltip,
             _marker: PhantomData,
         })
     }
@@ -100,22 +87,36 @@ impl SystemTrayIcon {
     /// Sets the context menu (`QSystemTrayIcon::setContextMenu`).
     ///
     /// When the tray icon requests a context menu (e.g. on right-click),
-    /// the custom menu is popped up modally at the anchor point via [`Menu::exec_popup`].
     pub fn set_context_menu(&mut self, menu: MenuRef) {
+        ThreadContext::assert_main_thread("SystemTrayIcon::set_context_menu");
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|m| std::rc::Rc::ptr_eq(m, &menu))
+        {
+            return;
+        }
         if let Some(conn) = self.menu_connection.take() {
             self.platform_tray
                 .on_context_menu_requested
                 .disconnect(conn);
         }
-        let menu_holder = MainThread(menu.clone());
-        let conn = self
-            .platform_tray
-            .on_context_menu_requested
-            .connect(move |pos: &Point| {
-                ThreadContext::assert_main_thread("SystemTrayIcon context menu");
-                let pos = *pos;
-                Menu::exec_popup(menu_holder.get(), pos);
-            });
+        let menu_weak = std::rc::Rc::downgrade(&menu);
+        let conn =
+            self.platform_tray
+                .on_context_menu_requested
+                .connect_local(move |pos: &Point| {
+                    ThreadContext::assert_main_thread("SystemTrayIcon context menu");
+                    let Some(menu) = menu_weak.upgrade() else {
+                        return;
+                    };
+                    // Reentrancy guard: if the menu is already popped up, skip duplicate invocation.
+                    if menu.borrow().is_visible() {
+                        return;
+                    }
+                    let pos = *pos;
+                    Menu::exec_popup(&menu, pos);
+                });
         self.menu = Some(menu);
         self.menu_connection = Some(conn);
     }
@@ -127,6 +128,7 @@ impl SystemTrayIcon {
 
     /// Clears the context menu.
     pub fn clear_context_menu(&mut self) {
+        ThreadContext::assert_main_thread("SystemTrayIcon::clear_context_menu");
         if let Some(conn) = self.menu_connection.take() {
             self.platform_tray
                 .on_context_menu_requested
@@ -137,6 +139,7 @@ impl SystemTrayIcon {
 
     /// Sets the tray icon (`QSystemTrayIcon::setIcon`).
     pub fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::set_icon");
         self.platform_tray.set_icon_from(icon)?;
         self.current_icon = Some(icon.clone());
         Ok(())
@@ -149,6 +152,7 @@ impl SystemTrayIcon {
 
     /// Sets the tooltip shown on hover (`QSystemTrayIcon::setToolTip`).
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::set_tooltip");
         let s = tooltip.into();
         self.platform_tray.set_tooltip(s.as_str())?;
         self.tooltip = s;
@@ -162,11 +166,13 @@ impl SystemTrayIcon {
 
     /// Shows the icon in the system tray (`QSystemTrayIcon::show`).
     pub fn show(&mut self) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::show");
         self.platform_tray.show()
     }
 
     /// Hides the icon from the system tray (`QSystemTrayIcon::hide`).
     pub fn hide(&mut self) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::hide");
         self.platform_tray.hide()
     }
 
@@ -213,14 +219,7 @@ impl SystemTrayIcon {
 
     /// Returns whether balloon messages are supported by the OS (`QSystemTrayIcon::supportsMessages`).
     pub fn supports_messages(&self) -> bool {
-        #[cfg(windows)]
-        {
-            self.platform_tray.supports_messages()
-        }
-        #[cfg(not(windows))]
-        {
-            true
-        }
+        self.platform_tray.supports_messages()
     }
 
     /// Returns the screen rectangle occupied by the tray icon (`QSystemTrayIcon::geometry`).

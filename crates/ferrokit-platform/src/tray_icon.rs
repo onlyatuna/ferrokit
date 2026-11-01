@@ -347,8 +347,6 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                         ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32,
                     );
                     let pos = crate::screen::native_cursor_to_logical(native);
-                    // `try_borrow`: busy while `TrayIcon::with_menu_mut` runs; then no menu.
-                    let has_menu = shared.menu.try_borrow().is_ok_and(|m| m.is_some());
                     shared.on_activated.emit(&TrayActivation::Context);
                     if shared.closed.get() {
                         return 0;
@@ -357,7 +355,8 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     if shared.closed.get() {
                         return 0;
                     }
-                    if has_menu && !shared.closed.get() {
+                    // Re-evaluate shared.menu dynamically in case a slot attached or removed it.
+                    if !shared.closed.get() && shared.menu.try_borrow().is_ok_and(|m| m.is_some()) {
                         shared.show_context_menu_at(pos);
                     }
                     return 0;
@@ -1392,11 +1391,13 @@ pub struct TrayIcon {
     inner: Box<dyn crate::platform_tray::PlatformTrayIcon>,
     /// Whether the icon is shown (`QSystemTrayIcon::isVisible`): messages are dropped while it is not.
     visible: bool,
+    tooltip: String,
     pub on_menu_action: Signal<u32>,
     pub on_activated: Signal<TrayActivation>,
     pub on_message_clicked: Signal<()>,
     pub on_context_menu_requested: Signal<Point>,
 }
+
 #[cfg(not(windows))]
 impl TrayIcon {
     /// A tray icon showing `icon` (`QSystemTrayIcon(const QIcon &)`).
@@ -1408,6 +1409,7 @@ impl TrayIcon {
         let mut inner = crate::integration::platform().create_tray_icon(&title_str, icon)?;
         let shown = inner.show().is_ok();
         let mut tray = Self::with_backend(inner);
+        tray.tooltip = title_str;
         tray.visible = shown;
         Ok(tray)
     }
@@ -1416,14 +1418,22 @@ impl TrayIcon {
     /// (`QSystemTrayIcon::activated`).
     pub fn with_backend(mut inner: Box<dyn crate::platform_tray::PlatformTrayIcon>) -> Box<Self> {
         let on_activated = Signal::new();
+        let on_message_clicked = Signal::new();
+        let on_context_menu_requested = Signal::new();
         crate::platform_tray::forward_activations(inner.as_mut(), &on_activated);
+        crate::platform_tray::forward_context_menu_requests(
+            inner.as_mut(),
+            &on_context_menu_requested,
+        );
+        crate::platform_tray::forward_message_clicks(inner.as_mut(), &on_message_clicked);
         Box::new(Self {
             inner,
             visible: false,
+            tooltip: String::new(),
             on_menu_action: Signal::new(),
             on_activated,
-            on_message_clicked: Signal::new(),
-            on_context_menu_requested: Signal::new(),
+            on_message_clicked,
+            on_context_menu_requested,
         })
     }
 
@@ -1460,7 +1470,17 @@ impl TrayIcon {
     }
 
     pub fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str> {
-        self.inner.set_tooltip(tooltip)
+        self.inner.set_tooltip(tooltip)?;
+        self.tooltip = tooltip.to_string();
+        Ok(())
+    }
+
+    pub fn tooltip(&self) -> &str {
+        &self.tooltip
+    }
+
+    pub fn supports_messages(&self) -> bool {
+        self.inner.supports_messages()
     }
     pub fn is_visible(&self) -> bool {
         self.visible
