@@ -2,7 +2,7 @@
 //! `qGeomCalc` (`qlayoutengine.cpp`) on equal-stretch chains, the shape of a `QGridLayout` whose
 //! columns all have stretch 1: each entry's smart size hint is its minimum, an entry that needs
 //! more than its share keeps its minimum and the others share the rest.
-use ferrokit_widgets::layout_engine::{q_geom_calc, LayoutStruct, LAYOUT_SIZE_MAX};
+use ferrokit_widgets::layout_engine::{LAYOUT_SIZE_MAX, LayoutStruct, q_geom_calc};
 
 fn stretch_column(min: i32) -> LayoutStruct {
     let mut data = LayoutStruct::default();

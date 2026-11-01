@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_gui::paint::{Painter, Pixmap};
+use ferrokit_widgets::Widget;
 use ferrokit_widgets::action::Action;
 use ferrokit_widgets::button::Button;
 use ferrokit_widgets::menu::Menu;
 use ferrokit_widgets::style::{ButtonStyleOption, Style};
-use ferrokit_widgets::Widget;
 
 struct CountingStyle(Rc<Cell<usize>>);
 

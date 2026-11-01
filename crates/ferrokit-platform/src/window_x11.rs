@@ -13,8 +13,8 @@ use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 use ferrokit_gui::paint::Pixmap;
 
 use crate::platform_window::PlatformWindow;
-use crate::surface::x11::X11ShmSurface;
 use crate::surface::PlatformSurface;
+use crate::surface::x11::X11ShmSurface;
 use crate::window::WindowFlags;
 use crate::window_system_interface::{
     KeyboardModifiers, MouseButton, PressedButtons, WheelDelta, WindowSystemEvent,
@@ -532,10 +532,11 @@ impl PlatformWindow for X11NativeWindow {
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
         let mut surface_guard = self.surface.lock().unwrap();
-        if let Some(surf) = surface_guard.as_mut() {
-            if rect.width > 0 && rect.height > 0 {
-                let _ = surf.resize(rect.width as u32, rect.height as u32);
-            }
+        if let Some(surf) = surface_guard.as_mut()
+            && rect.width > 0
+            && rect.height > 0
+        {
+            let _ = surf.resize(rect.width as u32, rect.height as u32);
         }
     }
 

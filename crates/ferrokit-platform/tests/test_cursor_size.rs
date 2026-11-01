@@ -3,7 +3,7 @@
 //! Expected values are worked out by hand from that source with `SM_CXCURSOR` = 32 (the Windows
 //! default), i.e. `baseSize` = 16, not by running the port.
 
-use ferrokit_platform::cursor::{windows_cursor_size, GenericCursor, PlatformCursor};
+use ferrokit_platform::cursor::{GenericCursor, PlatformCursor, windows_cursor_size};
 
 #[test]
 fn without_the_registry_value_the_cursor_is_half_the_base_size() {

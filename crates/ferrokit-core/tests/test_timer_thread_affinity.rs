@@ -11,9 +11,9 @@ use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -22,10 +22,10 @@ use ferrokit_core::event_loop::EventLoop;
 #[allow(deprecated)]
 use ferrokit_core::object::move_to_thread;
 use ferrokit_core::object::{
+    MoveByIdError, MoveError, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
     add_owned_child, dispatch_to_object, move_to_thread_by_id, query_object_children,
     query_object_thread, register_owned_qobject, register_qobject_ptr, reparent, set_parent,
-    set_parent_by_id, unregister_qobject, with_object, MoveByIdError, MoveError, ObjectData,
-    ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    set_parent_by_id, unregister_qobject, with_object,
 };
 use ferrokit_core::timer::Timer;
 

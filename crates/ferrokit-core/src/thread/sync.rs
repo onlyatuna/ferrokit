@@ -4,7 +4,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Condvar, LockResult, Mutex as StdMutex, RwLock as StdRwLock, TryLockError};
-use std::thread::{current as current_thread, ThreadId as StdThreadId};
+use std::thread::{ThreadId as StdThreadId, current as current_thread};
 use std::time::{Duration, Instant};
 
 // =============================================================================
@@ -137,10 +137,13 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
 impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("Mutex");
-        if let Some(guard) = self.try_lock() {
-            d.field("data", &&*guard);
-        } else {
-            d.field("data", &format_args!("<locked>"));
+        match self.try_lock() {
+            Some(guard) => {
+                d.field("data", &&*guard);
+            }
+            _ => {
+                d.field("data", &format_args!("<locked>"));
+            }
         }
         d.finish()
     }

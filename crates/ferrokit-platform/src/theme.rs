@@ -123,7 +123,7 @@ pub trait PlatformTheme: Send + Sync {
 pub mod win32_theme {
     use super::*;
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
 
     pub struct Win32Theme {
@@ -277,7 +277,7 @@ pub mod win32_theme {
 
         fn menu_font_family(&self) -> Option<String> {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SystemParametersInfoW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS,
+                NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SystemParametersInfoW,
             };
             // SAFETY: an all-zero `NONCLIENTMETRICSW` is a valid value (integers and integer arrays
             // only); `cbSize` is set to its size before the call, as `SPI_GETNONCLIENTMETRICS`
@@ -626,7 +626,7 @@ pub mod cocoa_theme {
             core: &Arc<SchemeCore>,
             slot: &Arc<Mutex<Option<AppearanceObserver>>>,
         ) {
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_main_np() -> i32;
             }
             use ferrokit_core::event::{Event, EventKind};
@@ -667,7 +667,7 @@ pub mod cocoa_theme {
         /// Registers the observers; the main thread only.
         #[cfg(target_os = "macos")]
         fn register(core: &Arc<SchemeCore>) -> Option<AppearanceObserver> {
-            use crate::objc_runtime::{nsstring_from_str, ActionTarget, Class, Id, ObjcMsg, Sel};
+            use crate::objc_runtime::{ActionTarget, Class, Id, ObjcMsg, Sel, nsstring_from_str};
             // Weak: the observers must not keep the theme's state alive.
             let weak = Arc::downgrade(core);
             let target = ActionTarget::new_shared(move || {
@@ -723,7 +723,7 @@ pub mod cocoa_theme {
         /// effective appearance's best match among Aqua and DarkAqua is DarkAqua; Light otherwise.
         #[cfg(target_os = "macos")]
         pub fn query_color_scheme() -> ColorScheme {
-            use crate::objc_runtime::{nsstring_from_str, Class, Id, ObjcMsg, Sel};
+            use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, nsstring_from_str};
             let nsapp_class = Class::get("NSApplication").unwrap_or(Class::NIL);
             // SAFETY: `nsapp_class` is `NSApplication` or nil; messaging nil is a no-op returning
             // nil, and `sharedApplication` takes no arguments and returns an object.
@@ -812,7 +812,7 @@ pub mod cocoa_theme {
         /// other themes do.
         #[cfg(target_os = "macos")]
         fn request_color_scheme(&self, scheme: ColorScheme) {
-            use crate::objc_runtime::{nsstring_from_str, Class, Id, ObjcMsg, Sel};
+            use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, nsstring_from_str};
             let name = match scheme {
                 ColorScheme::Dark => Some("NSAppearanceNameDarkAqua"),
                 ColorScheme::Light => Some("NSAppearanceNameAqua"),
@@ -1226,7 +1226,7 @@ pub mod unix_theme {
     mod tests {
         use super::*;
         use crate::theme_portal::PortalEvent;
-        use std::sync::mpsc::{channel, Sender};
+        use std::sync::mpsc::{Sender, channel};
         use std::time::{Duration, Instant};
 
         /// A generous upper bound for a read that finds its answer in: a missed wake-up would show
@@ -1427,12 +1427,14 @@ pub mod unix_theme {
         #[test]
         fn other_threads_are_not_listener_threads() {
             assert!(!std::thread::spawn(on_listener_thread).join().unwrap());
-            assert!(std::thread::spawn(|| {
-                mark_listener_thread();
-                on_listener_thread()
-            })
-            .join()
-            .unwrap());
+            assert!(
+                std::thread::spawn(|| {
+                    mark_listener_thread();
+                    on_listener_thread()
+                })
+                .join()
+                .unwrap()
+            );
         }
     }
 }
@@ -1489,8 +1491,8 @@ pub fn install_style_hints_theme(theme: Arc<dyn PlatformTheme>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_generic_theme_color_scheme_and_signals() {

@@ -7,13 +7,13 @@
 //!   It only validates thread affinity, removes existing entry, and prepends to the filter list.
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    install_event_filter, register_qobject_ptr, send_event, unregister_qobject, ObjectData,
-    ObjectId, QObject,
+    ObjectData, ObjectId, QObject, install_event_filter, register_qobject_ptr, send_event,
+    unregister_qobject,
 };
 
 struct SelfFilterWidget {

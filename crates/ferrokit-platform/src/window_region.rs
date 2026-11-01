@@ -3,21 +3,21 @@
 //! (`QWindowsWindow::updateTransientParent`).
 
 use crate::win32_handles::OwnedRgn;
+use ferrokit_gui::geometry::Region;
 #[cfg(test)]
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_gui::geometry::Region;
 use std::ptr;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    ClientToScreen, CreateRectRgn, ExtCreateRegion, OffsetRgn, SetWindowRgn, RDH_RECTANGLES,
-    RGNDATA,
+    ClientToScreen, CreateRectRgn, ExtCreateRegion, OffsetRgn, RDH_RECTANGLES, RGNDATA,
+    SetWindowRgn,
 };
 #[cfg(test)]
 use windows_sys::Win32::Graphics::Gdi::{GetRegionData, GetWindowRgn, HRGN};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetParent, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    SetWindowLongPtrW, SetWindowPos, GWLP_HWNDPARENT, GWL_STYLE, GW_OWNER, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CHILD,
+    EnumWindows, GW_OWNER, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetParent, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_CHILD,
 };
 
 /// `RGNDATAHEADER` is 32 bytes (`dwSize`, `iType`, `nCount`, `nRgnSize`, `rcBound`).
@@ -339,7 +339,7 @@ mod tests {
     use crate::platform_window::PlatformWindow;
     use crate::window::{NativeWindow, WindowFlags};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, IsWindow, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        GWL_EXSTYLE, GetWindowLongPtrW, IsWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
 
     fn rounded_region() -> Region {

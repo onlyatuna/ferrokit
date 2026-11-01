@@ -9,11 +9,11 @@ use std::ffi::c_void;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, HRGN,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GetDC, HBITMAP, HDC, HGDIOBJ, HRGN, ReleaseDC, SelectObject,
 };
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyIcon, DestroyMenu, HICON, HMENU,
 };
@@ -494,11 +494,11 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Graphics::Gdi::CreateRectRgn;
     use windows_sys::Win32::Graphics::Gdi::{
-        CreateCompatibleBitmap, GetCurrentObject, GetObjectW, BITMAP, OBJ_BITMAP,
+        BITMAP, CreateCompatibleBitmap, GetCurrentObject, GetObjectW, OBJ_BITMAP,
     };
     use windows_sys::Win32::System::Memory::GlobalSize;
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS,
+        GR_GDIOBJECTS, GetCurrentProcess, GetGuiResources,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{AppendMenuW, IsMenu, MF_POPUP, MF_STRING};
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};

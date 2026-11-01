@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use ferrokit_platform::dialogs_cocoa::{allowed_extensions, CocoaDialogs, DialogRuntime};
+use ferrokit_platform::dialogs_cocoa::{CocoaDialogs, DialogRuntime, allowed_extensions};
 use ferrokit_platform::objc_runtime::{Id, NSInteger};
 use ferrokit_platform::{
     DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs,
@@ -298,9 +298,10 @@ fn open_files_returns_all_urls_in_order_and_cancel_is_none() {
     let log = rt(&d).log();
     assert!(log.contains(&"[NSOpenPanel setAllowsMultipleSelection: true]".to_string()));
     assert!(log.contains(&"[NSOpenPanel URLs]".to_string()));
-    assert!(!log
-        .iter()
-        .any(|l| l.contains("setMessage:") || l.contains("setDirectoryURL:")));
+    assert!(
+        !log.iter()
+            .any(|l| l.contains("setMessage:") || l.contains("setDirectoryURL:"))
+    );
 
     let cancelled = dialogs();
     rt(&cancelled).respond(0, &["/ignored"]);
@@ -417,9 +418,11 @@ fn icon_maps_to_alert_style() {
         let d = dialogs();
         rt(&d).respond(1000, &[]);
         d.message_box("t", "m", icon, MessageBoxButtons::Ok);
-        assert!(rt(&d)
-            .log()
-            .contains(&format!("[NSAlert setAlertStyle: {style}]")));
+        assert!(
+            rt(&d)
+                .log()
+                .contains(&format!("[NSAlert setAlertStyle: {style}]"))
+        );
     }
 }
 

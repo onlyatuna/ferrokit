@@ -14,9 +14,9 @@ use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::widget::{EmptyWidget, WidgetRef};
 use ferrokit_widgets::window::Window;
-use ferrokit_widgets::{adopt_tree, Widget};
+use ferrokit_widgets::{Widget, adopt_tree};
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindow, GW_HWNDNEXT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GW_HWNDNEXT, GetForegroundWindow, GetWindow};
 
 fn window(title: &str) -> Window {
     Window::new(title, Rect::new(100, 100, 300, 200), WindowFlags::NORMAL).expect("window")

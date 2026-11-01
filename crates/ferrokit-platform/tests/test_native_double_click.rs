@@ -13,7 +13,7 @@ use ferrokit_platform::*;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClassLongPtrW, SendMessageW, CS_DBLCLKS, GCL_STYLE, WM_LBUTTONDBLCLK, WM_RBUTTONDBLCLK,
+    CS_DBLCLKS, GCL_STYLE, GetClassLongPtrW, SendMessageW, WM_LBUTTONDBLCLK, WM_RBUTTONDBLCLK,
 };
 
 fn window_with_log() -> (

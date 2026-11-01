@@ -12,8 +12,9 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    dispatch_to_object, move_to_thread_by_id, register_owned_qobject, register_qobject_ptr,
-    unregister_qobject, with_object, MoveByIdError, ObjectData, ObjectId, QObject, ThreadId,
+    MoveByIdError, ObjectData, ObjectId, QObject, ThreadId, dispatch_to_object,
+    move_to_thread_by_id, register_owned_qobject, register_qobject_ptr, unregister_qobject,
+    with_object,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.

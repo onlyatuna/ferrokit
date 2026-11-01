@@ -17,7 +17,7 @@ use ferrokit_platform::screen::PlatformScreen;
 use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::WindowSystemEventHandler;
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
+    GenericPlatformIntegration, PlatformIntegration, WindowFlags, set_platform_integration,
 };
 use ferrokit_widgets::{Action, Menu, Widget};
 use parking_lot::Mutex;
@@ -244,11 +244,13 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
         }
         PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0);
     }
-    assert!(Menu::exec_popup(
-        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-        Point::new(1900, 100)
-    )
-    .is_none());
+    assert!(
+        Menu::exec_popup(
+            &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+            Point::new(1900, 100)
+        )
+        .is_none()
+    );
 
     let log = log.lock();
     (log.frames.clone(), log.created[0])

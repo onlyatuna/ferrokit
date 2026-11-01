@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn test_win32_clipboard_skips_gdi_formats_and_bounds_unterminated_text() {
         use windows_sys::Win32::Graphics::Gdi::CreateBitmap;
-        use windows_sys::Win32::System::Memory::{GlobalAlloc, GMEM_MOVEABLE};
+        use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc};
         // Single test: both cases share the process-wide clipboard.
         // SAFETY: test-only; the arguments are plain integers and a null bits pointer, which
         // CreateBitmap permits (uninitialised bitmap). The result is null-checked below.

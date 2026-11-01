@@ -5,8 +5,8 @@
 //! polygon primitives, and configurable winding/even-odd fill rules.
 
 use super::qpath_geom::{
-    curves_for_arc, find_ellipse_coords, fuzzy_compare, is_valid_angle, is_valid_coord, point_eq,
-    rect_has_valid_coords, Rc, P,
+    P, Rc, curves_for_arc, find_ellipse_coords, fuzzy_compare, is_valid_angle, is_valid_coord,
+    point_eq, rect_has_valid_coords,
 };
 use crate::geometry::primitives::{PointF, RectF};
 use tiny_skia::{FillRule as SkiaFillRule, Path, PathBuilder};

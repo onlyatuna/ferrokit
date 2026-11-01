@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use super::dbus_connection::{
-    DbusConnection, DbusMessage, DbusValue, DBUS_MESSAGE_TYPE_ERROR, DBUS_MESSAGE_TYPE_METHOD_CALL,
-    DBUS_MESSAGE_TYPE_METHOD_RETURN, DBUS_MESSAGE_TYPE_SIGNAL,
+    DBUS_MESSAGE_TYPE_ERROR, DBUS_MESSAGE_TYPE_METHOD_CALL, DBUS_MESSAGE_TYPE_METHOD_RETURN,
+    DBUS_MESSAGE_TYPE_SIGNAL, DbusConnection, DbusMessage, DbusValue,
 };
 use crate::menu::PlatformMenu;
 use crate::platform_tray::PlatformTrayIcon;
@@ -300,24 +300,24 @@ impl DbusStatusNotifierItem {
             }
         };
         const NO_REPLY_EXPECTED: u8 = 0x1;
-        if msg.flags & NO_REPLY_EXPECTED == 0 {
-            if let Some(conn) = self.connection.lock().unwrap().as_mut() {
-                let serial = conn.next_serial();
-                let destination = msg.sender.as_deref().unwrap_or("");
-                let reply = match reply {
-                    Reply::Empty => DbusMessage::method_return(msg.serial, destination, serial),
-                    Reply::Body(body) => {
-                        let mut reply = DbusMessage::method_return(msg.serial, destination, serial);
-                        reply.signature = body.signature;
-                        reply.body = body.body;
-                        reply
-                    }
-                    Reply::Error(name, description) => {
-                        DbusMessage::error(msg.serial, destination, serial, name, &description)
-                    }
-                };
-                let _ = conn.send_message(reply);
-            }
+        if msg.flags & NO_REPLY_EXPECTED == 0
+            && let Some(conn) = self.connection.lock().unwrap().as_mut()
+        {
+            let serial = conn.next_serial();
+            let destination = msg.sender.as_deref().unwrap_or("");
+            let reply = match reply {
+                Reply::Empty => DbusMessage::method_return(msg.serial, destination, serial),
+                Reply::Body(body) => {
+                    let mut reply = DbusMessage::method_return(msg.serial, destination, serial);
+                    reply.signature = body.signature;
+                    reply.body = body.body;
+                    reply
+                }
+                Reply::Error(name, description) => {
+                    DbusMessage::error(msg.serial, destination, serial, name, &description)
+                }
+            };
+            let _ = conn.send_message(reply);
         }
         true
     }

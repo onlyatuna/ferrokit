@@ -9,9 +9,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusTransport;
-use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_METHOD_RETURN;
 use ferrokit_platform::tray::PlatformTrayIcon;
+use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_METHOD_RETURN;
+use ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusTransport;
 use ferrokit_platform::{DbusConnection, DbusMessage, DbusStatusNotifierItem, TrayActivation};
 
 type Seen = Rc<RefCell<Vec<TrayActivation>>>;
@@ -78,9 +78,11 @@ fn status_notifier_methods_map_to_qt_activation_reasons() {
         .collect();
     let serials: Vec<_> = replies.iter().map(|m| m.reply_serial).collect();
     assert_eq!(serials, [Some(10), Some(11), Some(12), Some(13), Some(14)]);
-    assert!(replies
-        .iter()
-        .all(|m| m.destination.as_deref() == Some(":1.99")));
+    assert!(
+        replies
+            .iter()
+            .all(|m| m.destination.as_deref() == Some(":1.99"))
+    );
 }
 
 #[test]
@@ -95,10 +97,11 @@ fn calls_for_other_objects_and_members_are_ignored() {
     }
     item.process_events();
     assert!(seen.borrow().is_empty());
-    assert!(!bus
-        .received()
-        .iter()
-        .any(|m| m.msg_type == DBUS_MESSAGE_TYPE_METHOD_RETURN));
+    assert!(
+        !bus.received()
+            .iter()
+            .any(|m| m.msg_type == DBUS_MESSAGE_TYPE_METHOD_RETURN)
+    );
 }
 
 #[test]
@@ -109,10 +112,11 @@ fn no_reply_expected_calls_are_not_answered() {
     bus.push_to_client(&call.to_bytes());
     item.process_events();
     assert_eq!(*seen.borrow(), [TrayActivation::Trigger]);
-    assert!(!bus
-        .received()
-        .iter()
-        .any(|m| m.msg_type == DBUS_MESSAGE_TYPE_METHOD_RETURN));
+    assert!(
+        !bus.received()
+            .iter()
+            .any(|m| m.msg_type == DBUS_MESSAGE_TYPE_METHOD_RETURN)
+    );
 }
 
 #[test]
@@ -360,7 +364,9 @@ fn get_status_replies_with_a_variant_string_byte_exactly() {
     // Variant signature "s", one pad byte up to the 4-aligned length, then the NUL-terminated text.
     assert_eq!(
         reply.body,
-        [1, b's', 0, 0, 6, 0, 0, 0, b'A', b'c', b't', b'i', b'v', b'e', 0]
+        [
+            1, b's', 0, 0, 6, 0, 0, 0, b'A', b'c', b't', b'i', b'v', b'e', 0
+        ]
     );
 }
 
@@ -407,7 +413,7 @@ fn icon_pixmap_is_width_height_and_argb_bytes() {
     let reply = reply_to(&bus, 90);
     let mut expected = vec![7, b'a', b'(', b'i', b'i', b'a', b'y', b')', 0];
     expected.extend_from_slice(&[0; 3]); // up to the 4-aligned array length
-                                         // Two elements of 4 + 4 + 4 + bytes each; the second starts 8-aligned, after 4 padding bytes.
+    // Two elements of 4 + 4 + 4 + bytes each; the second starts 8-aligned, after 4 padding bytes.
     let first = 12 + 2 * 2 * 4;
     let second = 12 + 24 * 24 * 4;
     expected.extend_from_slice(&((first + 4 + second) as u32).to_le_bytes());
@@ -905,8 +911,8 @@ mod cocoa {
     /// the other, in either order.
     #[test]
     fn click_callback_and_activation_handler_coexist() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         ThreadContext::init_current(true, None);
         let runtime = MockObjcRuntime::instance();

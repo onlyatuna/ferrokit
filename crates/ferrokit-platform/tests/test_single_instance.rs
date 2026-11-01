@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_platform::{SingleInstance, SingleInstanceCommand, SingleInstanceResult};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn test_single_instance_command_conversion() {

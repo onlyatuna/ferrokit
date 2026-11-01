@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Rect, RectF};

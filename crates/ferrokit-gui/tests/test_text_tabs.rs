@@ -3,9 +3,9 @@
 //! margin of 0, `QTextOption::setTabStopDistance` on its default text option) with the synthetic
 //! oracle font (16 px; "a" is 7.5 px, "b" 7.625 px). The line layout itself is covered by the
 //! tab cases of `text_layout_oracle.txt`.
+use ferrokit_gui::text::TextDocument;
 use ferrokit_gui::text::font::{Font, SharedFontData};
 use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
-use ferrokit_gui::text::TextDocument;
 
 fn document(text: &str, tab_stop: Option<f32>, width: Option<f32>) -> (f32, usize) {
     let font = Font::new("FerrokitOracleText", 16.0).with_font_data(SharedFontData::from_vec(

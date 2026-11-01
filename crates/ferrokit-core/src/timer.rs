@@ -413,12 +413,9 @@ pub fn unregister_thread_timer_context() {
 
 pub fn has_thread_timer_context() -> bool {
     THREAD_TIMER_CONTEXT
-        .try_with(|ctx| {
-            if let Ok(borrow) = ctx.try_borrow() {
-                borrow.is_some()
-            } else {
-                false
-            }
+        .try_with(|ctx| match ctx.try_borrow() {
+            Ok(borrow) => borrow.is_some(),
+            _ => false,
         })
         .unwrap_or(false)
 }
@@ -532,10 +529,11 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
         for id in to_remove {
             let _entry = reg.unregister(id);
             #[cfg(windows)]
-            if let Some(entry) = _entry {
-                if entry.interval_ms > 0 && !ctx.internal_hwnd.is_null() {
-                    kill_native(ctx.internal_hwnd, id);
-                }
+            if let Some(entry) = _entry
+                && entry.interval_ms > 0
+                && !ctx.internal_hwnd.is_null()
+            {
+                kill_native(ctx.internal_hwnd, id);
             }
         }
         count
@@ -761,10 +759,10 @@ fn arm_source(
 /// With `receiver`, a timer registered for another object is left alone.
 fn disarm_in_context(ctx: &ThreadTimerContext, receiver: Option<ObjectId>, id: TimerId) -> bool {
     let mut reg = lock_unpoisoned(&ctx.registry);
-    if let Some(receiver) = receiver {
-        if reg.get(id).is_some_and(|entry| entry.receiver != receiver) {
-            return false;
-        }
+    if let Some(receiver) = receiver
+        && reg.get(id).is_some_and(|entry| entry.receiver != receiver)
+    {
+        return false;
     }
     // Only the Windows code below reads the entry (its registered interval).
     #[cfg_attr(not(windows), allow(unused_variables))]
@@ -937,11 +935,11 @@ impl TimerControl {
     /// The timer's current id, following a re-id from a thread move.
     fn current_id(&self) -> TimerId {
         let id = self.id.get();
-        if id.is_valid() {
-            if let Some(fresh) = take_reidentified(self.object_id, id) {
-                self.id.set(fresh);
-                return fresh;
-            }
+        if id.is_valid()
+            && let Some(fresh) = take_reidentified(self.object_id, id)
+        {
+            self.id.set(fresh);
+            return fresh;
         }
         id
     }
@@ -991,10 +989,10 @@ impl TimerControl {
         if self.is_active() {
             let id = self.current_id();
             let _ = THREAD_TIMER_CONTEXT.try_with(|ctx| {
-                if let Ok(borrow) = ctx.try_borrow() {
-                    if let Some(ctx) = borrow.as_ref() {
-                        disarm_in_context(ctx, Some(self.object_id), id);
-                    }
+                if let Ok(borrow) = ctx.try_borrow()
+                    && let Some(ctx) = borrow.as_ref()
+                {
+                    disarm_in_context(ctx, Some(self.object_id), id);
                 }
             });
             self.id.set(TimerId::INVALID);
@@ -1416,7 +1414,7 @@ pub(crate) fn begin_timer_delivery(
 /// consumes the tick of such a receiver must not strand the callback in its thread-local map
 /// either.
 pub(crate) fn send_tick(receiver: ObjectId, raw_id: u64) {
-    use crate::event_loop::{deliver_timer_event, TimerDelivery};
+    use crate::event_loop::{TimerDelivery, deliver_timer_event};
     let run_callback = match deliver_timer_event(receiver, raw_id) {
         TimerDelivery::NotDeliverable => true,
         TimerDelivery::Filtered => SINGLE_SHOT_CALLBACKS
@@ -2684,11 +2682,13 @@ mod receiver_index_tests {
             owner_timers(&owner).is_empty(),
             "{started} left in the list"
         );
-        assert!(registry
-            .lock()
-            .unwrap()
-            .ids_for_receiver(receiver)
-            .is_empty());
+        assert!(
+            registry
+                .lock()
+                .unwrap()
+                .ids_for_receiver(receiver)
+                .is_empty()
+        );
         drop(held);
         drop(owner);
     }
@@ -2711,7 +2711,7 @@ mod receiver_index_tests {
 
 #[cfg(test)]
 mod early_tick_tests {
-    use super::{classify_early_tick, EarlyTick};
+    use super::{EarlyTick, classify_early_tick};
 
     #[test]
     fn a_tick_near_its_expiry_is_held_and_one_a_grid_point_early_is_dropped() {
@@ -2728,7 +2728,7 @@ mod early_tick_tests {
 
 #[cfg(all(test, windows))]
 mod single_shot_source_tests {
-    use super::{precise, with_thread_timer_context, Timer};
+    use super::{Timer, precise, with_thread_timer_context};
     use crate::event_loop::EventLoop;
 
     /// A short `Timer::single_shot` is driven by the same native source as every other `Precise`
@@ -2757,10 +2757,10 @@ mod single_shot_source_tests {
 
 #[cfg(all(test, windows))]
 mod precise_delivery_tests {
+    use super::{ObjectId, TimerType};
     use super::{
         begin_timer_delivery, lock_unpoisoned, start_object_timer, with_thread_timer_context,
     };
-    use super::{ObjectId, TimerType};
     use crate::event_loop::EventLoop;
 
     /// With the clock fixed by the test: no delivery before the expiry, and after an overrun one

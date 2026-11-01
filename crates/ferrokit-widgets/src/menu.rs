@@ -15,7 +15,7 @@ use ferrokit_gui::paint::painter::{Painter, Pen, RenderHint};
 use ferrokit_gui::text::{Font, FontMetrics};
 use ferrokit_gui::tiny_skia::Color;
 
-use crate::action::{keys, Action, ActionRef, ActionWeak};
+use crate::action::{Action, ActionRef, ActionWeak, keys};
 use crate::focus::FocusPolicy;
 use crate::layout::Layout;
 use crate::size_policy::{Policy, QSizePolicy};
@@ -297,10 +297,10 @@ impl Menu {
     /// Sets the title and keeps the menu action text in sync.
     pub fn set_title(&mut self, title: impl Into<String>) {
         self.title = title.into();
-        if let Some(action) = self.menu_action.upgrade() {
-            if let Ok(mut a) = action.try_borrow_mut() {
-                a.set_text(self.title.clone());
-            }
+        if let Some(action) = self.menu_action.upgrade()
+            && let Ok(mut a) = action.try_borrow_mut()
+        {
+            a.set_text(self.title.clone());
         }
         self.update();
     }
@@ -324,10 +324,10 @@ impl Menu {
             self.separator_color = Color::from_rgba8(210, 210, 210, 255);
         }
         for action in &self.actions {
-            if let Some(sub) = action.borrow().menu() {
-                if let Ok(mut s) = sub.try_borrow_mut() {
-                    s.set_dark_mode(dark);
-                }
+            if let Some(sub) = action.borrow().menu()
+                && let Ok(mut s) = sub.try_borrow_mut()
+            {
+                s.set_dark_mode(dark);
             }
         }
         self.update();
@@ -342,10 +342,10 @@ impl Menu {
 
     pub fn set_icon(&mut self, icon: Icon) {
         self.icon = icon.clone();
-        if let Some(action) = self.menu_action.upgrade() {
-            if let Ok(mut a) = action.try_borrow_mut() {
-                a.set_icon(icon);
-            }
+        if let Some(action) = self.menu_action.upgrade()
+            && let Ok(mut a) = action.try_borrow_mut()
+        {
+            a.set_icon(icon);
         }
     }
 
@@ -593,10 +593,10 @@ impl Menu {
                 self.close_submenu();
             }
             self.actions.remove(pos);
-            if let Some((i, _)) = self.open_submenu.as_mut() {
-                if *i > pos {
-                    *i -= 1;
-                }
+            if let Some((i, _)) = self.open_submenu.as_mut()
+                && *i > pos
+            {
+                *i -= 1;
             }
             self.active = match self.active {
                 Some(a) if a == pos => None,
@@ -758,8 +758,8 @@ impl Menu {
         if menu.borrow().base.is_visible() {
             Self::hide_menu(menu);
         }
-        let chosen = menu.borrow().last_triggered.clone();
-        chosen
+
+        menu.borrow().last_triggered.clone()
     }
 
     /// Pops the menu up and runs it modally (`QMenu::exec`); `about_to_show`, `about_to_hide` and
@@ -788,16 +788,16 @@ impl Menu {
     #[cfg(windows)]
     fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
         use crate::window::Window;
-        use ferrokit_platform::{platform, WindowFlags};
+        use ferrokit_platform::{WindowFlags, platform};
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
             SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, LoadCursorW, PeekMessageW, PostQuitMessage,
-            PostThreadMessageW, SetCursor, SetForegroundWindow, TranslateMessage, IDC_ARROW, MSG,
-            PM_REMOVE, WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS,
+            DispatchMessageW, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+            PostQuitMessage, PostThreadMessageW, SetCursor, SetForegroundWindow, TranslateMessage,
+            WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS,
             WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
             WM_SETCURSOR,
         };
@@ -1239,13 +1239,13 @@ impl Menu {
         let Some(submenu) = submenu else {
             return;
         };
-        if let Some((open_idx, open)) = &self.open_submenu {
-            if *open_idx == idx {
-                if select_first {
-                    open.borrow_mut().select_first();
-                }
-                return;
+        if let Some((open_idx, open)) = &self.open_submenu
+            && *open_idx == idx
+        {
+            if select_first {
+                open.borrow_mut().select_first();
             }
+            return;
         }
         self.close_submenu();
         if !enabled {
@@ -1369,11 +1369,11 @@ impl Menu {
     pub fn covered_rect(&self) -> Rect {
         let g = self.base.geometry();
         let mut rect = Rect::new(0, 0, g.width, g.height);
-        if let Some((_, submenu)) = &self.open_submenu {
-            if let Ok(s) = submenu.try_borrow() {
-                let sg = s.base.geometry();
-                rect = rect.united(&s.covered_rect().translated(sg.x, sg.y));
-            }
+        if let Some((_, submenu)) = &self.open_submenu
+            && let Ok(s) = submenu.try_borrow()
+        {
+            let sg = s.base.geometry();
+            rect = rect.united(&s.covered_rect().translated(sg.x, sg.y));
         }
         rect
     }
@@ -1382,11 +1382,14 @@ impl Menu {
         let mut sig = vec![(self.active, self.open_submenu.as_ref().map(|(i, _)| *i))];
         let mut curr = self.open_submenu.as_ref().map(|(_, s)| s.clone());
         while let Some(sub_rc) = curr {
-            if let Ok(s) = sub_rc.try_borrow() {
-                sig.push((s.active, s.open_submenu.as_ref().map(|(i, _)| *i)));
-                curr = s.open_submenu.as_ref().map(|(_, next)| next.clone());
-            } else {
-                break;
+            match sub_rc.try_borrow() {
+                Ok(s) => {
+                    sig.push((s.active, s.open_submenu.as_ref().map(|(i, _)| *i)));
+                    curr = s.open_submenu.as_ref().map(|(_, next)| next.clone());
+                }
+                _ => {
+                    break;
+                }
             }
         }
         sig
@@ -1555,10 +1558,10 @@ impl Menu {
         }
         // Parity with Qt QMenu::mouseMoveEvent (qmenu.cpp:3511):
         // When mouse is inside this menu, clear active hover selection on open submenus
-        if let Some((_, submenu)) = &self.open_submenu {
-            if let Ok(mut sub) = submenu.try_borrow_mut() {
-                sub.set_active_index(None);
-            }
+        if let Some((_, submenu)) = &self.open_submenu
+            && let Ok(mut sub) = submenu.try_borrow_mut()
+        {
+            sub.set_active_index(None);
         }
         // While the pointer travels diagonally towards the open submenu, keep the submenu and
         // the active item (mirrors Qt's sloppyState). Any other move selects the item under it.
@@ -1592,14 +1595,15 @@ impl Menu {
             self.hide_now(true);
             return MenuOutcome::Closed;
         }
-        if let Some(idx) = self.index_at(pos) {
-            if self.is_selectable(idx) && self.has_submenu(idx) {
-                if self.open_submenu.as_ref().is_some_and(|(i, _)| *i == idx) {
-                    self.close_submenu();
-                } else {
-                    self.set_active_index(Some(idx));
-                    self.open_submenu_at(idx, false);
-                }
+        if let Some(idx) = self.index_at(pos)
+            && self.is_selectable(idx)
+            && self.has_submenu(idx)
+        {
+            if self.open_submenu.as_ref().is_some_and(|(i, _)| *i == idx) {
+                self.close_submenu();
+            } else {
+                self.set_active_index(Some(idx));
+                self.open_submenu_at(idx, false);
             }
         }
         MenuOutcome::Handled
@@ -2128,19 +2132,19 @@ impl Widget for Menu {
             self.paint_item(painter, &a, rect, self.active == Some(i));
         }
 
-        if let Some((_, submenu)) = &self.open_submenu {
-            if let Ok(mut sub) = submenu.try_borrow_mut() {
-                let sg = sub.base.geometry();
-                painter.save();
-                // A sub-menu is its own native window in Qt, so it starts on a whole pixel.
-                let dpr = painter.device_pixel_ratio();
-                painter.translate_device(
-                    (sg.x as f32 * dpr).round() as i32,
-                    (sg.y as f32 * dpr).round() as i32,
-                );
-                sub.paint_event(painter);
-                painter.restore();
-            }
+        if let Some((_, submenu)) = &self.open_submenu
+            && let Ok(mut sub) = submenu.try_borrow_mut()
+        {
+            let sg = sub.base.geometry();
+            painter.save();
+            // A sub-menu is its own native window in Qt, so it starts on a whole pixel.
+            let dpr = painter.device_pixel_ratio();
+            painter.translate_device(
+                (sg.x as f32 * dpr).round() as i32,
+                (sg.y as f32 * dpr).round() as i32,
+            );
+            sub.paint_event(painter);
+            painter.restore();
         }
     }
 
@@ -2233,7 +2237,7 @@ fn paint_submenu_arrow(painter: &mut Painter, item: Rect, color: Color) {
     let dim = item.height / 2;
     let right = item.x + item.width - 1; // QRect::right()
     let center_y = item.y + (item.height - 1) / 2; // QRect::center().y()
-                                                   // QRect::moveCenter on a dim x dim rect.
+    // QRect::moveCenter on a dim x dim rect.
     let (left, top) = (right - dim - (dim - 1) / 2, center_y - (dim - 1) / 2);
     let square = Rect::new(left, top, dim, dim);
 

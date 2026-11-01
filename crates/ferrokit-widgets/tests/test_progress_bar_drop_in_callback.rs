@@ -20,8 +20,8 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 
 use ferrokit_core::object::{
-    add_owned_child, query_object_thread, register_owned_qobject, register_qobject_ptr,
-    with_object_mut, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, add_owned_child, query_object_thread,
+    register_owned_qobject, register_qobject_ptr, with_object_mut,
 };
 use ferrokit_widgets::progress_bar::ProgressBar;
 use ferrokit_widgets::widget::Widget;

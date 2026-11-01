@@ -43,10 +43,10 @@ impl WindowsSurface {
         width: u32,
         height: u32,
     ) -> Result<Self, &'static str> {
-        if crate::window::is_dcomp_enabled() {
-            if let Ok(dcomp) = DCompSurface::new(hwnd, width, height) {
-                return Ok(Self::DirectComposition(dcomp));
-            }
+        if crate::window::is_dcomp_enabled()
+            && let Ok(dcomp) = DCompSurface::new(hwnd, width, height)
+        {
+            return Ok(Self::DirectComposition(dcomp));
         }
         let layered = Win32LayeredSurface::new(hwnd, width, height)?;
         Ok(Self::Layered(layered))

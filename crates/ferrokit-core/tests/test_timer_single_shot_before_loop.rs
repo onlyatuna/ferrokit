@@ -6,7 +6,7 @@
 //! runs on that thread. Each test uses a fresh thread, so the "no loop yet" state is exact.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;

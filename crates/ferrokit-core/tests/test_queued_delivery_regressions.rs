@@ -12,14 +12,14 @@
 //!    slot panics must still release the emitter, so `emit` returns.
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{notify_helper, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, notify_helper};
 use ferrokit_core::object::{
-    register_owned_qobject, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, register_owned_qobject, with_object_mut,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 use ferrokit_core::timer::Timer;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 

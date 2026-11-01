@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::menu::PlatformMenu;
-use crate::objc_runtime::{ActionTarget, Class, Id, ObjcMsg, Sel, NS_SQUARE_STATUS_ITEM_LENGTH};
+use crate::objc_runtime::{ActionTarget, Class, Id, NS_SQUARE_STATUS_ITEM_LENGTH, ObjcMsg, Sel};
 use crate::platform_tray::PlatformTrayIcon;
 use crate::tray_icon::TrayActivation;
 
@@ -161,13 +161,13 @@ impl CocoaStatusItem {
             if let Some(handler) = activation {
                 handler(reason);
             }
-            if reason == TrayActivation::Context {
-                if let Some(handler) = context_menu {
-                    let pos =
-                        crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
-                            .unwrap_or_default();
-                    handler(pos);
-                }
+            if reason == TrayActivation::Context
+                && let Some(handler) = context_menu
+            {
+                let pos =
+                    crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
+                        .unwrap_or_default();
+                handler(pos);
             }
         }) else {
             return false;
@@ -710,8 +710,8 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     mod mock_runtime {
         use super::*;
-        use crate::objc_runtime::appkit::MockValue;
         use crate::objc_runtime::MockObjcRuntime;
+        use crate::objc_runtime::appkit::MockValue;
 
         fn event(kind: isize, clicks: isize, button: isize) -> Id {
             MockObjcRuntime::instance().object_with(

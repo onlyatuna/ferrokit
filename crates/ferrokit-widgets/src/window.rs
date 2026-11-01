@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::hit_test::EventTreeDispatcher;
-use crate::widget::{hide_children, show_children_first, EmptyWidget, WidgetRef};
+use crate::widget::{EmptyWidget, WidgetRef, hide_children, show_children_first};
 use ferrokit_core::event::{ContextMenuReason, Event, EventKind};
 use ferrokit_core::event_loop::filters_consume;
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
-use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
 use ferrokit_gui::geometry::Region;
+use ferrokit_gui::geometry::primitives::{Point, Rect, RectF, Size};
 use ferrokit_gui::paint::{BackingStore, Painter};
-use ferrokit_platform::size_limits::{clamp_size_limit, SizeLimits, WINDOW_SIZE_MAX};
+use ferrokit_platform::size_limits::{SizeLimits, WINDOW_SIZE_MAX, clamp_size_limit};
 use ferrokit_platform::{
-    platform, PlatformWindow, WindowFlags, WindowSystemEvent, WindowSystemEventHandler,
+    PlatformWindow, WindowFlags, WindowSystemEvent, WindowSystemEventHandler, platform,
 };
 type ContextMenuCallback = std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(Point)>>>>;
 type MousePressCallback = std::rc::Rc<
@@ -277,11 +277,11 @@ pub(crate) fn window_shows_tool_tips(top_level: &WidgetRef) -> bool {
     let Some(platform_window) = state.platform_window.upgrade() else {
         return false;
     };
-    let active = platform_window
+
+    platform_window
         .try_borrow()
         .map(|w| w.is_active())
-        .unwrap_or(false);
-    active
+        .unwrap_or(false)
 }
 
 /// The window state of the top-level window `widget` is in (`QWidget::windowHandle` of its
@@ -311,10 +311,10 @@ pub(crate) fn is_in_window<W: crate::widget::Widget + ?Sized>(widget: &W) -> boo
 /// `qt_qpa_set_cursor(widget, false)` (qwidget.cpp:5038-5078): a change to `widget`'s cursor or
 /// enabled state reaches the screen when the pointer is over it now.
 pub(crate) fn refresh_cursor_of<W: crate::widget::Widget + ?Sized>(widget: &W) {
-    if let Some(state) = render_state_of(widget) {
-        if !state.refresh_cursor(false) {
-            retry_cursor_refresh(state.window_id, false);
-        }
+    if let Some(state) = render_state_of(widget)
+        && !state.refresh_cursor(false)
+    {
+        retry_cursor_refresh(state.window_id, false);
     }
 }
 
@@ -1703,11 +1703,12 @@ impl Window {
         }
         // After the pending-render block: it borrows `self.render_state`, and the grow needs `&mut self`.
         // Qt activates the root layout on show (`qlayout.cpp:546-548` activates a visible parent only).
-        if !was_rendering && self.is_visible() {
-            if let Some(size) = self.sync_top_level_minimum() {
-                let geom = self.geometry.get();
-                self.set_geometry(Rect::new(geom.x, geom.y, size.width, size.height));
-            }
+        if !was_rendering
+            && self.is_visible()
+            && let Some(size) = self.sync_top_level_minimum()
+        {
+            let geom = self.geometry.get();
+            self.set_geometry(Rect::new(geom.x, geom.y, size.width, size.height));
         }
     }
 
@@ -2615,11 +2616,10 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     button: btn,
                 });
                 let consumed = self.dispatcher.dispatch_event(&root, &mut ev);
-                if !consumed {
-                    if let Some(cb) = self.mouse_press_cb.borrow().as_ref() {
+                if !consumed
+                    && let Some(cb) = self.mouse_press_cb.borrow().as_ref() {
                         cb(pos, button);
                     }
-                }
             }
             WindowSystemEvent::MouseRelease { pos, global_pos, button, .. } => {
                 note_mouse_state(button, false, global_pos);
@@ -2656,11 +2656,10 @@ impl WindowSystemEventHandler for WindowEventHandler {
                         global_y: global_pos.y,
                         reason: ContextMenuReason::Mouse,
                     });
-                    if !self.dispatcher.dispatch_event(&root, &mut menu) {
-                        if let Some(cb) = self.context_menu_cb.borrow().as_ref() {
+                    if !self.dispatcher.dispatch_event(&root, &mut menu)
+                        && let Some(cb) = self.context_menu_cb.borrow().as_ref() {
                             cb(global_pos);
                         }
-                    }
                 }
             }
             WindowSystemEvent::MouseDoubleClick { pos, global_pos, button, .. } => {
@@ -2842,8 +2841,8 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     root_borrow.update();
                 }
 
-                if let Some(pw_rc) = self.platform_window.upgrade() {
-                    if let Ok(mut pw) = pw_rc.try_borrow_mut() {
+                if let Some(pw_rc) = self.platform_window.upgrade()
+                    && let Ok(mut pw) = pw_rc.try_borrow_mut() {
                         let mut bs = self.backing_store.borrow_mut();
                         do_render_and_present(
                             &mut **pw,
@@ -2853,7 +2852,6 @@ impl WindowSystemEventHandler for WindowEventHandler {
                             self.render.device_pixel_ratio.get(),
                         );
                     }
-                }
             }
             WindowSystemEvent::InputMethod {
                 commit_string,
@@ -2941,8 +2939,8 @@ impl WindowSystemEventHandler for WindowEventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn test_native_geometry_change_dispatches_resize_callback_exactly_once() {

@@ -27,22 +27,32 @@ static BYTES: AtomicU64 = AtomicU64::new(0);
 // SAFETY: every method forwards to `System` unchanged; the counters are only bookkeeping.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        System.alloc(layout)
+        // SAFETY: forwards to System allocator with identical layout.
+        unsafe {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            System.alloc(layout)
+        }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        System.alloc_zeroed(layout)
+        // SAFETY: forwards to System allocator with identical layout.
+        unsafe {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            System.alloc_zeroed(layout)
+        }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
+        // SAFETY: forwards to System allocator with identical pointer and layout.
+        unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
+        // SAFETY: forwards to System allocator with identical arguments.
+        unsafe {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+            System.realloc(ptr, layout, new_size)
+        }
     }
 }
 

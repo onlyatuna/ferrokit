@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_owned_qobject, with_object_mut, ObjectData, ObjectDataMut,
-    ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, move_to_thread_by_id,
+    register_owned_qobject, with_object_mut,
 };
 use ferrokit_core::timer::Timer;
 
@@ -104,7 +104,7 @@ fn marker(thread: ThreadId) -> Arc<AtomicBool> {
     flag
 }
 
-fn recorder(seen: &Seen) -> impl FnOnce() + Send + 'static {
+fn recorder(seen: &Seen) -> impl FnOnce() + Send + 'static + use<> {
     let seen = Arc::clone(seen);
     move || {
         seen.lock()

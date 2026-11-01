@@ -12,8 +12,8 @@ use std::sync::Arc;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, register_owned_qobject, set_parent_by_id, with_object, with_object_mut,
-    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, add_owned_child,
+    register_owned_qobject, set_parent_by_id, with_object, with_object_mut,
 };
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -323,9 +323,11 @@ fn find_child_sees_children_attached_without_ownership() {
         Some(kid_id)
     );
     let mut seen = 0;
-    assert!(parent
-        .with(|p| p.find_child_any("kid", probe, &mut |_| seen += 1))
-        .unwrap());
+    assert!(
+        parent
+            .with(|p| p.find_child_any("kid", probe, &mut |_| seen += 1))
+            .unwrap()
+    );
     assert_eq!(seen, 1);
     let mut all = 0;
     parent

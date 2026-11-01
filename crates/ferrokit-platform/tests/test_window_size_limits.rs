@@ -21,13 +21,13 @@ use ferrokit_platform::window::get_window_dpr;
 use ferrokit_platform::{NativeWindow, WindowFlags};
 use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::UI::HiDpi::{
-    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_CONTEXT_UNAWARE,
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_UNAWARE, SetThreadDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, SendMessageW, SetWindowPos, HTBOTTOM, HTBOTTOMLEFT,
-    HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, MINMAXINFO,
-    SWP_NOACTIVATE, SWP_NOZORDER, WM_GETMINMAXINFO, WM_NCHITTEST,
+    GetClientRect, GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT,
+    HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, MINMAXINFO, SWP_NOACTIVATE, SWP_NOZORDER,
+    SendMessageW, SetWindowPos, WM_GETMINMAXINFO, WM_NCHITTEST,
 };
 
 const AWARE: DPI_AWARENESS_CONTEXT = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
@@ -568,7 +568,9 @@ fn a_fixed_width_offers_no_horizontal_resize() {
     // The left and right zones are plain window area; the corners resize the height only.
     assert_eq!(
         codes(&w),
-        [HTTOP, HTTOP, HTTOP, HTCLIENT, HTCLIENT, HTBOTTOM, HTBOTTOM, HTBOTTOM, HTCLIENT]
+        [
+            HTTOP, HTTOP, HTTOP, HTCLIENT, HTCLIENT, HTBOTTOM, HTBOTTOM, HTBOTTOM, HTCLIENT
+        ]
     );
 }
 
@@ -581,7 +583,9 @@ fn a_fixed_height_offers_no_vertical_resize() {
     // width only.
     assert_eq!(
         codes(&w),
-        [HTLEFT, HTCAPTION, HTRIGHT, HTLEFT, HTRIGHT, HTLEFT, HTCLIENT, HTRIGHT, HTCLIENT]
+        [
+            HTLEFT, HTCAPTION, HTRIGHT, HTLEFT, HTRIGHT, HTLEFT, HTCLIENT, HTRIGHT, HTCLIENT
+        ]
     );
 }
 

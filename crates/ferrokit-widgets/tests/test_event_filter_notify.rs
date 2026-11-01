@@ -6,18 +6,18 @@
 //! (`QWidget::event(Paint)` runs `paintEvent`, qwidget.cpp:9186-9190; a consuming filter skips it).
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::paint::Painter;
+use ferrokit_gui::paint::pixmap::Pixmap;
 use ferrokit_gui::text::Font;
 use ferrokit_widgets::window::deliver_paint_event;
 use ferrokit_widgets::*;
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Seen = Arc<Mutex<Vec<(ObjectId, &'static str)>>>;
 

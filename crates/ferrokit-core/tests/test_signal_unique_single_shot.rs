@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+    ObjectData, ObjectId, QObject, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::signal::{Signal, SlotId};
 

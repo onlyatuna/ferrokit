@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut,
-    ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, register_owned_qobject,
+    register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_widgets::widget::{Widget, WidgetRef};
 use ferrokit_widgets::Button;
+use ferrokit_widgets::widget::{Widget, WidgetRef};
 use parking_lot::Mutex;
 
 struct ToolTipProbe {

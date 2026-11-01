@@ -9,11 +9,11 @@
 //! [`Signal::connect_unique_with_key`] compares explicit [`SlotId`] or [`SlotKey::Named`] values
 //! instead of function pointer addresses.
 
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject, unregister_qobject,
 };
 use ferrokit_core::signal::{Signal, SlotId, SlotKey};
 

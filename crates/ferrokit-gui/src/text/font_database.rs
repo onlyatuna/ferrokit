@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData};
-use crate::text::glyph_face::{parse_face, LineMetrics, SharedGlyphFace};
+use crate::text::glyph_face::{LineMetrics, SharedGlyphFace, parse_face};
 use crate::text::glyph_layout::FontEngine;
 
 use rustybuzz::ttf_parser::name::Table as NameTable;
-use rustybuzz::ttf_parser::{name_id, PlatformId};
+use rustybuzz::ttf_parser::{PlatformId, name_id};
 
 /// Weight and slant requested from the font database (`QFontDatabase::bestStyle` key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -508,23 +508,23 @@ impl FontDatabase {
         }
 
         // An in-memory (application) font has a single face: use it for any style.
-        if style != FaceStyle::REGULAR {
-            if let Some(face) = self.cache.get(&key).cloned() {
-                self.cache.insert(style_key.clone(), Arc::clone(&face));
-                if let Some(raw) = self.raw_cache.get(&key).cloned() {
-                    self.raw_cache.insert(style_key, raw);
-                }
-                return Some(face);
+        if style != FaceStyle::REGULAR
+            && let Some(face) = self.cache.get(&key).cloned()
+        {
+            self.cache.insert(style_key.clone(), Arc::clone(&face));
+            if let Some(raw) = self.raw_cache.get(&key).cloned() {
+                self.raw_cache.insert(style_key, raw);
             }
+            return Some(face);
         }
 
-        if key != "segoe ui" && key != "arial" {
-            if let Some(fallback) = self
+        if key != "segoe ui"
+            && key != "arial"
+            && let Some(fallback) = self
                 .load_font_styled("segoe ui", style)
                 .or_else(|| self.load_font_styled("arial", style))
-            {
-                return Some(fallback);
-            }
+        {
+            return Some(fallback);
         }
 
         None
@@ -582,14 +582,14 @@ impl FontDatabase {
         let mut engines: Vec<FontEngine> = Vec::with_capacity(4);
 
         // 1. Primary in-memory font data if specified
-        if let Some(shared) = &font.font_data {
-            if let Some(face) = self.memory_face(shared) {
-                engines.push(
-                    FontEngine::new(face)
-                        .with_raw_data(shared.clone())
-                        .with_face_index(0),
-                );
-            }
+        if let Some(shared) = &font.font_data
+            && let Some(face) = self.memory_face(shared)
+        {
+            engines.push(
+                FontEngine::new(face)
+                    .with_raw_data(shared.clone())
+                    .with_face_index(0),
+            );
         }
 
         // If no in-memory font or in-memory font failed to parse, load primary by family
@@ -626,10 +626,10 @@ impl FontDatabase {
 
     /// The face of the font `font` itself asks for: its in-memory data, else the family it names.
     fn primary_face(&mut self, font: &Font) -> Option<SharedGlyphFace> {
-        if let Some(shared) = &font.font_data {
-            if let Some(face) = self.memory_face(shared) {
-                return Some(face);
-            }
+        if let Some(shared) = &font.font_data
+            && let Some(face) = self.memory_face(shared)
+        {
+            return Some(face);
         }
         self.load_font_styled(&font.family, FaceStyle::of(font))
     }
@@ -689,35 +689,36 @@ impl FontDatabase {
         fam: &str,
         style: FaceStyle,
     ) -> bool {
-        if let Some(font_face) = self.load_font_styled(fam, style) {
-            if engines.iter().any(|e| Arc::ptr_eq(&e.face, &font_face)) {
-                return false;
+        match self.load_font_styled(fam, style) {
+            Some(font_face) => {
+                if engines.iter().any(|e| Arc::ptr_eq(&e.face, &font_face)) {
+                    return false;
+                }
+                // Reuse the engine built for this exact request so its glyph caches survive across calls
+                // (Qt keeps one QFontEngine per font and caches glyphs in it). Keyed by the requested
+                // family string and style, not by font: a CSS-style list such as "'Segoe UI', sans-serif"
+                // has no raw data while the plain name "Segoe UI" does, and the two shape differently
+                // (face metrics vs rustybuzz). A replaced font has a new Arc, so a stale entry is
+                // never matched.
+                let engine_key = style.cache_key(fam);
+                if let Some(engine) = self
+                    .engines
+                    .get(&engine_key)
+                    .filter(|e| Arc::ptr_eq(&e.face, &font_face))
+                {
+                    engines.push(engine.clone());
+                    return true;
+                }
+                let raw_data = self.get_raw_font_data_styled(fam, style);
+                let mut engine = FontEngine::new(font_face).with_face_index(0);
+                if let Some(raw) = raw_data {
+                    engine = engine.with_raw_data(raw);
+                }
+                self.engines.insert(engine_key, engine.clone());
+                engines.push(engine);
+                true
             }
-            // Reuse the engine built for this exact request so its glyph caches survive across calls
-            // (Qt keeps one QFontEngine per font and caches glyphs in it). Keyed by the requested
-            // family string and style, not by font: a CSS-style list such as "'Segoe UI', sans-serif"
-            // has no raw data while the plain name "Segoe UI" does, and the two shape differently
-            // (face metrics vs rustybuzz). A replaced font has a new Arc, so a stale entry is
-            // never matched.
-            let engine_key = style.cache_key(fam);
-            if let Some(engine) = self
-                .engines
-                .get(&engine_key)
-                .filter(|e| Arc::ptr_eq(&e.face, &font_face))
-            {
-                engines.push(engine.clone());
-                return true;
-            }
-            let raw_data = self.get_raw_font_data_styled(fam, style);
-            let mut engine = FontEngine::new(font_face).with_face_index(0);
-            if let Some(raw) = raw_data {
-                engine = engine.with_raw_data(raw);
-            }
-            self.engines.insert(engine_key, engine.clone());
-            engines.push(engine);
-            true
-        } else {
-            false
+            _ => false,
         }
     }
 
@@ -840,10 +841,10 @@ impl FontDatabase {
                     let canonical = file_path
                         .canonicalize()
                         .unwrap_or_else(|_| file_path.clone());
-                    if let Some(shared) = self.file_cache.get(&canonical) {
-                        if let Ok(face) = parse_face(shared, 0) {
-                            return Some((shared.clone(), face));
-                        }
+                    if let Some(shared) = self.file_cache.get(&canonical)
+                        && let Ok(face) = parse_face(shared, 0)
+                    {
+                        return Some((shared.clone(), face));
                     }
                     let read =
                         crate::startup_trace::span(|| format!("map {}", canonical.display()));

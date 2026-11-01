@@ -19,7 +19,7 @@ use ferrokit_widgets::system_tray::{MessageIcon, QSystemTrayIcon, SystemTrayIcon
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    PeekMessageW, PostThreadMessageW, SendMessageW, MSG, PM_NOREMOVE, WM_CONTEXTMENU, WM_KEYDOWN,
+    MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SendMessageW, WM_CONTEXTMENU, WM_KEYDOWN,
     WM_LBUTTONDBLCLK, WM_MBUTTONUP,
 };
 

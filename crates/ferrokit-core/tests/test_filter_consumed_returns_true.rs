@@ -7,15 +7,15 @@
 //!   and `notify_helper` returns `filtered` (`true`).
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::{
     clear_application_event_filters, install_application_event_filter,
 };
 use ferrokit_core::object::{
-    register_qobject_ptr, send_event, unregister_qobject, ObjectData, ObjectId, QObject,
+    ObjectData, ObjectId, QObject, register_qobject_ptr, send_event, unregister_qobject,
 };
 struct ConsumingFilter {
     data: ObjectData,

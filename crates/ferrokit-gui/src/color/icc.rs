@@ -638,9 +638,10 @@ mod tests {
             .transformation_to_color_space(&srgb)
             .map_rgb(0.0, 1.0, 0.0);
         assert!(r == 0.0);
-        assert!(srgb
-            .transformation_to_color_space(&ColorSpace::srgb())
-            .is_identity());
+        assert!(
+            srgb.transformation_to_color_space(&ColorSpace::srgb())
+                .is_identity()
+        );
         assert_ne!(p3, adobe);
     }
 
@@ -678,9 +679,11 @@ mod tests {
         for v in [2.4, 0.0, 0.055, 1.0 / 12.92, 0.04045] {
             bad.extend_from_slice(&s15(v));
         }
-        assert!(build(b"GRAY", &[(*b"kTRC", bad.clone())])
-            .trc_tag(b"kTRC")
-            .is_none());
+        assert!(
+            build(b"GRAY", &[(*b"kTRC", bad.clone())])
+                .trc_tag(b"kTRC")
+                .is_none()
+        );
 
         // rTRC unusable, gTRC valid: the valid curve is used.
         let ok = rgb_profile(DISPLAY_P3_D50, srgb_para_tag());

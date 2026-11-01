@@ -256,21 +256,27 @@ fn a_menu_takes_the_sheet_of_the_window_it_hangs_under_and_not_another() {
     menu_b.set_parent_widget(Some(Rc::downgrade(&b.win.root_widget())));
     let orphan = Menu::new("c");
 
-    assert!(menu_a
-        .widget_base()
-        .resolve_style(&qmenu_ctx())
-        .background_color
-        .is_some());
-    assert!(menu_b
-        .widget_base()
-        .resolve_style(&qmenu_ctx())
-        .background_color
-        .is_none());
-    assert!(orphan
-        .widget_base()
-        .resolve_style(&qmenu_ctx())
-        .background_color
-        .is_none());
+    assert!(
+        menu_a
+            .widget_base()
+            .resolve_style(&qmenu_ctx())
+            .background_color
+            .is_some()
+    );
+    assert!(
+        menu_b
+            .widget_base()
+            .resolve_style(&qmenu_ctx())
+            .background_color
+            .is_none()
+    );
+    assert!(
+        orphan
+            .widget_base()
+            .resolve_style(&qmenu_ctx())
+            .background_color
+            .is_none()
+    );
 }
 
 fn two_item_menu(parent: Option<&WidgetRef>) -> Menu {

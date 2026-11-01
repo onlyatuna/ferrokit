@@ -16,7 +16,7 @@
 use std::any::Any;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,8 +26,8 @@ use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{
-    invoke_method_on_thread, register_qobject_ptr, unregister_qobject, EventSender, ObjectData,
-    ObjectId, QObject, ThreadId,
+    EventSender, ObjectData, ObjectId, QObject, ThreadId, invoke_method_on_thread,
+    register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 use ferrokit_core::variant::Variant;

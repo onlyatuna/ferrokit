@@ -6,8 +6,8 @@ use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::QObject;
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_widgets::Menu;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn press(menu: &mut Menu, key: u32) -> bool {
     let mut ev = Event::new_spontaneous(EventKind::KeyPress {

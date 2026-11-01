@@ -8,7 +8,7 @@ pub mod stylesheet;
 pub use stylesheet::*;
 
 use ferrokit_gui::geometry::primitives::{RectF, Size};
-use ferrokit_gui::paint::qss_box::{draw_qss_box, QssBorder};
+use ferrokit_gui::paint::qss_box::{QssBorder, draw_qss_box};
 use ferrokit_gui::paint::{Brush, Painter, Pen, RenderHint};
 use ferrokit_gui::text::Font;
 use ferrokit_gui::tiny_skia::Color;

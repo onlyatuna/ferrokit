@@ -70,10 +70,12 @@ mod windows {
 
         // Another manager (another thread) is refused as well: it is the system's table.
         let other = GlobalHotkeyManager::new().unwrap();
-        assert!(other
-            .register(20, MODS, f(14))
-            .unwrap_err()
-            .is_already_registered());
+        assert!(
+            other
+                .register(20, MODS, f(14))
+                .unwrap_err()
+                .is_already_registered()
+        );
         assert!(other.registered_ids().is_empty());
 
         // Once released the combination is free for the other manager.
@@ -101,21 +103,26 @@ mod windows {
         assert_eq!(m.registered_ids(), [40]);
         // F16 was released by the move, F17 is held.
         other.register(41, MODS, f(17)).unwrap();
-        assert!(other
-            .register(42, MODS, f(18))
-            .unwrap_err()
-            .is_already_registered());
+        assert!(
+            other
+                .register(42, MODS, f(18))
+                .unwrap_err()
+                .is_already_registered()
+        );
 
         // Moving onto a combination another registration holds fails and leaves F17 in place.
-        assert!(m
-            .replace(40, MODS, f(17))
-            .unwrap_err()
-            .is_already_registered());
+        assert!(
+            m.replace(40, MODS, f(17))
+                .unwrap_err()
+                .is_already_registered()
+        );
         assert!(m.is_registered(40));
-        assert!(other
-            .register(42, MODS, f(18))
-            .unwrap_err()
-            .is_already_registered());
+        assert!(
+            other
+                .register(42, MODS, f(18))
+                .unwrap_err()
+                .is_already_registered()
+        );
     }
 
     #[test]

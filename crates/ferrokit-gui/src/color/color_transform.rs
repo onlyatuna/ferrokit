@@ -6,8 +6,8 @@
 //! and target OETF encoding.
 
 use super::color_space::ColorSpace;
-use crate::geometry::transform::is_singular;
 use crate::geometry::PointF;
+use crate::geometry::transform::is_singular;
 
 /// Determinant of a 3x3 matrix and the sum of the absolute values of its six terms, evaluated
 /// in `f64`. The sum is the scale reference for [`is_singular`].

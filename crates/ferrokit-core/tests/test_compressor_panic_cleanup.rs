@@ -7,16 +7,16 @@
 //! timeout, and judges by its exit status.
 
 use ferrokit_core::event::{Event, EventCompressor, EventKind};
-use ferrokit_core::event_loop::{get_thread_event_sender, post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, get_thread_event_sender, post_event_to_thread};
 use ferrokit_core::object::{
-    register_owned_qobject, with_object, ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, register_owned_qobject, with_object,
 };
 use ferrokit_core::timer::Timer;
 use std::io::Read;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const CASE_ENV: &str = "FERROKIT_TEST_CASE";

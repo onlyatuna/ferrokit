@@ -1,7 +1,7 @@
 [package]
 name = "ferrokit-gui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Geometry, painting and text layout of ferrokit, a Rust implementation of a subset of Qt."
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"

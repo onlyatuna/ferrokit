@@ -8,8 +8,8 @@ use ferrokit_core::event_loop::{
     UnixEventDispatcher,
 };
 use std::os::raw::c_int;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// A non-blocking pipe, closed on drop.

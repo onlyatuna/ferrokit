@@ -193,11 +193,7 @@ impl FontTag {
 
     /// A tag from its numeric value; `None` for 0 (`QFont::Tag::fromValue`).
     pub const fn from_value(value: u32) -> Option<Self> {
-        if value == 0 {
-            None
-        } else {
-            Some(Self(value))
-        }
+        if value == 0 { None } else { Some(Self(value)) }
     }
 
     /// A tag from a string of exactly four UTF-16 units, each converted like

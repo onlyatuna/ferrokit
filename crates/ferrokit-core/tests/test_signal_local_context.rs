@@ -9,15 +9,15 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, OwnedObject, QObject, ThreadId, register_owned_qobject,
 };
-use ferrokit_core::signal::{sender, ConnectionType, LocalConnectError, Signal, SlotId, SlotKey};
+use ferrokit_core::signal::{ConnectionType, LocalConnectError, Signal, SlotId, SlotKey, sender};
 
 /// Only a failing test waits this long: every wait below ends as soon as its event happens.
 const WATCHDOG: Duration = Duration::from_secs(10);
@@ -700,9 +700,11 @@ fn a_local_slot_connected_to_a_context_is_dropped_on_its_thread_when_another_thr
         .unwrap();
 
     let remote = signal.clone();
-    assert!(std::thread::spawn(move || remote.disconnect(id))
-        .join()
-        .unwrap());
+    assert!(
+        std::thread::spawn(move || remote.disconnect(id))
+            .join()
+            .unwrap()
+    );
     assert_eq!(Rc::strong_count(&total), 2);
     assert!(event_loop.process_events(false));
     assert_eq!(Rc::strong_count(&total), 1);

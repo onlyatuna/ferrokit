@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+use ferrokit_core::QObject;
 use ferrokit_core::meta::{
-    register_meta_type, Access, MetaClassInfo, MetaEnum, MetaEnumItem, MetaMethod, MetaObject,
-    MetaProperty, MetaType, MetaTypeId, MethodType,
+    Access, MetaClassInfo, MetaEnum, MetaEnumItem, MetaMethod, MetaObject, MetaProperty, MetaType,
+    MetaTypeId, MethodType, register_meta_type,
 };
 use ferrokit_core::object::ObjectData;
 use ferrokit_core::signal::Signal;
 use ferrokit_core::variant::Variant;
-use ferrokit_core::QObject;
 use std::any::Any;
 
 // -----------------------------------------------------------------------------

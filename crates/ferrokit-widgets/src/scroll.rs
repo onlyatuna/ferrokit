@@ -459,10 +459,10 @@ impl ScrollArea {
     pub fn set_widget(&mut self, widget: WidgetRef) {
         // `QScrollArea::setWidget` installs itself as the content's event filter: watch its
         // resizes from now on, with or without a parent link.
-        if let Some(old) = &self.widget {
-            if let Ok(old) = old.try_borrow() {
-                old.widget_base().subscribe_resize(None);
-            }
+        if let Some(old) = &self.widget
+            && let Ok(old) = old.try_borrow()
+        {
+            old.widget_base().subscribe_resize(None);
         }
         widget
             .borrow()

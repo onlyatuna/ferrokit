@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // On Windows `HWND` is a pointer; elsewhere it is already an `isize`.
 #![cfg_attr(not(windows), allow(clippy::unnecessary_cast))]
+#[cfg(not(windows))]
+pub use crate::HWND;
 #[allow(unused_imports)]
 use crate::presenter::SurfacePresenter;
 #[allow(unused_imports)]
@@ -10,8 +12,6 @@ use crate::window_system_interface::{
     Delivery, KeyboardModifiers, MouseButton, WheelDelta, WindowSystemEvent,
     WindowSystemEventHandler,
 };
-#[cfg(not(windows))]
-pub use crate::HWND;
 #[allow(unused_imports)]
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoopHandle;
@@ -32,7 +32,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::{
-    ClientToScreen, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -40,17 +40,17 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetCapture, GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE,
-    TRACKMOUSEEVENT, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    GetCapture, GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+    TrackMouseEvent, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetForegroundWindow,
-    GetMessageTime, GetWindowRect, IsChild, IsIconic, IsZoomed, LoadCursorW, RegisterClassExW,
-    SetWindowPos, ShowWindow, CS_DBLCLKS, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION,
-    HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, NCCALCSIZE_PARAMS,
-    SIZE_MAXIMIZED, SIZE_MINIMIZED, SIZE_RESTORED, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, WM_CLOSE, WM_CONTEXTMENU,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetForegroundWindow,
+    GetMessageTime, GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT,
+    HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, IsChild, IsIconic, IsZoomed,
+    LoadCursorW, NCCALCSIZE_PARAMS, RegisterClassExW, SIZE_MAXIMIZED, SIZE_MINIMIZED,
+    SIZE_RESTORED, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_CLOSE, WM_CONTEXTMENU,
     WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCALCSIZE,
@@ -651,33 +651,37 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
 /// straight to [`native_window_proc`], whose contract then applies.
 #[cfg(windows)]
 unsafe fn sync_mouse_buttons_after_move_loop(hwnd: HWND) {
-    use ferrokit_core::event::MouseButtons;
-    let app = APP_MOUSE_BUTTONS
-        .try_with(|b| b.get())
-        .unwrap_or(MouseButtons::NO_BUTTON);
-    let stale = MouseButtons(app.0 & !query_mouse_buttons().0);
-    if stale.is_empty() {
-        return;
-    }
-    let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(MouseButtons(app.0 & !stale.0)));
+    // SAFETY: caller guarantees hwnd is live and owned by calling thread.
+    unsafe {
+        use ferrokit_core::event::MouseButtons;
+        let app = APP_MOUSE_BUTTONS
+            .try_with(|b| b.get())
+            .unwrap_or(MouseButtons::NO_BUTTON);
+        let stale = MouseButtons(app.0 & !query_mouse_buttons().0);
+        if stale.is_empty() {
+            return;
+        }
+        let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(MouseButtons(app.0 & !stale.0)));
 
-    let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-    GetCursorPos(&mut pt);
-    let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-    GetWindowRect(hwnd, &mut rect);
-    let inside = pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.bottom;
-    if !inside {
-        return;
-    }
-    windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-    let lparam = ((pt.x & 0xffff) | ((pt.y & 0xffff) << 16)) as LPARAM;
-    for (flag, up) in [
-        (MouseButtons::LEFT, WM_LBUTTONUP),
-        (MouseButtons::RIGHT, WM_RBUTTONUP),
-        (MouseButtons::MIDDLE, WM_MBUTTONUP),
-    ] {
-        if stale.contains(flag) {
-            native_window_proc(hwnd, up, 0, lparam);
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut rect);
+        let inside =
+            pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.bottom;
+        if !inside {
+            return;
+        }
+        windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+        let lparam = ((pt.x & 0xffff) | ((pt.y & 0xffff) << 16)) as LPARAM;
+        for (flag, up) in [
+            (MouseButtons::LEFT, WM_LBUTTONUP),
+            (MouseButtons::RIGHT, WM_RBUTTONUP),
+            (MouseButtons::MIDDLE, WM_MBUTTONUP),
+        ] {
+            if stale.contains(flag) {
+                native_window_proc(hwnd, up, 0, lparam);
+            }
         }
     }
 }
@@ -1062,8 +1066,8 @@ impl LayeredNeeds {
 fn apply_system_window_opacity(hwnd: HWND, needs: LayeredNeeds) {
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, IsWindowVisible, SetLayeredWindowAttributes, SetWindowLongPtrW,
-        GWL_EXSTYLE, LWA_ALPHA,
+        GWL_EXSTYLE, GetWindowLongPtrW, IsWindowVisible, LWA_ALPHA, SetLayeredWindowAttributes,
+        SetWindowLongPtrW,
     };
     // SAFETY: `hwnd` is the window being styled (validated by user32; stale handles make the
     // calls fail harmlessly); the only pointer argument is null, which InvalidateRect accepts to
@@ -1132,14 +1136,24 @@ unsafe extern "system" fn native_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let _t = ferrokit_gui::startup_trace::span_min(3.0, || format!("wndproc msg=0x{msg:04X}"));
-    // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        native_window_proc_inner(hwnd, msg, wparam, lparam)
-    })) {
-        Ok(result) => result,
-        Err(_) => DefWindowProcW(hwnd, msg, wparam, lparam),
+    // SAFETY: catches unwinding from native_window_proc_inner and falls back to DefWindowProcW.
+    unsafe {
+        let _t = ferrokit_gui::startup_trace::span_min(3.0, || format!("wndproc msg=0x{msg:04X}"));
+        // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native_window_proc_inner(hwnd, msg, wparam, lparam)
+        })) {
+            Ok(result) => result,
+            Err(_) => def_wnd_proc(hwnd, msg, wparam, lparam),
+        }
     }
+}
+
+#[cfg(windows)]
+#[inline]
+fn def_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: forwards unhandled or default messages to DefWindowProcW with parameters provided by Windows.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 /// The body of [`native_window_proc`], whose panics that function contains.
@@ -1165,30 +1179,39 @@ unsafe fn native_window_proc_inner(
                 // `NCCALCSIZE_PARAMS` owned by the sender and valid for the duration of the message
                 // (per the WM_NCCALCSIZE documentation); it is dereferenced only here, on this
                 // thread, and the exclusive reference does not outlive this arm.
-                let ncp = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
+                let ncp = unsafe { &mut *(lparam as *mut NCCALCSIZE_PARAMS) };
                 let client_rect = &mut ncp.rgrc[0];
-
-                if IsZoomed(hwnd) != 0 {
-                    let mut monitor_info: MONITORINFO = std::mem::zeroed();
-                    monitor_info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-                    let h_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                    if !h_monitor.is_null() && GetMonitorInfoW(h_monitor, &mut monitor_info) != 0 {
-                        *client_rect = monitor_info.rcWork;
+                // SAFETY: IsZoomed, MonitorFromWindow, and GetMonitorInfoW validate hwnd and use valid local struct.
+                let _is_zoomed = unsafe {
+                    if IsZoomed(hwnd) != 0 {
+                        let mut monitor_info: MONITORINFO = std::mem::zeroed();
+                        monitor_info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                        let h_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        if !h_monitor.is_null()
+                            && GetMonitorInfoW(h_monitor, &mut monitor_info) != 0
+                        {
+                            *client_rect = monitor_info.rcWork;
+                        }
+                        true
+                    } else {
+                        false
                     }
-                }
+                };
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_NCHITTEST => {
             if let Some(config) = get_window_frameless_config(hwnd) {
                 let x = get_x_lparam(lparam);
                 let y = get_y_lparam(lparam);
 
-                let mut window_rect: RECT = std::mem::zeroed();
-                GetWindowRect(hwnd, &mut window_rect);
-
-                let is_zoomed = IsZoomed(hwnd) != 0;
+                // SAFETY: GetWindowRect writes to valid local RECT; IsZoomed takes valid HWND.
+                let (window_rect, is_zoomed) = unsafe {
+                    let mut window_rect: RECT = std::mem::zeroed();
+                    GetWindowRect(hwnd, &mut window_rect);
+                    (window_rect, IsZoomed(hwnd) != 0)
+                };
                 let border = if is_zoomed { 0 } else { config.resize_border };
 
                 // An axis whose minimum equals its maximum cannot change size, so it offers no
@@ -1237,7 +1260,7 @@ unsafe fn native_window_proc_inner(
 
                 return HTCLIENT as LRESULT;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_GETMINMAXINFO => {
             use windows_sys::Win32::UI::WindowsAndMessaging::MINMAXINFO;
@@ -1246,7 +1269,7 @@ unsafe fn native_window_proc_inner(
                 // sender and valid for the duration of the message (per the WM_GETMINMAXINFO
                 // documentation); it is dereferenced only here, on this thread, and the exclusive
                 // reference does not outlive this arm.
-                let mmi = &mut *(lparam as *mut MINMAXINFO);
+                let mmi = unsafe { &mut *(lparam as *mut MINMAXINFO) };
                 // The limits are logical; the window's own ratio at this moment (after
                 // `WM_DPICHANGED` it is already the new one) makes them native, and a bound that
                 // is not set leaves the system's value in place
@@ -1266,7 +1289,7 @@ unsafe fn native_window_proc_inner(
                 }
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_ERASEBKGND => 1,
         WM_CLOSE => {
@@ -1284,18 +1307,19 @@ unsafe fn native_window_proc_inner(
                 hwnd,
                 WindowSystemEvent::InteractiveResizeStart,
             );
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
             set_interactive_resize_flag(hwnd, false);
-            sync_mouse_buttons_after_move_loop(hwnd);
+            // SAFETY: hwnd is valid window receiving WM_ENTERSIZEMOVE on calling thread.
+            unsafe { sync_mouse_buttons_after_move_loop(hwnd) };
             dispatch_window_system_event(
                 Delivery::Default,
                 hwnd,
                 WindowSystemEvent::InteractiveResizeEnd,
             );
             crate::resize_debug::exit_size_move();
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
             set_interactive_resize_flag(hwnd, false);
@@ -1316,7 +1340,7 @@ unsafe fn native_window_proc_inner(
                     hwnd,
                     WindowSystemEvent::Minimize { minimized: true },
                 );
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
+                return def_wnd_proc(hwnd, msg, wparam, lparam);
             }
             let dpr = get_window_dpr(hwnd);
             let phys_w = (lparam as usize & 0xffff) as i32;
@@ -1336,14 +1360,15 @@ unsafe fn native_window_proc_inner(
             // screen's native top-left (`qwindowsysteminterface.cpp:298`,
             // `qhighdpiscaling_p.h:254-260`).
             // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
-            let mut r: RECT = unsafe { std::mem::zeroed() };
-            // SAFETY: `hwnd` is the window this message was dispatched to (validated by user32); `r`
-            // is a local RECT, a valid out pointer for the call; a 0 return is handled below.
-            let (x, y) = if unsafe { GetWindowRect(hwnd, &mut r) } != 0 {
-                let logical_pt = window_global_position(hwnd, Point::new(r.left, r.top), dpr);
-                (logical_pt.x, logical_pt.y)
-            } else {
-                (0, 0)
+            // SAFETY: RECT is a plain integer struct; GetWindowRect writes to valid local RECT.
+            let (x, y) = unsafe {
+                let mut r: RECT = std::mem::zeroed();
+                if GetWindowRect(hwnd, &mut r) != 0 {
+                    let logical_pt = window_global_position(hwnd, Point::new(r.left, r.top), dpr);
+                    (logical_pt.x, logical_pt.y)
+                } else {
+                    (0, 0)
+                }
             };
             let logical_rect = Rect::new(x, y, logical_size.width, logical_size.height);
             crate::resize_debug::note(|| {
@@ -1367,7 +1392,7 @@ unsafe fn native_window_proc_inner(
                 );
             }
             crate::resize_debug::wm_size_end(hwnd as isize);
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_MOVE => {
             // Qt ignores a move while iconic: `QWindowsWindow::handleMoved` only runs the geometry
@@ -1375,8 +1400,9 @@ unsafe fn native_window_proc_inner(
             // position as (-32000, -32000), which must not reach the geometry or the event receiver.
             // SAFETY: `hwnd` is the window this message was dispatched to; IsIconic takes only the
             // handle and validates it.
+            // SAFETY: IsIconic validates hwnd.
             if unsafe { IsIconic(hwnd) } != 0 {
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
+                return def_wnd_proc(hwnd, msg, wparam, lparam);
             }
             crate::resize_debug::wm_move_begin(hwnd as isize);
             let dpr = get_window_dpr(hwnd);
@@ -1384,20 +1410,21 @@ unsafe fn native_window_proc_inner(
             let phys_y = get_y_lparam(lparam);
             let pos = window_global_position(hwnd, Point::new(phys_x, phys_y), dpr);
             // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
-            let mut r: RECT = unsafe { std::mem::zeroed() };
-            // SAFETY: as for WM_SIZE: `hwnd` is the window receiving WM_MOVE and `r` is a local
-            // out pointer valid for the call.
-            let (w, h) = if unsafe { GetWindowRect(hwnd, &mut r) } != 0 {
-                let logical_size = crate::high_dpi::from_native_size(
-                    ferrokit_gui::geometry::primitives::Size::new(
-                        r.right - r.left,
-                        r.bottom - r.top,
-                    ),
-                    dpr,
-                );
-                (logical_size.width, logical_size.height)
-            } else {
-                (0, 0)
+            // SAFETY: RECT is plain integer struct; GetWindowRect writes to valid local RECT.
+            let (w, h) = unsafe {
+                let mut r: RECT = std::mem::zeroed();
+                if GetWindowRect(hwnd, &mut r) != 0 {
+                    let logical_size = crate::high_dpi::from_native_size(
+                        ferrokit_gui::geometry::primitives::Size::new(
+                            r.right - r.left,
+                            r.bottom - r.top,
+                        ),
+                        dpr,
+                    );
+                    (logical_size.width, logical_size.height)
+                } else {
+                    (0, 0)
+                }
             };
             let logical_rect = Rect::new(pos.x, pos.y, w, h);
             handle_geometry_change(Delivery::Default, hwnd, logical_rect);
@@ -1414,7 +1441,7 @@ unsafe fn native_window_proc_inner(
                 );
             }
             crate::resize_debug::wm_move_end(hwnd as isize);
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_SHOWWINDOW => {
             let shown = wparam != 0;
@@ -1426,14 +1453,14 @@ unsafe fn native_window_proc_inner(
                 };
                 handle.post_event(receiver, Event::new_spontaneous(kind));
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_PAINT => {
             crate::resize_debug::count(crate::resize_debug::Count::WmPaint);
             if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                 handle.post_event(receiver, Event::new_spontaneous(EventKind::Expose));
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_SETFOCUS => {
             dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusIn);
@@ -1445,7 +1472,7 @@ unsafe fn native_window_proc_inner(
                     }),
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_KILLFOCUS => {
             dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::FocusOut);
@@ -1457,7 +1484,7 @@ unsafe fn native_window_proc_inner(
                     }),
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_DPICHANGED => {
             let dpi_x = (wparam as u32) & 0xffff;
@@ -1475,19 +1502,21 @@ unsafe fn native_window_proc_inner(
             if !rect_ptr.is_null() {
                 // SAFETY: `rect_ptr` is non-null (checked above); for WM_DPICHANGED `lParam` points
                 // to the suggested new window RECT, valid for the duration of the message (per the
-                // WM_DPICHANGED documentation); `RECT` is `Copy`, so this reads a value out.
-                let r = *rect_ptr;
-                let width = (r.right - r.left).max(0);
-                let height = (r.bottom - r.top).max(0);
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    r.left,
-                    r.top,
-                    width,
-                    height,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                // SAFETY: rect_ptr points to suggested RECT from Windows; SetWindowPos uses valid parameters.
+                unsafe {
+                    let r = *rect_ptr;
+                    let width = (r.right - r.left).max(0);
+                    let height = (r.bottom - r.top).max(0);
+                    SetWindowPos(
+                        hwnd,
+                        ptr::null_mut(),
+                        r.left,
+                        r.top,
+                        width,
+                        height,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
             }
             if let Some((handle, receiver)) = get_window_event_binding(hwnd) {
                 handle.post_event(
@@ -1499,11 +1528,11 @@ unsafe fn native_window_proc_inner(
         }
         WM_DISPLAYCHANGE => {
             crate::integration::platform().screen_changed().emit(&());
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
             crate::integration::platform().theme().refresh();
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_SETCURSOR => {
             let hit_test = (lparam & 0xFFFF) as u32;
@@ -1516,7 +1545,7 @@ unsafe fn native_window_proc_inner(
                 crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
                 return 1;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             track_button_press(msg);
@@ -1550,6 +1579,7 @@ unsafe fn native_window_proc_inner(
                     // `QWindowsContext` stamps mouse messages with `GetMessageTime()` (qwindowscontext.cpp:836).
                     // SAFETY: GetMessageTime takes no arguments and reads the time of the message
                     // this thread is currently handling (we are inside its wndproc).
+                    // SAFETY: GetMessageTime reads time of current message handled on this thread.
                     timestamp: unsafe { GetMessageTime() } as u32,
                 },
             );
@@ -1679,7 +1709,8 @@ unsafe fn native_window_proc_inner(
                 hwndTrack: hwnd,
                 dwHoverTime: 0,
             };
-            TrackMouseEvent(&mut tme);
+            // SAFETY: tme points to initialized TRACKMOUSEEVENT struct.
+            unsafe { TrackMouseEvent(&mut tme) };
 
             if is_repeated_buttonless_move(hwnd, wparam, lparam) {
                 return 0;
@@ -1727,7 +1758,8 @@ unsafe fn native_window_proc_inner(
                 x: global_x,
                 y: global_y,
             };
-            windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+            // SAFETY: hwnd is valid window and pt is valid POINT struct.
+            unsafe { windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt) };
             let pos = crate::high_dpi::from_native_point(
                 ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
                 dpr,
@@ -1763,14 +1795,14 @@ unsafe fn native_window_proc_inner(
                     }),
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_CANCELMODE => {
             // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
             // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
             let _ = APP_MOUSE_BUTTONS
                 .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_CAPTURECHANGED => {
             // `lparam` is the window gaining the capture. Capture moving to another window of
@@ -1794,7 +1826,7 @@ unsafe fn native_window_proc_inner(
                     WindowSystemEvent::MouseGrabLost,
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_MOUSELEAVE => {
             LAST_MOUSE_MOVE.with(|last| {
@@ -1803,7 +1835,7 @@ unsafe fn native_window_proc_inner(
                 }
             });
             dispatch_window_system_event(Delivery::Default, hwnd, WindowSystemEvent::MouseLeave);
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_CONTEXTMENU => {
             // lParam -1 is the menu key / Shift+F10: no pointer position, so the cursor is the
@@ -1811,10 +1843,14 @@ unsafe fn native_window_proc_inner(
             // positions a keyboard menu itself).
             let keyboard = lparam as u32 == u32::MAX;
             let (global_x, global_y) = if keyboard {
-                let mut cursor = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-                GetCursorPos(&mut cursor);
-                let mut rect: RECT = std::mem::zeroed();
-                GetWindowRect(hwnd, &mut rect);
+                // SAFETY: GetCursorPos and GetWindowRect write to valid local structs.
+                let (cursor, rect) = unsafe {
+                    let mut cursor: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+                    GetCursorPos(&mut cursor);
+                    let mut rect: RECT = std::mem::zeroed();
+                    GetWindowRect(hwnd, &mut rect);
+                    (cursor, rect)
+                };
                 if cursor.x >= rect.left
                     && cursor.x < rect.right
                     && cursor.y >= rect.top
@@ -1831,7 +1867,8 @@ unsafe fn native_window_proc_inner(
                 x: global_x,
                 y: global_y,
             };
-            windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
+            // SAFETY: hwnd is valid window and pt is valid POINT struct.
+            unsafe { windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt) };
             let pos = crate::high_dpi::from_native_point(
                 ferrokit_gui::geometry::primitives::Point::new(pt.x, pt.y),
                 get_window_dpr(hwnd),
@@ -1884,7 +1921,7 @@ unsafe fn native_window_proc_inner(
                     }),
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_KEYUP | WM_SYSKEYUP => {
             let key = wparam as u32;
@@ -1904,11 +1941,11 @@ unsafe fn native_window_proc_inner(
                     }),
                 );
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_STARTCOMPOSITION => {
             let _ = IME_COMPOSING.try_with(|c| c.borrow_mut().insert(hwnd as isize));
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_COMPOSITION => {
             let mut ime_ctx = crate::ime::Win32InputContext::new(hwnd);
@@ -1939,7 +1976,7 @@ unsafe fn native_window_proc_inner(
                     );
                 }
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
             // `QWindowsInputContext::endComposition`: a composition that was running is closed
@@ -1968,7 +2005,7 @@ unsafe fn native_window_proc_inner(
                     );
                 }
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         0x0218 => {
             // WM_POWERBROADCAST. Qt itself only handles PBT_POWERSETTINGCHANGE (qwindowscontext.cpp,
@@ -1987,7 +2024,7 @@ unsafe fn native_window_proc_inner(
             }
             1
         }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => def_wnd_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -1997,7 +2034,7 @@ pub fn set_dpi_awareness() -> bool {
     // only changes process state and returns 0 (handled by the caller) if already set or refused.
     unsafe {
         use windows_sys::Win32::UI::HiDpi::{
-            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
         };
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != 0
     }
@@ -2392,21 +2429,19 @@ impl NativeWindow {
                 && rect.height > 0
             {
                 sync_interactive_resize(self.hwnd, &mut self.presenter, &mut self.layered_surface);
-                if let Some(surface) = &mut self.layered_surface {
-                    if surface
+                if let Some(surface) = &mut self.layered_surface
+                    && surface
                         .resize(rect.width as u32, rect.height as u32)
                         .is_err()
-                    {
-                        self.layered_surface = None;
-                    }
+                {
+                    self.layered_surface = None;
                 }
-                if let Some(presenter) = &mut self.presenter {
-                    if presenter
+                if let Some(presenter) = &mut self.presenter
+                    && presenter
                         .resize(rect.width as u32, rect.height as u32)
                         .is_err()
-                    {
-                        self.presenter = None;
-                    }
+                {
+                    self.presenter = None;
                 }
             }
             self.geometry = rect;
@@ -2436,7 +2471,7 @@ impl NativeWindow {
     pub fn set_click_through(&mut self, enabled: bool) {
         if !self.hwnd.is_null() {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE,
+                GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW,
             };
             // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; the
             // calls take only integers/handles, no pointers.
@@ -2592,11 +2627,11 @@ impl NativeWindow {
         }
         sync_interactive_resize(self.hwnd, &mut self.presenter, &mut self.layered_surface);
         let surface = self.layered_surface.as_mut().unwrap();
-        if surface.width() != width || surface.height() != height {
-            if let Err(e) = surface.resize(width, height) {
-                self.layered_surface = None;
-                return Err(e);
-            }
+        if (surface.width() != width || surface.height() != height)
+            && let Err(e) = surface.resize(width, height)
+        {
+            self.layered_surface = None;
+            return Err(e);
         }
         Ok(self.layered_surface.as_mut().unwrap())
     }
@@ -2634,18 +2669,17 @@ impl NativeWindow {
         if self.presenter.is_none() {
             let p = if self.flags.contains(WindowFlags::LAYERED) {
                 if !self.dcomp_downgraded && is_dcomp_enabled() {
-                    if let Ok(dcomp) =
-                        crate::surface::dcomp::DCompSurface::new(self.hwnd, width, height)
-                    {
-                        crate::presenter::WindowsPresenter::DirectComposition(dcomp)
-                    } else {
-                        let layered = crate::presenter::Win32LayeredPresenter::new(
-                            self.hwnd,
-                            width,
-                            height,
-                            self.opacity,
-                        )?;
-                        crate::presenter::WindowsPresenter::Layered(layered)
+                    match crate::surface::dcomp::DCompSurface::new(self.hwnd, width, height) {
+                        Ok(dcomp) => crate::presenter::WindowsPresenter::DirectComposition(dcomp),
+                        _ => {
+                            let layered = crate::presenter::Win32LayeredPresenter::new(
+                                self.hwnd,
+                                width,
+                                height,
+                                self.opacity,
+                            )?;
+                            crate::presenter::WindowsPresenter::Layered(layered)
+                        }
                     }
                 } else {
                     let layered = crate::presenter::Win32LayeredPresenter::new(
@@ -2853,13 +2887,13 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         let res = match self.get_or_create_presenter(width, height) {
             Ok(p) => {
                 p.set_opacity(opacity);
-                if let crate::presenter::WindowsPresenter::Layered(lp) = p {
-                    if let Some(pos) = target_pos {
-                        lp.set_target_pos(Some(windows_sys::Win32::Foundation::POINT {
-                            x: pos.x,
-                            y: pos.y,
-                        }));
-                    }
+                if let crate::presenter::WindowsPresenter::Layered(lp) = p
+                    && let Some(pos) = target_pos
+                {
+                    lp.set_target_pos(Some(windows_sys::Win32::Foundation::POINT {
+                        x: pos.x,
+                        y: pos.y,
+                    }));
                 }
                 p.present(pixmap, dirty)
             }
@@ -2875,13 +2909,13 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
             }
             self.presenter.take();
             let p = self.get_or_create_presenter(width, height)?;
-            if let crate::presenter::WindowsPresenter::Layered(lp) = p {
-                if let Some(pos) = target_pos {
-                    lp.set_target_pos(Some(windows_sys::Win32::Foundation::POINT {
-                        x: pos.x,
-                        y: pos.y,
-                    }));
-                }
+            if let crate::presenter::WindowsPresenter::Layered(lp) = p
+                && let Some(pos) = target_pos
+            {
+                lp.set_target_pos(Some(windows_sys::Win32::Foundation::POINT {
+                    x: pos.x,
+                    y: pos.y,
+                }));
             }
             let full =
                 ferrokit_gui::geometry::Region::from_coords(0, 0, width as i32, height as i32);
@@ -3060,13 +3094,12 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
                     ),
                 }
             };
-            if let Ok(target) =
-                crate::drag_drop::win32_ole::register_drop_target(self.hwnd, callback)
-            {
-                self.drop_target = Some(target);
-                true
-            } else {
-                false
+            match crate::drag_drop::win32_ole::register_drop_target(self.hwnd, callback) {
+                Ok(target) => {
+                    self.drop_target = Some(target);
+                    true
+                }
+                _ => false,
             }
         } else {
             self.drop_target = None;
@@ -3185,7 +3218,7 @@ pub fn calc_frameless_edge(
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, IsWindow, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_LAYERED,
+        GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, IsWindow, WS_CAPTION, WS_EX_LAYERED,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
 

@@ -2,7 +2,7 @@
 use crate::event::EventFilterChain;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::object::{ScopeLevelGuard, ThreadContext, ThreadId};
 
 use crate::event::{CoreCompressor, Event, EventCompressor, EventKind, MergeKey};
-use crate::object::{send_event, EventSender, ObjectData, ObjectId, QObject};
+use crate::object::{EventSender, ObjectData, ObjectId, QObject, send_event};
 use crate::poison::lock_unpoisoned;
 use crate::timer::TimerRegistry;
 
@@ -196,10 +196,10 @@ fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
             task(obj);
         }
     });
-    if handled.is_none() {
-        if let Some(task) = task_opt.take() {
-            task(&mut ());
-        }
+    if handled.is_none()
+        && let Some(task) = task_opt.take()
+    {
+        task(&mut ());
     }
     true
 }
@@ -293,27 +293,25 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         return true;
     }
 
-    if matches!(&event.kind, EventKind::MetaCallNoTarget(_)) {
-        if let EventKind::MetaCallNoTarget(task) =
+    if matches!(&event.kind, EventKind::MetaCallNoTarget(_))
+        && let EventKind::MetaCallNoTarget(task) =
             std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
-        {
-            return run_no_target_call(receiver, task);
-        }
+    {
+        return run_no_target_call(receiver, task);
     }
 
-    if matches!(&event.kind, EventKind::MetaCall(_)) {
-        if let EventKind::MetaCall(task) =
+    if matches!(&event.kind, EventKind::MetaCall(_))
+        && let EventKind::MetaCall(task) =
             std::mem::replace(&mut event.kind, EventKind::LayoutRequest)
-        {
-            return run_target_call(receiver, task);
-        }
+    {
+        return run_target_call(receiver, task);
     }
 
     crate::object::dispatch_to_object(receiver, event)
 }
 use super::dispatcher::{
-    create_dispatcher, DefaultEventDispatcher, DispatchResult, DispatcherKind,
-    EventDispatcherHandle,
+    DefaultEventDispatcher, DispatchResult, DispatcherKind, EventDispatcherHandle,
+    create_dispatcher,
 };
 
 #[derive(Debug)]
@@ -1268,10 +1266,8 @@ pub fn send_posted_events_for_queue(queue: &Arc<Mutex<EventQueue>>) -> (usize, O
             .events
             .iter()
             .any(|e| deliverable_now(&e.event));
-        if deliverable {
-            if let Some(handle) = get_thread_event_sender(ThreadId::current()) {
-                handle.wake_up();
-            }
+        if deliverable && let Some(handle) = get_thread_event_sender(ThreadId::current()) {
+            handle.wake_up();
         }
     }
     result
@@ -1352,14 +1348,12 @@ fn next_deliverable_index(q: &mut EventQueue, modal: bool) -> Option<usize> {
             loop_level,
             scope_level,
         } = posted.event.kind
+            && (modal
+                || !deferred_delete_deliverable((loop_level, scope_level), current_levels(), false))
         {
-            if modal
-                || !deferred_delete_deliverable((loop_level, scope_level), current_levels(), false)
-            {
-                let posted = q.remove_at(index);
-                q.insert_posted(posted);
-                continue;
-            }
+            let posted = q.remove_at(index);
+            q.insert_posted(posted);
+            continue;
         }
         return Some(index);
     }
@@ -1800,8 +1794,8 @@ impl Default for EventLoop {
 mod tests {
     use super::*;
     use crate::object::{
-        register_owned_qobject, register_qobject_ptr, unregister_qobject, ObjectData, QObject,
-        ThreadContext,
+        ObjectData, QObject, ThreadContext, register_owned_qobject, register_qobject_ptr,
+        unregister_qobject,
     };
     use std::ptr::NonNull;
 
@@ -2339,7 +2333,7 @@ mod tests {
 
     #[test]
     fn test_notify_helper_pipeline_and_safe_removal() {
-        use crate::object::{register_qobject_ptr, unregister_qobject, ObjectData};
+        use crate::object::{ObjectData, register_qobject_ptr, unregister_qobject};
 
         struct TraceFilter {
             data: ObjectData,

@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, SendMessageW, TranslateMessage, MSG, PM_REMOVE,
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage,
 };
 
 #[test]
@@ -82,7 +82,7 @@ fn set_cursor_message(hwnd: HWND) {
 fn each_window_keeps_its_own_cursor_and_blank_hides_it() {
     use ferrokit_platform::cursor::CursorShape;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursor, LoadCursorW, IDC_CROSS, IDC_IBEAM,
+        GetCursor, IDC_CROSS, IDC_IBEAM, LoadCursorW,
     };
     let mut a = window("Cursor A");
     let mut b = window("Cursor B");
@@ -201,7 +201,7 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
     use ferrokit_platform::window::NativeWindow;
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER, WM_LBUTTONDOWN,
+        GetCursorPos, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_LBUTTONDOWN,
     };
     const WM_EXITSIZEMOVE: u32 = 0x0232;
     let win = NativeWindow::new("SystemMove", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)

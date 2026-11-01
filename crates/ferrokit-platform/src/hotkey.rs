@@ -88,7 +88,7 @@ pub mod win32_hotkey {
     use std::collections::HashSet;
     use windows_sys::Win32::Foundation::{GetLastError, HWND};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+        HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
     };
 
     pub struct Win32HotkeyManager {
@@ -765,7 +765,7 @@ pub mod cocoa_hotkey {
         const SIGNATURE: u32 = u32::from_be_bytes(*b"FKIT");
 
         #[link(name = "Carbon", kind = "framework")]
-        extern "C" {
+        unsafe extern "C" {
             fn GetApplicationEventTarget() -> EventTargetRef;
             fn InstallEventHandler(
                 target: EventTargetRef,
@@ -995,8 +995,8 @@ mod tests {
     use super::*;
 
     use crate::hotkey::cocoa_hotkey::{
-        carbon_keycode, carbon_modifiers, MockHotkey, MockHotkeyBackend, CARBON_CMD_KEY,
-        CARBON_CONTROL_KEY, CARBON_OPTION_KEY, CARBON_SHIFT_KEY,
+        CARBON_CMD_KEY, CARBON_CONTROL_KEY, CARBON_OPTION_KEY, CARBON_SHIFT_KEY, MockHotkey,
+        MockHotkeyBackend, carbon_keycode, carbon_modifiers,
     };
 
     fn manager() -> (CocoaHotkeyManager, MockHotkeyBackend) {
@@ -1139,9 +1139,10 @@ mod tests {
         mgr.register_hotkey(1, HotkeyModifiers::ALT, 0x41).unwrap();
 
         // Same id again, and an unmapped key.
-        assert!(mgr
-            .register_hotkey(1, HotkeyModifiers::CONTROL, 0x42)
-            .is_err());
+        assert!(
+            mgr.register_hotkey(1, HotkeyModifiers::CONTROL, 0x42)
+                .is_err()
+        );
         assert_eq!(
             mgr.register_hotkey(2, HotkeyModifiers::ALT, 0xFF),
             Err("CocoaHotkeyManager: unsupported key")
@@ -1149,9 +1150,10 @@ mod tests {
         // Same combination under another id: a conflict, as with another application.
         assert!(mgr.register_hotkey(3, HotkeyModifiers::ALT, 0x41).is_err());
         mock.occupy(11, CARBON_CONTROL_KEY);
-        assert!(mgr
-            .register_hotkey(4, HotkeyModifiers::CONTROL, 0x42)
-            .is_err());
+        assert!(
+            mgr.register_hotkey(4, HotkeyModifiers::CONTROL, 0x42)
+                .is_err()
+        );
 
         assert_eq!(mgr.registered_ids().len(), 1);
         assert_eq!(mock.hotkeys().len(), 1);
@@ -1192,9 +1194,10 @@ mod tests {
         let mask = UnixHotkeyManager::x11_modifiers(HotkeyModifiers::ALT | HotkeyModifiers::SHIFT);
         assert_eq!(mask, (1 << 3) | (1 << 0));
 
-        assert!(mgr
-            .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
-            .is_err());
+        assert!(
+            mgr.register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
+                .is_err()
+        );
         assert!(!mgr.registered_ids().contains(&9528));
         assert!(mgr.unregister_hotkey(9528).is_err());
     }

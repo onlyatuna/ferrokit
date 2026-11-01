@@ -55,8 +55,7 @@ const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
 const TOLERANCE: f64 = 1.0 / 128.0;
 
 /// The reason of the `align/syn_align_rtl/*` entries.
-const ALIGN_RTL_WHY: &str =
-    "when a line starts with a run of the opposite direction `cursorToX` of \
+const ALIGN_RTL_WHY: &str = "when a line starts with a run of the opposite direction `cursorToX` of \
      its first position takes the neighbouring item from the previous line and returns a position \
      that depends on that unrelated item (the line width, clamped, or a sum of widths); ferrokit \
      keeps the cursor on the run";
@@ -645,7 +644,9 @@ fn check_align(report: &mut Report, tokens: &[&str]) {
             })
             .collect();
         let theirs: Vec<(f64, f64)> = qt.iter().map(|q| (q.2, q.3)).collect();
-        println!("{key}: (x of the first, x of the last position) per line\n  ferrokit {ours:?}\n  Qt       {theirs:?}");
+        println!(
+            "{key}: (x of the first, x of the last position) per line\n  ferrokit {ours:?}\n  Qt       {theirs:?}"
+        );
     }
     report.push((key, Outcome::Dev(dev)));
 }

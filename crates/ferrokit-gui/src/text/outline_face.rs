@@ -12,8 +12,8 @@
 //! `tests/test_outline_face_parity.rs`).
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{exceeds_glyph_budget, GlyphFace, GlyphMetrics, LineMetrics};
-use ab_glyph_rasterizer::{point, Point, Rasterizer};
+use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics, exceeds_glyph_budget};
+use ab_glyph_rasterizer::{Point, Rasterizer, point};
 use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder, Tag};
 
 /// A font face read straight from the font file bytes.
@@ -94,26 +94,26 @@ impl OutlineFace {
         let bitmaps = [b"EBLC", b"CBLC", b"bdat"]
             .iter()
             .any(|tag| raw.table(Tag::from_bytes(tag)).is_some());
-        if !cfg!(target_os = "macos") && !bitmaps {
-            if let Some(os2) = raw
+        if !cfg!(target_os = "macos")
+            && !bitmaps
+            && let Some(os2) = raw
                 .table(Tag::from_bytes(b"OS/2"))
                 .filter(|t| t.len() >= 78)
-            {
-                const USE_TYPO_METRICS: u16 = 0x80;
-                if be_u16(os2, 62) & USE_TYPO_METRICS != 0 {
-                    let (a, d, l) = (be_i16(os2, 68), be_i16(os2, 70), be_i16(os2, 72));
-                    if !(a == 0 && d == 0) && fits(a) && fits(d) && fits(l) {
-                        ascent = fixed(f64::from(a));
-                        descent = -fixed(f64::from(d));
-                        leading = fixed(f64::from(l));
-                    }
-                } else {
-                    let (a, d) = (be_u16(os2, 74), be_u16(os2, 76));
-                    if !(a == 0 && d == 0) && f64::from(a) <= limit && f64::from(d) <= limit {
-                        ascent = fixed(f64::from(a));
-                        descent = fixed(f64::from(d));
-                        leading = 0.0;
-                    }
+        {
+            const USE_TYPO_METRICS: u16 = 0x80;
+            if be_u16(os2, 62) & USE_TYPO_METRICS != 0 {
+                let (a, d, l) = (be_i16(os2, 68), be_i16(os2, 70), be_i16(os2, 72));
+                if !(a == 0 && d == 0) && fits(a) && fits(d) && fits(l) {
+                    ascent = fixed(f64::from(a));
+                    descent = -fixed(f64::from(d));
+                    leading = fixed(f64::from(l));
+                }
+            } else {
+                let (a, d) = (be_u16(os2, 74), be_u16(os2, 76));
+                if !(a == 0 && d == 0) && f64::from(a) <= limit && f64::from(d) <= limit {
+                    ascent = fixed(f64::from(a));
+                    descent = fixed(f64::from(d));
+                    leading = 0.0;
                 }
             }
         }

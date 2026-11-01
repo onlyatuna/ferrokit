@@ -7,7 +7,7 @@
 mod probe_widget;
 
 use ferrokit_gui::geometry::primitives::Rect;
-use ferrokit_widgets::widget::{set_widget_visible, EmptyWidget, WidgetRef};
+use ferrokit_widgets::widget::{EmptyWidget, WidgetRef, set_widget_visible};
 use probe_widget::{Log, ProbeWidget};
 use std::cell::RefCell;
 use std::rc::Rc;

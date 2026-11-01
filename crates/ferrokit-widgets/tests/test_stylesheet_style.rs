@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::object::QObject;
 use ferrokit_gui::tiny_skia::Color;
+use ferrokit_widgets::Widget;
 use ferrokit_widgets::label::Label;
 use ferrokit_widgets::style::stylesheet::{QStyleSheetStyle, WidgetStyleContext};
-use ferrokit_widgets::Widget;
 
 #[test]
 fn test_stylesheet_style_resolution_and_specificity() {

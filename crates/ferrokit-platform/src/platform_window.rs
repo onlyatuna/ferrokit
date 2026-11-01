@@ -195,8 +195,8 @@ use crate::window::WindowFlags;
 use crate::window_system_interface::WindowSystemEventHandler;
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::Pixmap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct GenericWindow {
     /// Set by `FocusIn` and cleared by `FocusOut`/`hide`, from the events the window system

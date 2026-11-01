@@ -40,11 +40,11 @@ pub fn clean_path(path: impl AsRef<str>) -> String {
             continue;
         }
         if seg == ".." {
-            if let Some(last) = parts.last() {
-                if *last != ".." {
-                    parts.pop();
-                    continue;
-                }
+            if let Some(last) = parts.last()
+                && *last != ".."
+            {
+                parts.pop();
+                continue;
             }
             if !is_absolute {
                 parts.push("..");
@@ -143,10 +143,10 @@ pub fn relative_path(base: impl AsRef<Path>, target: impl AsRef<Path>) -> String
         }
     }
     for comp in target_comps {
-        if let Component::Normal(name) = comp {
-            if let Some(s) = name.to_str() {
-                result_parts.push(s);
-            }
+        if let Component::Normal(name) = comp
+            && let Some(s) = name.to_str()
+        {
+            result_parts.push(s);
         }
     }
 

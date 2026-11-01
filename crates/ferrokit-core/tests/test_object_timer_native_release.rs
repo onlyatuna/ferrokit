@@ -11,9 +11,9 @@
 use ferrokit_core::event::{NativeEventFilter, NativeMessage};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject, unregister_qobject,
 };
-use ferrokit_core::timer::{with_thread_timer_context, TimerId, TimerType};
+use ferrokit_core::timer::{TimerId, TimerType, with_thread_timer_context};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,12 +28,11 @@ impl NativeEventFilter for WmTimerLog {
         msg: &NativeMessage,
         _result: &mut isize,
     ) -> bool {
-        if event_type == "windows_generic_MSG" {
-            if let NativeMessage::Windows(m) = msg {
-                if m.message == WM_TIMER {
-                    self.0.lock().unwrap().push(m.wParam as u32);
-                }
-            }
+        if event_type == "windows_generic_MSG"
+            && let NativeMessage::Windows(m) = msg
+            && m.message == WM_TIMER
+        {
+            self.0.lock().unwrap().push(m.wParam as u32);
         }
         false
     }

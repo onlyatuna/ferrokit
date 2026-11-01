@@ -58,7 +58,7 @@ mod harness {
 
     use ferrokit_gui::application::GuiApplication;
 
-    use super::checks::{Recorder, CHECKS};
+    use super::checks::{CHECKS, Recorder};
     use super::objc;
 
     const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -159,7 +159,7 @@ mod harness {
         }
     }
 
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_main_np() -> std::os::raw::c_int;
     }
 
@@ -211,7 +211,7 @@ mod cg {
     pub const BYTE_ORDER_32_BIG: u32 = 4 << 12;
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn CFGetTypeID(object: *const c_void) -> usize;
         pub fn CGImageGetTypeID() -> usize;
         pub fn CGImageGetWidth(image: CGImageRef) -> usize;
@@ -241,17 +241,17 @@ mod cg {
 /// Raw message sends for reading AppKit state back; ferrokit's `ObjcMsg` has no getter for most of it.
 #[cfg(target_os = "macos")]
 mod objc {
-    use std::ffi::{c_char, CStr};
+    use std::ffi::{CStr, c_char};
     use std::sync::OnceLock;
 
     use ferrokit_platform::objc_runtime::{
-        nsstring_from_str, CGPoint, CGRect, Class, Id, ObjcMsg, Sel,
+        CGPoint, CGRect, Class, Id, ObjcMsg, Sel, nsstring_from_str,
     };
 
     type Preprocessor = extern "C" fn(Id) -> Id;
 
     #[link(name = "objc")]
-    extern "C" {
+    unsafe extern "C" {
         fn objc_msgSend();
         fn objc_setExceptionPreprocessor(f: Preprocessor) -> Option<Preprocessor>;
     }
@@ -465,8 +465,8 @@ mod checks {
     use std::sync::{Arc, Mutex};
 
     use ferrokit_core::event::MouseButtons;
-    use ferrokit_gui::geometry::primitives::{Point, Rect};
     use ferrokit_gui::geometry::Region;
+    use ferrokit_gui::geometry::primitives::{Point, Rect};
     use ferrokit_gui::paint::Pixmap;
     use ferrokit_gui::tiny_skia::Color;
     use ferrokit_platform::backdrop::BackdropType;

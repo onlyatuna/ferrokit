@@ -13,14 +13,14 @@
 
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::Pixmap;
-use ferrokit_gui::{round_scale_factor, GuiApplication, HighDpiScaleFactorRoundingPolicy};
+use ferrokit_gui::{GuiApplication, HighDpiScaleFactorRoundingPolicy, round_scale_factor};
 use ferrokit_platform::platform_window::PlatformWindow;
-use ferrokit_platform::screen::native_cursor_to_logical;
 use ferrokit_platform::screen::PlatformScreen;
+use ferrokit_platform::screen::native_cursor_to_logical;
 use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::WindowSystemEventHandler;
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
+    GenericPlatformIntegration, PlatformIntegration, WindowFlags, set_platform_integration,
 };
 use ferrokit_widgets::Window;
 use std::sync::{Arc, Mutex};

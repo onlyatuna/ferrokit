@@ -303,8 +303,8 @@ fn begin_publish(state: &Rc<FocusState>, widget: Option<&WidgetRef>) -> FocusTic
         .and_then(|w| w.try_borrow().ok().and_then(|w| w.window_id()))
         .or_else(|| {
             let root = state.root.borrow().upgrade()?;
-            let id = root.try_borrow().ok()?.window_id();
-            id
+
+            root.try_borrow().ok()?.window_id()
         });
     let new = widget.map(|w| (w.borrow().id(), Rc::downgrade(w)));
     Application::begin_focus_publish(Rc::as_ptr(state) as usize, window, new)

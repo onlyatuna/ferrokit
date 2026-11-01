@@ -8,8 +8,8 @@ use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 struct DpiObserverWidget {
     base: WidgetBase,

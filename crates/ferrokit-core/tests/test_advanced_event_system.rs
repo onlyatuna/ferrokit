@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event::*;
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 struct EventSpyWidget {
     data: ObjectData,

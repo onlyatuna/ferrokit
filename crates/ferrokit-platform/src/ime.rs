@@ -27,7 +27,7 @@ pub struct Win32InputContext {
 // `hwnd` is passed only to `ImmAssociateContextEx`, which validates it; nothing dereferences it.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn set_window_ime_enabled(hwnd: windows_sys::Win32::Foundation::HWND, enabled: bool) {
-    use windows_sys::Win32::UI::Input::Ime::{ImmAssociateContextEx, IACE_DEFAULT};
+    use windows_sys::Win32::UI::Input::Ime::{IACE_DEFAULT, ImmAssociateContextEx};
     let _t =
         ferrokit_gui::startup_trace::span(|| format!("ImmAssociateContextEx(enabled={enabled})"));
     // SAFETY: `ImmAssociateContextEx` takes only by-value arguments; `hwnd` is validated by imm32
@@ -55,8 +55,8 @@ impl Win32InputContext {
     /// Sets the IME candidate list position relative to the window client area.
     pub fn set_micro_focus(&mut self, pos: Point) {
         use windows_sys::Win32::UI::Input::Ime::{
-            ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, CANDIDATEFORM,
-            CFS_CANDIDATEPOS,
+            CANDIDATEFORM, CFS_CANDIDATEPOS, ImmGetContext, ImmReleaseContext,
+            ImmSetCandidateWindow,
         };
 
         self.candidate_pos = pos;
@@ -94,8 +94,8 @@ impl Win32InputContext {
     /// Handles WM_IME_COMPOSITION. Returns `(commit_string, preedit_string, cursor_pos)`.
     pub fn handle_composition(&mut self, lparam: isize) -> (Option<String>, Option<String>, i32) {
         use windows_sys::Win32::UI::Input::Ime::{
-            ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPSTR, GCS_CURSORPOS,
-            GCS_RESULTSTR,
+            GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTSTR, ImmGetCompositionStringW, ImmGetContext,
+            ImmReleaseContext,
         };
 
         if self.hwnd.is_null() {

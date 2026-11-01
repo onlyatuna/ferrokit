@@ -9,15 +9,14 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, query_object_children, query_object_parent,
-    query_object_parents_snapshot, register_owned_qobject, reparent_owned_object, set_parent_by_id,
-    with_object, with_object_mut, ObjectData, ObjectId, OwnedObject, QObject, ReparentError,
-    ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ReparentError, ThreadId, add_owned_child,
+    dispatch_to_object, query_object_children, query_object_parent, query_object_parents_snapshot,
+    register_owned_qobject, reparent_owned_object, set_parent_by_id, with_object, with_object_mut,
 };
 
 type Hook = Box<dyn FnOnce(&mut EncapsulatedNode)>;

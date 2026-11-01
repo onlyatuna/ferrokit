@@ -8,10 +8,10 @@
 
 use crate::clipboard::{MimeData, PlatformClipboard};
 use ferrokit_core::signal::Signal;
-use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 /// The `NSPasteboard` operations the clipboard uses. Types are pasteboard type strings (UTIs such
 /// as `public.utf8-plain-text`).
@@ -227,15 +227,15 @@ impl PlatformClipboard for CocoaClipboard {
         }
         // Types other applications put on the pasteboard that have a MIME counterpart but are
         // not stored by `set_mime_data`: used only when no better type supplied the MIME type.
-        if !mime_data.has_format("text/plain") {
-            if let Some(text) = fallback_text(backend.as_ref()) {
-                mime_data.set_text(&text);
-            }
+        if !mime_data.has_format("text/plain")
+            && let Some(text) = fallback_text(backend.as_ref())
+        {
+            mime_data.set_text(&text);
         }
-        if !mime_data.has_format("text/uri-list") {
-            if let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty)) {
-                mime_data.set_data("text/uri-list", url);
-            }
+        if !mime_data.has_format("text/uri-list")
+            && let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty))
+        {
+            mime_data.set_data("text/uri-list", url);
         }
         Ok(mime_data)
     }
@@ -251,12 +251,12 @@ impl PlatformClipboard for CocoaClipboard {
 mod native {
     use super::PasteboardBackend;
     use crate::objc_runtime::{
-        nsstring_from_str, objc_get_class, Id, NSUInteger, ObjcMsg, Sel, BOOL,
+        BOOL, Id, NSUInteger, ObjcMsg, Sel, nsstring_from_str, objc_get_class,
     };
-    use std::ffi::{c_void, CStr};
+    use std::ffi::{CStr, c_void};
     use std::sync::Mutex;
 
-    extern "C" {
+    unsafe extern "C" {
         fn objc_msgSend();
         fn objc_autoreleasePoolPush() -> *mut c_void;
         fn objc_autoreleasePoolPop(pool: *mut c_void);
@@ -311,8 +311,10 @@ mod native {
     /// # Safety
     /// `string` is nil or a live `NSString`.
     unsafe fn rust_string(string: Id) -> Option<String> {
-        let utf8 =
-            ObjcMsg::send_0(string, Sel::register("UTF8String")).0 as *const std::ffi::c_char;
+        // SAFETY: caller guarantees string is nil or a live NSString.
+        let utf8 = unsafe {
+            ObjcMsg::send_0(string, Sel::register("UTF8String")).0 as *const std::ffi::c_char
+        };
         if utf8.is_null() {
             return None;
         }
@@ -320,7 +322,7 @@ mod native {
         // returned `None`) or a live NSString; `UTF8String` returns a NUL-terminated buffer
         // owned by `string` that stays valid while the caller's autorelease pool has not drained
         // (per the NSString documentation), and it is copied here before returning.
-        Some(CStr::from_ptr(utf8).to_string_lossy().into_owned())
+        Some(unsafe { CStr::from_ptr(utf8).to_string_lossy().into_owned() })
     }
 
     /// `[NSPasteboard generalPasteboard]` as a [`PasteboardBackend`].
@@ -468,7 +470,7 @@ mod native {
                     pasteboard.0,
                     Sel::register("setData:forType:").0,
                     ns_data.0,
-                    ns_type.0 .0,
+                    ns_type.0.0,
                 ) != 0
             }
         }

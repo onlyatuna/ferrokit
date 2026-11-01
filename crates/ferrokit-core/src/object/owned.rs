@@ -4,8 +4,8 @@
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::qobject::{ObjectBorrowState, ObjectId, QObject, SendFree};
 

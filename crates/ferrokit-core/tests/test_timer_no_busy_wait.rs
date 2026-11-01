@@ -5,8 +5,8 @@
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::timer::Timer;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// `SetTimer` posts its `WM_TIMER` up to one system clock tick (about 15 ms) after the deadline in

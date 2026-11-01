@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+pub use crate::surface::PlatformSurface;
 pub use crate::surface::macos::CocoaLayerSurface;
 pub use crate::surface::wayland::WaylandShmSurface;
 #[cfg(windows)]
@@ -6,7 +7,6 @@ pub use crate::surface::win32::Win32LayeredSurface as LayeredSurface;
 #[cfg(windows)]
 pub use crate::surface::win32::Win32LayeredSurface;
 pub use crate::surface::x11::X11ShmSurface;
-pub use crate::surface::PlatformSurface;
 
 #[cfg(all(test, windows))]
 mod tests {
@@ -171,9 +171,10 @@ mod tests {
         let mut pm = Pixmap::new(100, 80).unwrap();
         pm.fill(Color::from_rgba8(50, 150, 250, 255));
         assert!(x11.present(&mut pm, 1.0).is_ok());
-        assert!(x11
-            .present_dirty(&mut pm, 1.0, Rect::new(10, 10, 20, 20))
-            .is_ok());
+        assert!(
+            x11.present_dirty(&mut pm, 1.0, Rect::new(10, 10, 20, 20))
+                .is_ok()
+        );
     }
 
     #[test]

@@ -264,11 +264,11 @@ impl<R: DialogRuntime> CocoaDialogs<R> {
             PanelKind::SaveFile => rt.msg_bool(panel, "setCanCreateDirectories:", true),
         }
 
-        if kind != PanelKind::Folder {
-            if let Some(extensions) = allowed_extensions(filter) {
-                let strings: Vec<Id> = extensions.iter().map(|e| self.nsstring(e)).collect();
-                rt.msg_id(panel, "setAllowedFileTypes:", rt.array(&strings));
-            }
+        if kind != PanelKind::Folder
+            && let Some(extensions) = allowed_extensions(filter)
+        {
+            let strings: Vec<Id> = extensions.iter().map(|e| self.nsstring(e)).collect();
+            rt.msg_id(panel, "setAllowedFileTypes:", rt.array(&strings));
         }
 
         let (directory, file_name) = split_initial_path(initial_path);
@@ -426,10 +426,10 @@ pub(crate) use native::NativeRuntime;
 
 #[cfg(target_os = "macos")]
 mod native {
-    use std::ffi::{c_char, CStr};
+    use std::ffi::{CStr, c_char};
 
     use super::DialogRuntime;
-    use crate::objc_runtime::{nsstring_from_str, objc_get_class, Id, NSInteger, ObjcMsg, Sel};
+    use crate::objc_runtime::{Id, NSInteger, ObjcMsg, Sel, nsstring_from_str, objc_get_class};
 
     /// [`DialogRuntime`] over the real Objective-C runtime.
     #[derive(Debug, Default, Clone, Copy)]

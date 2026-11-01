@@ -6,11 +6,11 @@
 
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_widgets::Menu;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, PeekMessageW, PostQuitMessage, PostThreadMessageW, MSG, PM_NOREMOVE, WM_KEYDOWN,
+    GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostQuitMessage, PostThreadMessageW, WM_KEYDOWN,
 };
 
 /// `PostThreadMessageW` needs the thread's message queue to exist; a peek creates it.

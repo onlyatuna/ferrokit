@@ -2,7 +2,7 @@
 //! 4x4 Matrix for 3D transformations, projections, and viewports (`QMatrix4x4` equivalent).
 
 use super::super::primitives::PointF;
-use super::super::transform::{finite_f32, SINGULAR_REL_EPS};
+use super::super::transform::{SINGULAR_REL_EPS, finite_f32};
 use super::vector3d::Vector3D;
 use super::vector4d::Vector4D;
 use std::f32::consts::PI;

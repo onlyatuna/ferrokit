@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use ferrokit_core::application::{ApplicationAttribute, CoreApplication};
 use ferrokit_core::event::{Event, EventFilter, EventKind, FilterResult};
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use ferrokit_gui::application::{ApplicationState, GuiApplication, LayoutDirection};
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};

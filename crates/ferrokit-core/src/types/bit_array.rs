@@ -111,11 +111,7 @@ impl BitArray {
     /// Counts the number of bits set to `value` (1s or 0s), matching `QBitArray::count`.
     pub fn count(&self, value: bool) -> usize {
         let ones: usize = self.blocks.iter().map(|b| b.count_ones() as usize).sum();
-        if value {
-            ones
-        } else {
-            self.len - ones
-        }
+        if value { ones } else { self.len - ones }
     }
 
     /// Fills all bits in the array with `value`, matching `QBitArray::fill`.

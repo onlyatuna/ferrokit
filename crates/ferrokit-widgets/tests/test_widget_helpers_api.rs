@@ -9,18 +9,18 @@ mod headless;
 
 use ferrokit_core::animation::{AnimationState, PropertyAnimation};
 use ferrokit_core::event::{Event, EventKind, MouseButtons};
-use ferrokit_core::object::{register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject};
+use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};
 use ferrokit_core::variant::Variant;
-use ferrokit_gui::application::{set_system_motion_preference, GuiApplication, MotionPreference};
+use ferrokit_gui::application::{GuiApplication, MotionPreference, set_system_motion_preference};
 use ferrokit_gui::geometry::primitives::{Point, Rect};
 use ferrokit_gui::paint::{Painter, Pixmap};
 use ferrokit_platform::WindowFlags;
 use ferrokit_widgets::accessibility::{AccessibleId, AccessibleTree};
 use ferrokit_widgets::button::Button;
-use ferrokit_widgets::hit_test::{hit_path, EventTreeDispatcher};
+use ferrokit_widgets::hit_test::{EventTreeDispatcher, hit_path};
 use ferrokit_widgets::layout::{BoxLayout, GridLayout, Layout};
 use ferrokit_widgets::widget::{EmptyWidget, Widget, WidgetRef};
-use ferrokit_widgets::window::{deliver_paint_event, Window};
+use ferrokit_widgets::window::{Window, deliver_paint_event};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -533,10 +533,11 @@ fn layout_reached_through_as_any_mut_and_item_access() {
     assert!(root.borrow().layout_ref_mut().unwrap().take_at(9).is_none());
 
     // A layout of another type does not downcast.
-    assert!(root
-        .borrow()
-        .with_layout_as::<GridLayout, _>(|_| ())
-        .is_none());
+    assert!(
+        root.borrow()
+            .with_layout_as::<GridLayout, _>(|_| ())
+            .is_none()
+    );
     // No layout at all.
     assert!(a.borrow().with_box_layout(|_| ()).is_none());
 }

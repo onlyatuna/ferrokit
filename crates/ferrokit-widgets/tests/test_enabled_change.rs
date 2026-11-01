@@ -176,10 +176,10 @@ fn tree(focus: Option<&str>) -> Tree {
     };
     if let Some(name) = focus {
         let id = t.named(name).borrow().id();
-        assert!(t
-            .d
-            .focus_manager_mut()
-            .set_focus(&t.root, Some(id), FocusReason::Other));
+        assert!(
+            t.d.focus_manager_mut()
+                .set_focus(&t.root, Some(id), FocusReason::Other)
+        );
     }
     t.log.borrow_mut().clear();
     t
@@ -284,9 +284,10 @@ fn container_tree(
     adopt_tree(&root);
     let mut d = EventTreeDispatcher::new();
     let id = container.borrow().id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(id), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(id), FocusReason::Other)
+    );
     log.borrow_mut().clear();
     (root, container, child, sibling, d, log)
 }

@@ -164,9 +164,10 @@ fn tree(nested: bool, b_policy: FocusPolicy) -> Tree {
     adopt_tree(&root);
     let mut d = EventTreeDispatcher::new();
     let id = a.borrow().id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(id), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(id), FocusReason::Other)
+    );
     log.borrow_mut().clear();
     Tree {
         root,

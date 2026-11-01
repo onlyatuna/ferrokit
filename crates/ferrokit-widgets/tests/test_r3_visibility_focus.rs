@@ -303,9 +303,10 @@ fn focus_tree() -> (
     adopt_tree(&root);
     let mut d = EventTreeDispatcher::new();
     let id = a.borrow().id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(id), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(id), FocusReason::Other)
+    );
     (root, a, b, c, d, log)
 }
 
@@ -382,9 +383,10 @@ fn stack_window(
         .unwrap()
         .borrow()
         .id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(target), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(target), FocusReason::Other)
+    );
     log.borrow_mut().clear();
     let mut all = vec![page0, page1];
     all.extend(ws);
@@ -442,9 +444,10 @@ fn a_page_switch_with_no_widget_outside_the_stack_still_focuses_the_new_page() {
 fn focus_on_the_page_itself_moves_into_the_new_page() {
     let (root, s, ws, mut d, log) = stack_window("a0");
     let page0 = ws[0].borrow().id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(page0), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(page0), FocusReason::Other)
+    );
     log.borrow_mut().clear();
     StackedWidget::set_current_index(&s, 1);
     assert_eq!(focused(&d, &ws), Some("b1"));
@@ -831,9 +834,10 @@ fn hiding_an_unadopted_container_moves_the_focus() {
     root.borrow_mut().add_child(c.clone());
     let mut d = EventTreeDispatcher::new();
     let id = a.borrow().id();
-    assert!(d
-        .focus_manager_mut()
-        .set_focus(&root, Some(id), FocusReason::Other));
+    assert!(
+        d.focus_manager_mut()
+            .set_focus(&root, Some(id), FocusReason::Other)
+    );
     assert!(
         c.borrow().parent_widget().is_none(),
         "precondition: c is not adopted"

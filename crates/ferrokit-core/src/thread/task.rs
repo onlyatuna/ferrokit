@@ -8,7 +8,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use crate::thread::pool::{
-    enter_blocking, note_awaited_job, steal_awaited_job, BlockedWorker, JobRef,
+    BlockedWorker, JobRef, enter_blocking, note_awaited_job, steal_awaited_job,
 };
 
 /// Status of a task in its execution lifecycle.
@@ -332,11 +332,11 @@ impl<T: Clone> Future for TaskHandle<T> {
             }
         }
         // Checked with `result` released: `settle` takes `status` before `result`.
-        if let Some(job) = &self.shared.queued_job {
-            if *self.shared.status.lock().unwrap() == TaskStatus::Queued {
-                // Lets `block_on` on a worker of the same pool run the task inline.
-                note_awaited_job(job);
-            }
+        if let Some(job) = &self.shared.queued_job
+            && *self.shared.status.lock().unwrap() == TaskStatus::Queued
+        {
+            // Lets `block_on` on a worker of the same pool run the task inline.
+            note_awaited_job(job);
         }
         Poll::Pending
     }

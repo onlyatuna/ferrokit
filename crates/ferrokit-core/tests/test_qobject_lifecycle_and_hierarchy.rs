@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{
+    ObjectData, ObjectId, OwnedObject, QObject, QObjectExt, QPointer, SignalBlocker, ThreadId,
     add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject,
-    register_qobject_ptr, unregister_qobject, with_object, ObjectData, ObjectId, OwnedObject,
-    QObject, QObjectExt, QPointer, SignalBlocker, ThreadId,
+    register_qobject_ptr, unregister_qobject, with_object,
 };
 use ferrokit_core::signal::Signal;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.

@@ -5,7 +5,7 @@
 //! any window system.
 
 use ferrokit_platform::size_limits::{
-    clamp_size_limit, scale_size_limit, SizeLimits, TrackLimits, WINDOW_SIZE_MAX,
+    SizeLimits, TrackLimits, WINDOW_SIZE_MAX, clamp_size_limit, scale_size_limit,
 };
 
 const NONE: Option<i32> = None;

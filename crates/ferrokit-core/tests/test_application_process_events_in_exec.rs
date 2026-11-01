@@ -9,8 +9,8 @@ use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::post_event_to_thread;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
-    ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, register_owned_qobject,
+    unregister_qobject,
 };
 
 type Log = Arc<Mutex<Vec<&'static str>>>;

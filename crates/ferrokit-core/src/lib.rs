@@ -39,4 +39,4 @@ pub mod application;
 pub use application::*;
 
 #[cfg(feature = "derive")]
-pub use ferrokit_derive::{slot, slots, QObject};
+pub use ferrokit_derive::{QObject, slot, slots};

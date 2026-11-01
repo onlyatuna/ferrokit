@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 mod color_scheme;
 pub use color_scheme::{
-    handle_theme_changed, set_color_scheme_source, ColorScheme, ColorSchemeSource,
+    ColorScheme, ColorSchemeSource, handle_theme_changed, set_color_scheme_source,
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event_loop::DispatcherKind;
@@ -458,8 +458,8 @@ pub(crate) static APPLICATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn application_lock() -> std::sync::MutexGuard<'static, ()> {
         APPLICATION_TEST_LOCK

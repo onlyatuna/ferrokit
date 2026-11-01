@@ -7,15 +7,15 @@
 //! afterwards through a handle that outlived the loop is dropped at once, not queued for good.
 //! A payload or handler that panics is contained and does not stop the rest.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{get_thread_event_sender, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, get_thread_event_sender};
 use ferrokit_core::object::{
-    query_object_thread, register_owned_qobject, ObjectData, ObjectId, OwnedObject, QObject,
-    ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, query_object_thread,
+    register_owned_qobject,
 };
 
 /// A call that does nothing, and holds `witness` until it is run or dropped.

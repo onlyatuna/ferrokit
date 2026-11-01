@@ -12,7 +12,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::UI::Shell::NIN_SELECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetIconInfo, IsWindow, SendMessageW, ICONINFO, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
+    GetIconInfo, ICONINFO, IsWindow, SendMessageW, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONDBLCLK,
     WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
 };
 
@@ -281,7 +281,7 @@ fn icon_alive(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -> bool 
 }
 
 fn icon_width(icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON) -> i32 {
-    use windows_sys::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+    use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
     // SAFETY: an all-zero `ICONINFO` (integers, a bool and null handles) is a valid value.
     let mut info: ICONINFO = unsafe { std::mem::zeroed() };
     // SAFETY: `icon` is the live `HICON` of a tray the caller still holds; `info` is a live
@@ -373,7 +373,7 @@ fn the_tray_window_lets_taskbar_created_through_the_message_filter() {
     // MSGFLT_ALLOW)`, so a tray in an elevated process still hears the restarted Explorer. Asking
     // again reports whether the message was already allowed for this window.
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, RegisterWindowMessageW, CHANGEFILTERSTRUCT, MSGFLT_ALLOW,
+        CHANGEFILTERSTRUCT, ChangeWindowMessageFilterEx, MSGFLT_ALLOW, RegisterWindowMessageW,
     };
     // MSGFLTINFO_NONE is 0 (the message was not allowed before this call).
     const MSGFLTINFO_ALREADYALLOWED_FORWINDOW: u32 = 1;

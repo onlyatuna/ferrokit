@@ -29,8 +29,8 @@ use crate::text::outline_face::OutlineFace;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
-use windows::core::{Interface, BOOL};
 use windows::Win32::Graphics::DirectWrite::*;
+use windows::core::{BOOL, Interface};
 
 /// Process-wide DirectWrite objects. `None` when DirectWrite (or the in-memory loader, which needs
 /// Windows 10 1703) is unavailable; callers then use [`OutlineFace`].

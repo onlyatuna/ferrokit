@@ -243,13 +243,18 @@ impl<T> Receiver<T> {
     /// Attempts to receive an item without blocking.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         let mut queue = self.shared.queue.lock().unwrap();
-        if let Some(val) = queue.pop_front() {
-            self.shared.send_cond.notify_one();
-            Ok(val)
-        } else if *self.shared.is_closed.lock().unwrap() {
-            Err(TryRecvError::Disconnected)
-        } else {
-            Err(TryRecvError::Empty)
+        match queue.pop_front() {
+            Some(val) => {
+                self.shared.send_cond.notify_one();
+                Ok(val)
+            }
+            _ => {
+                if *self.shared.is_closed.lock().unwrap() {
+                    Err(TryRecvError::Disconnected)
+                } else {
+                    Err(TryRecvError::Empty)
+                }
+            }
         }
     }
 

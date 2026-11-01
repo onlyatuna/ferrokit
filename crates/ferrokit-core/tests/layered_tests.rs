@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ferrokit_core::event::{compress_event, CoreCompressor, Event, EventFilterChain, EventKind};
+use ferrokit_core::event::{CoreCompressor, Event, EventFilterChain, EventKind, compress_event};
 use ferrokit_core::event_loop::{EventLoop, PostedEvent};
 use ferrokit_core::object::{
-    register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext,
+    ObjectData, ObjectId, QObject, ThreadContext, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::signal::Signal;
 use ferrokit_core::timer::Timer;

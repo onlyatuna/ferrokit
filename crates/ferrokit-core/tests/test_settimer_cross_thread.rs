@@ -15,18 +15,18 @@
 #![cfg(windows)]
 
 use std::ptr::NonNull;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use ferrokit_core::event::{NativeEventFilter, NativeMessage};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut,
-    ObjectId, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId, move_to_thread_by_id,
+    register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::timer::precise::native_handle;
-use ferrokit_core::timer::{kill_object_timer, start_object_timer, TimerId, TimerType};
+use ferrokit_core::timer::{TimerId, TimerType, kill_object_timer, start_object_timer};
 use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, WM_TIMER};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -61,12 +61,11 @@ impl NativeEventFilter for Recorder {
         msg: &NativeMessage,
         _result: &mut isize,
     ) -> bool {
-        if event_type == "windows_generic_MSG" {
-            if let NativeMessage::Windows(m) = msg {
-                if m.message == WM_TIMER {
-                    self.0.lock().unwrap().push((m.hwnd as usize, m.wParam));
-                }
-            }
+        if event_type == "windows_generic_MSG"
+            && let NativeMessage::Windows(m) = msg
+            && m.message == WM_TIMER
+        {
+            self.0.lock().unwrap().push((m.hwnd as usize, m.wParam));
         }
         false
     }

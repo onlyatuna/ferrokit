@@ -850,19 +850,18 @@ pub fn setup_spacings(
             }
             let cell = if horizontal { c * cc + r } else { r * cc + c };
             let current = grid[cell];
-            if let Some(prev_row) = previous_row {
-                if current.is_none() || previous_box != current {
-                    let mut spacing = fixed_spacing;
-                    if !horizontal {
-                        if let Some(sibling) = current {
-                            if empty_of(sibling) {
-                                spacing = 0;
-                            }
-                        }
-                    }
-                    if spacing > chain[prev_row].spacing {
-                        chain[prev_row].spacing = spacing;
-                    }
+            if let Some(prev_row) = previous_row
+                && (current.is_none() || previous_box != current)
+            {
+                let mut spacing = fixed_spacing;
+                if !horizontal
+                    && let Some(sibling) = current
+                    && empty_of(sibling)
+                {
+                    spacing = 0;
+                }
+                if spacing > chain[prev_row].spacing {
+                    chain[prev_row].spacing = spacing;
                 }
             }
             previous_box = current;

@@ -3,16 +3,16 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::event::{Event, EventKind};
 use crate::event_loop::{
-    install_application_event_filter, remove_application_event_filter, DispatcherKind, EventLoop,
+    DispatcherKind, EventLoop, install_application_event_filter, remove_application_event_filter,
 };
 use crate::meta::MetaObject;
 use crate::object::{
-    query_object_thread, unregister_qobject, ObjectData, ObjectId, QObject, ThreadContext, ThreadId,
+    ObjectData, ObjectId, QObject, ThreadContext, ThreadId, query_object_thread, unregister_qobject,
 };
 use crate::signal::Signal;
 
@@ -196,20 +196,19 @@ impl CoreApplication {
             let mut meta_guard = GLOBAL_METADATA.write().unwrap();
             let mut meta = meta_guard.take().unwrap_or_default();
             meta.arguments = args;
-            if meta.application_name.is_empty() {
-                if let Some(first_arg) = meta.arguments.first() {
-                    let path = Path::new(first_arg);
-                    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        meta.application_name = file_stem.to_string();
-                    }
+            if meta.application_name.is_empty()
+                && let Some(first_arg) = meta.arguments.first()
+            {
+                let path = Path::new(first_arg);
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    meta.application_name = file_stem.to_string();
                 }
             }
-            if meta.library_paths.is_empty() {
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(dir) = exe.parent() {
-                        meta.library_paths.push(dir.to_path_buf());
-                    }
-                }
+            if meta.library_paths.is_empty()
+                && let Ok(exe) = std::env::current_exe()
+                && let Some(dir) = exe.parent()
+            {
+                meta.library_paths.push(dir.to_path_buf());
             }
             *meta_guard = Some(meta);
         }
@@ -476,10 +475,10 @@ impl CoreApplication {
 
     pub fn add_library_path(path: PathBuf) {
         let mut guard = GLOBAL_METADATA.write().unwrap();
-        if let Some(m) = guard.as_mut() {
-            if !m.library_paths.contains(&path) {
-                m.library_paths.push(path);
-            }
+        if let Some(m) = guard.as_mut()
+            && !m.library_paths.contains(&path)
+        {
+            m.library_paths.push(path);
         }
     }
 

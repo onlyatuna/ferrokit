@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject, sender,
-    unregister_qobject, MoveByIdError, ObjectData, ObjectId, OwnedObject, QObject, ScopeLevelGuard,
-    ThreadContext, ThreadId,
+    MoveByIdError, ObjectData, ObjectId, OwnedObject, QObject, ScopeLevelGuard, ThreadContext,
+    ThreadId, add_owned_child, move_to_thread_by_id, query_object_thread, register_owned_qobject,
+    sender, unregister_qobject,
 };
 use ferrokit_core::property::Property;
 use ferrokit_core::signal::Signal;
@@ -436,9 +436,11 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
         .with_mut(|a| ferrokit_core::object::install_event_filter(&mut a.data, b_id))
         .unwrap();
     assert!(ok);
-    assert!(obj_a
-        .with(|a| a.data.event_filters().contains(b_id))
-        .unwrap());
+    assert!(
+        obj_a
+            .with(|a| a.data.event_filters().contains(b_id))
+            .unwrap()
+    );
 
     // 3. Qt allows mutual event filters (qobject.cpp:2407-2423)
     let cycle = obj_b

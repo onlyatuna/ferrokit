@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::event::{Event, EventKind};
-use crate::object::qobject::ObjectData;
 use crate::object::ObjectId;
+use crate::object::qobject::ObjectData;
 use crate::poison::{lock_unpoisoned, read_unpoisoned, write_unpoisoned};
 
 use std::cell::{Cell, RefCell};

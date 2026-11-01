@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::any::Any;
 use std::ptr::NonNull;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,8 +11,8 @@ use ferrokit_core::meta::{
     Access, InvokeError, MetaMethod, MetaObject, MethodType, QOBJECT_META_OBJECT,
 };
 use ferrokit_core::object::{
-    invoke_method_on_thread, register_qobject_ptr, unregister_qobject, with_object, ObjectData,
-    ObjectId, QObject,
+    ObjectData, ObjectId, QObject, invoke_method_on_thread, register_qobject_ptr,
+    unregister_qobject, with_object,
 };
 use ferrokit_core::signal::{ConnectionType, Signal};
 use ferrokit_core::variant::Variant;

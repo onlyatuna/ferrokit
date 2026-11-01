@@ -916,10 +916,11 @@ impl TextLayout {
     fn foreground_at(&self, g_idx: usize, default_color: Color) -> Color {
         let mut color = default_color;
         for fmt in &self.formats {
-            if g_idx >= fmt.start && g_idx < fmt.start + fmt.length {
-                if let Some(fg) = fmt.format.foreground {
-                    color = fg;
-                }
+            if g_idx >= fmt.start
+                && g_idx < fmt.start + fmt.length
+                && let Some(fg) = fmt.format.foreground
+            {
+                color = fg;
             }
         }
         color

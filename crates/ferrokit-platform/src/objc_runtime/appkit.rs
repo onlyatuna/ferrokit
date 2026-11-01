@@ -200,7 +200,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGPoint = msg_send_fn();
             msg_send(receiver.0, sel.0)
         }
@@ -226,7 +227,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, CGPoint) -> CGPoint =
                 msg_send_fn();
             msg_send(receiver.0, sel.0, point)
@@ -263,7 +265,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(
                 *mut c_void,
                 *const c_void,
@@ -311,7 +314,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSInteger = msg_send_fn();
             msg_send(receiver.0, sel.0)
         }
@@ -336,7 +340,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSUInteger = msg_send_fn();
             msg_send(receiver.0, sel.0)
         }
@@ -362,7 +367,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> u16 = msg_send_fn();
             msg_send(receiver.0, sel.0)
         }
@@ -387,7 +393,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGFloat = msg_send_fn();
             msg_send(receiver.0, sel.0)
         }
@@ -413,7 +420,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
             msg_send(receiver.0, sel.0) == YES
         }
@@ -437,7 +445,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             Self::send_0(receiver, sel)
         }
 
@@ -464,7 +473,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             ns_string_to_rust(Self::send_0(receiver, sel))
         }
 
@@ -488,7 +498,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) -> *mut c_void =
                 msg_send_fn();
             Id(msg_send(receiver.0, sel.0, val))
@@ -540,7 +551,8 @@ impl ObjcMsg {
             }
         }
 
-        Self::send_id(receiver, sel, arg)
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_id(receiver, sel, arg) }
     }
 
     /// `-[receiver sel:BOOL]`, logged (`setHidesOnDeactivate:`, `setAcceptsMouseMovedEvents:`,
@@ -553,7 +565,8 @@ impl ObjcMsg {
         if !receiver.is_nil() {
             record(receiver, sel, vec![MockValue::Bool(val)]);
         }
-        Self::send_bool(receiver, sel, val)
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_bool(receiver, sel, val) }
     }
 
     /// `-[receiver sel:NSInteger]`, logged (`setLevel:`, `setState:`, ...).
@@ -565,7 +578,8 @@ impl ObjcMsg {
         if !receiver.is_nil() {
             record(receiver, sel, vec![MockValue::Int(val as i64)]);
         }
-        Self::send_int(receiver, sel, val)
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_int(receiver, sel, val) }
     }
 
     /// `-[receiver sel]` returning an object, logged (`set`, `discardCursorRects`,
@@ -578,7 +592,8 @@ impl ObjcMsg {
         if !receiver.is_nil() {
             record(receiver, sel, Vec::new());
         }
-        Self::send_0(receiver, sel)
+        // SAFETY: caller guarantees receiver conforms to ObjcMsg contract.
+        unsafe { Self::send_0(receiver, sel) }
     }
 
     /// `-[receiver sel:id ordered:NSInteger]` (`-[NSWindow addChildWindow:ordered:]`), logged. The
@@ -592,7 +607,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(
                 *mut c_void,
                 *const c_void,
@@ -639,7 +655,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let name_obj = nsstring_from_str(name);
             let msg_send: extern "C" fn(
                 *mut c_void,
@@ -683,7 +700,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(
                 *mut c_void,
                 *const c_void,
@@ -720,7 +738,8 @@ impl ObjcMsg {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
             let msg_send: extern "C" fn(
                 *mut c_void,
                 *const c_void,
@@ -763,7 +782,8 @@ impl ObjcMsg {
 /// See [`ObjcMsg`].
 pub unsafe fn standard_cursor(selector: &str) -> Id {
     #[cfg(target_os = "macos")]
-    {
+    // SAFETY: caller guarantees receiver responds to sel with matching types.
+    unsafe {
         ObjcMsg::send_class_0(objc_get_class("NSCursor"), Sel::register(selector))
     }
 
@@ -790,7 +810,8 @@ pub unsafe fn standard_cursor(selector: &str) -> Id {
 /// See [`ObjcMsg`].
 pub unsafe fn array_with_object(object: Id) -> Id {
     #[cfg(target_os = "macos")]
-    {
+    // SAFETY: caller guarantees receiver responds to sel with matching types.
+    unsafe {
         ObjcMsg::send_id(
             Id(objc_get_class("NSArray").0),
             Sel::register("arrayWithObject:"),
@@ -816,7 +837,8 @@ pub unsafe fn retain(object: Id) {
         return;
     }
     #[cfg(target_os = "macos")]
-    {
+    // SAFETY: caller guarantees receiver responds to sel with matching types.
+    unsafe {
         ObjcMsg::send_0(object, Sel::register("retain"));
     }
     #[cfg(not(target_os = "macos"))]
@@ -830,8 +852,11 @@ pub unsafe fn retain(object: Id) {
 /// # Safety
 /// See [`ObjcMsg`]; the caller owns the reference it gives up.
 pub unsafe fn release(object: Id) {
-    if !object.is_nil() {
-        ObjcMsg::send_0(object, Sel::register("release"));
+    // SAFETY: caller guarantees object conforms to ObjcMsg contract and owns the reference given up.
+    unsafe {
+        if !object.is_nil() {
+            ObjcMsg::send_0(object, Sel::register("release"));
+        }
     }
 }
 
@@ -841,26 +866,32 @@ pub unsafe fn release(object: Id) {
 /// # Safety
 /// See [`ObjcMsg`]; `text` is nil or a live `NSString`/`NSAttributedString`.
 pub unsafe fn ns_text_to_string(text: Id) -> Option<String> {
-    if text.is_nil() {
-        return None;
-    }
+    // SAFETY: caller guarantees text conforms to ObjcMsg contract.
+    unsafe {
+        if text.is_nil() {
+            return None;
+        }
 
-    #[cfg(target_os = "macos")]
-    {
-        let attributed = objc_get_class("NSAttributedString");
-        let plain = if !attributed.is_nil()
-            && ObjcMsg::send_id_bool_return(text, Sel::register("isKindOfClass:"), Id(attributed.0))
+        #[cfg(target_os = "macos")]
         {
-            ObjcMsg::send_0(text, Sel::register("string"))
-        } else {
-            text
-        };
-        ns_string_to_rust(plain)
-    }
+            let attributed = objc_get_class("NSAttributedString");
+            let plain = if !attributed.is_nil()
+                && ObjcMsg::send_id_bool_return(
+                    text,
+                    Sel::register("isKindOfClass:"),
+                    Id(attributed.0),
+                ) {
+                ObjcMsg::send_0(text, Sel::register("string"))
+            } else {
+                text
+            };
+            ns_string_to_rust(plain)
+        }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        ObjcMsg::send_string_prop(text, Sel::register("string"))
+        #[cfg(not(target_os = "macos"))]
+        {
+            ObjcMsg::send_string_prop(text, Sel::register("string"))
+        }
     }
 }
 
@@ -873,17 +904,18 @@ unsafe fn ns_string_to_rust(string: Id) -> Option<String> {
     if string.is_nil() {
         return None;
     }
-    let utf8 = ObjcMsg::send_0(string, Sel::register("UTF8String")).0 as *const c_char;
+    // SAFETY: caller guarantees string is nil or live NSString.
+    let utf8 = unsafe { ObjcMsg::send_0(string, Sel::register("UTF8String")).0 as *const c_char };
     if utf8.is_null() {
         return None;
     }
     // SAFETY: `UTF8String` is a NUL-terminated buffer owned by `string`, valid until the
     // enclosing autorelease pool drains; it is copied before returning.
-    Some(
+    Some(unsafe {
         std::ffi::CStr::from_ptr(utf8)
             .to_string_lossy()
-            .into_owned(),
-    )
+            .into_owned()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +927,7 @@ mod core_graphics {
     use std::ffi::c_void;
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         pub fn CGPathCreateMutable() -> *mut c_void;
         pub fn CGPathAddRect(path: *mut c_void, transform: *const c_void, rect: super::CGRect);
         pub fn CGPathRelease(path: *mut c_void);
@@ -911,60 +943,63 @@ mod core_graphics {
 /// # Safety
 /// See [`ObjcMsg`].
 pub unsafe fn make_region_mask_layer(rects: &[CGRect], bounds: CGRect, flipped: bool) -> Id {
-    let class = objc_get_class("CAShapeLayer");
-    if class.is_nil() {
-        return Id::NIL;
-    }
-    let alloc = ObjcMsg::send_class_0(class, Sel::register("alloc"));
-    let layer = ObjcMsg::send_0(alloc, Sel::register("init"));
-    if layer.is_nil() {
-        return Id::NIL;
-    }
-    // The shape layer covers the masked layer, so path coordinates are the masked layer's.
-    ObjcMsg::send_rect(layer, Sel::register("setFrame:"), bounds);
-
-    let placed: Vec<CGRect> = rects
-        .iter()
-        .map(|r| {
-            if flipped {
-                *r
-            } else {
-                // Qt's top-left y becomes a bottom-left y inside `bounds`.
-                CGRect::new(
-                    r.origin.x,
-                    bounds.size.height - (r.origin.y + r.size.height),
-                    r.size.width,
-                    r.size.height,
-                )
-            }
-        })
-        .collect();
-
-    #[cfg(target_os = "macos")]
-    {
-        use core_graphics::*;
-        // SAFETY: the path is created, filled and released here; `setPath:` copies it.
-        let path = CGPathCreateMutable();
-        if path.is_null() {
-            release(layer);
+    // SAFETY: caller guarantees arguments conform to ObjcMsg contract.
+    unsafe {
+        let class = objc_get_class("CAShapeLayer");
+        if class.is_nil() {
             return Id::NIL;
         }
-        for rect in &placed {
-            CGPathAddRect(path, std::ptr::null(), *rect);
+        let alloc = ObjcMsg::send_class_0(class, Sel::register("alloc"));
+        let layer = ObjcMsg::send_0(alloc, Sel::register("init"));
+        if layer.is_nil() {
+            return Id::NIL;
         }
-        ObjcMsg::send_id(layer, Sel::register("setPath:"), Id(path));
-        CGPathRelease(path);
-    }
+        // The shape layer covers the masked layer, so path coordinates are the masked layer's.
+        ObjcMsg::send_rect(layer, Sel::register("setFrame:"), bounds);
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        record(
-            layer,
-            Sel::register("setPath:"),
-            placed.into_iter().map(MockValue::Rect).collect(),
-        );
+        let placed: Vec<CGRect> = rects
+            .iter()
+            .map(|r| {
+                if flipped {
+                    *r
+                } else {
+                    // Qt's top-left y becomes a bottom-left y inside `bounds`.
+                    CGRect::new(
+                        r.origin.x,
+                        bounds.size.height - (r.origin.y + r.size.height),
+                        r.size.width,
+                        r.size.height,
+                    )
+                }
+            })
+            .collect();
+
+        #[cfg(target_os = "macos")]
+        {
+            use core_graphics::*;
+            // SAFETY: the path is created, filled and released here; `setPath:` copies it.
+            let path = CGPathCreateMutable();
+            if path.is_null() {
+                release(layer);
+                return Id::NIL;
+            }
+            for rect in &placed {
+                CGPathAddRect(path, std::ptr::null(), *rect);
+            }
+            ObjcMsg::send_id(layer, Sel::register("setPath:"), Id(path));
+            CGPathRelease(path);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(
+                layer,
+                Sel::register("setPath:"),
+                placed.into_iter().map(MockValue::Rect).collect(),
+            );
+        }
+        layer
     }
-    layer
 }
 
 // ---------------------------------------------------------------------------
@@ -979,7 +1014,7 @@ mod native {
     use std::ffi::CStr;
 
     #[link(name = "objc")]
-    extern "C" {
+    unsafe extern "C" {
         fn objc_getProtocol(name: *const c_char) -> *mut c_void;
         fn class_addProtocol(class: *mut c_void, protocol: *mut c_void) -> BOOL;
         fn objc_msgSendSuper();
@@ -1013,7 +1048,8 @@ mod native {
     #[inline]
     unsafe fn super_send_fn<F: Copy>() -> F {
         debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
-        std::mem::transmute_copy(&(objc_msgSendSuper as *const ()))
+        // SAFETY: caller guarantees F matches objc_msgSendSuper signature.
+        unsafe { std::mem::transmute_copy(&(objc_msgSendSuper as *const ())) }
     }
 
     /// Runs `f`; a panic must not unwind into AppKit (undefined behavior), so it yields
@@ -1251,7 +1287,10 @@ mod native {
     /// `class` is an allocated, not yet registered class pair whose superclass is `NSView`.
     pub(crate) unsafe fn install_view_methods(class: *mut c_void) {
         let add = |name: &str, imp: *const c_void, types: &CStr| {
-            native_bindings::class_addMethod(class, Sel::register(name).0, imp, types.as_ptr());
+            // SAFETY: adding method implementation to un-registered class pair.
+            unsafe {
+                native_bindings::class_addMethod(class, Sel::register(name).0, imp, types.as_ptr())
+            };
         };
         let event_methods: [(&str, *const c_void); 12] = [
             ("mouseDown:", mouse_down as *const c_void),
@@ -1348,9 +1387,12 @@ mod native {
             do_command_by_selector as *const c_void,
             c"v@::",
         );
-        let protocol = objc_getProtocol(c"NSTextInputClient".as_ptr());
-        if !protocol.is_null() {
-            class_addProtocol(class, protocol);
+        // SAFETY: retrieves NSTextInputClient protocol and adds to un-registered class pair.
+        unsafe {
+            let protocol = objc_getProtocol(c"NSTextInputClient".as_ptr());
+            if !protocol.is_null() {
+                class_addProtocol(class, protocol);
+            }
         }
     }
 

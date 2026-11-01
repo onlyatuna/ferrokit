@@ -5,7 +5,7 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, N
 
 use crate::geometry::primitives::Size;
 use crate::image::image::Image;
-use crate::image::image_format::{q_gray, ImageFormat};
+use crate::image::image_format::{ImageFormat, q_gray};
 
 /// 1-bit monochrome bitmap used for masks, cursors, and clipping boundaries matching `QBitmap`.
 #[derive(Debug, Clone, PartialEq, Eq)]

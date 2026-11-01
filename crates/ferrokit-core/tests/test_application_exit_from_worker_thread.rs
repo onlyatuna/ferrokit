@@ -4,8 +4,8 @@
 //! (qcoreapplication.cpp:1534-1541). The worker is spawned from a timer inside `exec`, so the loop
 //! is running before the cross-thread exit is issued.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ferrokit_core::application::CoreApplication;

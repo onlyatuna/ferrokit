@@ -2,7 +2,7 @@
 //! CPU-side canonical image buffer matching Qt 6 `QImage`.
 
 use crate::geometry::primitives::{Rect, Size};
-use crate::image::image_format::{q_gray, ImageFormat};
+use crate::image::image_format::{ImageFormat, q_gray};
 use crate::image::image_view::{ImageView, ImageViewMut};
 use tiny_skia::Color;
 

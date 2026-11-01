@@ -3,7 +3,7 @@
 //! `QTextOption` starts with `LayoutDirectionAuto`, which takes it from the first strong
 //! character), embedding levels per grapheme, and the visual order of the runs of one line.
 
-use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
+use unicode_bidi::{BidiClass, BidiInfo, Level, bidi_class};
 
 /// Whether `text` reads right to left as a whole: its first strong character is a right to left
 /// one (rules P2 and P3, `QString::isRightToLeft`). The whole text counts, line feeds included: a

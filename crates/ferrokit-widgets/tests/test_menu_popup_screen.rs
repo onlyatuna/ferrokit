@@ -12,7 +12,7 @@ use ferrokit_platform::screen::PlatformScreen;
 use ferrokit_platform::size_limits::WINDOW_SIZE_MAX;
 use ferrokit_platform::window_system_interface::WindowSystemEventHandler;
 use ferrokit_platform::{
-    set_platform_integration, GenericPlatformIntegration, PlatformIntegration, WindowFlags,
+    GenericPlatformIntegration, PlatformIntegration, WindowFlags, set_platform_integration,
 };
 use ferrokit_widgets::{Action, Menu, Widget};
 use std::sync::{Arc, Mutex};

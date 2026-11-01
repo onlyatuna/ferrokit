@@ -310,10 +310,12 @@ fn test_syntax_highlighter() {
     // The highlight is an overlay (`QTextLayout::additionalFormats`): the document fragments keep
     // their user formats, and the overlay carries the highlight.
     let block0 = doc.block_at(0).unwrap();
-    assert!(block0
-        .fragments()
-        .iter()
-        .all(|f| f.char_format().foreground.is_none()));
+    assert!(
+        block0
+            .fragments()
+            .iter()
+            .all(|f| f.char_format().foreground.is_none())
+    );
     assert!(overlay_foreground(&doc, 0, 0, 2).is_some(), "fn");
 
     // Verify block 2 has comment color

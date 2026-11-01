@@ -8,13 +8,13 @@
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
-use ferrokit_core::object::{register_qobject_ptr, unregister_qobject};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject, ThreadId};
+use ferrokit_core::object::{register_qobject_ptr, unregister_qobject};
 use ferrokit_core::signal::{ConnectionType, Signal};
 
 type Log = Arc<Mutex<Vec<&'static str>>>;

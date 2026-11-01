@@ -7,8 +7,8 @@
 
 use ferrokit_core::object::QObject;
 use ferrokit_widgets::button::Button;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn button_clicked_honours_block_signals() {

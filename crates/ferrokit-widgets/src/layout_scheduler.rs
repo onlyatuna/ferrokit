@@ -115,10 +115,8 @@ impl LayoutScheduler {
             }
         }
         Self::activate_pending();
-        if complete {
-            if let Ok(w) = root.try_borrow() {
-                w.widget_base().layout_epoch.set(epoch);
-            }
+        if complete && let Ok(w) = root.try_borrow() {
+            w.widget_base().layout_epoch.set(epoch);
         }
     }
 
@@ -157,11 +155,11 @@ impl LayoutScheduler {
                     }
                     let g = widget.geometry();
                     let mut metrics_rebuilt = false;
-                    if let Some(mut layout) = widget.layout_ref_mut() {
-                        if dirty || layout.geometry().size() != Size::new(g.width, g.height) {
-                            layout.set_geometry(Rect::new(0, 0, g.width, g.height));
-                            metrics_rebuilt = dirty;
-                        }
+                    if let Some(mut layout) = widget.layout_ref_mut()
+                        && (dirty || layout.geometry().size() != Size::new(g.width, g.height))
+                    {
+                        layout.set_geometry(Rect::new(0, 0, g.width, g.height));
+                        metrics_rebuilt = dirty;
                     }
                     if metrics_rebuilt {
                         // `QLayout::activate` ends with `mw->updateGeometry()` (qlayout.cpp:1131):

@@ -17,8 +17,8 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, ObjectData, ObjectId, OwnedObject,
-    QObject, QObjectExt,
+    ObjectData, ObjectId, OwnedObject, QObject, QObjectExt, add_owned_child, dispatch_to_object,
+    register_owned_qobject,
 };
 
 struct Root {

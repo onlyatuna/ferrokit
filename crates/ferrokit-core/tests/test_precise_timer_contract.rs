@@ -18,11 +18,11 @@ use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, register_qobject_ptr, unregister_qobject, ObjectData, ObjectDataMut,
-    ObjectId, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId, move_to_thread_by_id,
+    register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::timer::precise::native_handle;
-use ferrokit_core::timer::{kill_object_timer, start_object_timer, Timer, TimerType};
+use ferrokit_core::timer::{Timer, TimerType, kill_object_timer, start_object_timer};
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
 fn movable_data(id: ObjectId) -> ObjectData {

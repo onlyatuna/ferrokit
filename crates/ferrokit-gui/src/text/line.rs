@@ -4,7 +4,7 @@
 //! Provides geometric bounds, baseline metrics, and bidirectional cursor-to-coordinate mapping.
 
 use crate::geometry::primitives::{PointF, RectF};
-use crate::text::bidi::{level_runs, visual_order, LevelRun};
+use crate::text::bidi::{LevelRun, level_runs, visual_order};
 
 /// Edge of a character or grapheme cluster for cursor positioning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -281,10 +281,10 @@ impl TextLine {
         }
         // Qt looks for the run under x only up to `textWidth`; the ink that hangs over the last
         // advance is within it but in no run, so it answers as the space right of the text.
-        if rel_x < self.natural_width {
-            if let Some(pos) = self.x_to_cursor_in_text(rel_x, mode) {
-                return self.text_start + pos;
-            }
+        if rel_x < self.natural_width
+            && let Some(pos) = self.x_to_cursor_in_text(rel_x, mode)
+        {
+            return self.text_start + pos;
         }
         let end = self.text_start + if self.base_rtl { 0 } else { self.text_length };
         if self.is_last {

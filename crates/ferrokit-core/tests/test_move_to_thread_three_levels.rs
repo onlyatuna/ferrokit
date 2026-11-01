@@ -8,8 +8,8 @@
 use std::ptr::NonNull;
 
 use ferrokit_core::object::{
-    add_owned_child, move_to_thread_by_id, register_qobject_ptr, unregister_qobject, with_object,
-    ObjectData, ObjectId, OwnedObject, QObject, ThreadId,
+    ObjectData, ObjectId, OwnedObject, QObject, ThreadId, add_owned_child, move_to_thread_by_id,
+    register_qobject_ptr, unregister_qobject, with_object,
 };
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.

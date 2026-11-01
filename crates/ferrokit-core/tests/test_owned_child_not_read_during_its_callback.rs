@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{
-    add_owned_child, dispatch_to_object, register_owned_qobject, reparent_owned_object,
-    set_parent_by_id, with_object, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, add_owned_child, dispatch_to_object,
+    register_owned_qobject, reparent_owned_object, set_parent_by_id, with_object,
 };
 
 struct Node {

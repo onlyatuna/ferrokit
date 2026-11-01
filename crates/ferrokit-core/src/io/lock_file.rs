@@ -171,21 +171,19 @@ impl LockFile {
 
     /// Checks whether the existing lock file is stale (process dead or exceeded timeout).
     pub fn is_stale(&self) -> bool {
-        if let Ok(meta) = fs::metadata(&self.file_path) {
-            if let Ok(modified) = meta.modified() {
-                if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
-                    if elapsed > self.stale_lock_time {
-                        return true;
-                    }
-                }
-            }
+        if let Ok(meta) = fs::metadata(&self.file_path)
+            && let Ok(modified) = meta.modified()
+            && let Ok(elapsed) = SystemTime::now().duration_since(modified)
+            && elapsed > self.stale_lock_time
+        {
+            return true;
         }
 
         // Check if owner process is dead
-        if let Some((pid, _)) = self.get_lock_info() {
-            if !is_process_alive(pid) {
-                return true;
-            }
+        if let Some((pid, _)) = self.get_lock_info()
+            && !is_process_alive(pid)
+        {
+            return true;
         }
 
         false

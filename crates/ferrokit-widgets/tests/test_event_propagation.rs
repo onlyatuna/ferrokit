@@ -889,7 +889,7 @@ mod window_level {
     #[test]
     fn minimize_and_restore_send_hide_and_show_like_qt() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SendMessageW, SC_MINIMIZE, SC_RESTORE, WM_SYSCOMMAND,
+            SC_MINIMIZE, SC_RESTORE, SendMessageW, WM_SYSCOMMAND,
         };
         let log: Log = Default::default();
         let (root, _m, _l) = tree(Resp::NotHandled, Resp::NotHandled, Resp::NotHandled, &log);
@@ -934,7 +934,7 @@ mod window_level {
     #[test]
     fn minimize_keeps_the_window_geometry() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SendMessageW, SC_MINIMIZE, WM_SYSCOMMAND,
+            SC_MINIMIZE, SendMessageW, WM_SYSCOMMAND,
         };
         let log: Log = Default::default();
         let (root, _m, _l) = tree(Resp::NotHandled, Resp::NotHandled, Resp::NotHandled, &log);
@@ -957,7 +957,7 @@ mod window_level {
     #[test]
     fn minimize_does_not_report_a_move_to_offscreen_coordinates() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SendMessageW, SC_MINIMIZE, WM_SYSCOMMAND,
+            SC_MINIMIZE, SendMessageW, WM_SYSCOMMAND,
         };
         let log: Log = Default::default();
         let (root, _m, _l) = tree(Resp::NotHandled, Resp::NotHandled, Resp::NotHandled, &log);

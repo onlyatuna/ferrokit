@@ -9,13 +9,13 @@
 //!   cannot call `Widget::update` at all; it posts an `UpdateRequest` with `post_event_to_thread`.
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ferrokit_core::event::{Event, EventKind};
-use ferrokit_core::event_loop::{post_event_to_thread, EventLoop};
+use ferrokit_core::event_loop::{EventLoop, post_event_to_thread};
 use ferrokit_core::object::{
-    query_object_thread, register_qobject_ptr, unregister_qobject, ObjectData, ObjectId, QObject,
+    ObjectData, ObjectId, QObject, query_object_thread, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_widgets::widget::{EmptyWidget, Widget};
 

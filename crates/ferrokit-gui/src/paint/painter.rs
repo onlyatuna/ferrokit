@@ -4,22 +4,22 @@
 //! Controls stroke styling, fill patterns (gradients, textures, solid), transform stack,
 //! composition modes, clipping, and text rendering.
 
+use crate::geometry::QPolygonF;
 use crate::geometry::primitives::{PointF, RectF};
 use crate::geometry::transform::Transform2D;
-use crate::geometry::QPolygonF;
 pub use crate::paint::brush::Brush;
 pub use crate::paint::composition::CompositionMode;
 use crate::paint::paint_device::PaintDevice;
 use crate::paint::path::{FillRule, PainterPath};
 use crate::paint::pixmap::Pixmap;
 use crate::paint::text_blend::{
-    blend_grey, blend_lcd, composite_masked, rgb_average, MaskedSource,
+    MaskedSource, blend_grey, blend_lcd, composite_masked, rgb_average,
 };
 use crate::text::document::TextDocument;
 use crate::text::font::Font;
 use crate::text::font_database::resolve_font_engines_for_text_global;
 use crate::text::glyph_layout::{FontEngine, GlyphLayout, PositionedGlyph};
-use crate::text::smoothing::{gamma_lut, text_smoothing, TextSmoothing, TrcLut};
+use crate::text::smoothing::{TextSmoothing, TrcLut, gamma_lut, text_smoothing};
 use std::sync::Arc;
 use tiny_skia::{
     Color, FilterQuality, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pattern, Shader,
@@ -79,10 +79,10 @@ impl Pen {
             line_join: self.join,
             ..Default::default()
         };
-        if let Some(dash) = &self.dash_pattern {
-            if let Some(dash_stroke) = tiny_skia::StrokeDash::new(dash.clone(), 0.0) {
-                stroke.dash = Some(dash_stroke);
-            }
+        if let Some(dash) = &self.dash_pattern
+            && let Some(dash_stroke) = tiny_skia::StrokeDash::new(dash.clone(), 0.0)
+        {
+            stroke.dash = Some(dash_stroke);
         }
         stroke
     }
@@ -1084,11 +1084,11 @@ impl<'a> Painter<'a> {
 
     // Draws an ellipse.
     pub fn draw_ellipse(&mut self, rect: RectF) {
-        if let Some(r) = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height) {
-            if let Some(path) = PathBuilder::from_oval(r) {
-                self.fill_path(&path);
-                self.stroke_path(&path);
-            }
+        if let Some(r) = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)
+            && let Some(path) = PathBuilder::from_oval(r)
+        {
+            self.fill_path(&path);
+            self.stroke_path(&path);
         }
     }
 
@@ -2188,7 +2188,10 @@ mod tests {
                 assert!(
                     pure_red || pure_blue,
                     "pixel ({x},{y}) is a mixed colour rgba=({},{},{},{}); Qt nearest sampling gives pure colours",
-                    px[0], px[1], px[2], px[3]
+                    px[0],
+                    px[1],
+                    px[2],
+                    px[3]
                 );
             }
         }

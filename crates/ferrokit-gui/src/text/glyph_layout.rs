@@ -164,10 +164,10 @@ impl FontEngine {
         px_size: f32,
     ) -> Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)> {
         let key = (glyph_id, (px_size * 64.0).round() as u32);
-        if let Ok(guard) = self.color_cache.lock() {
-            if let Some(entry) = guard.get(&key) {
-                return entry.clone();
-            }
+        if let Ok(guard) = self.color_cache.lock()
+            && let Some(entry) = guard.get(&key)
+        {
+            return entry.clone();
         }
 
         let raw = self.raw_data.as_ref()?;
@@ -200,10 +200,10 @@ impl FontEngine {
         scale: f32,
     ) -> (GlyphMetrics, Arc<[u8]>) {
         let key = (glyph_id, size.to_bits(), scale.to_bits());
-        if let Ok(guard) = self.mono_cache.lock() {
-            if let Some((metrics, bitmap)) = guard.get(&key) {
-                return (*metrics, bitmap.clone());
-            }
+        if let Ok(guard) = self.mono_cache.lock()
+            && let Some((metrics, bitmap)) = guard.get(&key)
+        {
+            return (*metrics, bitmap.clone());
         }
         let (metrics, bitmap) = self.face.rasterize_scaled(glyph_id, size, scale);
         let bitmap: Arc<[u8]> = bitmap.into();
@@ -225,10 +225,10 @@ impl FontEngine {
         scale: f32,
     ) -> Option<(GlyphMetrics, Arc<[u8]>)> {
         let key = (glyph_id, size.to_bits(), scale.to_bits());
-        if let Ok(guard) = self.lcd_cache.lock() {
-            if let Some(entry) = guard.get(&key) {
-                return entry.clone();
-            }
+        if let Ok(guard) = self.lcd_cache.lock()
+            && let Some(entry) = guard.get(&key)
+        {
+            return entry.clone();
         }
         let rendered = self
             .face
@@ -579,10 +579,10 @@ impl GlyphLayout {
             .enumerate()
             .map(|(idx, f)| {
                 let mut engine = FontEngine::new(Arc::clone(f));
-                if idx == 0 {
-                    if let Some(data) = &font.font_data {
-                        engine.raw_data = Some(data.clone());
-                    }
+                if idx == 0
+                    && let Some(data) = &font.font_data
+                {
+                    engine.raw_data = Some(data.clone());
                 }
                 engine
             })

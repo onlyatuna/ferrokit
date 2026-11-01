@@ -4,8 +4,8 @@ use ferrokit_platform::{Menu, WindowFlags};
 use ferrokit_widgets::{BoxLayout, EmptyWidget, Layout, StackedWidget, Widget, WidgetRef, Window};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// `Menu::popup` needs a shared menu (`aboutToShow` runs with it free); these tests drive an
 /// owned one, so hand it over for the popup and take it back.
@@ -350,8 +350,8 @@ fn test_window_system_resize_event_and_backing_store_update() {
     use ferrokit_core::event::{Event, EventKind};
     use ferrokit_core::object::QObject;
     use ferrokit_gui::geometry::primitives::{Rect, Size};
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let mut win = Window::new(
         "Resize Test",
@@ -403,8 +403,8 @@ fn test_window_system_resize_event_and_backing_store_update() {
 #[test]
 fn test_window_system_event_handler_resize() {
     use ferrokit_gui::geometry::primitives::Size;
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let mut win = Window::new(
         "Handler Resize Test",
@@ -440,8 +440,8 @@ fn test_geometry_change_event_delivery() {
     use ferrokit_gui::geometry::primitives::Size;
     use ferrokit_platform::handle_geometry_change;
     use ferrokit_platform::window_system_interface::Delivery;
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let mut win = Window::new(
         "Geometry Change Test",
@@ -482,8 +482,8 @@ fn test_lazy_backing_store_resize_observable_ordering() {
     use ferrokit_gui::geometry::primitives::{Rect, Size};
     use ferrokit_platform::handle_geometry_change;
     use ferrokit_platform::window_system_interface::Delivery;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     let mut win = Window::new(
         "Lazy Resize Ordering Test",
@@ -543,8 +543,8 @@ fn test_resize_event_observable_ordering_before_layout_activation() {
     use ferrokit_gui::geometry::primitives::{Rect, Size};
     use ferrokit_platform::handle_geometry_change;
     use ferrokit_platform::window_system_interface::Delivery;
-    use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     let mut win = Window::new(
         "Layout Lifecycle Test",

@@ -316,7 +316,7 @@ impl Drop for HintGuard {
 #[test]
 fn label_size_hints_differ_between_hint_light_and_hint_full_at_ratio_one() {
     use ferrokit_gui::text::font_database::{
-        default_hint_style, set_default_hint_style, HintStyle,
+        HintStyle, default_hint_style, set_default_hint_style,
     };
     let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
     let _hint_guard = HintGuard(default_hint_style());

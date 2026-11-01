@@ -5,12 +5,12 @@
 //! receiver (`~QObject`, qobject.cpp:1046-1180). A connection of one signal must never be
 //! confused with the connection of another signal.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferrokit_core::event::Event;
 use ferrokit_core::object::{
-    register_owned_qobject, unregister_qobject, ObjectData, ObjectId, OwnedObject, QObject,
+    ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject, unregister_qobject,
 };
 use ferrokit_core::signal::Signal;
 

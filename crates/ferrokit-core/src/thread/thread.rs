@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{Builder as StdThreadBuilder, JoinHandle};
 use std::time::Duration;
 
@@ -506,10 +506,11 @@ impl<T> ThreadHandle<T> {
 
     /// Blocks until the thread finishes and returns its result, matching `QThread::wait`.
     pub fn join(mut self) -> std::thread::Result<T> {
-        if let Some(h) = self.join_handle.take() {
-            h.join()
-        } else {
-            panic!("thread already joined");
+        match self.join_handle.take() {
+            Some(h) => h.join(),
+            _ => {
+                panic!("thread already joined");
+            }
         }
     }
 }
@@ -598,10 +599,11 @@ impl EventLoopThreadHandle {
 
     /// Blocks until the thread's event loop exits and thread terminates.
     pub fn join(mut self) -> std::thread::Result<i32> {
-        if let Some(h) = self.join_handle.take() {
-            h.join()
-        } else {
-            panic!("event loop thread already joined");
+        match self.join_handle.take() {
+            Some(h) => h.join(),
+            _ => {
+                panic!("event loop thread already joined");
+            }
         }
     }
 }

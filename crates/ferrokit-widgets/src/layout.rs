@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::layout_engine::{
-    alignment_rect, distribute_multi_box, find_size, init_empty_multi_box, item_expanding,
-    item_has_height_for_width, item_height_for_width, item_is_empty, item_minimum_size,
-    item_set_geometry_with, item_size_hint, q_geom_calc, q_max_exp_calc, setup_spacings,
-    ItemLimits, LayoutStruct, LAYOUT_SIZE_MAX,
+    ItemLimits, LAYOUT_SIZE_MAX, LayoutStruct, alignment_rect, distribute_multi_box, find_size,
+    init_empty_multi_box, item_expanding, item_has_height_for_width, item_height_for_width,
+    item_is_empty, item_minimum_size, item_set_geometry_with, item_size_hint, q_geom_calc,
+    q_max_exp_calc, setup_spacings,
 };
 use crate::size_policy::Policy;
 use crate::widget::{EmptyWidget, Widget, WidgetRef};
@@ -511,11 +511,11 @@ impl BoxLayout {
 
     /// `QBoxLayout::setStretch`: out-of-range indexes are ignored (qboxlayout.cpp:1114-1124).
     pub fn set_stretch(&mut self, index: usize, stretch: u32) {
-        if let Some(item) = self.items.get_mut(index) {
-            if item.stretch != stretch {
-                item.stretch = stretch;
-                self.update_layout();
-            }
+        if let Some(item) = self.items.get_mut(index)
+            && item.stretch != stretch
+        {
+            item.stretch = stretch;
+            self.update_layout();
         }
     }
 
@@ -1593,11 +1593,7 @@ impl Layout for GridLayout {
         // `QGridLayout::spacing` (qgridlayout.cpp:1150-1158): the common value, or -1 when the
         // horizontal and vertical spacings differ.
         let (h, v) = (self.horizontal_spacing(), self.vertical_spacing());
-        if h == v {
-            h
-        } else {
-            -1
-        }
+        if h == v { h } else { -1 }
     }
 
     fn alignment(&self) -> Alignment {

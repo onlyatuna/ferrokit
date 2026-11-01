@@ -12,7 +12,7 @@ use crate::text::font::Font;
 use crate::text::font_metrics::FontMetrics;
 use crate::text::format::TextCharFormat;
 use crate::text::fragment::TextFragment;
-use crate::text::layout::{TextLayout, WrapMode, DEFAULT_TAB_STOP_DISTANCE};
+use crate::text::layout::{DEFAULT_TAB_STOP_DISTANCE, TextLayout, WrapMode};
 use crate::text::markup;
 use crate::text::position::{byte_to_grapheme, grapheme_count, grapheme_to_byte};
 use tiny_skia::Color;

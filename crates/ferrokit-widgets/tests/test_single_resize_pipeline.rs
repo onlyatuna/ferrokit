@@ -8,17 +8,17 @@
 #![cfg(windows)]
 
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_gui::geometry::primitives::{Rect, Size};
-use ferrokit_platform::resize_trace::{self, TraceKind};
 use ferrokit_platform::WindowFlags;
+use ferrokit_platform::resize_trace::{self, TraceKind};
 use ferrokit_widgets::window::{RenderStats, Window};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SendMessageW, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetWindowPos,
 };
 
 const WM_ENTERSIZEMOVE: u32 = 0x0231;

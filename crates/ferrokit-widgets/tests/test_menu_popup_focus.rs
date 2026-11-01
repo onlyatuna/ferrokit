@@ -4,8 +4,8 @@
 use ferrokit_gui::geometry::primitives::Point;
 use ferrokit_widgets::{Action, Menu, Widget};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HWND;
@@ -17,14 +17,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 static POPUP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 unsafe extern "system" fn find_process_window(hwnd: HWND, lparam: isize) -> i32 {
-    let mut pid = 0;
-    GetWindowThreadProcessId(hwnd, &mut pid);
-    if pid == std::process::id() {
-        let out = lparam as *mut HWND;
-        *out = hwnd;
-        return 0; // stop enumeration
+    // SAFETY: lparam is a valid pointer to HWND passed from EnumWindows; hwnd is provided by system.
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == std::process::id() {
+            let out = lparam as *mut HWND;
+            *out = hwnd;
+            return 0; // stop enumeration
+        }
+        1 // continue
     }
-    1 // continue
 }
 
 fn get_popup_hwnd() -> HWND {

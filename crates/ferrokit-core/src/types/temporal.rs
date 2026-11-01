@@ -63,11 +63,7 @@ impl Date {
 
     /// Number of days in this date's year (`QDate::daysInYear`).
     pub const fn days_in_year(&self) -> u32 {
-        if self.is_leap_year() {
-            366
-        } else {
-            365
-        }
+        if self.is_leap_year() { 366 } else { 365 }
     }
 
     /// Days since the Unix epoch (1970-01-01 is day 0).

@@ -15,5 +15,5 @@ pub(crate) mod local;
 #[allow(clippy::module_inception)]
 pub mod signal;
 pub use crate::object::SignalBlocker;
-pub use local::{has_pending_local_retires, LocalConnectError};
+pub use local::{LocalConnectError, has_pending_local_retires};
 pub use signal::*;

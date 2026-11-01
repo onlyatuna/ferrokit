@@ -148,9 +148,11 @@ fn test_platform_tray_abstraction_trait() {
     ptray.set_menu(win_menu);
     let mut new_pixmap = Pixmap::new(16, 16).expect("failed to create new pixmap");
     new_pixmap.fill(Color::from_rgba8(0, 200, 100, 255));
-    assert!(ptray
-        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&new_pixmap))
-        .is_ok());
+    assert!(
+        ptray
+            .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&new_pixmap))
+            .is_ok()
+    );
 
     assert!(ptray.hide().is_ok());
     TrayIcon::destroy_hicon(hicon);
@@ -363,9 +365,11 @@ fn test_cross_platform_tray_icon_implementations() {
     let mut dbus_tray: Box<dyn PlatformTrayIcon> =
         Box::new(DbusStatusNotifierItem::new("hud-monitor", "HUD Monitor"));
 
-    assert!(dbus_tray
-        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
-        .is_ok());
+    assert!(
+        dbus_tray
+            .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .is_ok()
+    );
     assert!(dbus_tray.set_tooltip("CPU 45% | RAM 62%").is_ok());
     // show() only queues the registration, so it succeeds with or without a session bus.
     assert!(dbus_tray.show().is_ok());
@@ -455,9 +459,11 @@ fn test_cross_platform_tray_icon_implementations() {
     {
         use ferrokit_platform::tray::CocoaStatusItem;
         let mut cocoa_tray: Box<dyn PlatformTrayIcon> = Box::new(CocoaStatusItem::new(101));
-        assert!(cocoa_tray
-            .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
-            .is_ok());
+        assert!(
+            cocoa_tray
+                .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+                .is_ok()
+        );
         assert!(cocoa_tray.set_tooltip("Claude HUD").is_ok());
         assert!(cocoa_tray.show().is_ok());
         assert!(cocoa_tray.hide().is_ok());
@@ -466,8 +472,8 @@ fn test_cross_platform_tray_icon_implementations() {
 #[test]
 fn test_cross_platform_menu_implementations() {
     use ferrokit_platform::menu::{DBusMenu, DBusMenuPropValue, PlatformMenu};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     // 1. Verify Linux D-Bus Menu (com.canonical.dbusmenu)
     let mut dbus_menu = DBusMenu::new();
     let initial_rev = dbus_menu.revision();
@@ -573,8 +579,8 @@ fn test_cross_platform_menu_implementations() {
 fn test_cocoa_status_item_and_menu_clicks_reach_rust_callbacks() {
     use ferrokit_core::object::ThreadContext;
     use ferrokit_platform::{ActionTarget, CocoaStatusItem, MockObjcRuntime, ObjcMsg, Sel};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     ThreadContext::init_current(true, None);
     let mock = MockObjcRuntime::instance();
@@ -651,7 +657,7 @@ fn test_cocoa_status_item_and_menu_clicks_reach_rust_callbacks() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn test_platform_singleton_does_not_panic() {
-    use ferrokit_platform::{platform, CursorShape};
+    use ferrokit_platform::{CursorShape, platform};
 
     let p = platform();
     let primary = p.primary_screen();
@@ -715,9 +721,11 @@ fn test_generic_platform_integration_full_lifecycle() {
     let mut hotkey_mgr = integration
         .create_hotkey_manager()
         .expect("failed to create hotkey manager");
-    assert!(hotkey_mgr
-        .register_hotkey(1, ferrokit_platform::HotkeyModifiers::ALT, 0x41)
-        .is_err());
+    assert!(
+        hotkey_mgr
+            .register_hotkey(1, ferrokit_platform::HotkeyModifiers::ALT, 0x41)
+            .is_err()
+    );
     assert!(hotkey_mgr.unregister_hotkey(1).is_err());
 }
 
@@ -781,7 +789,7 @@ fn test_cocoa_platform_integration_status_item_and_retina() {
 
 #[test]
 fn test_set_platform_integration_custom_override() {
-    use ferrokit_platform::{platform, set_platform_integration, GenericPlatformIntegration};
+    use ferrokit_platform::{GenericPlatformIntegration, platform, set_platform_integration};
     use std::sync::Arc;
 
     let prev = platform();
@@ -948,7 +956,7 @@ fn test_linux_wayland_native_window_layer_shell_and_events() {
 
 #[test]
 fn test_linux_dbus_wire_protocol_serialization_and_deserialization() {
-    use ferrokit_platform::{DbusMessage, DBUS_MESSAGE_TYPE_METHOD_CALL};
+    use ferrokit_platform::{DBUS_MESSAGE_TYPE_METHOD_CALL, DbusMessage};
 
     let mut msg = DbusMessage::method_call(
         "org.freedesktop.DBus",
@@ -973,9 +981,9 @@ fn test_linux_dbus_wire_protocol_serialization_and_deserialization() {
 
 #[test]
 fn test_linux_dbus_connection_lifecycle_and_registration() {
-    use ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusTransport;
-    use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_METHOD_RETURN;
     use ferrokit_platform::DbusConnection;
+    use ferrokit_platform::tray::dbus_connection::DBUS_MESSAGE_TYPE_METHOD_RETURN;
+    use ferrokit_platform::tray::dbus_connection::scripted::ScriptedDbusTransport;
 
     let (transport, bus) = ScriptedDbusTransport::new(":1.42");
     let mut conn = DbusConnection::from_transport(Box::new(transport), "scripted:", 1000)
@@ -1065,10 +1073,11 @@ fn test_linux_dbus_connects_over_path_and_abstract_unix_sockets() {
     assert_eq!(conn.unique_name(), ":1.99");
     assert!(conn.socket_fd() >= 0);
     let mut dispatcher = UnixEventDispatcher::new();
-    assert!(conn
-        .bind_event_dispatcher(&mut dispatcher)
-        .unwrap()
-        .is_some());
+    assert!(
+        conn.bind_event_dispatcher(&mut dispatcher)
+            .unwrap()
+            .is_some()
+    );
     drop(conn);
     server.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1111,9 +1120,10 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
 
     let mut pixmap = Pixmap::new(24, 24).expect("failed to create pixmap");
     pixmap.fill(Color::from_rgba8(40, 160, 220, 255));
-    assert!(tray
-        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
-        .is_ok());
+    assert!(
+        tray.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .is_ok()
+    );
     assert!(tray.set_tooltip("Running Smoothly").is_ok());
 
     // show() queues the registration and returns; the watcher has not answered yet.
@@ -1131,9 +1141,10 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
     assert!(members.contains(&"AddMatch".to_string()));
 
     // Notify carries the complete `susssasa{sv}i` signature with aligned arguments.
-    assert!(tray
-        .show_message("Title", "Body", TrayMessageIcon::Information, 3000)
-        .is_ok());
+    assert!(
+        tray.show_message("Title", "Body", TrayMessageIcon::Information, 3000)
+            .is_ok()
+    );
     let notify = bus
         .received()
         .into_iter()
@@ -1144,10 +1155,11 @@ fn test_linux_dbus_status_notifier_item_with_socket_notifier() {
 
     // The scripted transport has no OS descriptor, so there is nothing to register.
     let mut dispatcher = UnixEventDispatcher::new();
-    assert!(tray
-        .bind_event_dispatcher(&mut dispatcher)
-        .unwrap()
-        .is_none());
+    assert!(
+        tray.bind_event_dispatcher(&mut dispatcher)
+            .unwrap()
+            .is_none()
+    );
 
     assert!(tray.hide().is_ok());
     assert_eq!(tray.status(), "Passive");
@@ -1177,7 +1189,7 @@ fn test_macos_objc_runtime_and_cocoa_window_lifecycle() {
     use ferrokit_gui::geometry::primitives::Rect;
     use ferrokit_platform::{
         ClosureWindowEventHandler, CocoaNativeEvent, CocoaNativeWindow, MockObjcRuntime,
-        PlatformWindow, WindowFlags, WindowSystemEvent, NS_MODAL_PANEL_WINDOW_LEVEL,
+        NS_MODAL_PANEL_WINDOW_LEVEL, PlatformWindow, WindowFlags, WindowSystemEvent,
     };
     use std::sync::{Arc, Mutex};
 
@@ -1285,9 +1297,9 @@ fn test_macos_cocoa_status_item_and_menu_objc_integration() {
     use ferrokit_core::object::ThreadContext;
     use ferrokit_gui::paint::Pixmap;
     use ferrokit_gui::tiny_skia::Color;
+    use ferrokit_platform::MockObjcRuntime;
     use ferrokit_platform::menu::{CocoaMenu, PlatformMenu};
     use ferrokit_platform::tray::{CocoaStatusItem, PlatformTrayIcon};
-    use ferrokit_platform::MockObjcRuntime;
 
     ThreadContext::init_current(true, None);
 
@@ -1297,9 +1309,10 @@ fn test_macos_cocoa_status_item_and_menu_objc_integration() {
 
     let mut pixmap = Pixmap::new(18, 18).expect("failed to create pixmap");
     pixmap.fill(Color::from_rgba8(255, 255, 255, 255));
-    assert!(item
-        .set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
-        .is_ok());
+    assert!(
+        item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap))
+            .is_ok()
+    );
     assert!(item.set_tooltip("Claude HUD macOS").is_ok());
 
     // Verify AppKit NSMenu and NSMenuItem hierarchy
@@ -1716,8 +1729,8 @@ fn test_platform_parity_gaps_verification() {
     #[cfg(not(target_os = "macos"))]
     {
         use ferrokit_gui::paint::Pixmap;
-        use ferrokit_platform::surface::macos::CocoaLayerSurface;
         use ferrokit_platform::surface::PlatformSurface;
+        use ferrokit_platform::surface::macos::CocoaLayerSurface;
         // SAFETY: off macOS the surface runs on the mock runtime, which never dereferences the
         // layer id.
         let mut surface = unsafe { CocoaLayerSurface::new(1234, 100, 100) }
@@ -1759,7 +1772,7 @@ fn test_x11_keymapper_wayland_buffer_release_and_cocoa_multi_monitor() {
     };
     use ferrokit_platform::window_system_interface::{WindowSystemEvent, WindowSystemEventHandler};
     use ferrokit_platform::window_wayland::{WaylandEvent, WaylandNativeWindow};
-    use ferrokit_platform::window_x11::{qt_key, x11_keycode_to_qt_key, X11Event, X11NativeWindow};
+    use ferrokit_platform::window_x11::{X11Event, X11NativeWindow, qt_key, x11_keycode_to_qt_key};
 
     // 1. Verify X11 hardware keycode to Qt::Key translation
     assert_eq!(x11_keycode_to_qt_key(9), qt_key::KEY_ESCAPE);
@@ -1845,8 +1858,8 @@ fn test_x11_keymapper_wayland_buffer_release_and_cocoa_multi_monitor() {
 #[test]
 fn test_dbus_menu_slot_can_reenter_menu_during_activation() {
     use ferrokit_platform::menu::{DBusMenu, PlatformMenu};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// `DBusMenu` holds `Box<dyn PlatformMenu>` submenus, so it is neither `Send` nor `Sync`; the
     /// test only ever touches it from one thread at a time while the box below keeps it alive.

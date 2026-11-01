@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 
 use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::{
-    move_to_thread_by_id, query_object_thread, register_qobject_ptr, unregister_qobject,
-    ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId,
+    ObjectData, ObjectDataMut, ObjectId, QObject, ThreadId, move_to_thread_by_id,
+    query_object_thread, register_qobject_ptr, unregister_qobject,
 };
 use ferrokit_core::timer::precise::native_handle;
-use ferrokit_core::timer::{kill_object_timer, start_object_timer, TimerId, TimerType};
+use ferrokit_core::timer::{TimerId, TimerType, kill_object_timer, start_object_timer};
 use windows_sys::Win32::Media::timeKillEvent;
 
 /// An `ObjectData` that lets `move_to_thread_by_id` move its object.
@@ -324,13 +324,13 @@ impl ferrokit_core::event::NativeEventFilter for SwallowFirstTick {
         msg: &ferrokit_core::event::NativeMessage,
         _result: &mut isize,
     ) -> bool {
-        if event_type == "windows_generic_MSG" && !self.0 {
-            if let ferrokit_core::event::NativeMessage::Windows(m) = msg {
-                if m.message == windows_sys::Win32::UI::WindowsAndMessaging::WM_TIMER {
-                    self.0 = true;
-                    return true;
-                }
-            }
+        if event_type == "windows_generic_MSG"
+            && !self.0
+            && let ferrokit_core::event::NativeMessage::Windows(m) = msg
+            && m.message == windows_sys::Win32::UI::WindowsAndMessaging::WM_TIMER
+        {
+            self.0 = true;
+            return true;
         }
         false
     }

@@ -6,8 +6,8 @@
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_platform::integration::platform;
 use ferrokit_platform::window::WindowFlags;
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 
 /// The tests below assert exact counts of one process-wide counter, so they run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -58,7 +58,7 @@ fn a_window_destroyed_outside_close_releases_its_drop_target() {
 
 #[test]
 fn a_failed_registration_frees_the_target() {
-    use ferrokit_platform::drag_drop::win32_ole::{register_drop_target, LIVE_DROP_TARGETS};
+    use ferrokit_platform::drag_drop::win32_ole::{LIVE_DROP_TARGETS, register_drop_target};
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let before = LIVE_DROP_TARGETS.load(Ordering::SeqCst);
     // No window: `RegisterDragDrop` fails with `DRAGDROP_E_INVALIDHWND`.

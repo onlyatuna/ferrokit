@@ -7,8 +7,8 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::with_object;
 use ferrokit_core::timer::Timer;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 #[test]

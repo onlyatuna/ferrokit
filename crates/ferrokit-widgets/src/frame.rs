@@ -5,13 +5,13 @@
 use ferrokit_core::event::{Event, EventKind, FocusReason};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
 use ferrokit_gui::geometry::primitives::{Rect, RectF, Size};
-use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
 use ferrokit_gui::paint::Painter;
+use ferrokit_gui::paint::palette::{ColorGroup, ColorRole, Palette};
 use ferrokit_gui::tiny_skia::Color;
 
 use crate::focus::FocusPolicy;
 use crate::layout::Layout;
-use crate::layout_engine::{owner_layout_margin, WIDGET_LAYOUT_SPACING};
+use crate::layout_engine::{WIDGET_LAYOUT_SPACING, owner_layout_margin};
 use crate::size_policy::{Policy, QSizePolicy};
 use crate::widget::{Widget, WidgetBase, WidgetRef, WidgetWeak};
 

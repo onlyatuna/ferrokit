@@ -4,7 +4,7 @@
 //! loop. Registration bookkeeping and the key tables are unit-tested in `src/hotkey.rs`.
 
 use ferrokit_core::application::CoreApplication;
-use ferrokit_platform::hotkey::cocoa_hotkey::{MockHotkeyBackend, CARBON_OPTION_KEY};
+use ferrokit_platform::hotkey::cocoa_hotkey::{CARBON_OPTION_KEY, MockHotkeyBackend};
 use ferrokit_platform::hotkey::{CocoaHotkeyManager, HotkeyModifiers, PlatformHotkeyManager};
 use std::cell::RefCell;
 use std::rc::Rc;
