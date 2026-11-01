@@ -349,11 +349,14 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     let pos = crate::screen::native_cursor_to_logical(native);
                     // `try_borrow`: busy while `TrayIcon::with_menu_mut` runs; then no menu.
                     let has_menu = shared.menu.try_borrow().is_ok_and(|m| m.is_some());
+                    shared.on_activated.emit(&TrayActivation::Context);
+                    if shared.closed.get() {
+                        return 0;
+                    }
                     shared.on_context_menu_requested.emit(&pos);
                     if shared.closed.get() {
                         return 0;
                     }
-                    shared.on_activated.emit(&TrayActivation::Context);
                     if has_menu && !shared.closed.get() {
                         shared.show_context_menu_at(pos);
                     }
@@ -1391,6 +1394,7 @@ pub struct TrayIcon {
     visible: bool,
     pub on_menu_action: Signal<u32>,
     pub on_activated: Signal<TrayActivation>,
+    pub on_message_clicked: Signal<()>,
     pub on_context_menu_requested: Signal<Point>,
 }
 #[cfg(not(windows))]
@@ -1418,6 +1422,7 @@ impl TrayIcon {
             visible: false,
             on_menu_action: Signal::new(),
             on_activated,
+            on_message_clicked: Signal::new(),
             on_context_menu_requested: Signal::new(),
         })
     }
@@ -1456,6 +1461,17 @@ impl TrayIcon {
 
     pub fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str> {
         self.inner.set_tooltip(tooltip)
+    }
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_icon(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        self.inner.set_icon(icon)
+    }
+
+    pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
+        self.inner.set_icon(icon)
     }
 
     /// Shows the icon. On Linux `Ok` only means the StatusNotifierWatcher registration was

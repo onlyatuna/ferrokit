@@ -66,3 +66,6 @@ pub use stacked::*;
 
 pub mod command;
 pub use command::*;
+
+pub mod system_tray;
+pub use system_tray::*;
