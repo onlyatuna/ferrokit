@@ -269,15 +269,18 @@ impl DbusStatusNotifierItem {
             let known = interface_matches
                 && match member {
                     Some("Activate") => {
-                        self.activate(0, 0);
+                        let (x, y) = msg.body_coordinates().unwrap_or((0, 0));
+                        self.activate(x, y);
                         true
                     }
                     Some("ContextMenu") => {
-                        self.context_menu(0, 0);
+                        let (x, y) = msg.body_coordinates().unwrap_or((0, 0));
+                        self.context_menu(x, y);
                         true
                     }
                     Some("SecondaryActivate") => {
-                        self.secondary_activate(0, 0);
+                        let (x, y) = msg.body_coordinates().unwrap_or((0, 0));
+                        self.secondary_activate(x, y);
                         true
                     }
                     Some("Scroll") | Some("ProvideXdgActivationToken") => true,

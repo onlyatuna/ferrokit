@@ -414,3 +414,44 @@ fn test_system_tray_drop_with_menu_cleans_up_safely() {
     // Menu is still alive and usable
     assert_eq!(menu.borrow().actions().len(), 1);
 }
+
+#[test]
+fn test_system_tray_reentrant_context_menu_does_not_panic() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _app = setup_app();
+
+    let mut tray = SystemTrayIcon::new().expect("tray");
+    let menu = Menu::new_ref("Menu");
+    menu.borrow_mut().add_new_action("Item");
+    tray.set_context_menu(menu);
+
+    #[cfg(windows)]
+    {
+        ensure_queue();
+        // Post second context menu request followed by escape key
+        // The second request arrives inside the modal loop while menu.borrow_mut() is active.
+        // SAFETY: PostMessageW safely posts WM_TRAY_CALLBACK with valid HWND to current thread.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                tray.hwnd(),
+                ferrokit_platform::tray_icon::WM_TRAY_CALLBACK,
+                0,
+                WM_CONTEXTMENU as isize,
+            );
+        }
+        post_key(VK_ESCAPE);
+
+        // First request enters exec_popup modal loop
+        send_tray_event(tray.hwnd(), WM_CONTEXTMENU);
+    }
+    #[cfg(not(windows))]
+    {
+        tray.platform_tray()
+            .on_context_menu_requested
+            .emit(&Point::new(50, 50));
+        // Non-windows simulated dispatch
+        tray.platform_tray()
+            .on_context_menu_requested
+            .emit(&Point::new(50, 50));
+    }
+}

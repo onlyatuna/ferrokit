@@ -1084,7 +1084,9 @@ impl Menu {
         // No modal loop without a native window system here: an earlier result is not this one.
         self.last_triggered = None;
         self.popup_at_inner(pos, None);
-        self.last_triggered.clone().map(|a| (a, Vec::new()))
+        let result = self.last_triggered.clone().map(|a| (a, Vec::new()));
+        self.hide_now(false);
+        result
     }
 
     /// Hides the menu and every open sub-menu without emitting `about_to_hide`: this menu's

@@ -99,6 +99,10 @@ impl<'a> Reader<'a> {
         })
     }
 
+    pub(crate) fn i32(&mut self) -> Result<i32, &'static str> {
+        self.u32().map(|u| u as i32)
+    }
+
     /// A `string` or `object path`: aligned u32 length, UTF-8 bytes, NUL.
     pub(crate) fn string(&mut self) -> Result<String, &'static str> {
         let len = self.u32()? as usize;
@@ -411,6 +415,17 @@ impl DbusMessage {
         .ok()
     }
 
+    /// Decodes two `i32` coordinates `(x, y)` from the body (`"ii"`), e.g. for `ContextMenu(x, y)`.
+    pub fn body_coordinates(&self) -> Option<(i32, i32)> {
+        let mut r = Reader {
+            data: &self.body,
+            pos: 0,
+            big_endian: self.big_endian,
+        };
+        let x = r.i32().ok()?;
+        let y = r.i32().ok()?;
+        Some((x, y))
+    }
     /// Rejects a message that cannot be encoded.
     fn validate(&self) -> Result<(), &'static str> {
         if self.signature.len() > 255 {

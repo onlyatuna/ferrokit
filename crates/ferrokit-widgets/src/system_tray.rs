@@ -39,7 +39,6 @@ pub struct SystemTrayIcon {
     pub message_clicked: Signal<()>,
     menu_connection: Option<ConnectionId>,
     current_icon: Option<Icon>,
-    tooltip: String,
     _marker: PhantomData<*const ()>,
 }
 
@@ -71,7 +70,6 @@ impl SystemTrayIcon {
         ThreadContext::assert_main_thread("SystemTrayIcon::with_tray");
         let activated = platform_tray.on_activated.clone();
         let message_clicked = platform_tray.on_message_clicked.clone();
-        let tooltip = platform_tray.tooltip().to_string();
         Ok(Self {
             platform_tray,
             menu: None,
@@ -79,7 +77,6 @@ impl SystemTrayIcon {
             message_clicked,
             menu_connection: None,
             current_icon: None,
-            tooltip,
             _marker: PhantomData,
         })
     }
@@ -110,8 +107,9 @@ impl SystemTrayIcon {
                     let Some(menu) = menu_weak.upgrade() else {
                         return;
                     };
-                    // Reentrancy guard: if the menu is already popped up, skip duplicate invocation.
-                    if menu.borrow().is_visible() {
+                    // Reentrancy guard: if the menu is already borrowed (exec_popup modal loop active)
+                    // or visible, skip duplicate invocation to avoid BorrowError panic.
+                    if menu.try_borrow().map_or(true, |m| m.is_visible()) {
                         return;
                     }
                     let pos = *pos;
@@ -154,14 +152,12 @@ impl SystemTrayIcon {
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) -> Result<(), &'static str> {
         ThreadContext::assert_main_thread("SystemTrayIcon::set_tooltip");
         let s = tooltip.into();
-        self.platform_tray.set_tooltip(s.as_str())?;
-        self.tooltip = s;
-        Ok(())
+        self.platform_tray.set_tooltip(s.as_str())
     }
 
     /// Returns the tooltip text (`QSystemTrayIcon::toolTip`).
     pub fn tooltip(&self) -> &str {
-        &self.tooltip
+        self.platform_tray.tooltip()
     }
 
     /// Shows the icon in the system tray (`QSystemTrayIcon::show`).
@@ -189,6 +185,7 @@ impl SystemTrayIcon {
         icon: TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::show_message");
         self.platform_tray
             .show_message(title, msg, icon, duration_ms)
     }
@@ -201,6 +198,7 @@ impl SystemTrayIcon {
         icon: &Icon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
+        ThreadContext::assert_main_thread("SystemTrayIcon::show_message_with_icon");
         self.platform_tray
             .show_message_with_icon(title, msg, icon, duration_ms)
     }

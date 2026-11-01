@@ -433,7 +433,17 @@ impl PlatformTrayIcon for CocoaStatusItem {
             return;
         }
         self.handlers.borrow_mut().context_menu = Some(Rc::from(handler));
-        self.observe_menu_tracking();
+        // Ensure button delivers right-clicks to the target
+        // SAFETY: `self.status_item` is live; `button` takes no arguments and returns an object.
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+        // SAFETY: `button` is live; `sendActionOn:` takes one NSEventMask.
+        unsafe {
+            ObjcMsg::send_int_logged(
+                button,
+                Sel::register("sendActionOn:"),
+                NS_EVENT_MASK_ACTIVATION,
+            )
+        };
     }
     fn show(&mut self) -> Result<(), &'static str> {
         self.is_visible = true;
