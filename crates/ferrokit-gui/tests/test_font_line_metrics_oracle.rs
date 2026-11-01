@@ -92,7 +92,7 @@ fn an_in_memory_font_takes_its_line_metrics_from_its_tables() {
     set_application_device_pixel_ratio(1.0);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 #[test]
 fn an_engine_without_sub_pixel_positions_rounds_and_moves_the_difference_into_the_leading() {
     let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,6 +102,79 @@ fn an_engine_without_sub_pixel_positions_rounds_and_moves_the_difference_into_th
         assert_eq!(ints(&f), expected_ints, "{px}px QFontMetrics");
         assert_eq!(floats(&f), expected_floats, "{px}px QFontMetricsF");
     }
+}
+
+/// With full hinting (`PreferFullHinting`), an engine disables sub-pixel positions and rounds
+/// line metrics, moving the difference into leading.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn prefer_full_hinting_disables_sub_pixel_positions_and_rounds_line_metrics() {
+    use ferrokit_gui::text::HintingPreference;
+    let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
+    set_application_device_pixel_ratio(1.0);
+    for (px, expected_ints, expected_floats) in ROUNDED {
+        let f = font(ORACLE_TTF.to_vec(), px)
+            .with_hinting_preference(HintingPreference::PreferFullHinting);
+        assert_eq!(
+            ints(&f),
+            expected_ints,
+            "{px}px QFontMetrics (PreferFullHinting)"
+        );
+        assert_eq!(
+            floats(&f),
+            expected_floats,
+            "{px}px QFontMetricsF (PreferFullHinting)"
+        );
+    }
+}
+
+/// On Linux (FreeType with default `HintLight` / fontconfig `hintslight`) and macOS (CoreText),
+/// engines keep fractional line metrics at ratio 1.0 under default hinting preference.
+#[cfg(not(windows))]
+#[test]
+fn linux_and_macos_engines_keep_fractional_metrics_at_a_ratio_of_one() {
+    let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
+    set_application_device_pixel_ratio(1.0);
+    for (px, expected_ints, expected_floats) in DIRECTWRITE {
+        let f = font(ORACLE_TTF.to_vec(), px);
+        assert_eq!(ints(&f), expected_ints, "{px}px QFontMetrics");
+        assert_eq!(floats(&f), expected_floats, "{px}px QFontMetricsF");
+        assert_eq!(FontMetrics::layout_height(&f), expected_floats[3], "{px}px");
+    }
+}
+
+/// Switching the default hint style between HintLight and HintFull toggles sub-pixel rounding
+/// at a ratio of 1.0 on FreeType/DirectWrite platforms (macOS CoreText never rounds).
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn default_hint_style_switch_controls_sub_pixel_rounding() {
+    use ferrokit_gui::text::font_database::{
+        default_hint_style, set_default_hint_style, HintStyle,
+    };
+    struct HintGuard(HintStyle);
+    impl Drop for HintGuard {
+        fn drop(&mut self) {
+            set_default_hint_style(self.0);
+        }
+    }
+    let _guard = DPR.lock().unwrap_or_else(|e| e.into_inner());
+    let _hint_guard = HintGuard(default_hint_style());
+    set_application_device_pixel_ratio(1.0);
+
+    // HintFull rounds
+    set_default_hint_style(HintStyle::HintFull);
+    let f16 = font(ORACLE_TTF.to_vec(), 16.0);
+    assert_eq!(floats(&f16), [13.0, 4.0, -1.0, 17.0]);
+
+    // HintLight keeps fractional
+    set_default_hint_style(HintStyle::HintLight);
+    let f16 = font(ORACLE_TTF.to_vec(), 16.0);
+    assert_eq!(floats(&f16), [12.5, 3.5, 0.0, 16.0]);
+
+    // HintNone keeps fractional
+    set_default_hint_style(HintStyle::HintNone);
+    let f16 = font(ORACLE_TTF.to_vec(), 16.0);
+    assert_eq!(floats(&f16), [12.5, 3.5, 0.0, 16.0]);
 }
 
 /// Table offset of `tag` in an sfnt.

@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::text::font::{Font, FontStyle, SharedFontData};
+use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData};
 use crate::text::glyph_face::{parse_face, LineMetrics, SharedGlyphFace};
 use crate::text::glyph_layout::FontEngine;
 
@@ -137,9 +137,8 @@ static FONT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Current font-set generation; changes whenever a search path or an in-memory font is added.
 pub fn font_generation() -> u64 {
-    FONT_GENERATION.load(Ordering::Relaxed)
+    FONT_GENERATION.load(Ordering::Acquire)
 }
-
 /// `QGuiApplication::devicePixelRatio()` as bits of an `f32`; the highest ratio of any screen.
 static APPLICATION_DPR_BITS: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 
@@ -169,21 +168,93 @@ pub fn uses_directwrite_engine() -> bool {
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()
 }
 
-/// `QFontEngine::supportsSubPixelPositions` of the engine Qt lays text out with, which decides
-/// whether its line metrics stay fractional or are rounded to whole pixels
-/// ([`LineMetrics::rounded`]). Windows: DirectWrite positions glyphs at sub-pixel offsets unless
-/// it hints fully, which is what a ratio of 1 gives (`determineHinting`,
-/// qwindowsfontenginedirectwrite.cpp:167-183; measured: 12.5 + 3.5 at 1.25, 13 + 4 with a leading
-/// of -1 at 1). macOS: CoreText always does (qfontengine_coretext_p.h:60).
+/// Font hinting style matching Qt's `QFontEngine::HintStyle` (qfontengine_p.h:60).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum HintStyle {
+    /// No hinting (`FT_LOAD_NO_HINTING`).
+    HintNone = 0,
+    /// Light/vertical hinting (`FT_LOAD_TARGET_LIGHT`, fontconfig `FC_HINT_SLIGHT` / `hintslight`).
+    #[default]
+    HintLight = 1,
+    /// Medium hinting (`FT_LOAD_TARGET_NORMAL`, fontconfig `FC_HINT_MEDIUM`).
+    HintMedium = 2,
+    /// Full hinting (`FT_LOAD_TARGET_NORMAL`, fontconfig `FC_HINT_FULL` / `hintfull`).
+    HintFull = 3,
+}
+
+static DEFAULT_HINT_STYLE: AtomicU8 = AtomicU8::new(initial_default_hint_style_u8());
+
+const fn initial_default_hint_style_u8() -> u8 {
+    if cfg!(target_os = "macos") {
+        0 // HintNone (CoreText always uses sub-pixel positioning)
+    } else if cfg!(windows) {
+        3 // HintFull (Windows DirectWrite GDI_CLASSIC at ratio 1 / ftInitialDefaultHintStyle on Windows)
+    } else {
+        1 // HintLight (FreeType default on Linux: fontconfig hintslight desktop standard)
+    }
+}
+
+/// Process-wide default hinting style (Qt `QFontEngine::default_hint_style`, `qfontengine_p.h:60`).
 ///
-/// **Known deviation (Linux and other FreeType platforms):** Qt's FreeType engine is sub-pixel
-/// only for the light or no hint style (`default_hint_style`, qfontengine_ft_p.h:170-179), which
-/// comes from fontconfig and the platform theme; ferrokit has no such input, so FreeType follows
-/// the DirectWrite rule here (fractional metrics at a ratio other than 1, as the advances do). A
-/// Linux desktop with `hintslight` (the common default) is therefore rounded at a ratio of 1
-/// where Qt is not. [inferred]
+/// On Linux/FreeType this defaults to [`HintStyle::HintLight`], matching fontconfig's standard
+/// desktop default (`hintslight`, `qfontconfigdatabase.cpp:730`). On Windows it defaults to
+/// [`HintStyle::HintFull`] (DirectWrite full hinting / GDI classic at ratio 1). On macOS it
+/// is [`HintStyle::HintNone`].
+pub fn default_hint_style() -> HintStyle {
+    match DEFAULT_HINT_STYLE.load(Ordering::Acquire) {
+        0 => HintStyle::HintNone,
+        1 => HintStyle::HintLight,
+        2 => HintStyle::HintMedium,
+        3 => HintStyle::HintFull,
+        _ => HintStyle::HintLight,
+    }
+}
+
+/// Sets the process-wide default hinting style.
+pub fn set_default_hint_style(style: HintStyle) {
+    if DEFAULT_HINT_STYLE.swap(style as u8, Ordering::AcqRel) != style as u8 {
+        FONT_GENERATION.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Whether `font`'s engine supports sub-pixel glyph positions under its hinting preference and
+/// platform rules (`QFontEngine::supportsSubPixelPositions`).
+///
+/// When `true`, line metrics (ascent, descent, leading) remain fractional 26.6 values.
+/// When `false`, line metrics are rounded to whole pixels ([`LineMetrics::rounded`]), with
+/// leading taking up the difference.
+///
+/// - **macOS (CoreText):** always `true` (`QFontEngineCoreText::supportsSubPixelPositions`,
+///   CoreText does not round line metrics regardless of hinting preference).
+/// - **Windows (DirectWrite):** `true` at ratio != 1.0 (sub-pixel / asymmetric), `false` at ratio 1.0
+///   (full hinting / GDI classic) under default hinting.
+/// - **Linux / FreeType:** `true` when the effective hint style is [`HintStyle::HintLight`]
+///   (`hintslight`, the Linux desktop default) or [`HintStyle::HintNone`], or when ratio != 1.0;
+///   `false` only for [`HintStyle::HintFull`] or [`HintStyle::HintMedium`] at ratio 1.0.
+pub fn font_has_subpixel_positions(font: &Font) -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
+    match font.hinting_preference() {
+        HintingPreference::PreferNoHinting | HintingPreference::PreferVerticalHinting => true,
+        HintingPreference::PreferFullHinting => false,
+        HintingPreference::PreferDefaultHinting => engine_has_subpixel_positions(),
+    }
+}
+
+/// Whether the default font engine at the current device pixel ratio has sub-pixel positions
+/// under default hinting preference ([`font_has_subpixel_positions`]).
+///
+/// Explicitly keeps `cfg!(target_os = "macos")` so standalone callers without a [`Font`] reference
+/// consistently observe CoreText's platform behavior.
 pub fn engine_has_subpixel_positions() -> bool {
-    cfg!(target_os = "macos") || uses_directwrite_engine()
+    cfg!(target_os = "macos")
+        || uses_directwrite_engine()
+        || matches!(
+            default_hint_style(),
+            HintStyle::HintNone | HintStyle::HintLight
+        )
 }
 
 /// Process-wide font database shared by the painter and font-selection widgets.
