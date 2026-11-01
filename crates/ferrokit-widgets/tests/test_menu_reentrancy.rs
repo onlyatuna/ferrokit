@@ -6,7 +6,7 @@
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::QObject;
 use ferrokit_gui::geometry::primitives::Point;
-use ferrokit_widgets::{Action, Menu, MenuRef, Widget};
+use ferrokit_widgets::{Action, Menu, MenuRef};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 

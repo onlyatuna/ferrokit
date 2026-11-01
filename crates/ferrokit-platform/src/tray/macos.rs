@@ -34,8 +34,8 @@ pub struct CocoaStatusItem {
 struct ButtonHandlers {
     on_click: Option<Arc<dyn Fn() + Send + Sync>>,
     activation: Option<Rc<dyn Fn(TrayActivation)>>,
+    context_menu: Option<Rc<dyn Fn(ferrokit_gui::geometry::primitives::Point)>>,
 }
-
 // Deliberately neither `Send` nor `Sync`: wraps an `NSStatusItem` (`Id`), which AppKit only allows
 // to be used from the main thread (`new` asserts it).
 
@@ -146,15 +146,28 @@ impl CocoaStatusItem {
         let handlers = Rc::clone(&self.handlers);
         let Ok(target) = ActionTarget::new(move || {
             // Copied out so a callback may set handlers without a borrow outstanding.
-            let (on_click, activation) = {
+            let (on_click, activation, context_menu) = {
                 let h = handlers.borrow();
-                (h.on_click.clone(), h.activation.clone())
+                (
+                    h.on_click.clone(),
+                    h.activation.clone(),
+                    h.context_menu.clone(),
+                )
             };
             if let Some(cb) = on_click {
                 cb();
             }
+            let reason = activation_reason_for_event(current_event());
             if let Some(handler) = activation {
-                handler(activation_reason_for_event(current_event()));
+                handler(reason);
+            }
+            if reason == TrayActivation::Context {
+                if let Some(handler) = context_menu {
+                    let pos =
+                        crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
+                            .unwrap_or_default();
+                    handler(pos);
+                }
             }
         }) else {
             return false;
@@ -412,6 +425,26 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.observe_menu_tracking();
     }
 
+    fn set_context_menu_handler(
+        &mut self,
+        handler: Box<dyn Fn(ferrokit_gui::geometry::primitives::Point)>,
+    ) {
+        if !self.ensure_button_target() {
+            return;
+        }
+        self.handlers.borrow_mut().context_menu = Some(Rc::from(handler));
+        // Ensure button delivers right-clicks to the target
+        // SAFETY: `self.status_item` is live; `button` takes no arguments and returns an object.
+        let button = unsafe { ObjcMsg::send_0(self.status_item, Sel::register("button")) };
+        // SAFETY: `button` is live; `sendActionOn:` takes one NSEventMask.
+        unsafe {
+            ObjcMsg::send_int_logged(
+                button,
+                Sel::register("sendActionOn:"),
+                NS_EVENT_MASK_ACTIVATION,
+            )
+        };
+    }
     fn show(&mut self) -> Result<(), &'static str> {
         self.is_visible = true;
         // Set status item visible
