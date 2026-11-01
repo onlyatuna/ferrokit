@@ -140,18 +140,32 @@ fn test_styled_widgets_respect_explicit_minimum_and_maximum_size() {
     assert_eq!(btn.minimum_size(), Size::new(0, 0));
     btn.set_minimum_size(Size::new(75, 25));
     assert_eq!(btn.minimum_size(), Size::new(75, 25));
+    btn.set_style_sheet("QPushButton { min-width: 90px; min-height: 35px; }");
+    assert_eq!(btn.minimum_size(), Size::new(90, 35));
+    btn.set_style_sheet("QPushButton { min-width: 50px; min-height: 20px; }");
+    assert_eq!(btn.minimum_size(), Size::new(75, 25));
     btn.set_maximum_size(Size::new(150, 40));
     assert_eq!(btn.maximum_size(), Size::new(150, 40));
+    btn.set_style_sheet("QPushButton { max-width: 120px; max-height: 30px; }");
+    assert_eq!(btn.maximum_size(), Size::new(120, 30));
 
     // QFrame
     let frame = Frame::new();
     assert_eq!(frame.minimum_size(), Size::new(0, 0));
     frame.set_minimum_size(Size::new(50, 50));
     assert_eq!(frame.minimum_size(), Size::new(50, 50));
+    frame.set_style_sheet("QFrame { min-width: 80px; min-height: 70px; }");
+    assert_eq!(frame.minimum_size(), Size::new(80, 70));
+    frame.set_style_sheet("QFrame { min-width: 30px; min-height: 40px; }");
+    assert_eq!(frame.minimum_size(), Size::new(50, 50));
 
     // QProgressBar
     let pb = ProgressBar::new();
     assert_eq!(pb.minimum_size(), Size::new(0, 0));
     pb.set_minimum_size(Size::new(60, 20));
+    assert_eq!(pb.minimum_size(), Size::new(60, 20));
+    pb.set_style_sheet("QProgressBar { min-width: 100px; min-height: 30px; }");
+    assert_eq!(pb.minimum_size(), Size::new(100, 30));
+    pb.set_style_sheet("QProgressBar { min-width: 40px; min-height: 15px; }");
     assert_eq!(pb.minimum_size(), Size::new(60, 20));
 }

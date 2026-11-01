@@ -426,12 +426,10 @@ impl Label {
         let vextra = box_t + box_b + v_indent;
         let (text_w, text_h) = self.text_size(&font, &metrics, hextra, width);
         // `expandedTo(q->minimumSize())`: the style sheet's `min-*` and the explicit minimum size.
-        let (style_w, style_h) = style.min_box_size();
-        let explicit = self.widget_base().min_size.get();
-        let (min_w, min_h) = (style_w.max(explicit.width), style_h.max(explicit.height));
+        let min = self.minimum_size();
         Size::new(
-            (text_w.ceil() as i32 + hextra.round() as i32).max(min_w),
-            (text_h.ceil() as i32 + vextra.round() as i32).max(min_h),
+            (text_w.ceil() as i32 + hextra.round() as i32).max(min.width),
+            (text_h.ceil() as i32 + vextra.round() as i32).max(min.height),
         )
     }
 
@@ -539,6 +537,11 @@ impl Widget for Label {
         let explicit = self.widget_base().max_size.get();
         Size::new(style_w.min(explicit.width), style_h.min(explicit.height))
     }
+
+    /// `QLabel::minimumSizeHint` (`qlabel.cpp:809-833`): the height of one line (`sizeForWidth` of
+    /// an unbounded width, never above the size hint's) by the width of the widest word
+    /// (`sizeForWidth(0)`). A label that does not wrap is as wide as its text either way, so this
+    /// is its size hint.
     fn minimum_size_hint(&self) -> Size {
         let hint = self.size_hint();
         if !self.is_text_label || !self.word_wrap {
