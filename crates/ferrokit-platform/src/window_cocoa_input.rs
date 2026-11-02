@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
+use ferrokit_gui::geometry::primitives::{Point, Size};
 
 use crate::objc_runtime::appkit::{self, NS_NOT_FOUND, NSRange};
 use crate::objc_runtime::{CGFloat, CGPoint, CGRect, Id, NSUInteger, ObjcMsg, Sel};
@@ -593,21 +593,6 @@ fn translate(slot: &mut ViewSlot, event: CocoaNativeEvent, origin: Point) -> Win
     }
 }
 
-/// Queries an `NSWindow`'s live frame in Cocoa bottom-left desktop coordinates and flips it to
-/// Qt's top-left desktop coordinates, flooring negative origin coordinates for secondary monitors.
-fn window_flipped_geometry(window: Id) -> Rect {
-    // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect in
-    // Cocoa bottom-left desktop coordinates.
-    let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
-    let cocoa_rect = Rect::new(
-        rect.origin.x.floor() as i32,
-        rect.origin.y.floor() as i32,
-        rect.size.width.round() as i32,
-        rect.size.height.round() as i32,
-    );
-    crate::window_cocoa::qt_mac_flip_global_rect(cocoa_rect)
-}
-
 /// Delivers a window delegate notification (`NSWindowDidBecomeKeyNotification`, etc.) to `view`'s handler.
 pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
     ThreadContext::assert_main_thread("dispatch_notification");
@@ -632,7 +617,7 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
             // coordinates also moves (flip_y = screen_h - y - h). Matching Qt's
             // QCocoaWindow::handleGeometryChange(), deliver GeometryChange so the top-left
             // position updates, followed by Resize for layout and backing surface resize.
-            let geometry = window_flipped_geometry(window);
+            let geometry = crate::window_cocoa::window_flipped_geometry(window);
             let moved = dispatch(
                 view,
                 CocoaNativeEvent::WindowMoved { geometry },
@@ -649,7 +634,7 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
             moved || resized
         }
         "NSWindowDidMoveNotification" => {
-            let geometry = window_flipped_geometry(window);
+            let geometry = crate::window_cocoa::window_flipped_geometry(window);
             dispatch(
                 view,
                 CocoaNativeEvent::WindowMoved { geometry },

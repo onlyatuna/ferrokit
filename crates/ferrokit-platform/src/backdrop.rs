@@ -422,6 +422,26 @@ pub(crate) fn set_cocoa_window_backdrop(
                 // live NSWindow; `contentView` takes no arguments and returns an object, matching `send_0`.
                 let content_view =
                     unsafe { ObjcMsg::send_0(target_window, Sel::register("contentView")) };
+                let bounds = if !content_view.is_nil() {
+                    // SAFETY: `content_view` is live and non-nil; `bounds` takes no arguments and
+                    // returns NSRect, matching `send_rect_return`.
+                    unsafe { ObjcMsg::send_rect_return(content_view, Sel::register("bounds")) }
+                } else {
+                    // SAFETY: `target_window` is live and non-nil; `frame` takes no arguments and
+                    // returns NSRect, matching `send_rect_return`.
+                    unsafe { ObjcMsg::send_rect_return(target_window, Sel::register("frame")) }
+                };
+                // SAFETY: `effect_view` is live; `setFrame:` takes NSRect, matching `send_rect`.
+                unsafe { ObjcMsg::send_rect(effect_view, Sel::register("setFrame:"), bounds) };
+                // Autoresizing mask: NSViewWidthSizable (0x02) | NSViewHeightSizable (0x10) = 0x12
+                // SAFETY: `effect_view` is live; `setAutoresizingMask:` takes NSUInteger, matching `send_uint_logged`.
+                unsafe {
+                    ObjcMsg::send_uint_logged(
+                        effect_view,
+                        Sel::register("setAutoresizingMask:"),
+                        0x12,
+                    )
+                };
                 if !content_view.is_nil() {
                     // SAFETY: `content_view` is non-nil (checked above) and `effect_view` is live;
                     // `addSubview:` takes one object, matching `send_id`. The superview retains the
