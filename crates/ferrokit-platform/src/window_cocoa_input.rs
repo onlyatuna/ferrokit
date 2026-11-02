@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::Point;
+use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 
 use crate::objc_runtime::appkit::{self, NS_NOT_FOUND, NSRange};
 use crate::objc_runtime::{CGFloat, CGPoint, CGRect, Id, NSUInteger, ObjcMsg, Sel};
@@ -532,10 +532,65 @@ fn translate(slot: &mut ViewSlot, event: CocoaNativeEvent, origin: Point) -> Win
             cursor_position: cursor,
         },
         CocoaNativeEvent::WindowResized { width, height } => WindowSystemEvent::Resize {
-            size: ferrokit_gui::geometry::primitives::Size::new(width as i32, height as i32),
+            size: Size::new(width as i32, height as i32),
         },
         CocoaNativeEvent::WindowCloseRequested => WindowSystemEvent::CloseRequest,
+        CocoaNativeEvent::WindowFocusIn => WindowSystemEvent::FocusIn,
+        CocoaNativeEvent::WindowFocusOut => WindowSystemEvent::FocusOut,
+        CocoaNativeEvent::WindowMoved { geometry } => {
+            WindowSystemEvent::GeometryChange { geometry }
+        }
+        CocoaNativeEvent::WindowDpiChanged { dpi_x, dpi_y } => {
+            WindowSystemEvent::DpiChanged { dpi_x, dpi_y }
+        }
     }
+}
+
+/// Delivers a window delegate notification (`NSWindowDidBecomeKeyNotification`, etc.) to `view`'s handler.
+pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
+    ThreadContext::assert_main_thread("dispatch_notification");
+    if !has_handler(view) {
+        return false;
+    }
+    let event = match name {
+        "NSWindowDidBecomeKeyNotification" => CocoaNativeEvent::WindowFocusIn,
+        "NSWindowDidResignKeyNotification" => CocoaNativeEvent::WindowFocusOut,
+        "NSWindowWillCloseNotification" => CocoaNativeEvent::WindowCloseRequested,
+        "NSWindowDidResizeNotification" => {
+            // SAFETY: `view` is the content view; `frame` takes no arguments and returns NSRect.
+            let rect = unsafe { ObjcMsg::send_rect_return(view, Sel::register("frame")) };
+            CocoaNativeEvent::WindowResized {
+                width: rect.size.width,
+                height: rect.size.height,
+            }
+        }
+        "NSWindowDidMoveNotification" => {
+            // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect in
+            // Cocoa bottom-left desktop coordinates.
+            let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
+            let cocoa_rect = Rect::new(
+                rect.origin.x as i32,
+                rect.origin.y as i32,
+                rect.size.width as i32,
+                rect.size.height as i32,
+            );
+            let geometry = crate::window_cocoa::qt_mac_flip_global_rect(cocoa_rect);
+            CocoaNativeEvent::WindowMoved { geometry }
+        }
+        "NSWindowDidChangeBackingPropertiesNotification" => {
+            // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
+            let scale =
+                unsafe { ObjcMsg::send_f64_return(window, Sel::register("backingScaleFactor")) };
+            let scale = if scale > 0.0 { scale } else { 1.0 };
+            let dpi = (scale * 96.0).round() as u32;
+            CocoaNativeEvent::WindowDpiChanged {
+                dpi_x: dpi,
+                dpi_y: dpi,
+            }
+        }
+        _ => return false,
+    };
+    dispatch(view, event, Point::new(0, 0))
 }
 
 // ---------------------------------------------------------------------------
