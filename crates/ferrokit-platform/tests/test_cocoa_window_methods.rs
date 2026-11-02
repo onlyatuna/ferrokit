@@ -601,7 +601,16 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
         !selectors(mock, tooltip.ns_window()).contains(&"makeKeyAndOrderFront:".to_string()),
         "tooltip never takes activation"
     );
-
+    // Click-through window: never takes activation even when shown.
+    let click_through = window(WindowFlags::CLICK_THROUGH);
+    click_through.show();
+    mock.clear_calls();
+    click_through.request_activate_window();
+    assert!(!click_through.is_active());
+    assert!(
+        !selectors(mock, click_through.ns_window()).contains(&"makeKeyAndOrderFront:".to_string()),
+        "click-through window never takes activation"
+    );
     // Visible normal window: activates the application and makes key.
     win.show();
     mock.clear_calls();
@@ -667,6 +676,22 @@ fn flat_tint_backdrop_applies_inactive_effect_view() {
         "NSVisualEffectStateInactive (flat tint without blur)"
     );
     assert_eq!(data.material, 6, "Popover material");
+    let effect = effect_view(&win);
+    let effect_calls: Vec<_> = mock
+        .calls_for(effect)
+        .into_iter()
+        .filter(|c| c.selector == "setAutoresizingMask:")
+        .collect();
+    assert_eq!(
+        effect_calls.len(),
+        1,
+        "setAutoresizingMask: called on effect view"
+    );
+    assert_eq!(
+        effect_calls[0].args,
+        vec![MockValue::Int(0x12)],
+        "NSViewWidthSizable | NSViewHeightSizable"
+    );
 }
 
 #[test]

@@ -501,8 +501,7 @@ impl CocoaNativeWindow {
             return false;
         }
         if let CocoaNativeEvent::WindowResized { width, height } = &event {
-            self.geometry.width = *width as i32;
-            self.geometry.height = *height as i32;
+            self.geometry = self.geometry();
             let _ = self
                 .surface
                 .resize(surface_dim(*width as i32), surface_dim(*height as i32));
@@ -659,7 +658,7 @@ impl CocoaNativeWindow {
             pixmap.logical_width().round() as i32,
             pixmap.logical_height().round() as i32,
         );
-        if target == self.geometry {
+        if target == self.geometry() {
             return;
         }
         self.geometry = target;
@@ -678,9 +677,11 @@ impl CocoaNativeWindow {
 
 impl PlatformWindow for CocoaNativeWindow {
     fn show(&self) {
-        // A tooltip is ordered front without becoming the key window (`Qt::ToolTip` does not
-        // take activation); every other window becomes key.
-        let order = if self.flags.contains(WindowFlags::TOOLTIP) {
+        // A tooltip or click-through overlay is ordered front without becoming the key window;
+        // every other window becomes key.
+        let order = if self.flags.contains(WindowFlags::TOOLTIP)
+            || self.flags.contains(WindowFlags::CLICK_THROUGH)
+        {
             "orderFront:"
         } else {
             "makeKeyAndOrderFront:"
@@ -705,6 +706,12 @@ impl PlatformWindow for CocoaNativeWindow {
         if !self.is_visible() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isVisible` takes no arguments
+        // and returns BOOL, matching `send_bool_return`.
+        if !unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible")) } {
+            return;
+        }
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` takes one sender
         // object (nil here), matching `send_id_logged`.
         unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), Id::NIL) };
@@ -712,7 +719,10 @@ impl PlatformWindow for CocoaNativeWindow {
     fn request_activate_window(&self) {
         // `QPlatformWindow::requestActivateWindow` (qcocoawindow.mm:1850-1865): a tooltip never
         // takes activation, and an invisible window cannot become active.
-        if self.flags.contains(WindowFlags::TOOLTIP) || !self.is_visible() {
+        if self.flags.contains(WindowFlags::TOOLTIP)
+            || self.flags.contains(WindowFlags::CLICK_THROUGH)
+            || !self.is_visible()
+        {
             return;
         }
         // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication` returning
@@ -749,16 +759,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn geometry(&self) -> Rect {
         if !self.ns_window.is_nil() {
-            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `frame` takes no arguments
-            // and returns NSRect in Cocoa bottom-left desktop coordinates.
-            let rect = unsafe { ObjcMsg::send_rect_return(self.ns_window, Sel::register("frame")) };
-            let cocoa_rect = Rect::new(
-                rect.origin.x.floor() as i32,
-                rect.origin.y.floor() as i32,
-                rect.size.width.round() as i32,
-                rect.size.height.round() as i32,
-            );
-            return qt_mac_flip_global_rect(cocoa_rect);
+            return window_flipped_geometry(self.ns_window);
         }
         self.geometry
     }
@@ -1182,16 +1183,17 @@ impl PlatformWindow for CocoaNativeWindow {
     fn device_pixel_ratio(&self) -> f32 {
         // AppKit's `-[NSWindow backingScaleFactor]` reports the scaling factor of the screen
         // this window is currently on (qcocoawindow.mm:1450).
-        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `backingScaleFactor` takes no
-        // arguments and returns a CGFloat (double), matching `send_f64_return`.
-        let scale = unsafe {
-            ObjcMsg::send_f64_return(self.ns_window, Sel::register("backingScaleFactor"))
-        };
-        if scale > 0.0 {
-            scale as f32
-        } else {
-            crate::platform().primary_screen().device_pixel_ratio()
+        if !self.ns_window.is_nil() {
+            // SAFETY: `self.ns_window` is live and non-nil; `backingScaleFactor` takes no
+            // arguments and returns a CGFloat (double), matching `send_f64_return`.
+            let scale = unsafe {
+                ObjcMsg::send_f64_return(self.ns_window, Sel::register("backingScaleFactor"))
+            };
+            if scale > 0.0 {
+                return scale as f32;
+            }
         }
+        crate::platform().primary_screen().device_pixel_ratio()
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
@@ -1398,9 +1400,25 @@ pub fn qt_mac_flip_rect(rect: Rect, reference_height: i32) -> Rect {
 #[inline]
 pub fn qt_mac_primary_screen_height() -> i32 {
     use crate::screen::PlatformScreen;
-    crate::screen::CocoaScreen::screens()[0].geometry().height
+    crate::screen::CocoaScreen::primary().geometry().height
 }
-
+/// Queries an `NSWindow`'s live frame in Cocoa bottom-left desktop coordinates and flips it to
+/// Qt's top-left desktop coordinates, flooring negative origin coordinates for secondary monitors.
+pub fn window_flipped_geometry(window: Id) -> Rect {
+    if !window.is_nil() {
+        // SAFETY: `window` is live from `new` to `Drop`; `frame` takes no arguments
+        // and returns NSRect in Cocoa bottom-left desktop coordinates.
+        let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
+        let cocoa_rect = Rect::new(
+            rect.origin.x.floor() as i32,
+            rect.origin.y.floor() as i32,
+            rect.size.width.round() as i32,
+            rect.size.height.round() as i32,
+        );
+        return qt_mac_flip_global_rect(cocoa_rect);
+    }
+    Rect::new(0, 0, 0, 0)
+}
 /// `QCocoaScreen::mapToNative` (qcocoascreen.mm:815-818): Qt's top-left global rect as the
 /// bottom-left rect AppKit expects.
 fn native_rect(rect: Rect) -> CGRect {
