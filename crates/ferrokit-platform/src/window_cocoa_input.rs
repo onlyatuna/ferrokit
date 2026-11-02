@@ -593,36 +593,68 @@ fn translate(slot: &mut ViewSlot, event: CocoaNativeEvent, origin: Point) -> Win
     }
 }
 
+/// Queries an `NSWindow`'s live frame in Cocoa bottom-left desktop coordinates and flips it to
+/// Qt's top-left desktop coordinates, flooring negative origin coordinates for secondary monitors.
+fn window_flipped_geometry(window: Id) -> Rect {
+    // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect in
+    // Cocoa bottom-left desktop coordinates.
+    let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
+    let cocoa_rect = Rect::new(
+        rect.origin.x.floor() as i32,
+        rect.origin.y.floor() as i32,
+        rect.size.width.round() as i32,
+        rect.size.height.round() as i32,
+    );
+    crate::window_cocoa::qt_mac_flip_global_rect(cocoa_rect)
+}
+
 /// Delivers a window delegate notification (`NSWindowDidBecomeKeyNotification`, etc.) to `view`'s handler.
 pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
     ThreadContext::assert_main_thread("dispatch_notification");
     if !has_handler(view) {
         return false;
     }
-    let event = match name {
-        "NSWindowDidBecomeKeyNotification" => CocoaNativeEvent::WindowFocusIn,
-        "NSWindowDidResignKeyNotification" => CocoaNativeEvent::WindowFocusOut,
-        "NSWindowWillCloseNotification" => CocoaNativeEvent::WindowCloseRequested,
+    match name {
+        "NSWindowDidBecomeKeyNotification" => {
+            dispatch(view, CocoaNativeEvent::WindowFocusIn, Point::new(0, 0))
+        }
+        "NSWindowDidResignKeyNotification" => {
+            dispatch(view, CocoaNativeEvent::WindowFocusOut, Point::new(0, 0))
+        }
+        "NSWindowWillCloseNotification" => dispatch(
+            view,
+            CocoaNativeEvent::WindowCloseRequested,
+            Point::new(0, 0),
+        ),
         "NSWindowDidResizeNotification" => {
-            // SAFETY: `view` is the content view; `frame` takes no arguments and returns NSRect.
-            let rect = unsafe { ObjcMsg::send_rect_return(view, Sel::register("frame")) };
-            CocoaNativeEvent::WindowResized {
-                width: rect.size.width,
-                height: rect.size.height,
-            }
+            // On macOS, the coordinate origin is at the bottom-left of the primary display.
+            // When the window height changes, the flipped top-left y position in Qt screen
+            // coordinates also moves (flip_y = screen_h - y - h). Matching Qt's
+            // QCocoaWindow::handleGeometryChange(), deliver GeometryChange so the top-left
+            // position updates, followed by Resize for layout and backing surface resize.
+            let geometry = window_flipped_geometry(window);
+            let moved = dispatch(
+                view,
+                CocoaNativeEvent::WindowMoved { geometry },
+                Point::new(0, 0),
+            );
+            let resized = dispatch(
+                view,
+                CocoaNativeEvent::WindowResized {
+                    width: geometry.width as f64,
+                    height: geometry.height as f64,
+                },
+                Point::new(0, 0),
+            );
+            moved || resized
         }
         "NSWindowDidMoveNotification" => {
-            // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect in
-            // Cocoa bottom-left desktop coordinates.
-            let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
-            let cocoa_rect = Rect::new(
-                rect.origin.x as i32,
-                rect.origin.y as i32,
-                rect.size.width as i32,
-                rect.size.height as i32,
-            );
-            let geometry = crate::window_cocoa::qt_mac_flip_global_rect(cocoa_rect);
-            CocoaNativeEvent::WindowMoved { geometry }
+            let geometry = window_flipped_geometry(window);
+            dispatch(
+                view,
+                CocoaNativeEvent::WindowMoved { geometry },
+                Point::new(0, 0),
+            )
         }
         "NSWindowDidChangeBackingPropertiesNotification" => {
             // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
@@ -630,14 +662,17 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
                 unsafe { ObjcMsg::send_f64_return(window, Sel::register("backingScaleFactor")) };
             let scale = if scale > 0.0 { scale } else { 1.0 };
             let dpi = (scale * 96.0).round() as u32;
-            CocoaNativeEvent::WindowDpiChanged {
-                dpi_x: dpi,
-                dpi_y: dpi,
-            }
+            dispatch(
+                view,
+                CocoaNativeEvent::WindowDpiChanged {
+                    dpi_x: dpi,
+                    dpi_y: dpi,
+                },
+                Point::new(0, 0),
+            )
         }
-        _ => return false,
-    };
-    dispatch(view, event, Point::new(0, 0))
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
