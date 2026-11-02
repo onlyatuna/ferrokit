@@ -557,17 +557,25 @@ fn raise_orders_window_front_without_activating_or_making_key() {
     let mock = MockObjcRuntime::instance();
     let win = window(WindowFlags::NORMAL);
     let ns_window = win.ns_window();
-    mock.clear_calls();
 
-    assert!(!win.is_active());
+    // Invisible window: raise is a no-op (AppKit orderFront: would show it).
+    mock.clear_calls();
     win.raise();
-    assert!(!win.is_active(), "raise does not make the window key");
+    assert!(!win.is_active());
+    assert!(
+        !selectors(mock, ns_window).contains(&"orderFront:".to_string()),
+        "invisible window is not raised"
+    );
+
+    // Visible window: ordered front without taking key.
+    win.show();
+    mock.clear_calls();
+    win.raise();
     assert!(
         selectors(mock, ns_window).contains(&"orderFront:".to_string()),
-        "raise orders the window front in the local stacking order"
+        "raise orders the visible window front in the local stacking order"
     );
 }
-
 #[test]
 fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_tooltip() {
     let mock = MockObjcRuntime::instance();
@@ -602,6 +610,17 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
     assert!(
         selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
         "orders front and makes key"
+    );
+    // SAFETY: mock runtime only: sharedApplication takes no arguments, matching send_class_0.
+    let nsapp = unsafe {
+        ferrokit_platform::ObjcMsg::send_class_0(
+            ferrokit_platform::Class::get("NSApplication").unwrap(),
+            ferrokit_platform::Sel::register("sharedApplication"),
+        )
+    };
+    assert!(
+        selectors(mock, nsapp).contains(&"activateIgnoringOtherApps:".to_string()),
+        "activates the shared NSApplication"
     );
 }
 

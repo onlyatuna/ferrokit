@@ -14,8 +14,8 @@ pub enum BackdropType {
     Acrylic,
     /// Windows 7 / 10 Classic DWM Aero Glass blur behind (`DwmEnableBlurBehindWindow`).
     BlurBehind,
-    /// Flat tinted panel without blur, the Acrylic tint on `ACCENT_ENABLE_TRANSPARENTGRADIENT`.
-    /// Windows only: Cocoa removes the effect view and reports `false` (the tint is not drawn);
+    /// Flat tinted panel without blur: the Acrylic tint on `ACCENT_ENABLE_TRANSPARENTGRADIENT`
+    /// on Windows, and an `NSVisualEffectView` in `NSVisualEffectStateInactive` on Cocoa.
     /// X11 and Wayland keep their stub behaviour.
     FlatTint,
 }
@@ -290,7 +290,9 @@ pub(crate) fn set_cocoa_window_backdrop(
     dark_mode: bool,
     backdrop_view: &mut Option<crate::objc_runtime::Id>,
 ) -> bool {
-    use crate::objc_runtime::{Class, Id, ObjcMsg, Sel};
+    use crate::objc_runtime::{
+        Class, Id, NS_VISUAL_EFFECT_STATE_ACTIVE, NS_VISUAL_EFFECT_STATE_INACTIVE, ObjcMsg, Sel,
+    };
 
     if ns_window.is_nil() && ns_view.is_nil() {
         return false;
@@ -368,9 +370,9 @@ pub(crate) fn set_cocoa_window_backdrop(
             // SAFETY: as above; `setBlendingMode:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) }; // BehindWindow
             let state = if backdrop == BackdropType::FlatTint {
-                2 // NSVisualEffectStateInactive: flat material fill without background blur
+                NS_VISUAL_EFFECT_STATE_INACTIVE
             } else {
-                1 // NSVisualEffectStateActive: live background blur
+                NS_VISUAL_EFFECT_STATE_ACTIVE
             };
             // SAFETY: as above; `setState:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), state) };

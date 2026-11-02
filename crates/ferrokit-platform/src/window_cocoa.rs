@@ -13,6 +13,7 @@ use crate::objc_runtime::appkit;
 use crate::objc_runtime::{
     CGFloat, CGRect, CGSize, Class, Id, NS_BACKING_STORE_BUFFERED, NS_FLOATING_WINDOW_LEVEL,
     NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL,
+    NS_VISUAL_EFFECT_STATE_ACTIVE, NS_VISUAL_EFFECT_STATE_INACTIVE,
     NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
     NS_WINDOW_STYLE_MASK_MINIATURIZABLE, NS_WINDOW_STYLE_MASK_RESIZABLE,
     NS_WINDOW_STYLE_MASK_TITLED, NSInteger, NSUInteger, ObjcMsg, Sel,
@@ -25,10 +26,6 @@ use crate::window_system_interface::WindowSystemEventHandler;
 
 /// `NSWindowAbove`: the child window is ordered above its parent.
 const NS_WINDOW_ABOVE: NSInteger = 1;
-/// `NSVisualEffectStateActive` / `NSVisualEffectStateInactive`: an inactive effect view draws
-/// its material as a flat fill instead of blurring what is behind the window.
-const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
-const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
 
 /// An input or window event for `CocoaNativeWindow::dispatch_cocoa_event`, in view coordinates:
 /// logical pixels with the origin at the top left (the content view is flipped), as Qt reports
@@ -653,11 +650,15 @@ impl PlatformWindow for CocoaNativeWindow {
     fn raise(&self) {
         // `QPlatformWindow::raise` (qcocoawindow.mm:1900): brings the window front in the window
         // system's stacking order without taking activation or making it the key window.
+        // AppKit's `-[NSWindow orderFront:]` would order an invisible window onto screen, so
+        // invisible windows are skipped, matching Qt (`if ([m_nsWindow isVisible])`).
+        if !self.is_visible() {
+            return;
+        }
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` takes one sender
         // object (nil here), matching `send_id_logged`.
         unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), Id::NIL) };
     }
-
     fn request_activate_window(&self) {
         // `QPlatformWindow::requestActivateWindow` (qcocoawindow.mm:1850-1865): a tooltip never
         // takes activation, and an invisible window cannot become active.
