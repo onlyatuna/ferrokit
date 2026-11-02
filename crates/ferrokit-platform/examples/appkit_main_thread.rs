@@ -1786,7 +1786,10 @@ mod checks {
         t.eq(
             "ferrokit primary() size",
             (primary.geometry().width, primary.geometry().height),
-            (frame.size.width as i32, frame.size.height as i32),
+            (
+                frame.size.width.round() as i32,
+                frame.size.height.round() as i32,
+            ),
         );
         t.expect(
             primary.available_geometry().height <= primary.geometry().height,
@@ -2062,9 +2065,9 @@ mod checks {
             !yes(tip.ns_window(), "canBecomeKeyWindow"),
             "[window canBecomeKeyWindow] of a tooltip",
         );
-        // Qt: entered/exited, moved and cursor updates, while the application is active, over
-        // the visible rect (NSTrackingMouseEnteredAndExited | MouseMoved | CursorUpdate |
-        // ActiveInActiveApp | InVisibleRect).
+        // Qt: entered/exited, moved and cursor updates, always active (qnsview_mouse.mm:253),
+        // over the visible rect (NSTrackingMouseEnteredAndExited | MouseMoved | CursorUpdate |
+        // ActiveAlways | InVisibleRect = 0x287).
         let areas: Vec<Id> = array(send(view, "trackingAreas"))
             .into_iter()
             .filter(|&area| send::<Id>(area, "owner") == view)
@@ -2074,8 +2077,8 @@ mod checks {
             let options: usize = send(area, "options");
             t.eq(
                 "[trackingArea options] contains Qt's",
-                options & 0x247,
-                0x247,
+                options & 0x287,
+                0x287,
             );
         }
     }

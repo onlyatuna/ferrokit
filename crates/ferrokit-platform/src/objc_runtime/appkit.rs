@@ -171,21 +171,51 @@ impl MockObjcRuntime {
         }
     }
 
-    /// The pasteboard type strings stored on `pasteboard` by [`set_pasteboard_data`](Self::set_pasteboard_data).
-    pub fn pasteboard_types(&self, pasteboard: Id) -> Vec<String> {
-        mock_state()
+    /// Appends another `(ty, data)` item entry to `pasteboard` without replacing prior entries of
+    /// the same type (simulating multiple `NSPasteboardItem`s in a multi-file Finder drop).
+    pub fn add_pasteboard_item_data(&self, pasteboard: Id, ty: &str, data: &[u8]) {
+        let mut state = mock_state();
+        state
             .pasteboards
-            .get(&(pasteboard.0 as usize))
-            .map(|items| items.iter().map(|(t, _)| t.clone()).collect())
-            .unwrap_or_default()
+            .entry(pasteboard.0 as usize)
+            .or_default()
+            .push((ty.to_string(), data.to_vec()));
     }
 
-    /// The payload stored for `ty` on `pasteboard` by [`set_pasteboard_data`](Self::set_pasteboard_data).
+    /// The unique pasteboard type strings stored on `pasteboard` in insertion order.
+    pub fn pasteboard_types(&self, pasteboard: Id) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(items) = mock_state().pasteboards.get(&(pasteboard.0 as usize)) {
+            for (ty, _) in items {
+                if !out.contains(ty) {
+                    out.push(ty.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The first payload stored for `ty` on `pasteboard`.
     pub fn pasteboard_data(&self, pasteboard: Id, ty: &str) -> Option<Vec<u8>> {
         mock_state()
             .pasteboards
             .get(&(pasteboard.0 as usize))
             .and_then(|items| items.iter().find(|(t, _)| t == ty).map(|(_, d)| d.clone()))
+    }
+
+    /// Every payload stored for `ty` across all items on `pasteboard`.
+    pub fn pasteboard_all_data(&self, pasteboard: Id, ty: &str) -> Vec<Vec<u8>> {
+        mock_state()
+            .pasteboards
+            .get(&(pasteboard.0 as usize))
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|(t, _)| t == ty)
+                    .map(|(_, d)| d.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Empties all mock pasteboard payloads stored by [`set_pasteboard_data`](Self::set_pasteboard_data).
@@ -520,7 +550,7 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
-            msg_send(receiver.0, sel.0) == YES
+            msg_send(receiver.0, sel.0) != NO
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -749,6 +779,63 @@ impl ObjcMsg {
                 );
             }
             receiver
+        }
+    }
+
+    /// `-[receiver addSubview:subview positioned:ordering relativeTo:other]` (`NSView`), logged.
+    /// In the mock runtime this also attaches `subview` as a child of `receiver` and retains it,
+    /// matching `addSubview:`.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_add_subview_positioned(
+        receiver: Id,
+        subview: Id,
+        ordering: NSInteger,
+        other: Id,
+    ) {
+        if receiver.is_nil() || subview.is_nil() {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver is a live NSView and subview is a live NSView.
+        unsafe {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                *mut c_void,
+                NSInteger,
+                *mut c_void,
+            ) = msg_send_fn();
+            msg_send(
+                receiver.0,
+                Sel::register("addSubview:positioned:relativeTo:").0,
+                subview.0,
+                ordering,
+                other.0,
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let runtime = MockObjcRuntime::instance();
+            record(
+                receiver,
+                Sel::register("addSubview:positioned:relativeTo:"),
+                vec![
+                    MockValue::Id(subview),
+                    MockValue::Int(ordering as i64),
+                    MockValue::Id(other),
+                ],
+            );
+            runtime.update_object(receiver, |data| {
+                data.children.push(subview);
+            });
+            runtime.update_object(subview, |data| {
+                data.parent = receiver;
+            });
+            runtime.retain(subview);
         }
     }
 

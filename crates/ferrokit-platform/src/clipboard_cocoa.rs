@@ -25,6 +25,11 @@ pub trait PasteboardBackend: Send + Sync {
     fn types(&self) -> Vec<String>;
     /// `-[NSPasteboard dataForType:]`; `None` when the type is absent.
     fn data_for_type(&self, ty: &str) -> Option<Vec<u8>>;
+    /// Payloads of `ty` across every `NSPasteboardItem` in `-[NSPasteboard pasteboardItems]`
+    /// (used to collect all URLs in a multi-file Finder drop); defaults to `data_for_type(ty)`.
+    fn all_data_for_type(&self, ty: &str) -> Vec<Vec<u8>> {
+        self.data_for_type(ty).into_iter().collect()
+    }
     /// `-[NSPasteboard setData:forType:]`; `false` when AppKit refuses.
     fn set_data_for_type(&self, data: &[u8], ty: &str) -> bool;
 }
@@ -245,11 +250,37 @@ pub fn mime_data_from_backend(backend: &dyn PasteboardBackend) -> MimeData {
         mime_data.set_text(&text);
     }
     if !mime_data.has_format("text/uri-list")
-        && let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty))
+        && let Some(urls) = fallback_uri_list(backend)
     {
-        mime_data.set_data("text/uri-list", url);
+        mime_data.set_data("text/uri-list", urls);
     }
     mime_data
+}
+
+/// Collects all URL payloads from `URL_TYPES` across `pasteboardItems` (joined with `\r\n` when
+/// multiple items are present, matching RFC 2483 `text/uri-list`).
+fn fallback_uri_list(backend: &dyn PasteboardBackend) -> Option<Vec<u8>> {
+    for ty in URL_TYPES {
+        let parts: Vec<Vec<u8>> = backend
+            .all_data_for_type(ty)
+            .into_iter()
+            .filter(|b| !b.is_empty())
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let mut joined = Vec::new();
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                joined.extend_from_slice(b"\r\n");
+            }
+            let trimmed = part.strip_suffix(b"\r\n").unwrap_or(&part);
+            let trimmed = trimmed.strip_suffix(b"\n").unwrap_or(trimmed);
+            joined.extend_from_slice(trimmed);
+        }
+        return Some(joined);
+    }
+    None
 }
 
 /// Lists the MIME formats available on `backend` in sorted `BTreeSet` order without fetching their
@@ -309,7 +340,6 @@ pub unsafe fn pasteboard_mime_data(pasteboard: crate::objc_runtime::Id) -> MimeD
         mime_data_from_backend(&backend)
     }
 }
-
 #[cfg(not(target_os = "macos"))]
 struct MockPasteboard(usize);
 
@@ -329,6 +359,10 @@ impl PasteboardBackend for MockPasteboard {
         crate::objc_runtime::MockObjcRuntime::instance()
             .pasteboard_data(crate::objc_runtime::Id(self.0 as *mut std::ffi::c_void), ty)
     }
+    fn all_data_for_type(&self, ty: &str) -> Vec<Vec<u8>> {
+        crate::objc_runtime::MockObjcRuntime::instance()
+            .pasteboard_all_data(crate::objc_runtime::Id(self.0 as *mut std::ffi::c_void), ty)
+    }
     fn set_data_for_type(&self, _data: &[u8], _ty: &str) -> bool {
         false
     }
@@ -338,43 +372,15 @@ impl PasteboardBackend for MockPasteboard {
 mod native {
     use super::PasteboardBackend;
     use crate::objc_runtime::{
-        BOOL, Id, NSUInteger, ObjcMsg, Sel, nsstring_from_str, objc_get_class,
+        AutoreleasePool as Pool, BOOL, Id, NSUInteger, ObjcMsg, Sel, nsstring_from_str,
+        objc_get_class,
     };
     use std::ffi::{CStr, c_void};
     use std::sync::Mutex;
 
     unsafe extern "C" {
         fn objc_msgSend();
-        fn objc_autoreleasePoolPush() -> *mut c_void;
-        fn objc_autoreleasePoolPop(pool: *mut c_void);
     }
-
-    /// An autorelease pool for one pasteboard operation: `NSPasteboard` returns autoreleased
-    /// `NSData`/`NSString`/`NSArray`, and the calling thread may not have a pool of its own.
-    struct Pool(*mut c_void);
-
-    impl Pool {
-        fn new() -> Self {
-            // SAFETY: `objc_autoreleasePoolPush` takes no arguments and returns the opaque token
-            // that `objc_autoreleasePoolPop` expects; it is declared with that signature in the
-            // `extern` block above and is available from any thread per the libobjc
-            // documentation [inferred]. The token is stored in the returned guard, whose `Drop`
-            // pops it exactly once, on the same thread (`Pool` holds a raw pointer, so it is
-            // `!Send`).
-            Self(unsafe { objc_autoreleasePoolPush() })
-        }
-    }
-
-    impl Drop for Pool {
-        fn drop(&mut self) {
-            // SAFETY: `self.0` is the token this guard's `new` got from `objc_autoreleasePoolPush`
-            // on this thread and is popped only here. Pools are popped in reverse creation order
-            // because each guard is a local that drops before the guard declared before it (the
-            // only nesting in this file is a single `Pool` per backend call).
-            unsafe { objc_autoreleasePoolPop(self.0) };
-        }
-    }
-
     /// A +1 `NSString` released on drop.
     struct OwnedString(Id);
 
@@ -473,6 +479,12 @@ mod native {
             unsafe { pasteboard_data_for_type(Self::general(), ty) }
         }
 
+        fn all_data_for_type(&self, ty: &str) -> Vec<Vec<u8>> {
+            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: `Self::general()` is the live general pasteboard, serialized by `_guard`.
+            unsafe { pasteboard_all_data_for_type(Self::general(), ty) }
+        }
+
         fn set_data_for_type(&self, data: &[u8], ty: &str) -> bool {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
@@ -548,6 +560,10 @@ mod native {
             // SAFETY: `self.0` is nil or a live NSPasteboard per `pasteboard_mime_data`'s contract.
             unsafe { pasteboard_data_for_type(self.0, ty) }
         }
+        fn all_data_for_type(&self, ty: &str) -> Vec<Vec<u8>> {
+            // SAFETY: `self.0` is nil or a live NSPasteboard per `pasteboard_mime_data`'s contract.
+            unsafe { pasteboard_all_data_for_type(self.0, ty) }
+        }
         fn set_data_for_type(&self, _data: &[u8], _ty: &str) -> bool {
             false
         }
@@ -579,21 +595,20 @@ mod native {
         out
     }
 
-    /// `-[NSPasteboard dataForType:]` copied into a `Vec<u8>` inside a fresh autorelease pool.
+    /// Reads `-[receiver dataForType:ns_type]` (`NSPasteboard` or `NSPasteboardItem`) inside an
+    /// active autorelease pool.
     ///
     /// # Safety
-    /// `pasteboard` is nil or a live `NSPasteboard`.
-    unsafe fn pasteboard_data_for_type(pasteboard: Id, ty: &str) -> Option<Vec<u8>> {
-        let _pool = Pool::new();
-        let ns_type = OwnedString::new(ty);
-        // SAFETY: `dataForType:` takes one NSString (`ns_type`, the live +1 string created
-        // above and released after this block) and returns an autoreleased NSData or nil, which
-        // is checked. `length` and `bytes` take no arguments, so `bytes` points at `len`
-        // bytes owned by that NSData, which stays valid until `_pool` drains (after this
-        // block), and `from_raw_parts` is only called for `len > 0` with a non-null pointer.
-        // The slice is read only, and copied by `to_vec` before the block ends.
+    /// `receiver` is nil or a live `NSPasteboard` / `NSPasteboardItem`, and `ns_type` is a live
+    /// `NSString` inside an active autorelease pool.
+    unsafe fn read_data_for_ns_type(receiver: Id, ns_type: Id) -> Option<Vec<u8>> {
+        // SAFETY: `dataForType:` takes one NSString (`ns_type`, live for this call) and returns an
+        // autoreleased NSData or nil, which is checked. `length` and `bytes` take no arguments, so
+        // `bytes` points at `len` bytes owned by that NSData (valid until the caller's pool
+        // drains), and `from_raw_parts` is only called for `len > 0` with a non-null pointer. The
+        // slice is read only, and copied by `to_vec` before returning.
         unsafe {
-            let data = ObjcMsg::send_id(pasteboard, Sel::register("dataForType:"), ns_type.0);
+            let data = ObjcMsg::send_id(receiver, Sel::register("dataForType:"), ns_type);
             if data.is_nil() {
                 return None;
             }
@@ -607,5 +622,48 @@ mod native {
             }
             Some(std::slice::from_raw_parts(bytes, len).to_vec())
         }
+    }
+
+    /// `-[NSPasteboard dataForType:]` copied into a `Vec<u8>` inside a fresh autorelease pool.
+    ///
+    /// # Safety
+    /// `pasteboard` is nil or a live `NSPasteboard`.
+    unsafe fn pasteboard_data_for_type(pasteboard: Id, ty: &str) -> Option<Vec<u8>> {
+        let _pool = Pool::new();
+        let ns_type = OwnedString::new(ty);
+        // SAFETY: `pasteboard` is nil or a live NSPasteboard and `ns_type.0` is live inside `_pool`.
+        unsafe { read_data_for_ns_type(pasteboard, ns_type.0) }
+    }
+
+    /// Reads `-[NSPasteboardItem dataForType:]` across every item in `-[NSPasteboard
+    /// pasteboardItems]`, falling back to `-[NSPasteboard dataForType:]` when `pasteboardItems`
+    /// is empty or nil.
+    ///
+    /// # Safety
+    /// `pasteboard` is nil or a live `NSPasteboard`.
+    unsafe fn pasteboard_all_data_for_type(pasteboard: Id, ty: &str) -> Vec<Vec<u8>> {
+        let _pool = Pool::new();
+        let ns_type = OwnedString::new(ty);
+        let mut out = Vec::new();
+        // SAFETY: `pasteboard` is nil or a live NSPasteboard (inside `_pool`); `pasteboardItems`
+        // returns an autoreleased NSArray of NSPasteboardItem or nil. Each `item` is valid until
+        // `_pool` drains and responds to `dataForType:` just like `NSPasteboard`.
+        unsafe {
+            let items = ObjcMsg::send_0(pasteboard, Sel::register("pasteboardItems"));
+            let count = ObjcMsg::send_usize_return(items, Sel::register("count"));
+            for index in 0..count {
+                let item =
+                    ObjcMsg::send_id_with_usize(items, Sel::register("objectAtIndex:"), index);
+                if let Some(bytes) = read_data_for_ns_type(item, ns_type.0) {
+                    out.push(bytes);
+                }
+            }
+            if out.is_empty()
+                && let Some(bytes) = read_data_for_ns_type(pasteboard, ns_type.0)
+            {
+                out.push(bytes);
+            }
+        }
+        out
     }
 }

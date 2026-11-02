@@ -815,10 +815,10 @@ fn tracking_area_is_installed_replaced_and_released() {
         .into_iter()
         .find(|c| c.selector == "initWithRect:options:owner:userInfo:")
         .expect("initWithRect:options:owner:userInfo:");
-    // Entered/exited, moved, cursor update, active in the active app, in the visible rect.
+    // Entered/exited, moved, cursor update, active always (0x80), in the visible rect.
     assert_eq!(
         init.args[1],
-        MockValue::Int(0x01 | 0x02 | 0x04 | 0x40 | 0x200)
+        MockValue::Int(0x01 | 0x02 | 0x04 | 0x80 | 0x200)
     );
     assert_eq!(init.args[2], MockValue::Id(view), "the view is the owner");
     assert_eq!(mock.get_object_data(first).unwrap().retain_count, 1);
@@ -1163,6 +1163,7 @@ fn drag_enter_move_and_drop_deliver_flipped_coordinates_formats_and_payload() {
     let pboard = mock.allocate_object("NSPasteboard");
     mock.set_pasteboard_data(pboard, "public.utf8-plain-text", b"hello macos");
     mock.set_pasteboard_data(pboard, "public.file-url", b"file:///tmp/test.txt");
+    mock.add_pasteboard_item_data(pboard, "public.file-url", b"file:///tmp/second.txt");
 
     // Before `enable_drop_target(true)`, drags are refused and never reach the handler.
     let sender = drag_sender(
@@ -1223,7 +1224,7 @@ fn drag_enter_move_and_drop_deliver_flipped_coordinates_formats_and_payload() {
                 ("text/plain".to_string(), b"hello macos".to_vec()),
                 (
                     "text/uri-list".to_string(),
-                    b"file:///tmp/test.txt".to_vec()
+                    b"file:///tmp/test.txt\r\nfile:///tmp/second.txt".to_vec()
                 ),
             ],
             drop_action: 1,

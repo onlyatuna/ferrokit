@@ -458,11 +458,45 @@ impl CocoaNativeWindow {
                     // NSVisualEffectStateActive = 1
                     // SAFETY: as above; `setState:` takes one NSInteger.
                     unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) };
-                    // SAFETY: `self.ns_view` is live (created in `new`, released in `Drop`) and
-                    // `effect_view` is a live view; `addSubview:` takes one NSView and retains it, so
-                    // our +1 from `alloc`/`init` is kept and released in `set_vibrancy(None)`/`Drop`.
+                    // Qt stacks the effect layer below the content layer (z 0): wantsLayer, then
+                    // layer.zPosition = -FLT_MAX (qcocoawindow.mm:2267-2270).
+                    // SAFETY: `effect_view` is live; `setWantsLayer:` takes one BOOL.
                     unsafe {
-                        ObjcMsg::send_id(self.ns_view, Sel::register("addSubview:"), effect_view)
+                        ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true);
+                    }
+                    // SAFETY: `effect_view` is live; `layer` takes no arguments and returns an object.
+                    let effect_layer =
+                        unsafe { ObjcMsg::send_0(effect_view, Sel::register("layer")) };
+                    // SAFETY: `effect_layer` is the layer just returned by the live view (nil is a
+                    // no-op); `setZPosition:` takes one CGFloat.
+                    unsafe {
+                        ObjcMsg::send_cgfloat_logged(
+                            effect_layer,
+                            Sel::register("setZPosition:"),
+                            f64::from(-f32::MAX),
+                        );
+                    }
+                    // Autoresizing mask: NSViewWidthSizable (0x02) | NSViewHeightSizable (0x10) = 0x12
+                    // SAFETY: `effect_view` is live; `setAutoresizingMask:` takes NSUInteger.
+                    unsafe {
+                        ObjcMsg::send_uint_logged(
+                            effect_view,
+                            Sel::register("setAutoresizingMask:"),
+                            0x12,
+                        );
+                    }
+                    // SAFETY: `self.ns_view` is live (created in `new`, released in `Drop`) and
+                    // `effect_view` is a live view; `addSubview:positioned:relativeTo:` with
+                    // `NSWindowBelow` and `nil` places the effect view at the bottom of the
+                    // subview list and retains it, so our +1 from `alloc`/`init` is kept and
+                    // released in `set_vibrancy(None)`/`Drop`.
+                    unsafe {
+                        ObjcMsg::send_add_subview_positioned(
+                            self.ns_view,
+                            effect_view,
+                            crate::objc_runtime::NS_WINDOW_BELOW,
+                            Id::NIL,
+                        )
                     };
                     self.vibrancy_view = Some(effect_view);
                 }

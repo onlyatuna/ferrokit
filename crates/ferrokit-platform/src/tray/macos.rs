@@ -386,8 +386,9 @@ impl PlatformTrayIcon for CocoaStatusItem {
         // status item gets none.
         let menu_id = crate::menu::cocoa_menu::ns_menu_of(&*menu);
         // SAFETY: `self.status_item` is live (created in `new`, removed in `Drop`); `menu_id`
-        // is nil or a live NSMenu that `CocoaMenu::new` created and never releases
-        // (`ns_menu_of`); `setMenu:` takes one NSMenu or nil.
+        // is nil or a live NSMenu that `CocoaMenu::new` created (`ns_menu_of`, kept alive by
+        // `self.menu` and cleared in `CocoaStatusItem::drop` before `self.menu` drops);
+        // `setMenu:` takes one NSMenu or nil.
         unsafe { ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), menu_id) };
         self.menu = Some(menu);
         self.observe_menu_tracking();
@@ -492,10 +493,11 @@ impl PlatformTrayIcon for CocoaStatusItem {
             // SAFETY: as above; `setInformativeText:` takes one NSString.
             unsafe { ObjcMsg::send_str(notif, Sel::register("setInformativeText:"), msg) };
             // SAFETY: `center` is the shared centre (nil is a no-op) and `notif` the live
-            // notification; `deliverNotification:` takes one NSUserNotification and the centre
-            // retains it [inferred], so our `alloc` +1 is deliberately left to it (not released
-            // here), which is a leak of one object per message, not unsoundness.
+            // notification; `deliverNotification:` takes one NSUserNotification and retains it.
             unsafe { ObjcMsg::send_id(center, Sel::register("deliverNotification:"), notif) };
+            // Drop our +1 from `alloc`/`init` now that `deliverNotification:` has retained it.
+            // SAFETY: `notif` is the +1 object created above; `release` takes no arguments.
+            unsafe { ObjcMsg::send_0(notif, Sel::register("release")) };
         }
         Ok(())
     }
@@ -516,6 +518,11 @@ impl Drop for CocoaStatusItem {
             // object, here nil, which clears the button's weak reference to `click_target` before
             // that is dropped with `self`.
             unsafe { ObjcMsg::send_id(button, Sel::register("setTarget:"), Id::NIL) };
+        }
+        if self.menu.is_some() && !self.status_item.is_nil() {
+            // Clear the status item's menu before `self.menu` drops.
+            // SAFETY: `self.status_item` is still live; `setMenu:` takes one NSMenu or nil.
+            unsafe { ObjcMsg::send_id(self.status_item, Sel::register("setMenu:"), Id::NIL) };
         }
         // [[NSStatusBar systemStatusBar] removeStatusItem:status_item]
         if !self.status_item.is_nil() {
