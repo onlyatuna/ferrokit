@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
 use ferrokit_core::object::ThreadContext;
-use ferrokit_gui::geometry::primitives::{Point, Size};
+use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 
 use crate::objc_runtime::appkit::{self, NS_NOT_FOUND, NSRange};
 use crate::objc_runtime::{CGFloat, CGPoint, CGRect, Id, NSUInteger, ObjcMsg, Sel};
@@ -309,6 +309,8 @@ pub(crate) struct ViewSlot {
     pub(crate) ns_window: Id,
     /// The `NSTrackingArea` owned (+1) by the slot, nil before the first update.
     tracking_area: Id,
+    /// Last seen window geometry (in Qt screen coordinates), used to avoid duplicate GeometryChange events.
+    pub(crate) last_geometry: Option<Rect>,
 }
 
 thread_local! {
@@ -331,6 +333,7 @@ pub(crate) fn register_view(view: Id, window: Id) {
         mouse_grab: false,
         ns_window: window,
         tracking_area: Id::NIL,
+        last_geometry: None,
     };
     let _ = VIEWS.try_with(|views| views.borrow_mut().insert(view.0 as usize, slot));
 }
@@ -618,11 +621,17 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
             // QCocoaWindow::handleGeometryChange(), deliver GeometryChange so the top-left
             // position updates, followed by Resize for layout and backing surface resize.
             let geometry = crate::window_cocoa::window_flipped_geometry(window);
-            let moved = dispatch(
-                view,
-                CocoaNativeEvent::WindowMoved { geometry },
-                Point::new(0, 0),
-            );
+            let prev_geo = with_slot(view, |slot| slot.last_geometry).flatten();
+            let moved = if prev_geo != Some(geometry) {
+                with_slot(view, |slot| slot.last_geometry = Some(geometry));
+                dispatch(
+                    view,
+                    CocoaNativeEvent::WindowMoved { geometry },
+                    Point::new(0, 0),
+                )
+            } else {
+                false
+            };
             let resized = dispatch(
                 view,
                 CocoaNativeEvent::WindowResized {
@@ -635,17 +644,27 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
         }
         "NSWindowDidMoveNotification" => {
             let geometry = crate::window_cocoa::window_flipped_geometry(window);
-            dispatch(
-                view,
-                CocoaNativeEvent::WindowMoved { geometry },
-                Point::new(0, 0),
-            )
+            let prev_geo = with_slot(view, |slot| slot.last_geometry).flatten();
+            if prev_geo != Some(geometry) {
+                with_slot(view, |slot| slot.last_geometry = Some(geometry));
+                dispatch(
+                    view,
+                    CocoaNativeEvent::WindowMoved { geometry },
+                    Point::new(0, 0),
+                )
+            } else {
+                false
+            }
         }
         "NSWindowDidChangeBackingPropertiesNotification" => {
             // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
             let scale =
                 unsafe { ObjcMsg::send_f64_return(window, Sel::register("backingScaleFactor")) };
-            let scale = if scale > 0.0 { scale } else { 1.0 };
+            let scale = if scale > 0.0 {
+                scale
+            } else {
+                crate::platform().primary_screen().device_pixel_ratio() as f64
+            };
             let dpi = (scale * 96.0).round() as u32;
             dispatch(
                 view,

@@ -986,3 +986,57 @@ fn native_input_is_main_thread_only() {
         "AppKit callbacks off the main thread are a bug"
     );
 }
+#[test]
+fn resize_notification_skips_duplicate_geometry_change_when_unmoved() {
+    let (win, log) = window();
+    let view = win.ns_view();
+    let window_id = win.ns_window();
+
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        view,
+        window_id,
+        "NSWindowDidResizeNotification",
+    );
+    let events = take(&log);
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        events[0],
+        WindowSystemEvent::GeometryChange { .. }
+    ));
+    assert!(matches!(events[1], WindowSystemEvent::Resize { .. }));
+
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        view,
+        window_id,
+        "NSWindowDidResizeNotification",
+    );
+    let events = take(&log);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(events[0], WindowSystemEvent::Resize { .. }));
+}
+
+#[test]
+fn backing_properties_notification_falls_back_to_primary_screen_dpr() {
+    let (win, log) = window();
+    let view = win.ns_view();
+    let window_id = win.ns_window();
+
+    MockObjcRuntime::instance().update_object(window_id, |d| d.scale_factor = 0.0);
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        view,
+        window_id,
+        "NSWindowDidChangeBackingPropertiesNotification",
+    );
+    let event = only(&log);
+    let expected_dpr = ferrokit_platform::platform()
+        .primary_screen()
+        .device_pixel_ratio();
+    let expected_dpi = (expected_dpr * 96.0).round() as u32;
+    assert_eq!(
+        event,
+        WindowSystemEvent::DpiChanged {
+            dpi_x: expected_dpi,
+            dpi_y: expected_dpi,
+        }
+    );
+}
