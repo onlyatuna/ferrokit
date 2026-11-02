@@ -748,6 +748,18 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn geometry(&self) -> Rect {
+        if !self.ns_window.is_nil() {
+            // SAFETY: `self.ns_window` is live from `new` to `Drop`; `frame` takes no arguments
+            // and returns NSRect in Cocoa bottom-left desktop coordinates.
+            let rect = unsafe { ObjcMsg::send_rect_return(self.ns_window, Sel::register("frame")) };
+            let cocoa_rect = Rect::new(
+                rect.origin.x.floor() as i32,
+                rect.origin.y.floor() as i32,
+                rect.size.width.round() as i32,
+                rect.size.height.round() as i32,
+            );
+            return qt_mac_flip_global_rect(cocoa_rect);
+        }
         self.geometry
     }
 

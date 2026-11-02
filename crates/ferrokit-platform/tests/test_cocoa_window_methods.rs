@@ -730,8 +730,12 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
         Some(WindowSystemEvent::CloseRequest)
     );
 
-    // 4. Resize
-    mock.update_object(ns_view, |d| d.frame = CGRect::new(0.0, 0.0, 800.0, 500.0));
+    // 4. Resize: verifies that NSWindowDidResizeNotification delivers both Resize AND GeometryChange
+    // because on macOS, height changes also move the flipped top-left y position.
+    // Primary screen height is 1080: y = 1080 - 380 - 500 = 200.
+    mock.update_object(ns_window, |d| {
+        d.frame = CGRect::new(100.0, 380.0, 800.0, 500.0);
+    });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
         ns_window,
@@ -743,11 +747,22 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
             size: ferrokit_gui::geometry::primitives::Size::new(800, 500)
         })
     );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::GeometryChange {
+            geometry: Rect::new(100, 200, 800, 500)
+        })
+    );
+    // PlatformWindow::geometry() dynamically reflects live [window frame]
+    assert_eq!(
+        PlatformWindow::geometry(&win),
+        Rect::new(100, 200, 800, 500)
+    );
 
-    // 5. GeometryChange (flipped from Cocoa bottom-left to Qt top-left)
-    // Primary screen height is 1080: y = 1080 - 380 - 500 = 200.
+    // 5. GeometryChange (flipped from Cocoa bottom-left to Qt top-left, testing negative origin floor)
+    // Secondary monitor with negative x: -50.4.floor() as i32 = -51.
     mock.update_object(ns_window, |d| {
-        d.frame = CGRect::new(150.0, 380.0, 800.0, 500.0)
+        d.frame = CGRect::new(-50.4, 380.0, 800.0, 500.0);
     });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
@@ -757,8 +772,12 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
     assert_eq!(
         events.borrow_mut().pop(),
         Some(WindowSystemEvent::GeometryChange {
-            geometry: Rect::new(150, 200, 800, 500)
+            geometry: Rect::new(-51, 200, 800, 500)
         })
+    );
+    assert_eq!(
+        PlatformWindow::geometry(&win),
+        Rect::new(-51, 200, 800, 500)
     );
 
     // 6. DpiChanged
