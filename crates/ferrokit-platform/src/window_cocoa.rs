@@ -639,8 +639,8 @@ impl PlatformWindow for CocoaNativeWindow {
             "makeKeyAndOrderFront:"
         };
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` /
-        // `makeKeyAndOrderFront:` each take one sender object (nil here).
-        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register(order), Id::NIL) };
+        // `makeKeyAndOrderFront:` each take one sender object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register(order), Id::NIL) };
         self.visible.store(true, Ordering::Release);
     }
 
@@ -650,10 +650,49 @@ impl PlatformWindow for CocoaNativeWindow {
         unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isKeyWindow")) }
     }
 
+    fn raise(&self) {
+        // `QPlatformWindow::raise` (qcocoawindow.mm:1900): brings the window front in the window
+        // system's stacking order without taking activation or making it the key window.
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` takes one sender
+        // object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), Id::NIL) };
+    }
+
+    fn request_activate_window(&self) {
+        // `QPlatformWindow::requestActivateWindow` (qcocoawindow.mm:1850-1865): a tooltip never
+        // takes activation, and an invisible window cannot become active.
+        if self.flags.contains(WindowFlags::TOOLTIP) || !self.is_visible() {
+            return;
+        }
+        // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication` returning
+        // an object (a nil class from `unwrap_or` is a no-op).
+        let nsapp = unsafe {
+            ObjcMsg::send_class_0(
+                Class::get("NSApplication").unwrap_or(Class::NIL),
+                Sel::register("sharedApplication"),
+            )
+        };
+        if !nsapp.is_nil() {
+            // SAFETY: `activateIgnoringOtherApps:` takes one BOOL, matching `send_bool_logged`.
+            unsafe {
+                ObjcMsg::send_bool_logged(nsapp, Sel::register("activateIgnoringOtherApps:"), true)
+            };
+        }
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `makeKeyAndOrderFront:` takes
+        // one sender object (nil here), matching `send_id_logged`.
+        unsafe {
+            ObjcMsg::send_id_logged(
+                self.ns_window,
+                Sel::register("makeKeyAndOrderFront:"),
+                Id::NIL,
+            )
+        };
+    }
+
     fn hide(&self) {
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderOut:` takes one sender
-        // object (nil here).
-        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
+        // object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
         self.visible.store(false, Ordering::Release);
     }
 
@@ -1077,10 +1116,19 @@ impl PlatformWindow for CocoaNativeWindow {
         self.ns_window.0 as isize
     }
 
-    /// Per-window screen lookup is not implemented on this backend yet: the primary screen's
-    /// ratio (what every window used before `PlatformWindow::device_pixel_ratio` existed).
     fn device_pixel_ratio(&self) -> f32 {
-        crate::platform().primary_screen().device_pixel_ratio()
+        // AppKit's `-[NSWindow backingScaleFactor]` reports the scaling factor of the screen
+        // this window is currently on (qcocoawindow.mm:1450).
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `backingScaleFactor` takes no
+        // arguments and returns a CGFloat (double), matching `send_f64_return`.
+        let scale = unsafe {
+            ObjcMsg::send_f64_return(self.ns_window, Sel::register("backingScaleFactor"))
+        };
+        if scale > 0.0 {
+            scale as f32
+        } else {
+            crate::platform().primary_screen().device_pixel_ratio()
+        }
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {

@@ -551,3 +551,101 @@ fn suspending_acrylic_makes_the_effect_view_inactive_and_resuming_makes_it_activ
     assert!(!win.suspend_backdrop());
     assert_eq!(state_of(&win), 1);
 }
+
+#[test]
+fn raise_orders_window_front_without_activating_or_making_key() {
+    let mock = MockObjcRuntime::instance();
+    let win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+    mock.clear_calls();
+
+    assert!(!win.is_active());
+    win.raise();
+    assert!(!win.is_active(), "raise does not make the window key");
+    assert!(
+        selectors(mock, ns_window).contains(&"orderFront:".to_string()),
+        "raise orders the window front in the local stacking order"
+    );
+}
+
+#[test]
+fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_tooltip() {
+    let mock = MockObjcRuntime::instance();
+    let win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+
+    // Invisible window: request_activate_window is a no-op.
+    mock.clear_calls();
+    win.request_activate_window();
+    assert!(!win.is_active());
+    assert!(
+        !selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        "invisible window cannot be activated"
+    );
+
+    // Tooltip window: never takes activation even when shown.
+    let tooltip = window(WindowFlags::TOOLTIP);
+    tooltip.show();
+    mock.clear_calls();
+    tooltip.request_activate_window();
+    assert!(!tooltip.is_active());
+    assert!(
+        !selectors(mock, tooltip.ns_window()).contains(&"makeKeyAndOrderFront:".to_string()),
+        "tooltip never takes activation"
+    );
+
+    // Visible normal window: activates the application and makes key.
+    win.show();
+    mock.clear_calls();
+    win.request_activate_window();
+    assert!(win.is_active());
+    assert!(
+        selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        "orders front and makes key"
+    );
+}
+
+#[test]
+fn device_pixel_ratio_follows_window_backing_scale_factor_with_screen_fallback() {
+    let mock = MockObjcRuntime::instance();
+    let win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+
+    // Default window scale factor in mock is 1.0.
+    assert_eq!(win.device_pixel_ratio(), 1.0);
+
+    // Window on a 2.0x Retina display.
+    mock.update_object(ns_window, |d| d.scale_factor = 2.0);
+    assert_eq!(win.device_pixel_ratio(), 2.0);
+
+    // Zero or invalid scale factor falls back to primary screen (2.0 in mock).
+    mock.update_object(ns_window, |d| d.scale_factor = 0.0);
+    assert_eq!(
+        win.device_pixel_ratio(),
+        ferrokit_platform::platform()
+            .primary_screen()
+            .device_pixel_ratio()
+    );
+}
+
+#[test]
+fn flat_tint_backdrop_applies_inactive_effect_view() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::NORMAL);
+    let effect_view = |win: &CocoaNativeWindow| {
+        *mock
+            .get_object_data(win.ns_window())
+            .unwrap()
+            .children
+            .last()
+            .unwrap()
+    };
+
+    assert!(win.set_backdrop(BackdropType::FlatTint, true));
+    let data = mock.get_object_data(effect_view(&win)).unwrap();
+    assert_eq!(
+        data.state, 2,
+        "NSVisualEffectStateInactive (flat tint without blur)"
+    );
+    assert_eq!(data.material, 6, "Popover material");
+}

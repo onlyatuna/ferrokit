@@ -310,7 +310,7 @@ pub(crate) fn set_cocoa_window_backdrop(
     }
 
     match backdrop {
-        BackdropType::None | BackdropType::FlatTint => {
+        BackdropType::None => {
             // Qt removes the area's effect view from its superview and forgets it; the content
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
             if let Some(effect_view) = backdrop_view.take() {
@@ -325,14 +325,13 @@ pub(crate) fn set_cocoa_window_backdrop(
                 // from the slot). `release` takes no arguments and returns void, matching `send_0`.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
             }
-            // `FlatTint` is a Windows accent tint that AppKit has no counterpart for: the tint
-            // is not drawn, so it reports `false` while `None` reports `true`.
-            backdrop != BackdropType::FlatTint
+            true
         }
         BackdropType::Mica
         | BackdropType::MicaAlt
         | BackdropType::Acrylic
-        | BackdropType::BlurBehind => {
+        | BackdropType::BlurBehind
+        | BackdropType::FlatTint => {
             // Qt keeps one effect view per area and updates it in place
             // (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2259,2278-2281).
             let existing = *backdrop_view;
@@ -358,9 +357,9 @@ pub(crate) fn set_cocoa_window_backdrop(
             // HUDWindow = 13, Popover = 6, UnderWindowBackground = 2
             let material = match backdrop {
                 BackdropType::Mica | BackdropType::MicaAlt => 13,
-                BackdropType::Acrylic => 6,
+                BackdropType::Acrylic | BackdropType::FlatTint => 6,
                 BackdropType::BlurBehind => 2,
-                BackdropType::None | BackdropType::FlatTint => 0,
+                BackdropType::None => 0,
             };
 
             // SAFETY: `effect_view` is a live NSVisualEffectView (existing slot value, or just
@@ -368,9 +367,13 @@ pub(crate) fn set_cocoa_window_backdrop(
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), material) };
             // SAFETY: as above; `setBlendingMode:` takes one NSInteger, matching `send_int`.
             unsafe { ObjcMsg::send_int(effect_view, Sel::register("setBlendingMode:"), 0) }; // BehindWindow
+            let state = if backdrop == BackdropType::FlatTint {
+                2 // NSVisualEffectStateInactive: flat material fill without background blur
+            } else {
+                1 // NSVisualEffectStateActive: live background blur
+            };
             // SAFETY: as above; `setState:` takes one NSInteger, matching `send_int`.
-            unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) }; // Active
-
+            unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), state) };
             let app_name = if dark_mode {
                 "NSAppearanceNameDarkAqua"
             } else {
