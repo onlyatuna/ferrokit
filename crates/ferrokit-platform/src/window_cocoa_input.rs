@@ -36,6 +36,16 @@ pub const NS_EVENT_MODIFIER_FLAG_CONTROL: usize = 1 << 18;
 pub const NS_EVENT_MODIFIER_FLAG_OPTION: usize = 1 << 19;
 pub const NS_EVENT_MODIFIER_FLAG_COMMAND: usize = 1 << 20;
 
+/// Device-dependent modifier flag masks from Apple's `<IOKit/hidsystem/IOLLEvent.h>`,
+/// distinguishing left and right modifier keys in `NSEvent.modifierFlags`.
+pub const NX_DEVICELCTLKEYMASK: usize = 0x0000_0001;
+pub const NX_DEVICELSHIFTKEYMASK: usize = 0x0000_0002;
+pub const NX_DEVICERSHIFTKEYMASK: usize = 0x0000_0004;
+pub const NX_DEVICELCMDKEYMASK: usize = 0x0000_0008;
+pub const NX_DEVICERCMDKEYMASK: usize = 0x0000_0010;
+pub const NX_DEVICELALTKEYMASK: usize = 0x0000_0020;
+pub const NX_DEVICERALTKEYMASK: usize = 0x0000_0040;
+pub const NX_DEVICERCTLKEYMASK: usize = 0x0000_2000;
 const QT_SHIFT_MODIFIER: u32 = 0x0200_0000;
 const QT_CONTROL_MODIFIER: u32 = 0x0400_0000;
 const QT_ALT_MODIFIER: u32 = 0x0800_0000;
@@ -218,15 +228,52 @@ pub fn qt_key_for_event(
     }
 }
 
-/// For a modifier key's code: the Qt key and the `modifierFlags` bit that says whether it is
-/// down after a `flagsChanged:`.
-pub fn modifier_key(key_code: u16) -> Option<(u32, usize)> {
+/// For a modifier key's code: the Qt key, the device-independent `modifierFlags` bit,
+/// and the optional device-dependent side-specific mask (`NX_DEVICE*KEYMASK`) that says
+/// whether this specific side is down after a `flagsChanged:`.
+pub fn modifier_key(key_code: u16) -> Option<(u32, usize, usize)> {
     Some(match key_code {
-        0x36 | 0x37 => (qt_key::CONTROL, NS_EVENT_MODIFIER_FLAG_COMMAND),
-        0x3B | 0x3E => (qt_key::META, NS_EVENT_MODIFIER_FLAG_CONTROL),
-        0x3A | 0x3D => (qt_key::ALT, NS_EVENT_MODIFIER_FLAG_OPTION),
-        0x38 | 0x3C => (qt_key::SHIFT, NS_EVENT_MODIFIER_FLAG_SHIFT),
-        0x39 => (qt_key::CAPS_LOCK, NS_EVENT_MODIFIER_FLAG_CAPS_LOCK),
+        0x37 => (
+            qt_key::CONTROL,
+            NS_EVENT_MODIFIER_FLAG_COMMAND,
+            NX_DEVICELCMDKEYMASK,
+        ),
+        0x36 => (
+            qt_key::CONTROL,
+            NS_EVENT_MODIFIER_FLAG_COMMAND,
+            NX_DEVICERCMDKEYMASK,
+        ),
+        0x3B => (
+            qt_key::META,
+            NS_EVENT_MODIFIER_FLAG_CONTROL,
+            NX_DEVICELCTLKEYMASK,
+        ),
+        0x3E => (
+            qt_key::META,
+            NS_EVENT_MODIFIER_FLAG_CONTROL,
+            NX_DEVICERCTLKEYMASK,
+        ),
+        0x3A => (
+            qt_key::ALT,
+            NS_EVENT_MODIFIER_FLAG_OPTION,
+            NX_DEVICELALTKEYMASK,
+        ),
+        0x3D => (
+            qt_key::ALT,
+            NS_EVENT_MODIFIER_FLAG_OPTION,
+            NX_DEVICERALTKEYMASK,
+        ),
+        0x38 => (
+            qt_key::SHIFT,
+            NS_EVENT_MODIFIER_FLAG_SHIFT,
+            NX_DEVICELSHIFTKEYMASK,
+        ),
+        0x3C => (
+            qt_key::SHIFT,
+            NS_EVENT_MODIFIER_FLAG_SHIFT,
+            NX_DEVICERSHIFTKEYMASK,
+        ),
+        0x39 => (qt_key::CAPS_LOCK, NS_EVENT_MODIFIER_FLAG_CAPS_LOCK, 0),
         _ => return None,
     })
 }
@@ -777,10 +824,18 @@ pub unsafe fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
             // arguments) is defined for key-type events, which include flagsChanged
             // [inferred: NSEvent documentation].
             let key_code = unsafe { ObjcMsg::send_u16_return(event, sel("keyCode")) };
-            let Some((key, flag)) = modifier_key(key_code) else {
+            let Some((key, flag, side_mask)) = modifier_key(key_code) else {
                 return false;
             };
-            let native = if flags & flag != 0 {
+            // If device-dependent side bits are available in flags, use the side-specific mask
+            // to determine whether this specific modifier key is pressed or released.
+            // Otherwise fall back to the general device-independent flag.
+            let is_pressed = if side_mask != 0 && (flags & 0xFFFF) != 0 {
+                flags & side_mask != 0
+            } else {
+                flags & flag != 0
+            };
+            let native = if is_pressed {
                 CocoaNativeEvent::KeyDown {
                     key,
                     modifiers,
