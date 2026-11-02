@@ -744,9 +744,10 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
         })
     );
 
-    // 5. GeometryChange
+    // 5. GeometryChange (flipped from Cocoa bottom-left to Qt top-left)
+    // Primary screen height is 1080: y = 1080 - 380 - 500 = 200.
     mock.update_object(ns_window, |d| {
-        d.frame = CGRect::new(150.0, 200.0, 800.0, 500.0)
+        d.frame = CGRect::new(150.0, 380.0, 800.0, 500.0)
     });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
@@ -756,7 +757,7 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
     assert_eq!(
         events.borrow_mut().pop(),
         Some(WindowSystemEvent::GeometryChange {
-            geometry: Rect::new(150, 200, 0, 0)
+            geometry: Rect::new(150, 200, 800, 500)
         })
     );
 

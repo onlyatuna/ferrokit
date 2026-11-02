@@ -90,8 +90,7 @@ pub enum CocoaNativeEvent {
     WindowFocusIn,
     WindowFocusOut,
     WindowMoved {
-        x: f64,
-        y: f64,
+        geometry: Rect,
     },
     WindowDpiChanged {
         dpi_x: u32,
@@ -328,7 +327,7 @@ impl CocoaNativeWindow {
             live_windows().insert(ns_window.0 as usize);
         }
         let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
-        // SAFETY: `sharedApplication` is a no-argument class method returning an object.
+        // SAFETY: `defaultCenter` is a no-argument class method returning an object.
         let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
         let mut window_observers = Vec::new();
         if !center.is_nil() {
@@ -507,6 +506,8 @@ impl CocoaNativeWindow {
             let _ = self
                 .surface
                 .resize(surface_dim(*width as i32), surface_dim(*height as i32));
+        } else if let CocoaNativeEvent::WindowMoved { geometry } = &event {
+            self.geometry = *geometry;
         }
         let origin = Point::new(self.geometry.x, self.geometry.y);
         input::dispatch(self.ns_view, event, origin)

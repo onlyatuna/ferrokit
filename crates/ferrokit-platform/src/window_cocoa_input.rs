@@ -537,9 +537,9 @@ fn translate(slot: &mut ViewSlot, event: CocoaNativeEvent, origin: Point) -> Win
         CocoaNativeEvent::WindowCloseRequested => WindowSystemEvent::CloseRequest,
         CocoaNativeEvent::WindowFocusIn => WindowSystemEvent::FocusIn,
         CocoaNativeEvent::WindowFocusOut => WindowSystemEvent::FocusOut,
-        CocoaNativeEvent::WindowMoved { x, y } => WindowSystemEvent::GeometryChange {
-            geometry: Rect::new(x as i32, y as i32, 0, 0),
-        },
+        CocoaNativeEvent::WindowMoved { geometry } => {
+            WindowSystemEvent::GeometryChange { geometry }
+        }
         CocoaNativeEvent::WindowDpiChanged { dpi_x, dpi_y } => {
             WindowSystemEvent::DpiChanged { dpi_x, dpi_y }
         }
@@ -548,6 +548,10 @@ fn translate(slot: &mut ViewSlot, event: CocoaNativeEvent, origin: Point) -> Win
 
 /// Delivers a window delegate notification (`NSWindowDidBecomeKeyNotification`, etc.) to `view`'s handler.
 pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
+    ThreadContext::assert_main_thread("dispatch_notification");
+    if !has_handler(view) {
+        return false;
+    }
     let event = match name {
         "NSWindowDidBecomeKeyNotification" => CocoaNativeEvent::WindowFocusIn,
         "NSWindowDidResignKeyNotification" => CocoaNativeEvent::WindowFocusOut,
@@ -561,12 +565,17 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
             }
         }
         "NSWindowDidMoveNotification" => {
-            // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect.
+            // SAFETY: `window` is the NSWindow; `frame` takes no arguments and returns NSRect in
+            // Cocoa bottom-left desktop coordinates.
             let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
-            CocoaNativeEvent::WindowMoved {
-                x: rect.origin.x,
-                y: rect.origin.y,
-            }
+            let cocoa_rect = Rect::new(
+                rect.origin.x as i32,
+                rect.origin.y as i32,
+                rect.size.width as i32,
+                rect.size.height as i32,
+            );
+            let geometry = crate::window_cocoa::qt_mac_flip_global_rect(cocoa_rect);
+            CocoaNativeEvent::WindowMoved { geometry }
         }
         "NSWindowDidChangeBackingPropertiesNotification" => {
             // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
@@ -581,14 +590,7 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
         }
         _ => return false,
     };
-    let origin = with_slot(view, |slot| {
-        // SAFETY: `window` is the live NSWindow; `frame` returns NSRect.
-        let rect = unsafe { ObjcMsg::send_rect_return(slot.ns_window, Sel::register("frame")) };
-        Point::new(rect.origin.x as i32, rect.origin.y as i32)
-    })
-    .unwrap_or_else(|| Point::new(0, 0));
-
-    dispatch(view, event, origin)
+    dispatch(view, event, Point::new(0, 0))
 }
 
 // ---------------------------------------------------------------------------
