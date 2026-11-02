@@ -523,6 +523,79 @@ fn modifier_keys_report_press_and_release_from_flags_changed() {
     ));
     assert!(take(&log).is_empty());
 }
+#[test]
+fn side_specific_modifiers_distinguish_left_and_right_releases() {
+    let (win, log) = window();
+    let view = win.ns_view();
+    let flags_changed = |code: i64, flags: i64| {
+        ns_event(&[
+            ("keyCode", MockValue::Int(code)),
+            ("modifierFlags", MockValue::Int(flags)),
+        ])
+    };
+
+    // Press Left Shift (0x38) with general Shift (1 << 17) and NX_DEVICELSHIFTKEYMASK (0x02)
+    assert!(handle_ns_event(
+        view,
+        NsEventKind::FlagsChanged,
+        flags_changed(0x38, (1 << 17) | 0x02)
+    ));
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::KeyPress {
+            key: 0x0100_0020,
+            modifiers: mods(true, false, false, false),
+            is_repeat: false,
+        }
+    );
+
+    // Now press Right Shift (0x3C) too: both general Shift and both device masks (0x02 | 0x04)
+    assert!(handle_ns_event(
+        view,
+        NsEventKind::FlagsChanged,
+        flags_changed(0x3C, (1 << 17) | 0x02 | 0x04)
+    ));
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::KeyPress {
+            key: 0x0100_0020,
+            modifiers: mods(true, false, false, false),
+            is_repeat: false,
+        }
+    );
+
+    // Release Left Shift (0x38), while Right Shift remains held:
+    // General Shift is STILL set (1 << 17), but NX_DEVICELSHIFTKEYMASK (0x02) is cleared,
+    // leaving only NX_DEVICERSHIFTKEYMASK (0x04).
+    // Before this fix, general Shift != 0 would cause Left Shift to be reported as KeyPress again!
+    // With side mask checking, it is correctly reported as KeyRelease.
+    assert!(handle_ns_event(
+        view,
+        NsEventKind::FlagsChanged,
+        flags_changed(0x38, (1 << 17) | 0x04)
+    ));
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::KeyRelease {
+            key: 0x0100_0020,
+            modifiers: mods(true, false, false, false),
+        }
+    );
+
+    // Finally release Right Shift (0x3C): general Shift and device mask are both 0.
+    assert!(handle_ns_event(
+        view,
+        NsEventKind::FlagsChanged,
+        flags_changed(0x3C, 0)
+    ));
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::KeyRelease {
+            key: 0x0100_0020,
+            modifiers: KeyboardModifiers::default(),
+        }
+    );
+}
 
 fn commit(text: &str) -> WindowSystemEvent {
     WindowSystemEvent::InputMethod {
