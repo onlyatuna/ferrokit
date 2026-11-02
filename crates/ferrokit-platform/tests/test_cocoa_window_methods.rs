@@ -668,3 +668,120 @@ fn flat_tint_backdrop_applies_inactive_effect_view() {
     );
     assert_eq!(data.material, 6, "Popover material");
 }
+
+#[test]
+fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
+    use ferrokit_platform::WindowSystemEvent;
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+    let ns_view = win.ns_view();
+
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&events);
+    win.set_event_handler(Box::new(ClosureWindowEventHandler::new(move |event| {
+        sink.borrow_mut().push(event);
+    })));
+
+    // Verify 6 notification observers were registered on NSNotificationCenter for this window.
+    // SAFETY: defaultCenter is a no-argument class method returning an object.
+    let center = unsafe {
+        ferrokit_platform::ObjcMsg::send_class_0(
+            ferrokit_platform::Class::get("NSNotificationCenter").unwrap(),
+            ferrokit_platform::Sel::register("defaultCenter"),
+        )
+    };
+    let center_calls: Vec<_> = mock
+        .calls_for(center)
+        .into_iter()
+        .filter(|c| c.selector == "addObserver:selector:name:object:")
+        .filter(|c| c.args.last() == Some(&MockValue::Id(ns_window)))
+        .collect();
+    assert_eq!(
+        center_calls.len(),
+        6,
+        "all 6 delegate notifications registered"
+    );
+
+    // 1. FocusIn
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidBecomeKeyNotification",
+    );
+    assert_eq!(events.borrow_mut().pop(), Some(WindowSystemEvent::FocusIn));
+
+    // 2. FocusOut
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidResignKeyNotification",
+    );
+    assert_eq!(events.borrow_mut().pop(), Some(WindowSystemEvent::FocusOut));
+
+    // 3. CloseRequest
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowWillCloseNotification",
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::CloseRequest)
+    );
+
+    // 4. Resize
+    mock.update_object(ns_view, |d| d.frame = CGRect::new(0.0, 0.0, 800.0, 500.0));
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidResizeNotification",
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::Resize {
+            size: ferrokit_gui::geometry::primitives::Size::new(800, 500)
+        })
+    );
+
+    // 5. GeometryChange
+    mock.update_object(ns_window, |d| {
+        d.frame = CGRect::new(150.0, 200.0, 800.0, 500.0)
+    });
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidMoveNotification",
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::GeometryChange {
+            geometry: Rect::new(150, 200, 0, 0)
+        })
+    );
+
+    // 6. DpiChanged
+    mock.update_object(ns_window, |d| d.scale_factor = 2.0);
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidChangeBackingPropertiesNotification",
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::DpiChanged {
+            dpi_x: 192,
+            dpi_y: 192
+        })
+    );
+
+    // When dropped, all 6 observers are removed from the notification center.
+    mock.clear_calls();
+    drop(win);
+    let remove_calls: Vec<_> = mock
+        .calls_for(center)
+        .into_iter()
+        .filter(|c| c.selector == "removeObserver:")
+        .collect();
+    assert_eq!(remove_calls.len(), 6, "all 6 observers removed on drop");
+}

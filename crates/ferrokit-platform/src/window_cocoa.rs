@@ -87,6 +87,16 @@ pub enum CocoaNativeEvent {
         height: f64,
     },
     WindowCloseRequested,
+    WindowFocusIn,
+    WindowFocusOut,
+    WindowMoved {
+        x: f64,
+        y: f64,
+    },
+    WindowDpiChanged {
+        dpi_x: u32,
+        dpi_y: u32,
+    },
 }
 
 /// Visual effect materials for macOS translucent vibrancy backgrounds (`NSVisualEffectView`).
@@ -131,6 +141,8 @@ pub struct CocoaNativeWindow {
     target_pos: Option<Point>,
     /// `set_mask` made the window non-opaque (it was opaque), so removing the mask restores it.
     mask_made_transparent: bool,
+    /// Notification observers keeping track of window delegate events (focus in/out, close, move, resize).
+    window_observers: Vec<crate::objc_runtime::ActionTarget>,
 }
 
 // Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
@@ -315,6 +327,42 @@ impl CocoaNativeWindow {
         if !ns_window.is_nil() {
             live_windows().insert(ns_window.0 as usize);
         }
+        let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
+        // SAFETY: `sharedApplication` is a no-argument class method returning an object.
+        let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
+        let mut window_observers = Vec::new();
+        if !center.is_nil() {
+            const NOTIFICATIONS: [&str; 6] = [
+                "NSWindowDidBecomeKeyNotification",
+                "NSWindowDidResignKeyNotification",
+                "NSWindowWillCloseNotification",
+                "NSWindowDidResizeNotification",
+                "NSWindowDidMoveNotification",
+                "NSWindowDidChangeBackingPropertiesNotification",
+            ];
+            for &notif in &NOTIFICATIONS {
+                let view = ns_view;
+                let win = ns_window;
+                let notif_name = notif;
+                if let Ok(target) = crate::objc_runtime::ActionTarget::new(move || {
+                    input::dispatch_notification(view, win, notif_name);
+                }) {
+                    // SAFETY: `center` is the shared NSNotificationCenter; `target` is a live
+                    // ActionTarget responding to `ActionTarget::action()`; `win` is `ns_window`.
+                    unsafe {
+                        ObjcMsg::send_add_observer_logged(
+                            center,
+                            Sel::register("addObserver:selector:name:object:"),
+                            target.id(),
+                            crate::objc_runtime::ActionTarget::action(),
+                            notif,
+                            win,
+                        );
+                    }
+                    window_observers.push(target);
+                }
+            }
+        }
 
         Ok(Self {
             ns_window,
@@ -335,6 +383,7 @@ impl CocoaNativeWindow {
             backdrop_state: BackdropState::new(),
             target_pos: None,
             mask_made_transparent: false,
+            window_observers,
         })
     }
 
@@ -1226,6 +1275,22 @@ impl Drop for CocoaNativeWindow {
             unsafe {
                 if ObjcMsg::send_id_prop(child, Sel::register("parentWindow")) == me {
                     ObjcMsg::send_id_logged(me, Sel::register("removeChildWindow:"), child);
+                }
+            }
+        }
+        let center_class = Class::get("NSNotificationCenter").unwrap_or(Class::NIL);
+        // SAFETY: `defaultCenter` is a no-argument class method returning an object.
+        let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
+        if !center.is_nil() {
+            for observer in self.window_observers.drain(..) {
+                // SAFETY: `center` is the shared NSNotificationCenter; `observer.id()` is the live
+                // target registered in `new`; `removeObserver:` takes one object, matching `send_id_logged`.
+                unsafe {
+                    ObjcMsg::send_id_logged(
+                        center,
+                        Sel::register("removeObserver:"),
+                        observer.id(),
+                    );
                 }
             }
         }
