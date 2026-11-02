@@ -154,7 +154,6 @@ pub const NS_MODAL_PANEL_WINDOW_LEVEL: NSInteger = 8; // kCGModalPanelWindowLeve
 pub const NS_SCREEN_SAVER_WINDOW_LEVEL: NSInteger = 1000; // kCGScreenSaverWindowLevel
 pub const NS_STATUS_WINDOW_LEVEL: NSInteger = 25; // System status bar window level
 
-pub const NS_VISUAL_EFFECT_STATE_FOLLOWS_WINDOW_ACTIVE_STATE: NSInteger = 0;
 pub const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
 pub const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
 // ---------------------------------------------------------------------------
@@ -175,6 +174,8 @@ mod native_bindings {
         pub fn objc_getClass(name: *const c_char) -> *mut c_void;
         pub fn sel_registerName(name: *const c_char) -> *const c_void;
         pub fn objc_msgSend();
+        #[cfg(target_arch = "x86_64")]
+        pub fn objc_msgSend_stret();
         pub fn objc_allocateClassPair(
             superclass: *mut c_void,
             name: *const c_char,
@@ -439,6 +440,22 @@ pub fn sel_register_name(name: &str) -> Sel {
 // High-fidelity mock Objective-C runtime for cross-platform simulation (MockObjcRuntime)
 // ---------------------------------------------------------------------------
 
+/// Height of a titled window's title bar in the mock runtime (AppKit: 28 pt), the difference
+/// between `-[NSWindow frame]` and `contentRectForFrameRect:`.
+pub const MOCK_TITLE_BAR_HEIGHT: CGFloat = 28.0;
+
+/// Title bar height the mock gives a window with `style_mask`: only a titled window that does
+/// not extend its content under the title bar has one.
+pub fn mock_title_bar_height(style_mask: NSUInteger) -> CGFloat {
+    if style_mask & NS_WINDOW_STYLE_MASK_TITLED != 0
+        && style_mask & NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW == 0
+    {
+        MOCK_TITLE_BAR_HEIGHT
+    } else {
+        0.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MockObjectData {
     pub class_name: String,
@@ -548,6 +565,7 @@ impl MockObjcRuntime {
             "NSScreen",
             "NSVisualEffectView",
             "NSArray",
+            "NSColor",
         ];
         for (i, name) in class_names.iter().enumerate() {
             classes.insert(name.to_string(), i + 1);
@@ -732,6 +750,19 @@ unsafe fn msg_send_fn<F: Copy>() -> F {
     unsafe { std::mem::transmute_copy(&(native_bindings::objc_msgSend as *const ())) }
 }
 
+/// `objc_msgSend_stret` as the function pointer type `F` (x86_64 struct-return ABI).
+///
+/// # Safety
+/// `F` must be an `extern "C" fn` pointer type taking `(*mut Ret, receiver, selector, ...)`
+/// matching the struct-returning method sent.
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[inline]
+unsafe fn msg_send_stret_fn<F: Copy>() -> F {
+    debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
+    // SAFETY: caller guarantees F matches objc_msgSend_stret signature.
+    unsafe { std::mem::transmute_copy(&(native_bindings::objc_msgSend_stret as *const ())) }
+}
+
 impl ObjcMsg {
     /// `-[receiver sel]` returning an object.
     ///
@@ -769,6 +800,9 @@ impl ObjcMsg {
                 return runtime.current_event();
             } else if sel_name == "release" {
                 runtime.release(receiver);
+                return Id::NIL;
+            } else if sel_name == "makeKeyWindow" {
+                runtime.update_object(receiver, |data| data.is_key = true);
                 return Id::NIL;
             } else if sel_name == "close" {
                 runtime.close_window(receiver);
@@ -851,6 +885,19 @@ impl ObjcMsg {
                 array_id
             } else if sel_name == "alloc" {
                 runtime.allocate_object(&class_name)
+            } else if sel_name == "clearColor" || sel_name == "windowBackgroundColor" {
+                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
+                    if v.class_name == "NSColor" && v.title == sel_name {
+                        Some(Id(k as *mut c_void))
+                    } else {
+                        None
+                    }
+                });
+                existing.unwrap_or_else(|| {
+                    let id = runtime.allocate_object("NSColor");
+                    runtime.update_object(id, |d| d.title = sel_name);
+                    id
+                })
             } else {
                 Id::NIL
             }
@@ -1271,7 +1318,14 @@ impl ObjcMsg {
         {
             let runtime = MockObjcRuntime::instance();
             runtime.update_object(receiver, |data| {
-                data.frame = rect;
+                // The rect is the content rect; the window's frame also holds the title bar.
+                let title_bar = mock_title_bar_height(style_mask);
+                data.frame = CGRect::new(
+                    rect.origin.x,
+                    rect.origin.y,
+                    rect.size.width,
+                    rect.size.height + title_bar,
+                );
                 data.style_mask = style_mask;
             });
             receiver
@@ -1540,15 +1594,10 @@ impl ObjcMsg {
             }
             #[cfg(target_arch = "x86_64")]
             {
-                unsafe extern "C" {
-                    fn objc_msgSend_stret(
-                        stret_addr: *mut CGRect,
-                        self_ptr: *mut c_void,
-                        op: *const c_void,
-                    );
-                }
+                let msg_send_stret: extern "C" fn(*mut CGRect, *mut c_void, *const c_void) =
+                    msg_send_stret_fn();
                 let mut result = std::mem::MaybeUninit::<CGRect>::uninit();
-                objc_msgSend_stret(result.as_mut_ptr(), receiver.0, sel.0);
+                msg_send_stret(result.as_mut_ptr(), receiver.0, sel.0);
                 result.assume_init()
             }
         }
@@ -1560,7 +1609,7 @@ impl ObjcMsg {
     /// See [`ObjcMsg`].
     pub unsafe fn send_f64_return(receiver: Id, sel: Sel) -> f64 {
         if receiver.is_nil() {
-            return 1.0;
+            return 0.0;
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -1569,7 +1618,7 @@ impl ObjcMsg {
             MockObjcRuntime::instance()
                 .get_object_data(receiver)
                 .map(|d| d.scale_factor)
-                .unwrap_or(2.0)
+                .unwrap_or(0.0)
         }
 
         #[cfg(target_os = "macos")]

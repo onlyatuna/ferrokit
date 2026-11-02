@@ -249,6 +249,57 @@ impl ObjcMsg {
         }
     }
 
+    /// `-[receiver sel:NSRect]` returning an `NSRect` (`-[NSWindow contentRectForFrameRect:]`
+    /// and `frameRectForContentRect:`). The mock models a title bar of
+    /// [`MOCK_TITLE_BAR_HEIGHT`] on a titled window (see [`mock_title_bar_height`]): the frame
+    /// is the content rect plus the title bar above it, so the bottom-left origin is shared.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_rect_arg_rect_return(receiver: Id, sel: Sel, rect: CGRect) -> CGRect {
+        if receiver.is_nil() {
+            return CGRect::ZERO;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
+            #[cfg(target_arch = "aarch64")]
+            {
+                let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect) -> CGRect =
+                    msg_send_fn();
+                msg_send(receiver.0, sel.0, rect)
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let msg_send_stret: extern "C" fn(*mut CGRect, *mut c_void, *const c_void, CGRect) =
+                    msg_send_stret_fn();
+                let mut result = std::mem::MaybeUninit::<CGRect>::uninit();
+                msg_send_stret(result.as_mut_ptr(), receiver.0, sel.0, rect);
+                result.assume_init()
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let style_mask = MockObjcRuntime::instance()
+                .get_object_data(receiver)
+                .map_or(0, |d| d.style_mask);
+            let title_bar = mock_title_bar_height(style_mask);
+            let delta = if mock_selector_name(sel) == "frameRectForContentRect:" {
+                title_bar
+            } else {
+                -title_bar
+            };
+            CGRect::new(
+                rect.origin.x,
+                rect.origin.y,
+                rect.size.width,
+                rect.size.height + delta,
+            )
+        }
+    }
+
     /// `-[receiver sel:NSPoint view:id]` returning an `NSPoint` (`-[NSView convertPoint:fromView:]`
     /// and `convertPoint:toView:`; a nil `view` is the window's base coordinate system, whose
     /// origin is at the bottom left).
@@ -510,6 +561,27 @@ impl ObjcMsg {
             if mock_selector_name(sel) == "setStyleMask:" {
                 MockObjcRuntime::instance().update_object(receiver, |data| data.style_mask = val);
             }
+        }
+    }
+    /// `-[receiver sel:CGFloat]` (`-[CALayer setZPosition:]`), logged.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_cgfloat_logged(receiver: Id, sel: Sel, val: CGFloat) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGFloat) = msg_send_fn();
+            msg_send(receiver.0, sel.0, val);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(receiver, sel, vec![MockValue::Float(val)]);
         }
     }
 
@@ -1051,6 +1123,10 @@ mod native {
     const ENC_HAS_MARKED_TEXT: &CStr = c"B@:";
     #[cfg(not(target_arch = "aarch64"))]
     const ENC_HAS_MARKED_TEXT: &CStr = c"c@:";
+    #[cfg(target_arch = "aarch64")]
+    const ENC_WINDOW_SHOULD_CLOSE: &CStr = c"B@:@";
+    #[cfg(not(target_arch = "aarch64"))]
+    const ENC_WINDOW_SHOULD_CLOSE: &CStr = c"c@:@";
 
     /// `struct objc_super`: where `objc_msgSendSuper` starts its method lookup.
     #[repr(C)]
@@ -1140,6 +1216,26 @@ mod native {
         _event: *mut c_void,
     ) -> BOOL {
         YES
+    }
+
+    /// `-[QNSWindow windowShouldClose:]`: the handler gets the close request and decides
+    /// whether the window closes (as the Win32 `WM_CLOSE` and the X11 and Wayland close
+    /// requests do), so AppKit is told NO. Without a handler AppKit closes the window itself.
+    extern "C" fn window_should_close(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        _sender: *mut c_void,
+    ) -> BOOL {
+        let window = Id(this);
+        // The handler may drop the `CocoaNativeWindow`, releasing its reference to the window
+        // while AppKit is still inside this very message; this reference keeps it alive.
+        // SAFETY: `this` is the live window AppKit is sending `windowShouldClose:` to; the
+        // `retain` is balanced by the `release` below.
+        unsafe { retain(window) };
+        let close = guarded(true, || input::window_should_close(window));
+        // SAFETY: balances the `retain` above.
+        unsafe { release(window) };
+        if close { YES } else { NO }
     }
 
     extern "C" fn update_tracking_areas(this: *mut c_void, cmd: *const c_void) {
@@ -1445,6 +1541,15 @@ mod native {
                     ENC_BOOL_GETTER.as_ptr(),
                 );
             }
+            // `-[NSWindow performClose:]` (the title bar's close button, Cmd+W) asks the window,
+            // or its delegate, `windowShouldClose:` before closing; like Qt's `QNSWindow` it
+            // delivers the close request synchronously.
+            native_bindings::class_addMethod(
+                class,
+                Sel::register("windowShouldClose:").0,
+                window_should_close as *const c_void,
+                ENC_WINDOW_SHOULD_CLOSE.as_ptr(),
+            );
             native_bindings::objc_registerClassPair(class);
             class as usize
         });

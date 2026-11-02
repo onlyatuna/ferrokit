@@ -46,6 +46,16 @@ pub const NX_DEVICERCMDKEYMASK: usize = 0x0000_0010;
 pub const NX_DEVICELALTKEYMASK: usize = 0x0000_0020;
 pub const NX_DEVICERALTKEYMASK: usize = 0x0000_0040;
 pub const NX_DEVICERCTLKEYMASK: usize = 0x0000_2000;
+/// Every side-specific device-dependent modifier bit; none set means the event carries no
+/// device-dependent information (`NX_NONCOALESCEDMASK` and other low bits are not side bits).
+pub const NX_ALL_DEVICE_MODIFIER_MASKS: usize = NX_DEVICELCTLKEYMASK
+    | NX_DEVICELSHIFTKEYMASK
+    | NX_DEVICERSHIFTKEYMASK
+    | NX_DEVICELCMDKEYMASK
+    | NX_DEVICERCMDKEYMASK
+    | NX_DEVICELALTKEYMASK
+    | NX_DEVICERALTKEYMASK
+    | NX_DEVICERCTLKEYMASK;
 const QT_SHIFT_MODIFIER: u32 = 0x0200_0000;
 const QT_CONTROL_MODIFIER: u32 = 0x0400_0000;
 const QT_ALT_MODIFIER: u32 = 0x0800_0000;
@@ -333,7 +343,10 @@ pub(crate) fn register_view(view: Id, window: Id) {
         mouse_grab: false,
         ns_window: window,
         tracking_area: Id::NIL,
-        last_geometry: None,
+        // Seeded with the window's current geometry, so the first notification of an unmoved
+        // window does not report a change.
+        last_geometry: (!window.is_nil())
+            .then(|| crate::window_cocoa::window_flipped_geometry(window)),
     };
     let _ = VIEWS.try_with(|views| views.borrow_mut().insert(view.0 as usize, slot));
 }
@@ -609,74 +622,114 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
         "NSWindowDidResignKeyNotification" => {
             dispatch(view, CocoaNativeEvent::WindowFocusOut, Point::new(0, 0))
         }
-        "NSWindowWillCloseNotification" => dispatch(
-            view,
-            CocoaNativeEvent::WindowCloseRequested,
-            Point::new(0, 0),
-        ),
         "NSWindowDidResizeNotification" => {
             // On macOS, the coordinate origin is at the bottom-left of the primary display.
             // When the window height changes, the flipped top-left y position in Qt screen
             // coordinates also moves (flip_y = screen_h - y - h). Matching Qt's
             // QCocoaWindow::handleGeometryChange(), deliver GeometryChange so the top-left
-            // position updates, followed by Resize for layout and backing surface resize.
-            let geometry = crate::window_cocoa::window_flipped_geometry(window);
-            let prev_geo = with_slot(view, |slot| slot.last_geometry).flatten();
-            let moved = if prev_geo != Some(geometry) {
-                with_slot(view, |slot| slot.last_geometry = Some(geometry));
-                dispatch(
+            // position updates, followed by Resize for layout. The backing surface follows the
+            // new size when the handler presents a frame of that size.
+            let (geometry, prev_geo) = take_geometry_change(view, window);
+            let moved = prev_geo != Some(geometry)
+                && dispatch(
                     view,
                     CocoaNativeEvent::WindowMoved { geometry },
                     Point::new(0, 0),
-                )
-            } else {
-                false
-            };
-            let resized = dispatch(
-                view,
-                CocoaNativeEvent::WindowResized {
-                    width: geometry.width as f64,
-                    height: geometry.height as f64,
-                },
-                Point::new(0, 0),
-            );
+                );
+            // A resize notification for a size the handler already has (e.g. the move half of
+            // a drag, or `setFrame:` echoing a size it was just told) delivers nothing.
+            let size_changed =
+                prev_geo.is_none_or(|p| p.width != geometry.width || p.height != geometry.height);
+            let resized = size_changed
+                && dispatch(
+                    view,
+                    CocoaNativeEvent::WindowResized {
+                        width: geometry.width as f64,
+                        height: geometry.height as f64,
+                    },
+                    Point::new(0, 0),
+                );
             moved || resized
         }
         "NSWindowDidMoveNotification" => {
-            let geometry = crate::window_cocoa::window_flipped_geometry(window);
-            let prev_geo = with_slot(view, |slot| slot.last_geometry).flatten();
-            if prev_geo != Some(geometry) {
-                with_slot(view, |slot| slot.last_geometry = Some(geometry));
-                dispatch(
+            let (geometry, prev_geo) = take_geometry_change(view, window);
+            prev_geo != Some(geometry)
+                && dispatch(
                     view,
                     CocoaNativeEvent::WindowMoved { geometry },
                     Point::new(0, 0),
                 )
-            } else {
-                false
-            }
         }
-        "NSWindowDidChangeBackingPropertiesNotification" => {
-            // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
-            let scale =
-                unsafe { ObjcMsg::send_f64_return(window, Sel::register("backingScaleFactor")) };
-            let scale = if scale > 0.0 {
-                scale
-            } else {
-                crate::platform().primary_screen().device_pixel_ratio() as f64
-            };
-            let dpi = (scale * 96.0).round() as u32;
-            dispatch(
-                view,
-                CocoaNativeEvent::WindowDpiChanged {
-                    dpi_x: dpi,
-                    dpi_y: dpi,
-                },
-                Point::new(0, 0),
-            )
+        "NSWindowDidChangeScreenNotification" => {
+            // The window moved to another monitor: its geometry (the new monitor may sit at
+            // another position) and, when the monitors differ in scale, its DPI change. AppKit
+            // also posts `DidMove` and `DidChangeBackingProperties` for these; the geometry
+            // is deduplicated here, the DPI is reported again because it is cheap and the
+            // backing notification is not guaranteed for every monitor change.
+            let (geometry, prev_geo) = take_geometry_change(view, window);
+            let moved = prev_geo != Some(geometry)
+                && dispatch(
+                    view,
+                    CocoaNativeEvent::WindowMoved { geometry },
+                    Point::new(0, 0),
+                );
+            dispatch_dpi(view, window) || moved
         }
+        "NSWindowDidChangeBackingPropertiesNotification" => dispatch_dpi(view, window),
         _ => false,
     }
+}
+
+/// The window's current geometry and the one the handler was last told about, recording the
+/// current one as the new last-told geometry.
+fn take_geometry_change(view: Id, window: Id) -> (Rect, Option<Rect>) {
+    let geometry = crate::window_cocoa::window_flipped_geometry(window);
+    let prev_geo = with_slot(view, |slot| slot.last_geometry.replace(geometry)).flatten();
+    (geometry, prev_geo)
+}
+
+/// Reports the DPI of the monitor `window` is on. ferrokit's DPI convention, shared by every
+/// platform backend (Windows `GetDpiForWindow`, X11 and Wayland scale), is a base of 96 dpi
+/// at scale 1, so a 2x Retina backing scale is 192, not AppKit's 72-point base.
+fn dispatch_dpi(view: Id, window: Id) -> bool {
+    // SAFETY: `window` is the NSWindow; `backingScaleFactor` returns CGFloat.
+    let scale = unsafe { ObjcMsg::send_f64_return(window, Sel::register("backingScaleFactor")) };
+    let scale = if scale > 0.0 {
+        scale
+    } else {
+        crate::platform().primary_screen().device_pixel_ratio() as f64
+    };
+    let dpi = (scale * 96.0).round() as u32;
+    dispatch(
+        view,
+        CocoaNativeEvent::WindowDpiChanged {
+            dpi_x: dpi,
+            dpi_y: dpi,
+        },
+        Point::new(0, 0),
+    )
+}
+
+/// `-[NSWindow windowShouldClose:]` (a user close: the title bar's close button, Cmd+W,
+/// `performClose:`), the synchronous counterpart of Qt's `QNSWindow windowShouldClose:`
+/// delivering `QWindowSystemInterface::handleCloseEvent`. Returns whether AppKit closes the
+/// window itself.
+///
+/// With a handler the request is delivered and AppKit is told NO: as for `WM_CLOSE` and the
+/// X11 and Wayland close requests, the handler turns the request into the window's close (or
+/// ignores it), the window is never closed behind its back. Without a handler there is nobody
+/// to ask and AppKit's default (close) applies. A request that arrives while the handler is
+/// already running waits for it (see [`dispatch`]).
+pub fn window_should_close(window: Id) -> bool {
+    ThreadContext::assert_main_thread("window_should_close");
+    // SAFETY: `window` is the live NSWindow AppKit is sending `windowShouldClose:` to (or a
+    // test's window); `contentView` takes no arguments and returns an object.
+    let view = unsafe { ObjcMsg::send_0(window, Sel::register("contentView")) };
+    !dispatch(
+        view,
+        CocoaNativeEvent::WindowCloseRequested,
+        Point::new(0, 0),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -866,10 +919,12 @@ pub unsafe fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
             let Some((key, flag, side_mask)) = modifier_key(key_code) else {
                 return false;
             };
-            // If device-dependent side bits are available in flags, use the side-specific mask
-            // to determine whether this specific modifier key is pressed or released.
+            // If the device-dependent side bits are present in flags, use the side-specific
+            // mask to determine whether this specific modifier key is pressed or released.
+            // Only the eight side bits count: the other low bits (e.g. `NX_NONCOALESCEDMASK`,
+            // 0x100) are set without any side bit and must not read as a release.
             // Otherwise fall back to the general device-independent flag.
-            let is_pressed = if side_mask != 0 && (flags & 0xFFFF) != 0 {
+            let is_pressed = if side_mask != 0 && (flags & NX_ALL_DEVICE_MODIFIER_MASKS) != 0 {
                 flags & side_mask != 0
             } else {
                 flags & flag != 0
