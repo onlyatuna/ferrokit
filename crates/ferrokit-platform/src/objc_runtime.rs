@@ -154,6 +154,9 @@ pub const NS_MODAL_PANEL_WINDOW_LEVEL: NSInteger = 8; // kCGModalPanelWindowLeve
 pub const NS_SCREEN_SAVER_WINDOW_LEVEL: NSInteger = 1000; // kCGScreenSaverWindowLevel
 pub const NS_STATUS_WINDOW_LEVEL: NSInteger = 25; // System status bar window level
 
+pub const NS_VISUAL_EFFECT_STATE_FOLLOWS_WINDOW_ACTIVE_STATE: NSInteger = 0;
+pub const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
+pub const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
 // ---------------------------------------------------------------------------
 // Runtime and message dispatch (native vs mock)
 // ---------------------------------------------------------------------------
@@ -813,9 +816,23 @@ impl ObjcMsg {
             if sel_name == "systemStatusBar" {
                 runtime.allocate_object("NSStatusBar")
             } else if sel_name == "sharedApplication" {
-                runtime.allocate_object("NSApplication")
+                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
+                    if v.class_name == "NSApplication" {
+                        Some(Id(k as *mut c_void))
+                    } else {
+                        None
+                    }
+                });
+                existing.unwrap_or_else(|| runtime.allocate_object("NSApplication"))
             } else if sel_name == "defaultCenter" {
-                runtime.allocate_object("NSNotificationCenter")
+                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
+                    if v.class_name == "NSNotificationCenter" {
+                        Some(Id(k as *mut c_void))
+                    } else {
+                        None
+                    }
+                });
+                existing.unwrap_or_else(|| runtime.allocate_object("NSNotificationCenter"))
             } else if sel_name == "mainScreen" {
                 runtime.allocate_object("NSScreen")
             } else if sel_name == "screens" {

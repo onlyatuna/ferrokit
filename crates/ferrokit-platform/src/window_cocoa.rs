@@ -13,6 +13,7 @@ use crate::objc_runtime::appkit;
 use crate::objc_runtime::{
     CGFloat, CGRect, CGSize, Class, Id, NS_BACKING_STORE_BUFFERED, NS_FLOATING_WINDOW_LEVEL,
     NS_MODAL_PANEL_WINDOW_LEVEL, NS_NORMAL_WINDOW_LEVEL, NS_SCREEN_SAVER_WINDOW_LEVEL,
+    NS_VISUAL_EFFECT_STATE_ACTIVE, NS_VISUAL_EFFECT_STATE_INACTIVE,
     NS_WINDOW_STYLE_MASK_BORDERLESS, NS_WINDOW_STYLE_MASK_CLOSABLE,
     NS_WINDOW_STYLE_MASK_MINIATURIZABLE, NS_WINDOW_STYLE_MASK_RESIZABLE,
     NS_WINDOW_STYLE_MASK_TITLED, NSInteger, NSUInteger, ObjcMsg, Sel,
@@ -25,10 +26,6 @@ use crate::window_system_interface::WindowSystemEventHandler;
 
 /// `NSWindowAbove`: the child window is ordered above its parent.
 const NS_WINDOW_ABOVE: NSInteger = 1;
-/// `NSVisualEffectStateActive` / `NSVisualEffectStateInactive`: an inactive effect view draws
-/// its material as a flat fill instead of blurring what is behind the window.
-const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
-const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
 
 /// An input or window event for `CocoaNativeWindow::dispatch_cocoa_event`, in view coordinates:
 /// logical pixels with the origin at the top left (the content view is flipped), as Qt reports
@@ -639,8 +636,8 @@ impl PlatformWindow for CocoaNativeWindow {
             "makeKeyAndOrderFront:"
         };
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` /
-        // `makeKeyAndOrderFront:` each take one sender object (nil here).
-        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register(order), Id::NIL) };
+        // `makeKeyAndOrderFront:` each take one sender object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register(order), Id::NIL) };
         self.visible.store(true, Ordering::Release);
     }
 
@@ -650,10 +647,53 @@ impl PlatformWindow for CocoaNativeWindow {
         unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isKeyWindow")) }
     }
 
+    fn raise(&self) {
+        // `QPlatformWindow::raise` (qcocoawindow.mm:1900): brings the window front in the window
+        // system's stacking order without taking activation or making it the key window.
+        // AppKit's `-[NSWindow orderFront:]` would order an invisible window onto screen, so
+        // invisible windows are skipped, matching Qt (`if ([m_nsWindow isVisible])`).
+        if !self.is_visible() {
+            return;
+        }
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` takes one sender
+        // object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), Id::NIL) };
+    }
+    fn request_activate_window(&self) {
+        // `QPlatformWindow::requestActivateWindow` (qcocoawindow.mm:1850-1865): a tooltip never
+        // takes activation, and an invisible window cannot become active.
+        if self.flags.contains(WindowFlags::TOOLTIP) || !self.is_visible() {
+            return;
+        }
+        // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication` returning
+        // an object (a nil class from `unwrap_or` is a no-op).
+        let nsapp = unsafe {
+            ObjcMsg::send_class_0(
+                Class::get("NSApplication").unwrap_or(Class::NIL),
+                Sel::register("sharedApplication"),
+            )
+        };
+        if !nsapp.is_nil() {
+            // SAFETY: `activateIgnoringOtherApps:` takes one BOOL, matching `send_bool_logged`.
+            unsafe {
+                ObjcMsg::send_bool_logged(nsapp, Sel::register("activateIgnoringOtherApps:"), true)
+            };
+        }
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `makeKeyAndOrderFront:` takes
+        // one sender object (nil here), matching `send_id_logged`.
+        unsafe {
+            ObjcMsg::send_id_logged(
+                self.ns_window,
+                Sel::register("makeKeyAndOrderFront:"),
+                Id::NIL,
+            )
+        };
+    }
+
     fn hide(&self) {
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderOut:` takes one sender
-        // object (nil here).
-        unsafe { ObjcMsg::send_id(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
+        // object (nil here), matching `send_id_logged`.
+        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderOut:"), Id::NIL) };
         self.visible.store(false, Ordering::Release);
     }
 
@@ -1077,10 +1117,19 @@ impl PlatformWindow for CocoaNativeWindow {
         self.ns_window.0 as isize
     }
 
-    /// Per-window screen lookup is not implemented on this backend yet: the primary screen's
-    /// ratio (what every window used before `PlatformWindow::device_pixel_ratio` existed).
     fn device_pixel_ratio(&self) -> f32 {
-        crate::platform().primary_screen().device_pixel_ratio()
+        // AppKit's `-[NSWindow backingScaleFactor]` reports the scaling factor of the screen
+        // this window is currently on (qcocoawindow.mm:1450).
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `backingScaleFactor` takes no
+        // arguments and returns a CGFloat (double), matching `send_f64_return`.
+        let scale = unsafe {
+            ObjcMsg::send_f64_return(self.ns_window, Sel::register("backingScaleFactor"))
+        };
+        if scale > 0.0 {
+            scale as f32
+        } else {
+            crate::platform().primary_screen().device_pixel_ratio()
+        }
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
