@@ -665,13 +665,13 @@ impl ObjcMsg {
                 *const c_void,
                 *mut c_void,
                 *mut c_void,
-            ) -> *mut c_void = msg_send_fn();
-            let result = Id(msg_send(
+            ) = msg_send_fn();
+            msg_send(
                 receiver.0, sel.0, observer.0, action.0, name_obj.0, object.0,
-            ));
+            );
             // The centre copies the name; balance the +1 from `nsstring_from_str`.
             ObjcMsg::send_0(name_obj, Sel::register("release"));
-            result
+            Id::NIL
         }
 
         #[cfg(not(target_os = "macos"))]
