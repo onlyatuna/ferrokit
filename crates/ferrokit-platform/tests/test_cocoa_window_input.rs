@@ -992,6 +992,19 @@ fn resize_notification_skips_duplicate_geometry_change_when_unmoved() {
     let view = win.ns_view();
     let window_id = win.ns_window();
 
+    // Spurious notification with no actual frame change: both GeometryChange and Resize are skipped.
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        view,
+        window_id,
+        "NSWindowDidResizeNotification",
+    );
+    assert!(take(&log).is_empty());
+
+    // When the window resizes (which on macOS also changes top-left y unless y is adjusted),
+    // both GeometryChange and Resize are delivered once; a duplicate notification is a no-op.
+    MockObjcRuntime::instance().update_object(window_id, |d| {
+        d.frame = ferrokit_platform::CGRect::new(0.0, 480.0, 640.0, 528.0);
+    });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         view,
         window_id,
@@ -1010,9 +1023,7 @@ fn resize_notification_skips_duplicate_geometry_change_when_unmoved() {
         window_id,
         "NSWindowDidResizeNotification",
     );
-    let events = take(&log);
-    assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], WindowSystemEvent::Resize { .. }));
+    assert!(take(&log).is_empty());
 }
 
 #[test]

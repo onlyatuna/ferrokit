@@ -565,11 +565,26 @@ fn raise_orders_window_front_without_activating_or_making_key() {
 
     // Visible window: ordered front without taking key.
     win.show();
+    mock.update_object(ns_window, |d| d.is_key = false);
     mock.clear_calls();
     win.raise();
     assert!(
         selectors(mock, ns_window).contains(&"orderFront:".to_string()),
         "raise orders the visible window front in the local stacking order"
+    );
+    assert!(
+        !selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        "raise must not activate or make key"
+    );
+    assert!(!win.is_active(), "raise leaves the window non-key");
+
+    // When miniaturized or hidden natively (isVisible == false), raise is a no-op.
+    mock.update_object(ns_window, |d| d.is_visible = false);
+    mock.clear_calls();
+    win.raise();
+    assert!(
+        !selectors(mock, ns_window).contains(&"orderFront:".to_string()),
+        "window with native isVisible == false is not raised"
     );
 }
 #[test]
@@ -583,7 +598,7 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
     win.request_activate_window();
     assert!(!win.is_active());
     assert!(
-        !selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        !selectors(mock, ns_window).contains(&"makeKeyWindow".to_string()),
         "invisible window cannot be activated"
     );
 
@@ -594,7 +609,7 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
     tooltip.request_activate_window();
     assert!(!tooltip.is_active());
     assert!(
-        !selectors(mock, tooltip.ns_window()).contains(&"makeKeyAndOrderFront:".to_string()),
+        !selectors(mock, tooltip.ns_window()).contains(&"makeKeyWindow".to_string()),
         "tooltip never takes activation"
     );
     // Click-through window: never takes activation even when shown.
@@ -604,7 +619,7 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
     click_through.request_activate_window();
     assert!(!click_through.is_active());
     assert!(
-        !selectors(mock, click_through.ns_window()).contains(&"makeKeyAndOrderFront:".to_string()),
+        !selectors(mock, click_through.ns_window()).contains(&"makeKeyWindow".to_string()),
         "click-through window never takes activation"
     );
     // Visible normal window: activates the application and makes key.
@@ -612,9 +627,14 @@ fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_toolt
     mock.clear_calls();
     win.request_activate_window();
     assert!(win.is_active());
+    let selectors_after = selectors(mock, ns_window);
     assert!(
-        selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
-        "orders front and makes key"
+        selectors_after.contains(&"makeKeyWindow".to_string()),
+        "makes the window key"
+    );
+    assert!(
+        selectors_after.contains(&"makeFirstResponder:".to_string()),
+        "makes the view the first responder"
     );
     // SAFETY: mock runtime only: sharedApplication takes no arguments, matching send_class_0.
     let nsapp = unsafe {
@@ -688,6 +708,59 @@ fn flat_tint_backdrop_applies_inactive_effect_view() {
         vec![MockValue::Int(0x12)],
         "NSViewWidthSizable | NSViewHeightSizable"
     );
+
+    let z_calls: Vec<_> = mock
+        .calls_for(effect)
+        .into_iter()
+        .filter(|c| c.selector == "setZPosition:")
+        .collect();
+    assert_eq!(z_calls.len(), 1);
+    assert_eq!(
+        z_calls[0].args,
+        vec![MockValue::Float(f64::from(-f32::MAX))]
+    );
+
+    // Window is made non-opaque with clearColor for behind-window effect.
+    let opaque_calls: Vec<_> = mock
+        .calls_for(win.ns_window())
+        .into_iter()
+        .filter(|c| c.selector == "setOpaque:")
+        .collect();
+    assert_eq!(opaque_calls.len(), 1);
+    assert_eq!(opaque_calls[0].args, vec![MockValue::Bool(false)]);
+    let bg_calls: Vec<_> = mock
+        .calls_for(win.ns_window())
+        .into_iter()
+        .filter(|c| c.selector == "setBackgroundColor:")
+        .collect();
+    assert_eq!(bg_calls.len(), 1);
+    let MockValue::Id(clear_id) = bg_calls[0].args[0] else {
+        panic!("expected Id argument for setBackgroundColor:");
+    };
+    assert_eq!(mock.get_object_data(clear_id).unwrap().title, "clearColor");
+
+    // When reset to None, opacity and windowBackgroundColor are restored.
+    assert!(win.set_backdrop(BackdropType::None, false));
+    let opaque_calls: Vec<_> = mock
+        .calls_for(win.ns_window())
+        .into_iter()
+        .filter(|c| c.selector == "setOpaque:")
+        .collect();
+    assert_eq!(opaque_calls.len(), 2);
+    assert_eq!(opaque_calls[1].args, vec![MockValue::Bool(true)]);
+    let bg_calls: Vec<_> = mock
+        .calls_for(win.ns_window())
+        .into_iter()
+        .filter(|c| c.selector == "setBackgroundColor:")
+        .collect();
+    assert_eq!(bg_calls.len(), 2);
+    let MockValue::Id(win_bg_id) = bg_calls[1].args[0] else {
+        panic!("expected Id argument for setBackgroundColor:");
+    };
+    assert_eq!(
+        mock.get_object_data(win_bg_id).unwrap().title,
+        "windowBackgroundColor"
+    );
 }
 
 #[test]
@@ -740,11 +813,10 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
     );
     assert_eq!(events.borrow_mut().pop(), Some(WindowSystemEvent::FocusOut));
 
-    // 3. CloseRequest
-    ferrokit_platform::window_cocoa_input::dispatch_notification(
-        ns_view,
-        ns_window,
-        "NSWindowWillCloseNotification",
+    // 3. CloseRequest via synchronous windowShouldClose:
+    assert!(
+        !ferrokit_platform::window_cocoa_input::window_should_close(ns_window),
+        "windowShouldClose: returns false when handled so AppKit does not close behind our back"
     );
     assert_eq!(
         events.borrow_mut().pop(),
@@ -752,10 +824,10 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
     );
 
     // 4. Resize: verifies that NSWindowDidResizeNotification delivers both Resize AND GeometryChange
-    // because on macOS, height changes also move the flipped top-left y position.
+    // using the content rect (frame height 528 - 28pt titlebar = 500 content height).
     // Primary screen height is 1080: y = 1080 - 380 - 500 = 200.
     mock.update_object(ns_window, |d| {
-        d.frame = CGRect::new(100.0, 380.0, 800.0, 500.0);
+        d.frame = CGRect::new(100.0, 380.0, 800.0, 528.0);
     });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
@@ -774,16 +846,16 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
             geometry: Rect::new(100, 200, 800, 500)
         })
     );
-    // PlatformWindow::geometry() dynamically reflects live [window frame]
+    // PlatformWindow::geometry() dynamically reflects live content rect
     assert_eq!(
         PlatformWindow::geometry(&win),
         Rect::new(100, 200, 800, 500)
     );
 
-    // 5. GeometryChange (flipped from Cocoa bottom-left to Qt top-left, testing negative origin floor)
-    // Secondary monitor with negative x: -50.4.floor() as i32 = -51.
+    // 5. GeometryChange (flipped from Cocoa bottom-left to Qt top-left, testing QRectF::toRect rounding)
+    // Secondary monitor with negative x: (-50.4).round() as i32 = -50; (-50.6).round() as i32 = -51.
     mock.update_object(ns_window, |d| {
-        d.frame = CGRect::new(-50.4, 380.0, 800.0, 500.0);
+        d.frame = CGRect::new(-50.6, 380.0, 800.0, 528.0);
     });
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
@@ -801,7 +873,30 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
         Rect::new(-51, 200, 800, 500)
     );
 
-    // 6. DpiChanged
+    // 6. Screen change notification delivers DPI and geometry updates
+    mock.update_object(ns_window, |d| {
+        d.frame = CGRect::new(200.0, 380.0, 800.0, 528.0);
+        d.scale_factor = 2.0;
+    });
+    ferrokit_platform::window_cocoa_input::dispatch_notification(
+        ns_view,
+        ns_window,
+        "NSWindowDidChangeScreenNotification",
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::DpiChanged {
+            dpi_x: 192,
+            dpi_y: 192
+        })
+    );
+    assert_eq!(
+        events.borrow_mut().pop(),
+        Some(WindowSystemEvent::GeometryChange {
+            geometry: Rect::new(200, 200, 800, 500)
+        })
+    );
+    // 7. DpiChanged
     mock.update_object(ns_window, |d| d.scale_factor = 2.0);
     ferrokit_platform::window_cocoa_input::dispatch_notification(
         ns_view,
@@ -838,7 +933,79 @@ fn request_activate_window_checks_native_is_visible() {
 
     win.request_activate_window();
     assert!(
-        !selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        !selectors(mock, ns_window).contains(&"makeKeyWindow".to_string()),
         "window with native isVisible == false must not be activated"
+    );
+}
+
+#[test]
+fn send_f64_return_on_nil_receiver_returns_zero() {
+    // SAFETY: testing nil receiver handling for send_f64_return.
+    let result = unsafe {
+        ferrokit_platform::objc_runtime::ObjcMsg::send_f64_return(
+            ferrokit_platform::objc_runtime::Id::NIL,
+            ferrokit_platform::objc_runtime::Sel::register("backingScaleFactor"),
+        )
+    };
+    assert_eq!(result, 0.0);
+}
+
+#[test]
+fn window_flipped_geometry_rounds_like_qrectf_to_rect_and_strips_titlebar() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+
+    // Titled window has a 28pt titlebar in mock.
+    // Setting content geometry (100, 200, 300, 200) sets frame height to 228 and origin.y = 1080 - 200 - 200 = 680.
+    win.set_geometry(Rect::new(100, 200, 300, 200));
+    let frame = mock.get_object_data(ns_window).unwrap().frame;
+    assert_eq!(frame, CGRect::new(100.0, 680.0, 300.0, 228.0));
+    assert_eq!(win.geometry(), Rect::new(100, 200, 300, 200));
+
+    // Fractional coordinates: origin.x = -50.4 -> rounds to -50.
+    // Frame height 228 -> content height 200; origin.y = 100.6 -> top_left_y = 1080.0 - 100.6 - 200.0 = 779.4 -> rounds to 779.
+    mock.update_object(ns_window, |d| {
+        d.frame = CGRect::new(-50.4, 100.6, 300.0, 228.0);
+    });
+    assert_eq!(win.geometry(), Rect::new(-50, 779, 300, 200));
+}
+
+#[test]
+fn backdrop_none_preserves_transparency_when_vibrancy_or_mask_is_active() {
+    use ferrokit_platform::window_cocoa::CocoaVibrancyMaterial;
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+
+    // Calling BackdropType::None when no backdrop was ever active does not touch setOpaque:.
+    mock.clear_calls();
+    assert!(win.set_backdrop(BackdropType::None, false));
+    assert!(
+        !selectors(mock, ns_window).contains(&"setOpaque:".to_string()),
+        "BackdropType::None without prior backdrop must not clobber window opacity"
+    );
+
+    // Enable vibrancy AND backdrop; removing backdrop must keep window non-opaque because vibrancy is active.
+    win.set_vibrancy(Some(CocoaVibrancyMaterial::HudWindow));
+    assert!(win.set_backdrop(BackdropType::Acrylic, true));
+    mock.clear_calls();
+    assert!(win.set_backdrop(BackdropType::None, false));
+    assert!(
+        !mock
+            .calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
+        "removing backdrop while vibrancy is active must not setOpaque: true"
+    );
+
+    // Once vibrancy is also removed, window opacity is restored to true.
+    mock.clear_calls();
+    win.set_vibrancy(None);
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
+        "removing last transparency source restores setOpaque: true"
     );
 }

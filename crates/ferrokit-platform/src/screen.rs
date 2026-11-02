@@ -589,70 +589,57 @@ pub mod cocoa_screen {
                 geometry,
                 available_geometry,
                 is_primary,
-                dpr: scale as f32,
+                dpr: if scale > 0.0 { scale as f32 } else { 1.0 },
             }
         }
-        /// Returns the primary screen's frame height without constructing full CocoaScreen objects.
-        pub fn primary_height() -> i32 {
+
+        /// Returns element 0 of `[NSScreen screens]` (and the array itself + count), or
+        /// `(Id::NIL, Id::NIL, 0)` when no screen exists.
+        fn first_nsscreen() -> (Id, Id, usize) {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
             // SAFETY: `screens` is a class method with no arguments returning an object;
             // a nil class lookup yields nil which is checked below.
             let screens_array =
                 unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
-            let has_screens = if screens_array.is_nil() {
-                false
-            } else {
-                // SAFETY: `screens_array` is non-nil; `count` returns NSUInteger.
-                (unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) }) > 0
+            if screens_array.is_nil() {
+                return (Id::NIL, Id::NIL, 0);
+            }
+            // SAFETY: `screens_array` is non-nil; `count` returns NSUInteger.
+            let count =
+                unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) };
+            if count == 0 {
+                return (screens_array, Id::NIL, 0);
+            }
+            // SAFETY: `screens_array` has count > 0; index 0 is in bounds and returns object.
+            let first = unsafe {
+                ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
             };
-            if !has_screens {
-                1080
+            (screens_array, first, count)
+        }
+
+        /// Returns the primary screen's frame height without constructing full CocoaScreen objects.
+        pub fn primary_height() -> i32 {
+            let (_, main_screen, _) = Self::first_nsscreen();
+            if !main_screen.is_nil() {
+                // SAFETY: `main_screen` is non-nil; `frame` returns NSRect.
+                let frame =
+                    unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
+                frame.size.height.round() as i32
             } else {
-                // SAFETY: `screens_array` has count > 0; index 0 is in bounds and returns object.
-                let main_screen = unsafe {
-                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
-                };
-                if !main_screen.is_nil() {
-                    // SAFETY: `main_screen` is non-nil; `frame` returns NSRect.
-                    let frame =
-                        unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
-                    frame.size.height as i32
-                } else {
-                    1080
-                }
+                1080
             }
         }
 
         pub fn primary() -> Self {
-            let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
             // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen
             // (the primary is the CGDisplayIsMain display, which is screens[0]).
-            // SAFETY: `screens` is a class method with no arguments returning an object, matching
-            // `send_class_0`; a nil class (failed lookup) yields nil, which is checked next. In the
-            // `count` send, `screens_array` is non-nil (short-circuit `||`) and the NSArray returned
-            // above; `count` returns an NSUInteger, matching `send_usize_return`.
-            let screens_array =
-                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
-            let main_screen = if screens_array.is_nil()
-                // SAFETY: `screens_array` is non-nil here (short-circuit `||`); `count` returns an
-                // NSUInteger, matching `send_usize_return`.
-                || unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) } == 0
-            {
-                Id::NIL
-            } else {
-                // SAFETY: `screens_array` is a non-nil NSArray with `count > 0` (checked above), so
-                // index 0 is in bounds; `objectAtIndex:` takes an NSUInteger and returns an object,
-                // matching `send_id_with_usize`.
-                unsafe {
-                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
-                }
-            };
+            let (_, main_screen, _) = Self::first_nsscreen();
             if !main_screen.is_nil() {
                 // SAFETY: `main_screen` is non-nil (checked above); `frame` returns an NSRect,
                 // matching `send_rect_return`.
                 let frame =
                     unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
-                let primary_height = frame.size.height as i32;
+                let primary_height = frame.size.height.round() as i32;
                 Self::from_nsscreen(main_screen, true, primary_height)
             } else {
                 Self {
@@ -666,33 +653,14 @@ pub mod cocoa_screen {
         }
 
         pub fn screens() -> Vec<Self> {
-            let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
-            // SAFETY: `screens` is a class method with no arguments returning an object, matching
-            // `send_class_0`; a nil class (failed lookup) yields nil, which is checked next.
-            let screens_array =
-                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
-            if screens_array.is_nil() {
+            let (screens_array, first, count) = Self::first_nsscreen();
+            if first.is_nil() {
                 return vec![Self::primary()];
             }
-
-            // SAFETY: `screens_array` is non-nil (checked above); `count` returns an NSUInteger,
-            // matching `send_usize_return`.
-            let count =
-                unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) };
-            if count == 0 {
-                return vec![Self::primary()];
-            }
-
-            // SAFETY: `screens_array` is a non-nil NSArray with `count != 0` (checked above), so index
-            // 0 is in bounds; `objectAtIndex:` takes an NSUInteger, matching `send_id_with_usize`.
-            let first = unsafe {
-                ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
-            };
             // SAFETY: `first` is element 0 of a non-empty NSArray of NSScreen; `frame` returns an
             // NSRect, matching `send_rect_return`.
             let first_frame = unsafe { ObjcMsg::send_rect_return(first, Sel::register("frame")) };
-            let primary_height = first_frame.size.height as i32;
-
+            let primary_height = first_frame.size.height.round() as i32;
             let mut result = Vec::with_capacity(count);
             for i in 0..count {
                 // SAFETY: `i < count`, the array's own count read above, so the index is in bounds;

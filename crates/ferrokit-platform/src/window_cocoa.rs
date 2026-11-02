@@ -331,34 +331,41 @@ impl CocoaNativeWindow {
         let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
         let mut window_observers = Vec::new();
         if !center.is_nil() && !ns_window.is_nil() {
+            // A close request is not a notification: `QNSWindow windowShouldClose:` delivers it
+            // synchronously (`input::window_should_close`) so the handler can refuse it.
             const NOTIFICATIONS: [&str; 6] = [
                 "NSWindowDidBecomeKeyNotification",
                 "NSWindowDidResignKeyNotification",
-                "NSWindowWillCloseNotification",
                 "NSWindowDidResizeNotification",
                 "NSWindowDidMoveNotification",
                 "NSWindowDidChangeBackingPropertiesNotification",
+                "NSWindowDidChangeScreenNotification",
             ];
             for &notif in &NOTIFICATIONS {
                 let view = ns_view;
                 let win = ns_window;
                 let notif_name = notif;
-                if let Ok(target) = crate::objc_runtime::ActionTarget::new(move || {
+                match crate::objc_runtime::ActionTarget::new(move || {
                     input::dispatch_notification(view, win, notif_name);
                 }) {
-                    // SAFETY: `center` is the shared NSNotificationCenter; `target` is a live
-                    // ActionTarget responding to `ActionTarget::action()`; `win` is `ns_window`.
-                    unsafe {
-                        ObjcMsg::send_add_observer_logged(
-                            center,
-                            Sel::register("addObserver:selector:name:object:"),
-                            target.id(),
-                            crate::objc_runtime::ActionTarget::action(),
-                            notif,
-                            win,
-                        );
+                    Ok(target) => {
+                        // SAFETY: `center` is the shared NSNotificationCenter; `target` is a live
+                        // ActionTarget responding to `ActionTarget::action()`; `win` is `ns_window`.
+                        unsafe {
+                            ObjcMsg::send_add_observer_logged(
+                                center,
+                                Sel::register("addObserver:selector:name:object:"),
+                                target.id(),
+                                crate::objc_runtime::ActionTarget::action(),
+                                notif,
+                                win,
+                            );
+                        }
+                        window_observers.push(target);
                     }
-                    window_observers.push(target);
+                    Err(err) => {
+                        eprintln!("ferrokit: cannot observe {notif} for a window: {err}");
+                    }
                 }
             }
         }
@@ -431,11 +438,12 @@ impl CocoaNativeWindow {
                 // `send_class_0` (a nil class from `unwrap_or` is a no-op).
                 let effect_alloc =
                     unsafe { ObjcMsg::send_class_0(effect_class, Sel::register("alloc")) };
+                let current_geo = self.geometry();
                 let view_rect = CGRect::new(
                     0.0,
                     0.0,
-                    self.geometry.width as f64,
-                    self.geometry.height as f64,
+                    current_geo.width as f64,
+                    current_geo.height as f64,
                 );
                 // SAFETY: `initWithFrame:` takes one NSRect, matching `send_rect`; the receiver is
                 // the unconsumed `alloc` result above (nil is a no-op, checked below).
@@ -468,8 +476,7 @@ impl CocoaNativeWindow {
                 };
             }
         } else {
-            // SAFETY: `self.ns_window` is live (see above); `setOpaque:` takes one BOOL.
-            unsafe { ObjcMsg::send_bool(self.ns_window, Sel::register("setOpaque:"), true) };
+            let had_vibrancy_view = self.vibrancy_view.is_some();
             if let Some(effect_view) = self.vibrancy_view.take() {
                 // SAFETY: `effect_view` was just taken from `self.vibrancy_view`, so it is the +1
                 // object this window created and still owns; `removeFromSuperview` takes no arguments.
@@ -479,6 +486,10 @@ impl CocoaNativeWindow {
                 // remains); this `release` balances our own `alloc`/`init` and the value was taken
                 // out of `self.vibrancy_view`, so it is released once.
                 unsafe { ObjcMsg::send_0(effect_view, Sel::register("release")) };
+            }
+            if had_vibrancy_view {
+                // A backdrop or mask still needs the window transparent; otherwise it is restored.
+                self.update_window_opacity();
             }
         }
     }
@@ -500,13 +511,19 @@ impl CocoaNativeWindow {
         if !input::has_handler(self.ns_view) {
             return false;
         }
-        if let CocoaNativeEvent::WindowResized { width, height } = &event {
-            self.geometry = self.geometry();
-            let _ = self
-                .surface
-                .resize(surface_dim(*width as i32), surface_dim(*height as i32));
-        } else if let CocoaNativeEvent::WindowMoved { geometry } = &event {
+        if let CocoaNativeEvent::WindowMoved { geometry } = &event {
+            // The event's geometry is the new one; the notification path must not repeat it.
             self.geometry = *geometry;
+            input::with_slot(self.ns_view, |slot| slot.last_geometry = Some(*geometry));
+        } else {
+            // Every other event is positioned against the window as it is now, not as it was
+            // when `geometry` was last cached (the user may have dragged or resized it).
+            self.geometry = self.geometry();
+            if let CocoaNativeEvent::WindowResized { width, height } = &event {
+                let _ = self
+                    .surface
+                    .resize(surface_dim(*width as i32), surface_dim(*height as i32));
+            }
         }
         let origin = Point::new(self.geometry.x, self.geometry.y);
         input::dispatch(self.ns_view, event, origin)
@@ -625,10 +642,21 @@ impl CocoaNativeWindow {
     /// Undoes what `apply_mask` did to the window's opacity, unless vibrancy or a backdrop
     /// needs the window transparent.
     fn restore_opaque_after_mask(&mut self) {
-        if !std::mem::take(&mut self.mask_made_transparent) {
-            return;
+        if std::mem::take(&mut self.mask_made_transparent) {
+            self.update_window_opacity();
         }
-        if self.vibrancy_material.is_some() || self.backdrop_view.is_some() {
+    }
+
+    /// Gives the window back its opaque `windowBackgroundColor` look once nothing needs it
+    /// transparent: no vibrancy view, no backdrop view and no mask that made it transparent.
+    /// Callers invoke it only after removing one of those, so a window that was never made
+    /// transparent is left alone.
+    fn update_window_opacity(&mut self) {
+        if self.vibrancy_material.is_some()
+            || self.vibrancy_view.is_some()
+            || self.backdrop_view.is_some()
+            || self.mask_made_transparent
+        {
             return;
         }
         let window = self.ns_window;
@@ -662,13 +690,14 @@ impl CocoaNativeWindow {
             return;
         }
         self.geometry = target;
+        let frame = native_frame_rect(self.ns_window, target);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setFrame:display:` takes (NSRect,
         // BOOL), matching `send_rect_display`.
         unsafe {
             ObjcMsg::send_rect_display(
                 self.ns_window,
                 Sel::register("setFrame:display:"),
-                native_rect(target),
+                frame,
                 false,
             )
         };
@@ -699,25 +728,26 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn raise(&self) {
-        // `QPlatformWindow::raise` (qcocoawindow.mm:1900): brings the window front in the window
+        // `QCocoaWindow::raise` (qcocoawindow.mm): brings the window front in the window
         // system's stacking order without taking activation or making it the key window.
         // AppKit's `-[NSWindow orderFront:]` would order an invisible window onto screen, so
         // invisible windows are skipped, matching Qt (`if ([m_nsWindow isVisible])`).
         if !self.is_visible() {
             return;
         }
-        #[cfg(target_os = "macos")]
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isVisible` takes no arguments
         // and returns BOOL, matching `send_bool_return`.
         if !unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible")) } {
             return;
         }
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderFront:` takes one sender
-        // object (nil here), matching `send_id_logged`.
-        unsafe { ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), Id::NIL) };
+        // object (the window itself, as Qt passes `m_nsWindow`), matching `send_id_logged`.
+        unsafe {
+            ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), self.ns_window)
+        };
     }
     fn request_activate_window(&self) {
-        // `QPlatformWindow::requestActivateWindow` (qcocoawindow.mm:1850-1865): a tooltip never
+        // `QCocoaWindow::requestActivateWindow` (qcocoawindow.mm): a tooltip never
         // takes activation, and an invisible window cannot become active.
         if self.flags.contains(WindowFlags::TOOLTIP)
             || self.flags.contains(WindowFlags::CLICK_THROUGH)
@@ -726,7 +756,7 @@ impl PlatformWindow for CocoaNativeWindow {
             return;
         }
         // AppKit's `-[NSWindow isVisible]` is NO when miniaturized (minimized) or hidden,
-        // even though our local state tracks shown (qcocoawindow.mm:1850-1865).
+        // even though our local state tracks shown (`QCocoaWindow::requestActivateWindow`).
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isVisible` takes no arguments
         // and returns BOOL, matching `send_bool_return`.
         if !unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible")) } {
@@ -746,15 +776,21 @@ impl PlatformWindow for CocoaNativeWindow {
                 ObjcMsg::send_bool_logged(nsapp, Sel::register("activateIgnoringOtherApps:"), true)
             };
         }
-        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `makeKeyAndOrderFront:` takes
-        // one sender object (nil here), matching `send_id_logged`.
+        // `QCocoaWindow::requestActivateWindow`: the view becomes the window's first responder
+        // and the window becomes key. The window is already visible (checked above), so no
+        // ordering is needed.
+        // SAFETY: `self.ns_window` and `self.ns_view` are live from `new` to `Drop`;
+        // `makeFirstResponder:` takes one responder and returns BOOL, ignored as in `new`
+        // [inferred: the BOOL return is in a register and ignoring it is harmless].
         unsafe {
             ObjcMsg::send_id_logged(
                 self.ns_window,
-                Sel::register("makeKeyAndOrderFront:"),
-                Id::NIL,
+                Sel::register("makeFirstResponder:"),
+                self.ns_view,
             )
         };
+        // SAFETY: `self.ns_window` is live (see above); `makeKeyWindow` takes no arguments.
+        unsafe { ObjcMsg::send_0_logged(self.ns_window, Sel::register("makeKeyWindow")) };
     }
 
     fn hide(&self) {
@@ -773,7 +809,9 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
-        let cg_rect = native_rect(rect);
+        // `QCocoaWindow::setGeometry` hands AppKit the content rect through
+        // `-[NSWindow setFrame:display:]` after converting it to a frame (with title bar).
+        let cg_rect = native_frame_rect(self.ns_window, rect);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setFrame:display:` takes
         // (NSRect, BOOL), matching `send_rect_display`.
         unsafe {
@@ -1205,6 +1243,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
         self.backdrop_state.request(backdrop, dark_mode);
+        let had_backdrop_view = self.backdrop_view.is_some();
         // The requested material is applied even while suspended: a suspension only turns the
         // effect view's state inactive (below), it never removes the view.
         let applied = crate::backdrop::set_cocoa_window_backdrop(
@@ -1214,6 +1253,10 @@ impl PlatformWindow for CocoaNativeWindow {
             dark_mode,
             &mut self.backdrop_view,
         );
+        if had_backdrop_view && self.backdrop_view.is_none() {
+            // The removed effect view may have been the only reason the window was transparent.
+            self.update_window_opacity();
+        }
         if self.backdrop_state.is_suspended() {
             self.set_backdrop_effect_active(false);
         }
@@ -1408,22 +1451,48 @@ pub fn qt_mac_flip_rect(rect: Rect, reference_height: i32) -> Rect {
 pub fn qt_mac_primary_screen_height() -> i32 {
     crate::screen::CocoaScreen::primary_height()
 }
-/// Queries an `NSWindow`'s live frame in Cocoa bottom-left desktop coordinates and flips it to
-/// Qt's top-left desktop coordinates, flooring negative origin coordinates for secondary monitors.
+/// Queries an `NSWindow`'s live content rect (`QCocoaWindow::geometry` is the content area, not
+/// the frame with the title bar) and flips it from Cocoa bottom-left desktop coordinates to
+/// Qt's top-left desktop coordinates. Each component is rounded as `QRectF::toRect()` rounds
+/// (`qRound`), including the fractional origins of secondary monitors.
 pub fn window_flipped_geometry(window: Id) -> Rect {
     if !window.is_nil() {
         // SAFETY: `window` is live from `new` to `Drop`; `frame` takes no arguments
         // and returns NSRect in Cocoa bottom-left desktop coordinates.
-        let rect = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
-        let cocoa_rect = Rect::new(
-            rect.origin.x.floor() as i32,
-            rect.origin.y.floor() as i32,
+        let frame = unsafe { ObjcMsg::send_rect_return(window, Sel::register("frame")) };
+        // SAFETY: `window` is live (see above); `contentRectForFrameRect:` takes one NSRect and
+        // returns an NSRect, matching `send_rect_arg_rect_return`.
+        let rect = unsafe {
+            ObjcMsg::send_rect_arg_rect_return(
+                window,
+                Sel::register("contentRectForFrameRect:"),
+                frame,
+            )
+        };
+        let primary_height = qt_mac_primary_screen_height() as f64;
+        let top_left_y = primary_height - rect.origin.y - rect.size.height;
+        return Rect::new(
+            rect.origin.x.round() as i32,
+            top_left_y.round() as i32,
             rect.size.width.round() as i32,
             rect.size.height.round() as i32,
         );
-        return qt_mac_flip_global_rect(cocoa_rect);
     }
     Rect::new(0, 0, 0, 0)
+}
+
+/// The `NSWindow` frame rect (with title bar) whose content rect is Qt's top-left global
+/// `rect`: `frameRectForContentRect:` of `QCocoaWindow::setGeometry`'s native rect.
+fn native_frame_rect(window: Id, rect: Rect) -> CGRect {
+    // SAFETY: `window` is live (callers pass `self.ns_window`); `frameRectForContentRect:` takes
+    // one NSRect and returns an NSRect, matching `send_rect_arg_rect_return`.
+    unsafe {
+        ObjcMsg::send_rect_arg_rect_return(
+            window,
+            Sel::register("frameRectForContentRect:"),
+            native_rect(rect),
+        )
+    }
 }
 /// `QCocoaScreen::mapToNative` (qcocoascreen.mm:815-818): Qt's top-left global rect as the
 /// bottom-left rect AppKit expects.

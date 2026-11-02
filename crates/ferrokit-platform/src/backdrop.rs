@@ -315,6 +315,8 @@ pub(crate) fn set_cocoa_window_backdrop(
         BackdropType::None => {
             // Qt removes the area's effect view from its superview and forgets it; the content
             // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
+            // The window's opacity is not touched here: it may still be transparent for vibrancy
+            // or a mask, so `CocoaNativeWindow` restores it once nothing needs it.
             if let Some(effect_view) = backdrop_view.take() {
                 // SAFETY: `effect_view` was taken from `backdrop_view`, which only ever holds the
                 // effect view this function created below, still retained by us (+1 from
@@ -334,6 +336,26 @@ pub(crate) fn set_cocoa_window_backdrop(
         | BackdropType::Acrylic
         | BackdropType::BlurBehind
         | BackdropType::FlatTint => {
+            // AppKit requires a non-opaque window and clear background color for a
+            // behind-window `NSVisualEffectView` to show through; the window's opacity is
+            // restored by `CocoaNativeWindow` when the last transparency user is removed.
+            // SAFETY: `target_window` is live and non-nil; `setOpaque:` takes one BOOL.
+            unsafe { ObjcMsg::send_bool_logged(target_window, Sel::register("setOpaque:"), false) };
+            // SAFETY: `clearColor` is a class method of `NSColor` returning an autoreleased object.
+            let clear_color = unsafe {
+                let nscolor_class = Class::get("NSColor").unwrap_or(Class::NIL);
+                ObjcMsg::send_class_0(nscolor_class, Sel::register("clearColor"))
+            };
+            if !clear_color.is_nil() {
+                // SAFETY: `target_window` is live; `setBackgroundColor:` takes one object.
+                unsafe {
+                    ObjcMsg::send_id_logged(
+                        target_window,
+                        Sel::register("setBackgroundColor:"),
+                        clear_color,
+                    );
+                }
+            }
             // Qt keeps one effect view per area and updates it in place
             // (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2259,2278-2281).
             let existing = *backdrop_view;
@@ -355,12 +377,13 @@ pub(crate) fn set_cocoa_window_backdrop(
                 }
             };
 
-            // Material selection:
-            // HUDWindow = 13, Popover = 6, UnderWindowBackground = 2
+            // Material selection (`NSVisualEffectMaterial`):
+            // HUDWindow = 13, Popover = 6, UnderWindowBackground = 21 (the non-deprecated
+            // material for a behind-window blur; raw 2 is the deprecated `Dark`).
             let material = match backdrop {
                 BackdropType::Mica | BackdropType::MicaAlt => 13,
                 BackdropType::Acrylic | BackdropType::FlatTint => 6,
-                BackdropType::BlurBehind => 2,
+                BackdropType::BlurBehind => 21,
                 BackdropType::None => 0,
             };
 
@@ -410,14 +433,14 @@ pub(crate) fn set_cocoa_window_backdrop(
                 // matching `send_0`.
                 let effect_layer = unsafe { ObjcMsg::send_0(effect_view, Sel::register("layer")) };
                 // SAFETY: `effect_layer` is the layer just returned by the live view (nil is a
-                // no-op); `setZPosition:` takes one CGFloat, matching `send_length`.
+                // no-op); `setZPosition:` takes one CGFloat, matching `send_cgfloat_logged`.
                 unsafe {
-                    ObjcMsg::send_length(
+                    ObjcMsg::send_cgfloat_logged(
                         effect_layer,
                         Sel::register("setZPosition:"),
                         f64::from(-f32::MAX),
-                    )
-                };
+                    );
+                }
                 // SAFETY: `target_window` is non-nil (checked above) and, per the caller contract, a
                 // live NSWindow; `contentView` takes no arguments and returns an object, matching `send_0`.
                 let content_view =
