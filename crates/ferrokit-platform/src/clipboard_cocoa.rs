@@ -212,38 +212,125 @@ impl PlatformClipboard for CocoaClipboard {
     }
 
     fn mime_data(&self) -> Result<MimeData, &'static str> {
-        let backend = &self.state.backend;
-        let mut mime_data = MimeData::new();
-        for ty in backend.types() {
-            let Some(mime) = mime_for_pasteboard_type(&ty) else {
-                continue;
-            };
-            if mime_data.has_format(&mime) {
-                continue;
-            }
-            if let Some(bytes) = backend.data_for_type(&ty) {
-                mime_data.set_data(mime, bytes);
-            }
-        }
-        // Types other applications put on the pasteboard that have a MIME counterpart but are
-        // not stored by `set_mime_data`: used only when no better type supplied the MIME type.
-        if !mime_data.has_format("text/plain")
-            && let Some(text) = fallback_text(backend.as_ref())
-        {
-            mime_data.set_text(&text);
-        }
-        if !mime_data.has_format("text/uri-list")
-            && let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty))
-        {
-            mime_data.set_data("text/uri-list", url);
-        }
-        Ok(mime_data)
+        Ok(mime_data_from_backend(self.state.backend.as_ref()))
     }
 
     fn clear(&self) -> Result<(), &'static str> {
         self.state.backend.clear_contents();
         self.state.poll();
         Ok(())
+    }
+}
+
+/// Decodes every format on `backend` into a [`MimeData`], including the UTF-16, legacy string and
+/// file/URL fallbacks. Shared by [`CocoaClipboard`] and drag-and-drop (`draggingPasteboard`).
+pub fn mime_data_from_backend(backend: &dyn PasteboardBackend) -> MimeData {
+    let mut mime_data = MimeData::new();
+    for ty in backend.types() {
+        let Some(mime) = mime_for_pasteboard_type(&ty) else {
+            continue;
+        };
+        if mime_data.has_format(&mime) {
+            continue;
+        }
+        if let Some(bytes) = backend.data_for_type(&ty) {
+            mime_data.set_data(mime, bytes);
+        }
+    }
+    // Types other applications put on the pasteboard that have a MIME counterpart but are
+    // not stored by `set_mime_data`: used only when no better type supplied the MIME type.
+    if !mime_data.has_format("text/plain")
+        && let Some(text) = fallback_text(backend)
+    {
+        mime_data.set_text(&text);
+    }
+    if !mime_data.has_format("text/uri-list")
+        && let Some(url) = URL_TYPES.iter().find_map(|ty| backend.data_for_type(ty))
+    {
+        mime_data.set_data("text/uri-list", url);
+    }
+    mime_data
+}
+
+/// Lists the MIME formats available on `backend` in sorted `BTreeSet` order without fetching their
+/// payloads (`com.trolltech.anymime.<mime>` encodes custom MIME names directly in the type string).
+pub fn formats_from_backend(backend: &dyn PasteboardBackend) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for ty in backend.types() {
+        if let Some(mime) = mime_for_pasteboard_type(&ty) {
+            set.insert(mime);
+        } else if ty == "public.utf16-plain-text" || LEGACY_STRING_TYPES.contains(&ty.as_str()) {
+            set.insert("text/plain".to_owned());
+        } else if URL_TYPES.contains(&ty.as_str()) {
+            set.insert("text/uri-list".to_owned());
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Lists the MIME formats of an arbitrary `NSPasteboard` object (`-[NSDraggingInfo
+/// draggingPasteboard]`) without reading every payload; empty when `pasteboard` is nil.
+///
+/// # Safety
+/// On macOS `pasteboard` is nil or a live `NSPasteboard`.
+pub unsafe fn pasteboard_formats(pasteboard: crate::objc_runtime::Id) -> Vec<String> {
+    if pasteboard.is_nil() {
+        return Vec::new();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let backend = native::RawPasteboard(pasteboard);
+        formats_from_backend(&backend)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let backend = MockPasteboard(pasteboard.0 as usize);
+        formats_from_backend(&backend)
+    }
+}
+
+/// Reads the [`MimeData`] of an arbitrary `NSPasteboard` object (`-[NSDraggingInfo
+/// draggingPasteboard]`); empty when `pasteboard` is nil.
+///
+/// # Safety
+/// On macOS `pasteboard` is nil or a live `NSPasteboard`.
+pub unsafe fn pasteboard_mime_data(pasteboard: crate::objc_runtime::Id) -> MimeData {
+    if pasteboard.is_nil() {
+        return MimeData::new();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let backend = native::RawPasteboard(pasteboard);
+        mime_data_from_backend(&backend)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let backend = MockPasteboard(pasteboard.0 as usize);
+        mime_data_from_backend(&backend)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct MockPasteboard(usize);
+
+#[cfg(not(target_os = "macos"))]
+impl PasteboardBackend for MockPasteboard {
+    fn change_count(&self) -> isize {
+        0
+    }
+    fn clear_contents(&self) -> isize {
+        0
+    }
+    fn types(&self) -> Vec<String> {
+        crate::objc_runtime::MockObjcRuntime::instance()
+            .pasteboard_types(crate::objc_runtime::Id(self.0 as *mut std::ffi::c_void))
+    }
+    fn data_for_type(&self, ty: &str) -> Option<Vec<u8>> {
+        crate::objc_runtime::MockObjcRuntime::instance()
+            .pasteboard_data(crate::objc_runtime::Id(self.0 as *mut std::ffi::c_void), ty)
+    }
+    fn set_data_for_type(&self, _data: &[u8], _ty: &str) -> bool {
+        false
     }
 }
 
@@ -376,54 +463,14 @@ mod native {
 
         fn types(&self) -> Vec<String> {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-            let _pool = Pool::new();
-            let mut out = Vec::new();
-            // SAFETY: `Self::general()` is the live pasteboard (inside `_pool`, under `_guard`);
-            // `types` returns an autoreleased NSArray of NSString or nil (a nil array makes `count`
-            // return 0 and the loop does not run). `objectAtIndex:` takes one NSUInteger and is
-            // called only for `index < count`, so it does not raise. Every item stays valid
-            // until `_pool` drains, after this block, and `rust_string` copies it; nothing is
-            // retained or released here.
-            unsafe {
-                let array = ObjcMsg::send_0(Self::general(), Sel::register("types"));
-                let count = ObjcMsg::send_usize_return(array, Sel::register("count"));
-                for index in 0..count {
-                    let item =
-                        ObjcMsg::send_id_with_usize(array, Sel::register("objectAtIndex:"), index);
-                    if let Some(text) = rust_string(item) {
-                        out.push(text);
-                    }
-                }
-            }
-            out
+            // SAFETY: `Self::general()` is the live general pasteboard, serialized by `_guard`.
+            unsafe { pasteboard_types(Self::general()) }
         }
 
         fn data_for_type(&self, ty: &str) -> Option<Vec<u8>> {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-            let _pool = Pool::new();
-            let ns_type = OwnedString::new(ty);
-            // SAFETY: `dataForType:` takes one NSString (`ns_type`, the live +1 string created
-            // above and released after this block) and returns an autoreleased NSData or nil, which
-            // is checked. `length` and `bytes` take no arguments, so `bytes` points at `len`
-            // bytes owned by that NSData, which stays valid until `_pool` drains (after this
-            // block), and `from_raw_parts` is only called for `len > 0` with a non-null pointer.
-            // The slice is read only, and copied by `to_vec` before the block ends.
-            unsafe {
-                let data =
-                    ObjcMsg::send_id(Self::general(), Sel::register("dataForType:"), ns_type.0);
-                if data.is_nil() {
-                    return None;
-                }
-                let len = ObjcMsg::send_usize_return(data, Sel::register("length"));
-                if len == 0 {
-                    return Some(Vec::new());
-                }
-                let bytes = ObjcMsg::send_0(data, Sel::register("bytes")).0 as *const u8;
-                if bytes.is_null() {
-                    return None;
-                }
-                Some(std::slice::from_raw_parts(bytes, len).to_vec())
-            }
+            // SAFETY: `Self::general()` is the live general pasteboard, serialized by `_guard`.
+            unsafe { pasteboard_data_for_type(Self::general(), ty) }
         }
 
         fn set_data_for_type(&self, data: &[u8], ty: &str) -> bool {
@@ -473,6 +520,92 @@ mod native {
                     ns_type.0.0,
                 ) != 0
             }
+        }
+    }
+
+    /// An arbitrary `NSPasteboard` (`draggingPasteboard`) as a read-only [`PasteboardBackend`].
+    pub(super) struct RawPasteboard(pub(super) Id);
+
+    // SAFETY: `RawPasteboard` is constructed and consumed synchronously inside `pasteboard_formats`
+    // and `pasteboard_mime_data` on the main thread and never crosses threads; `PasteboardBackend`
+    // requires `Send + Sync`.
+    unsafe impl Send for RawPasteboard {}
+    // SAFETY: see `Send` above.
+    unsafe impl Sync for RawPasteboard {}
+
+    impl PasteboardBackend for RawPasteboard {
+        fn change_count(&self) -> isize {
+            0
+        }
+        fn clear_contents(&self) -> isize {
+            0
+        }
+        fn types(&self) -> Vec<String> {
+            // SAFETY: `self.0` is nil or a live NSPasteboard per `pasteboard_mime_data`'s contract.
+            unsafe { pasteboard_types(self.0) }
+        }
+        fn data_for_type(&self, ty: &str) -> Option<Vec<u8>> {
+            // SAFETY: `self.0` is nil or a live NSPasteboard per `pasteboard_mime_data`'s contract.
+            unsafe { pasteboard_data_for_type(self.0, ty) }
+        }
+        fn set_data_for_type(&self, _data: &[u8], _ty: &str) -> bool {
+            false
+        }
+    }
+
+    /// `-[NSPasteboard types]` copied into Rust strings inside a fresh autorelease pool.
+    ///
+    /// # Safety
+    /// `pasteboard` is nil or a live `NSPasteboard`.
+    unsafe fn pasteboard_types(pasteboard: Id) -> Vec<String> {
+        let _pool = Pool::new();
+        let mut out = Vec::new();
+        // SAFETY: `pasteboard` is nil or a live NSPasteboard (inside `_pool`); `types` returns an
+        // autoreleased NSArray of NSString or nil (a nil array makes `count` return 0 and the
+        // loop does not run). `objectAtIndex:` takes one NSUInteger and is called only for
+        // `index < count`, so it does not raise. Every item stays valid until `_pool` drains,
+        // after this block, and `rust_string` copies it; nothing is retained or released here.
+        unsafe {
+            let array = ObjcMsg::send_0(pasteboard, Sel::register("types"));
+            let count = ObjcMsg::send_usize_return(array, Sel::register("count"));
+            for index in 0..count {
+                let item =
+                    ObjcMsg::send_id_with_usize(array, Sel::register("objectAtIndex:"), index);
+                if let Some(text) = rust_string(item) {
+                    out.push(text);
+                }
+            }
+        }
+        out
+    }
+
+    /// `-[NSPasteboard dataForType:]` copied into a `Vec<u8>` inside a fresh autorelease pool.
+    ///
+    /// # Safety
+    /// `pasteboard` is nil or a live `NSPasteboard`.
+    unsafe fn pasteboard_data_for_type(pasteboard: Id, ty: &str) -> Option<Vec<u8>> {
+        let _pool = Pool::new();
+        let ns_type = OwnedString::new(ty);
+        // SAFETY: `dataForType:` takes one NSString (`ns_type`, the live +1 string created
+        // above and released after this block) and returns an autoreleased NSData or nil, which
+        // is checked. `length` and `bytes` take no arguments, so `bytes` points at `len`
+        // bytes owned by that NSData, which stays valid until `_pool` drains (after this
+        // block), and `from_raw_parts` is only called for `len > 0` with a non-null pointer.
+        // The slice is read only, and copied by `to_vec` before the block ends.
+        unsafe {
+            let data = ObjcMsg::send_id(pasteboard, Sel::register("dataForType:"), ns_type.0);
+            if data.is_nil() {
+                return None;
+            }
+            let len = ObjcMsg::send_usize_return(data, Sel::register("length"));
+            if len == 0 {
+                return Some(Vec::new());
+            }
+            let bytes = ObjcMsg::send_0(data, Sel::register("bytes")).0 as *const u8;
+            if bytes.is_null() {
+                return None;
+            }
+            Some(std::slice::from_raw_parts(bytes, len).to_vec())
         }
     }
 }
