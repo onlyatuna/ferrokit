@@ -428,8 +428,12 @@ pub(crate) fn set_cocoa_window_backdrop(
                     unsafe { ObjcMsg::send_rect_return(content_view, Sel::register("bounds")) }
                 } else {
                     // SAFETY: `target_window` is live and non-nil; `frame` takes no arguments and
-                    // returns NSRect, matching `send_rect_return`.
-                    unsafe { ObjcMsg::send_rect_return(target_window, Sel::register("frame")) }
+                    // returns NSRect, matching `send_rect_return`. When the view becomes the content
+                    // view, its frame origin must be (0.0, 0.0) relative to the window, not the
+                    // window's screen coordinates.
+                    let frame =
+                        unsafe { ObjcMsg::send_rect_return(target_window, Sel::register("frame")) };
+                    crate::objc_runtime::CGRect::new(0.0, 0.0, frame.size.width, frame.size.height)
                 };
                 // SAFETY: `effect_view` is live; `setFrame:` takes NSRect, matching `send_rect`.
                 unsafe { ObjcMsg::send_rect(effect_view, Sel::register("setFrame:"), bounds) };
@@ -440,8 +444,8 @@ pub(crate) fn set_cocoa_window_backdrop(
                         effect_view,
                         Sel::register("setAutoresizingMask:"),
                         0x12,
-                    )
-                };
+                    );
+                }
                 if !content_view.is_nil() {
                     // SAFETY: `content_view` is non-nil (checked above) and `effect_view` is live;
                     // `addSubview:` takes one object, matching `send_id`. The superview retains the

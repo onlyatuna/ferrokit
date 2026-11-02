@@ -504,11 +504,10 @@ fn present_region_moves_a_layered_window_to_its_target_position_once() {
 fn suspending_acrylic_makes_the_effect_view_inactive_and_resuming_makes_it_active_again() {
     let mock = MockObjcRuntime::instance();
     let mut win = window(WindowFlags::NORMAL);
-    // The mock's `contentView` is the window itself, so the effect view is the window's last
-    // child (after the content view).
+    // The effect view is added as a subview of the window's content view.
     let effect_view = |win: &CocoaNativeWindow| {
         *mock
-            .get_object_data(win.ns_window())
+            .get_object_data(win.ns_view())
             .unwrap()
             .children
             .last()
@@ -530,12 +529,9 @@ fn suspending_acrylic_makes_the_effect_view_inactive_and_resuming_makes_it_activ
     );
     assert!(!win.suspend_backdrop(), "already suspended");
     assert_eq!(
-        mock.get_object_data(win.ns_window())
-            .unwrap()
-            .children
-            .len(),
-        2,
-        "content view and effect view: the effect view stays"
+        mock.get_object_data(win.ns_view()).unwrap().children.len(),
+        1,
+        "effect view is child of content view"
     );
 
     // Asking for Acrylic again while suspended keeps it suspended.
@@ -662,7 +658,7 @@ fn flat_tint_backdrop_applies_inactive_effect_view() {
     let mut win = window(WindowFlags::NORMAL);
     let effect_view = |win: &CocoaNativeWindow| {
         *mock
-            .get_object_data(win.ns_window())
+            .get_object_data(win.ns_view())
             .unwrap()
             .children
             .last()
@@ -829,4 +825,20 @@ fn window_delegate_notifications_deliver_events_and_are_cleaned_up_on_drop() {
         .filter(|c| c.selector == "removeObserver:")
         .collect();
     assert_eq!(remove_calls.len(), 6, "all 6 observers removed on drop");
+}
+#[test]
+fn request_activate_window_checks_native_is_visible() {
+    let mock = MockObjcRuntime::instance();
+    let win = window(WindowFlags::NORMAL);
+    let ns_window = win.ns_window();
+
+    win.show();
+    mock.update_object(ns_window, |d| d.is_visible = false);
+    mock.clear_calls();
+
+    win.request_activate_window();
+    assert!(
+        !selectors(mock, ns_window).contains(&"makeKeyAndOrderFront:".to_string()),
+        "window with native isVisible == false must not be activated"
+    );
 }

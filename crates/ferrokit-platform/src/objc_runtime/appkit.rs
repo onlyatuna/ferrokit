@@ -492,17 +492,16 @@ impl ObjcMsg {
     ///
     /// # Safety
     /// See [`ObjcMsg`].
-    pub unsafe fn send_uint_logged(receiver: Id, sel: Sel, val: NSUInteger) -> Id {
+    pub unsafe fn send_uint_logged(receiver: Id, sel: Sel, val: NSUInteger) {
         if receiver.is_nil() {
-            return Id::NIL;
+            return;
         }
 
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, val))
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) = msg_send_fn();
+            msg_send(receiver.0, sel.0, val);
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -511,7 +510,6 @@ impl ObjcMsg {
             if mock_selector_name(sel) == "setStyleMask:" {
                 MockObjcRuntime::instance().update_object(receiver, |data| data.style_mask = val);
             }
-            receiver
         }
     }
 
@@ -686,7 +684,28 @@ impl ObjcMsg {
                     MockValue::Id(object),
                 ],
             );
-            receiver
+            Id::NIL
+        }
+    }
+    /// `-[NSNotificationCenter removeObserver:]`, logged.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_remove_observer_logged(receiver: Id, sel: Sel, observer: Id) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
+            msg_send(receiver.0, sel.0, observer.0);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(receiver, sel, vec![MockValue::Id(observer)]);
         }
     }
 

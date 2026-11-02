@@ -330,7 +330,7 @@ impl CocoaNativeWindow {
         // SAFETY: `defaultCenter` is a no-argument class method returning an object.
         let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
         let mut window_observers = Vec::new();
-        if !center.is_nil() {
+        if !center.is_nil() && !ns_window.is_nil() {
             const NOTIFICATIONS: [&str; 6] = [
                 "NSWindowDidBecomeKeyNotification",
                 "NSWindowDidResignKeyNotification",
@@ -725,6 +725,13 @@ impl PlatformWindow for CocoaNativeWindow {
         {
             return;
         }
+        // AppKit's `-[NSWindow isVisible]` is NO when miniaturized (minimized) or hidden,
+        // even though our local state tracks shown (qcocoawindow.mm:1850-1865).
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isVisible` takes no arguments
+        // and returns BOOL, matching `send_bool_return`.
+        if !unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible")) } {
+            return;
+        }
         // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication` returning
         // an object (a nil class from `unwrap_or` is a no-op).
         let nsapp = unsafe {
@@ -834,7 +841,7 @@ impl PlatformWindow for CocoaNativeWindow {
                     self.ns_window,
                     Sel::register("setStyleMask:"),
                     cocoa_style_mask(self.flags),
-                )
+                );
             };
         }
         if changed.intersects(WindowFlags::STAYS_ON_TOP | WindowFlags::TOOL | WindowFlags::TOOLTIP)
@@ -1299,9 +1306,9 @@ impl Drop for CocoaNativeWindow {
         if !center.is_nil() {
             for observer in self.window_observers.drain(..) {
                 // SAFETY: `center` is the shared NSNotificationCenter; `observer.id()` is the live
-                // target registered in `new`; `removeObserver:` takes one object, matching `send_id_logged`.
+                // target registered in `new`; `removeObserver:` takes one object, matching `send_remove_observer_logged`.
                 unsafe {
-                    ObjcMsg::send_id_logged(
+                    ObjcMsg::send_remove_observer_logged(
                         center,
                         Sel::register("removeObserver:"),
                         observer.id(),
@@ -1399,8 +1406,7 @@ pub fn qt_mac_flip_rect(rect: Rect, reference_height: i32) -> Rect {
 /// reference of every Qt top-left <-> Cocoa bottom-left conversion (qcocoascreen.mm:226-227).
 #[inline]
 pub fn qt_mac_primary_screen_height() -> i32 {
-    use crate::screen::PlatformScreen;
-    crate::screen::CocoaScreen::primary().geometry().height
+    crate::screen::CocoaScreen::primary_height()
 }
 /// Queries an `NSWindow`'s live frame in Cocoa bottom-left desktop coordinates and flips it to
 /// Qt's top-left desktop coordinates, flooring negative origin coordinates for secondary monitors.

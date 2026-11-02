@@ -592,6 +592,36 @@ pub mod cocoa_screen {
                 dpr: scale as f32,
             }
         }
+        /// Returns the primary screen's frame height without constructing full CocoaScreen objects.
+        pub fn primary_height() -> i32 {
+            let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);
+            // SAFETY: `screens` is a class method with no arguments returning an object;
+            // a nil class lookup yields nil which is checked below.
+            let screens_array =
+                unsafe { ObjcMsg::send_class_0(nsscreen_class, Sel::register("screens")) };
+            let has_screens = if screens_array.is_nil() {
+                false
+            } else {
+                // SAFETY: `screens_array` is non-nil; `count` returns NSUInteger.
+                (unsafe { ObjcMsg::send_usize_return(screens_array, Sel::register("count")) }) > 0
+            };
+            if !has_screens {
+                1080
+            } else {
+                // SAFETY: `screens_array` has count > 0; index 0 is in bounds and returns object.
+                let main_screen = unsafe {
+                    ObjcMsg::send_id_with_usize(screens_array, Sel::register("objectAtIndex:"), 0)
+                };
+                if !main_screen.is_nil() {
+                    // SAFETY: `main_screen` is non-nil; `frame` returns NSRect.
+                    let frame =
+                        unsafe { ObjcMsg::send_rect_return(main_screen, Sel::register("frame")) };
+                    frame.size.height as i32
+                } else {
+                    1080
+                }
+            }
+        }
 
         pub fn primary() -> Self {
             let nsscreen_class = Class::get("NSScreen").unwrap_or(Class::NIL);

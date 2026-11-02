@@ -473,6 +473,8 @@ pub struct MockObjectData {
     pub released_when_closed: bool,
     /// `-[NSWindow styleMask]`, set by `initWithContentRect:styleMask:backing:defer:`.
     pub style_mask: NSUInteger,
+    /// `-[NSWindow contentView]`, set by `setContentView:`.
+    pub content_view: Id,
 }
 
 // SAFETY: in the mock runtime an `Id` is an integer handle into `MockObjcRuntime::objects`, never
@@ -508,6 +510,7 @@ impl Default for MockObjectData {
             retain_count: 1,
             released_when_closed: true,
             style_mask: 0,
+            content_view: Id::NIL,
         }
     }
 }
@@ -758,6 +761,10 @@ impl ObjcMsg {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.menu;
                 }
+            } else if sel_name == "contentView" {
+                if let Some(data) = runtime.get_object_data(receiver) {
+                    return data.content_view;
+                }
             } else if sel_name == "currentEvent" {
                 return runtime.current_event();
             } else if sel_name == "release" {
@@ -985,6 +992,9 @@ impl ObjcMsg {
                 || sel_name == "setContentView:"
             {
                 runtime.update_object(receiver, |data| {
+                    if sel_name == "setContentView:" {
+                        data.content_view = arg;
+                    }
                     data.children.push(arg);
                 });
                 runtime.update_object(arg, |data| {
@@ -1311,6 +1321,10 @@ impl ObjcMsg {
                 && let Some(obj) = runtime.get_object_data(receiver)
             {
                 return obj.is_key;
+            } else if sel_name == "isVisible"
+                && let Some(obj) = runtime.get_object_data(receiver)
+            {
+                return obj.is_visible;
             }
             false
         }
