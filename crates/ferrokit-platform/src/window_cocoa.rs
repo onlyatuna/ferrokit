@@ -1079,6 +1079,10 @@ impl PlatformWindow for CocoaNativeWindow {
         }
     }
 
+    fn enable_drop_target(&mut self, enabled: bool) -> bool {
+        input::set_drop_target_enabled(self.ns_view, enabled)
+    }
+
     fn start_system_drag(&self) {
         let _ = self.start_system_move();
     }

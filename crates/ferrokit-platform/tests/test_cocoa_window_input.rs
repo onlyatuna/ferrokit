@@ -1051,3 +1051,311 @@ fn backing_properties_notification_falls_back_to_primary_screen_dpr() {
         }
     );
 }
+
+// ---------------------------------------------------------------------------
+// Drag and drop (`NSDraggingDestination`, qnsview_dragging.mm)
+// ---------------------------------------------------------------------------
+
+struct DragAcceptHandler<F> {
+    log: Log,
+    decide: F,
+}
+
+impl<F: FnMut(&WindowSystemEvent) -> u32 + 'static>
+    ferrokit_platform::window_system_interface::WindowSystemEventHandler for DragAcceptHandler<F>
+{
+    fn handle_window_event(&mut self, event: WindowSystemEvent) {
+        self.log.borrow_mut().push(event);
+    }
+
+    fn handle_window_event_accepted(&mut self, event: WindowSystemEvent) -> u32 {
+        let reply = (self.decide)(&event);
+        self.log.borrow_mut().push(event);
+        reply
+    }
+}
+
+fn drag_sender(x: f64, y: f64, source_mask: i64, pasteboard: Id) -> Id {
+    MockObjcRuntime::instance().object_with(
+        "NSDraggingInfo",
+        &[
+            ("draggingLocation", MockValue::Point(CGPoint::new(x, y))),
+            ("draggingSourceOperationMask", MockValue::Int(source_mask)),
+            ("draggingPasteboard", MockValue::Id(pasteboard)),
+        ],
+    )
+}
+
+fn dragging_entered(view: Id, sender: Id) -> usize {
+    // SAFETY: mock runtime never dereferences `Id`.
+    unsafe { input::dragging_entered(view, sender) }
+}
+
+fn dragging_updated(view: Id, sender: Id) -> usize {
+    // SAFETY: mock runtime never dereferences `Id`.
+    unsafe { input::dragging_updated(view, sender) }
+}
+
+fn perform_drag_operation(view: Id, sender: Id) -> bool {
+    // SAFETY: mock runtime never dereferences `Id`.
+    unsafe { input::perform_drag_operation(view, sender) }
+}
+
+#[test]
+fn enable_drop_target_registers_and_unregisters_dragged_types() {
+    let mock = MockObjcRuntime::instance();
+    let (mut win, _log) = window();
+    let view = win.ns_view();
+    mock.clear_calls();
+
+    assert!(win.enable_drop_target(true));
+    let calls = mock.calls_for(view);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].selector, "registerForDraggedTypes:");
+    assert!(
+        calls[0]
+            .args
+            .contains(&MockValue::Str("public.utf8-plain-text".into()))
+    );
+    assert!(
+        calls[0]
+            .args
+            .contains(&MockValue::Str("public.file-url".into()))
+    );
+    assert!(
+        calls[0]
+            .args
+            .contains(&MockValue::Str("com.trolltech.qt.MimeTypeName".into()))
+    );
+
+    // Enabling again while already enabled is a no-op.
+    mock.clear_calls();
+    assert!(win.enable_drop_target(true));
+    assert!(mock.calls_for(view).is_empty());
+
+    // Disabling sends `unregisterDraggedTypes` once.
+    assert!(win.enable_drop_target(false));
+    let calls = mock.calls_for(view);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].selector, "unregisterDraggedTypes");
+
+    mock.clear_calls();
+    assert!(win.enable_drop_target(false));
+    assert!(mock.calls_for(view).is_empty());
+}
+
+#[test]
+fn drag_enter_move_and_drop_deliver_flipped_coordinates_formats_and_payload() {
+    let mock = MockObjcRuntime::instance();
+    let (mut win, log) = window();
+    let view = win.ns_view();
+    win.set_event_handler(Box::new(DragAcceptHandler {
+        log: Rc::clone(&log),
+        decide: |ev: &WindowSystemEvent| match *ev {
+            WindowSystemEvent::DragEnter { drop_action, .. }
+            | WindowSystemEvent::DragMove { drop_action, .. }
+            | WindowSystemEvent::Drop { drop_action, .. } => drop_action,
+            _ => 0,
+        },
+    }));
+    mock.set_current_event(Id::NIL);
+
+    let pboard = mock.allocate_object("NSPasteboard");
+    mock.set_pasteboard_data(pboard, "public.utf8-plain-text", b"hello macos");
+    mock.set_pasteboard_data(pboard, "public.file-url", b"file:///tmp/test.txt");
+
+    // Before `enable_drop_target(true)`, drags are refused and never reach the handler.
+    let sender = drag_sender(
+        40.0,
+        310.0,
+        (input::NS_DRAG_OPERATION_COPY | input::NS_DRAG_OPERATION_MOVE) as i64,
+        pboard,
+    );
+    assert_eq!(
+        dragging_entered(view, sender),
+        input::NS_DRAG_OPERATION_NONE
+    );
+    assert!(take(&log).is_empty());
+
+    assert!(win.enable_drop_target(true));
+
+    // Window height is 400: bottom-left (40, 310) -> flipped top-left (40, 90).
+    assert_eq!(
+        dragging_entered(view, sender),
+        input::NS_DRAG_OPERATION_COPY
+    );
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::DragEnter {
+            pos: Point::new(40, 90),
+            formats: vec!["text/plain".to_string(), "text/uri-list".to_string()],
+            drop_action: 1, // Copy
+        }
+    );
+
+    // Move to bottom-left (120.4, 250.6) -> flipped (120.4, 149.4) -> rounds to (120, 149).
+    let move_sender = drag_sender(
+        120.4,
+        250.6,
+        (input::NS_DRAG_OPERATION_COPY | input::NS_DRAG_OPERATION_MOVE) as i64,
+        pboard,
+    );
+    assert_eq!(
+        dragging_updated(view, move_sender),
+        input::NS_DRAG_OPERATION_COPY
+    );
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::DragMove {
+            pos: Point::new(120, 149),
+            drop_action: 1,
+        }
+    );
+
+    // Drop at the moved position.
+    assert!(perform_drag_operation(view, move_sender));
+    assert_eq!(
+        only(&log),
+        WindowSystemEvent::Drop {
+            pos: Point::new(120, 149),
+            formats: vec!["text/plain".to_string(), "text/uri-list".to_string()],
+            data: vec![
+                ("text/plain".to_string(), b"hello macos".to_vec()),
+                (
+                    "text/uri-list".to_string(),
+                    b"file:///tmp/test.txt".to_vec()
+                ),
+            ],
+            drop_action: 1,
+        }
+    );
+}
+
+#[test]
+fn drag_modifiers_choose_move_and_link_and_respect_source_operation_mask() {
+    let mock = MockObjcRuntime::instance();
+    let (mut win, log) = window();
+    let view = win.ns_view();
+    assert!(win.enable_drop_target(true));
+
+    // Handler accepts whatever action was proposed.
+    win.set_event_handler(Box::new(DragAcceptHandler {
+        log: Rc::clone(&log),
+        decide: |ev: &WindowSystemEvent| match *ev {
+            WindowSystemEvent::DragEnter { drop_action, .. }
+            | WindowSystemEvent::DragMove { drop_action, .. }
+            | WindowSystemEvent::Drop { drop_action, .. } => drop_action,
+            _ => 0,
+        },
+    }));
+
+    let pboard = mock.allocate_object("NSPasteboard");
+    mock.set_pasteboard_data(pboard, "public.utf8-plain-text", b"item");
+    let all_ops = (input::NS_DRAG_OPERATION_COPY
+        | input::NS_DRAG_OPERATION_MOVE
+        | input::NS_DRAG_OPERATION_LINK) as i64;
+    let sender = drag_sender(10.0, 390.0, all_ops, pboard);
+
+    // Command (`QT_CONTROL_MODIFIER` on macOS) proposes Move (2).
+    let cmd_ev = ns_event(&[("modifierFlags", MockValue::Int(COMMAND))]);
+    mock.set_current_event(cmd_ev);
+    assert_eq!(
+        dragging_entered(view, sender),
+        input::NS_DRAG_OPERATION_MOVE
+    );
+    assert!(matches!(
+        only(&log),
+        WindowSystemEvent::DragEnter { drop_action: 2, .. }
+    ));
+
+    // Command + Option proposes Link (4).
+    let cmd_opt_ev = ns_event(&[("modifierFlags", MockValue::Int(COMMAND | OPTION))]);
+    mock.set_current_event(cmd_opt_ev);
+    assert_eq!(
+        dragging_updated(view, sender),
+        input::NS_DRAG_OPERATION_LINK
+    );
+    assert!(matches!(
+        only(&log),
+        WindowSystemEvent::DragMove { drop_action: 4, .. }
+    ));
+
+    // Option alone proposes Copy (1).
+    let opt_ev = ns_event(&[("modifierFlags", MockValue::Int(OPTION))]);
+    mock.set_current_event(opt_ev);
+    assert_eq!(
+        dragging_updated(view, sender),
+        input::NS_DRAG_OPERATION_COPY
+    );
+    assert!(matches!(
+        only(&log),
+        WindowSystemEvent::DragMove { drop_action: 1, .. }
+    ));
+
+    // Releasing all modifiers (`[NSApp currentEvent]` has `modifierFlags == 0`) proposes Copy (1).
+    let no_mod_ev = ns_event(&[("modifierFlags", MockValue::Int(0))]);
+    mock.set_current_event(no_mod_ev);
+    assert_eq!(
+        dragging_updated(view, sender),
+        input::NS_DRAG_OPERATION_COPY
+    );
+    assert!(matches!(
+        only(&log),
+        WindowSystemEvent::DragMove { drop_action: 1, .. }
+    ));
+
+    mock.set_current_event(Id::NIL);
+    input::dragging_exited(view);
+    assert_eq!(only(&log), WindowSystemEvent::DragLeave);
+
+    // After `draggingExited:`, a stray `draggingUpdated:` before a new `draggingEntered:` is refused.
+    assert_eq!(
+        dragging_updated(view, sender),
+        input::NS_DRAG_OPERATION_NONE
+    );
+    assert!(take(&log).is_empty());
+
+    // If the handler requests an action not in the source's allowed mask, it is rejected.
+    win.set_event_handler(Box::new(DragAcceptHandler {
+        log: Rc::clone(&log),
+        decide: |_: &WindowSystemEvent| 2, // handler insists on Move
+    }));
+    let copy_only_sender = drag_sender(10.0, 390.0, input::NS_DRAG_OPERATION_COPY as i64, pboard);
+    assert_eq!(
+        dragging_entered(view, copy_only_sender),
+        input::NS_DRAG_OPERATION_NONE
+    );
+    assert!(!perform_drag_operation(view, copy_only_sender));
+    let _ = take(&log);
+
+    // A pasteboard with no supported formats is refused without invoking the handler.
+    let empty_pboard = mock.allocate_object("NSPasteboard");
+    let empty_sender = drag_sender(10.0, 390.0, all_ops, empty_pboard);
+    assert_eq!(
+        dragging_entered(view, empty_sender),
+        input::NS_DRAG_OPERATION_NONE
+    );
+    assert!(take(&log).is_empty());
+    // Since `draggingEntered:` was refused (no supported formats), `draggingExited:` and
+    // `performDragOperation:` are no-ops and do not emit `DragLeave` or `Drop`.
+    input::dragging_exited(view);
+    assert!(!perform_drag_operation(view, empty_sender));
+    assert!(take(&log).is_empty());
+
+    // Disabling the drop target while a drag session is active dispatches `DragLeave` immediately.
+    win.set_event_handler(Box::new(DragAcceptHandler {
+        log: Rc::clone(&log),
+        decide: |ev: &WindowSystemEvent| match *ev {
+            WindowSystemEvent::DragEnter { drop_action, .. } => drop_action,
+            _ => 0,
+        },
+    }));
+    assert_eq!(
+        dragging_entered(view, sender),
+        input::NS_DRAG_OPERATION_COPY
+    );
+    assert!(matches!(only(&log), WindowSystemEvent::DragEnter { .. }));
+    assert!(win.enable_drop_target(false));
+    assert_eq!(only(&log), WindowSystemEvent::DragLeave);
+    mock.clear_pasteboards();
+}

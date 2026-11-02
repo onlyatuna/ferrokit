@@ -321,6 +321,11 @@ pub(crate) struct ViewSlot {
     tracking_area: Id,
     /// Last seen window geometry (in Qt screen coordinates), used to avoid duplicate GeometryChange events.
     pub(crate) last_geometry: Option<Rect>,
+    /// Whether `enable_drop_target(true)` is in effect on this view.
+    pub(crate) drop_target_enabled: bool,
+    /// Whether the drag currently over the view (`draggingEntered:` .. `draggingExited:` /
+    /// `performDragOperation:`) carries at least one decodable format.
+    drag_accepts: bool,
 }
 
 thread_local! {
@@ -347,6 +352,8 @@ pub(crate) fn register_view(view: Id, window: Id) {
         // window does not report a change.
         last_geometry: (!window.is_nil())
             .then(|| crate::window_cocoa::window_flipped_geometry(window)),
+        drop_target_enabled: false,
+        drag_accepts: false,
     };
     let _ = VIEWS.try_with(|views| views.borrow_mut().insert(view.0 as usize, slot));
 }
@@ -441,6 +448,16 @@ impl Drop for Delivery {
 /// Called while the handler runs (a handler that creates a window, pumps events, ...), the event
 /// waits and is delivered right after the running call, never nested.
 pub(crate) fn dispatch(view: Id, event: CocoaNativeEvent, origin: Point) -> bool {
+    dispatch_with(view, |slot| translate(slot, event, origin))
+}
+
+/// Delivers a pre-built [`WindowSystemEvent`] to `view`'s handler, queueing it when the handler is
+/// already running on the stack.
+fn dispatch_window_event(view: Id, event: WindowSystemEvent) -> bool {
+    dispatch_with(view, |_| event)
+}
+
+fn dispatch_with(view: Id, make: impl FnOnce(&mut ViewSlot) -> WindowSystemEvent) -> bool {
     enum Next {
         Ignore,
         Queued,
@@ -454,7 +471,7 @@ pub(crate) fn dispatch(view: Id, event: CocoaNativeEvent, origin: Point) -> bool
                 return Next::Ignore;
             };
             if slot.delivering {
-                let event = translate(slot, event, origin);
+                let event = make(slot);
                 slot.queued.push_back(event);
                 return Next::Queued;
             }
@@ -462,7 +479,7 @@ pub(crate) fn dispatch(view: Id, event: CocoaNativeEvent, origin: Point) -> bool
                 return Next::Ignore;
             };
             slot.delivering = true;
-            let event = translate(slot, event, origin);
+            let event = make(slot);
             Next::Run(handler, event)
         })
         .unwrap_or(Next::Ignore);
@@ -474,22 +491,29 @@ pub(crate) fn dispatch(view: Id, event: CocoaNativeEvent, origin: Point) -> bool
                 key,
                 handler: Some(handler),
             };
-            let mut event = Some(first);
-            while let Some(current) = event.take() {
-                if let Some(handler) = delivery.handler.as_mut() {
-                    handler.handle_window_event(current);
-                }
-                event = VIEWS
-                    .try_with(|views| {
-                        views
-                            .borrow_mut()
-                            .get_mut(&key)
-                            .and_then(|slot| slot.queued.pop_front())
-                    })
-                    .ok()
-                    .flatten();
+            if let Some(h) = delivery.handler.as_mut() {
+                h.handle_window_event(first);
             }
+            drain_queued_events(key, &mut delivery);
             true
+        }
+    }
+}
+
+/// Drains events queued in `key`'s slot while `delivery` ran.
+fn drain_queued_events(key: usize, delivery: &mut Delivery) {
+    while let Some(queued) = VIEWS
+        .try_with(|views| {
+            views
+                .borrow_mut()
+                .get_mut(&key)
+                .and_then(|slot| slot.queued.pop_front())
+        })
+        .ok()
+        .flatten()
+    {
+        if let Some(h) = delivery.handler.as_mut() {
+            h.handle_window_event(queued);
         }
     }
 }
@@ -1296,4 +1320,322 @@ pub(crate) fn replace_cursor(view: Id, cursor: Id) {
         appkit::release(previous);
         ObjcMsg::send_id_logged(window, sel("invalidateCursorRectsForView:"), view);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop (`NSDraggingDestination`, qnsview_dragging.mm / qcocoadrag.mm)
+// ---------------------------------------------------------------------------
+
+pub const NS_DRAG_OPERATION_NONE: NSUInteger = 0;
+pub const NS_DRAG_OPERATION_COPY: NSUInteger = 1;
+pub const NS_DRAG_OPERATION_LINK: NSUInteger = 2;
+pub const NS_DRAG_OPERATION_GENERIC: NSUInteger = 4;
+pub const NS_DRAG_OPERATION_MOVE: NSUInteger = 16;
+pub const NS_DRAG_OPERATION_DELETE: NSUInteger = 32;
+
+const QT_DROP_ACTION_COPY: u32 = 1;
+const QT_DROP_ACTION_MOVE: u32 = 2;
+const QT_DROP_ACTION_LINK: u32 = 4;
+
+/// The pasteboard types `QNSView` registers with `registerForDraggedTypes:` when a window enables
+/// its drop target (`QNSView::registerDragTypes`, qnsview_dragging.mm:11-30).
+pub const DRAGGED_PASTEBOARD_TYPES: [&str; 10] = [
+    "public.utf8-plain-text",
+    "public.utf16-plain-text",
+    "NSStringPboardType",
+    "public.html",
+    "public.file-url",
+    "public.url",
+    "public.png",
+    "public.tiff",
+    "public.jpeg",
+    "com.trolltech.qt.MimeTypeName",
+];
+
+/// Enables or disables `view` as an AppKit drag-and-drop destination (`registerForDraggedTypes:`
+/// / `unregisterDraggedTypes`). Returns `false` when `view` is not a registered `QNSView`.
+pub fn set_drop_target_enabled(view: Id, enabled: bool) -> bool {
+    ThreadContext::assert_main_thread("set_drop_target_enabled");
+    let Some((was_enabled, was_active)) = with_slot(view, |slot| {
+        let prev = slot.drop_target_enabled;
+        let active = slot.drag_accepts;
+        slot.drop_target_enabled = enabled;
+        if !enabled {
+            slot.drag_accepts = false;
+        }
+        (prev, active)
+    }) else {
+        return false;
+    };
+    if enabled {
+        if !was_enabled {
+            // SAFETY: `view` was just found in `VIEWS`, so it is the live `QNSView` of a
+            // `CocoaNativeWindow` on the main thread.
+            unsafe {
+                ObjcMsg::send_register_dragged_types(view, &DRAGGED_PASTEBOARD_TYPES);
+            }
+        }
+    } else if was_enabled {
+        // SAFETY: `view` is live (found in `VIEWS` above); `unregisterDraggedTypes` takes no
+        // arguments.
+        unsafe {
+            ObjcMsg::send_0_logged(view, sel("unregisterDraggedTypes"));
+        }
+        if was_active {
+            let _ = dispatch_window_event(view, WindowSystemEvent::DragLeave);
+        }
+    }
+    true
+}
+
+/// `qt_mac_mapNSDragOperations` (qcocoahelpers.mm): maps an `NSDragOperation` mask to a
+/// `Qt::DropActions` bitmask (`Copy = 1`, `Move = 2`, `Link = 4`).
+pub fn qt_drop_actions_from_ns(ns_ops: NSUInteger) -> u32 {
+    let mut actions = 0;
+    if ns_ops & (NS_DRAG_OPERATION_COPY | NS_DRAG_OPERATION_GENERIC) != 0 {
+        actions |= QT_DROP_ACTION_COPY;
+    }
+    if ns_ops & (NS_DRAG_OPERATION_MOVE | NS_DRAG_OPERATION_DELETE) != 0 {
+        actions |= QT_DROP_ACTION_MOVE;
+    }
+    if ns_ops & NS_DRAG_OPERATION_LINK != 0 {
+        actions |= QT_DROP_ACTION_LINK;
+    }
+    actions
+}
+
+/// `QCocoaDrag::defaultAction` (qcocoadrag.mm:58-100): chooses the proposed single drop action
+/// from `allowed` (`Qt::DropActions`) and the current `Qt::KeyboardModifiers`. On macOS Command
+/// (`QT_CONTROL_MODIFIER`) + Option (`QT_ALT_MODIFIER`) requests Link, Option alone requests Copy,
+/// Command alone requests Move, and no modifier defaults to Copy (falling back to Copy, then Move,
+/// then Link within `allowed`).
+pub fn proposed_drop_action(allowed: u32, modifiers: u32) -> u32 {
+    if allowed == 0 {
+        return 0;
+    }
+    let cmd = modifiers & QT_CONTROL_MODIFIER != 0;
+    let alt = modifiers & QT_ALT_MODIFIER != 0;
+    let wanted = if cmd && alt {
+        QT_DROP_ACTION_LINK
+    } else if alt {
+        QT_DROP_ACTION_COPY
+    } else if cmd {
+        QT_DROP_ACTION_MOVE
+    } else {
+        QT_DROP_ACTION_COPY
+    };
+    if allowed & wanted != 0 {
+        return wanted;
+    }
+    [
+        QT_DROP_ACTION_COPY,
+        QT_DROP_ACTION_MOVE,
+        QT_DROP_ACTION_LINK,
+    ]
+    .into_iter()
+    .find(|&a| allowed & a != 0)
+    .unwrap_or(0)
+}
+
+/// `qt_mac_mapDropAction` (qcocoahelpers.mm): maps a single accepted `Qt::DropAction` (restricted
+/// to `allowed`) back to an `NSDragOperation`. Following `dnd_enums` order in `qcocoahelpers.mm`,
+/// Link -> `NSDragOperationLink`, Move -> `NSDragOperationMove`, Copy -> `NSDragOperationCopy`.
+pub fn ns_drag_operation_from_qt(reply: u32, allowed: u32) -> NSUInteger {
+    let mask = reply & allowed;
+    if mask & QT_DROP_ACTION_LINK != 0 {
+        NS_DRAG_OPERATION_LINK
+    } else if mask & QT_DROP_ACTION_MOVE != 0 {
+        NS_DRAG_OPERATION_MOVE
+    } else if mask & QT_DROP_ACTION_COPY != 0 {
+        NS_DRAG_OPERATION_COPY
+    } else {
+        NS_DRAG_OPERATION_NONE
+    }
+}
+
+/// Delivers `event` synchronously to `view`'s handler via `handle_window_event_accepted`, returning
+/// the accepted `Qt::DropAction` (`0` when refused, no handler, or the handler is already running
+/// on the stack). Any events queued while the handler ran are drained afterwards.
+fn dispatch_accepted(view: Id, event: WindowSystemEvent) -> u32 {
+    let key = view.0 as usize;
+    let handler = VIEWS
+        .try_with(|views| {
+            let mut views = views.borrow_mut();
+            let slot = views.get_mut(&key)?;
+            if slot.delivering {
+                return None;
+            }
+            let h = slot.handler.take()?;
+            slot.delivering = true;
+            Some(h)
+        })
+        .ok()
+        .flatten();
+    let Some(handler) = handler else {
+        return 0;
+    };
+    let mut delivery = Delivery {
+        key,
+        handler: Some(handler),
+    };
+    let accepted = delivery
+        .handler
+        .as_mut()
+        .map_or(0, |h| h.handle_window_event_accepted(event));
+    drain_queued_events(key, &mut delivery);
+    accepted
+}
+
+/// Reads `(pos, allowed_qt_actions, proposed_qt_action)` from an `id<NSDraggingInfo>` for `view`.
+///
+/// # Safety
+/// `view` is a live `QNSView` and `sender` is a non-nil `id<NSDraggingInfo>`.
+unsafe fn drag_info_location_and_actions(view: Id, sender: Id) -> (Point, u32, u32) {
+    // SAFETY: `sender` responds to `draggingLocation` (NSPoint) and `draggingSourceOperationMask`
+    // (NSDragOperation = NSUInteger); `view` responds to `convertPoint:fromView:`; `+[NSEvent
+    // modifierFlags]` returns NSUInteger (`qnsview_dragging.mm:158`).
+    unsafe {
+        let in_window = ObjcMsg::send_point_return(sender, sel("draggingLocation"));
+        let local =
+            ObjcMsg::send_convert_point(view, sel("convertPoint:fromView:"), in_window, Id::NIL);
+        // `QPointF::fromCGPoint(...).toPoint()` rounds each coordinate (`qpoint.h`).
+        let pos = Point::new(local.x.round() as i32, local.y.round() as i32);
+        let mask = ObjcMsg::send_nsuinteger_return(sender, sel("draggingSourceOperationMask"));
+        let allowed = qt_drop_actions_from_ns(mask);
+        let ns_event_cls = Id(crate::objc_runtime::objc_get_class("NSEvent").0);
+        let flags = ObjcMsg::send_nsuinteger_return(ns_event_cls, sel("modifierFlags"));
+        let modifiers = qt_modifiers_from_ns_flags(flags);
+        let proposed = proposed_drop_action(allowed, modifiers);
+        (pos, allowed, proposed)
+    }
+}
+
+/// `-[QNSView draggingEntered:]` (`qnsview_dragging.mm:140-143`).
+///
+/// # Safety
+/// `sender` is nil or a live `id<NSDraggingInfo>` whose `draggingPasteboard` is nil or a live
+/// `NSPasteboard`.
+pub unsafe fn dragging_entered(view: Id, sender: Id) -> NSUInteger {
+    ThreadContext::assert_main_thread("dragging_entered");
+    if sender.is_nil() || !with_slot(view, |slot| slot.drop_target_enabled).unwrap_or(false) {
+        with_slot(view, |slot| slot.drag_accepts = false);
+        return NS_DRAG_OPERATION_NONE;
+    }
+    // SAFETY: `sender` is non-nil and conforms to `NSDraggingInfo` (caller contract); `view` was
+    // found in `VIEWS` above, so it is live. Only pasteboard type names are inspected here; data
+    // payloads are fetched on `performDragOperation:` (`QCocoaDropData`, qnsview_dragging.mm).
+    let (pos, allowed, proposed, formats) = unsafe {
+        let (pos, allowed, proposed) = drag_info_location_and_actions(view, sender);
+        let pboard = ObjcMsg::send_id_prop(sender, sel("draggingPasteboard"));
+        let formats = crate::clipboard_cocoa::pasteboard_formats(pboard);
+        (pos, allowed, proposed, formats)
+    };
+    let active = !formats.is_empty() && allowed != 0;
+    with_slot(view, |slot| slot.drag_accepts = active);
+    if !active {
+        return NS_DRAG_OPERATION_NONE;
+    }
+    let reply = dispatch_accepted(
+        view,
+        WindowSystemEvent::DragEnter {
+            pos,
+            formats,
+            drop_action: proposed,
+        },
+    );
+    ns_drag_operation_from_qt(reply, allowed)
+}
+
+/// `-[QNSView draggingUpdated:]` (`qnsview_dragging.mm:145-149`).
+///
+/// # Safety
+/// `sender` is nil or a live `id<NSDraggingInfo>`.
+pub unsafe fn dragging_updated(view: Id, sender: Id) -> NSUInteger {
+    ThreadContext::assert_main_thread("dragging_updated");
+    let Some((enabled, active)) =
+        with_slot(view, |slot| (slot.drop_target_enabled, slot.drag_accepts))
+    else {
+        return NS_DRAG_OPERATION_NONE;
+    };
+    if !enabled || !active || sender.is_nil() {
+        return NS_DRAG_OPERATION_NONE;
+    }
+    // SAFETY: `view` is live (found in `VIEWS` above) and `sender` is a non-nil `NSDraggingInfo`.
+    let (pos, allowed, proposed) = unsafe { drag_info_location_and_actions(view, sender) };
+    if allowed == 0 {
+        return NS_DRAG_OPERATION_NONE;
+    }
+    let reply = dispatch_accepted(
+        view,
+        WindowSystemEvent::DragMove {
+            pos,
+            drop_action: proposed,
+        },
+    );
+    ns_drag_operation_from_qt(reply, allowed)
+}
+
+/// `-[QNSView draggingExited:]` (`qnsview_dragging.mm:191-213`).
+pub fn dragging_exited(view: Id) {
+    ThreadContext::assert_main_thread("dragging_exited");
+    let Some(was_active) = with_slot(view, |slot| {
+        let active = slot.drag_accepts;
+        slot.drag_accepts = false;
+        slot.drop_target_enabled && active
+    }) else {
+        return;
+    };
+    if !was_active {
+        return;
+    }
+    let _ = dispatch_window_event(view, WindowSystemEvent::DragLeave);
+}
+
+/// `-[QNSView performDragOperation:]` (`qnsview_dragging.mm:216-248`).
+///
+/// # Safety
+/// `sender` is nil or a live `id<NSDraggingInfo>` whose `draggingPasteboard` is nil or a live
+/// `NSPasteboard`.
+pub unsafe fn perform_drag_operation(view: Id, sender: Id) -> bool {
+    ThreadContext::assert_main_thread("perform_drag_operation");
+    let Some(was_active) = with_slot(view, |slot| {
+        let active = slot.drag_accepts;
+        slot.drag_accepts = false;
+        slot.drop_target_enabled && active
+    }) else {
+        return false;
+    };
+    if !was_active {
+        return false;
+    }
+    if sender.is_nil() {
+        let _ = dispatch_window_event(view, WindowSystemEvent::DragLeave);
+        return false;
+    }
+    // SAFETY: `view` is live (found in `VIEWS` above) and `sender` is a non-nil `NSDraggingInfo`.
+    let (pos, allowed, proposed, formats, data) = unsafe {
+        let (pos, allowed, proposed) = drag_info_location_and_actions(view, sender);
+        let pboard = ObjcMsg::send_id_prop(sender, sel("draggingPasteboard"));
+        let mime_data = crate::clipboard_cocoa::pasteboard_mime_data(pboard);
+        let formats: Vec<String> = mime_data.formats().map(str::to_owned).collect();
+        let data: Vec<(String, Vec<u8>)> = formats
+            .iter()
+            .filter_map(|f| mime_data.data(f).map(|b| (f.clone(), b.to_vec())))
+            .collect();
+        (pos, allowed, proposed, formats, data)
+    };
+    if formats.is_empty() || allowed == 0 {
+        let _ = dispatch_window_event(view, WindowSystemEvent::DragLeave);
+        return false;
+    }
+    let reply = dispatch_accepted(
+        view,
+        WindowSystemEvent::Drop {
+            pos,
+            formats,
+            data,
+            drop_action: proposed,
+        },
+    );
+    ns_drag_operation_from_qt(reply, allowed) != NS_DRAG_OPERATION_NONE
 }

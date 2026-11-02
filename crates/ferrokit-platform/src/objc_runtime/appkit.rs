@@ -73,6 +73,8 @@ struct MockAppKitState {
     cursors: HashMap<String, usize>,
     /// `[NSApp currentEvent]`, as an object handle (0: nil).
     current_event: usize,
+    /// Pasteboard items `(ty, bytes)` stored on mock `NSPasteboard` objects by object handle.
+    pasteboards: HashMap<usize, Vec<(String, Vec<u8>)>>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -110,7 +112,17 @@ impl MockObjcRuntime {
 
     /// What `[NSApp currentEvent]` returns: the event being dispatched, nil outside of one.
     pub fn set_current_event(&self, event: Id) {
+        let ns_event_cls = Id(self.get_class("NSEvent").0);
+        let flags = if event.is_nil() {
+            None
+        } else {
+            self.property(event, "modifierFlags")
+        };
         mock_state().current_event = event.0 as usize;
+        match flags {
+            Some(val) => self.set_property(ns_event_cls, "modifierFlags", val),
+            None => self.clear_property(ns_event_cls, "modifierFlags"),
+        }
     }
 
     /// The event `set_current_event` stored, nil if none.
@@ -145,6 +157,40 @@ impl MockObjcRuntime {
     /// Empties the call log.
     pub fn clear_calls(&self) {
         mock_state().calls.clear();
+    }
+
+    /// Stores `(ty, data)` on a mock `NSPasteboard` (`draggingPasteboard`), replacing any prior
+    /// entry of the same type while preserving insertion order.
+    pub fn set_pasteboard_data(&self, pasteboard: Id, ty: &str, data: &[u8]) {
+        let mut state = mock_state();
+        let items = state.pasteboards.entry(pasteboard.0 as usize).or_default();
+        if let Some((_, existing)) = items.iter_mut().find(|(t, _)| t == ty) {
+            *existing = data.to_vec();
+        } else {
+            items.push((ty.to_string(), data.to_vec()));
+        }
+    }
+
+    /// The pasteboard type strings stored on `pasteboard` by [`set_pasteboard_data`](Self::set_pasteboard_data).
+    pub fn pasteboard_types(&self, pasteboard: Id) -> Vec<String> {
+        mock_state()
+            .pasteboards
+            .get(&(pasteboard.0 as usize))
+            .map(|items| items.iter().map(|(t, _)| t.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The payload stored for `ty` on `pasteboard` by [`set_pasteboard_data`](Self::set_pasteboard_data).
+    pub fn pasteboard_data(&self, pasteboard: Id, ty: &str) -> Option<Vec<u8>> {
+        mock_state()
+            .pasteboards
+            .get(&(pasteboard.0 as usize))
+            .and_then(|items| items.iter().find(|(t, _)| t == ty).map(|(_, d)| d.clone()))
+    }
+
+    /// Empties all mock pasteboard payloads stored by [`set_pasteboard_data`](Self::set_pasteboard_data).
+    pub fn clear_pasteboards(&self) {
+        mock_state().pasteboards.clear();
     }
 }
 
@@ -864,6 +910,61 @@ impl ObjcMsg {
             receiver
         }
     }
+
+    /// `-[NSView registerForDraggedTypes:]` with an `NSArray` of `NSString` pasteboard types,
+    /// logged. Each temporary `NSString` and the `NSArray` are released before returning.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]; `receiver` is nil or a live `NSView`.
+    pub unsafe fn send_register_dragged_types(receiver: Id, types: &[&str]) {
+        if receiver.is_nil() {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: `receiver` is a live `NSView` on the main thread. `NSMutableArray` is allocated
+        // and initialised (+1), populated with +1 `NSString` objects (each released right after
+        // `addObject:` retains it), passed to `registerForDraggedTypes:` (which returns void), and
+        // then released once to balance `alloc`/`init`.
+        unsafe {
+            let array_cls = objc_get_class("NSMutableArray");
+            let array = Self::send_0(
+                Self::send_class_0(array_cls, Sel::register("alloc")),
+                Sel::register("init"),
+            );
+            if array.is_nil() {
+                return;
+            }
+            let add_sel = Sel::register("addObject:");
+            let release_sel = Sel::register("release");
+            for ty in types {
+                let ns_str = nsstring_from_str(ty);
+                if !ns_str.is_nil() {
+                    Self::send_id(array, add_sel, ns_str);
+                    Self::send_0(ns_str, release_sel);
+                }
+            }
+            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
+            msg_send(
+                receiver.0,
+                Sel::register("registerForDraggedTypes:").0,
+                array.0,
+            );
+            Self::send_0(array, release_sel);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(
+                receiver,
+                Sel::register("registerForDraggedTypes:"),
+                types
+                    .iter()
+                    .map(|t| MockValue::Str((*t).to_string()))
+                    .collect(),
+            );
+        }
+    }
 }
 
 /// The shared `NSCursor` that class method `selector` (`arrowCursor`, `IBeamCursor`, ...)
@@ -1116,17 +1217,9 @@ mod native {
     #[cfg(not(target_arch = "aarch64"))]
     const ENC_BOOL_GETTER: &CStr = c"c@:";
     #[cfg(target_arch = "aarch64")]
-    const ENC_ACCEPTS_FIRST_MOUSE: &CStr = c"B@:@";
+    const ENC_BOOL_METHOD_WITH_ID_ARG: &CStr = c"B@:@";
     #[cfg(not(target_arch = "aarch64"))]
-    const ENC_ACCEPTS_FIRST_MOUSE: &CStr = c"c@:@";
-    #[cfg(target_arch = "aarch64")]
-    const ENC_HAS_MARKED_TEXT: &CStr = c"B@:";
-    #[cfg(not(target_arch = "aarch64"))]
-    const ENC_HAS_MARKED_TEXT: &CStr = c"c@:";
-    #[cfg(target_arch = "aarch64")]
-    const ENC_WINDOW_SHOULD_CLOSE: &CStr = c"B@:@";
-    #[cfg(not(target_arch = "aarch64"))]
-    const ENC_WINDOW_SHOULD_CLOSE: &CStr = c"c@:@";
+    const ENC_BOOL_METHOD_WITH_ID_ARG: &CStr = c"c@:@";
 
     /// `struct objc_super`: where `objc_msgSendSuper` starts its method lookup.
     #[repr(C)]
@@ -1395,6 +1488,62 @@ mod native {
         // Commands such as `insertNewline:` have no text; the key press itself was delivered.
     }
 
+    extern "C" fn returns_no(_this: *mut c_void, _cmd: *const c_void) -> BOOL {
+        NO
+    }
+
+    extern "C" fn returns_no_arg(
+        _this: *mut c_void,
+        _cmd: *const c_void,
+        _arg: *mut c_void,
+    ) -> BOOL {
+        NO
+    }
+
+    extern "C" fn dragging_entered(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        sender: *mut c_void,
+    ) -> NSUInteger {
+        // SAFETY: `sender` is the `id<NSDraggingInfo>` AppKit passed to `draggingEntered:`, live
+        // for this call.
+        guarded(0, || unsafe {
+            input::dragging_entered(Id(this), Id(sender))
+        })
+    }
+
+    extern "C" fn dragging_updated(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        sender: *mut c_void,
+    ) -> NSUInteger {
+        // SAFETY: `sender` is the `id<NSDraggingInfo>` AppKit passed to `draggingUpdated:`, live
+        // for this call.
+        guarded(0, || unsafe {
+            input::dragging_updated(Id(this), Id(sender))
+        })
+    }
+
+    extern "C" fn dragging_exited(this: *mut c_void, _cmd: *const c_void, _sender: *mut c_void) {
+        guarded((), || input::dragging_exited(Id(this)));
+    }
+
+    extern "C" fn perform_drag_operation(
+        this: *mut c_void,
+        _cmd: *const c_void,
+        sender: *mut c_void,
+    ) -> BOOL {
+        // SAFETY: `sender` is the `id<NSDraggingInfo>` AppKit passed to `performDragOperation:`,
+        // live for this call.
+        if guarded(false, || unsafe {
+            input::perform_drag_operation(Id(this), Id(sender))
+        }) {
+            YES
+        } else {
+            NO
+        }
+    }
+
     /// Adds the input methods to `QNSView`, the `NSTextInputClient` ones included, and declares
     /// the protocol so `-inputContext` exists.
     ///
@@ -1447,7 +1596,34 @@ mod native {
         add(
             "acceptsFirstMouse:",
             accepts_first_mouse as *const c_void,
-            ENC_ACCEPTS_FIRST_MOUSE,
+            ENC_BOOL_METHOD_WITH_ID_ARG,
+        );
+        // NSDraggingDestination (qnsview_dragging.mm)
+        add(
+            "draggingEntered:",
+            dragging_entered as *const c_void,
+            c"Q@:@",
+        );
+        add(
+            "draggingUpdated:",
+            dragging_updated as *const c_void,
+            c"Q@:@",
+        );
+        add("draggingExited:", dragging_exited as *const c_void, c"v@:@");
+        add(
+            "performDragOperation:",
+            perform_drag_operation as *const c_void,
+            ENC_BOOL_METHOD_WITH_ID_ARG,
+        );
+        add(
+            "wantsPeriodicDraggingUpdates",
+            returns_no as *const c_void,
+            ENC_BOOL_GETTER,
+        );
+        add(
+            "wantsPeriodicDraggingUpdates:",
+            returns_no_arg as *const c_void,
+            ENC_BOOL_METHOD_WITH_ID_ARG,
         );
 
         // NSTextInputClient
@@ -1475,7 +1651,7 @@ mod native {
         add(
             "hasMarkedText",
             has_marked_text as *const c_void,
-            ENC_HAS_MARKED_TEXT,
+            ENC_BOOL_GETTER,
         );
         add(
             "attributedSubstringForProposedRange:actualRange:",
@@ -1548,7 +1724,7 @@ mod native {
                 class,
                 Sel::register("windowShouldClose:").0,
                 window_should_close as *const c_void,
-                ENC_WINDOW_SHOULD_CLOSE.as_ptr(),
+                ENC_BOOL_METHOD_WITH_ID_ARG.as_ptr(),
             );
             native_bindings::objc_registerClassPair(class);
             class as usize
