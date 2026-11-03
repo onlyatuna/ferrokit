@@ -138,6 +138,8 @@ pub struct FontDatabase {
         (usize, usize),
         std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
     )>,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fontconfig_cache: HashMap<(String, bool, StyleHint), Vec<String>>,
 }
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
@@ -351,6 +353,397 @@ pub fn family_for_style_hint(hint: StyleHint) -> &'static str {
         StyleHint::System | StyleHint::AnyStyle => "Tahoma",
     }
 }
+
+/// Substitute font family for a style hint on macOS matching Qt 6 / qtbase dev
+/// (`src/gui/text/coretext/qcoretextfontdatabase.mm:661-770`, specifically `descriptorForStyle` L691-706).
+///
+/// On macOS, when a requested font family is not installed, Qt resolves the style hint:
+/// - `SansSerif` (`Helvetica`) -> "Helvetica"
+/// - `Serif` (`Times`) -> "Times New Roman"
+/// - `Monospace` -> "Menlo"
+/// - `Cursive` -> "Apple Chancery"
+/// - `Fantasy` -> "Zapfino"
+/// - `TypeWriter` (`Courier`) -> "American Typewriter"
+/// - `AnyStyle` / `System` -> `None` from this pure table (Qt resolves them to the system UI font
+///   via `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`; ferrokit has no CoreText bridge, so
+///   they keep the previous segoe ui, then arial guess, which is not Qt's [inferred])
+/// - others -> `None` [inferred]
+#[cfg(target_os = "macos")]
+pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
+    match hint {
+        StyleHint::Helvetica => Some("Helvetica"),
+        StyleHint::Times => Some("Times New Roman"),
+        StyleHint::Monospace => Some("Menlo"),
+        StyleHint::Cursive => Some("Apple Chancery"),
+        StyleHint::Fantasy => Some("Zapfino"),
+        StyleHint::Courier => Some("American Typewriter"),
+        StyleHint::AnyStyle | StyleHint::System | StyleHint::OldEnglish => None,
+    }
+}
+
+/// Fontconfig generic family for a style hint matching Qt 6 / qtbase dev
+/// (`src/gui/text/unix/qfontconfigdatabase.cpp:349-370`, `getFcFamilyForStyleHint`).
+///
+/// In Qt, when `styleHint == QFont::AnyStyle && fixedPitch`, Qt substitutes `QFont::TypeWriter`
+/// before calling `fallbacksForFamily` (`src/gui/text/qfontdatabase.cpp:846-848, 2776-2778`).
+///
+/// Mappings:
+/// - `SansSerif` (`Helvetica`) -> "sans-serif"
+/// - `Serif` (`Times`) -> "serif"
+/// - `TypeWriter` (`Courier`) / `Monospace` -> "monospace"
+/// - `Cursive` -> "cursive"
+/// - `Fantasy` -> "fantasy"
+/// - others (`AnyStyle`, `System`, `OldEnglish`) -> `None`
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn fc_family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
+    match hint {
+        StyleHint::Helvetica => Some("sans-serif"),
+        StyleHint::Times => Some("serif"),
+        StyleHint::Courier | StyleHint::Monospace => Some("monospace"),
+        StyleHint::Cursive => Some("cursive"),
+        StyleHint::Fantasy => Some("fantasy"),
+        StyleHint::System | StyleHint::AnyStyle | StyleHint::OldEnglish => None,
+    }
+}
+
+/// Substitute font family for a style hint on Linux/Unix platforms matching Qt's
+/// `getFcFamilyForStyleHint` (`src/gui/text/unix/qfontconfigdatabase.cpp:349-370`).
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
+    fc_family_for_style_hint(hint)
+}
+
+/// Returns whether fontconfig runtime library is available.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn is_fontconfig_available() -> bool {
+    #[cfg(miri)]
+    {
+        false
+    }
+    #[cfg(not(miri))]
+    {
+        fontconfig_ffi::FontConfig::get().is_some()
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn query_fontconfig_fallbacks(
+    family: &str,
+    italic: bool,
+    hint: StyleHint,
+) -> Vec<String> {
+    #[cfg(miri)]
+    {
+        let _ = (family, italic, hint);
+        Vec::new()
+    }
+    #[cfg(not(miri))]
+    {
+        match fontconfig_ffi::FontConfig::get() {
+            Some(fc) => fc.fallbacks_for_family(family, italic, hint),
+            None => Vec::new(),
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(miri)))]
+mod fontconfig_ffi {
+    use super::*;
+    use std::ffi::{CStr, CString, c_char, c_int, c_void};
+
+    pub const RTLD_LAZY: c_int = 1;
+    pub const FC_TYPE_STRING: c_int = 3;
+    pub const FC_SLANT_ROMAN: c_int = 0;
+    pub const FC_SLANT_ITALIC: c_int = 100;
+    pub const FC_MATCH_PATTERN: c_int = 0;
+    pub const FC_RESULT_MATCH: c_int = 0;
+    pub const FC_TRUE: c_int = 1;
+    pub const FC_FALSE: c_int = 0;
+
+    #[repr(C)]
+    pub struct FcPattern {
+        _unused: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct FcFontSet {
+        pub nfont: c_int,
+        pub sfont: c_int,
+        pub fonts: *mut *mut FcPattern,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub union FcValueUnion {
+        pub s: *const u8,
+        pub i: c_int,
+        pub b: c_int,
+        pub d: f64,
+        pub p: *const c_void,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    pub struct FcValue {
+        pub typ: c_int,
+        pub u: FcValueUnion,
+    }
+
+    unsafe extern "C" {
+        pub fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+        pub fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        pub fn dlclose(handle: *mut c_void) -> c_int;
+    }
+
+    /// Closes the `dlopen` handle when symbol resolution fails; on success it is `forget`-ed
+    /// so the library stays loaded for the life of the process.
+    struct HandleGuard(*mut c_void);
+
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a non-null handle returned by `dlopen` that nothing else closes.
+            unsafe { dlclose(self.0) };
+        }
+    }
+
+    pub type FcPatternCreateFn = unsafe extern "C" fn() -> *mut FcPattern;
+    pub type FcPatternDestroyFn = unsafe extern "C" fn(*mut FcPattern);
+    pub type FcPatternAddFn =
+        unsafe extern "C" fn(*mut FcPattern, *const c_char, FcValue, c_int) -> c_int;
+    pub type FcPatternAddWeakFn =
+        unsafe extern "C" fn(*mut FcPattern, *const c_char, FcValue, c_int) -> c_int;
+    pub type FcPatternAddIntegerFn =
+        unsafe extern "C" fn(*mut FcPattern, *const c_char, c_int) -> c_int;
+    pub type FcPatternAddStringFn =
+        unsafe extern "C" fn(*mut FcPattern, *const c_char, *const u8) -> c_int;
+    pub type FcPatternGetStringFn =
+        unsafe extern "C" fn(*const FcPattern, *const c_char, c_int, *mut *mut u8) -> c_int;
+    pub type FcDefaultSubstituteFn = unsafe extern "C" fn(*mut FcPattern);
+    pub type FcConfigSubstituteFn =
+        unsafe extern "C" fn(*mut c_void, *mut FcPattern, c_int) -> c_int;
+    pub type FcFontSortFn = unsafe extern "C" fn(
+        *mut c_void,
+        *mut FcPattern,
+        c_int,
+        *mut c_void,
+        *mut c_int,
+    ) -> *mut FcFontSet;
+    pub type FcFontSetDestroyFn = unsafe extern "C" fn(*mut FcFontSet);
+
+    pub struct FontConfig {
+        pub pattern_create: FcPatternCreateFn,
+        pub pattern_destroy: FcPatternDestroyFn,
+        pub pattern_add: FcPatternAddFn,
+        pub pattern_add_weak: FcPatternAddWeakFn,
+        pub pattern_add_integer: FcPatternAddIntegerFn,
+        pub pattern_add_string: FcPatternAddStringFn,
+        pub pattern_get_string: FcPatternGetStringFn,
+        pub default_substitute: FcDefaultSubstituteFn,
+        pub config_substitute: FcConfigSubstituteFn,
+        pub font_sort: FcFontSortFn,
+        pub font_set_destroy: FcFontSetDestroyFn,
+    }
+
+    impl FontConfig {
+        pub fn get() -> Option<&'static Self> {
+            static INSTANCE: std::sync::LazyLock<Option<FontConfig>> =
+                std::sync::LazyLock::new(FontConfig::load);
+            INSTANCE.as_ref()
+        }
+
+        fn load() -> Option<Self> {
+            // SAFETY: calls POSIX dlopen with a valid NUL-terminated library name string
+            // literal and standard flag RTLD_LAZY.
+            let handle = unsafe { dlopen(c"libfontconfig.so.1".as_ptr(), RTLD_LAZY) };
+            if handle.is_null() {
+                return None;
+            }
+            let guard = HandleGuard(handle);
+
+            // SAFETY: each symbol is queried on the valid library `handle` with a NUL-terminated
+            // symbol name string literal; transmute casts non-null function pointers to their exact
+            // C function signature.
+            unsafe {
+                let load_sym = |name: &CStr| -> Option<*mut c_void> {
+                    let ptr = dlsym(handle, name.as_ptr());
+                    if ptr.is_null() { None } else { Some(ptr) }
+                };
+
+                let pattern_create: FcPatternCreateFn =
+                    std::mem::transmute(load_sym(c"FcPatternCreate")?);
+                let pattern_destroy: FcPatternDestroyFn =
+                    std::mem::transmute(load_sym(c"FcPatternDestroy")?);
+                let pattern_add: FcPatternAddFn = std::mem::transmute(load_sym(c"FcPatternAdd")?);
+                let pattern_add_weak: FcPatternAddWeakFn =
+                    std::mem::transmute(load_sym(c"FcPatternAddWeak")?);
+                let pattern_add_integer: FcPatternAddIntegerFn =
+                    std::mem::transmute(load_sym(c"FcPatternAddInteger")?);
+                let pattern_add_string: FcPatternAddStringFn =
+                    std::mem::transmute(load_sym(c"FcPatternAddString")?);
+                let pattern_get_string: FcPatternGetStringFn =
+                    std::mem::transmute(load_sym(c"FcPatternGetString")?);
+                let default_substitute: FcDefaultSubstituteFn =
+                    std::mem::transmute(load_sym(c"FcDefaultSubstitute")?);
+                let config_substitute: FcConfigSubstituteFn =
+                    std::mem::transmute(load_sym(c"FcConfigSubstitute")?);
+                let font_sort: FcFontSortFn = std::mem::transmute(load_sym(c"FcFontSort")?);
+                let font_set_destroy: FcFontSetDestroyFn =
+                    std::mem::transmute(load_sym(c"FcFontSetDestroy")?);
+
+                std::mem::forget(guard);
+                Some(Self {
+                    pattern_create,
+                    pattern_destroy,
+                    pattern_add,
+                    pattern_add_weak,
+                    pattern_add_integer,
+                    pattern_add_string,
+                    pattern_get_string,
+                    default_substitute,
+                    config_substitute,
+                    font_sort,
+                    font_set_destroy,
+                })
+            }
+        }
+
+        pub fn fallbacks_for_family(
+            &self,
+            family: &str,
+            italic: bool,
+            style_hint: StyleHint,
+        ) -> Vec<String> {
+            // SAFETY: calls FcPatternCreate through the loaded function pointer.
+            let pattern = unsafe { (self.pattern_create)() };
+            if pattern.is_null() {
+                return Vec::new();
+            }
+
+            let family_bytes = match CString::new(family) {
+                Ok(s) => s,
+                Err(_) => {
+                    // SAFETY: frees allocated pattern on CString conversion error.
+                    unsafe { (self.pattern_destroy)(pattern) };
+                    return Vec::new();
+                }
+            };
+
+            // SAFETY: adds requested family to pattern with FC_FAMILY string value.
+            unsafe {
+                let val = FcValue {
+                    typ: FC_TYPE_STRING,
+                    u: FcValueUnion {
+                        s: family_bytes.as_ptr().cast(),
+                    },
+                };
+                (self.pattern_add)(pattern, c"family".as_ptr(), val, FC_TRUE);
+            }
+
+            let slant_val = if italic {
+                FC_SLANT_ITALIC
+            } else {
+                FC_SLANT_ROMAN
+            };
+            // SAFETY: adds slant integer value to pattern.
+            unsafe {
+                (self.pattern_add_integer)(pattern, c"slant".as_ptr(), slant_val);
+            }
+
+            // System default language substitute when family is non-empty (matching Qt qfontconfigdatabase.cpp:857-870)
+            if !family.is_empty() {
+                // SAFETY: creates a dummy pattern to retrieve default system language.
+                let dummy = unsafe { (self.pattern_create)() };
+                if !dummy.is_null() {
+                    // SAFETY: substitutes defaults into dummy pattern and queries FC_LANG.
+                    unsafe {
+                        (self.default_substitute)(dummy);
+                        let mut lang_ptr: *mut u8 = std::ptr::null_mut();
+                        let res =
+                            (self.pattern_get_string)(dummy, c"lang".as_ptr(), 0, &mut lang_ptr);
+                        if res == FC_RESULT_MATCH && !lang_ptr.is_null() {
+                            (self.pattern_add_string)(pattern, c"lang".as_ptr(), lang_ptr);
+                        }
+                        (self.pattern_destroy)(dummy);
+                    }
+                }
+            }
+
+            if let Some(stylehint) = fc_family_for_style_hint(style_hint)
+                && let Ok(hint_bytes) = CString::new(stylehint)
+            {
+                // SAFETY: adds weak style hint family to pattern matching Qt qfontconfigdatabase.cpp:872-876.
+                unsafe {
+                    let val = FcValue {
+                        typ: FC_TYPE_STRING,
+                        u: FcValueUnion {
+                            s: hint_bytes.as_ptr().cast(),
+                        },
+                    };
+                    (self.pattern_add_weak)(pattern, c"family".as_ptr(), val, FC_TRUE);
+                }
+            }
+
+            // SAFETY: config and default substitute on pattern.
+            unsafe {
+                (self.config_substitute)(std::ptr::null_mut(), pattern, FC_MATCH_PATTERN);
+                (self.default_substitute)(pattern);
+            }
+
+            let mut res: c_int = FC_RESULT_MATCH;
+            // SAFETY: font sort sorts fonts matching pattern; pattern is destroyed immediately after.
+            let font_set = unsafe {
+                let fs = (self.font_sort)(
+                    std::ptr::null_mut(),
+                    pattern,
+                    FC_FALSE,
+                    std::ptr::null_mut(),
+                    &mut res,
+                );
+                (self.pattern_destroy)(pattern);
+                fs
+            };
+
+            let mut fallback_families = Vec::new();
+            if !font_set.is_null() {
+                // SAFETY: reads font families from font_set and frees font_set.
+                unsafe {
+                    let nfont = (*font_set).nfont;
+                    let fonts = (*font_set).fonts;
+                    if fonts.is_null() {
+                        (self.font_set_destroy)(font_set);
+                        return fallback_families;
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    // Pre-seed seen with requested family (case-folded), matching Qt's QDuplicateTracker
+                    seen.insert(family.to_lowercase());
+
+                    for i in 0..nfont {
+                        let font_pat = *fonts.add(i as usize);
+                        if font_pat.is_null() {
+                            continue;
+                        }
+                        let mut val_ptr: *mut u8 = std::ptr::null_mut();
+                        if (self.pattern_get_string)(font_pat, c"family".as_ptr(), 0, &mut val_ptr)
+                            == FC_RESULT_MATCH
+                            && !val_ptr.is_null()
+                        {
+                            let name = CStr::from_ptr(val_ptr.cast())
+                                .to_string_lossy()
+                                .into_owned();
+                            let name_lower = name.to_lowercase();
+                            if seen.insert(name_lower) {
+                                fallback_families.push(name);
+                            }
+                        }
+                    }
+                    (self.font_set_destroy)(font_set);
+                }
+            }
+
+            fallback_families
+        }
+    }
+}
 impl FontDatabase {
     /// Creates a new font database and preloads default fonts.
     pub fn new() -> Self {
@@ -400,8 +793,9 @@ impl FontDatabase {
             engines: HashMap::new(),
             recent_memory_faces: Vec::new(),
             memory_faces: Vec::new(),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            fontconfig_cache: HashMap::new(),
         };
-
         db.preload_default_fonts();
         db
     }
@@ -410,6 +804,8 @@ impl FontDatabase {
     pub fn add_search_path<P: AsRef<Path>>(&mut self, path: P) {
         self.search_paths.push(path.as_ref().to_path_buf());
         self.system_faces = None;
+        #[cfg(all(unix, not(target_os = "macos")))]
+        self.fontconfig_cache.clear();
         FONT_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -571,6 +967,61 @@ impl FontDatabase {
             }
         }
 
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(substitute) = family_for_style_hint(hint)
+                && !key.eq_ignore_ascii_case(substitute)
+                && let Some(fallback) = self.load_font_styled(substitute, style, hint)
+            {
+                self.cache.insert(style_key.clone(), Arc::clone(&fallback));
+                let sub_key = style.cache_key(&substitute.to_ascii_lowercase(), hint);
+                if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
+                    self.raw_cache.insert(style_key, raw);
+                }
+                return Some(fallback);
+            }
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let fc_key = (key.clone(), style.italic, hint);
+            let candidates = if let Some(cached) = self.fontconfig_cache.get(&fc_key) {
+                cached.clone()
+            } else {
+                let fallbacks = query_fontconfig_fallbacks(&key, style.italic, hint);
+                self.fontconfig_cache.insert(fc_key, fallbacks.clone());
+                fallbacks
+            };
+
+            for candidate in candidates {
+                let cand_key = candidate.to_ascii_lowercase();
+                if cand_key == key {
+                    continue;
+                }
+                let cand_style_key = style.cache_key(&cand_key, hint);
+                if let Some(cached_face) = self.cache.get(&cand_style_key) {
+                    let face = Arc::clone(cached_face);
+                    self.cache.insert(style_key.clone(), Arc::clone(&face));
+                    if let Some(raw) = self.raw_cache.get(&cand_style_key).cloned() {
+                        self.raw_cache.insert(style_key, raw);
+                    }
+                    return Some(face);
+                }
+                if let Some((raw, face)) = self.find_and_load_font_file(&cand_key, style) {
+                    self.cache.insert(cand_style_key.clone(), Arc::clone(&face));
+                    self.raw_cache.insert(cand_style_key, raw.clone());
+                    self.cache.insert(style_key.clone(), Arc::clone(&face));
+                    self.raw_cache.insert(style_key, raw);
+                    return Some(face);
+                }
+            }
+        }
+
+        // Last resort on every non-Windows target: the pre-existing guess, which is not Qt's. On
+        // Linux it applies only when fontconfig is unavailable (or lists nothing loadable, and
+        // under Miri, which cannot call it). On macOS Qt resolves AnyStyle and System to the
+        // system UI font (`CTFontCreateUIFontForLanguage`), which needs a CoreText bridge
+        // ferrokit does not have [inferred].
         #[cfg(not(windows))]
         {
             if key != "segoe ui"
@@ -1273,5 +1724,141 @@ mod tests {
         assert!(db.cache.contains_key(&key_any));
         assert!(db.cache.contains_key(&key_helv));
         assert!(!Arc::ptr_eq(&db.cache[&key_any], &db.cache[&key_helv]));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn test_font_database_style_hint_substitute_linux() {
+        let mut db = FontDatabase::new();
+        let missing = "NoSuchFontXYZ";
+
+        if !is_fontconfig_available() {
+            let face = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::AnyStyle);
+            assert!(
+                face.is_none(),
+                "When fontconfig is absent, no substitute resolves"
+            );
+            return;
+        }
+
+        // The substitute is the first family `FcFontSort` lists that this machine can load (which
+        // family that is depends on its fontconfig configuration and installed fonts, so it is
+        // derived here, not hard-coded).
+        let all_hints = [
+            StyleHint::AnyStyle,
+            StyleHint::SansSerif,
+            StyleHint::Serif,
+            StyleHint::Monospace,
+            StyleHint::TypeWriter,
+            StyleHint::Cursive,
+            StyleHint::Fantasy,
+            StyleHint::System,
+        ];
+        for hint in all_hints {
+            let candidates = query_fontconfig_fallbacks(&missing.to_ascii_lowercase(), false, hint);
+            let expected = candidates
+                .iter()
+                .find_map(|c| db.load_font_styled(c, FaceStyle::REGULAR, hint))
+                .expect("fontconfig lists no family this machine can load");
+            let face = db
+                .load_font_styled(missing, FaceStyle::REGULAR, hint)
+                .unwrap_or_else(|| panic!("no substitute resolved for {hint:?}"));
+            assert!(
+                Arc::ptr_eq(&face, &expected),
+                "substitute for {hint:?} must be the first listed family that loads"
+            );
+        }
+
+        // Fonts that differ only in hint do not share a cache entry.
+        let key_any =
+            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
+        let key_serif =
+            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::Serif);
+        assert_ne!(key_any, key_serif);
+        assert!(db.cache.contains_key(&key_any));
+        assert!(db.cache.contains_key(&key_serif));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn test_fc_family_for_style_hint_pure_mapping() {
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::SansSerif),
+            Some("sans-serif")
+        );
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::Helvetica),
+            Some("sans-serif")
+        );
+        assert_eq!(fc_family_for_style_hint(StyleHint::Serif), Some("serif"));
+        assert_eq!(fc_family_for_style_hint(StyleHint::Times), Some("serif"));
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::Monospace),
+            Some("monospace")
+        );
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::TypeWriter),
+            Some("monospace")
+        );
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::Courier),
+            Some("monospace")
+        );
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::Cursive),
+            Some("cursive")
+        );
+        assert_eq!(
+            fc_family_for_style_hint(StyleHint::Fantasy),
+            Some("fantasy")
+        );
+        assert_eq!(fc_family_for_style_hint(StyleHint::AnyStyle), None);
+        assert_eq!(fc_family_for_style_hint(StyleHint::System), None);
+        assert_eq!(fc_family_for_style_hint(StyleHint::OldEnglish), None);
+        assert_eq!(fc_family_for_style_hint(StyleHint::Decorative), None);
+
+        // family_for_style_hint alias
+        assert_eq!(
+            family_for_style_hint(StyleHint::SansSerif),
+            Some("sans-serif")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_family_for_style_hint_macos_table() {
+        assert_eq!(
+            family_for_style_hint(StyleHint::SansSerif),
+            Some("Helvetica")
+        );
+        assert_eq!(
+            family_for_style_hint(StyleHint::Helvetica),
+            Some("Helvetica")
+        );
+        assert_eq!(
+            family_for_style_hint(StyleHint::Serif),
+            Some("Times New Roman")
+        );
+        assert_eq!(
+            family_for_style_hint(StyleHint::Times),
+            Some("Times New Roman")
+        );
+        assert_eq!(family_for_style_hint(StyleHint::Monospace), Some("Menlo"));
+        assert_eq!(
+            family_for_style_hint(StyleHint::Cursive),
+            Some("Apple Chancery")
+        );
+        assert_eq!(family_for_style_hint(StyleHint::Fantasy), Some("Zapfino"));
+        assert_eq!(
+            family_for_style_hint(StyleHint::TypeWriter),
+            Some("American Typewriter")
+        );
+        assert_eq!(
+            family_for_style_hint(StyleHint::Courier),
+            Some("American Typewriter")
+        );
+        assert_eq!(family_for_style_hint(StyleHint::AnyStyle), None);
+        assert_eq!(family_for_style_hint(StyleHint::System), None);
+        assert_eq!(family_for_style_hint(StyleHint::OldEnglish), None);
+        assert_eq!(family_for_style_hint(StyleHint::Decorative), None);
     }
 }

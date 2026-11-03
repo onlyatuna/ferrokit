@@ -154,9 +154,9 @@ impl FontMetrics {
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
     /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
     /// which no face resolves (both the requested family and its platform style-hint substitute,
-    /// e.g. Tahoma on Windows, are missing from the system, or `size <= 0.0`) has made-up numbers
-    /// (0.8, 0.2 and 0.1 of the size, 0.6 for the average character width), since there is nothing
-    /// to measure.
+    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or the style-hint table on macOS,
+    /// are missing from the system, or `size <= 0.0`) has made-up numbers (0.8, 0.2 and 0.1 of the
+    /// size, 0.6 for the average character width), since there is nothing to measure.
     /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
     /// [`GlyphFace::average_char_width`]: crate::text::glyph_face::GlyphFace::average_char_width
     pub fn from_font(font: &Font) -> Self {
@@ -865,5 +865,63 @@ mod tests {
                 &Font::new("Segoe UI", 12.0).with_style_hint(StyleHint::AnyStyle)
             )
         );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn test_style_hint_substitute_metrics_parity_with_qt_linux() {
+        let non_existent = "NoSuchFontXYZ";
+
+        if !crate::text::font_database::is_fontconfig_available() {
+            // When libfontconfig is absent, assert the documented no-substitute result (made-up metrics)
+            for px in [12.0, 16.0, 20.0] {
+                let font = Font::new(non_existent, px);
+                let m = FontMetrics::from_font(&font);
+                assert_eq!(m.ascent, px * 0.8);
+                assert_eq!(m.descent, px * 0.2);
+                assert_eq!(m.line_gap, px * 0.1);
+                assert_eq!(m.height, m.ascent + m.descent + m.line_gap);
+                assert_eq!(m.average_char_width, px * 0.6);
+            }
+            return;
+        }
+
+        let hints = [
+            StyleHint::AnyStyle,
+            StyleHint::SansSerif,
+            StyleHint::Serif,
+            StyleHint::Monospace,
+            StyleHint::TypeWriter,
+            StyleHint::Cursive,
+            StyleHint::Fantasy,
+            StyleHint::System,
+        ];
+        for hint in hints {
+            // What Qt does: the families `FcFontSort` lists, in order; the first one this machine
+            // can load is the font. Which family that is depends on the machine's fontconfig
+            // configuration and installed fonts, so the expectation is derived, not hard-coded.
+            let candidates = crate::text::font_database::query_fontconfig_fallbacks(
+                &non_existent.to_ascii_lowercase(),
+                false,
+                hint,
+            );
+            for px in [12.0f32, 16.0, 20.0] {
+                let resolved = candidates
+                    .iter()
+                    .find(|c| {
+                        FontMetrics::engine_metrics(
+                            &Font::new(c.as_str(), px).with_style_hint(hint),
+                        )
+                        .is_some()
+                    })
+                    .expect("fontconfig lists no family this machine can load");
+                let m = FontMetrics::from_font(&Font::new(non_existent, px).with_style_hint(hint));
+                let expected =
+                    FontMetrics::from_font(&Font::new(resolved.as_str(), px).with_style_hint(hint));
+                assert_eq!(
+                    m, expected,
+                    "{hint:?} at {px}px must have the metrics of {resolved}, the first listed family that loads"
+                );
+            }
+        }
     }
 }
