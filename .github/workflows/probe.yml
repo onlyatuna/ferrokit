@@ -1,0 +1,12 @@
+name: probe
+on:
+  push:
+    branches: ["probe/**"]
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p ferrokit-gui --test probe_macos_system_font -- --nocapture
+        continue-on-error: true
