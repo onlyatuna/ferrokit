@@ -435,7 +435,9 @@ fn hb_tracking_units(data: &rustybuzz::ttf_parser::trak::TrackData, ptem: f32) -
 fn hb_scale_tracking(units: f32, size: f32, units_per_em: i32) -> i64 {
     let x_scale = (f64::from(size) * 64.0) as i32;
     let multiplier = x_scale as f32 / units_per_em as f32;
-    (units * multiplier).round() as i64
+    // Measured against Qt 6.12 (PySide6, macOS 26): a tie rounds up, `-16.5` at 22 px gives -16 and
+    // `4.5` at 24 px gives 5, so the bundled HarfBuzz is not `roundf` (half away from zero) here.
+    (units * multiplier + 0.5).floor() as i64
 }
 
 /// What `AAT::trak::apply` adds to the advance of the first glyph of every grapheme (26.6 pixels):
@@ -1580,7 +1582,15 @@ mod tests {
     /// character minus `QRawFont::advancesForGlyphIndexes`, in 1/64 px, at each size.
     #[test]
     fn tracking_is_scaled_and_rounded_as_qt_measured() {
-        for (px, expected) in [(9.0, 11), (12.0, 0), (16.0, -20), (20.0, -29), (24.0, 5)] {
+        for (px, expected) in [
+            (9.0, 11),
+            (12.0, 0),
+            (16.0, -20),
+            (19.0, -28),
+            (20.0, -29),
+            (22.0, -16),
+            (24.0, 5),
+        ] {
             let units = hb_trak_value(&SF_TRAK_SIZES, &SF_TRAK_TRACKS[1].1, px);
             assert_eq!(hb_scale_tracking(units, px, 2048), expected, "{px}px");
         }
