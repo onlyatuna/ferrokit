@@ -1450,15 +1450,28 @@ impl<'a> Painter<'a> {
             let lcd_glyph = lcd_lut
                 .as_ref()
                 .and_then(|_| engine.rasterize_lcd_glyph(glyph.glyph_id, font.size, dpr));
+            // An engine with horizontal sub-pixel positions (Qt's CoreText engine) draws the glyph
+            // at the fractional position of its pen, kept in 26.6 pixels (`QFixed::fromReal`), and
+            // blits it at the floor of that position (`QRasterPaintEngine::drawCachedGlyphs`).
+            let pen_x = (f64::from(px) * 64.0).trunc() as i64;
+            let subpixel_glyph =
+                lcd_glyph.is_none() && engine.supports_horizontal_subpixel_positions();
             let (metrics, bitmap) = match &lcd_glyph {
                 Some((metrics, bitmap)) => (*metrics, bitmap.clone()),
+                None if subpixel_glyph => {
+                    engine.rasterize_glyph_at(glyph.glyph_id, font.size, dpr, pen_x)
+                }
                 None => engine.rasterize_glyph(glyph.glyph_id, font.size, dpr),
             };
             if metrics.width == 0 || metrics.height == 0 {
                 continue;
             }
 
-            let start_x = glyph_pixel(px + metrics.xmin as f32);
+            let start_x = if subpixel_glyph {
+                (pen_x >> 6).clamp(-1_000_000_000, 1_000_000_000) as i32 + metrics.xmin
+            } else {
+                glyph_pixel(px + metrics.xmin as f32)
+            };
             let start_y = glyph_pixel(py - metrics.ymin as f32 - metrics.height as f32);
 
             if let Some(clip) = self.state.clip_rect {

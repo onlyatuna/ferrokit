@@ -179,6 +179,18 @@ pub fn uses_directwrite_engine() -> bool {
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()
 }
 
+/// Whether text layout keeps the fractional advances and offsets the font engine reports instead of
+/// rounding them to whole pixels (`QTextEngine::shapeTextWithHarfbuzzNG`:
+/// `!supportsHorizontalSubPixelPositions()`): Qt's DirectWrite engine (see
+/// [`uses_directwrite_engine`]) and its CoreText engine, which always positions at sub-pixels.
+///
+/// Off macOS this is exactly [`uses_directwrite_engine`], independent of the hinting preference:
+/// [`font_has_subpixel_positions`], which the line metrics follow, is `true` for FreeType with light
+/// hinting and for any font preferring no hinting, but layout advances never followed it.
+pub(crate) fn layout_has_subpixel_advances() -> bool {
+    cfg!(target_os = "macos") || uses_directwrite_engine()
+}
+
 /// Font hinting style matching Qt's `QFontEngine::HintStyle` (qfontengine_p.h:60).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -961,21 +973,20 @@ impl FontDatabase {
     pub fn load_font(&mut self, family: &str) -> Option<SharedGlyphFace> {
         self.load_font_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
     }
+
+    /// The file of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`),
+    /// read once and kept under a pseudo path that no real file has.
     #[cfg(target_os = "macos")]
-    pub(crate) fn get_system_ui_font_data(&mut self) -> Option<SharedFontData> {
+    fn get_system_ui_font_data(&mut self) -> Option<SharedFontData> {
         let canonical = std::path::PathBuf::from(".applesystemuifont");
         if let Some(shared) = self.file_cache.get(&canonical) {
             return Some(shared.clone());
         }
         let path = query_system_ui_font_path()
             .unwrap_or_else(|| std::path::PathBuf::from("/System/Library/Fonts/SFNS.ttf"));
-        if let Ok(data) = SharedFontData::from_file(&path) {
-            let marked = data.with_system_ui(true);
-            self.file_cache.insert(canonical, marked.clone());
-            Some(marked)
-        } else {
-            None
-        }
+        let data = SharedFontData::from_file(&path).ok()?;
+        self.file_cache.insert(canonical, data.clone());
+        Some(data)
     }
 
     /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
@@ -1054,7 +1065,7 @@ impl FontDatabase {
 
             if key == ".applesystemuifont"
                 && let Some(sys_data) = self.get_system_ui_font_data()
-                && let Ok(face) = parse_face(&sys_data, 0)
+                && let Ok(face) = crate::text::glyph_face::parse_system_ui_face(&sys_data)
             {
                 self.cache.insert(style_key.clone(), Arc::clone(&face));
                 self.raw_cache.insert(style_key, sys_data);
@@ -1240,9 +1251,29 @@ impl FontDatabase {
             &["Microsoft JhengHei", "Microsoft YaHei"],
             &["Segoe UI Emoji", "Segoe UI Symbol"],
         ];
+        // macOS: these families are ferrokit's own picks, not Qt's cascade. Qt
+        // (`QCoreTextFontDatabase::fallbacksForFamily`, qcoretextfontdatabase.mm) asks CoreText for
+        // `CTFontCopyDefaultCascadeListForLanguages(font, preferredLanguages)`; measured on macOS 26
+        // with en-US, for the system UI font, that is `.AppleSystemFallback, .SF Georgian,
+        // Helvetica Neue, .Apple Symbols Fallback, .SF Arabic, .AppleUrduFont,
+        // .AppleSimplifiedChineseFont, .AppleTraditionalChineseFont, .AppleHongKongChineseFont,
+        // .AppleMacaoChineseFont, .AppleJapaneseFont, .AppleKoreanFont, ...` (private families,
+        // one per script). Qt moves the two last-resort families to the end, appends `Arial Unicode
+        // MS` and `Apple Symbols`, and uses `.Apple Color Emoji UI` for emoji. ferrokit loads files
+        // by family and has no cascade, so:
+        // * `PingFang TC`, `PingFang SC`, `Heiti TC` (the CJK slot) are ferrokit's choice: one
+        //   Han font, Traditional first, where Qt takes the Simplified family first for en-US
+        //   (`.AppleSimplifiedChineseFont`; for Helvetica it names PingFang SC). `Heiti TC` is the
+        //   system font before PingFang.
+        // * `Apple Color Emoji` is ferrokit's choice (Qt: `.Apple Color Emoji UI`).
+        // * `Apple Symbols` is Qt's (its own final fail-safe; the cascade has it too).
+        // `AppleGothic` was added for machines without PingFang: availability, not Qt parity (Qt
+        // measured `.AppleKoreanFont` or `Apple SD Gothic Neo` for Hangul, PingFang for Han), so it
+        // is not here. Kana, Hangul and the other scripts of the cascade are not covered by these
+        // slots.
         #[cfg(target_os = "macos")]
         const SLOTS: &[&[&str]] = &[
-            &["PingFang TC", "PingFang SC", "Heiti TC", "AppleGothic"],
+            &["PingFang TC", "PingFang SC", "Heiti TC"],
             &["Apple Color Emoji", "Apple Symbols"],
         ];
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -1696,6 +1727,26 @@ impl Default for FontDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Off macOS the flag layout rounds its advances by is `uses_directwrite_engine`, whatever the
+    /// hinting: `font_has_subpixel_positions` (what the line metrics follow) is `true` for a font
+    /// preferring no hinting, but Windows and Linux advances are still rounded without
+    /// DirectWrite, as before the CoreText engine existed.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn layout_advances_follow_directwrite_not_hinting_off_macos() {
+        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
+        let font =
+            Font::new("Arial", 16.0).with_hinting_preference(HintingPreference::PreferNoHinting);
+        assert!(font_has_subpixel_positions(&font));
+        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn layout_keeps_fractional_advances_on_macos() {
+        assert!(layout_has_subpixel_advances());
+    }
 
     #[test]
     fn test_font_database_creation_and_lookup() {

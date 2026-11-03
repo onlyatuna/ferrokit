@@ -82,6 +82,35 @@ pub trait GlyphFace: Send + Sync {
         None
     }
 
+    /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
+    /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
+    /// blits it at the floor of that position, instead of at the rounded one. Only Qt's CoreText
+    /// engine here.
+    fn supports_horizontal_subpixel_positions(&self) -> bool {
+        false
+    }
+
+    /// `QFontEngine::subPixelPositionFor`, horizontal part: the offset, in 26.6 pixels, at which the
+    /// bitmap of `glyph_id` is drawn for a pen at `x` (26.6 device pixels). The first glyph with an
+    /// outline that is asked about decides how many offsets a pixel has at `size`
+    /// (`QTextureGlyphCache::populate`). Only backends that support horizontal sub-pixel positions
+    /// return other than 0.
+    fn subpixel_position(&self, _glyph_id: u16, _size: f32, _scale: f32, _x: i64) -> i32 {
+        0
+    }
+
+    /// [`rasterize_scaled`](Self::rasterize_scaled) drawn at the sub-pixel offset `subpixel` (26.6
+    /// pixels, from [`subpixel_position`](Self::subpixel_position)).
+    fn rasterize_subpixel(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        _subpixel: i32,
+    ) -> (GlyphMetrics, Vec<u8>) {
+        self.rasterize_scaled(glyph_id, size, scale)
+    }
+
     /// Metrics of the glyph for `ch` at `px`.
     fn metrics(&self, ch: char, px: f32) -> GlyphMetrics {
         self.metrics_indexed(self.glyph_index(ch), px)
@@ -147,10 +176,11 @@ pub type SharedGlyphFace = Arc<dyn GlyphFace>;
 
 /// Which rasterizer backend [`parse_face`] uses (Qt's per-platform font engine choice).
 ///
-/// Windows uses DirectWrite, macOS uses CoreText, like Qt; every other platform, and Windows
-/// without DirectWrite or macOS when CoreText cannot open the font data, uses [`OutlineFace`]
-/// (Qt's FreeType role). `FERROKIT_FONT_ENGINE=outline` forces the generic backend
-/// (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
+/// Windows uses DirectWrite and macOS uses CoreText, like Qt; every other platform, and Windows
+/// without DirectWrite, uses [`OutlineFace`] (Qt's FreeType role). A font CoreText cannot open
+/// yields no face on macOS (the caller tries its next candidate), as Qt's CoreText engine would
+/// not exist for it. `FERROKIT_FONT_ENGINE=outline` forces the generic backend on Windows and
+/// macOS (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
 #[cfg(windows)]
 fn use_directwrite() -> bool {
     static CHOICE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
@@ -184,14 +214,24 @@ pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphF
     }
     #[cfg(target_os = "macos")]
     if use_coretext() {
-        return crate::text::core_text_face::CoreTextFace::new(
-            data.clone(),
-            face_index,
-            data.is_system_ui(),
-        )
-        .map(|face| Arc::new(face) as SharedGlyphFace);
+        return crate::text::core_text_face::CoreTextFace::new(data.clone(), face_index)
+            .map(|face| Arc::new(face) as SharedGlyphFace);
     }
     OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
+}
+
+/// Builds the face of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`,
+/// the font Qt resolves `AnyStyle` and `System` to): `data` is its file, which CoreText does not
+/// use for drawing (the UI font is created per size so that its optical size follows the pixel
+/// size) but the shaper and the glyph lookup read.
+#[cfg(target_os = "macos")]
+pub(crate) fn parse_system_ui_face(data: &SharedFontData) -> Result<SharedGlyphFace, String> {
+    if use_coretext() {
+        crate::text::core_text_face::CoreTextFace::system_ui(data.clone())
+            .map(|face| Arc::new(face) as SharedGlyphFace)
+    } else {
+        OutlineFace::new(data.clone(), 0).map(|f| Arc::new(f) as SharedGlyphFace)
+    }
 }
 
 #[cfg(test)]

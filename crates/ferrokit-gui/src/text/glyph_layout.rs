@@ -31,8 +31,9 @@ type ColorGlyphCache = Arc<
         std::collections::HashMap<(u16, u32), Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)>>,
     >,
 >;
-type MonoGlyphCache =
-    Arc<std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), (GlyphMetrics, Arc<[u8]>)>>>;
+type MonoGlyphCache = Arc<
+    std::sync::Mutex<std::collections::HashMap<(u16, u32, u32, i32), (GlyphMetrics, Arc<[u8]>)>>,
+>;
 type LcdGlyphCache = Arc<
     std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), Option<(GlyphMetrics, Arc<[u8]>)>>>,
 >;
@@ -73,7 +74,9 @@ impl ShapingFace {
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
         face.set_pixels_per_em(Some((ppem, ppem)));
-        face.set_points_per_em(Some(ppem as f32));
+        // No points per em on purpose: rustybuzz then applies no `trak` tracking (what it adds is
+        // not what the HarfBuzz 14 bundled with Qt 6.12 adds, see `hb_tracking`); where Qt applies
+        // tracking (macOS) `qt_glyph_metrics` does.
         Some(Self {
             face,
             _data: data.clone(),
@@ -200,13 +203,53 @@ impl FontEngine {
         size: f32,
         scale: f32,
     ) -> (GlyphMetrics, Arc<[u8]>) {
-        let key = (glyph_id, size.to_bits(), scale.to_bits());
+        self.cached_mono_glyph(glyph_id, size, scale, 0, || {
+            self.face.rasterize_scaled(glyph_id, size, scale)
+        })
+    }
+
+    /// Whether glyphs are drawn at the fractional x position of their pen
+    /// ([`GlyphFace::supports_horizontal_subpixel_positions`]): the caller then blits them at the
+    /// floor of that position, `x >> 6` for a pen at `x` (26.6).
+    pub fn supports_horizontal_subpixel_positions(&self) -> bool {
+        self.face.supports_horizontal_subpixel_positions()
+    }
+
+    /// [`rasterize_glyph`](Self::rasterize_glyph) for a glyph whose pen is at `x` (26.6 device
+    /// pixels): the bitmap Qt's glyph cache draws for that sub-pixel position, cached per position.
+    /// Same as `rasterize_glyph` when the face has no sub-pixel positions.
+    pub fn rasterize_glyph_at(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        x: i64,
+    ) -> (GlyphMetrics, Arc<[u8]>) {
+        if !self.supports_horizontal_subpixel_positions() {
+            return self.rasterize_glyph(glyph_id, size, scale);
+        }
+        let subpixel = self.face.subpixel_position(glyph_id, size, scale, x);
+        self.cached_mono_glyph(glyph_id, size, scale, subpixel, || {
+            self.face
+                .rasterize_subpixel(glyph_id, size, scale, subpixel)
+        })
+    }
+
+    fn cached_mono_glyph(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        subpixel: i32,
+        rasterize: impl FnOnce() -> (GlyphMetrics, Vec<u8>),
+    ) -> (GlyphMetrics, Arc<[u8]>) {
+        let key = (glyph_id, size.to_bits(), scale.to_bits(), subpixel);
         if let Ok(guard) = self.mono_cache.lock()
             && let Some((metrics, bitmap)) = guard.get(&key)
         {
             return (*metrics, bitmap.clone());
         }
-        let (metrics, bitmap) = self.face.rasterize_scaled(glyph_id, size, scale);
+        let (metrics, bitmap) = rasterize();
         let bitmap: Arc<[u8]> = bitmap.into();
         if let Ok(mut guard) = self.mono_cache.lock() {
             if guard.len() >= MONO_GLYPH_CACHE_LIMIT {
@@ -291,6 +334,158 @@ fn hb_font_multiplier(size: f32, units_per_em: i32) -> i64 {
 /// adds to the font engine's advance.
 fn hb_scale_font_units(units: i64, mult: i64) -> i64 {
     (units * mult + 32768) >> 16
+}
+
+/// Qt's `fontDef.pointSize` for a font of `pixel_size` pixels (`QFontDatabasePrivate::load`:
+/// `pixelSize * 72 / dpi`), which `hb_qt_font_create` hands HarfBuzz as the font's points per em.
+/// `dpi` is `qt_defaultDpi()`, the primary screen's logical DPI: 72 on macOS, the base DPI of
+/// `QCocoaScreen` (`logicalBaseDpi`), as PySide6 6.12 reports it under the `cocoa` plugin. The
+/// other platforms' screens differ (96 on Windows at 100 %, whatever the display says on Linux),
+/// so there this is not applied, and neither is tracking.
+#[cfg(target_os = "macos")]
+fn qt_point_size(pixel_size: f32) -> f32 {
+    const QT_DEFAULT_DPI: f64 = 72.0;
+    (f64::from(pixel_size) * 72.0 / QT_DEFAULT_DPI) as f32
+}
+
+/// `AAT::TrackTableEntry::get_value` (HarfBuzz 14, hb-aat-layout-trak-table.hh): the tracking in
+/// font units of one track at `ptem`, from the sizes the table lists. The value of the first size
+/// at or above `ptem` is used, interpolated from the size before it; below the first size and
+/// above the last one the nearest value stands (rustybuzz 0.20 extrapolates there). Single
+/// precision, as HarfBuzz computes it.
+#[cfg(any(target_os = "macos", test))]
+fn hb_trak_value(sizes: &[f32], values: &[i16], ptem: f32) -> f32 {
+    let n = sizes.len().min(values.len());
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return f32::from(values[0]);
+    }
+    let Some(i) = sizes[..n].iter().position(|&s| s >= ptem) else {
+        return f32::from(values[n - 1]);
+    };
+    if i == 0 {
+        return f32::from(values[0]);
+    }
+    if sizes[i] == ptem {
+        return f32::from(values[i]);
+    }
+    let (mut s0, mut s1) = (sizes[i - 1], sizes[i]);
+    let (mut v0, mut v1) = (i32::from(values[i - 1]), i32::from(values[i]));
+    // Deal with font bugs.
+    if s1 < s0 {
+        std::mem::swap(&mut s0, &mut s1);
+        std::mem::swap(&mut v0, &mut v1);
+    }
+    if ptem < s0 {
+        return v0 as f32;
+    }
+    if ptem > s1 {
+        return v1 as f32;
+    }
+    if s0 == s1 {
+        return (v0 + v1) as f32 * 0.5;
+    }
+    let t = (ptem - s0) / (s1 - s0);
+    v0 as f32 + t * (v1 - v0) as f32
+}
+
+/// `AAT::TrackData::get_tracking` for the default track (0): the tracking of a horizontal `trak`
+/// table at `ptem`, in font units. A table without a track 0 interpolates between the tracks
+/// around it.
+#[cfg(any(target_os = "macos", test))]
+fn hb_tracking_units(data: &rustybuzz::ttf_parser::trak::TrackData, ptem: f32) -> f32 {
+    let sizes: Vec<f32> = data.sizes.into_iter().map(|size| size.0).collect();
+    let tracks: Vec<(f32, f32)> = data
+        .tracks
+        .into_iter()
+        .map(|track| {
+            let values: Vec<i16> = track.values.into_iter().collect();
+            (track.value, hb_trak_value(&sizes, &values, ptem))
+        })
+        .collect();
+    let count = tracks.len();
+    match count {
+        0 => return 0.0,
+        1 => return tracks[0].1,
+        _ => {}
+    }
+    const TRACK: f32 = 0.0;
+    let mut i = 0;
+    let mut j = count - 1;
+    while i + 1 < count && tracks[i + 1].0 <= TRACK {
+        i += 1;
+    }
+    while j > 0 && tracks[j - 1].0 >= TRACK {
+        j -= 1;
+    }
+    if i == j {
+        return tracks[i].1;
+    }
+    let ((t0, a), (t1, b)) = (tracks[i], tracks[j]);
+    let t = (TRACK - t0) / (t1 - t0);
+    a + t * (b - a)
+}
+
+/// `hb_font_t::em_scalef_x`: `units` font units at `size` pixels per em in 26.6 pixels, rounded
+/// half away from zero. HarfBuzz scales with `x_scale / upem`, `x_scale` being Qt's
+/// `QFixed::fromReal(size)` (`hb_qt_font_create`), in single precision.
+#[cfg(any(target_os = "macos", test))]
+fn hb_scale_tracking(units: f32, size: f32, units_per_em: i32) -> i64 {
+    let x_scale = (f64::from(size) * 64.0) as i32;
+    let multiplier = x_scale as f32 / units_per_em as f32;
+    (units * multiplier).round() as i64
+}
+
+/// What `AAT::trak::apply` adds to the advance of the first glyph of every grapheme (26.6 pixels):
+/// the `trak` table's tracking at `ptem`. HarfBuzz 14, which Qt 6.12 bundles, applies it to fonts
+/// with a `trak` and a `STAT` table ("modern fonts", `hb-ot-shape.cc`) regardless of what the
+/// shaping features say. 0 for any other font.
+#[cfg(any(target_os = "macos", test))]
+fn hb_tracking(face: &rustybuzz::Face, ptem: f32, size: f32) -> i64 {
+    let stat = rustybuzz::ttf_parser::Tag::from_bytes(b"STAT");
+    let has_stat = face
+        .raw_face()
+        .table(stat)
+        .is_some_and(|table| table.len() >= 4 && table[..4] != [0; 4]);
+    let Some(trak) = face.tables().trak else {
+        return 0;
+    };
+    if !has_stat || face.units_per_em() <= 0 {
+        return 0;
+    }
+    // `HB_CORETEXT_DEFAULT_FONT_SIZE` for a font without points per em.
+    let ptem = if ptem > 0.0 { ptem } else { 12.0 };
+    hb_scale_tracking(
+        hb_tracking_units(&trak.horizontal, ptem),
+        size,
+        face.units_per_em(),
+    )
+}
+
+/// The tracking Qt's HarfBuzz adds to every grapheme's advance in a font of `size` pixels:
+/// [`hb_tracking`] with the points per em Qt gives the font, on macOS only (off it the
+/// screen-dependent points per em of the other platforms are not modelled and ferrokit has always
+/// laid text out without tracking).
+fn layout_tracking(face: &rustybuzz::Face, size: f32) -> i64 {
+    #[cfg(target_os = "macos")]
+    {
+        hb_tracking(face, qt_point_size(size), size)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (face, size);
+        0
+    }
+}
+
+/// Whether `glyph_id` is a mark in the font's GDEF table, which HarfBuzz never gives an advance.
+fn is_mark_glyph(face: &rustybuzz::Face, glyph_id: u32) -> bool {
+    face.tables().gdef.is_some_and(|gdef| {
+        gdef.glyph_class(rustybuzz::ttf_parser::GlyphId(glyph_id as u16))
+            == Some(rustybuzz::ttf_parser::gdef::GlyphClass::Mark)
+    })
 }
 
 /// A HarfBuzz feature switching `tag` to `value` over the whole run (`HB_FEATURE_GLOBAL_START`
@@ -400,12 +595,7 @@ fn qt_glyph_metrics(
         metrics.push((advance, hb_scale_font_units(i64::from(pos.x_offset), mult)));
     }
     if let Some(subtables) = legacy_kern {
-        let is_mark = |info: &rustybuzz::GlyphInfo| {
-            face.tables().gdef.is_some_and(|gdef| {
-                gdef.glyph_class(rustybuzz::ttf_parser::GlyphId(info.glyph_id as u16))
-                    == Some(rustybuzz::ttf_parser::gdef::GlyphClass::Mark)
-            })
-        };
+        let is_mark = |info: &rustybuzz::GlyphInfo| is_mark_glyph(face, info.glyph_id);
         for subtable in subtables {
             let mut i = 0;
             while i < infos.len() {
@@ -428,6 +618,17 @@ fn qt_glyph_metrics(
                     metrics[j].1 += second;
                 }
                 i = j;
+            }
+        }
+    }
+    // `AAT::trak::apply` comes last in `hb_ot_shape_plan_t::position`: it widens the first glyph of
+    // every grapheme (not a mark, whose advance HarfBuzz zeroes afterwards, and not a glyph
+    // without an advance).
+    let tracking = layout_tracking(face, size);
+    if tracking != 0 {
+        for (info, (advance, _)) in infos.iter().zip(&mut metrics) {
+            if *advance != 0 && !is_mark_glyph(face, info.glyph_id) {
+                *advance += tracking;
             }
         }
     }
@@ -827,7 +1028,7 @@ impl GlyphLayout {
         let mut glyphs = Vec::with_capacity(text.len());
         let mut current_x = 0.0;
         let mut current_y = 0.0;
-        let subpixel = crate::text::font_database::font_has_subpixel_positions(font);
+        let subpixel = crate::text::font_database::layout_has_subpixel_advances();
 
         for run in runs {
             // `run.text` is a subslice of `text`, so the pointer difference is its byte offset.
@@ -1244,5 +1445,164 @@ mod tests {
                 "Emoji should have been shaped with engine 1"
             );
         }
+    }
+
+    /// The horizontal tracking (track 0) SFNS.ttf, the macOS system UI font, lists on macOS 26:
+    /// sizes in points, the value of each track in font units (2048 per em).
+    const SF_TRAK_SIZES: [f32; 21] = [
+        6.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 20.0, 22.0, 24.0, 28.0, 32.0,
+        36.0, 50.0, 64.0, 80.0, 100.0, 138.0,
+    ];
+    const SF_TRAK_TRACKS: [(f32, [i16; 21]); 3] = [
+        (
+            -1.0,
+            [
+                54, 10, -4, -16, -28, -40, -50, -60, -68, -80, -76, -58, -34, 0, -2, -7, -14, -21,
+                -28, -28, -28,
+            ],
+        ),
+        (
+            0.0,
+            [
+                82, 38, 24, 12, 0, -12, -22, -32, -40, -52, -46, -24, 6, 28, 26, 21, 14, 7, 0, 0, 0,
+            ],
+        ),
+        (
+            1.0,
+            [
+                110, 66, 52, 40, 28, 16, 6, -4, -12, -24, -18, 4, 34, 56, 54, 49, 42, 35, 28, 28,
+                28,
+            ],
+        ),
+    ];
+
+    /// A `trak` table with only horizontal data.
+    fn trak_table(sizes: &[f32], tracks: &[(f32, &[i16])]) -> Vec<u8> {
+        let fixed = |v: f32| ((v * 65536.0) as i32).to_be_bytes();
+        let sizes_offset = 12 + 8 + 8 * tracks.len();
+        let values_offset = sizes_offset + 4 * sizes.len();
+        let mut out = Vec::new();
+        out.extend(0x0001_0000u32.to_be_bytes());
+        out.extend([0, 0, 0, 12, 0, 0, 0, 0]); // format, horizontal at 12, no vertical, reserved
+        out.extend((tracks.len() as u16).to_be_bytes());
+        out.extend((sizes.len() as u16).to_be_bytes());
+        out.extend((sizes_offset as u32).to_be_bytes());
+        for (i, (value, _)) in tracks.iter().enumerate() {
+            out.extend(fixed(*value));
+            out.extend([0, 0]); // name index
+            out.extend(((values_offset + 2 * sizes.len() * i) as u16).to_be_bytes());
+        }
+        for size in sizes {
+            out.extend(fixed(*size));
+        }
+        for (_, values) in tracks {
+            for value in *values {
+                out.extend(value.to_be_bytes());
+            }
+        }
+        out
+    }
+
+    /// `font` with `extra` tables added, the table directory rebuilt in tag order.
+    fn with_tables(font: &[u8], extra: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let be16 = |at: usize| usize::from(u16::from_be_bytes([font[at], font[at + 1]]));
+        let be32 = |at: usize| {
+            u32::from_be_bytes([font[at], font[at + 1], font[at + 2], font[at + 3]]) as usize
+        };
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = (0..be16(4))
+            .map(|i| {
+                let record = 12 + 16 * i;
+                let (offset, length) = (be32(record + 8), be32(record + 12));
+                let tag = [
+                    font[record],
+                    font[record + 1],
+                    font[record + 2],
+                    font[record + 3],
+                ];
+                (tag, font[offset..offset + length].to_vec())
+            })
+            .collect();
+        tables.extend(extra.iter().cloned());
+        tables.sort_by_key(|(tag, _)| *tag);
+        let mut out = font[..4].to_vec();
+        out.extend((tables.len() as u16).to_be_bytes());
+        out.extend([0; 6]); // search range, entry selector and range shift: unused by the readers
+        let mut body = Vec::new();
+        for (tag, data) in &tables {
+            out.extend(tag);
+            out.extend([0; 4]); // checksum: unchecked
+            out.extend(((12 + 16 * tables.len() + body.len()) as u32).to_be_bytes());
+            out.extend((data.len() as u32).to_be_bytes());
+            body.extend(data);
+            while body.len() % 4 != 0 {
+                body.push(0);
+            }
+        }
+        out.extend(body);
+        out
+    }
+
+    fn oracle_with_trak(stat: bool) -> Vec<u8> {
+        let tracks: Vec<(f32, &[i16])> = SF_TRAK_TRACKS
+            .iter()
+            .map(|(value, values)| (*value, values.as_slice()))
+            .collect();
+        let mut extra = vec![(*b"trak", trak_table(&SF_TRAK_SIZES, &tracks))];
+        if stat {
+            extra.push((*b"STAT", vec![0, 1, 0, 2, 0, 0, 0, 0]));
+        }
+        with_tables(include_bytes!("../../tests/data/oracle_text.ttf"), &extra)
+    }
+
+    /// HarfBuzz reads the value of the first size at or above the points per em and interpolates
+    /// from the size before it; rustybuzz 0.20 extrapolates beyond the table's ends, HarfBuzz
+    /// keeps the nearest value.
+    #[test]
+    fn trak_values_follow_hb_aat_layout_trak_table() {
+        let font = oracle_with_trak(true);
+        let face = rustybuzz::Face::from_slice(&font, 0).unwrap();
+        let trak = face.tables().trak.expect("trak table");
+        let units = |ptem: f32| hb_tracking_units(&trak.horizontal, ptem);
+        // The listed sizes.
+        assert_eq!(units(12.0), 0.0);
+        assert_eq!(units(9.0), 38.0);
+        assert_eq!(units(20.0), -46.0);
+        // Between two sizes: linear.
+        assert!((units(18.0) + 50.0).abs() < 1e-4);
+        assert_eq!(units(12.5), -6.0);
+        // Outside the table: the nearest value, not an extrapolation.
+        assert_eq!(units(4.0), 82.0);
+        assert_eq!(units(500.0), 0.0);
+    }
+
+    /// The tracking Qt's HarfBuzz added to every glyph of the system UI font on macOS 26
+    /// (PySide6 6.12, `cocoa` plugin, `ptem == px`): `QFontMetricsF::horizontalAdvance` of one
+    /// character minus `QRawFont::advancesForGlyphIndexes`, in 1/64 px, at each size.
+    #[test]
+    fn tracking_is_scaled_and_rounded_as_qt_measured() {
+        for (px, expected) in [(9.0, 11), (12.0, 0), (16.0, -20), (20.0, -29), (24.0, 5)] {
+            let units = hb_trak_value(&SF_TRAK_SIZES, &SF_TRAK_TRACKS[1].1, px);
+            assert_eq!(hb_scale_tracking(units, px, 2048), expected, "{px}px");
+        }
+    }
+
+    /// HarfBuzz tracks only fonts with both a `trak` and a `STAT` table.
+    #[test]
+    fn tracking_needs_a_stat_table() {
+        let with_stat = oracle_with_trak(true);
+        let face = rustybuzz::Face::from_slice(&with_stat, 0).unwrap();
+        let upem = face.units_per_em();
+        assert_eq!(
+            hb_tracking(&face, 20.0, 20.0),
+            hb_scale_tracking(-46.0, 20.0, upem)
+        );
+        assert_ne!(hb_tracking(&face, 20.0, 20.0), 0);
+        // No points per em: HarfBuzz tracks at 12 pt.
+        assert_eq!(hb_tracking(&face, 0.0, 20.0), 0);
+
+        let without_stat = oracle_with_trak(false);
+        let face = rustybuzz::Face::from_slice(&without_stat, 0).unwrap();
+        assert!(face.tables().trak.is_some());
+        assert_eq!(hb_tracking(&face, 20.0, 20.0), 0);
     }
 }
