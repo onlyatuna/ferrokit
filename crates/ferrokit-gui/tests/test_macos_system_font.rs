@@ -31,6 +31,35 @@ fn test_system_ui_font_resolves_and_metrics_match_qt() {
     }
 }
 
+/// `QFontMetricsF::horizontalAdvance` of the system UI font, measured with PySide6 6.12.0 on macOS 26
+/// under the `cocoa` platform plugin (logical DPI 72, so HarfBuzz's points per em equal the pixel
+/// size and its `trak` tracking of SF applies). The rows are 12, 16, 19, 20 and 22 px; 19 and 22
+/// land on ties of the tracking's rounding. The `offscreen` plugin (logical DPI 96) gives other
+/// numbers (67.5 at 12 px for the first string), which are not what a macOS application sees.
+#[test]
+fn test_system_ui_font_advances_match_qt_cocoa() {
+    const TEXTS: [&str; 4] = ["5h 42% Wg", "0123456789", "AV", "To"];
+    const EXPECTED: [(f32, [f32; 4]); 5] = [
+        (12.0, [65.53125, 72.640625, 15.21875, 13.09375]),
+        (16.0, [81.796875, 90.671875, 19.0625, 16.234375]),
+        (19.0, [94.90625, 105.671875, 22.203125, 18.796875]),
+        (20.0, [98.59375, 110.703125, 23.1875, 19.5]),
+        (22.0, [109.390625, 124.75, 25.953125, 21.6875]),
+    ];
+    for (px, widths) in EXPECTED {
+        let mut font = Font::new("NoSuchFontXYZ", px);
+        font.style_hint = StyleHint::System;
+        let metrics = FontMetrics::from_font(&font);
+        for (text, expected) in TEXTS.iter().zip(widths) {
+            assert_eq!(
+                metrics.horizontal_advance_exact(text, &font),
+                expected,
+                "{text:?} at {px}px"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_system_ui_font_draws_pixels() {
     let mut font = Font::new("NoSuchFontXYZ", 16.0);
