@@ -233,6 +233,37 @@ fn glyph_pixel(v: f32) -> i32 {
     v.round().clamp(-1.0e9, 1.0e9) as i32
 }
 
+/// Where `QRasterPaintEngine::drawCachedGlyphs` (qpaintengine_raster.cpp) puts a glyph of a face
+/// of Qt's FreeType engine ([`GlyphFace::freetype_engine`]): the glyph's whole device pixel
+/// (`qFloor(x)`, `qRound(y)`, before the bitmap's own left and top are applied) and the pen
+/// position in 26.6, from which the glyph cache's sub-pixel position follows
+/// (`QFontEngine::subPixelPositionFor`).
+///
+/// [`GlyphFace::freetype_engine`]: crate::text::glyph_face::GlyphFace::freetype_engine
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QtGlyphPlacement {
+    x: i32,
+    y: i32,
+    pen_x: i64,
+}
+
+/// `QFixed::fromReal`: truncated toward zero to 26.6, kept within a billion pixels (see
+/// [`glyph_pixel`]).
+fn qt_fixed(v: f64) -> i64 {
+    (v * 64.0).clamp(-6.4e10, 6.4e10) as i64
+}
+
+/// [`QtGlyphPlacement`] of a glyph at the 26.6 device position `(x, y)`, which
+/// `QFontEngine::getGlyphPositions` gives it.
+fn qt_glyph_placement(x: i64, y: i64) -> QtGlyphPlacement {
+    let clamp = |v: i64| v.clamp(-1_000_000_000, 1_000_000_000) as i32;
+    QtGlyphPlacement {
+        x: clamp(x >> 6),
+        y: clamp(y.saturating_add(32) >> 6),
+        pen_x: x,
+    }
+}
+
 /// `qRound` (`qnumeric.h`): rounds half away from zero.
 fn qt_round(v: f64) -> i32 {
     if v >= 0.0 {
@@ -1457,6 +1488,35 @@ impl<'a> Painter<'a> {
             let lcd_glyph = lcd_lut
                 .as_ref()
                 .and_then(|_| engine.rasterize_lcd_glyph_at(glyph.glyph_id, font.size, dpr, pen_x));
+            // A face of Qt's FreeType engine is placed at the glyph's 26.6 position as
+            // `QFontEngine::getGlyphPositions` computes it: the translation truncated to 26.6, plus
+            // the laid-out advances, unless the transform scales.
+            let placement = engine
+                .face
+                .freetype_engine()
+                .then_some(())
+                .filter(|_| lcd_glyph.is_none())
+                .map(|()| {
+                    let (x, y) = if transform.sx == 1.0
+                        && transform.sy == 1.0
+                        && transform.kx == 0.0
+                        && transform.ky == 0.0
+                    {
+                        // The laid-out positions are 26.6 values already.
+                        (
+                            qt_fixed(f64::from(transform.tx) + f64::from(pos.x))
+                                .saturating_add((f64::from(glyph.x) * 64.0).round() as i64),
+                            qt_fixed(f64::from(transform.ty) + f64::from(pos.y))
+                                .saturating_add((f64::from(glyph.y) * 64.0).round() as i64),
+                        )
+                    } else {
+                        (qt_fixed(f64::from(px)), qt_fixed(f64::from(py)))
+                    };
+                    qt_glyph_placement(x, y)
+                });
+            let pen_x = placement.map_or(pen_x, |p| p.pen_x);
+            let subpixel_glyph =
+                lcd_glyph.is_none() && engine.supports_horizontal_subpixel_positions();
             let (metrics, bitmap) = match &lcd_glyph {
                 Some((metrics, bitmap)) => (*metrics, bitmap.clone()),
                 None if subpixel_glyph => {
@@ -1468,12 +1528,20 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
-            let start_x = if subpixel_glyph || cfg!(windows) {
-                (pen_x >> 6).clamp(-1_000_000_000, 1_000_000_000) as i32 + metrics.xmin
-            } else {
-                glyph_pixel(px + metrics.xmin as f32)
+            let (start_x, start_y) = match placement {
+                Some(p) => (
+                    p.x.saturating_add(metrics.xmin),
+                    p.y.saturating_sub(metrics.ymin.saturating_add(metrics.height as i32)),
+                ),
+                None if subpixel_glyph || cfg!(windows) => (
+                    (pen_x >> 6).clamp(-1_000_000_000, 1_000_000_000) as i32 + metrics.xmin,
+                    glyph_pixel(py - metrics.ymin as f32 - metrics.height as f32),
+                ),
+                None => (
+                    glyph_pixel(px + metrics.xmin as f32),
+                    glyph_pixel(py - metrics.ymin as f32 - metrics.height as f32),
+                ),
             };
-            let start_y = glyph_pixel(py - metrics.ymin as f32 - metrics.height as f32);
 
             if let Some(clip) = self.state.clip_rect {
                 let cx0 = (clip.left() * dpr).floor() as i32;

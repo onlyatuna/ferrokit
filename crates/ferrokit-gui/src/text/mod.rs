@@ -15,6 +15,7 @@ pub mod font_database;
 pub mod font_metrics;
 pub mod format;
 pub mod fragment;
+pub mod ftgrays;
 pub mod glyph_face;
 pub mod glyph_layout;
 pub mod highlighter;
@@ -26,6 +27,7 @@ pub use markup::might_be_rich_text;
 pub mod outline_face;
 pub mod position;
 pub mod qcssparser;
+pub mod skrifa_face;
 pub mod smoothing;
 
 pub use block::*;

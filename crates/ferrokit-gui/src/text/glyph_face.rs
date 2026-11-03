@@ -96,6 +96,15 @@ pub trait GlyphFace: Send + Sync {
         None
     }
 
+    /// The face is Qt's FreeType engine (`QFontEngineFT`): the painter places its glyphs as
+    /// `QFontEngine::getGlyphPositions` and `QRasterPaintEngine::drawCachedGlyphs` do (whole pixel
+    /// `qFloor(x)`, `qRound(y)`), and the layout rounds its advances to whole pixels exactly when
+    /// the face has no [horizontal sub-pixel positions](Self::supports_horizontal_subpixel_positions)
+    /// (its hint style is neither none nor light).
+    fn freetype_engine(&self) -> bool {
+        false
+    }
+
     /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
     /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
     /// blits it at the floor of that position, instead of at the rounded one. Qt's CoreText
@@ -190,17 +199,17 @@ pub type SharedGlyphFace = Arc<dyn GlyphFace>;
 
 /// Which rasterizer backend [`parse_face`] uses (Qt's per-platform font engine choice).
 ///
-/// Windows uses DirectWrite and macOS uses CoreText, like Qt; every other platform, and Windows
-/// without DirectWrite, uses [`OutlineFace`] (Qt's FreeType role). A font CoreText cannot open
-/// yields no face on macOS (the caller tries its next candidate), as Qt's CoreText engine would
-/// not exist for it. `FERROKIT_FONT_ENGINE=outline` forces the generic backend on Windows and
-/// macOS (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
-#[cfg(windows)]
-fn use_directwrite() -> bool {
+/// Windows uses DirectWrite and macOS uses CoreText, like Qt; Linux and the other Unix systems
+/// but macOS use [`SkrifaFace`](crate::text::skrifa_face::SkrifaFace) (Qt's FreeType engine);
+/// every other platform, and a font the first two cannot open on Windows or a font skrifa cannot
+/// read on Unix, uses [`OutlineFace`] (a font CoreText cannot open yields no face on macOS, the
+/// caller tries its next candidate, as Qt's CoreText engine would not exist for it).
+/// `FERROKIT_FONT_ENGINE=outline` forces the generic backend (on Windows like Qt's
+/// `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+fn use_platform_engine() -> bool {
     static CHOICE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-        let forced_generic =
-            std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"));
-        !forced_generic && crate::text::directwrite_face::is_available()
+        !std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"))
     });
     *CHOICE
 }
@@ -213,12 +222,27 @@ fn use_coretext() -> bool {
     *CHOICE
 }
 
-/// Builds the glyph face for face `face_index` of the font file `data`.
+/// Builds the glyph face for face `face_index` of the font file `data` for the process-wide
+/// default hint style.
+pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphFace, String> {
+    parse_face_with_hint_style(
+        data,
+        face_index,
+        crate::text::font_database::default_hint_style(),
+    )
+}
+
+/// Builds the glyph face for face `face_index` of the font file `data`, rendering with
+/// `hint_style` where the backend hints (Qt fixes an engine's hint style when it creates it).
 ///
 /// This is the only place that selects a rasterizer backend.
-pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphFace, String> {
+pub fn parse_face_with_hint_style(
+    data: &SharedFontData,
+    face_index: u32,
+    hint_style: crate::text::font_database::HintStyle,
+) -> Result<SharedGlyphFace, String> {
     #[cfg(windows)]
-    if use_directwrite() {
+    if use_platform_engine() && crate::text::directwrite_face::is_available() {
         // A font DirectWrite cannot open is still drawn by the generic backend.
         if let Ok(face) =
             crate::text::directwrite_face::DirectWriteFace::new(data.clone(), face_index)
@@ -231,6 +255,18 @@ pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphF
         return crate::text::core_text_face::CoreTextFace::new(data.clone(), face_index)
             .map(|face| Arc::new(face) as SharedGlyphFace);
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if use_platform_engine() {
+        // A font skrifa cannot read is still drawn by the generic backend.
+        if let Ok(face) =
+            crate::text::skrifa_face::SkrifaFace::new(data.clone(), face_index, hint_style)
+        {
+            return Ok(Arc::new(face));
+        }
+    }
+    // Only the FreeType-role backend hints.
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = hint_style;
     OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
 }
 
