@@ -169,6 +169,34 @@ pub enum HintingPreference {
     PreferFullHinting = 3,
 }
 
+/// Font style hint matching Qt's `QFont::StyleHint`.
+///
+/// Used by the font matching algorithm to select a suitable substitute family
+/// when the requested font family is not installed.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum StyleHint {
+    Helvetica = 0,
+    Times = 1,
+    Courier = 2,
+    OldEnglish = 3,
+    System = 4,
+    #[default]
+    AnyStyle = 5,
+    Cursive = 6,
+    Monospace = 7,
+    Fantasy = 8,
+}
+
+#[allow(non_upper_case_globals)]
+impl StyleHint {
+    pub const SansSerif: Self = Self::Helvetica;
+    pub const Serif: Self = Self::Times;
+    pub const TypeWriter: Self = Self::Courier;
+    pub const Decorative: Self = Self::OldEnglish;
+}
+
 /// A four-character OpenType feature tag (`QFont::Tag`), held as the big-endian `u32` of its
 /// bytes, so `FontTag::new(b"tnum").value()` is Qt's `QFont::Tag("tnum").value()`. The default
 /// tag has value 0, which is invalid. Tags compare and order by value, as `QMap` keys do.
@@ -258,6 +286,8 @@ pub struct Font {
     pub font_data: Option<SharedFontData>,
     /// Font hinting preference (`QFont::hintingPreference`).
     pub hinting_preference: HintingPreference,
+    /// Font style hint (`QFont::styleHint`).
+    pub style_hint: StyleHint,
 }
 
 impl Font {
@@ -272,6 +302,7 @@ impl Font {
             letter_spacing: 0.0,
             font_data: None,
             hinting_preference: HintingPreference::PreferDefaultHinting,
+            style_hint: StyleHint::AnyStyle,
         }
     }
     #[inline]
@@ -326,6 +357,22 @@ impl Font {
     #[inline]
     pub fn with_hinting_preference(mut self, preference: HintingPreference) -> Self {
         self.hinting_preference = preference;
+        self
+    }
+
+    #[inline]
+    pub fn style_hint(&self) -> StyleHint {
+        self.style_hint
+    }
+
+    #[inline]
+    pub fn set_style_hint(&mut self, hint: StyleHint) {
+        self.style_hint = hint;
+    }
+
+    #[inline]
+    pub fn with_style_hint(mut self, hint: StyleHint) -> Self {
+        self.style_hint = hint;
         self
     }
 
@@ -431,6 +478,7 @@ pub struct FontDescription {
     pub style: Option<FontStyle>,
     pub features: Option<BTreeMap<FontTag, u32>>,
     pub hinting_preference: Option<HintingPreference>,
+    pub style_hint: Option<StyleHint>,
 }
 
 impl FontDescription {
@@ -474,6 +522,11 @@ impl FontDescription {
         self
     }
 
+    pub fn with_style_hint(mut self, hint: StyleHint) -> Self {
+        self.style_hint = Some(hint);
+        self
+    }
+
     /// Merges this description with parent font, overriding specified properties.
     pub fn merge_with_parent(&self, parent: &Font) -> Font {
         Font {
@@ -488,6 +541,7 @@ impl FontDescription {
             letter_spacing: parent.letter_spacing,
             font_data: parent.font_data.clone(),
             hinting_preference: self.hinting_preference.unwrap_or(parent.hinting_preference),
+            style_hint: self.style_hint.unwrap_or(parent.style_hint),
         }
     }
 }
@@ -501,6 +555,7 @@ impl From<&Font> for FontDescription {
             style: Some(font.style),
             features: Some(font.features.clone()),
             hinting_preference: Some(font.hinting_preference),
+            style_hint: Some(font.style_hint),
         }
     }
 }
@@ -521,8 +576,15 @@ mod tests {
         assert_eq!(font.style, FontStyle::Italic);
         assert!(font.feature_tags().is_empty());
         assert!(font.font_data.is_none());
-    }
+        assert_eq!(font.style_hint(), StyleHint::AnyStyle);
 
+        let font_with_hint = font.with_style_hint(StyleHint::Helvetica);
+        assert_eq!(font_with_hint.style_hint(), StyleHint::Helvetica);
+        assert_eq!(StyleHint::SansSerif, StyleHint::Helvetica);
+        assert_eq!(StyleHint::Serif, StyleHint::Times);
+        assert_eq!(StyleHint::TypeWriter, StyleHint::Courier);
+        assert_eq!(StyleHint::Decorative, StyleHint::OldEnglish);
+    }
     #[test]
     fn test_font_with_memory_data() {
         let fake_data = Arc::new(vec![0x00, 0x01, 0x00, 0x00]);
@@ -587,5 +649,10 @@ mod tests {
             FontDescription::from(&merged_full).merge_with_parent(&parent),
             merged_full
         );
+
+        // 5. Style hint override
+        let desc_hint = FontDescription::new().with_style_hint(StyleHint::Helvetica);
+        let merged_hint = desc_hint.merge_with_parent(&parent);
+        assert_eq!(merged_hint.style_hint(), StyleHint::Helvetica);
     }
 }

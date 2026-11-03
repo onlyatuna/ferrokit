@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData};
+use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData, StyleHint};
 use crate::text::glyph_face::{LineMetrics, SharedGlyphFace, parse_face};
 use crate::text::glyph_layout::FontEngine;
 
@@ -42,13 +42,15 @@ impl FaceStyle {
         w + if self.italic != italic { 0x1000 } else { 0 }
     }
 
-    /// Cache key of `family` at this style; the regular style keeps the plain family key.
-    fn cache_key(self, family: &str) -> String {
-        if self == Self::REGULAR {
-            family.to_string()
-        } else {
-            format!("{family}\u{1}{}{}", self.weight, u8::from(self.italic))
-        }
+    /// Cache key of `family` at this style and style hint; fonts that differ only in style hint
+    /// do not share a cache entry so substitute resolution is cached independently.
+    fn cache_key(self, family: &str, hint: StyleHint) -> String {
+        format!(
+            "{family}\u{1}{}\u{1}{}\u{1}{:?}",
+            self.weight,
+            u8::from(self.italic),
+            hint
+        )
     }
 }
 
@@ -69,11 +71,18 @@ fn known_styled_filenames(family_key: &str, style: FaceStyle) -> Option<&'static
         ("consolas", false, true) => &["consolai.ttf"],
         ("consolas", true, true) => &["consolaz.ttf"],
         ("tahoma", true, _) => &["tahomabd.ttf"],
+        ("courier new", true, false) => &["courbd.ttf"],
+        ("courier new", false, true) => &["couri.ttf"],
+        ("courier new", true, true) => &["courbi.ttf"],
+        ("times new roman", true, false) => &["timesbd.ttf"],
+        ("times new roman", false, true) => &["timesi.ttf"],
+        ("times new roman", true, true) => &["timesbi.ttf"],
         ("microsoft jhenghei" | "msjh", true, _) => &["msjhbd.ttc"],
         ("microsoft yahei" | "msyh", true, _) => &["msyhbd.ttc"],
         (
-            "segoe ui" | "arial" | "consolas" | "tahoma" | "microsoft jhenghei" | "msjh"
-            | "microsoft yahei" | "msyh" | "segoe ui symbol" | "segoe ui emoji" | "ms gothic",
+            "segoe ui" | "arial" | "consolas" | "tahoma" | "courier new" | "times new roman"
+            | "microsoft jhenghei" | "msjh" | "microsoft yahei" | "msyh" | "segoe ui symbol"
+            | "segoe ui emoji" | "ms gothic",
             _,
             _,
         ) => &[],
@@ -298,7 +307,7 @@ pub fn primary_face_metrics(font: &Font) -> (Option<LineMetrics>, Option<f32>) {
 /// [`GlyphFace::cap_height`]: crate::text::glyph_face::GlyphFace::cap_height
 pub fn primary_face_cap_height(font: &Font) -> Option<f32> {
     with_global_font_database(|db| {
-        db.load_font_styled(&font.family, FaceStyle::of(font))
+        db.load_font_styled(&font.family, FaceStyle::of(font), font.style_hint)
             .and_then(|face| {
                 face.cap_height(font.size)
                     .or_else(|| Some(face.metrics('H', font.size).height as f32))
@@ -316,6 +325,32 @@ pub fn resolve_font_engines_for_text_global(font: &Font, text: &str) -> Vec<Font
     with_global_font_database(|db| db.resolve_font_engines_for_text(font, text))
 }
 
+/// Substitute font family for a style hint on Windows, matching Qt 6 / qtbase dev
+/// (`src/gui/text/windows/qwindowsfontdatabasebase.cpp:951-973`).
+///
+/// On Windows, when a requested font family is not installed, Qt resolves the
+/// style hint to a platform substitute family:
+/// - `Times` / `Serif` -> "Times New Roman"
+/// - `Courier` / `TypeWriter` / `Monospace` -> "Courier New"
+/// - `Cursive` -> "Comic Sans MS"
+/// - `Fantasy` -> "Impact"
+/// - `Decorative` / `OldEnglish` -> "Old English"
+/// - `Helvetica` / `SansSerif` -> "Arial"
+/// - `System` / `AnyStyle` (and every other value) -> "Tahoma"
+///
+/// Non-Windows platforms (macOS/Linux) retain their previous fallback behavior.
+#[cfg(windows)]
+pub fn family_for_style_hint(hint: StyleHint) -> &'static str {
+    match hint {
+        StyleHint::Times => "Times New Roman",
+        StyleHint::Courier | StyleHint::Monospace => "Courier New",
+        StyleHint::Cursive => "Comic Sans MS",
+        StyleHint::Fantasy => "Impact",
+        StyleHint::OldEnglish => "Old English",
+        StyleHint::Helvetica => "Arial",
+        StyleHint::System | StyleHint::AnyStyle => "Tahoma",
+    }
+}
 impl FontDatabase {
     /// Creates a new font database and preloads default fonts.
     pub fn new() -> Self {
@@ -473,12 +508,17 @@ impl FontDatabase {
 
     /// Loads the regular face of a family, caching the result.
     pub fn load_font(&mut self, family: &str) -> Option<SharedGlyphFace> {
-        self.load_font_styled(family, FaceStyle::REGULAR)
+        self.load_font_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
     }
 
     /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
     /// A family without a face for that style yields its nearest one (e.g. regular for bold).
-    pub fn load_font_styled(&mut self, family: &str, style: FaceStyle) -> Option<SharedGlyphFace> {
+    pub fn load_font_styled(
+        &mut self,
+        family: &str,
+        style: FaceStyle,
+        hint: StyleHint,
+    ) -> Option<SharedGlyphFace> {
         if family.contains(',') {
             for candidate in family.split(',') {
                 let clean = candidate.trim().trim_matches('\'').trim_matches('"');
@@ -489,14 +529,14 @@ impl FontDatabase {
                 {
                     continue;
                 }
-                if let Some(f) = self.load_font_styled(clean, style) {
+                if let Some(f) = self.load_font_styled(clean, style, hint) {
                     return Some(f);
                 }
             }
         }
 
         let key = family.to_ascii_lowercase();
-        let style_key = style.cache_key(&key);
+        let style_key = style.cache_key(&key, hint);
         if let Some(font) = self.cache.get(&style_key) {
             return Some(Arc::clone(font));
         }
@@ -508,9 +548,7 @@ impl FontDatabase {
         }
 
         // An in-memory (application) font has a single face: use it for any style.
-        if style != FaceStyle::REGULAR
-            && let Some(face) = self.cache.get(&key).cloned()
-        {
+        if let Some(face) = self.cache.get(&key).cloned() {
             self.cache.insert(style_key.clone(), Arc::clone(&face));
             if let Some(raw) = self.raw_cache.get(&key).cloned() {
                 self.raw_cache.insert(style_key, raw);
@@ -518,13 +556,32 @@ impl FontDatabase {
             return Some(face);
         }
 
-        if key != "segoe ui"
-            && key != "arial"
-            && let Some(fallback) = self
-                .load_font_styled("segoe ui", style)
-                .or_else(|| self.load_font_styled("arial", style))
+        #[cfg(windows)]
         {
-            return Some(fallback);
+            let substitute = family_for_style_hint(hint);
+            if !key.eq_ignore_ascii_case(substitute)
+                && let Some(fallback) = self.load_font_styled(substitute, style, hint)
+            {
+                self.cache.insert(style_key.clone(), Arc::clone(&fallback));
+                let sub_key = style.cache_key(&substitute.to_ascii_lowercase(), hint);
+                if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
+                    self.raw_cache.insert(style_key, raw);
+                }
+                return Some(fallback);
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            if key != "segoe ui"
+                && key != "arial"
+                && let Some(fallback) = self
+                    .load_font_styled("segoe ui", style, hint)
+                    .or_else(|| self.load_font_styled("arial", style, hint))
+            {
+                self.cache.insert(style_key.clone(), Arc::clone(&fallback));
+                return Some(fallback);
+            }
         }
 
         None
@@ -532,7 +589,7 @@ impl FontDatabase {
 
     /// Returns the raw binary font data of the regular face for OpenType shaping.
     pub fn get_raw_font_data(&mut self, family: &str) -> Option<SharedFontData> {
-        self.get_raw_font_data_styled(family, FaceStyle::REGULAR)
+        self.get_raw_font_data_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
     }
 
     /// Returns the raw binary font data of the face [`load_font_styled`](Self::load_font_styled) picks.
@@ -540,12 +597,13 @@ impl FontDatabase {
         &mut self,
         family: &str,
         style: FaceStyle,
+        hint: StyleHint,
     ) -> Option<SharedFontData> {
-        let key = style.cache_key(&family.to_ascii_lowercase());
+        let key = style.cache_key(&family.to_ascii_lowercase(), hint);
         if let Some(data) = self.raw_cache.get(&key) {
             return Some(data.clone());
         }
-        self.load_font_styled(family, style);
+        self.load_font_styled(family, style, hint);
         self.raw_cache.get(&key).cloned()
     }
     /// Resolves the primary font engine and its platform-aware fallback chain (`QFontEngineMulti` equivalent).
@@ -594,7 +652,12 @@ impl FontDatabase {
 
         // If no in-memory font or in-memory font failed to parse, load primary by family
         if engines.is_empty() {
-            self.try_add_engine(&mut engines, &font.family, FaceStyle::of(font));
+            self.try_add_engine(
+                &mut engines,
+                &font.family,
+                FaceStyle::of(font),
+                font.style_hint,
+            );
         }
         engines
     }
@@ -631,7 +694,7 @@ impl FontDatabase {
         {
             return Some(face);
         }
-        self.load_font_styled(&font.family, FaceStyle::of(font))
+        self.load_font_styled(&font.family, FaceStyle::of(font), font.style_hint)
     }
 
     /// Appends the platform's fallback fonts in priority order: CJK first, then emoji/symbols.
@@ -676,7 +739,7 @@ impl FontDatabase {
                 }
             }
             for family in *slot {
-                if self.try_add_engine(engines, family, style) {
+                if self.try_add_engine(engines, family, style, StyleHint::AnyStyle) {
                     break;
                 }
             }
@@ -688,8 +751,9 @@ impl FontDatabase {
         engines: &mut Vec<FontEngine>,
         fam: &str,
         style: FaceStyle,
+        hint: StyleHint,
     ) -> bool {
-        match self.load_font_styled(fam, style) {
+        match self.load_font_styled(fam, style, hint) {
             Some(font_face) => {
                 if engines.iter().any(|e| Arc::ptr_eq(&e.face, &font_face)) {
                     return false;
@@ -700,7 +764,7 @@ impl FontDatabase {
                 // has no raw data while the plain name "Segoe UI" does, and the two shape differently
                 // (face metrics vs rustybuzz). A replaced font has a new Arc, so a stale entry is
                 // never matched.
-                let engine_key = style.cache_key(fam);
+                let engine_key = style.cache_key(fam, hint);
                 if let Some(engine) = self
                     .engines
                     .get(&engine_key)
@@ -709,7 +773,7 @@ impl FontDatabase {
                     engines.push(engine.clone());
                     return true;
                 }
-                let raw_data = self.get_raw_font_data_styled(fam, style);
+                let raw_data = self.get_raw_font_data_styled(fam, style, hint);
                 let mut engine = FontEngine::new(font_face).with_face_index(0);
                 if let Some(raw) = raw_data {
                     engine = engine.with_raw_data(raw);
@@ -795,6 +859,8 @@ impl FontDatabase {
                 "consolas.ttf".into(),
             ],
             "tahoma" => vec!["tahoma.ttf".into(), "Tahoma.ttf".into()],
+            "courier new" => vec!["cour.ttf".into(), "Cour.ttf".into()],
+            "times new roman" => vec!["times.ttf".into(), "Times.ttf".into()],
             "microsoft jhenghei" | "msjh" => vec![
                 "msjh.ttc".into(),
                 "msjh.ttf".into(),
@@ -1155,5 +1221,57 @@ mod tests {
         let a = db.resolve_font_engines(&font);
         let b = db.resolve_font_engines(&font);
         assert!(Arc::ptr_eq(&a[0].face, &b[0].face));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn test_font_database_style_hint_substitute() {
+        assert!(
+            Path::new("C:/Windows/Fonts/tahoma.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Tahoma.ttf").exists(),
+            "Tahoma must be installed on Windows"
+        );
+        assert!(
+            Path::new("C:/Windows/Fonts/arial.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Arial.ttf").exists(),
+            "Arial must be installed on Windows"
+        );
+        assert!(
+            Path::new("C:/Windows/Fonts/cour.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Cour.ttf").exists(),
+            "Courier New must be installed on Windows"
+        );
+
+        let mut db = FontDatabase::new();
+        let missing = "NoSuchFamilyNonExistent123";
+
+        // AnyStyle -> Tahoma
+        let face_tahoma = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::AnyStyle);
+        assert!(face_tahoma.is_some());
+        let tahoma_direct = db.load_font_styled("Tahoma", FaceStyle::REGULAR, StyleHint::AnyStyle);
+        assert!(face_tahoma.is_some() && tahoma_direct.is_some());
+        assert!(Arc::ptr_eq(&face_tahoma.unwrap(), &tahoma_direct.unwrap()));
+
+        // Helvetica -> Arial
+        let face_arial = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::Helvetica);
+        let arial_direct = db.load_font_styled("Arial", FaceStyle::REGULAR, StyleHint::Helvetica);
+        assert!(face_arial.is_some() && arial_direct.is_some());
+        assert!(Arc::ptr_eq(&face_arial.unwrap(), &arial_direct.unwrap()));
+
+        // Courier -> Courier New
+        let face_cour = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::Courier);
+        let cour_direct =
+            db.load_font_styled("Courier New", FaceStyle::REGULAR, StyleHint::Courier);
+        assert!(face_cour.is_some() && cour_direct.is_some());
+        assert!(Arc::ptr_eq(&face_cour.unwrap(), &cour_direct.unwrap()));
+
+        // Fonts differing only in hint do not share a cache entry
+        let key_any =
+            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
+        let key_helv =
+            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::Helvetica);
+        assert_ne!(key_any, key_helv);
+        assert!(db.cache.contains_key(&key_any));
+        assert!(db.cache.contains_key(&key_helv));
+        assert!(!Arc::ptr_eq(&db.cache[&key_any], &db.cache[&key_helv]));
     }
 }
