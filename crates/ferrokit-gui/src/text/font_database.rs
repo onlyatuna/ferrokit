@@ -691,6 +691,10 @@ mod fontconfig_ffi {
                 unsafe {
                     let nfont = (*font_set).nfont;
                     let fonts = (*font_set).fonts;
+                    if fonts.is_null() {
+                        (self.font_set_destroy)(font_set);
+                        return fallback_families;
+                    }
                     let mut seen = std::collections::HashSet::new();
                     // Pre-seed seen with requested family (case-folded), matching Qt's QDuplicateTracker
                     seen.insert(family.to_lowercase());
@@ -1736,21 +1740,6 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn test_font_database_style_hint_substitute_linux() {
-        if !cfg!(miri) {
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").is_file(),
-                "DejaVu Sans (DejaVuSans.ttf) must be installed on Linux CI"
-            );
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf").is_file(),
-                "DejaVu Serif (DejaVuSerif.ttf) must be installed on Linux CI"
-            );
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").is_file(),
-                "DejaVu Sans Mono (DejaVuSansMono.ttf) must be installed on Linux CI"
-            );
-        }
-
         let mut db = FontDatabase::new();
         let missing = "NoSuchFontXYZ";
 

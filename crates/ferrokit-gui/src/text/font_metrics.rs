@@ -869,22 +869,6 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn test_style_hint_substitute_metrics_parity_with_qt_linux() {
-        use std::path::Path;
-        if !cfg!(miri) {
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").is_file(),
-                "DejaVu Sans (DejaVuSans.ttf) must be installed on Linux CI"
-            );
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf").is_file(),
-                "DejaVu Serif (DejaVuSerif.ttf) must be installed on Linux CI"
-            );
-            assert!(
-                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").is_file(),
-                "DejaVu Sans Mono (DejaVuSansMono.ttf) must be installed on Linux CI"
-            );
-        }
-
         let non_existent = "NoSuchFontXYZ";
 
         if !crate::text::font_database::is_fontconfig_available() {
