@@ -154,7 +154,7 @@ impl FontMetrics {
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
     /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
     /// which no face resolves (both the requested family and its platform style-hint substitute,
-    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or CoreText style-hint / SFNS on macOS,
+    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or the style-hint table / SFNS on macOS,
     /// are missing from the system, or `size <= 0.0`) has made-up numbers (0.8, 0.2 and 0.1 of the
     /// size, 0.6 for the average character width), since there is nothing to measure.
     /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics

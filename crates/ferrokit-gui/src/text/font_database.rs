@@ -488,6 +488,18 @@ mod fontconfig_ffi {
     unsafe extern "C" {
         pub fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
         pub fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        pub fn dlclose(handle: *mut c_void) -> c_int;
+    }
+
+    /// Closes the `dlopen` handle when symbol resolution fails; on success it is `forget`-ed
+    /// so the library stays loaded for the life of the process.
+    struct HandleGuard(*mut c_void);
+
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` is a non-null handle returned by `dlopen` that nothing else closes.
+            unsafe { dlclose(self.0) };
+        }
     }
 
     pub type FcPatternCreateFn = unsafe extern "C" fn() -> *mut FcPattern;
@@ -542,6 +554,7 @@ mod fontconfig_ffi {
             if handle.is_null() {
                 return None;
             }
+            let guard = HandleGuard(handle);
 
             // SAFETY: each symbol is queried on the valid library `handle` with a NUL-terminated
             // symbol name string literal; transmute casts non-null function pointers to their exact
@@ -573,6 +586,7 @@ mod fontconfig_ffi {
                 let font_set_destroy: FcFontSetDestroyFn =
                     std::mem::transmute(load_sym(c"FcFontSetDestroy")?);
 
+                std::mem::forget(guard);
                 Some(Self {
                     pattern_create,
                     pattern_destroy,
@@ -968,10 +982,19 @@ impl FontDatabase {
                 // platform bridge, so try the documented system font file `/System/Library/Fonts/SFNS.ttf`
                 // if parseable, otherwise fall back to Helvetica [inferred].
                 let sfns_path = Path::new("/System/Library/Fonts/SFNS.ttf");
-                let sfns_face = if sfns_path.is_file() {
-                    SharedFontData::from_file(sfns_path)
+                let sfns_key = sfns_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| sfns_path.to_path_buf());
+                let sfns_face = if let Some(shared) = self.file_cache.get(&sfns_key) {
+                    parse_face(shared, 0)
                         .ok()
-                        .and_then(|shared| parse_face(&shared, 0).ok().map(|face| (shared, face)))
+                        .map(|face| (shared.clone(), face))
+                } else if sfns_path.is_file()
+                    && let Ok(shared) = SharedFontData::from_file(&sfns_key)
+                    && let Ok(face) = parse_face(&shared, 0)
+                {
+                    self.file_cache.insert(sfns_key, shared.clone());
+                    Some((shared, face))
                 } else {
                     None
                 };
