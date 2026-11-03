@@ -303,3 +303,82 @@ fn coretext_outline_probe() -> String {
     }
     out
 }
+
+#[test]
+fn probe_sfns_glyf() {
+    let bytes = std::fs::read("/System/Library/Fonts/SFNS.ttf").unwrap();
+    let n = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    let mut tab = std::collections::HashMap::new();
+    for i in 0..n {
+        let r = &bytes[12 + i * 16..28 + i * 16];
+        let tag = String::from_utf8_lossy(&r[0..4]).into_owned();
+        let off = u32::from_be_bytes([r[8], r[9], r[10], r[11]]) as usize;
+        let len = u32::from_be_bytes([r[12], r[13], r[14], r[15]]) as usize;
+        tab.insert(tag, (off, len));
+    }
+    let (ho, _) = tab["head"];
+    let fmt = i16::from_be_bytes([bytes[ho + 50], bytes[ho + 51]]);
+    let (lo, ll) = tab["loca"];
+    let (_, gl) = tab["glyf"];
+    let loca = |g: usize| -> usize {
+        if fmt == 0 {
+            2 * u16::from_be_bytes([bytes[lo + 2 * g], bytes[lo + 2 * g + 1]]) as usize
+        } else {
+            u32::from_be_bytes([
+                bytes[lo + 4 * g],
+                bytes[lo + 4 * g + 1],
+                bytes[lo + 4 * g + 2],
+                bytes[lo + 4 * g + 3],
+            ]) as usize
+        }
+    };
+    let mut report = format!("\n=== GLYF ===\nloca fmt={fmt} loca len={ll} glyf len={gl}\n");
+    let glyphs = if fmt == 0 { ll / 2 - 1 } else { ll / 4 - 1 };
+    let nonempty = (0..glyphs).filter(|&g| loca(g + 1) > loca(g)).count();
+    report += &format!("glyphs={glyphs} nonempty glyf entries={nonempty}\n");
+    for g in [304usize, 1314, 1681] {
+        report += &format!(
+            "gid {g}: loca {}..{} (len {})\n",
+            loca(g),
+            loca(g + 1),
+            loca(g + 1) - loca(g)
+        );
+    }
+    if let Ok(mut face) = rustybuzz::ttf_parser::Face::parse(&bytes, 0) {
+        for a in face.variation_axes() {
+            report += &format!(
+                "axis {:?} min={} def={} max={}\n",
+                a.tag, a.min_value, a.def_value, a.max_value
+            );
+        }
+        let (_, gv) = tab["gvar"];
+        report += &format!("gvar len={gv}\n");
+        struct B(usize);
+        impl rustybuzz::ttf_parser::OutlineBuilder for B {
+            fn move_to(&mut self, _: f32, _: f32) {
+                self.0 += 1;
+            }
+            fn line_to(&mut self, _: f32, _: f32) {
+                self.0 += 1;
+            }
+            fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+                self.0 += 1;
+            }
+            fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+                self.0 += 1;
+            }
+            fn close(&mut self) {}
+        }
+        let tags: Vec<_> = face.variation_axes().into_iter().map(|a| a.tag).collect();
+        for t in tags {
+            let _ = face.set_variation(t, 400.0);
+        }
+        let mut b = B(0);
+        let bb = face.outline_glyph(rustybuzz::ttf_parser::GlyphId(304), &mut b);
+        report += &format!(
+            "after set_variation(400) outline W: bbox={bb:?} segs={}\n",
+            b.0
+        );
+    }
+    panic!("{report}");
+}
