@@ -10,8 +10,11 @@ use std::ffi::{c_char, c_void};
 
 #[link(name = "CoreText", kind = "framework")]
 unsafe extern "C" {
-    fn CTFontCreateUIFontForLanguage(ui_type: i32, size: f64, language: *const c_void)
-    -> *const c_void;
+    fn CTFontCreateUIFontForLanguage(
+        ui_type: i32,
+        size: f64,
+        language: *const c_void,
+    ) -> *const c_void;
     fn CTFontCopyFontDescriptor(font: *const c_void) -> *const c_void;
     fn CTFontDescriptorCopyAttribute(d: *const c_void, attr: *const c_void) -> *const c_void;
     static kCTFontURLAttribute: *const c_void;
@@ -47,7 +50,11 @@ fn cfstr(s: *const c_void) -> String {
 }
 
 fn run(cmd: &str) -> String {
-    let out = std::process::Command::new("sh").arg("-c").arg(cmd).output().unwrap();
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .unwrap();
     format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -82,7 +89,11 @@ fn probe() {
             } else {
                 "<no url>".into()
             };
-            report += &format!("{name}: family={:?} postscript={:?} path={p}\n", cfstr(fam), cfstr(ps));
+            report += &format!(
+                "{name}: family={:?} postscript={:?} path={p}\n",
+                cfstr(fam),
+                cfstr(ps)
+            );
             if ok != 0 {
                 match SharedFontData::from_file(std::path::Path::new(&p)) {
                     Ok(data) => {
@@ -96,7 +107,10 @@ fn probe() {
                         let lit = pm.data().iter().filter(|&&b| b != 0).count();
                         report += &format!(
                             "  ferrokit in-memory {name}: asc={} desc={} h={} avg={} lit_bytes={lit}\n",
-                            m.ascent, m.descent, m.height, m.rounded_average_char_width()
+                            m.ascent,
+                            m.descent,
+                            m.height,
+                            m.rounded_average_char_width()
                         );
                     }
                     Err(e) => report += &format!("  from_file failed: {e}\n"),
@@ -126,6 +140,7 @@ fn probe() {
         );
     }
 
+    report += &coretext_outline_probe();
     // SFNS.ttf: why does it draw nothing?
     if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
         report += &format!("SFNS bytes={}\n", bytes.len());
@@ -139,20 +154,35 @@ fn probe() {
                 face.glyph_index('5')
             );
             let raw = face.raw_face();
-            for t in ["glyf", "loca", "CFF ", "CFF2", "gvar", "fvar", "avar", "HVAR", "MVAR", "hmtx", "cmap"] {
-                report += &format!("  table {t:?} present={}\n", raw.table(rustybuzz::ttf_parser::Tag::from_bytes(&{
-                    let mut b = [b' '; 4];
-                    b[..t.len()].copy_from_slice(t.as_bytes());
-                    b
-                })).is_some());
+            for t in [
+                "glyf", "loca", "CFF ", "CFF2", "gvar", "fvar", "avar", "HVAR", "MVAR", "hmtx",
+                "cmap",
+            ] {
+                report += &format!(
+                    "  table {t:?} present={}\n",
+                    raw.table(rustybuzz::ttf_parser::Tag::from_bytes(&{
+                        let mut b = [b' '; 4];
+                        b[..t.len()].copy_from_slice(t.as_bytes());
+                        b
+                    }))
+                    .is_some()
+                );
             }
             if let Some(g) = face.glyph_index('W') {
                 struct B(usize);
                 impl rustybuzz::ttf_parser::OutlineBuilder for B {
-                    fn move_to(&mut self, _: f32, _: f32) { self.0 += 1; }
-                    fn line_to(&mut self, _: f32, _: f32) { self.0 += 1; }
-                    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) { self.0 += 1; }
-                    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) { self.0 += 1; }
+                    fn move_to(&mut self, _: f32, _: f32) {
+                        self.0 += 1;
+                    }
+                    fn line_to(&mut self, _: f32, _: f32) {
+                        self.0 += 1;
+                    }
+                    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+                        self.0 += 1;
+                    }
+                    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+                        self.0 += 1;
+                    }
                     fn close(&mut self) {}
                 }
                 let mut b = B(0);
@@ -194,4 +224,82 @@ for fam in ['NoSuchFontXYZ', 'Segoe UI', 'Helvetica', 'Arial']:
          QT_QPA_PLATFORM=offscreen /tmp/qtv/bin/python /tmp/q.py 2>&1 | head -120",
     );
     panic!("{report}");
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+#[repr(C)]
+struct CGPathElement {
+    kind: i32,
+    points: *mut CGPoint,
+}
+
+#[link(name = "CoreText", kind = "framework")]
+unsafe extern "C" {
+    fn CTFontGetGlyphsForCharacters(
+        font: *const c_void,
+        chars: *const u16,
+        glyphs: *mut u16,
+        count: isize,
+    ) -> u8;
+    fn CTFontCreatePathForGlyph(font: *const c_void, glyph: u16, t: *const c_void)
+    -> *const c_void;
+}
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPathApply(
+        path: *const c_void,
+        info: *mut c_void,
+        f: extern "C" fn(*mut c_void, *const CGPathElement),
+    );
+    fn CGPathGetBoundingBox(path: *const c_void) -> CGRect;
+}
+
+extern "C" fn count_elem(info: *mut c_void, _e: *const CGPathElement) {
+    // SAFETY: `info` is the `usize` counter passed below.
+    unsafe { *(info as *mut usize) += 1 };
+}
+
+fn coretext_outline_probe() -> String {
+    let mut out = String::new();
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        let n = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        let tags: Vec<String> = (0..n)
+            .map(|i| String::from_utf8_lossy(&bytes[12 + i * 16..16 + i * 16]).into_owned())
+            .collect();
+        out += &format!("SFNS tables ({n}): {tags:?}\n");
+    }
+    // SAFETY: plain CoreText/CoreGraphics calls on objects we own and release.
+    unsafe {
+        let font = CTFontCreateUIFontForLanguage(2, 2048.0, std::ptr::null());
+        for ch in ['W', '5', '%'] {
+            let u = ch as u16;
+            let mut g = 0u16;
+            let ok = CTFontGetGlyphsForCharacters(font, &u, &mut g, 1);
+            let path = CTFontCreatePathForGlyph(font, g, std::ptr::null());
+            if path.is_null() {
+                out += &format!("CoreText {ch:?}: ok={ok} glyph={g} path=null\n");
+                continue;
+            }
+            let mut n = 0usize;
+            CGPathApply(path, &mut n as *mut usize as *mut c_void, count_elem);
+            let bb = CGPathGetBoundingBox(path);
+            out += &format!("CoreText {ch:?}: ok={ok} glyph={g} elements={n} bbox={bb:?}\n");
+            CFRelease(path);
+        }
+        CFRelease(font);
+    }
+    out
 }
