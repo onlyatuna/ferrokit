@@ -3,6 +3,8 @@ mod bidi;
 pub mod block;
 pub mod block_data;
 pub mod color_glyph;
+#[cfg(target_os = "macos")]
+pub mod core_text_face;
 pub mod cursor;
 #[cfg(windows)]
 pub mod directwrite_face;

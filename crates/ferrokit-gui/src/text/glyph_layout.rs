@@ -73,6 +73,7 @@ impl ShapingFace {
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
         face.set_pixels_per_em(Some((ppem, ppem)));
+        face.set_points_per_em(Some(ppem as f32));
         Some(Self {
             face,
             _data: data.clone(),
@@ -380,14 +381,14 @@ fn qt_glyph_metrics(
     infos: &[rustybuzz::GlyphInfo],
     positions: &[rustybuzz::GlyphPosition],
     size: f32,
-    direct_write: bool,
+    subpixel: bool,
     legacy_kern: Option<&Vec<ttf_kern::Subtable>>,
 ) -> Option<Vec<(i64, i64)>> {
     let mult = hb_font_multiplier(size, face.units_per_em());
     let mut metrics = Vec::with_capacity(infos.len());
     for (info, pos) in infos.iter().zip(positions) {
         let glyph = rustybuzz::ttf_parser::GlyphId(info.glyph_id as u16);
-        let engine_advance = engine.layout_advance_width(glyph.0, size, direct_write)?;
+        let engine_advance = engine.layout_advance_width(glyph.0, size, subpixel)?;
         let design = i64::from(face.glyph_hor_advance(glyph).unwrap_or(0));
         // HarfBuzz zeroes the advance of marks after the font callback; keep that zero.
         let advance = if pos.x_advance == 0 {
@@ -430,7 +431,7 @@ fn qt_glyph_metrics(
             }
         }
     }
-    if !direct_write {
+    if !subpixel {
         // `g.advances[i].round()` and `g.offsets[i].x.round()` for engines without subpixel positions.
         for (advance, x_offset) in &mut metrics {
             *advance = (*advance + 32) & -64;
@@ -826,7 +827,7 @@ impl GlyphLayout {
         let mut glyphs = Vec::with_capacity(text.len());
         let mut current_x = 0.0;
         let mut current_y = 0.0;
-        let direct_write = crate::text::font_database::uses_directwrite_engine();
+        let subpixel = crate::text::font_database::font_has_subpixel_positions(font);
 
         for run in runs {
             // `run.text` is a subslice of `text`, so the pointer difference is its byte offset.
@@ -865,7 +866,7 @@ impl GlyphLayout {
                     infos,
                     positions,
                     font.size,
-                    direct_write,
+                    subpixel,
                     legacy_kern.as_ref(),
                 );
 
@@ -944,7 +945,7 @@ impl GlyphLayout {
                     } else {
                         engine
                             .face
-                            .layout_advance_width(gid, font.size, direct_write)
+                            .layout_advance_width(gid, font.size, subpixel)
                             .unwrap_or(metrics.advance_width)
                     };
 

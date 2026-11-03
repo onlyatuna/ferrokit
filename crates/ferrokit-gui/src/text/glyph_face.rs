@@ -147,8 +147,9 @@ pub type SharedGlyphFace = Arc<dyn GlyphFace>;
 
 /// Which rasterizer backend [`parse_face`] uses (Qt's per-platform font engine choice).
 ///
-/// Windows uses DirectWrite, like Qt; every other platform, and Windows without DirectWrite, uses
-/// [`OutlineFace`] (Qt's FreeType role). `FERROKIT_FONT_ENGINE=outline` forces the generic backend
+/// Windows uses DirectWrite, macOS uses CoreText, like Qt; every other platform, and Windows
+/// without DirectWrite or macOS when CoreText cannot open the font data, uses [`OutlineFace`]
+/// (Qt's FreeType role). `FERROKIT_FONT_ENGINE=outline` forces the generic backend
 /// (Qt's `QT_QPA_PLATFORM=windows:fontengine=freetype`), for comparing the two.
 #[cfg(windows)]
 fn use_directwrite() -> bool {
@@ -156,6 +157,14 @@ fn use_directwrite() -> bool {
         let forced_generic =
             std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"));
         !forced_generic && crate::text::directwrite_face::is_available()
+    });
+    *CHOICE
+}
+
+#[cfg(target_os = "macos")]
+fn use_coretext() -> bool {
+    static CHOICE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        !std::env::var("FERROKIT_FONT_ENGINE").is_ok_and(|v| v.eq_ignore_ascii_case("outline"))
     });
     *CHOICE
 }
@@ -172,6 +181,15 @@ pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphF
         {
             return Ok(Arc::new(face));
         }
+    }
+    #[cfg(target_os = "macos")]
+    if use_coretext() {
+        return crate::text::core_text_face::CoreTextFace::new(
+            data.clone(),
+            face_index,
+            data.is_system_ui(),
+        )
+        .map(|face| Arc::new(face) as SharedGlyphFace);
     }
     OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
 }

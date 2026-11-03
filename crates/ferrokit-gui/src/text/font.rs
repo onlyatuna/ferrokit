@@ -14,6 +14,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SharedFontData {
     data: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    system_ui: bool,
 }
 
 impl SharedFontData {
@@ -21,12 +22,16 @@ impl SharedFontData {
     pub fn from_vec(vec: Vec<u8>) -> Self {
         Self {
             data: Arc::new(vec),
+            system_ui: false,
         }
     }
 
     /// Creates a `SharedFontData` wrapping an existing `Arc<Vec<u8>>`.
     pub fn from_arc(data: Arc<Vec<u8>>) -> Self {
-        Self { data }
+        Self {
+            data,
+            system_ui: false,
+        }
     }
 
     /// Loads the font file at `path`: on Windows maps it read-only (reading it into memory if it
@@ -47,6 +52,7 @@ impl SharedFontData {
                 if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
                     return Ok(Self {
                         data: Arc::new(map),
+                        system_ui: false,
                     });
                 }
             }
@@ -83,13 +89,26 @@ impl SharedFontData {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         std::ptr::eq(self.as_slice().as_ptr(), other.as_slice().as_ptr())
             && self.len() == other.len()
+            && self.system_ui == other.system_ui
+    }
+    /// Marks whether this font represents the platform's system UI font.
+    #[inline]
+    pub fn with_system_ui(mut self, system_ui: bool) -> Self {
+        self.system_ui = system_ui;
+        self
+    }
+
+    /// Whether this font represents the platform's system UI font.
+    #[inline]
+    pub fn is_system_ui(&self) -> bool {
+        self.system_ui
     }
 }
-
 impl std::fmt::Debug for SharedFontData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedFontData")
             .field("len", &self.len())
+            .field("system_ui", &self.system_ui)
             .finish()
     }
 }
@@ -112,7 +131,8 @@ impl AsRef<[u8]> for SharedFontData {
 
 impl PartialEq for SharedFontData {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr_eq(other) || self.as_slice() == other.as_slice()
+        self.system_ui == other.system_ui
+            && (self.ptr_eq(other) || self.as_slice() == other.as_slice())
     }
 }
 
