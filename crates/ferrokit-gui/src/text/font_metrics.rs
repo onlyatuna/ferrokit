@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::geometry::primitives::RectF;
-use crate::text::font::{Font, FontStyle, FontTag, FontWeight, HintingPreference};
+use crate::text::font::{Font, FontStyle, FontTag, FontWeight, HintingPreference, StyleHint};
 use crate::text::glyph_face::LineMetrics;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,6 +16,7 @@ struct AdvanceKey {
     features: Vec<(u32, u32)>,
     letter_spacing_bits: u32,
     hinting_preference: HintingPreference,
+    style_hint: StyleHint,
 }
 
 impl AdvanceKey {
@@ -29,6 +30,7 @@ impl AdvanceKey {
             features: Self::features_of(font).collect(),
             letter_spacing_bits: font.letter_spacing.to_bits(),
             hinting_preference: font.hinting_preference,
+            style_hint: font.style_hint,
         }
     }
 
@@ -48,6 +50,7 @@ impl AdvanceKey {
             && self.letter_spacing_bits == font.letter_spacing.to_bits()
             && self.features.iter().copied().eq(Self::features_of(font))
             && self.hinting_preference == font.hinting_preference
+            && self.style_hint == font.style_hint
     }
 
     /// Hash of the query `(text, font)` from borrowed data, so a cache hit allocates nothing.
@@ -64,6 +67,7 @@ impl AdvanceKey {
         }
         font.letter_spacing.to_bits().hash(&mut h);
         font.hinting_preference.hash(&mut h);
+        font.style_hint.hash(&mut h);
         h.finish()
     }
 }
@@ -95,12 +99,13 @@ fn q_round(value: f32) -> f32 {
 }
 
 /// Identity of a line-metrics query.
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 struct LineKey {
     family: String,
     size_bits: u32,
     weight: FontWeight,
     style: FontStyle,
+    style_hint: StyleHint,
 }
 
 struct LineCache {
@@ -147,10 +152,11 @@ impl FontMetrics {
     /// [`GlyphFace::line_metrics`] and [`GlyphFace::average_char_width`]. `ascent`, `descent` and
     /// `line_gap` (`leading()`) are those engine values rounded to whole pixels (`qRound`) and
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
-    /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font no
-    /// face resolves for has made-up numbers (0.8, 0.2 and 0.1 of the size, 0.6 for the average
-    /// character width), since there is nothing to measure.
-    ///
+    /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
+    /// which no face resolves (both the requested family and its platform style-hint substitute,
+    /// e.g. Tahoma on Windows, are missing from the system, or `size <= 0.0`) has made-up numbers
+    /// (0.8, 0.2 and 0.1 of the size, 0.6 for the average character width), since there is nothing
+    /// to measure.
     /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
     /// [`GlyphFace::average_char_width`]: crate::text::glyph_face::GlyphFace::average_char_width
     pub fn from_font(font: &Font) -> Self {
@@ -301,6 +307,7 @@ impl FontMetrics {
             size_bits: font.size.to_bits(),
             weight: font.weight,
             style: font.style,
+            style_hint: font.style_hint,
         };
         let hit = LINE_CACHE.with(|c| {
             let mut c = c.borrow_mut();
@@ -636,6 +643,7 @@ mod tests {
             font.clone().with_weight(FontWeight::Bold),
             font.clone().with_style(FontStyle::Italic),
             spaced,
+            font.clone().with_style_hint(StyleHint::Times),
         ];
         for other in &others {
             assert!(!key.is("Wa", other), "{other:?}");
@@ -694,5 +702,168 @@ mod tests {
 
         let short_text = "OK";
         assert_eq!(metrics.elided_text(short_text, 200.0, &font), "OK");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn test_style_hint_substitute_metrics_parity_with_qt() {
+        use std::path::Path;
+        assert!(
+            Path::new("C:/Windows/Fonts/tahoma.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Tahoma.ttf").exists(),
+            "Tahoma must be installed on Windows"
+        );
+        assert!(
+            Path::new("C:/Windows/Fonts/arial.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Arial.ttf").exists(),
+            "Arial must be installed on Windows"
+        );
+        assert!(
+            Path::new("C:/Windows/Fonts/cour.ttf").exists()
+                || Path::new("C:/Windows/Fonts/Cour.ttf").exists(),
+            "Courier New (cour.ttf) must be installed on Windows"
+        );
+
+        let non_existent = "NoSuchFontFamilyXYZNonExistent";
+        for px in [12.0, 16.0, 20.0] {
+            // AnyStyle (default) -> Tahoma
+            let missing_default = Font::new(non_existent, px);
+            let tahoma = Font::new("Tahoma", px);
+            let m_missing = FontMetrics::from_font(&missing_default);
+            let m_tahoma = FontMetrics::from_font(&tahoma);
+            assert_eq!(m_missing, m_tahoma, "AnyStyle at {px}px must equal Tahoma");
+            // Also verify height against measured Qt facts: 12px -> 14, 16px -> 19, 20px -> 24
+            let expected_height = match px as i32 {
+                12 => 14.0,
+                16 => 19.0,
+                20 => 24.0,
+                _ => unreachable!(),
+            };
+            assert_eq!(m_missing.height, expected_height, "Tahoma height at {px}px");
+
+            let missing_anystyle = Font::new(non_existent, px).with_style_hint(StyleHint::AnyStyle);
+            assert_eq!(FontMetrics::from_font(&missing_anystyle), m_tahoma);
+
+            // Helvetica / SansSerif -> Arial
+            let missing_helvetica =
+                Font::new(non_existent, px).with_style_hint(StyleHint::Helvetica);
+            let missing_sans_serif =
+                Font::new(non_existent, px).with_style_hint(StyleHint::SansSerif);
+            let arial = Font::new("Arial", px);
+            let m_arial = FontMetrics::from_font(&arial);
+            assert_eq!(
+                FontMetrics::from_font(&missing_helvetica),
+                m_arial,
+                "Helvetica at {px}px must equal Arial"
+            );
+            assert_eq!(
+                FontMetrics::from_font(&missing_sans_serif),
+                m_arial,
+                "SansSerif at {px}px must equal Arial"
+            );
+
+            // Courier / TypeWriter -> Courier New
+            let missing_courier = Font::new(non_existent, px).with_style_hint(StyleHint::Courier);
+            let missing_typewriter =
+                Font::new(non_existent, px).with_style_hint(StyleHint::TypeWriter);
+            let courier_new = Font::new("Courier New", px);
+            let m_courier = FontMetrics::from_font(&courier_new);
+            assert_eq!(
+                FontMetrics::from_font(&missing_courier),
+                m_courier,
+                "Courier at {px}px must equal Courier New"
+            );
+            assert_eq!(
+                FontMetrics::from_font(&missing_typewriter),
+                m_courier,
+                "TypeWriter at {px}px must equal Courier New"
+            );
+        }
+
+        // Two fonts differing only by hint do not share a metrics cache entry
+        let font_a = Font::new(non_existent, 12.0).with_style_hint(StyleHint::AnyStyle);
+        let font_b = Font::new(non_existent, 12.0).with_style_hint(StyleHint::Helvetica);
+        let font_c = Font::new(non_existent, 12.0).with_style_hint(StyleHint::Courier);
+
+        // Populate cache
+        let _ = FontMetrics::from_font(&font_a);
+        let _ = FontMetrics::from_font(&font_b);
+        let _ = FontMetrics::from_font(&font_c);
+
+        LINE_CACHE.with(|c| {
+            let map = &c.borrow().map;
+            let key_a = LineKey {
+                family: font_a.family.clone(),
+                size_bits: font_a.size.to_bits(),
+                weight: font_a.weight,
+                style: font_a.style,
+                style_hint: StyleHint::AnyStyle,
+            };
+            let key_b = LineKey {
+                family: font_b.family.clone(),
+                size_bits: font_b.size.to_bits(),
+                weight: font_b.weight,
+                style: font_b.style,
+                style_hint: StyleHint::Helvetica,
+            };
+            let key_c = LineKey {
+                family: font_c.family.clone(),
+                size_bits: font_c.size.to_bits(),
+                weight: font_c.weight,
+                style: font_c.style,
+                style_hint: StyleHint::Courier,
+            };
+            assert!(
+                map.contains_key(&key_a),
+                "Cache must contain AnyStyle entry"
+            );
+            assert!(
+                map.contains_key(&key_b),
+                "Cache must contain Helvetica entry"
+            );
+            assert!(map.contains_key(&key_c), "Cache must contain Courier entry");
+            assert_ne!(map.get(&key_a), map.get(&key_b));
+            assert_ne!(map.get(&key_a), map.get(&key_c));
+            assert_ne!(map.get(&key_b), map.get(&key_c));
+        });
+
+        // Installed families cache entries differ by hint and remain unchanged
+        let inst_a = Font::new("Arial", 12.0).with_style_hint(StyleHint::AnyStyle);
+        let inst_b = Font::new("Arial", 12.0).with_style_hint(StyleHint::Helvetica);
+        let _ = FontMetrics::from_font(&inst_a);
+        let _ = FontMetrics::from_font(&inst_b);
+        LINE_CACHE.with(|c| {
+            let map = &c.borrow().map;
+            let key_a = LineKey {
+                family: inst_a.family.clone(),
+                size_bits: inst_a.size.to_bits(),
+                weight: inst_a.weight,
+                style: inst_a.style,
+                style_hint: StyleHint::AnyStyle,
+            };
+            let key_b = LineKey {
+                family: inst_b.family.clone(),
+                size_bits: inst_b.size.to_bits(),
+                weight: inst_b.weight,
+                style: inst_b.style,
+                style_hint: StyleHint::Helvetica,
+            };
+            assert!(map.contains_key(&key_a));
+            assert!(map.contains_key(&key_b));
+            assert_ne!(key_a, key_b);
+        });
+
+        // Installed families unchanged
+        let arial_plain = Font::new("Arial", 12.0);
+        let segoe_plain = Font::new("Segoe UI", 12.0);
+        assert_eq!(
+            FontMetrics::from_font(&arial_plain),
+            FontMetrics::from_font(&Font::new("Arial", 12.0).with_style_hint(StyleHint::AnyStyle))
+        );
+        assert_eq!(
+            FontMetrics::from_font(&segoe_plain),
+            FontMetrics::from_font(
+                &Font::new("Segoe UI", 12.0).with_style_hint(StyleHint::AnyStyle)
+            )
+        );
     }
 }
