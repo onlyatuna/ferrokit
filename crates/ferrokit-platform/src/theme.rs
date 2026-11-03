@@ -723,7 +723,10 @@ pub mod cocoa_theme {
         /// effective appearance's best match among Aqua and DarkAqua is DarkAqua; Light otherwise.
         #[cfg(target_os = "macos")]
         pub fn query_color_scheme() -> ColorScheme {
-            use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, nsstring_from_str};
+            use crate::objc_runtime::{
+                AutoreleasePool, Class, Id, ObjcMsg, Sel, nsstring_from_str,
+            };
+            let _pool = AutoreleasePool::new();
             let nsapp_class = Class::get("NSApplication").unwrap_or(Class::NIL);
             // SAFETY: `nsapp_class` is `NSApplication` or nil; messaging nil is a no-op returning
             // nil, and `sharedApplication` takes no arguments and returns an object.
@@ -812,7 +815,10 @@ pub mod cocoa_theme {
         /// other themes do.
         #[cfg(target_os = "macos")]
         fn request_color_scheme(&self, scheme: ColorScheme) {
-            use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, nsstring_from_str};
+            use crate::objc_runtime::{
+                AutoreleasePool, Class, Id, ObjcMsg, Sel, nsstring_from_str,
+            };
+            let _pool = AutoreleasePool::new();
             let name = match scheme {
                 ColorScheme::Dark => Some("NSAppearanceNameDarkAqua"),
                 ColorScheme::Light => Some("NSAppearanceNameAqua"),

@@ -534,8 +534,8 @@ impl PlatformScreen for GenericScreen {
 
 pub mod cocoa_screen {
     use super::*;
-    use crate::objc_runtime::{Class, Id, ObjcMsg, Sel};
-    use crate::window_cocoa::qt_mac_flip_rect;
+    use crate::objc_runtime::CGRect;
+    use crate::objc_runtime::{AutoreleasePool, Class, Id, ObjcMsg, Sel};
 
     #[derive(Debug, Clone)]
     pub struct CocoaScreen {
@@ -564,22 +564,17 @@ pub mod cocoa_screen {
             // SAFETY: as above; `backingScaleFactor` returns a CGFloat (double), matching `send_f64_return`.
             let scale = unsafe { ObjcMsg::send_f64_return(screen, sel_scale) };
 
-            let raw_geom = Rect::new(
-                frame.origin.x as i32,
-                frame.origin.y as i32,
-                frame.size.width as i32,
-                frame.size.height as i32,
-            );
-            let raw_avail = Rect::new(
-                visible_frame.origin.x as i32,
-                visible_frame.origin.y as i32,
-                visible_frame.size.width as i32,
-                visible_frame.size.height as i32,
-            );
-
-            let geometry = qt_mac_flip_rect(raw_geom, primary_height);
-            let available_geometry = qt_mac_flip_rect(raw_avail, primary_height);
-
+            let flip_to_rect = |rect: CGRect| -> Rect {
+                let top_left_y = f64::from(primary_height) - rect.origin.y - rect.size.height;
+                Rect::new(
+                    rect.origin.x.round() as i32,
+                    top_left_y.round() as i32,
+                    rect.size.width.round() as i32,
+                    rect.size.height.round() as i32,
+                )
+            };
+            let geometry = flip_to_rect(frame);
+            let available_geometry = flip_to_rect(visible_frame);
             Self {
                 name: if is_primary {
                     "CocoaPrimaryScreen".to_string()
@@ -619,6 +614,7 @@ pub mod cocoa_screen {
 
         /// Returns the primary screen's frame height without constructing full CocoaScreen objects.
         pub fn primary_height() -> i32 {
+            let _pool = AutoreleasePool::new();
             let (_, main_screen, _) = Self::first_nsscreen();
             if !main_screen.is_nil() {
                 // SAFETY: `main_screen` is non-nil; `frame` returns NSRect.
@@ -631,6 +627,7 @@ pub mod cocoa_screen {
         }
 
         pub fn primary() -> Self {
+            let _pool = AutoreleasePool::new();
             // Qt uses screens[0] as primary; [NSScreen mainScreen] is the key-window screen
             // (the primary is the CGDisplayIsMain display, which is screens[0]).
             let (_, main_screen, _) = Self::first_nsscreen();
@@ -653,6 +650,7 @@ pub mod cocoa_screen {
         }
 
         pub fn screens() -> Vec<Self> {
+            let _pool = AutoreleasePool::new();
             let (screens_array, first, count) = Self::first_nsscreen();
             if first.is_nil() {
                 return vec![Self::primary()];

@@ -156,6 +156,9 @@ pub const NS_STATUS_WINDOW_LEVEL: NSInteger = 25; // System status bar window le
 
 pub const NS_VISUAL_EFFECT_STATE_ACTIVE: NSInteger = 1;
 pub const NS_VISUAL_EFFECT_STATE_INACTIVE: NSInteger = 2;
+/// `NSWindowOrderingMode` values (`addChildWindow:ordered:`, `addSubview:positioned:relativeTo:`).
+pub const NS_WINDOW_ABOVE: NSInteger = 1;
+pub const NS_WINDOW_BELOW: NSInteger = -1;
 // ---------------------------------------------------------------------------
 // Runtime and message dispatch (native vs mock)
 // ---------------------------------------------------------------------------
@@ -190,6 +193,53 @@ mod native_bindings {
             imp: *const c_void,
             types: *const c_char,
         ) -> BOOL;
+        pub fn objc_autoreleasePoolPush() -> *mut c_void;
+        pub fn objc_autoreleasePoolPop(pool: *mut c_void);
+    }
+}
+
+/// RAII guard for an Objective-C `@autoreleasepool` scope (`objc_autoreleasePoolPush` /
+/// `objc_autoreleasePoolPop`). Safe to construct on any thread; `!Send` so it is always popped on
+/// the thread that pushed it.
+pub struct AutoreleasePool {
+    #[cfg(target_os = "macos")]
+    pool: *mut c_void,
+    #[cfg(not(target_os = "macos"))]
+    _not_send: std::marker::PhantomData<*mut c_void>,
+}
+
+impl AutoreleasePool {
+    pub fn new() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: `objc_autoreleasePoolPush` takes no arguments and returns an opaque token
+            // popped in `Drop` on the same thread (`AutoreleasePool` holds a raw pointer and is
+            // `!Send`).
+            let pool = unsafe { native_bindings::objc_autoreleasePoolPush() };
+            Self { pool }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self {
+                _not_send: std::marker::PhantomData,
+            }
+        }
+    }
+}
+
+impl Default for AutoreleasePool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for AutoreleasePool {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: `self.pool` is the token pushed by `new` on this thread, popped once here.
+            unsafe { native_bindings::objc_autoreleasePoolPop(self.pool) };
+        }
     }
 }
 
@@ -270,7 +320,7 @@ fn is_macos_at_least(major: NSInteger) -> bool {
         ) -> BOOL = std::mem::transmute(native_bindings::objc_msgSend as *const ());
         msg_send(info.0, sel.0, version)
     };
-    res == YES
+    res != NO
 }
 
 /// The application delegate, an `NSObject` subclass named `QCocoaApplicationDelegate` created
@@ -676,6 +726,12 @@ impl MockObjcRuntime {
             if obj.retain_count == 0
                 && let Some(dead) = objects.remove(&key)
             {
+                if !dead.menu.is_nil() {
+                    pending.push(dead.menu);
+                }
+                if !dead.contents.is_nil() {
+                    pending.push(dead.contents);
+                }
                 pending.extend(dead.children);
             }
         }
@@ -1000,10 +1056,20 @@ impl ObjcMsg {
             let runtime = MockObjcRuntime::instance();
             let sel_name = mock_selector_name(sel);
 
-            if sel_name == "setMenu:" {
+            if sel_name == "setMenu:" || sel_name == "setSubmenu:" {
+                let old = runtime
+                    .get_object_data(receiver)
+                    .map(|d| d.menu)
+                    .unwrap_or(Id::NIL);
                 runtime.update_object(receiver, |data| {
                     data.menu = arg;
                 });
+                if !arg.is_nil() {
+                    runtime.retain(arg);
+                }
+                if !old.is_nil() {
+                    runtime.release(old);
+                }
             } else if sel_name == "setTarget:" {
                 runtime.update_object(receiver, |data| {
                     data.target = arg;
@@ -1051,6 +1117,10 @@ impl ObjcMsg {
                 runtime.retain(arg);
             } else if sel_name == "removeStatusItem:" {
                 runtime.remove_object(arg);
+            } else if sel_name == "deliverNotification:" {
+                if !arg.is_nil() {
+                    runtime.retain(arg);
+                }
             } else if sel_name == "setImage:" {
                 let old = runtime
                     .get_object_data(receiver)
@@ -1387,7 +1457,7 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
-            msg_send(receiver.0, sel.0) == YES
+            msg_send(receiver.0, sel.0) != NO
         }
     }
 
@@ -1411,7 +1481,7 @@ impl ObjcMsg {
         unsafe {
             let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> BOOL =
                 msg_send_fn();
-            msg_send(receiver.0, sel.0, arg.0) == YES
+            msg_send(receiver.0, sel.0, arg.0) != NO
         }
     }
 

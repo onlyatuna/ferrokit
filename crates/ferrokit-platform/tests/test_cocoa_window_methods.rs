@@ -719,6 +719,18 @@ fn flat_tint_backdrop_applies_inactive_effect_view() {
         z_calls[0].args,
         vec![MockValue::Float(f64::from(-f32::MAX))]
     );
+    assert!(
+        mock.calls_for(win.ns_view()).iter().any(|c| {
+            c.selector == "addSubview:positioned:relativeTo:"
+                && c.args
+                    == vec![
+                        MockValue::Id(effect),
+                        MockValue::Int(-1),
+                        MockValue::Id(Id::NIL),
+                    ]
+        }),
+        "effect view positioned NSWindowBelow (-1) relative to nil"
+    );
 
     // Window is made non-opaque with clearColor for behind-window effect.
     let opaque_calls: Vec<_> = mock
@@ -988,6 +1000,32 @@ fn backdrop_none_preserves_transparency_when_vibrancy_or_mask_is_active() {
 
     // Enable vibrancy AND backdrop; removing backdrop must keep window non-opaque because vibrancy is active.
     win.set_vibrancy(Some(CocoaVibrancyMaterial::HudWindow));
+    let vib_view = *mock
+        .get_object_data(win.ns_view())
+        .unwrap()
+        .children
+        .last()
+        .unwrap();
+    assert!(
+        mock.calls_for(vib_view)
+            .iter()
+            .any(|c| c.selector == "setAutoresizingMask:" && c.args == vec![MockValue::Int(0x12)])
+    );
+    assert!(mock.calls_for(vib_view).iter().any(|c| {
+        c.selector == "setZPosition:" && c.args == vec![MockValue::Float(f64::from(-f32::MAX))]
+    }));
+    assert!(
+        mock.calls_for(win.ns_view()).iter().any(|c| {
+            c.selector == "addSubview:positioned:relativeTo:"
+                && c.args
+                    == vec![
+                        MockValue::Id(vib_view),
+                        MockValue::Int(-1),
+                        MockValue::Id(Id::NIL),
+                    ]
+        }),
+        "vibrancy view positioned NSWindowBelow (-1) relative to nil"
+    );
     assert!(win.set_backdrop(BackdropType::Acrylic, true));
     mock.clear_calls();
     assert!(win.set_backdrop(BackdropType::None, false));

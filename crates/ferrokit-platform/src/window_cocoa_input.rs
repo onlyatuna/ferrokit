@@ -62,9 +62,9 @@ const QT_ALT_MODIFIER: u32 = 0x0800_0000;
 const QT_META_MODIFIER: u32 = 0x1000_0000;
 
 /// `NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate |
-/// NSTrackingActiveInActiveApp | NSTrackingInVisibleRect`, the options of `QNSView`'s tracking
-/// area (qnsview_mouse.mm `updateTrackingAreas`).
-const TRACKING_AREA_OPTIONS: NSUInteger = 0x01 | 0x02 | 0x04 | 0x40 | 0x200;
+/// NSTrackingActiveAlways | NSTrackingInVisibleRect`, the options of `QNSView`'s tracking
+/// area (qnsview_mouse.mm:250-256 `updateTrackingAreas`).
+const TRACKING_AREA_OPTIONS: NSUInteger = 0x01 | 0x02 | 0x04 | 0x80 | 0x200;
 
 /// Which `NSResponder` method an `NSEvent` arrived through. The left, right and other mouse
 /// buttons share a kind: the event's `buttonNumber` says which button it is.

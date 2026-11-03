@@ -291,7 +291,8 @@ pub(crate) fn set_cocoa_window_backdrop(
     backdrop_view: &mut Option<crate::objc_runtime::Id>,
 ) -> bool {
     use crate::objc_runtime::{
-        Class, Id, NS_VISUAL_EFFECT_STATE_ACTIVE, NS_VISUAL_EFFECT_STATE_INACTIVE, ObjcMsg, Sel,
+        Class, Id, NS_VISUAL_EFFECT_STATE_ACTIVE, NS_VISUAL_EFFECT_STATE_INACTIVE, NS_WINDOW_BELOW,
+        ObjcMsg, Sel,
     };
 
     if ns_window.is_nil() && ns_view.is_nil() {
@@ -471,10 +472,16 @@ pub(crate) fn set_cocoa_window_backdrop(
                 }
                 if !content_view.is_nil() {
                     // SAFETY: `content_view` is non-nil (checked above) and `effect_view` is live;
-                    // `addSubview:` takes one object, matching `send_id`. The superview retains the
-                    // subview, while our +1 is kept in `backdrop_view`.
+                    // `addSubview:positioned:relativeTo:` with `NSWindowBelow` and `nil` places
+                    // the effect view at the bottom of the subview list and retains it, while our
+                    // +1 is kept in `backdrop_view`.
                     unsafe {
-                        ObjcMsg::send_id(content_view, Sel::register("addSubview:"), effect_view)
+                        ObjcMsg::send_add_subview_positioned(
+                            content_view,
+                            effect_view,
+                            NS_WINDOW_BELOW,
+                            Id::NIL,
+                        )
                     };
                 } else {
                     // SAFETY: `target_window` is live and non-nil; `effect_view` is live;
