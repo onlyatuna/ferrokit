@@ -154,9 +154,9 @@ impl FontMetrics {
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
     /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
     /// which no face resolves (both the requested family and its platform style-hint substitute,
-    /// e.g. Tahoma on Windows, are missing from the system, or `size <= 0.0`) has made-up numbers
-    /// (0.8, 0.2 and 0.1 of the size, 0.6 for the average character width), since there is nothing
-    /// to measure.
+    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or CoreText style-hint / SFNS on macOS,
+    /// are missing from the system, or `size <= 0.0`) has made-up numbers (0.8, 0.2 and 0.1 of the
+    /// size, 0.6 for the average character width), since there is nothing to measure.
     /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
     /// [`GlyphFace::average_char_width`]: crate::text::glyph_face::GlyphFace::average_char_width
     pub fn from_font(font: &Font) -> Self {
@@ -865,5 +865,109 @@ mod tests {
                 &Font::new("Segoe UI", 12.0).with_style_hint(StyleHint::AnyStyle)
             )
         );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn test_style_hint_substitute_metrics_parity_with_qt_linux() {
+        use std::path::Path;
+        if !cfg!(miri) {
+            assert!(
+                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").is_file(),
+                "DejaVu Sans (DejaVuSans.ttf) must be installed on Linux CI"
+            );
+            assert!(
+                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf").is_file(),
+                "DejaVu Serif (DejaVuSerif.ttf) must be installed on Linux CI"
+            );
+            assert!(
+                Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").is_file(),
+                "DejaVu Sans Mono (DejaVuSansMono.ttf) must be installed on Linux CI"
+            );
+        }
+
+        let non_existent = "NoSuchFontXYZ";
+
+        if !crate::text::font_database::is_fontconfig_available() {
+            // When libfontconfig is absent, assert the documented no-substitute result (made-up metrics)
+            for px in [12.0, 16.0, 20.0] {
+                let font = Font::new(non_existent, px);
+                let m = FontMetrics::from_font(&font);
+                assert_eq!(m.ascent, px * 0.8);
+                assert_eq!(m.descent, px * 0.2);
+                assert_eq!(m.line_gap, px * 0.1);
+                assert_eq!(m.height, m.ascent + m.descent + m.line_gap);
+                assert_eq!(m.average_char_width, px * 0.6);
+            }
+            return;
+        }
+
+        for px in [12.0, 16.0, 20.0] {
+            // Measured real Qt 6.12.0 (PySide6, offscreen, Linux host with DejaVu Sans/Serif/Sans Mono,
+            // Liberation, Noto CJK installed; 12/16/20 px) for the family "NoSuchFontXYZ":
+            // AnyStyle/SansSerif/System/Cursive/Fantasy -> 'DejaVu Sans' (asc 11/15/19, desc 3/4/5, h 14/19/24, avg 6/8/10);
+            let (expected_asc, expected_desc, expected_h, expected_avg) = match px as i32 {
+                12 => (11.0, 3.0, 14.0, 6.0),
+                16 => (15.0, 4.0, 19.0, 8.0),
+                20 => (19.0, 5.0, 24.0, 10.0),
+                _ => unreachable!(),
+            };
+
+            for hint in [
+                StyleHint::AnyStyle,
+                StyleHint::SansSerif,
+                StyleHint::System,
+                StyleHint::Cursive,
+                StyleHint::Fantasy,
+            ] {
+                let font = Font::new(non_existent, px).with_style_hint(hint);
+                let m = FontMetrics::from_font(&font);
+                let font_dejavu_sans = Font::new("DejaVu Sans", px);
+                let m_dejavu_sans = FontMetrics::from_font(&font_dejavu_sans);
+                assert_eq!(
+                    m, m_dejavu_sans,
+                    "{hint:?} at {px}px must equal DejaVu Sans"
+                );
+                assert_eq!(m.ascent, expected_asc, "{hint:?} at {px}px ascent");
+                assert_eq!(m.descent, expected_desc, "{hint:?} at {px}px descent");
+                assert_eq!(m.height, expected_h, "{hint:?} at {px}px height");
+                assert_eq!(
+                    m.rounded_average_char_width(),
+                    expected_avg,
+                    "{hint:?} at {px}px avgCharWidth"
+                );
+            }
+            // Serif -> 'DejaVu Serif'
+            let font_serif = Font::new(non_existent, px).with_style_hint(StyleHint::Serif);
+            let m_serif = FontMetrics::from_font(&font_serif);
+            let font_dejavu_serif = Font::new("DejaVu Serif", px);
+            let m_dejavu_serif = FontMetrics::from_font(&font_dejavu_serif);
+            assert_eq!(
+                m_serif, m_dejavu_serif,
+                "Serif at {px}px must equal DejaVu Serif"
+            );
+
+            // Monospace and TypeWriter -> 'DejaVu Sans Mono' (avg 7/10/12)
+            let expected_mono_avg = match px as i32 {
+                12 => 7.0,
+                16 => 10.0,
+                20 => 12.0,
+                _ => unreachable!(),
+            };
+            for hint in [StyleHint::Monospace, StyleHint::TypeWriter] {
+                let font = Font::new(non_existent, px).with_style_hint(hint);
+                let m = FontMetrics::from_font(&font);
+                let font_dejavu_mono = Font::new("DejaVu Sans Mono", px);
+                let m_dejavu_mono = FontMetrics::from_font(&font_dejavu_mono);
+                assert_eq!(
+                    m, m_dejavu_mono,
+                    "{hint:?} at {px}px must equal DejaVu Sans Mono"
+                );
+                assert_eq!(
+                    m.rounded_average_char_width(),
+                    expected_mono_avg,
+                    "{hint:?} at {px}px avg"
+                );
+            }
+        }
     }
 }
