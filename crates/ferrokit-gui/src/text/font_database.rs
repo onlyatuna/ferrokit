@@ -1017,11 +1017,12 @@ impl FontDatabase {
             }
         }
 
-        // macOS (for the families the style-hint table has no entry for) and any other target: the
-        // pre-existing guess, which is not Qt's. Qt resolves AnyStyle and System to the system UI
-        // font (`CTFontCreateUIFontForLanguage`), which needs a CoreText bridge ferrokit does not
-        // have [inferred].
-        #[cfg(any(target_os = "macos", not(any(windows, unix))))]
+        // Last resort on every non-Windows target: the pre-existing guess, which is not Qt's. On
+        // Linux it applies only when fontconfig is unavailable (or lists nothing loadable, and
+        // under Miri, which cannot call it). On macOS Qt resolves AnyStyle and System to the
+        // system UI font (`CTFontCreateUIFontForLanguage`), which needs a CoreText bridge
+        // ferrokit does not have [inferred].
+        #[cfg(not(windows))]
         {
             if key != "segoe ui"
                 && key != "arial"
@@ -1280,9 +1281,6 @@ impl FontDatabase {
 
     /// Preloads common default system fonts.
     fn preload_default_fonts(&mut self) {
-        if cfg!(miri) {
-            return;
-        }
         let default_families = ["segoe ui", "arial", "consolas"];
         for fam in &default_families {
             if let Some((raw_data, face)) = self.find_and_load_font_file(fam, FaceStyle::REGULAR) {
@@ -1300,9 +1298,6 @@ impl FontDatabase {
         family_key: &str,
         style: FaceStyle,
     ) -> Option<(SharedFontData, SharedGlyphFace)> {
-        if cfg!(miri) {
-            return None;
-        }
         let _t = crate::startup_trace::span(|| format!("find_and_load_font_file({family_key:?})"));
         let regular_filenames: Vec<String> = match family_key {
             "segoe ui" => vec!["segoeui.ttf".into(), "SegoeUI.ttf".into()],

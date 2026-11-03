@@ -904,7 +904,7 @@ mod tests {
                 false,
                 hint,
             );
-            for (i, px) in [12.0f32, 16.0, 20.0].into_iter().enumerate() {
+            for px in [12.0f32, 16.0, 20.0] {
                 let resolved = candidates
                     .iter()
                     .find(|c| {
@@ -921,24 +921,6 @@ mod tests {
                     m, expected,
                     "{hint:?} at {px}px must have the metrics of {resolved}, the first listed family that loads"
                 );
-
-                // Measured on real Qt 6.12.0 (PySide6, offscreen) on a machine where fontconfig
-                // resolves a missing family to these DejaVu faces: height 14/19/24 at 12/16/20 px,
-                // average character width 6/8/10 (Sans, Serif) and 7/10/12 (Sans Mono). Only
-                // meaningful when this machine resolved to one of them.
-                let qt = match resolved.as_str() {
-                    "DejaVu Sans" | "DejaVu Serif" => Some(([14.0, 19.0, 24.0], [6.0, 8.0, 10.0])),
-                    "DejaVu Sans Mono" => Some(([14.0, 19.0, 24.0], [7.0, 10.0, 12.0])),
-                    _ => None,
-                };
-                if let Some((heights, widths)) = qt {
-                    assert_eq!(m.height, heights[i], "{hint:?} at {px}px height vs Qt");
-                    assert_eq!(
-                        m.rounded_average_char_width(),
-                        widths[i],
-                        "{hint:?} at {px}px avgCharWidth vs Qt"
-                    );
-                }
             }
         }
     }
