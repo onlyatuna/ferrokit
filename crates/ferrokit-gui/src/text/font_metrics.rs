@@ -154,7 +154,7 @@ impl FontMetrics {
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
     /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
     /// which no face resolves (both the requested family and its platform style-hint substitute,
-    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or the style-hint table / SFNS on macOS,
+    /// e.g. Tahoma on Windows, fontconfig fallback on Linux, or the style-hint table on macOS,
     /// are missing from the system, or `size <= 0.0`) has made-up numbers (0.8, 0.2 and 0.1 of the
     /// size, 0.6 for the average character width), since there is nothing to measure.
     /// [`GlyphFace::line_metrics`]: crate::text::glyph_face::GlyphFace::line_metrics
@@ -885,72 +885,60 @@ mod tests {
             return;
         }
 
-        for px in [12.0, 16.0, 20.0] {
-            // Measured real Qt 6.12.0 (PySide6, offscreen, Linux host with DejaVu Sans/Serif/Sans Mono,
-            // Liberation, Noto CJK installed; 12/16/20 px) for the family "NoSuchFontXYZ":
-            // AnyStyle/SansSerif/System/Cursive/Fantasy -> 'DejaVu Sans' (asc 11/15/19, desc 3/4/5, h 14/19/24, avg 6/8/10);
-            let (expected_asc, expected_desc, expected_h, expected_avg) = match px as i32 {
-                12 => (11.0, 3.0, 14.0, 6.0),
-                16 => (15.0, 4.0, 19.0, 8.0),
-                20 => (19.0, 5.0, 24.0, 10.0),
-                _ => unreachable!(),
-            };
-
-            for hint in [
-                StyleHint::AnyStyle,
-                StyleHint::SansSerif,
-                StyleHint::System,
-                StyleHint::Cursive,
-                StyleHint::Fantasy,
-            ] {
-                let font = Font::new(non_existent, px).with_style_hint(hint);
-                let m = FontMetrics::from_font(&font);
-                let font_dejavu_sans = Font::new("DejaVu Sans", px);
-                let m_dejavu_sans = FontMetrics::from_font(&font_dejavu_sans);
-                assert_eq!(
-                    m, m_dejavu_sans,
-                    "{hint:?} at {px}px must equal DejaVu Sans"
-                );
-                assert_eq!(m.ascent, expected_asc, "{hint:?} at {px}px ascent");
-                assert_eq!(m.descent, expected_desc, "{hint:?} at {px}px descent");
-                assert_eq!(m.height, expected_h, "{hint:?} at {px}px height");
-                assert_eq!(
-                    m.rounded_average_char_width(),
-                    expected_avg,
-                    "{hint:?} at {px}px avgCharWidth"
-                );
-            }
-            // Serif -> 'DejaVu Serif'
-            let font_serif = Font::new(non_existent, px).with_style_hint(StyleHint::Serif);
-            let m_serif = FontMetrics::from_font(&font_serif);
-            let font_dejavu_serif = Font::new("DejaVu Serif", px);
-            let m_dejavu_serif = FontMetrics::from_font(&font_dejavu_serif);
-            assert_eq!(
-                m_serif, m_dejavu_serif,
-                "Serif at {px}px must equal DejaVu Serif"
+        let hints = [
+            StyleHint::AnyStyle,
+            StyleHint::SansSerif,
+            StyleHint::Serif,
+            StyleHint::Monospace,
+            StyleHint::TypeWriter,
+            StyleHint::Cursive,
+            StyleHint::Fantasy,
+            StyleHint::System,
+        ];
+        for hint in hints {
+            // What Qt does: the families `FcFontSort` lists, in order; the first one this machine
+            // can load is the font. Which family that is depends on the machine's fontconfig
+            // configuration and installed fonts, so the expectation is derived, not hard-coded.
+            let candidates = crate::text::font_database::query_fontconfig_fallbacks(
+                &non_existent.to_ascii_lowercase(),
+                false,
+                hint,
             );
+            for (i, px) in [12.0f32, 16.0, 20.0].into_iter().enumerate() {
+                let resolved = candidates
+                    .iter()
+                    .find(|c| {
+                        FontMetrics::engine_metrics(
+                            &Font::new(c.as_str(), px).with_style_hint(hint),
+                        )
+                        .is_some()
+                    })
+                    .expect("fontconfig lists no family this machine can load");
+                let m = FontMetrics::from_font(&Font::new(non_existent, px).with_style_hint(hint));
+                let expected =
+                    FontMetrics::from_font(&Font::new(resolved.as_str(), px).with_style_hint(hint));
+                assert_eq!(
+                    m, expected,
+                    "{hint:?} at {px}px must have the metrics of {resolved}, the first listed family that loads"
+                );
 
-            // Monospace and TypeWriter -> 'DejaVu Sans Mono' (avg 7/10/12)
-            let expected_mono_avg = match px as i32 {
-                12 => 7.0,
-                16 => 10.0,
-                20 => 12.0,
-                _ => unreachable!(),
-            };
-            for hint in [StyleHint::Monospace, StyleHint::TypeWriter] {
-                let font = Font::new(non_existent, px).with_style_hint(hint);
-                let m = FontMetrics::from_font(&font);
-                let font_dejavu_mono = Font::new("DejaVu Sans Mono", px);
-                let m_dejavu_mono = FontMetrics::from_font(&font_dejavu_mono);
-                assert_eq!(
-                    m, m_dejavu_mono,
-                    "{hint:?} at {px}px must equal DejaVu Sans Mono"
-                );
-                assert_eq!(
-                    m.rounded_average_char_width(),
-                    expected_mono_avg,
-                    "{hint:?} at {px}px avg"
-                );
+                // Measured on real Qt 6.12.0 (PySide6, offscreen) on a machine where fontconfig
+                // resolves a missing family to these DejaVu faces: height 14/19/24 at 12/16/20 px,
+                // average character width 6/8/10 (Sans, Serif) and 7/10/12 (Sans Mono). Only
+                // meaningful when this machine resolved to one of them.
+                let qt = match resolved.as_str() {
+                    "DejaVu Sans" | "DejaVu Serif" => Some(([14.0, 19.0, 24.0], [6.0, 8.0, 10.0])),
+                    "DejaVu Sans Mono" => Some(([14.0, 19.0, 24.0], [7.0, 10.0, 12.0])),
+                    _ => None,
+                };
+                if let Some((heights, widths)) = qt {
+                    assert_eq!(m.height, heights[i], "{hint:?} at {px}px height vs Qt");
+                    assert_eq!(
+                        m.rounded_average_char_width(),
+                        widths[i],
+                        "{hint:?} at {px}px avgCharWidth vs Qt"
+                    );
+                }
             }
         }
     }

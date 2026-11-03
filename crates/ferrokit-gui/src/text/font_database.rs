@@ -364,9 +364,9 @@ pub fn family_for_style_hint(hint: StyleHint) -> &'static str {
 /// - `Cursive` -> "Apple Chancery"
 /// - `Fantasy` -> "Zapfino"
 /// - `TypeWriter` (`Courier`) -> "American Typewriter"
-/// - `AnyStyle` / `System` -> `None` from this pure table (Qt resolves to the system UI font
-///   via `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`; ferrokit resolves `/System/Library/Fonts/SFNS.ttf`
-///   if parseable, otherwise falls back to "Helvetica" [inferred])
+/// - `AnyStyle` / `System` -> `None` from this pure table (Qt resolves them to the system UI font
+///   via `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`; ferrokit has no CoreText bridge, so
+///   they keep the previous segoe ui, then arial guess, which is not Qt's [inferred])
 /// - others -> `None` [inferred]
 #[cfg(target_os = "macos")]
 pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
@@ -427,7 +427,11 @@ pub fn is_fontconfig_available() -> bool {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn query_fontconfig_fallbacks(family: &str, italic: bool, hint: StyleHint) -> Vec<String> {
+pub(crate) fn query_fontconfig_fallbacks(
+    family: &str,
+    italic: bool,
+    hint: StyleHint,
+) -> Vec<String> {
     #[cfg(miri)]
     {
         let _ = (family, italic, hint);
@@ -965,54 +969,16 @@ impl FontDatabase {
 
         #[cfg(target_os = "macos")]
         {
-            if let Some(substitute) = family_for_style_hint(hint) {
-                if !key.eq_ignore_ascii_case(substitute)
-                    && let Some(fallback) = self.load_font_styled(substitute, style, hint)
-                {
-                    self.cache.insert(style_key.clone(), Arc::clone(&fallback));
-                    let sub_key = style.cache_key(&substitute.to_ascii_lowercase(), hint);
-                    if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
-                        self.raw_cache.insert(style_key, raw);
-                    }
-                    return Some(fallback);
+            if let Some(substitute) = family_for_style_hint(hint)
+                && !key.eq_ignore_ascii_case(substitute)
+                && let Some(fallback) = self.load_font_styled(substitute, style, hint)
+            {
+                self.cache.insert(style_key.clone(), Arc::clone(&fallback));
+                let sub_key = style.cache_key(&substitute.to_ascii_lowercase(), hint);
+                if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
+                    self.raw_cache.insert(style_key, raw);
                 }
-            } else if matches!(hint, StyleHint::AnyStyle | StyleHint::System) {
-                // For AnyStyle and System, Qt resolves the system UI font via
-                // `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`. Ferrokit has no CoreText
-                // platform bridge, so try the documented system font file `/System/Library/Fonts/SFNS.ttf`
-                // if parseable, otherwise fall back to Helvetica [inferred].
-                let sfns_path = Path::new("/System/Library/Fonts/SFNS.ttf");
-                let sfns_key = sfns_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| sfns_path.to_path_buf());
-                let sfns_face = if let Some(shared) = self.file_cache.get(&sfns_key) {
-                    parse_face(shared, 0)
-                        .ok()
-                        .map(|face| (shared.clone(), face))
-                } else if sfns_path.is_file()
-                    && let Ok(shared) = SharedFontData::from_file(&sfns_key)
-                    && let Ok(face) = parse_face(&shared, 0)
-                {
-                    self.file_cache.insert(sfns_key, shared.clone());
-                    Some((shared, face))
-                } else {
-                    None
-                };
-
-                if let Some((raw_data, face)) = sfns_face {
-                    self.cache.insert(style_key.clone(), Arc::clone(&face));
-                    self.raw_cache.insert(style_key, raw_data);
-                    return Some(face);
-                } else if !key.eq_ignore_ascii_case("helvetica")
-                    && let Some(fallback) = self.load_font_styled("Helvetica", style, hint)
-                {
-                    self.cache.insert(style_key.clone(), Arc::clone(&fallback));
-                    let sub_key = style.cache_key("helvetica", hint);
-                    if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
-                        self.raw_cache.insert(style_key, raw);
-                    }
-                    return Some(fallback);
-                }
+                return Some(fallback);
             }
         }
 
@@ -1051,7 +1017,11 @@ impl FontDatabase {
             }
         }
 
-        #[cfg(not(any(windows, unix)))]
+        // macOS (for the families the style-hint table has no entry for) and any other target: the
+        // pre-existing guess, which is not Qt's. Qt resolves AnyStyle and System to the system UI
+        // font (`CTFontCreateUIFontForLanguage`), which needs a CoreText bridge ferrokit does not
+        // have [inferred].
+        #[cfg(any(target_os = "macos", not(any(windows, unix))))]
         {
             if key != "segoe ui"
                 && key != "arial"
@@ -1775,40 +1745,35 @@ mod tests {
             return;
         }
 
-        // AnyStyle / SansSerif / System / Cursive / Fantasy -> DejaVu Sans
-        for hint in [
+        // The substitute is the first family `FcFontSort` lists that this machine can load (which
+        // family that is depends on its fontconfig configuration and installed fonts, so it is
+        // derived here, not hard-coded).
+        let all_hints = [
             StyleHint::AnyStyle,
             StyleHint::SansSerif,
-            StyleHint::System,
+            StyleHint::Serif,
+            StyleHint::Monospace,
+            StyleHint::TypeWriter,
             StyleHint::Cursive,
             StyleHint::Fantasy,
-        ] {
-            let face = db.load_font_styled(missing, FaceStyle::REGULAR, hint);
-            assert!(face.is_some(), "Must resolve substitute for {hint:?}");
-            let dejavu_sans = db.load_font_styled("DejaVu Sans", FaceStyle::REGULAR, hint);
-            assert!(dejavu_sans.is_some());
+            StyleHint::System,
+        ];
+        for hint in all_hints {
+            let candidates = query_fontconfig_fallbacks(&missing.to_ascii_lowercase(), false, hint);
+            let expected = candidates
+                .iter()
+                .find_map(|c| db.load_font_styled(c, FaceStyle::REGULAR, hint))
+                .expect("fontconfig lists no family this machine can load");
+            let face = db
+                .load_font_styled(missing, FaceStyle::REGULAR, hint)
+                .unwrap_or_else(|| panic!("no substitute resolved for {hint:?}"));
             assert!(
-                Arc::ptr_eq(&face.unwrap(), &dejavu_sans.unwrap()),
-                "Substitute for {hint:?} must equal DejaVu Sans"
+                Arc::ptr_eq(&face, &expected),
+                "substitute for {hint:?} must be the first listed family that loads"
             );
         }
 
-        // Serif -> DejaVu Serif
-        let face_serif = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::Serif);
-        let dejavu_serif =
-            db.load_font_styled("DejaVu Serif", FaceStyle::REGULAR, StyleHint::Serif);
-        assert!(face_serif.is_some() && dejavu_serif.is_some());
-        assert!(Arc::ptr_eq(&face_serif.unwrap(), &dejavu_serif.unwrap()));
-
-        // Monospace / TypeWriter -> DejaVu Sans Mono
-        for hint in [StyleHint::Monospace, StyleHint::TypeWriter] {
-            let face = db.load_font_styled(missing, FaceStyle::REGULAR, hint);
-            let dejavu_mono = db.load_font_styled("DejaVu Sans Mono", FaceStyle::REGULAR, hint);
-            assert!(face.is_some() && dejavu_mono.is_some());
-            assert!(Arc::ptr_eq(&face.unwrap(), &dejavu_mono.unwrap()));
-        }
-
-        // Caching per (family, style slant, hint) and fontconfig run at most once per key
+        // Fonts that differ only in hint do not share a cache entry.
         let key_any =
             FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
         let key_serif =
@@ -1816,7 +1781,6 @@ mod tests {
         assert_ne!(key_any, key_serif);
         assert!(db.cache.contains_key(&key_any));
         assert!(db.cache.contains_key(&key_serif));
-        assert!(!Arc::ptr_eq(&db.cache[&key_any], &db.cache[&key_serif]));
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
