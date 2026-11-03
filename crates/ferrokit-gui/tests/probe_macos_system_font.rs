@@ -126,21 +126,72 @@ fn probe() {
         );
     }
 
+    // SFNS.ttf: why does it draw nothing?
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        report += &format!("SFNS bytes={}\n", bytes.len());
+        if let Ok(face) = rustybuzz::ttf_parser::Face::parse(&bytes, 0) {
+            report += &format!(
+                "  ttf_parser: glyphs={} variable={} upem={} W={:?} 5={:?}\n",
+                face.number_of_glyphs(),
+                face.is_variable(),
+                face.units_per_em(),
+                face.glyph_index('W'),
+                face.glyph_index('5')
+            );
+            let raw = face.raw_face();
+            for t in ["glyf", "loca", "CFF ", "CFF2", "gvar", "fvar", "avar", "HVAR", "MVAR", "hmtx", "cmap"] {
+                report += &format!("  table {t:?} present={}\n", raw.table(rustybuzz::ttf_parser::Tag::from_bytes(&{
+                    let mut b = [b' '; 4];
+                    b[..t.len()].copy_from_slice(t.as_bytes());
+                    b
+                })).is_some());
+            }
+            if let Some(g) = face.glyph_index('W') {
+                struct B(usize);
+                impl rustybuzz::ttf_parser::OutlineBuilder for B {
+                    fn move_to(&mut self, _: f32, _: f32) { self.0 += 1; }
+                    fn line_to(&mut self, _: f32, _: f32) { self.0 += 1; }
+                    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) { self.0 += 1; }
+                    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) { self.0 += 1; }
+                    fn close(&mut self) {}
+                }
+                let mut b = B(0);
+                let bb = face.outline_glyph(g, &mut b);
+                report += &format!("  outline W: bbox={bb:?} segments={}\n", b.0);
+            }
+        }
+        match fontdue::Font::from_bytes(bytes.as_slice(), fontdue::FontSettings::default()) {
+            Ok(fd) => {
+                let (m, bm) = fd.rasterize('W', 13.0);
+                report += &format!(
+                    "  fontdue: glyph_count={} W metrics w={} h={} lit={}\n",
+                    fd.glyph_count(),
+                    m.width,
+                    m.height,
+                    bm.iter().filter(|&&b| b != 0).count()
+                );
+            }
+            Err(e) => report += &format!("  fontdue failed: {e}\n"),
+        }
+    }
+
     // Real Qt on this machine.
+    let script = r#"from PySide6.QtGui import QFont, QFontMetrics, QFontInfo, QGuiApplication
+a = QGuiApplication([])
+print('platform', a.platformName(), 'default font', repr(QGuiApplication.font().family()))
+for fam in ['NoSuchFontXYZ', 'Segoe UI', 'Helvetica', 'Arial']:
+    for name in ['AnyStyle', 'System', 'SansSerif', 'Serif', 'Monospace', 'TypeWriter', 'Cursive', 'Fantasy']:
+        for px in (12, 16, 20):
+            f = QFont(fam)
+            f.setStyleHint(getattr(QFont.StyleHint, name))
+            f.setPixelSize(px)
+            m = QFontMetrics(f)
+            print(fam, name, px, repr(QFontInfo(f).family()), 'asc', m.ascent(), 'desc', m.descent(), 'h', m.height(), 'avg', m.averageCharWidth())
+"#;
+    std::fs::write("/tmp/q.py", script).unwrap();
     report += &run(
         "python3 -m venv /tmp/qtv && /tmp/qtv/bin/python -m pip install -q PySide6 2>&1 | tail -2; \
-         cat > /tmp/q.py <<'E'\n\
-from PySide6.QtGui import QFont, QFontMetrics, QFontInfo, QGuiApplication\n\
-a=QGuiApplication([])\n\
-print('platform',a.platformName(),'default font',QGuiApplication.font().family())\n\
-for fam in ['NoSuchFontXYZ','Segoe UI','Helvetica','Arial']:\n\
-  for name in ['AnyStyle','System','SansSerif','Serif','Monospace','TypeWriter','Cursive','Fantasy']:\n\
-    for px in (12,16,20):\n\
-        f=QFont(fam); f.setStyleHint(getattr(QFont,name)); f.setPixelSize(px)\n\
-        m=QFontMetrics(f)\n\
-        print(fam,name,px,repr(QFontInfo(f).family()),'asc',m.ascent(),'desc',m.descent(),'h',m.height(),'avg',m.averageCharWidth())\n\
-E\n\
-QT_QPA_PLATFORM=offscreen /tmp/qtv/bin/python /tmp/q.py 2>&1 | head -120",
+         QT_QPA_PLATFORM=offscreen /tmp/qtv/bin/python /tmp/q.py 2>&1 | head -120",
     );
     panic!("{report}");
 }
