@@ -1446,7 +1446,9 @@ impl FontDatabase {
         font: &Font,
     ) -> bool {
         use crate::text::directwrite_catalog as dw;
-        use crate::text::glyph_layout::{ScriptChains, fallback_script_key, is_zero_width};
+        use crate::text::glyph_layout::{
+            ScriptChains, emoji_sequence_flags, fallback_script_key, is_zero_width,
+        };
         let Some(catalog) = dw::catalog() else {
             return false;
         };
@@ -1470,16 +1472,23 @@ impl FontDatabase {
         let mut found: HashMap<&'static str, Vec<(usize, usize)>> = HashMap::new();
         let mut misses: HashSet<(&'static str, char)> = HashSet::new();
         let items = crate::text::shaping_plan::script_items(text);
+        let emoji_flags = emoji_sequence_flags(text);
+        let mut position = 0usize;
         for (n, &(start, script)) in items.iter().enumerate() {
             let end = items.get(n + 1).map_or(text.len(), |next| next.0);
             for ch in text[start..end].chars() {
+                let index = position;
+                position += 1;
+                // A character of an emoji sequence is an item of the emoji script, which has no
+                // primary font (the family must be a color font): it goes to the emoji chain even
+                // where the primary font has a glyph for it.
                 if matches!(ch, '\t' | '\n' | '\r')
                     || is_zero_width(ch)
-                    || primary.face.glyph_index(ch) != 0
+                    || (primary.face.glyph_index(ch) != 0 && !emoji_flags[index])
                 {
                     continue;
                 }
-                let key = fallback_script_key(ch, script);
+                let key = fallback_script_key(ch, script, emoji_flags[index]);
                 if !misses.insert((key, ch)) {
                     continue;
                 }

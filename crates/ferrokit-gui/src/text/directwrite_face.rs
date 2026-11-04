@@ -722,13 +722,6 @@ impl GlyphFace for DirectWriteFace {
         })
     }
 
-    fn variations(&self) -> Vec<([u8; 4], f32)> {
-        self.axes
-            .iter()
-            .map(|&(tag, value)| (tag.to_le_bytes(), value))
-            .collect()
-    }
-
     /// `boundingBox('x').xoff` (the design advance of `x`): Qt's Windows engines do not use the
     /// OS/2 average width. A simulated bold face is wider, so DirectWrite is asked for it.
     fn average_char_width(&self, px: f32) -> Option<f32> {

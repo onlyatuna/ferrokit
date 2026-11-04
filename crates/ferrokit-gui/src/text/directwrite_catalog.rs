@@ -374,6 +374,17 @@ struct Locales {
     english: Vec<u16>,
 }
 
+/// The language of the system as a HarfBuzz language (Qt passes `QLocale().bcp47Name()`; the
+/// Windows locale name of the user gives the same OpenType language tags, e.g. `zh-TW`).
+pub(crate) fn system_language() -> Option<rustybuzz::Language> {
+    static LANGUAGE: LazyLock<Option<rustybuzz::Language>> = LazyLock::new(|| {
+        let locale = Locales::new().default?;
+        let name = String::from_utf16_lossy(&locale);
+        name.trim_end_matches('\0').parse().ok()
+    });
+    LANGUAGE.clone()
+}
+
 impl Locales {
     fn new() -> Self {
         let mut buffer = [0u16; 85];

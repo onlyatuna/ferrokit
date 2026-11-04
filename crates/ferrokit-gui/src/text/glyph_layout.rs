@@ -67,12 +67,7 @@ pub struct ShapingFace {
 }
 
 impl ShapingFace {
-    fn new(
-        data: &SharedFontData,
-        face_index: u32,
-        ppem: u16,
-        variations: &[([u8; 4], f32)],
-    ) -> Option<Self> {
+    fn new(data: &SharedFontData, face_index: u32, ppem: u16) -> Option<Self> {
         SHAPING_FACE_PARSES.with(|n| n.set(n.get() + 1));
         let bytes = data.as_slice();
         // SAFETY: `SharedFontData` is an `Arc` over font bytes that are never moved or written
@@ -81,17 +76,11 @@ impl ShapingFace {
         // the lifetime of `&self`.
         let bytes: &'static [u8] =
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
+        // The face is shaped at its default coordinates even for a named instance of a variable
+        // font: Qt's HarfBuzz font has no variations (qharfbuzzng.cpp), so the GPOS kerning and
+        // the GSUB feature variations are those of the default instance, while the advances come
+        // from the font engine (DirectWrite, at the instance).
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
-        if !variations.is_empty() {
-            let variations: Vec<rustybuzz::Variation> = variations
-                .iter()
-                .map(|&(tag, value)| rustybuzz::Variation {
-                    tag: rustybuzz::ttf_parser::Tag::from_bytes(&tag),
-                    value,
-                })
-                .collect();
-            face.set_variations(&variations);
-        }
         face.set_pixels_per_em(Some((ppem, ppem)));
         // No points per em on purpose: rustybuzz then applies no `trak` tracking (what it adds is
         // not what the HarfBuzz 14 bundled with Qt 6.12 adds, see `hb_tracking`); where Qt applies
@@ -202,13 +191,31 @@ pub(crate) fn is_emoji_presentation(c: char) -> bool {
 pub type ScriptChains = std::collections::HashMap<&'static str, Vec<usize>>;
 
 /// The key of the fallback chain a character of the item script `script` uses: its script, or
-/// the emoji chain for a pictograph (Qt's emoji segmenter makes those their own items).
-pub(crate) fn fallback_script_key(ch: char, script: Script) -> &'static str {
-    if is_emoji_presentation(ch) {
+/// the emoji chain for an `Emoji_Presentation` character and for a character of an emoji sequence
+/// (`in_sequence`, see [`emoji_sequence_flags`]): Qt's emoji segmenter makes those their own
+/// items.
+pub(crate) fn fallback_script_key(ch: char, script: Script, in_sequence: bool) -> &'static str {
+    if in_sequence || is_emoji_presentation(ch) {
         "Emoji"
     } else {
         script.short_name()
     }
+}
+
+/// For each character of `text`, whether it is part of an emoji sequence (a keycap, a character
+/// with the emoji variation selector, a ZWJ sequence, a flag, a tag sequence).
+pub(crate) fn emoji_sequence_flags(text: &str) -> Vec<bool> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut flags = Vec::with_capacity(text.len());
+    if !GlyphLayout::has_emoji_sequence(text) {
+        flags.resize(text.chars().count(), false);
+        return flags;
+    }
+    for cluster in text.graphemes(true) {
+        let in_sequence = cluster.chars().count() > 1 && GlyphLayout::has_emoji_sequence(cluster);
+        flags.extend(cluster.chars().map(|_| in_sequence));
+    }
+    flags
 }
 
 #[derive(Clone)]
@@ -261,9 +268,7 @@ impl FontEngine {
         let mut faces = self.shaping_faces.lock().unwrap_or_else(|e| e.into_inner());
         faces
             .entry(ppem)
-            .or_insert_with(|| {
-                ShapingFace::new(data, self.face_index, ppem, &self.face.variations()).map(Arc::new)
-            })
+            .or_insert_with(|| ShapingFace::new(data, self.face_index, ppem).map(Arc::new))
             .clone()
     }
 
@@ -1235,8 +1240,13 @@ impl GlyphLayout {
 
         let chains = engines[0].script_chains.as_deref();
         let items = chains.map(|_| shaping_plan::script_items(text));
+        let emoji_flags = if chains.is_some() {
+            emoji_sequence_flags(text)
+        } else {
+            Vec::new()
+        };
         let mut item = 0;
-        for (offset, ch) in text.char_indices() {
+        for (index, (offset, ch)) in text.char_indices().enumerate() {
             // A character of no width never takes a fallback font: whatever glyph one has for it
             // is not shown (Qt gives it no advance in any font), and switching fonts would cut
             // the run (and its kerning) around it. It stays with the font before it.
@@ -1258,7 +1268,7 @@ impl GlyphLayout {
                     while item + 1 < items.len() && items[item + 1].0 <= offset {
                         item += 1;
                     }
-                    let key = fallback_script_key(ch, items[item].1);
+                    let key = fallback_script_key(ch, items[item].1, emoji_flags[index]);
                     resolved_idx = chains
                         .get(key)
                         .and_then(|chain| {
@@ -1384,6 +1394,12 @@ impl GlyphLayout {
                 // would suggest (`QTextEngine::shapeTextWithHarfbuzzNG`).
                 if let Some(script) = script.and_then(shaping_plan::buzz_script) {
                     buffer.set_script(script);
+                    // And the language of the system (`QLocale().bcp47Name()`), which selects the
+                    // language system of the font's layout tables.
+                    #[cfg(windows)]
+                    if let Some(language) = crate::text::directwrite_catalog::system_language() {
+                        buffer.set_language(language);
+                    }
                 }
                 if let Some(rtl) = right_to_left {
                     buffer.set_direction(if rtl {

@@ -9,10 +9,12 @@
 //! Arabic only, so its Latin text is kerned from the `kern` table; a check that looks at every
 //! script of the font gets that wrong.
 //!
-//! Not mirrored: the language. Qt hands HarfBuzz `QLocale().bcp47Name()`, which can select a
-//! language system (for instance `ZHT ` under `hani`) other than the default one; ferrokit has no
-//! locale and reads the default language system, which is what a font with no system for the
-//! locale's language gives as well.
+//! The language: Qt hands HarfBuzz `QLocale().bcp47Name()`, which can select a language system
+//! (for instance `ZHT ` under `latn`) other than the default one. Shaping passes the system
+//! language to rustybuzz (`directwrite_catalog::system_language`), which picks the language
+//! system itself; only the check below for a GPOS `kern` reads the default language system, which
+//! differs from Qt's choice for a font whose language system for the locale has other features
+//! than its default one and a `kern` table besides (none measured).
 
 use rustybuzz::ttf_parser::Tag;
 use rustybuzz::ttf_parser::opentype_layout::LayoutTable;
