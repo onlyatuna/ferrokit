@@ -4,7 +4,8 @@
 //! over fonts, sizes and strings is a separate PySide6 comparison script.
 //!
 //! What they pin down (all read from Qt's sources):
-//! * ratio 1 is laid out by Qt's GDI engine: whole-pixel advances;
+//! * ratio 1 is laid out by Qt's DirectWrite engine with full hinting: glyph advances from
+//!   `GetGdiCompatibleGlyphMetrics`, rounded to whole pixels once after kerning;
 //! * any other ratio by its DirectWrite engine: design advances truncated to 26.6, the same at
 //!   125%, 150% and 200%;
 //! * a `kern` table is scaled before it is split over the pair (`AV` is -126 font units: -63/64 px at
@@ -29,7 +30,7 @@ fn widths_match_qt_at_every_device_pixel_ratio() {
          cannot be checked; install it instead of skipping this test"
     );
 
-    // GDI engine.
+    // Full hinting: whole-pixel advances.
     set_application_device_pixel_ratio(1.0);
     assert_eq!(width("Claude Code", 14.0, FontWeight::SemiBold), 86.0);
 

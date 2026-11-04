@@ -174,8 +174,9 @@ pub trait GlyphFace: Send + Sync {
         None
     }
 
-    /// The advance Qt's Windows font engine gives a glyph in layout (see
-    /// `DirectWriteFace::layout_advance_width`); `direct_write` is
+    /// The advance Qt's font engine gives a glyph in layout (see
+    /// `DirectWriteFace::layout_advance_width`), a 26.6 value the engine does not round to whole
+    /// pixels itself; `direct_write` is
     /// [`uses_directwrite_engine`](crate::text::font_database::uses_directwrite_engine).
     /// `None` when the backend has no such metrics: the caller then keeps HarfBuzz's own advance.
     fn layout_advance_width(&self, _glyph_id: u16, _size: f32, _direct_write: bool) -> Option<f32> {

@@ -603,8 +603,9 @@ fn legacy_kern_table<'a>(face: &'a rustybuzz::Face<'a>) -> Option<Vec<ttf_kern::
 /// hands them on: the font engine's advance (`_hb_qt_font_get_glyph_h_advance`) plus what HarfBuzz
 /// adds to it, scaled to `size * 64` per unit. A `kern` table is applied the way `hb_kern_machine_t`
 /// does: the pair's kern is scaled first and only then split over both glyphs, the second one also
-/// moving by its half. A font engine without subpixel positions (Qt's GDI engine) gets every
-/// advance and offset rounded to whole pixels. `None` when the engine has no layout advance.
+/// moving by its half. A font engine without subpixel positions (Qt's DirectWrite engine with full
+/// hinting, FreeType with full hinting) gets every advance and offset rounded to whole pixels.
+/// `None` when the engine has no layout advance.
 fn qt_glyph_metrics(
     face: &rustybuzz::Face,
     engine: &dyn GlyphFace,
@@ -1187,10 +1188,14 @@ impl GlyphLayout {
                     } else if ch.is_ascii_digit() && run.engine_index == 0 {
                         tnum_width.unwrap_or(metrics.advance_width)
                     } else {
-                        engine
-                            .face
-                            .layout_advance_width(gid, font.size, subpixel)
-                            .unwrap_or(metrics.advance_width)
+                        let advance = engine.face.layout_advance_width(gid, font.size, subpixel);
+                        match advance {
+                            // Qt rounds the advances of an engine without sub-pixel positions
+                            // (`QTextEngine::shapeText`); the face reports them unrounded.
+                            Some(advance) if !subpixel => advance.round(),
+                            Some(advance) => advance,
+                            None => metrics.advance_width,
+                        }
                     };
 
                     let advance = adv_x + qt_letter_spacing(font.letter_spacing);
@@ -1360,6 +1365,47 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A face whose layout advance is a 26.6 value the engine leaves unrounded (Qt's DirectWrite
+    /// engine at a ratio of 1) is laid out glyph by glyph, without OpenType data, with whole pixel
+    /// advances when the platform has no sub-pixel advances, and with the 26.6 value where it has
+    /// (macOS; the test process stays at a device pixel ratio of 1).
+    #[test]
+    fn unrounded_layout_advances_are_rounded_once_without_subpixel_advances() {
+        struct Unrounded;
+        impl GlyphFace for Unrounded {
+            fn glyph_index(&self, _ch: char) -> u16 {
+                1
+            }
+            fn metrics_indexed(&self, _glyph_id: u16, _px: f32) -> GlyphMetrics {
+                GlyphMetrics::default()
+            }
+            fn rasterize_indexed(&self, _glyph_id: u16, _px: f32) -> (GlyphMetrics, Vec<u8>) {
+                (GlyphMetrics::default(), Vec::new())
+            }
+            fn layout_advance_width(
+                &self,
+                _glyph_id: u16,
+                _size: f32,
+                _direct_write: bool,
+            ) -> Option<f32> {
+                Some(5.40625)
+            }
+        }
+        let font = Font::new("Stub", 12.0);
+        let layout = GlyphLayout::shape_with_face("ab", &font, Arc::new(Unrounded));
+        let want = if cfg!(target_os = "macos") {
+            5.40625
+        } else {
+            5.0
+        };
+        assert_eq!(layout.glyphs.len(), 2);
+        assert!(
+            layout.glyphs.iter().all(|g| g.advance == want),
+            "{layout:?}"
+        );
+        assert_eq!(layout.width, 2.0 * want);
     }
 
     #[test]

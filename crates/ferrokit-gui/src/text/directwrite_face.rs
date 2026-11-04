@@ -8,8 +8,13 @@
 //!   the device pixel ratio applied as the run's transform;
 //! * the rendering mode Qt derives from its default hinting preference (`determineHinting` /
 //!   `hintingPreferenceToRenderingMode`): at a device pixel ratio other than 1 `NATURAL` up to
-//!   16 px and `NATURAL_SYMMETRIC` above, at ratio 1 (full hinting) `GDI_CLASSIC` up to 16 px
-//!   and `NATURAL_SYMMETRIC` above, with grid fit default and ClearType antialiasing;
+//!   16 px and `NATURAL_SYMMETRIC` above, at ratio 1 (full hinting) `NATURAL_SYMMETRIC` when
+//!   `useSymmetricAntialiasing` (Qt 6.12: over 16 px or no `maxp` instructions, overridden by the
+//!   font's `gasp` table) and `GDI_CLASSIC` otherwise, with grid fit default and ClearType
+//!   antialiasing;
+//! * the layout advance (`recalcAdvances`): the design advance at a ratio other than 1, at ratio 1
+//!   `GetGdiCompatibleGlyphMetrics` with `needsNaturalMetrics` for the natural modes, converted
+//!   with `DESIGN_TO_LOGICAL` and left unrounded for the shaper to round after kerning;
 //! * the ClearType 3x1 texture is kept as three coverages per pixel for LCD text
 //!   (`alphaRGBMapForGlyph`, [`GlyphFace::rasterize_lcd_scaled`]) and reduced with `qGray` for
 //!   grey-scale text (`alphaMapForGlyph`); a BGR panel swaps red and blue first;
@@ -18,12 +23,12 @@
 //!   twelve probe offsets, `QTextureGlyphCache::calculateSubPixelPositionCount`), and the painter
 //!   blits it at the floor of the pen position (`QRasterPaintEngine::drawCachedGlyphs`).
 //!
-//! Measured against Qt 6.12 (PySide6): single glyphs at the ratios where the rendering mode
-//! matches are bit-identical (A8 and LCD); the sizes where the `gasp` table of the font selects
-//! another mode at ratio 1 are not modelled yet, and neither is anything listed in the Windows
-//! text series as later work (synthesized weight and slant, font collections' face index,
-//! `needsNaturalMetrics` advances). The goldens in `tests/test_directwrite_placement.rs` pin
-//! whole strings measured from Qt.
+//! Measured against Qt 6.12 (PySide6): single glyphs are bit-identical (A8 and LCD) at every
+//! ratio and size tried for the fonts that need no synthesized weight or slant, and so are the
+//! advances of Latin text. Not modelled yet, as listed in the Windows text series: synthesized
+//! weight and slant, font collections' face index, the per-script `kern` check, the metrics of
+//! fonts with embedded bitmaps. The goldens in `tests/test_directwrite_placement.rs` and
+//! `tests/test_directwrite_modes.rs` pin whole strings and glyphs measured from Qt.
 //!
 //! The font stays plain bytes in our memory (`SharedFontData`, handed to DirectWrite through an
 //! in-memory font file loader); character mapping and advances come from [`OutlineFace`], which
@@ -128,6 +133,10 @@ pub struct DirectWriteFace {
     face: ManuallyDrop<IDWriteFontFace>,
     base: OutlineFace,
     upem: f32,
+    /// `QFontEngine::hasHinting`: the `maxp` table says the font has instructions.
+    has_hinting: bool,
+    /// The `(rangeMaxPPEM, rangeGaspBehavior)` records of the `gasp` table, in file order.
+    gasp: Vec<(u16, u16)>,
     /// Qt's `m_subPixelPositionCount` per `(size, scale)`, see [`Self::subpixel_count`].
     subpixel_counts: Mutex<HashMap<(u32, u32), i64>>,
 }
@@ -151,6 +160,56 @@ impl Drop for DirectWriteFace {
         // bytes the face reads, is only dropped after this body.
         serialized(|| unsafe { ManuallyDrop::drop(&mut self.face) });
     }
+}
+
+/// `QFontEngine::hasHinting` (qfontengine.cpp): `maxSizeOfInstructions > 0` for a version 1.0
+/// `maxp` table, true for any other version that is long enough to be read, false for a missing
+/// or short table (version 0.5, the CFF one, is 6 bytes).
+fn maxp_has_hinting(maxp: Option<&[u8]>) -> bool {
+    let Some(maxp) = maxp.filter(|t| t.len() >= 28) else {
+        return false;
+    };
+    if u32::from_be_bytes([maxp[0], maxp[1], maxp[2], maxp[3]]) == 0x0001_0000 {
+        u16::from_be_bytes([maxp[26], maxp[27]]) > 0
+    } else {
+        true
+    }
+}
+
+/// The records of the `gasp` table as `QWindowsFontEngineDirectWrite::useSymmetricAntialiasing`
+/// reads them: nothing for a table of 4 bytes or less, or one shorter than its `numRanges`
+/// announces.
+fn gasp_ranges(gasp: Option<&[u8]>) -> Vec<(u16, u16)> {
+    let Some(gasp) = gasp.filter(|t| t.len() > 4) else {
+        return Vec::new();
+    };
+    let count = usize::from(u16::from_be_bytes([gasp[2], gasp[3]]));
+    if gasp.len() < 4 + count * 4 {
+        return Vec::new();
+    }
+    (0..count)
+        .map(|i| {
+            let record = &gasp[4 + i * 4..];
+            (
+                u16::from_be_bytes([record[0], record[1]]),
+                u16::from_be_bytes([record[2], record[3]]),
+            )
+        })
+        .collect()
+}
+
+/// `QWindowsFontEngineDirectWrite::useSymmetricAntialiasing` (Qt 6.12): symmetric for sizes over
+/// 16 px and for fonts without hinting instructions, unless the first `gasp` range whose
+/// `rangeMaxPPEM` is at least the size says otherwise (`GASP_SYMMETRIC_SMOOTHING`, 0x8).
+fn symmetric_antialiasing(size: f32, has_hinting: bool, gasp: &[(u16, u16)]) -> bool {
+    let mut symmetric = size > 16.0 || !has_hinting;
+    if let Some(&(_, behavior)) = gasp
+        .iter()
+        .find(|&&(max_ppem, _)| f32::from(max_ppem) >= size)
+    {
+        symmetric = behavior & 0x8 != 0;
+    }
+    symmetric
 }
 
 impl DirectWriteFace {
@@ -209,10 +268,14 @@ impl DirectWriteFace {
             unsafe { face.GetMetrics(&mut fm) };
             Ok((face, fm.designUnitsPerEm as f32))
         })?;
+        let has_hinting = maxp_has_hinting(base.sfnt_table(b"maxp"));
+        let gasp = gasp_ranges(base.sfnt_table(b"gasp"));
         Ok(Self {
             face: ManuallyDrop::new(face),
             base,
             upem,
+            has_hinting,
+            gasp,
             subpixel_counts: Mutex::new(HashMap::new()),
         })
     }
@@ -223,22 +286,29 @@ impl DirectWriteFace {
     /// With a device pixel ratio other than 1, Qt's default hinting resolves to vertical hinting up
     /// to 16 px (`NATURAL`, "asymmetric") and none above (`NATURAL_SYMMETRIC`), the sizes Microsoft
     /// recommends. At ratio 1 Qt's DirectWrite engine (the only engine its Windows platform
-    /// plugin creates; measured against PySide6 6.12 at ratio 1) uses full hinting, whose rendering
-    /// mode is `GDI_CLASSIC` up to 16 px and `NATURAL_SYMMETRIC` above:
-    /// `hintingPreferenceToRenderingMode` picks `GDI_CLASSIC`, it does not imitate GDI. The
-    /// `gasp`/`maxp` overrides of `useSymmetricAntialiasing` (Qt 6.12) are not modelled yet.
-    fn rendering_mode(size: f32, scale: f32) -> (DWRITE_RENDERING_MODE, DWRITE_MEASURING_MODE) {
+    /// plugin creates; measured against PySide6 6.12 at ratio 1) uses full hinting, and
+    /// `hintingPreferenceToRenderingMode` then takes `NATURAL_SYMMETRIC` when
+    /// [`symmetric_antialiasing`] (`useSymmetricAntialiasing`, new in Qt 6.12: the size, the
+    /// `maxp` hinting check and the font's `gasp` table decide) and `GDI_CLASSIC` otherwise; it
+    /// does not imitate GDI.
+    fn rendering_mode(
+        &self,
+        size: f32,
+        scale: f32,
+    ) -> (DWRITE_RENDERING_MODE, DWRITE_MEASURING_MODE) {
         let scaled = (scale - 1.0).abs() > f32::EPSILON;
-        match (scaled, size > 16.0) {
-            (true, false) => (DWRITE_RENDERING_MODE_NATURAL, DWRITE_MEASURING_MODE_NATURAL),
-            (_, true) => (
+        if scaled && size <= 16.0 {
+            (DWRITE_RENDERING_MODE_NATURAL, DWRITE_MEASURING_MODE_NATURAL)
+        } else if scaled || symmetric_antialiasing(size, self.has_hinting, &self.gasp) {
+            (
                 DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                 DWRITE_MEASURING_MODE_NATURAL,
-            ),
-            (false, false) => (
+            )
+        } else {
+            (
                 DWRITE_RENDERING_MODE_GDI_CLASSIC,
                 DWRITE_MEASURING_MODE_GDI_CLASSIC,
-            ),
+            )
         }
     }
 
@@ -260,7 +330,7 @@ impl DirectWriteFace {
             ..GlyphMetrics::default()
         };
 
-        let (mode, measuring) = Self::rendering_mode(size, scale);
+        let (mode, measuring) = self.rendering_mode(size, scale);
         // Everything DirectWrite does here, including releasing the analysis and the run's face
         // reference, happens under the lock. `None` inside: an empty or over-budget bitmap.
         let rendered = serialized(|| {
@@ -392,17 +462,22 @@ impl DirectWriteFace {
         count
     }
 
-    /// The advance Qt's Windows font engines give a glyph when laying text out
-    /// (`QFontEngine::recalcAdvances`, called back from HarfBuzz for every glyph).
+    /// The advance Qt's DirectWrite engine gives a glyph when laying text out
+    /// (`QWindowsFontEngineDirectWrite::recalcAdvances`, called back from HarfBuzz for every
+    /// glyph), as a 26.6 value: `DESIGN_TO_LOGICAL`, `QFixed::fromReal(design / unitsPerEm *
+    /// pixelSize)`, truncated toward zero. It is not rounded to whole pixels here; Qt rounds the
+    /// advances of an engine without sub-pixel positions once, after HarfBuzz added its kerning
+    /// (`qt_glyph_metrics`).
     ///
-    /// * `direct_write == false`: Qt's GDI engine (`QWindowsFontEngine::recalcAdvances`), whose
-    ///   advances are whole pixels (`GetCharWidthI`). `GetGdiCompatibleGlyphMetrics` reports that
-    ///   grid-fitted advance, in font units.
-    /// * `direct_write == true`: Qt's DirectWrite engine. Default hinting resolves to vertical or no
-    ///   hinting there (`determineHinting`), so `recalcAdvances` takes `GetDesignGlyphMetrics` and
-    ///   converts with `DESIGN_TO_LOGICAL`: `QFixed::fromReal(design / unitsPerEm * pixelSize)`, a
-    ///   26.6 value truncated toward zero. The device pixel ratio does not enter, so 125%, 150% and
-    ///   200% share these advances.
+    /// * `direct_write == true` (a device pixel ratio other than 1): `determineHinting` is not full
+    ///   hinting, so the design advance (`GetDesignGlyphMetrics`) is taken. The device pixel ratio
+    ///   does not enter, so 125%, 150% and 200% share these advances.
+    /// * `direct_write == false` (ratio 1, full hinting): `GetGdiCompatibleGlyphMetrics` at the
+    ///   logical size, with `needsNaturalMetrics` when the rendering mode is a natural one
+    ///   ([`Self::rendering_mode`]: `NATURAL` or `NATURAL_SYMMETRIC`). The classic ones are whole
+    ///   pixel advances stored in font units, which `DESIGN_TO_LOGICAL` then truncates again (Arial
+    ///   Italic's `A` at 9 px: 6 px is 1365 units, 5.984375 px); the natural ones are the design
+    ///   advances.
     pub fn layout_advance_width(
         &self,
         glyph_id: u16,
@@ -422,26 +497,29 @@ impl DirectWriteFace {
                     .GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false)
             })
             .ok()?;
-            let pixels = f64::from(metric.advanceWidth) / f64::from(self.upem) * f64::from(size);
-            return Some(((pixels * 64.0).trunc() / 64.0) as f32);
+        } else {
+            let (mode, _) = self.rendering_mode(size, 1.0);
+            let natural = mode == DWRITE_RENDERING_MODE_NATURAL
+                || mode == DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
+            // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16` and
+            // the glyph count passed is 1, and `&mut metric` is a live local receiving exactly one
+            // `DWRITE_GLYPH_METRICS`; the optional transform is `None` (no pointer is passed).
+            serialized(|| unsafe {
+                self.face.GetGdiCompatibleGlyphMetrics(
+                    size,
+                    1.0,
+                    None,
+                    natural,
+                    &glyph_id,
+                    1,
+                    &mut metric,
+                    false,
+                )
+            })
+            .ok()?;
         }
-        // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16` and
-        // the glyph count passed is 1, and `&mut metric` is a live local receiving exactly one
-        // `DWRITE_GLYPH_METRICS`; the optional transform is `None` (no pointer is passed).
-        serialized(|| unsafe {
-            self.face.GetGdiCompatibleGlyphMetrics(
-                size,
-                1.0,
-                None,
-                false,
-                &glyph_id,
-                1,
-                &mut metric,
-                false,
-            )
-        })
-        .ok()?;
-        Some(((metric.advanceWidth as f32 * size / self.upem) + 0.5).floor())
+        let pixels = f64::from(metric.advanceWidth) / f64::from(self.upem) * f64::from(size);
+        Some(((pixels * 64.0).trunc() / 64.0) as f32)
     }
 }
 
@@ -558,6 +636,73 @@ impl GlyphFace for DirectWriteFace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn maxp(version: u32, size_of_instructions: u16, len: usize) -> Vec<u8> {
+        let mut table = vec![0u8; len];
+        table[..4].copy_from_slice(&version.to_be_bytes());
+        table[26..28].copy_from_slice(&size_of_instructions.to_be_bytes());
+        table
+    }
+
+    fn gasp(ranges: &[(u16, u16)]) -> Vec<u8> {
+        let mut table = vec![0, 1];
+        table.extend_from_slice(&(ranges.len() as u16).to_be_bytes());
+        for (max_ppem, behavior) in ranges {
+            table.extend_from_slice(&max_ppem.to_be_bytes());
+            table.extend_from_slice(&behavior.to_be_bytes());
+        }
+        table
+    }
+
+    /// `QFontEngine::hasHinting` reads `maxSizeOfInstructions` of a version 1.0 `maxp`, assumes
+    /// hinting for another version, and none for a missing or short table.
+    #[test]
+    fn maxp_decides_whether_the_font_has_hinting() {
+        assert!(maxp_has_hinting(Some(&maxp(0x0001_0000, 1, 32))));
+        assert!(!maxp_has_hinting(Some(&maxp(0x0001_0000, 0, 32))));
+        assert!(maxp_has_hinting(Some(&maxp(0x0001_0000, 300, 28))));
+        assert!(maxp_has_hinting(Some(&maxp(0x0002_0000, 0, 28))));
+        assert!(!maxp_has_hinting(Some(&maxp(0x0001_0000, 5, 28)[..27])));
+        assert!(!maxp_has_hinting(Some(&[0, 0, 0x50, 0, 0, 9])));
+        assert!(!maxp_has_hinting(None));
+    }
+
+    /// `useSymmetricAntialiasing` ignores a `gasp` table of 4 bytes or less and one that is shorter
+    /// than its `numRanges`, and reads the records otherwise in file order.
+    #[test]
+    fn gasp_records_are_read_as_qt_reads_them() {
+        let arial = gasp(&[(8, 10), (17, 5), (65535, 15)]);
+        assert_eq!(gasp_ranges(Some(&arial)), [(8, 10), (17, 5), (65535, 15)]);
+        assert_eq!(gasp_ranges(Some(&arial[..arial.len() - 1])), []);
+        assert_eq!(gasp_ranges(Some(&[0, 1, 0, 0])), []);
+        assert_eq!(gasp_ranges(None), []);
+        let mut padded = gasp(&[(9, 2)]);
+        padded.extend_from_slice(&[0xff; 8]);
+        assert_eq!(gasp_ranges(Some(&padded)), [(9, 2)]);
+    }
+
+    /// `size > 16 || !hasHinting()`, then the first `gasp` range with `rangeMaxPPEM >= size`
+    /// replaces it by bit 0x8 of its behaviour (Arial's table: 17 px is not symmetric, though it
+    /// is over 16 px).
+    #[test]
+    fn symmetric_antialiasing_follows_size_hinting_and_gasp() {
+        assert!(!symmetric_antialiasing(16.0, true, &[]));
+        assert!(symmetric_antialiasing(16.5, true, &[]));
+        assert!(symmetric_antialiasing(12.0, false, &[]));
+        let arial = [(8, 10), (17, 5), (65535, 15)];
+        assert!(symmetric_antialiasing(8.0, true, &arial));
+        assert!(!symmetric_antialiasing(9.0, true, &arial));
+        assert!(!symmetric_antialiasing(16.0, true, &arial));
+        assert!(!symmetric_antialiasing(17.0, true, &arial));
+        assert!(symmetric_antialiasing(18.0, true, &arial));
+        assert!(symmetric_antialiasing(40.0, true, &arial));
+        // No range reaches the size: the default stays.
+        assert!(symmetric_antialiasing(30.0, true, &[(20, 0)]));
+        assert!(symmetric_antialiasing(12.0, true, &[(20, 0x8 | 0x2)]));
+        // A fractional size is compared as the float it is.
+        assert!(!symmetric_antialiasing(17.0, true, &[(17, 0)]));
+        assert!(symmetric_antialiasing(17.5, true, &[(17, 0)]));
+    }
 
     /// `right_side_bearing` is what DirectWrite itself reports (`GetDesignGlyphMetrics`, the call
     /// Qt's `QWindowsFontEngineDirectWrite::boundingBox(glyph_t)` makes) converted as Qt's

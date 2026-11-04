@@ -56,6 +56,12 @@ impl OutlineFace {
         self.face.glyph_hor_advance(GlyphId(glyph_id))
     }
 
+    /// The bytes of the sfnt table `tag` (`QFontEngine::getSfntTable`).
+    #[cfg(windows)]
+    pub(crate) fn sfnt_table(&self, tag: &[u8; 4]) -> Option<&[u8]> {
+        self.face.raw_face().table(Tag::from_bytes(tag))
+    }
+
     /// `QFontEngine::initializeHeightMetrics` (qfontengine.cpp:419-448) from the font's own tables,
     /// which Qt 6 uses on every platform instead of the system's values: the `hhea` ascender,
     /// descender and line gap, replaced by the OS/2 typographic ones when `fsSelection` has
