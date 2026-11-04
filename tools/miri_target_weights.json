@@ -347,8 +347,8 @@
       "TB": 2
     },
     "test_ft_golden": {
-      "SB": 190,
-      "TB": 350
+      "SB": 274,
+      "TB": 530
     },
     "test_geometry_system": {
       "SB": 1,
