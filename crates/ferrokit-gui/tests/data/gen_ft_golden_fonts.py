@@ -22,7 +22,7 @@ from fontTools.fontBuilder import FontBuilder
 from fontTools.ttLib import newTable
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.ttLib.tables import ttProgram
-from fontTools.ttLib.tables._g_l_y_f import Glyph, GlyphCoordinates
+from fontTools.ttLib.tables._g_l_y_f import Glyph, GlyphComponent, GlyphCoordinates
 
 UPEM = 1024
 FAMILY = "FerrokitFtGolden"
@@ -296,7 +296,204 @@ def build_otf(path):
     fb.save(path)
 
 
+# ---------------------------------------------------------------------------------------------
+# ft_golden_accents.ttf: Latin letters and accents for FreeType's vertical separation adjustment
+# (afadjust.c). TrueType, no instructions, so FreeType auto-hints it in every mode. The base
+# letters are plain shapes with the blue zones of a Latin font (cap height 700, x height 500,
+# ascender 730, descender -200, overshoot 10); the accented letters are composites of a base and
+# an accent at a gap of 50 to 90 units, so that the gap is under one pixel at the small sizes
+# of the goldens and the adjustment moves the accent.
+
+ACCENTS_FONT = "ft_golden_accents.ttf"
+ACCENTS_FAMILY = "FerrokitFtGoldenAccents"
+XH, CAP, ASC, DESC = 500, 700, 730, -200
+
+
+def area2(contour):
+    return sum(x0 * y1 - x1 * y0 for (x0, y0, _), (x1, y1, _) in zip(contour, contour[1:] + contour[:1]))
+
+
+def on_first(contour):
+    """The contour rotated to start at an on-curve point, the order of the points kept."""
+    start = next(i for i, (_, _, on) in enumerate(contour) if on)
+    return contour[start:] + contour[:start]
+
+
+def cw(contour):
+    """The contour clockwise, as a TrueType outer contour."""
+    return on_first(contour[::-1] if area2(contour) > 0 else contour)
+
+
+def ccw(contour):
+    """The contour counter-clockwise, as a TrueType counter."""
+    return on_first(contour[::-1] if area2(contour) < 0 else contour)
+
+
+def poly(*pts):
+    return cw([(x, y, ON) for x, y in pts])
+
+
+def oval(cx, cy, rx, ry):
+    """Four on-curve extremes and the four off-curve corners of the bounding box."""
+    return [(cx, cy + ry, ON), (cx + rx, cy + ry, OFF), (cx + rx, cy, ON), (cx + rx, cy - ry, OFF),
+            (cx, cy - ry, ON), (cx - rx, cy - ry, OFF), (cx - rx, cy, ON), (cx - rx, cy + ry, OFF)]
+
+
+def ring(cx, cy, rx, ry, inner_rx, inner_ry):
+    return [cw(oval(cx, cy, rx, ry)), ccw(oval(cx, cy, inner_rx, inner_ry))]
+
+
+def stem(x0, y0, x1, y1):
+    return poly((x0, y0), (x0, y1), (x1, y1), (x1, y0))
+
+
+O_RING = ring(300, 350, 260, 360, 150, 250)
+SMALL_O_RING = ring(260, 250, 210, 260, 120, 170)
+
+ACCENTS_BASES = {
+    "H": [poly((80, 0), (80, CAP), (180, CAP), (180, 400), (420, 400), (420, CAP), (520, CAP),
+               (520, 0), (420, 0), (420, 300), (180, 300), (180, 0))],
+    "E": [poly((80, 0), (80, CAP), (480, CAP), (480, 610), (180, 610), (180, 400), (420, 400),
+               (420, 310), (180, 310), (180, 90), (480, 90), (480, 0))],
+    "I": [stem(80, 0, 180, CAP)],
+    "N": [poly((80, 0), (80, CAP), (180, CAP), (420, 250), (420, CAP), (520, CAP), (520, 0),
+               (420, 0), (180, 450), (180, 0))],
+    "A": [poly((0, 0), (250, CAP), (350, CAP), (600, 0), (490, 0), (450, 120), (150, 120), (110, 0)),
+          ccw([(210, 215, ON), (300, 520, ON), (390, 215, ON)])],
+    "Y": [poly((250, 0), (250, 280), (0, CAP), (120, CAP), (300, 420), (480, CAP), (600, CAP),
+               (350, 280), (350, 0))],
+    "U": [cw([(80, CAP, ON), (80, 200, ON), (80, -10, OFF), (300, -10, ON), (520, -10, OFF),
+              (520, 200, ON), (520, CAP, ON), (420, CAP, ON), (420, 200, ON), (420, 80, OFF),
+              (300, 80, ON), (180, 80, OFF), (180, 200, ON), (180, CAP, ON)])],
+    "O": O_RING,
+    "C": O_RING,
+    "a": SMALL_O_RING + [stem(430, 0, 520, XH)],
+    "c": SMALL_O_RING,
+    "e": SMALL_O_RING + [stem(120, 230, 400, 300)],
+    "o": SMALL_O_RING,
+    "dotlessi": [stem(80, 0, 180, XH)],
+    "n": [stem(80, 0, 180, XH), stem(180, 400, 480, XH), stem(380, 0, 480, 400)],
+    "u": [stem(80, 100, 180, XH), stem(380, 0, 480, XH), stem(180, 0, 380, 100)],
+    "y": [poly((0, XH), (110, XH), (250, 170), (390, XH), (500, XH), (220, DESC), (110, DESC),
+               (190, 20))],
+    "x": [poly((0, 0), (150, 0), (500, XH), (350, XH)), poly((350, 0), (500, 0), (150, XH), (0, XH))],
+    "z": [poly((40, 0), (40, 90), (330, 400), (40, 400), (40, XH), (480, XH), (480, 410), (190, 100),
+               (480, 100), (480, 0))],
+    "p": [stem(80, DESC, 170, XH)] + ring(330, 250, 200, 260, 110, 170),
+    "h": [stem(80, 0, 180, ASC), stem(180, 400, 480, XH), stem(380, 0, 480, 400)],
+    "i": [stem(80, 0, 180, XH), stem(80, 590, 180, 690)],
+    "j": [stem(80, DESC, 180, XH), stem(80, 590, 180, 690)],
+    "Oslash": O_RING + [poly((40, -60), (140, -60), (560, 760), (460, 760))],
+    "oslash": SMALL_O_RING + [poly((30, -40), (130, -40), (490, 540), (390, 540))],
+    "exclam": [stem(80, 200, 180, CAP), stem(80, 0, 180, 100)],
+    "question": ring(250, 500, 190, 200, 110, 120) + [stem(130, 0, 230, 200)],
+    "exclamdown": [stem(80, DESC, 180, 400), stem(80, 500, 180, 600)],
+    "brokenbar": [stem(80, -100, 180, 300), stem(80, 400, 180, 800)],
+    "ordfeminine": ring(150, 600, 120, 140, 70, 90) + [stem(20, 380, 280, 440)],
+    "ordmasculine": ring(150, 600, 120, 140, 70, 90) + [stem(20, 380, 280, 440)],
+}
+
+# Accents, each drawn with its origin at the lower left of its box. The tilde has two inner round
+# wiggles (an on-curve point between two off-curve points of the same y), the case that FreeType
+# measures to stretch a tilde at small sizes.
+ACCENTS_MARKS = {
+    "acute": [poly((130, 0), (250, 150), (340, 150), (230, 0))],
+    "grave": [poly((60, 150), (150, 150), (250, 0), (160, 0))],
+    "dieresis": [stem(40, 0, 140, 100), stem(260, 0, 360, 100)],
+    "circumflex": [poly((30, 0), (130, 0), (200, 60), (270, 0), (370, 0), (250, 150), (150, 150))],
+    "ring": [cw(oval(150, 75, 90, 90)), ccw(oval(150, 75, 40, 40))],
+    "tilde": [cw([(0, 0, ON), (60, 150, OFF), (110, 150, ON), (150, 150, OFF), (190, 100, ON),
+                  (230, 50, OFF), (270, 50, ON), (310, 50, OFF), (360, 160, ON), (360, 100, ON),
+                  (310, -10, OFF), (270, -10, ON), (230, -10, OFF), (190, 40, ON), (150, 90, OFF),
+                  (110, 90, ON), (60, 90, OFF), (0, -60, ON)])],
+    "cedilla": [poly((140, 10), (140, -40), (250, -40), (250, -90), (110, -90), (110, -150),
+                     (320, -150), (320, 10))],
+}
+
+# character -> (base, [(accent, gap, top of the base)]): the accent sits `gap` units above the top
+# of the base (the cedilla hangs from the baseline) and is centred on the 600 unit advance.
+ACCENT_GAPS = {"acute": 60, "grave": 60, "circumflex": 50, "dieresis": 80, "tilde": 90, "ring": 50}
+ACCENTED = {}
+for _caps, _small, _marks in [
+    ("ÀÁÂÃÄÅ", "àáâãäå", ["grave", "acute", "circumflex", "tilde", "dieresis", "ring"]),
+    ("ÈÉÊË", "èéêë", ["grave", "acute", "circumflex", "dieresis"]),
+    ("ÌÍÎÏ", "ìíîï", ["grave", "acute", "circumflex", "dieresis"]),
+    ("ÒÓÔÕÖ", "òóôõö", ["grave", "acute", "circumflex", "tilde", "dieresis"]),
+    ("ÙÚÛÜ", "ùúûü", ["grave", "acute", "circumflex", "dieresis"]),
+]:
+    _base = {"À": "A", "È": "E", "Ì": "I", "Ò": "O", "Ù": "U"}[_caps[0]]
+    _small_base = {"à": "a", "è": "e", "ì": "dotlessi", "ò": "o", "ù": "u"}[_small[0]]
+    for _c, _s, _m in zip(_caps, _small, _marks):
+        ACCENTED[_c] = (_base, [(_m, ACCENT_GAPS[_m], CAP)])
+        ACCENTED[_s] = (_small_base, [(_m, ACCENT_GAPS[_m], XH)])
+ACCENTED.update({
+    "Ç": ("C", [("cedilla", 0, 0)]),
+    "ç": ("c", [("cedilla", 0, 0)]),
+    "Ñ": ("N", [("tilde", ACCENT_GAPS["tilde"], CAP)]),
+    "ñ": ("n", [("tilde", ACCENT_GAPS["tilde"], XH)]),
+    "Ý": ("Y", [("acute", ACCENT_GAPS["acute"], CAP)]),
+    "ý": ("y", [("acute", ACCENT_GAPS["acute"], XH)]),
+    "ÿ": ("y", [("dieresis", ACCENT_GAPS["dieresis"], XH)]),
+})
+ACCENTS_SPECIAL = {"Ø": "Oslash", "ø": "oslash", "!": "exclam", "?": "question", "¡": "exclamdown",
+                   "¦": "brokenbar", "ª": "ordfeminine", "º": "ordmasculine", "ı": "dotlessi"}
+ACCENTS_PLAIN = "HEINAYUOCaceonuyxzphij"
+
+
+def tt_composite(parts):
+    """A composite glyph from (glyph name, dx, dy) parts."""
+    glyph = Glyph()
+    glyph.numberOfContours = -1
+    glyph.components = []
+    for name, dx, dy in parts:
+        part = GlyphComponent()
+        part.glyphName, part.x, part.y, part.flags = name, dx, dy, 0
+        glyph.components.append(part)
+    glyph.program = ttProgram.Program()
+    glyph.program.fromBytecode(b"")
+    return glyph
+
+
+def build_accents_ttf(path):
+    names = [".notdef", "space"] + list(ACCENTS_BASES) + list(ACCENTS_MARKS)
+    cmap = {32: "space"}
+    glyphs = {".notdef": tt_glyph([rect(50, 0, 550, 700)]), "space": tt_glyph([])}
+    for name, contours in {**ACCENTS_BASES, **ACCENTS_MARKS}.items():
+        glyphs[name] = tt_glyph(contours)
+    for ch in ACCENTS_PLAIN:
+        cmap[ord(ch)] = ch
+    for ch, name in ACCENTS_SPECIAL.items():
+        cmap[ord(ch)] = name
+    for ch, (base, marks) in ACCENTED.items():
+        name = "uni%04X" % ord(ch)
+        parts = [(base, 0, 0)]
+        for mark, gap, top in marks:
+            parts.append((mark, 120, top + gap))
+        glyphs[name] = tt_composite(parts)
+        names.append(name)
+        cmap[ord(ch)] = name
+    names = list(dict.fromkeys(names))
+    advances = {n: 600 for n in names}
+    advances["space"] = 300
+    fb = FontBuilder(UPEM, isTTF=True)
+    fb.setupGlyphOrder(names)
+    fb.setupCharacterMap(cmap)
+    fb.setupHorizontalMetrics({n: (advances[n], 0) for n in names})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({"familyName": ACCENTS_FAMILY, "styleName": "Regular",
+                       "copyright": "Original work of the ferrokit contributors, LGPL-3.0-only"})
+    fb.setupOS2(sTypoAscender=800, sTypoDescender=-200, usWinAscent=800, usWinDescent=200,
+                sxHeight=XH, sCapHeight=CAP)
+    fb.setupPost()
+    fb.setupGlyf({n: glyphs[n] for n in names})
+    fb.font["maxp"].recalc(fb.font)
+    fb.font.recalcBBoxes = False
+    fb.save(path)
+
+
 if __name__ == "__main__":
-    build_ttf(os.path.join(HERE, "ft_golden.ttf"))
-    if "--no-otf" not in sys.argv:
-        build_otf(os.path.join(HERE, "ft_golden.otf"))
+    if "--only-accents" not in sys.argv:
+        build_ttf(os.path.join(HERE, "ft_golden.ttf"))
+        if "--no-otf" not in sys.argv:
+            build_otf(os.path.join(HERE, "ft_golden.otf"))
+    build_accents_ttf(os.path.join(HERE, ACCENTS_FONT))

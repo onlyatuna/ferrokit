@@ -103,12 +103,19 @@ table above and in `[package.metadata.ferrokit-licenses]`. A user who takes only
    `cff_stem_darkening` field in option literals). The `scaler` module's own `prefer_interpreter`
    (`scaler/truetype.rs`) follows change 2.
 
-## Not implemented here (a known difference)
+## Vertical separation adjustment (FreeType 2.14.0, `afadjust.c`)
 
-FreeType 2.14.0 added a vertical separation adjustment to its auto-hinter (`afadjust.c`, commit
-`7099b09e9`, "[autofit] Implement vertical separation adjustment"). skrifa's auto-hinter has no such
-code, and neither does this copy. It affects Light-hinted TrueType glyphs with accents and the
-dots of `i` and `j`; see the module documentation of `skrifa_face.rs`.
+Ported in `src/outline/autohint/adjust/` (`database.rs` is `adjustment_database` in FreeType's table
+order, which is not sorted: `Q` is never found, as in FreeType) with the tilde pre-pass, the
+ignore-top/bottom edge flags (`NO_BLUE`, segment points marked `IGNORE`), the accent height limit and
+the separation itself of `aflatin.c`. Also ported from 2.14: the real-serif check in
+`hint/edges.rs` (`aflatin.c:4657-4722`), which the Liberation Sans C-cedilla and c-cedilla needed.
+The bottom blue zone properties of `afblue.dat` are set by hand in `generated/generated_autohint_styles.rs`
+(23 entries; the generator `skrifa/scripts/gen_autohint_styles.py` of fontations predates them and is not
+vendored; every blue string and property of the table was checked against FreeType 2.14.2's `afblue.dat`).
+The reference FreeType (Ubuntu 2.14.2) loads HarfBuzz at run time; known difference: blue zones that
+HarfBuzz computes for Indic clusters (dotted circle inserted) are not reproduced (U+20B9 of Segoe UI),
+and FreeType's GSUB extension of the reverse character map (single/alternate substitutions) is not ported.
 
 To update: copy the new crates.io release, redo change 1 (about 30 lines), change 2 and change 3 (the
 new file `darken.rs` and the hooks listed there), then run the FreeType comparison tests of

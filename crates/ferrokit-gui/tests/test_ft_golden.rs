@@ -26,8 +26,13 @@ use std::collections::HashMap;
 const FT_GOLDEN: &str = include_str!("data/ft_golden.txt");
 const QT_GOLDEN: &str = include_str!("data/qt_golden.txt");
 
+/// The font of the vertical separation adjustment: letters with accents, TrueType without
+/// instructions, so FreeType auto-hints it in every mode (`gen_ft_golden_fonts.py`).
+const ACCENTS_FONT: &str = "ft_golden_accents.ttf";
+
 fn font_bytes(name: &str) -> &'static [u8] {
     match name {
+        ACCENTS_FONT => include_bytes!("data/ft_golden_accents.ttf"),
         "ft_golden.ttf" => include_bytes!("data/ft_golden.ttf"),
         "ft_golden.otf" => include_bytes!("data/ft_golden.otf"),
         "oracle_text.ttf" => include_bytes!("data/oracle_text.ttf"),
@@ -227,8 +232,8 @@ fn glyph_ranks<'a>(text: &'a str, prefix: &str) -> HashMap<(&'a str, char), usiz
 const MIRI_SIZES: [u32; 2] = [9, 37];
 
 /// Records in the Miri sample (see [`miri_keeps`]): 25 glyphs, 3 glyphs with a TrueType program
-/// again in `Normal` mode, 8 sub-pixel translations.
-const MIRI_SAMPLE: usize = 36;
+/// again in `Normal` mode, 8 sub-pixel translations, and 4 glyphs of the accents font.
+const MIRI_SAMPLE: usize = 40;
 
 /// Whether the Miri sample (an interpreter ran the whole file for 22 minutes) holds the record
 /// of glyph rank `rank` of `font` with these parameters. It still runs every code path the full
@@ -248,6 +253,11 @@ const MIRI_SAMPLE: usize = 36;
 ///
 /// The count is asserted, so a change of the goldens or of this rule shows up.
 fn miri_keeps(font: &str, ch: char, rank: usize, size: u32, mode: u8, delta: i32) -> bool {
+    // The accents font: the dot of i, a tilde (stretched), a cedilla (ignored bottom zone) and an
+    // acute (raised), auto-hinted in light mode at the small size.
+    if font == ACCENTS_FONT {
+        return size == MIRI_SIZES[0] && mode == 1 && matches!(ch, 'i' | 'Ñ' | 'Ç' | 'é');
+    }
     let program = matches!(ch, 'x' | 'p' | 'k') && font == "ft_golden.ttf";
     let wanted = if font == "oracle_text.ttf" {
         MIRI_SIZES[0]
@@ -413,8 +423,13 @@ fn qt_glyphs() -> Vec<QtGlyph> {
             let ch = char::from_u32(u32::from_str_radix(f[2], 16).unwrap()).unwrap();
             let rank = ranks[&(f[1], ch)];
             !cfg!(miri)
-                || f[3].parse::<u32>().unwrap() == [9, 24][rank % 2]
-                    && f[4].starts_with(['d', 'n', 'f'][rank % 3])
+                || if f[1] == ACCENTS_FONT {
+                    // light preference at 9 px: the dot of i, the tilde of N, the cedilla, the slash
+                    f[3] == "9" && f[4] == "d" && matches!(ch, 'i' | 'Ñ' | 'Ç' | 'ø')
+                } else {
+                    f[3].parse::<u32>().unwrap() == [9, 24][rank % 2]
+                        && f[4].starts_with(['d', 'n', 'f'][rank % 3])
+                }
         })
         .map(|line| {
             let f: Vec<&str> = line.split(' ').collect();
@@ -473,8 +488,13 @@ fn glyph_face_equals_qts_alpha_maps() {
         checked += 1;
     }
     // Every glyph of the two fonts (`gen_ft_golden.py`: 12 and 7 characters, space included) at
-    // each of 4 sizes and 3 hint preferences, or, under Miri, each glyph once: 19 records.
-    let expected = if cfg!(miri) { 19 } else { 19 * 4 * 3 };
+    // each of 4 sizes and 3 hint preferences, or, under Miri, each glyph once: 19 records; the
+    // accents font adds 16 glyphs at 3 sizes in 2 preferences, or 4 records under Miri.
+    let expected = if cfg!(miri) {
+        19 + 4
+    } else {
+        19 * 4 * 3 + 16 * 3 * 2
+    };
     assert_eq!(checked, expected, "glyph records checked");
 }
 
