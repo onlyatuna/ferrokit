@@ -218,7 +218,14 @@ impl<'a> Shaper<'a> {
                 gsub.script_list()
                     .ok()
                     .and_then(|list| list.select(&ScriptTags::from_unicode(style.script.tag)))
-                    .is_some_and(|selected| !selected.is_fallback)
+                    .is_some_and(|selected| {
+                        // HarfBuzz shapes Myanmar with its Myanmar shaper only for the new
+                        // script tag 'mym2'; 'mymr' selects the Zawgyi shaper, which inserts
+                        // no dotted circle.
+                        !selected.is_fallback
+                            && (style.script.tag != Tag::new(b"Mymr")
+                                || selected.tag == Tag::new(b"mym2"))
+                    })
             });
         ClusterShaper {
             shaper: self,
@@ -353,6 +360,13 @@ impl ClusterShaper<'_> {
         // to glyph id mapping
         output.clear();
         for ch in input.chars() {
+            // HarfBuzz replaces the default ignorable characters (zero width joiners, variation
+            // selectors, ...) with an invisible glyph after substitution (hb_ot_hide_default_
+            // ignorables), so they add no outline to a blue string cluster; the nominal glyph of
+            // the font (Segoe UI draws a visible U+200D) must not be measured.
+            if self.shaper.mode != ShaperMode::Nominal && is_default_ignorable(ch) {
+                continue;
+            }
             output.push(ShapedGlyph {
                 id: self.shaper.context.map(ch as u32).unwrap_or_default(),
                 y_offset: 0,
@@ -1438,4 +1452,28 @@ const DEPENDENT_MARKS: &[u32] = &[
 fn is_lone_dependent_mark(input: &str) -> bool {
     let mut chars = input.chars();
     matches!((chars.next(), chars.next()), (Some(ch), None) if DEPENDENT_MARKS.contains(&(ch as u32)))
+}
+
+/// `Default_Ignorable_Code_Point` of the Unicode Character Database.
+fn is_default_ignorable(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x00AD
+            | 0x034F
+            | 0x061C
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFF8
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
 }
