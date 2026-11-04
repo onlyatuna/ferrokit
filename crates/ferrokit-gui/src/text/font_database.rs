@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData, StyleHint};
-use crate::text::glyph_face::{LineMetrics, SharedGlyphFace, parse_face_with_hint_style};
+use crate::text::glyph_face::{
+    LineMetrics, SharedGlyphFace, parse_face_for_request, parse_face_with_hint_style,
+};
 use crate::text::glyph_layout::FontEngine;
 
 use rustybuzz::ttf_parser::name::Table as NameTable;
@@ -120,18 +122,38 @@ pub struct FontFamilyInfo {
 /// In-memory faces [`FontDatabase`] keeps alive strongly after their last use.
 const RECENT_MEMORY_FACES: usize = 4;
 
-/// `memory_faces` entry: data address, length and hint style, and the face built from them.
+/// Identity of a face built from in-memory font data: the data address and length, the hint style,
+/// and what the request asks for that DirectWrite would synthesize (see [`memory_face_key`]).
+type MemoryFaceKey = (usize, usize, HintStyle, bool, bool);
+
+/// `memory_faces` entry: the key of a face and the face.
 type MemoryFaceEntry = (
-    (usize, usize, HintStyle),
+    MemoryFaceKey,
     std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
 );
 
-/// The `memory_faces` key of the face of `shared` for `hint_style`.
-fn memory_face_key(shared: &SharedFontData, hint_style: HintStyle) -> (usize, usize, HintStyle) {
+/// The `memory_faces` key of the face of `shared` for `hint_style` and a request of `weight` that
+/// is `italic` or not. On Windows the face differs by whether the request is at least `DemiBold`
+/// and whether it is italic, the two things Qt's DirectWrite font database synthesizes (see
+/// [`parse_face_for_request`]); the other backends build one face whatever the request, so they
+/// share it.
+fn memory_face_key(
+    shared: &SharedFontData,
+    hint_style: HintStyle,
+    weight: u16,
+    italic: bool,
+) -> MemoryFaceKey {
+    let (bold, italic) = if cfg!(windows) {
+        (weight >= crate::text::glyph_face::DEMI_BOLD, italic)
+    } else {
+        (false, false)
+    };
     (
         shared.as_slice().as_ptr() as usize,
         shared.len(),
         hint_style,
+        bold,
+        italic,
     )
 }
 
@@ -929,7 +951,7 @@ impl FontDatabase {
         // Faces of this font for other hint styles are built from the same data (see
         // `load_font_styled`); this one is found there too.
         self.memory_faces.push((
-            memory_face_key(&shared, hint_style),
+            memory_face_key(&shared, hint_style, 400, false),
             Arc::downgrade(&font_arc),
         ));
         let key = family.to_ascii_lowercase();
@@ -1037,7 +1059,9 @@ impl FontDatabase {
     }
 
     /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
-    /// A family without a face for that style yields its nearest one (e.g. regular for bold).
+    /// A family without a face for that style yields its nearest one (e.g. regular for bold); on
+    /// Windows that face is then created with DirectWrite's bold or oblique simulation, as Qt
+    /// does ([`parse_face_for_request`]).
     pub fn load_font_styled(
         &mut self,
         family: &str,
@@ -1073,12 +1097,13 @@ impl FontDatabase {
         }
 
         // An in-memory (application) font has a single face: use it for any style, built for the
-        // hint style asked for.
+        // hint style asked for (and, on Windows, with DirectWrite's simulations for a weight or
+        // slant it lacks, as Qt does for an application font).
         if let Some(face) = self.cache.get(&key).cloned() {
             let raw = self.raw_cache.get(&key).cloned();
             let face = raw
                 .as_ref()
-                .and_then(|raw| self.memory_face(raw, style.hint_style))
+                .and_then(|raw| self.memory_face(raw, style.hint_style, style.weight, style.italic))
                 .unwrap_or(face);
             self.cache.insert(style_key.clone(), Arc::clone(&face));
             if let Some(raw) = raw {
@@ -1235,7 +1260,8 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data
-            && let Some(face) = self.memory_face(shared, face_hint_style(font.hinting_preference))
+            && let Some(face) =
+                self.memory_face(shared, face_hint_style(font.hinting_preference), 400, false)
         {
             engines.push(
                 FontEngine::new(face)
@@ -1256,15 +1282,18 @@ impl FontDatabase {
         engines
     }
 
-    /// The face built from in-memory font data for `hint_style`, parsed once per buffer and hint
-    /// style and remembered (see `memory_faces`); `None` when the data does not parse.
+    /// The face built from in-memory font data for `hint_style` and a request of `weight` that is
+    /// `italic` or not, parsed once per buffer and request and remembered (see `memory_faces`);
+    /// `None` when the data does not parse.
     fn memory_face(
         &mut self,
         shared: &SharedFontData,
         hint_style: HintStyle,
+        weight: u16,
+        italic: bool,
     ) -> Option<SharedGlyphFace> {
         self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
-        let key = memory_face_key(shared, hint_style);
+        let key = memory_face_key(shared, hint_style, weight, italic);
         let cached = self
             .memory_faces
             .iter()
@@ -1272,7 +1301,7 @@ impl FontDatabase {
             .and_then(|(_, f)| f.upgrade());
         let face = match cached {
             Some(face) => Some(face),
-            None => parse_face_with_hint_style(shared, 0, hint_style)
+            None => parse_face_for_request(shared, 0, hint_style, weight, italic)
                 .ok()
                 .inspect(|face| {
                     // Each parse re-registers the font with the platform rasterizer, so remember it.
@@ -1290,7 +1319,8 @@ impl FontDatabase {
     /// The face of the font `font` itself asks for: its in-memory data, else the family it names.
     fn primary_face(&mut self, font: &Font) -> Option<SharedGlyphFace> {
         if let Some(shared) = &font.font_data
-            && let Some(face) = self.memory_face(shared, face_hint_style(font.hinting_preference))
+            && let Some(face) =
+                self.memory_face(shared, face_hint_style(font.hinting_preference), 400, false)
         {
             return Some(face);
         }
@@ -1394,7 +1424,8 @@ impl FontDatabase {
                     return true;
                 }
                 let raw_data = self.get_raw_font_data_styled(fam, style, hint);
-                let mut engine = FontEngine::new(font_face).with_face_index(0);
+                let face_index = font_face.face_index();
+                let mut engine = FontEngine::new(font_face).with_face_index(face_index);
                 if let Some(raw) = raw_data {
                     engine = engine.with_raw_data(raw);
                 }
@@ -1529,7 +1560,13 @@ impl FontDatabase {
                         .canonicalize()
                         .unwrap_or_else(|_| file_path.clone());
                     if let Some(shared) = self.file_cache.get(&canonical)
-                        && let Ok(face) = parse_face_with_hint_style(shared, 0, style.hint_style)
+                        && let Ok(face) = parse_face_for_request(
+                            shared,
+                            0,
+                            style.hint_style,
+                            style.weight,
+                            style.italic,
+                        )
                     {
                         return Some((shared.clone(), face));
                     }
@@ -1544,7 +1581,13 @@ impl FontDatabase {
                                 shared.len() / 1024
                             )
                         });
-                        if let Ok(face) = parse_face_with_hint_style(&shared, 0, style.hint_style) {
+                        if let Ok(face) = parse_face_for_request(
+                            &shared,
+                            0,
+                            style.hint_style,
+                            style.weight,
+                            style.italic,
+                        ) {
                             self.file_cache.insert(canonical, shared.clone());
                             return Some((shared, face));
                         }
@@ -1577,7 +1620,14 @@ impl FontDatabase {
             .unwrap_or_else(|_| face_path.clone());
 
         if let Some(shared) = self.file_cache.get(&canonical) {
-            let face = parse_face_with_hint_style(shared, face_index, style.hint_style).ok()?;
+            let face = parse_face_for_request(
+                shared,
+                face_index,
+                style.hint_style,
+                style.weight,
+                style.italic,
+            )
+            .ok()?;
             return Some((shared.clone(), face));
         }
 
@@ -1585,7 +1635,14 @@ impl FontDatabase {
             format!("map+parse (family index) {}", canonical.display())
         });
         let shared = SharedFontData::from_file(&canonical).ok()?;
-        let face = parse_face_with_hint_style(&shared, face_index, style.hint_style).ok()?;
+        let face = parse_face_for_request(
+            &shared,
+            face_index,
+            style.hint_style,
+            style.weight,
+            style.italic,
+        )
+        .ok()?;
         self.file_cache.insert(canonical, shared.clone());
         Some((shared, face))
     }
@@ -2057,5 +2114,51 @@ mod tests {
         );
         assert_eq!(family_for_style_hint(StyleHint::OldEnglish), None);
         assert_eq!(family_for_style_hint(StyleHint::Decorative), None);
+    }
+
+    /// A face built from memory is shared between requests unless the backend would build a
+    /// different one: on Windows DirectWrite synthesizes bold from `DemiBold` up and oblique for
+    /// an italic request, so those split the cache; elsewhere every request shares one face.
+    #[test]
+    fn memory_face_keys_split_only_on_what_the_backend_synthesizes() {
+        let data = SharedFontData::from_vec(vec![0u8; 16]);
+        let hint = HintStyle::HintFull;
+        let key = |weight, italic| memory_face_key(&data, hint, weight, italic);
+        assert_eq!(key(400, false), key(500, false));
+        assert_eq!(key(300, false), key(400, false));
+        assert_eq!(key(600, false) == key(400, false), !cfg!(windows));
+        assert_eq!(key(600, false), key(900, false));
+        assert_eq!(key(400, true) == key(400, false), !cfg!(windows));
+        assert_eq!(key(400, true), key(500, true));
+        assert_eq!(key(700, true) == key(700, false), !cfg!(windows));
+        // The hint style always splits, and so does another buffer.
+        assert_ne!(
+            key(400, false),
+            memory_face_key(&data, HintStyle::HintNone, 400, false)
+        );
+        let other = SharedFontData::from_vec(vec![0u8; 16]);
+        assert_ne!(key(400, false), memory_face_key(&other, hint, 400, false));
+    }
+
+    /// The shaper must open a collection file with the face index of the glyph face, or its glyph
+    /// ids are those of another member (MS PGothic is the third face of `msgothic.ttc`, whose
+    /// glyph ids differ from the first face's).
+    #[cfg(windows)]
+    #[test]
+    fn engines_of_collection_members_shape_with_their_own_face() {
+        let mut db = FontDatabase::new();
+        for (family, index) in [("MS Gothic", 0), ("MS UI Gothic", 1), ("MS PGothic", 2)] {
+            let engines = db.resolve_font_engines(&Font::new(family, 16.0));
+            let engine = &engines[0];
+            assert_eq!(engine.face_index, index, "{family}");
+            let shaping = engine.shaping_face(16).expect("shaping face");
+            for ch in ['i', 'A', 'あ', '日'] {
+                assert_eq!(
+                    shaping.face().glyph_index(ch).unwrap_or_default().0,
+                    engine.face.glyph_index(ch),
+                    "{family}: {ch:?}"
+                );
+            }
+        }
     }
 }

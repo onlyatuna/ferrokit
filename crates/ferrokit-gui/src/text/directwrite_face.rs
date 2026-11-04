@@ -21,21 +21,32 @@
 //! * at a device pixel ratio other than 1 (`supportsHorizontalSubPixelPositions`) the glyph is
 //!   drawn at the sub-pixel offset of its pen through `DWRITE_MATRIX.dx` (bucket count from
 //!   twelve probe offsets, `QTextureGlyphCache::calculateSubPixelPositionCount`), and the painter
-//!   blits it at the floor of the pen position (`QRasterPaintEngine::drawCachedGlyphs`).
+//!   blits it at the floor of the pen position (`QRasterPaintEngine::drawCachedGlyphs`);
+//! * the face itself (`QWindowsDirectWriteFontDatabase::fontEngine`): a request for a weight from
+//!   `DemiBold` up that the face does not have gets `DWRITE_FONT_SIMULATIONS_BOLD`, a request for
+//!   an italic or oblique style that the face does not have gets `DWRITE_FONT_SIMULATIONS_OBLIQUE`
+//!   ([`DirectWriteFace::for_request`]); the bitmaps, advances, bearings and average width of
+//!   such a face are DirectWrite's. The member of a font collection is opened by its real index,
+//!   which [`GlyphFace::face_index`] hands to the shaper.
 //!
 //! Measured against Qt 6.12 (PySide6): single glyphs are bit-identical (A8 and LCD) at every
-//! ratio and size tried for the fonts that need no synthesized weight or slant, and so are the
-//! advances of Latin text. Not modelled yet, as listed in the Windows text series: synthesized
-//! weight and slant, font collections' face index, the per-script `kern` check, the metrics of
-//! fonts with embedded bitmaps. The goldens in `tests/test_directwrite_placement.rs` and
-//! `tests/test_directwrite_modes.rs` pin whole strings and glyphs measured from Qt.
+//! ratio and size tried, simulated faces and collection members included, and so are the advances
+//! of text. Not modelled yet, as listed in the Windows text series: the per-script `kern` check,
+//! the metrics of fonts with embedded bitmaps, the outlines of `QPainterPath::addText` (Qt takes
+//! them from DirectWrite, simulated faces included, as cubic curves; [`OutlineFace`]'s are quadratic
+//! and unsimulated). The goldens in `tests/test_directwrite_placement.rs`,
+//! `tests/test_directwrite_modes.rs` and `tests/test_directwrite_faces.rs` pin whole strings and
+//! glyphs measured from Qt.
 //!
 //! The font stays plain bytes in our memory (`SharedFontData`, handed to DirectWrite through an
-//! in-memory font file loader); character mapping and advances come from [`OutlineFace`], which
-//! reads them straight from the file. Only the coverage bitmap comes from DirectWrite.
+//! in-memory font file loader); the character mapping and the line metrics come from
+//! [`OutlineFace`], which reads them straight from the file. The coverage bitmaps and the advances
+//! come from DirectWrite.
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics, subpixel_bucket_offset};
+use crate::text::glyph_face::{
+    DEMI_BOLD, GlyphFace, GlyphMetrics, LineMetrics, subpixel_bucket_offset,
+};
 use crate::text::outline_face::OutlineFace;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -133,6 +144,11 @@ pub struct DirectWriteFace {
     face: ManuallyDrop<IDWriteFontFace>,
     base: OutlineFace,
     upem: f32,
+    /// The face's index within its font file (a collection's member).
+    face_index: u32,
+    /// What the face was created with ([`requested_simulations`]): `NONE` unless the request asked
+    /// for a weight or slant the face does not have.
+    simulations: DWRITE_FONT_SIMULATIONS,
     /// `QFontEngine::hasHinting`: the `maxp` table says the font has instructions.
     has_hinting: bool,
     /// The `(rangeMaxPPEM, rangeGaspBehavior)` records of the `gasp` table, in file order.
@@ -212,22 +228,59 @@ fn symmetric_antialiasing(size: f32, has_hinting: bool, gasp: &[(u16, u16)]) -> 
     symmetric
 }
 
+/// The simulations `QWindowsDirectWriteFontDatabase::fontEngine` (qwindowsdirectwritefontdatabase.cpp)
+/// asks DirectWrite for: bold when the request is at least `DemiBold` and the face is lighter, and
+/// oblique when the request is not upright and the face is (`DWRITE_FONT_STYLE_NORMAL`). `face_weight`
+/// and `face_style` are `IDWriteFontFace3::GetWeight` and `GetStyle` of the face the family match
+/// chose, `weight` and `italic` the request (`QFontDef::weight`, `style != StyleNormal`).
+fn requested_simulations(
+    weight: u16,
+    italic: bool,
+    face_weight: DWRITE_FONT_WEIGHT,
+    face_style: DWRITE_FONT_STYLE,
+) -> DWRITE_FONT_SIMULATIONS {
+    let mut simulations = DWRITE_FONT_SIMULATIONS_NONE.0;
+    if weight >= DEMI_BOLD && face_weight.0 < i32::from(DEMI_BOLD) {
+        simulations |= DWRITE_FONT_SIMULATIONS_BOLD.0;
+    }
+    if italic && face_style == DWRITE_FONT_STYLE_NORMAL {
+        simulations |= DWRITE_FONT_SIMULATIONS_OBLIQUE.0;
+    }
+    DWRITE_FONT_SIMULATIONS(simulations)
+}
+
 impl DirectWriteFace {
-    /// Opens face `face_index` of the font file `data` with DirectWrite.
+    /// Opens face `face_index` of the font file `data` with DirectWrite, for a regular upright
+    /// request (no simulations).
     pub fn new(data: SharedFontData, face_index: u32) -> Result<Self, String> {
+        Self::for_request(data, face_index, 400, false)
+    }
+
+    /// Opens face `face_index` of the font file `data` for a request of `weight` (1..=1000, Qt's
+    /// scale) that is `italic` or not. As Qt's DirectWrite font database does, the face gets
+    /// `DWRITE_FONT_SIMULATIONS_BOLD` when the request is at least `DemiBold` and the face is
+    /// lighter, and `DWRITE_FONT_SIMULATIONS_OBLIQUE` when the request is italic or oblique and the
+    /// face is upright ([`requested_simulations`]): the face then draws and measures the emboldened
+    /// or slanted glyphs, as the font Qt creates for the same request does.
+    pub fn for_request(
+        data: SharedFontData,
+        face_index: u32,
+        weight: u16,
+        italic: bool,
+    ) -> Result<Self, String> {
         let base = OutlineFace::new(data.clone(), face_index)?;
         // Before the lock: `FACTORY`'s first use creates it.
         let factory = FACTORY.as_ref().ok_or("DirectWrite is unavailable")?;
-        let (face, upem) = serialized(|| {
+        let (face, upem, simulations) = serialized(|| {
             // SAFETY: the in-memory font file reference stores the raw pointer without owning the
             // bytes (no owner object is passed), so the bytes must outlive the file and the face
             // created from it. They do: `data.as_slice()` is kept alive by `base`, which holds a
             // clone of the `SharedFontData` and is dropped after `face` (`DirectWriteFace`'s
-            // `Drop`), and the file reference itself is moved into `CreateFontFace`. `data.len()`
-            // is the length of that same slice; `supported`, `file_type`, `face_type` and `faces`
-            // are live locals used as out-pointers, and `face_index < faces` is checked before
-            // `CreateFontFace`.
-            let face = unsafe {
+            // `Drop`), and the file reference itself is cloned into the `CreateFontFace` calls.
+            // `data.len()` is the length of that same slice; `supported`, `file_type`, `face_type`
+            // and `faces` are live locals used as out-pointers, and `face_index < faces` is
+            // checked before `CreateFontFace`.
+            let (mut face, file, face_type) = unsafe {
                 let file = factory
                     .loader
                     .CreateInMemoryFontFileReference(
@@ -252,21 +305,46 @@ impl DirectWriteFace {
                 if !supported.as_bool() || face_index >= faces {
                     return Err("DirectWrite does not support this font".to_string());
                 }
-                factory
+                let face = factory
                     .base
                     .CreateFontFace(
                         face_type,
-                        &[Some(file)],
+                        &[Some(file.clone())],
                         face_index,
                         DWRITE_FONT_SIMULATIONS_NONE,
                     )
-                    .map_err(|e| format!("CreateFontFace: {e}"))?
+                    .map_err(|e| format!("CreateFontFace: {e}"))?;
+                (face, file, face_type)
             };
+            let mut simulations = DWRITE_FONT_SIMULATIONS_NONE;
+            if weight >= DEMI_BOLD || italic {
+                // The face's own weight and style decide (`IDWriteFontFace3`, Windows 10). Without
+                // it Qt requests no simulation either.
+                if let Ok(face3) = face.cast::<IDWriteFontFace3>() {
+                    // SAFETY: `face3` is a live interface of the face created above; both calls
+                    // take no arguments.
+                    let (face_weight, face_style) =
+                        unsafe { (face3.GetWeight(), face3.GetStyle()) };
+                    simulations = requested_simulations(weight, italic, face_weight, face_style);
+                }
+                if simulations != DWRITE_FONT_SIMULATIONS_NONE {
+                    // SAFETY: as for the first `CreateFontFace`: `file` is the live reference
+                    // whose bytes `base` keeps alive, and `face_index` was checked against its
+                    // face count. The face without simulations is released when `face` is
+                    // replaced, under the lock held by this closure.
+                    face = unsafe {
+                        factory
+                            .base
+                            .CreateFontFace(face_type, &[Some(file)], face_index, simulations)
+                            .map_err(|e| format!("CreateFontFace (simulated): {e}"))?
+                    };
+                }
+            }
             let mut fm = DWRITE_FONT_METRICS::default();
             // SAFETY: `face` was just created and is live; `&mut fm` is a live local that receives
             // one `DWRITE_FONT_METRICS`.
             unsafe { face.GetMetrics(&mut fm) };
-            Ok((face, fm.designUnitsPerEm as f32))
+            Ok((face, fm.designUnitsPerEm as f32, simulations))
         })?;
         let has_hinting = maxp_has_hinting(base.sfnt_table(b"maxp"));
         let gasp = gasp_ranges(base.sfnt_table(b"gasp"));
@@ -274,6 +352,8 @@ impl DirectWriteFace {
             face: ManuallyDrop::new(face),
             base,
             upem,
+            face_index,
+            simulations,
             has_hinting,
             gasp,
             subpixel_counts: Mutex::new(HashMap::new()),
@@ -487,17 +567,10 @@ impl DirectWriteFace {
         if self.upem <= 0.0 {
             return None;
         }
-        let mut metric = DWRITE_GLYPH_METRICS::default();
-        if direct_write {
-            // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16`
-            // and the glyph count passed is 1, and `&mut metric` is a live local receiving
-            // exactly one `DWRITE_GLYPH_METRICS`.
-            serialized(|| unsafe {
-                self.face
-                    .GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false)
-            })
-            .ok()?;
+        let metric = if direct_write {
+            self.design_metrics(glyph_id)?
         } else {
+            let mut metric = DWRITE_GLYPH_METRICS::default();
             let (mode, _) = self.rendering_mode(size, 1.0);
             let natural = mode == DWRITE_RENDERING_MODE_NATURAL
                 || mode == DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
@@ -517,9 +590,30 @@ impl DirectWriteFace {
                 )
             })
             .ok()?;
-        }
-        let pixels = f64::from(metric.advanceWidth) / f64::from(self.upem) * f64::from(size);
-        Some(((pixels * 64.0).trunc() / 64.0) as f32)
+            metric
+        };
+        Some(self.design_to_logical(metric.advanceWidth as i32, size))
+    }
+
+    /// `GetDesignGlyphMetrics` of one glyph (`QWindowsFontEngineDirectWrite::boundingBox`).
+    fn design_metrics(&self, glyph_id: u16) -> Option<DWRITE_GLYPH_METRICS> {
+        let mut metric = DWRITE_GLYPH_METRICS::default();
+        // SAFETY: `self.face` is a live `IDWriteFontFace`; `&glyph_id` points to one `u16` and the
+        // glyph count passed is 1, and `&mut metric` is a live local receiving exactly one
+        // `DWRITE_GLYPH_METRICS`.
+        serialized(|| unsafe {
+            self.face
+                .GetDesignGlyphMetrics(&glyph_id, 1, &mut metric, false)
+        })
+        .ok()?;
+        Some(metric)
+    }
+
+    /// Qt's `DESIGN_TO_LOGICAL` for a value of `design` font units at `size` pixels per em: a 26.6
+    /// value, truncated toward zero.
+    fn design_to_logical(&self, design: i32, size: f32) -> f32 {
+        let pixels = f64::from(design) / f64::from(self.upem) * f64::from(size);
+        ((pixels * 64.0).trunc() / 64.0) as f32
     }
 }
 
@@ -536,9 +630,13 @@ impl GlyphFace for DirectWriteFace {
     }
 
     /// `boundingBox('x').xoff` (the design advance of `x`): Qt's Windows engines do not use the
-    /// OS/2 average width.
+    /// OS/2 average width. A simulated bold face is wider, so DirectWrite is asked for it.
     fn average_char_width(&self, px: f32) -> Option<f32> {
-        self.base.x_advance(px)
+        if self.simulations == DWRITE_FONT_SIMULATIONS_NONE {
+            return self.base.x_advance(px);
+        }
+        let metric = self.design_metrics(self.base.glyph_index('x'))?;
+        Some(self.design_to_logical(metric.advanceWidth as i32, px))
     }
 
     fn cap_height(&self, px: f32) -> Option<f32> {
@@ -626,10 +724,19 @@ impl GlyphFace for DirectWriteFace {
         self.layout_advance_width(glyph_id, size, direct_write)
     }
 
-    /// The same design metrics DirectWrite reports (`rightSideBearing`); read from the font file
-    /// like the advances are (`right_side_bearings_match_directwrite` compares them).
+    /// The right side bearing of `GetDesignGlyphMetrics`: read from the font file like the
+    /// advances are (`right_side_bearings_match_directwrite` compares them) unless the face is
+    /// simulated, where only DirectWrite knows the emboldened glyph's bearings.
     fn right_side_bearing(&self, glyph_id: u16, size: f32) -> Option<f32> {
-        self.base.right_side_bearing(glyph_id, size)
+        if self.simulations == DWRITE_FONT_SIMULATIONS_NONE {
+            return self.base.right_side_bearing(glyph_id, size);
+        }
+        let metric = self.design_metrics(glyph_id)?;
+        Some(self.design_to_logical(metric.rightSideBearing, size))
+    }
+
+    fn face_index(&self) -> u32 {
+        self.face_index
     }
 }
 
@@ -748,5 +855,94 @@ mod tests {
             }
         }
         assert!(compared > 1000, "only {compared} glyphs compared");
+    }
+
+    /// The simulations Qt's DirectWrite font database asks for: bold from `DemiBold` up when the
+    /// face is lighter, oblique for an italic request when the face is upright, nothing the face
+    /// already has, and never an "un-bold" for a light request.
+    #[test]
+    fn simulations_are_asked_for_what_the_request_has_and_the_face_lacks() {
+        let sim = |weight, italic, face_weight, face_style| {
+            requested_simulations(weight, italic, DWRITE_FONT_WEIGHT(face_weight), face_style).0
+        };
+        let (bold, oblique) = (
+            DWRITE_FONT_SIMULATIONS_BOLD.0,
+            DWRITE_FONT_SIMULATIONS_OBLIQUE.0,
+        );
+        // Tahoma Regular: bold from 600 (`QFont::DemiBold`), oblique for italic.
+        assert_eq!(sim(700, false, 400, DWRITE_FONT_STYLE_NORMAL), bold);
+        assert_eq!(sim(600, false, 400, DWRITE_FONT_STYLE_NORMAL), bold);
+        assert_eq!(sim(599, false, 400, DWRITE_FONT_STYLE_NORMAL), 0);
+        assert_eq!(sim(400, true, 400, DWRITE_FONT_STYLE_NORMAL), oblique);
+        assert_eq!(
+            sim(700, true, 400, DWRITE_FONT_STYLE_NORMAL),
+            bold | oblique
+        );
+        // Faces that have the weight or the slant (Tahoma Bold, Arial Italic, an oblique one, a
+        // Semibold one for DemiBold): nothing to synthesize.
+        assert_eq!(sim(700, false, 700, DWRITE_FONT_STYLE_NORMAL), 0);
+        assert_eq!(sim(700, false, 600, DWRITE_FONT_STYLE_NORMAL), 0);
+        assert_eq!(sim(400, true, 400, DWRITE_FONT_STYLE_ITALIC), 0);
+        assert_eq!(sim(400, true, 400, DWRITE_FONT_STYLE_OBLIQUE), 0);
+        assert_eq!(sim(700, true, 700, DWRITE_FONT_STYLE_ITALIC), 0);
+        assert_eq!(sim(700, true, 400, DWRITE_FONT_STYLE_ITALIC), bold);
+        // A bold face asked for a regular upright one stays as it is.
+        assert_eq!(sim(400, false, 700, DWRITE_FONT_STYLE_NORMAL), 0);
+    }
+
+    /// A request for more weight than the face has creates a face with DirectWrite's bold
+    /// simulation, whose advances and average width are wider; a request for an italic style
+    /// creates the oblique simulation, which keeps the advances. The widths themselves are Qt's
+    /// (`tests/test_directwrite_faces.rs`).
+    #[test]
+    fn a_request_the_face_cannot_satisfy_creates_a_simulated_face() {
+        // Like `tests/test_directwrite_face.rs`: nothing to compare without DirectWrite.
+        if !is_available() {
+            return;
+        }
+        let data =
+            SharedFontData::from_vec(include_bytes!("../../tests/data/oracle_text.ttf").to_vec());
+        let make = |weight, italic| {
+            DirectWriteFace::for_request(data.clone(), 0, weight, italic).expect("fixture face")
+        };
+        let (regular, bold, italic) = (make(400, false), make(700, false), make(400, true));
+        assert_eq!(regular.simulations, DWRITE_FONT_SIMULATIONS_NONE);
+        assert_eq!(bold.simulations, DWRITE_FONT_SIMULATIONS_BOLD);
+        assert_eq!(italic.simulations, DWRITE_FONT_SIMULATIONS_OBLIQUE);
+        let glyph = regular.glyph_index('H');
+        let advance = |face: &DirectWriteFace| face.layout_advance_width(glyph, 16.0, true);
+        assert!(advance(&bold) > advance(&regular));
+        assert_eq!(advance(&italic), advance(&regular));
+        assert!(bold.average_char_width(16.0) > regular.average_char_width(16.0));
+        assert_eq!(
+            italic.average_char_width(16.0),
+            regular.average_char_width(16.0)
+        );
+    }
+
+    /// The face of a collection is opened by its index and reports it, which the shaper opens the
+    /// same file with; an index past the last face is refused.
+    #[test]
+    fn a_collection_member_is_opened_by_its_index() {
+        if !is_available() {
+            return;
+        }
+        let bytes = std::fs::read("C:/Windows/Fonts/msgothic.ttc")
+            .unwrap_or_else(|e| panic!("the test needs C:/Windows/Fonts/msgothic.ttc: {e}"));
+        let data = SharedFontData::from_vec(bytes);
+        // MS Gothic, MS UI Gothic, MS PGothic.
+        let faces: Vec<_> = (0..3)
+            .map(|index| DirectWriteFace::new(data.clone(), index).expect("collection member"))
+            .collect();
+        for (index, face) in faces.iter().enumerate() {
+            assert_eq!(GlyphFace::face_index(face), index as u32);
+        }
+        // MS Gothic is fixed pitch, MS PGothic is proportional.
+        let glyph = faces[0].glyph_index('i');
+        assert_ne!(
+            faces[0].layout_advance_width(glyph, 16.0, true),
+            faces[2].layout_advance_width(faces[2].glyph_index('i'), 16.0, true)
+        );
+        assert!(DirectWriteFace::new(data, 3).is_err());
     }
 }
