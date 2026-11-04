@@ -999,3 +999,69 @@ pub(super) fn lookup(codepoint: u32) -> u16 {
     }
     NONE
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The table is `adjustment_database` of afadjust.c without its `#if 0` entry (`~`, 0x7E).
+    #[test]
+    fn table_has_freetypes_entries() {
+        assert_eq!(ADJUSTMENT_DATABASE.len(), 935);
+        assert_eq!(ADJUSTMENT_DATABASE[0], (0x21, UP | NO_HEIGHT_CHECK));
+        assert_eq!(ADJUSTMENT_DATABASE[1], (0x51, IGNORE_CAPITAL_BOTTOM));
+        assert_eq!(ADJUSTMENT_DATABASE[2], (0x3F, UP | NO_HEIGHT_CHECK));
+        assert_eq!(ADJUSTMENT_DATABASE[934], (0xAB67, IGNORE_SMALL_BOTTOM));
+        assert!(ADJUSTMENT_DATABASE.iter().all(|&(cp, _)| cp != 0x7E));
+    }
+
+    // FreeType's comment says the entries are sorted, but `Q` (0x51) comes before `?` (0x3F),
+    // and its binary search goes by the table as it is: of all 935 entries only 0x51 is not found.
+    // This is `af_adjustment_database_lookup` of FreeType 2.14.2 run on its table.
+    #[test]
+    fn lookup_is_freetypes_binary_search_of_the_unsorted_table() {
+        let unsorted: Vec<_> = ADJUSTMENT_DATABASE
+            .windows(2)
+            .filter(|w| w[0].0 >= w[1].0)
+            .map(|w| (w[0].0, w[1].0))
+            .collect();
+        assert_eq!(unsorted, [(0x51, 0x3F)]);
+        let missed: Vec<_> = ADJUSTMENT_DATABASE
+            .iter()
+            .filter(|&&(cp, flags)| lookup(cp) != flags)
+            .map(|&(cp, _)| cp)
+            .collect();
+        assert_eq!(missed, [0x51]);
+        assert_eq!(lookup(0x51), NONE);
+    }
+
+    #[test]
+    fn lookup_finds_known_entries() {
+        assert_eq!(lookup(0x21), UP | NO_HEIGHT_CHECK);
+        assert_eq!(lookup(0x3F), UP | NO_HEIGHT_CHECK);
+        assert_eq!(lookup(0x69), UP);
+        assert_eq!(lookup(0x6A), UP);
+        assert_eq!(lookup(0xC3), UP | TILDE_TOP);
+        assert_eq!(lookup(0xC7), IGNORE_CAPITAL_BOTTOM);
+        assert_eq!(lookup(0xD8), IGNORE_CAPITAL_TOP | IGNORE_CAPITAL_BOTTOM);
+        assert_eq!(lookup(0xE7), IGNORE_SMALL_BOTTOM);
+        assert_eq!(lookup(0xF8), IGNORE_SMALL_TOP | IGNORE_SMALL_BOTTOM);
+        assert_eq!(lookup(0x1FD7), UP2 | TILDE_TOP);
+        assert_eq!(lookup(0x1FF7), UP | TILDE_TOP | DOWN);
+        assert_eq!(lookup(0xAB67), IGNORE_SMALL_BOTTOM);
+    }
+
+    #[test]
+    fn lookup_misses_what_is_not_in_the_table() {
+        // letters without accents, the tilde (`#if 0` in FreeType), controls, the ends
+        for cp in [0x20, 0x41, 0x7E, 0x7F, 0xA0, 0xC6, 0x100_0, 0x20_0000, 0xFFFF_FFFF] {
+            if ADJUSTMENT_DATABASE.iter().all(|&(c, _)| c != cp) {
+                assert_eq!(lookup(cp), NONE, "{cp:#x}");
+            }
+        }
+        assert_eq!(lookup(0x7E), NONE);
+        assert_eq!(lookup(0xC6), NONE);
+        assert_eq!(lookup(0), NONE);
+        assert_eq!(lookup(u32::MAX), NONE);
+    }
+}

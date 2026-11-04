@@ -791,7 +791,7 @@ mod tests {
                 overshoot: -10,
                 ascender: 725,
                 descender: -10,
-                zones: BlueZones::default(),
+                zones: BlueZones::CAPITAL_BOTTOM,
             },
             UnscaledBlue {
                 position: 760,
@@ -812,7 +812,7 @@ mod tests {
                 overshoot: -10,
                 ascender: 546,
                 descender: -10,
-                zones: BlueZones::default(),
+                zones: BlueZones::SMALL_BOTTOM,
             },
             UnscaledBlue {
                 position: -240,
@@ -910,7 +910,7 @@ mod tests {
                 overshoot: 0,
                 ascender: 571,
                 descender: 0,
-                zones: BlueZones::default(),
+                zones: BlueZones::CAPITAL_BOTTOM,
             },
         ];
         assert_eq!(values, &expected);

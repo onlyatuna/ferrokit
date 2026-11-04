@@ -36,6 +36,8 @@
 // result diverges from FreeType 2.14.2.
 
 mod database;
+#[cfg(test)]
+mod tests;
 
 use alloc::vec::Vec;
 
