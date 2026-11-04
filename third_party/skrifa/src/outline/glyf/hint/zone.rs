@@ -719,8 +719,9 @@ mod tests {
         assert_eq!(point.map(F26Dot6::to_bits), Point::new(4, -16));
     }
 
-    // With a horizontal projection vector, a diagonal move is made in both
-    // directions despite backward compatibility.
+    // FreeType 2.14 has no exception for a horizontal projection vector (2.15 added one for
+    // Comic Sans MS): a diagonal move in backward compatibility mode after IUP in both directions
+    // moves nothing.
     #[test]
     fn move_point_along_a_horizontal_projection() {
         let mut mock = MockGraphicsState::new();
@@ -733,9 +734,26 @@ mod tests {
         let orig_point = gs.zones[1].point(0).unwrap();
         gs.move_point(ZonePointer::Glyph, 0, F26Dot6::from_bits(10))
             .unwrap();
+        assert_eq!(gs.zones[1].point(0).unwrap(), orig_point);
+    }
+
+    // Outside backward compatibility the move is `FT_MulFix(distance, moveVector)` along the freedom
+    // vector, here (0.894, 0.447) over a dot product of 0.894 (2.14's rounded `F_dot_P`).
+    #[test]
+    fn move_point_along_a_diagonal_uses_the_move_vector() {
+        let mut mock = MockGraphicsState::new();
+        let mut gs = mock.graphics_state(100, 50);
+        gs.backward_compatibility = false;
+        gs.did_iup_x = false;
+        gs.did_iup_y = false;
+        let orig_point = gs.zones[1].point(0).unwrap();
+        gs.move_point(ZonePointer::Glyph, 0, F26Dot6::from_bits(10))
+            .unwrap();
         let point = gs.zones[1].point(0).unwrap();
-        assert_ne!(point.x, orig_point.x);
-        assert_ne!(point.y, orig_point.y);
+        assert_eq!(
+            (point.x - orig_point.x, point.y - orig_point.y),
+            (F26Dot6::from_bits(9), F26Dot6::from_bits(4))
+        );
     }
 
     #[test]

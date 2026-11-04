@@ -26,7 +26,9 @@
    point arrays, and every other pen behaves as before.
 2. `Cargo.toml`: the `[[bench]]` targets and the `[dev-dependencies]` are removed, and the
    `benches/`, `scripts/` and `Cargo.lock` of the package are not vendored (nothing here is built
-   as a test or bench target). Unit tests inside `src/` are untouched and are not run by ferrokit.
+   as a test or bench target). The unit tests inside `src/` need the `font-test-data` crate of the
+   fontations repository (not vendored): they are run by copying `src/` over a checkout at the commit
+   above (`cargo test -p read-fonts`), all pass (1252 unit tests), none was edited.
 
 To update: copy the new crates.io release, redo change 1 (a few lines in the two `path.rs` files
 and the forwarding in skrifa's `ErasedPen`), and run the FreeType comparison tests of

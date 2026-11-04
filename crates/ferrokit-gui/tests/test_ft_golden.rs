@@ -263,8 +263,12 @@ fn glyph_face_bitmaps_equal_freetypes() {
         let (m, bits) = if r.delta == 0 {
             face.rasterize_indexed(gid, r.size as f32)
         } else {
-            assert_eq!(face.subpixel_positions(), Some(4), "{}", r.label());
-            face.rasterize_subpixel(gid, r.size as f32, 1.0, r.delta as u8)
+            assert!(
+                face.supports_horizontal_subpixel_positions(),
+                "{}",
+                r.label()
+            );
+            face.rasterize_subpixel(gid, r.size as f32, 1.0, r.delta)
         };
         match &r.bitmap {
             None => assert!(m.width == 0 || m.height == 0, "{}", r.label()),
@@ -384,7 +388,12 @@ fn glyph_face_equals_qts_alpha_maps() {
         assert_eq!(f64::from(advance), g.advance, "{label}: advance");
         checked += 1;
     }
-    assert!(checked >= 10, "only {checked} glyphs checked");
+    // Every glyph of the two fonts (`gen_ft_golden.py`: 12 and 7 characters, space included) at
+    // each of 4 sizes and 3 hint preferences, or, under Miri, those at 12 px and the default
+    // preference only: 19 records.
+    let per_size_and_preference = 19;
+    let expected = per_size_and_preference * if cfg!(miri) { 1 } else { 4 * 3 };
+    assert_eq!(checked, expected, "glyph records checked");
 }
 
 /// `QPainter::drawText` into a QImage against `Painter::draw_text`: whole strings with sub-pixel

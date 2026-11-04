@@ -434,18 +434,12 @@ pub(super) fn hint_tables(tables: &Tables) -> HintTables<'_> {
 /// Returns true if FreeType would run the interpreter for `tables` rather
 /// than the automatic hinter.
 ///
-/// This is the case when the font has glyph instructions, or a font or
-/// control value program.
+/// This is the case when the font has a font program, or a control value
+/// program of more than 7 bytes (FreeType 2.14's test; ferrokit change, see
+/// `README.ferrokit.md`, which `outline::glyf` follows too).
 /// <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/base/ftobjs.c#L1001>
 pub(super) fn prefer_interpreter(tables: &Tables) -> bool {
-    let max_instructions = tables
-        .selected_maxp()
-        .ok()
-        .and_then(|maxp| maxp.max_size_of_instructions())
-        .unwrap_or_default();
-    !(max_instructions == 0
-        && tables.fpgm().unwrap_or_default().is_empty()
-        && tables.prep().unwrap_or_default().is_empty())
+    !(tables.fpgm().unwrap_or_default().is_empty() && tables.prep().unwrap_or_default().len() <= 7)
 }
 
 /// Returns the byte range of the widths in the `hdmx` record for `ppem`, if

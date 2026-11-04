@@ -69,8 +69,14 @@ FreeType 2.14.2's.
    Not darkened, as in FreeType: outlines that the auto-hinter loads (`FT_LOAD_NO_SCALE`), and
    TrueType ones.
 4. `Cargo.toml`: the `[[test]]` targets and the `[dev-dependencies]` are removed and the `tests/`,
-   `scripts/` and `Cargo.lock` of the package are not vendored. Unit tests inside `src/` are
-   untouched; the ones that pin the replaced arithmetic (`zone.rs`) are stale and are not run.
+   `scripts/` and `Cargo.lock` of the package are not vendored. The unit tests inside `src/` need the
+   `font-test-data` crate of the fontations repository, which is not vendored, so ferrokit's build
+   does not run them. They are run by copying `src/` over a checkout of fontations at the commit above
+   and running `cargo test -p skrifa -p read-fonts` there: all pass (skrifa 480 unit tests). Tests
+   edited for the changes above: `outline/glyf/hint/zone.rs` (the horizontal-projection test now pins
+   2.14's behaviour; one test for the move vector added) and `scaler/tests.rs` (the new
+   `cff_stem_darkening` field in option literals). The `scaler` module's own `prefer_interpreter`
+   (`scaler/truetype.rs`) follows change 2.
 
 ## Not implemented here (a known difference)
 

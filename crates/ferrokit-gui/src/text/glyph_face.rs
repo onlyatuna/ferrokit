@@ -116,7 +116,8 @@ pub trait GlyphFace: Send + Sync {
     /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
     /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
     /// blits it at the floor of that position, instead of at the rounded one. Qt's CoreText
-    /// engine, and its DirectWrite engine at a device pixel ratio other than 1.
+    /// engine, its DirectWrite engine at a device pixel ratio other than 1, and its FreeType
+    /// engine for the hint styles none and light.
     fn supports_horizontal_subpixel_positions(&self) -> bool {
         false
     }
