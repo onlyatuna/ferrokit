@@ -123,10 +123,25 @@ where
     field.split(',').map(|v| v.parse().unwrap()).collect()
 }
 
+/// The records of `ft_golden.txt`; under Miri only those of the sample ([`miri_keeps`]).
 fn ft_records() -> Vec<Record> {
-    FT_GOLDEN
+    let ranks = glyph_ranks(FT_GOLDEN, "R ");
+    let records: Vec<Record> = FT_GOLDEN
         .lines()
         .filter(|l| l.starts_with("R "))
+        .filter(|line| {
+            let f: Vec<&str> = line.split(' ').take(6).collect();
+            let ch = char::from_u32(u32::from_str_radix(f[2], 16).unwrap()).unwrap();
+            !cfg!(miri)
+                || miri_keeps(
+                    f[1],
+                    ch,
+                    ranks[&(f[1], ch)],
+                    f[3].parse().unwrap(),
+                    f[4].parse().unwrap(),
+                    f[5].parse().unwrap(),
+                )
+        })
         .map(|line| {
             let f: Vec<&str> = line.split(' ').collect();
             assert_eq!(f.len(), 12, "{line}");
@@ -167,7 +182,11 @@ fn ft_records() -> Vec<Record> {
                 bitmap,
             }
         })
-        .collect()
+        .collect();
+    if cfg!(miri) {
+        assert_eq!(records.len(), MIRI_SAMPLE, "records in the Miri sample");
+    }
+    records
 }
 
 /// `SkrifaFace::freetype_outline` of the record's glyph: `FT_Load_Glyph`'s slot outline moved by the
@@ -180,13 +199,64 @@ fn outline_of(faces: &mut Faces, r: &Record) -> Outline {
         .unwrap_or_else(|| panic!("{}: no outline", r.label()))
 }
 
-/// Records to check in a test: all of them, or a sample of every font, size and mode when Miri
-/// (which runs this as an interpreter) executes the test.
-fn selected(records: &[Record]) -> Vec<&Record> {
-    records
-        .iter()
-        .filter(|r| !cfg!(miri) || (r.size == 9 || r.size == 16) && r.delta == 0)
-        .collect()
+/// The rank of each glyph of each font in the golden `text` (the lines starting with `prefix`, whose
+/// fields 1 and 2 are the font and the character): its place among the font's characters in
+/// order. The Miri samples are cut by rank so that every font and glyph kind is met.
+fn glyph_ranks<'a>(text: &'a str, prefix: &str) -> HashMap<(&'a str, char), usize> {
+    let mut chars: HashMap<&str, Vec<char>> = HashMap::new();
+    for line in text.lines().filter(|l| l.starts_with(prefix)) {
+        let mut f = line.split(' ').skip(1);
+        let (font, ch) = (f.next().unwrap(), f.next().unwrap());
+        let ch = char::from_u32(u32::from_str_radix(ch, 16).unwrap()).unwrap();
+        let list = chars.entry(font).or_default();
+        if !list.contains(&ch) {
+            list.push(ch);
+        }
+    }
+    let mut ranks = HashMap::new();
+    for (font, mut list) in chars {
+        list.sort();
+        for (rank, ch) in list.into_iter().enumerate() {
+            ranks.insert((font, ch), rank);
+        }
+    }
+    ranks
+}
+
+/// The sizes of the Miri sample: a small and a large one (of the six of the goldens).
+const MIRI_SIZES: [u32; 2] = [9, 37];
+
+/// Records in the Miri sample (see [`miri_keeps`]): 25 glyphs, 3 glyphs with a TrueType program
+/// again in `Normal` mode, 8 sub-pixel translations.
+const MIRI_SAMPLE: usize = 36;
+
+/// Whether the Miri sample (an interpreter ran the whole file for 22 minutes) holds the record
+/// of glyph rank `rank` of `font` with these parameters. It still runs every code path the full
+/// set runs:
+///
+/// - every glyph of every font once, at the small or the large size by turns (`oracle_text.ttf`,
+///   whose hinting programs cost seconds to set up for each size, at the small one only): implied
+///   points, contours starting or ending off the curve, repeated points, overlapping contours (the
+///   overlap flag), sub-pixel glyphs, CFF cubics with stem hints;
+/// - the glyphs with a TrueType program (`x`, `p`, `k`) also in `Normal` mode, where the bytecode
+///   interpreter, not the auto-hinter, moves their points;
+/// - the hint mode cycles through `Normal` (full), `Light` and `None` over the glyphs, so each
+///   font meets every mode: TrueType and CFF, the interpreter, the auto-hinter, the native CFF
+///   hinter, and no hinting;
+/// - the sub-pixel translation of Qt's raster engine (delta 32) for the glyphs at the small size
+///   in the modes that have one, so each font meets it in `Light` and in `None`.
+///
+/// The count is asserted, so a change of the goldens or of this rule shows up.
+fn miri_keeps(font: &str, ch: char, rank: usize, size: u32, mode: u8, delta: i32) -> bool {
+    let program = matches!(ch, 'x' | 'p' | 'k') && font == "ft_golden.ttf";
+    let wanted = if font == "oracle_text.ttf" {
+        MIRI_SIZES[0]
+    } else {
+        MIRI_SIZES[rank % 2]
+    };
+    size == wanted
+        && (mode == (rank % 3) as u8 || (program && mode == 0))
+        && (delta == 0 || (mode != 0 && rank.is_multiple_of(2)))
 }
 
 #[test]
@@ -194,7 +264,7 @@ fn outlines_equal_freetypes_point_for_point() {
     let records = ft_records();
     let mut faces = Faces::default();
     let mut checked = 0;
-    for r in selected(&records) {
+    for r in &records {
         let o = outline_of(&mut faces, r);
         let label = r.label();
         assert_eq!(o.contours, r.contours, "{label}: contour ends");
@@ -213,14 +283,19 @@ fn outlines_equal_freetypes_point_for_point() {
         );
         checked += 1;
     }
-    assert!(checked >= 40, "only {checked} records checked");
+    let expected = if cfg!(miri) {
+        MIRI_SAMPLE
+    } else {
+        records.len()
+    };
+    assert_eq!(checked, expected, "records checked");
 }
 
 #[test]
 fn bitmaps_equal_freetypes_render_glyph() {
     let records = ft_records();
     let mut faces = Faces::default();
-    for r in selected(&records) {
+    for r in &records {
         let o = outline_of(&mut faces, r);
         let ppem = (r.size as u16, r.size as u16);
         let got = ftgrays::render(&o, ppem)
@@ -254,7 +329,7 @@ fn bitmaps_equal_freetypes_render_glyph() {
 fn glyph_face_bitmaps_equal_freetypes() {
     let records = ft_records();
     let mut faces = Faces::default();
-    for r in selected(&records) {
+    for r in &records {
         if !matches!(r.delta, 0 | 32) || (r.mode == 0 && r.delta != 0) {
             continue;
         }
@@ -325,10 +400,22 @@ struct QtGlyph {
     data: Vec<u8>,
 }
 
+/// The glyphs of `qt_golden.txt`; under Miri each glyph of each font once, with the preference
+/// cycling through light, none and full over the glyphs and the size alternating between 9 and 24
+/// px: every font meets every preference and both sizes.
 fn qt_glyphs() -> Vec<QtGlyph> {
+    let ranks = glyph_ranks(QT_GOLDEN, "A ");
     QT_GOLDEN
         .lines()
         .filter(|l| l.starts_with("A "))
+        .filter(|line| {
+            let f: Vec<&str> = line.split(' ').take(5).collect();
+            let ch = char::from_u32(u32::from_str_radix(f[2], 16).unwrap()).unwrap();
+            let rank = ranks[&(f[1], ch)];
+            !cfg!(miri)
+                || f[3].parse::<u32>().unwrap() == [9, 24][rank % 2]
+                    && f[4].starts_with(['d', 'n', 'f'][rank % 3])
+        })
         .map(|line| {
             let f: Vec<&str> = line.split(' ').collect();
             assert_eq!(f.len(), 12, "{line}");
@@ -359,10 +446,7 @@ fn qt_glyphs() -> Vec<QtGlyph> {
 fn glyph_face_equals_qts_alpha_maps() {
     let mut faces = Faces::default();
     let mut checked = 0;
-    for g in qt_glyphs()
-        .iter()
-        .filter(|g| !cfg!(miri) || g.size == 12 && g.pref == 'd')
-    {
+    for g in &qt_glyphs() {
         let mode = match g.pref {
             'd' => 1,
             'n' => 2,
@@ -389,10 +473,8 @@ fn glyph_face_equals_qts_alpha_maps() {
         checked += 1;
     }
     // Every glyph of the two fonts (`gen_ft_golden.py`: 12 and 7 characters, space included) at
-    // each of 4 sizes and 3 hint preferences, or, under Miri, those at 12 px and the default
-    // preference only: 19 records.
-    let per_size_and_preference = 19;
-    let expected = per_size_and_preference * if cfg!(miri) { 1 } else { 4 * 3 };
+    // each of 4 sizes and 3 hint preferences, or, under Miri, each glyph once: 19 records.
+    let expected = if cfg!(miri) { 19 } else { 19 * 4 * 3 };
     assert_eq!(checked, expected, "glyph records checked");
 }
 
