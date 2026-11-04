@@ -39,6 +39,7 @@
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_directwrite_modes": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_placement": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_font_style": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_macos_system_font": "macOS-only (cfg(target_os = \"macos\")): compiled out on the Linux Miri target",
@@ -812,6 +813,8 @@
     "test_text_system::test_right_to_left_text_before_a_line_separator_as_in_qt::TB": "unsupported",
     "lib::text::glyph_layout::tests::zero_width_characters_have_no_advance_without_opentype_data::SB": "pass",
     "lib::text::glyph_layout::tests::zero_width_characters_have_no_advance_without_opentype_data::TB": "pass",
+    "lib::text::glyph_layout::tests::unrounded_layout_advances_are_rounded_once_without_subpixel_advances::SB": "pass",
+    "lib::text::glyph_layout::tests::unrounded_layout_advances_are_rounded_once_without_subpixel_advances::TB": "pass",
     "test_font_line_metrics_oracle::prefer_full_hinting_disables_sub_pixel_positions_and_rounds_line_metrics::SB": "unsupported",
     "test_font_line_metrics_oracle::prefer_full_hinting_disables_sub_pixel_positions_and_rounds_line_metrics::TB": "unsupported",
     "test_font_line_metrics_oracle::linux_and_macos_engines_keep_fractional_metrics_at_a_ratio_of_one::SB": "unsupported",

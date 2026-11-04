@@ -236,7 +236,7 @@ const fn initial_default_hint_style_u8() -> u8 {
     if cfg!(target_os = "macos") {
         0 // HintNone (CoreText always uses sub-pixel positioning)
     } else if cfg!(windows) {
-        3 // HintFull (Windows DirectWrite GDI_CLASSIC at ratio 1 / ftInitialDefaultHintStyle on Windows)
+        3 // HintFull (DirectWrite full hinting at ratio 1 / ftInitialDefaultHintStyle on Windows)
     } else {
         1 // HintLight (FreeType default on Linux: fontconfig hintslight desktop standard)
     }
@@ -246,7 +246,7 @@ const fn initial_default_hint_style_u8() -> u8 {
 ///
 /// On Linux/FreeType this defaults to [`HintStyle::HintLight`], matching fontconfig's standard
 /// desktop default (`hintslight`, `qfontconfigdatabase.cpp:730`). On Windows it defaults to
-/// [`HintStyle::HintFull`] (DirectWrite full hinting / GDI classic at ratio 1). On macOS it
+/// [`HintStyle::HintFull`] (DirectWrite full hinting at ratio 1). On macOS it
 /// is [`HintStyle::HintNone`].
 pub fn default_hint_style() -> HintStyle {
     match DEFAULT_HINT_STYLE.load(Ordering::Acquire) {
@@ -291,7 +291,7 @@ pub(crate) fn face_hint_style(preference: HintingPreference) -> HintStyle {
 /// - **macOS (CoreText):** always `true` (`QFontEngineCoreText::supportsSubPixelPositions`,
 ///   CoreText does not round line metrics regardless of hinting preference).
 /// - **Windows (DirectWrite):** `true` at ratio != 1.0 (sub-pixel / asymmetric), `false` at ratio 1.0
-///   (full hinting / GDI classic) under default hinting.
+///   (full hinting) under default hinting.
 /// - **Linux / FreeType:** `true` when the effective hint style is [`HintStyle::HintLight`]
 ///   (`hintslight`, the Linux desktop default) or [`HintStyle::HintNone`], or when ratio != 1.0;
 ///   `false` only for [`HintStyle::HintFull`] or [`HintStyle::HintMedium`] at ratio 1.0.

@@ -11,8 +11,8 @@ use ferrokit_gui::text::font::{Font, SharedFontData};
 use ferrokit_widgets::{Label, Widget};
 
 /// (width, number of lines of the font's line height). The Qt numbers were measured at a device
-/// pixel ratio of 2 (`QT_SCALE_FACTOR=2`), which on Windows selects Qt's DirectWrite engine and its
-/// fractional advances; at 1 the GDI engine rounds every advance to whole pixels.
+/// pixel ratio of 2 (`QT_SCALE_FACTOR=2`), where Qt's DirectWrite engine lays out fractional
+/// advances; at 1 it uses full hinting and rounds every advance to whole pixels.
 fn hint(text: &str, word_wrap: bool) -> (i32, i32) {
     ferrokit_gui::text::font_database::set_application_device_pixel_ratio(2.0);
     let mut l = Label::new(text);
