@@ -234,6 +234,21 @@ pub(crate) fn parse_system_ui_face(data: &SharedFontData) -> Result<SharedGlyphF
     }
 }
 
+/// `QFontEngine::subPixelPositionFor`, horizontal part, for a pen position `x` in 26.6 pixels and
+/// a bucket `count` (`m_subPixelPositionCount`): the fraction of the position plus one 26.6 unit
+/// (against the precision lost in fixed point), floored to a multiple of `1 / count`, then divided
+/// by `count` with `QFixed::operator/=`, which rounds half up in 26.6 (`((a << 6) + (b >> 1)) / b`).
+/// The result is in 26.6 pixels; 0 for a position of 0 or fewer than two buckets.
+pub fn subpixel_bucket_offset(x: i64, count: i64) -> i32 {
+    if count <= 1 || x == 0 {
+        return 0;
+    }
+    let v = (x & 63) + 1;
+    let fraction = (v * count) >> 6;
+    let (a, b) = (fraction << 6, count << 6);
+    (((a << 6) + (b >> 1)) / b) as i32
+}
+
 #[cfg(test)]
 mod budget_tests {
     use super::*;
@@ -253,5 +268,43 @@ mod budget_tests {
         let span = (i32::MAX as i64 - i32::MIN as i64) as usize;
         assert!(exceeds_glyph_budget(span, 1));
         assert!(exceeds_glyph_budget(span, span));
+    }
+}
+
+#[cfg(test)]
+mod subpixel_tests {
+    use super::subpixel_bucket_offset;
+
+    /// Three buckets: the offsets of 0, 1/3 and 2/3 of a pixel in 26.6 are 0, 21 and 43 (not the
+    /// truncated 42): `QFixed(2) / QFixed(3)` rounds `128 * 64 / 192 = 42.67` up. Real Qt on macOS
+    /// switches the image of a 12 px glyph at a pen fraction of 32/48, the edge of the third bucket.
+    #[test]
+    fn three_buckets_use_the_rounded_quotient() {
+        let offset = |frac64: i64| subpixel_bucket_offset(10 * 64 + frac64, 3);
+        assert_eq!(offset(0), 0);
+        assert_eq!(offset(20), 0);
+        assert_eq!(offset(21), 21);
+        assert_eq!(offset(41), 21);
+        assert_eq!(offset(42), 43);
+        assert_eq!(offset(62), 43);
+        // The extra unit pushes the last fraction to a whole pixel, as in Qt.
+        assert_eq!(offset(63), 64);
+    }
+
+    /// The extra 26.6 unit moves each bucket edge one unit down: with two buckets a fraction of
+    /// 31/64 already lands in the second.
+    #[test]
+    fn two_and_four_buckets_are_exact_and_a_zero_position_has_none() {
+        assert_eq!(subpixel_bucket_offset(10 * 64 + 30, 2), 0);
+        assert_eq!(subpixel_bucket_offset(10 * 64 + 31, 2), 32);
+        assert_eq!(subpixel_bucket_offset(10 * 64 + 48, 4), 48);
+        assert_eq!(subpixel_bucket_offset(0, 3), 0);
+        assert_eq!(subpixel_bucket_offset(10 * 64 + 40, 1), 0);
+    }
+
+    #[test]
+    fn a_negative_position_uses_its_fraction_above_the_floor() {
+        // -1/4 px lies 3/4 px above the pixel below it.
+        assert_eq!(subpixel_bucket_offset(-16, 4), 48);
     }
 }

@@ -19,7 +19,10 @@
 //!   used as they are.
 //! * Sub-pixel positions: the glyph is drawn at a fractional x offset, and how many offsets there
 //!   are is what CoreGraphics distinguishes for the first glyph with an outline that is drawn at
-//!   a size (`QTextureGlyphCache::calculateSubPixelPositionCount`).
+//!   a size (`QTextureGlyphCache::calculateSubPixelPositionCount`, kept per engine and size, so a
+//!   ratio-2 draw before a ratio-1 one decides the count of both). The offset of a bucket is
+//!   [`subpixel_bucket_offset`](crate::text::glyph_face::subpixel_bucket_offset); its quotient
+//!   rounds as `QFixed::operator/=` does (2/3 is 43/64, not 42/64), measured against Qt images.
 //! * System UI font: optical sizing and metrics come from
 //!   `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)` at each size.
 //!
@@ -30,7 +33,9 @@
 //! black (`QPlatformTheme::colorScheme`): glyphs are made for the light appearance.
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics, exceeds_glyph_budget};
+use crate::text::glyph_face::{
+    GlyphFace, GlyphMetrics, LineMetrics, exceeds_glyph_budget, subpixel_bucket_offset,
+};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
@@ -793,15 +798,7 @@ impl GlyphFace for CoreTextFace {
     }
 
     fn subpixel_position(&self, glyph_id: u16, size: f32, scale: f32, x: i64) -> i32 {
-        let count = self.subpixel_count(glyph_id, size, scale);
-        if count <= 1 || x == 0 {
-            return 0;
-        }
-        // `QFontEngine::subPixelPositionFor`: the fraction of the position, plus one 26.6 unit
-        // against the precision lost in fixed point, floored to a multiple of 1 / count.
-        let v = (x & 63) + 1;
-        let fraction = (v * count) >> 6;
-        ((fraction << 6) / count) as i32
+        subpixel_bucket_offset(x, self.subpixel_count(glyph_id, size, scale))
     }
 
     fn rasterize_subpixel(
