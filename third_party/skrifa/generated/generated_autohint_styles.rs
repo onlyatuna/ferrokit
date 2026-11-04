@@ -1461,7 +1461,6 @@ pub(super) const STYLE_RANGES: &[StyleRange] = &[
     base_range(72448, 72543, 24),
     base_range(73648, 73663, 64),
     base_range(73664, 73727, 80),
-    base_range(92160, 92735, 4),
     base_range(93760, 93855, 66),
     base_range(110576, 110959, 90),
     base_range(119552, 119647, 90),

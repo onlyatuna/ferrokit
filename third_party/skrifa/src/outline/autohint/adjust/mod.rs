@@ -39,10 +39,10 @@
 // map that FreeType 2.14.2's `afranges.c` builds (`af_face_globals_compute_style_coverage`:
 // the style classes in order, the first range that holds a character wins, and the non-base
 // ranges mark the characters of the style that they hold). It was derived programmatically by
-// building the map from the `*_uniranges` arrays of `afranges.c` of 2.14.2 and comparing it
-// character by character with the table: the table was FreeType's map of the snapshot it
-// was generated from, with two deviations (Bamum Supplement U+16800-U+16A3F missing, and
-// Nyiakeng Puachue Hmong U+1E100-U+1E14F, a script that FreeType 2.14.2 does not have), and
+// building the map from the `*_uniranges` arrays of `afranges.c` of 2.14.2 (without its `#if 0`
+// block, the Bamum Supplement) and comparing it character by character with the table: the
+// table was FreeType's map of the snapshot it was generated from, with one deviation
+// (Nyiakeng Puachue Hmong U+1E100-U+1E14F, a script that FreeType 2.14.2 does not have), and
 // without what 2.14 added.
 
 mod database;
