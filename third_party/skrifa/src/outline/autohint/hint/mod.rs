@@ -146,6 +146,7 @@ fn hint_outline_impl(
         }
         edges::hint_edges(
             &mut axis,
+            &outline.points,
             &scaled_metrics.axes[dim],
             group,
             scale,

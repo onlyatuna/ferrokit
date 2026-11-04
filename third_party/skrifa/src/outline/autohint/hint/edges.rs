@@ -6,6 +6,7 @@
 
 use super::super::{
     metrics::{fixed_mul_div, pix_floor, pix_round, Scale, ScaledAxisMetrics, ScaledWidth},
+    outline::Point,
     recorder::{EdgeAction, HintsRecorder},
     style::ScriptGroup,
     topo::{Axis, Dimension, Edge, TopoFlags},
@@ -19,6 +20,7 @@ use super::super::{
 /// See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/aflatin.c#L2999>
 pub(crate) fn hint_edges(
     axis: &mut Axis,
+    points: &[Point],
     metrics: &ScaledAxisMetrics,
     group: ScriptGroup,
     scale: &Scale,
@@ -49,6 +51,7 @@ pub(crate) fn hint_edges(
     if serif_count > 0 || anchor_ix.is_none() {
         align_remaining_edges(
             axis,
+            points,
             group,
             top_to_bottom_hinting,
             serif_count,
@@ -457,6 +460,7 @@ fn hint_lowercase_m(edges: &mut [Edge], group: ScriptGroup) {
 /// Align serif and single segment edges.
 fn align_remaining_edges(
     axis: &mut Axis,
+    points: &[Point],
     group: ScriptGroup,
     top_to_bottom_hinting: bool,
     mut serif_count: usize,
@@ -477,6 +481,14 @@ fn align_remaining_edges(
             };
             if edge_flags.contains(TopoFlags::DONE) {
                 continue;
+            }
+            // aflatin.c:4657-4722 (FreeType 2.14): an edge whose serif partner is
+            // closer than 1.5 pixels is a real serif only if no edge between the
+            // two overlaps or is enclosed by their segment end points.
+            if let Some(serif_ix) = edge_serif_ix {
+                if delta < 64 + 32 && !is_real_serif(axis, points, edge_ix, serif_ix as usize) {
+                    continue;
+                }
             }
             if delta < 64 + 16 {
                 // delta is only < 1000 if edge.serif_ix is Some(_)
@@ -632,6 +644,48 @@ fn align_remaining_edges(
             }
         }
     }
+}
+
+/// Returns the smallest and largest `v` of the end points of the first and
+/// last segment of an edge.
+///
+/// See the `FT_MIN`/`FT_MAX` expressions of aflatin.c:4683-4709.
+fn edge_end_extent(axis: &Axis, points: &[Point], edge_ix: usize) -> (i32, i32) {
+    let edge = &axis.edges[edge_ix];
+    let mut min = i32::MAX;
+    let mut max = i32::MIN;
+    for segment_ix in [edge.first_ix, edge.last_ix] {
+        let segment = &axis.segments[segment_ix as usize];
+        for point_ix in [segment.first_ix, segment.last_ix] {
+            let v = points[point_ix as usize].v;
+            min = min.min(v);
+            max = max.max(v);
+        }
+    }
+    (min, max)
+}
+
+/// Checks whether `serif_ix` is a real serif edge of `edge_ix`: no edge
+/// between the two may overlap or be enclosed by their segment end points.
+///
+/// See aflatin.c:4657-4722; `delta == 1000` there means "not a real serif".
+fn is_real_serif(axis: &Axis, points: &[Point], edge_ix: usize, serif_ix: usize) -> bool {
+    // aflatin.c:4666-4678
+    let (top_ix, bottom_ix) = if axis.edges[serif_ix].opos - axis.edges[edge_ix].opos < 0 {
+        (edge_ix, serif_ix)
+    } else {
+        (serif_ix, edge_ix)
+    };
+    // aflatin.c:4683-4698
+    let (top_min, top_max) = edge_end_extent(axis, points, top_ix);
+    let (bottom_min, bottom_max) = edge_end_extent(axis, points, bottom_ix);
+    let min_pos = top_min.min(bottom_min);
+    let max_pos = top_max.max(bottom_max);
+    // aflatin.c:4700-4717
+    ((bottom_ix + 1)..top_ix).all(|between_ix| {
+        let (e_min, e_max) = edge_end_extent(axis, points, between_ix);
+        (e_min < min_pos && e_max < min_pos) || (e_min > max_pos && e_max > max_pos)
+    })
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -1218,6 +1272,7 @@ mod tests {
             }
             hint_edges(
                 axis,
+                &outline.points,
                 &scaled_metrics.axes[dim],
                 class.script.group,
                 &scale,
