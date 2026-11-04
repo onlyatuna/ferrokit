@@ -1483,7 +1483,6 @@ impl<'a> Painter<'a> {
             // it at the floor of that position (`QRasterPaintEngine::drawCachedGlyphs`). Qt's
             // Windows engines without sub-pixel positions blit at that floor too.
             let pen_x = (f64::from(px) * 64.0).trunc() as i64;
-            let subpixel_glyph = engine.supports_horizontal_subpixel_positions();
             // Qt draws LCD masks when ClearType is on and the face has them
             // (`QRasterPaintEngine::drawCachedGlyphs`, `alphaRGBMapForGlyph`).
             let lcd_glyph = lcd_lut
