@@ -78,7 +78,7 @@ fn reverse_map_keeps_the_last_database_entry() {
         0x3F => Some(GlyphId::NOTDEF),
         _ => None,
     };
-    let reverse = ReverseCharMap::new(map);
+    let reverse = ReverseCharMap::from_cmap(map);
     assert_eq!(reverse.flags(GlyphId::new(5)), UP);
     assert_eq!(reverse.flags(GlyphId::new(6)), UP);
     assert_eq!(reverse.flags(GlyphId::new(7)), 0);
@@ -88,7 +88,7 @@ fn reverse_map_keeps_the_last_database_entry() {
 
 #[test]
 fn reverse_map_of_a_font_without_database_characters_is_empty() {
-    let reverse = ReverseCharMap::new(|_| None);
+    let reverse = ReverseCharMap::from_cmap(|_| None);
     assert_eq!(reverse.flags(GlyphId::new(1)), 0);
 }
 

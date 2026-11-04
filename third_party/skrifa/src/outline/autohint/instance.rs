@@ -9,11 +9,11 @@ use super::{
     metrics::{fixed_mul, pix_round, Scale, UnscaledStyleMetricsSet},
     outline::Outline,
     shape::{Shaper, ShaperMode},
-    style::{GlyphStyle, GlyphStyleMap, ScriptGroup},
+    style::{GlyphStyle, GlyphStyleMap, ScriptGroup, STYLE_CLASSES},
     ScaleFlags,
 };
 use crate::{attribute::Style, font::Font, prelude::Size};
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use raw::{
     model::{
         _font_interop,
@@ -79,7 +79,7 @@ pub(crate) struct LocatedState {
     /// FreeType's reverse character map, which maps a glyph to the code point of
     /// the vertical adjustment database that the cmap gives it. It is built the
     /// first time a glyph of a Latin style is drawn.
-    adjust: Once<ReverseCharMap>,
+    adjust: Vec<Once<ReverseCharMap>>,
     style: Style,
 }
 
@@ -98,7 +98,7 @@ impl LocatedState {
             styles,
             metrics,
             is_fixed_width: context.is_fixed_pitch(),
-            adjust: Once::default(),
+            adjust: (0..STYLE_CLASSES.len()).map(|_| Once::default()).collect(),
             style: context.style(),
         }
     }
@@ -283,10 +283,15 @@ impl Instance {
         );
         // Only the Latin writing system has vertical adjustments (aflatin.c).
         let adjust_flags = if metrics.style_class().script.group == ScriptGroup::Default {
+            let style_class = metrics.style_class();
             state
                 .adjust
-                .get_or_init(|| ReverseCharMap::new(|ch| context.map(ch)))
-                .flags(glyph_id)
+                .get(style_class.index)
+                .map(|map| {
+                    map.get_or_init(|| ReverseCharMap::new(context, style_class.script.tag))
+                        .flags(glyph_id)
+                })
+                .unwrap_or(0)
         } else {
             0
         };

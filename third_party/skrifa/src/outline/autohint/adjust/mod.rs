@@ -36,14 +36,19 @@
 // result diverges from FreeType 2.14.2.
 
 mod database;
+mod gsub;
 #[cfg(test)]
 mod tests;
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 
-use read_fonts::{tables::glyf::PointMarker, types::GlyphId};
+use read_fonts::{
+    tables::glyf::PointMarker,
+    types::{GlyphId, Tag},
+};
 
 use super::{
+    context::AutohintContext,
     metrics::{
         blues::{BlueZones, ScaledBlue, ScaledBlues},
         fixed_mul,
@@ -69,54 +74,64 @@ fn sub(a: i64, b: i64) -> i64 {
     a.wrapping_sub(b)
 }
 
-/// The adjustment flags of every glyph that is in the adjustment database,
-/// as FreeType's reverse character map holds them (afadjust.c:1277).
+/// FreeType's reverse character map (afadjust.c:1277): the code point of the adjustment
+/// database that each glyph gets.
 ///
-/// FreeType builds the map once per Latin style: for each database entry in
-/// table order, the cmap glyph of the entry's code point is mapped to that code
-/// point with `ft_hash_num_insert`, which overwrites. So when two database code
-/// points map to one glyph, the one later in the table wins.
+/// FreeType builds the map once per Latin style. First, for each database entry in table order,
+/// the cmap glyph of the entry's code point is mapped to that code point with
+/// `ft_hash_num_insert`, which overwrites: when two database code points map to one glyph, the
+/// one later in the table wins. Then (the reference FreeType has HarfBuzz) the glyphs that
+/// single and alternate substitutions of the style's script make from those glyphs are added
+/// without overwriting (see `gsub.rs`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReverseCharMap {
-    /// Glyph ids in ascending order with the flags that the lookup of the
-    /// winning code point gives.
-    glyphs: Vec<(u32, u16)>,
+    /// Glyph index to code point.
+    codepoints: BTreeMap<u32, u32>,
 }
 
 impl ReverseCharMap {
-    /// Builds the map from the cmap lookup `map`.
-    pub(crate) fn new(map: impl Fn(u32) -> Option<GlyphId>) -> Self {
-        // afadjust.c:1314-1354
-        let mut glyphs: Vec<(u32, u16)> = Vec::new();
+    /// Builds the map of a font for the style of `style_script` (the tag of its script class).
+    pub(crate) fn new(context: &dyn AutohintContext, style_script: Tag) -> Self {
+        let mut map = Self::from_cmap(|cp| context.map(cp));
+        gsub::extend_reverse_map(&mut map, context, style_script);
+        map
+    }
+
+    /// The part of the map that comes from the cmap lookup `map` (afadjust.c:1314-1354).
+    pub(crate) fn from_cmap(map: impl Fn(u32) -> Option<GlyphId>) -> Self {
+        let mut codepoints = BTreeMap::new();
         for &(codepoint, _) in ADJUSTMENT_DATABASE.iter() {
             let Some(glyph) = map(codepoint) else {
                 continue;
             };
             // `cmap_glyph == 0` is skipped (afadjust.c:1348).
-            if glyph == GlyphId::NOTDEF {
-                continue;
-            }
-            // FreeType stores the code point and looks its flags up when the glyph
-            // is hinted (aflatin.c:4915). That lookup is a binary search over the
-            // unsorted table and can miss (U+0051), so the flags are what the
-            // search returns for the code point that is stored last.
-            let flags = database::lookup(codepoint);
-            let id = glyph.to_u32();
-            match glyphs.binary_search_by_key(&id, |entry| entry.0) {
-                Ok(ix) => glyphs[ix].1 = flags,
-                Err(ix) => glyphs.insert(ix, (id, flags)),
+            if glyph != GlyphId::NOTDEF {
+                codepoints.insert(glyph.to_u32(), codepoint);
             }
         }
-        Self { glyphs }
+        Self { codepoints }
     }
 
-    /// Returns the adjustment flags of `glyph`, or 0 if it has none
-    /// (aflatin.c:4910-4936 and aflatin.c:3606-3622).
+    /// `ft_hash_num_insert_no_overwrite`: true if the glyph was not in the map.
+    fn insert_no_overwrite(&mut self, glyph: u32, codepoint: u32) -> bool {
+        match self.codepoints.entry(glyph) {
+            alloc::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(codepoint);
+                true
+            }
+            alloc::collections::btree_map::Entry::Occupied(_) => false,
+        }
+    }
+
+    fn codepoint(&self, glyph: u32) -> Option<u32> {
+        self.codepoints.get(&glyph).copied()
+    }
+
+    /// Returns the adjustment flags of `glyph`, or 0 if it has none: FreeType looks the code
+    /// point up in the database when it hints the glyph (aflatin.c:4910-4936 and
+    /// aflatin.c:3606-3622); the binary search over the unsorted table can miss (U+0051).
     pub(crate) fn flags(&self, glyph: GlyphId) -> u16 {
-        let id = glyph.to_u32();
-        self.glyphs
-            .binary_search_by_key(&id, |entry| entry.0)
-            .map_or(0, |ix| self.glyphs[ix].1)
+        self.codepoint(glyph.to_u32()).map_or(0, database::lookup)
     }
 }
 

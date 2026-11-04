@@ -106,7 +106,11 @@ impl<'a> Shaper<'a> {
         }
     }
 
-    fn lookup_indices(&self, feature_ix: u16, all_locations: bool) -> Option<Vec<u16>> {
+    pub(super) fn gsub(&self) -> Option<&Gsub<'a>> {
+        self.gsub.as_ref()
+    }
+
+    pub(super) fn lookup_indices(&self, feature_ix: u16, all_locations: bool) -> Option<Vec<u16>> {
         let gsub = self.gsub.as_ref()?;
         let feature = gsub.feature_list().ok()?.get(feature_ix).ok()?.element;
         let mut lookups: Vec<_> = feature

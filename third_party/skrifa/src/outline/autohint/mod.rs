@@ -83,7 +83,7 @@ impl HintPlan {
         );
 
         let adjust_flags = if metrics.style_class().script.group == style::ScriptGroup::Default {
-            adjust::ReverseCharMap::new(|ch| context.map(ch)).flags(glyph_id)
+            adjust::ReverseCharMap::new(&context, metrics.style_class().script.tag).flags(glyph_id)
         } else {
             0
         };
