@@ -271,7 +271,7 @@ fn tilde_min_measurement(outline: &Outline, first: usize, min_y: i64, max_y: i64
         let p = &outline.points[ix];
         let prev = &outline.points[p.prev()];
         let next = &outline.points[p.next()];
-        if p.is_on_curve() || prev.is_on_curve() || next.is_on_curve() {
+        if !p.is_on_curve() || prev.is_on_curve() || next.is_on_curve() {
             continue;
         }
         let y = i64::from(p.y);
