@@ -1090,6 +1090,18 @@ impl FontDatabase {
             return Some(Arc::clone(font));
         }
 
+        // Qt's DirectWrite database decides what a family name is: the typographic family names,
+        // the GDI-compatible names of styled faces ("Segoe UI Semibold"), the named instances of
+        // variable fonts, each with its styles and `bestStyle` (see `directwrite_catalog`). A name
+        // it does not know (a font only in a search path added by the caller) is searched for in
+        // the font files.
+        #[cfg(windows)]
+        if let Some((raw_data, face)) = self.load_catalog_font(&key, style) {
+            self.cache.insert(style_key.clone(), Arc::clone(&face));
+            self.raw_cache.insert(style_key, raw_data);
+            return Some(face);
+        }
+
         if let Some((raw_data, face)) = self.find_and_load_font_file(&key, style) {
             self.cache.insert(style_key.clone(), Arc::clone(&face));
             self.raw_cache.insert(style_key, raw_data);
@@ -1490,6 +1502,42 @@ impl FontDatabase {
                 break;
             }
         }
+    }
+
+    /// The face Qt's DirectWrite font database resolves the family name `family_key` to: the
+    /// style of the registered family nearest to `style` (`bestStyle`), including the family
+    /// names of styled faces ("Segoe UI Semibold") and the named instances of variable fonts
+    /// ([`directwrite_catalog`](crate::text::directwrite_catalog)).
+    #[cfg(windows)]
+    fn load_catalog_font(
+        &mut self,
+        family_key: &str,
+        style: FaceStyle,
+    ) -> Option<(SharedFontData, SharedGlyphFace)> {
+        let catalog = crate::text::directwrite_catalog::catalog()?;
+        let source = catalog.resolve(family_key, style.weight, style.italic)?;
+        let canonical = source
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| source.path.clone());
+        let shared = match self.file_cache.get(&canonical) {
+            Some(shared) => shared.clone(),
+            None => {
+                let shared = SharedFontData::from_file(&canonical).ok()?;
+                self.file_cache.insert(canonical, shared.clone());
+                shared
+            }
+        };
+        let face = crate::text::glyph_face::parse_face_for_instance(
+            &shared,
+            source.face_index,
+            style.hint_style,
+            style.weight,
+            style.italic,
+            &source.axes,
+        )
+        .ok()?;
+        Some((shared, face))
     }
 
     /// Searches search paths for a font file matching family key, reusing existing

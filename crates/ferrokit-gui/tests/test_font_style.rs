@@ -39,16 +39,22 @@ fn bold_weights_load_the_bold_face_and_lighter_weights_the_regular_one() {
         "Bold must not be served from the regular file"
     );
 
-    // Qt picks the nearest of the faces a family has: Segoe UI ships regular and bold only.
-    for (weight, want_bold) in [
-        (FontWeight::Light, false),
-        (FontWeight::Medium, false),
-        (FontWeight::SemiBold, true),
-        (FontWeight::Black, true),
-    ] {
-        let len = file_len(&primary(&regular.clone().with_weight(weight), "SESSION"));
-        assert_eq!(len == bold_len, want_bold, "{weight:?}");
+    // Qt picks the nearest face of the family (measured with QFontInfo, PySide6 6.12: Light for
+    // 300, Regular for 500, Semibold for 600, Bold for 700, Black for 900): Segoe UI ships those
+    // as faces of its family. The regular face serves Medium; each other weight has its own file.
+    let weight_len = |weight| file_len(&primary(&regular.clone().with_weight(weight), "SESSION"));
+    assert_eq!(weight_len(FontWeight::Medium), regular_len, "Medium");
+    for weight in [FontWeight::Light, FontWeight::SemiBold, FontWeight::Black] {
+        let len = weight_len(weight);
+        assert!(
+            len != regular_len && len != bold_len,
+            "{weight:?} has a face of its own"
+        );
     }
+    assert_ne!(
+        weight_len(FontWeight::SemiBold),
+        weight_len(FontWeight::Black)
+    );
 
     // Bold glyphs are wider, so layout and painting see a different advance.
     let bold = regular.clone().with_weight(FontWeight::Bold);

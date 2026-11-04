@@ -7,6 +7,8 @@ pub mod color_glyph;
 pub mod core_text_face;
 pub mod cursor;
 #[cfg(windows)]
+pub(crate) mod directwrite_catalog;
+#[cfg(windows)]
 pub mod directwrite_face;
 pub mod document;
 pub mod document_fragment;
