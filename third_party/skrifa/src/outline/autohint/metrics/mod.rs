@@ -1,6 +1,6 @@
 //! Autohinting specific metrics.
 
-mod blues;
+pub(crate) mod blues;
 mod scale;
 mod widths;
 

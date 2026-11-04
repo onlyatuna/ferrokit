@@ -308,6 +308,9 @@ pub(crate) fn compute_blue_edges(
     // Initial threshold
     let initial_best_dest = fixed_mul(scale.units_per_em / 40, axis_scale).min(64 / 2);
     for edge in &mut axis.edges {
+        if edge.flags.0 & TopoFlags::NO_BLUE.0 != 0 {
+            continue;
+        }
         let mut best_blue = None;
         let mut best_is_neutral = false;
         let mut best_blue_idx = None;
