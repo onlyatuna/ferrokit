@@ -206,14 +206,25 @@ impl<'a> Shaper<'a> {
                         shaper: self,
                         lookup_list: Some(lookup_list),
                         kind: ClusterShaperKind::Lookups(feature),
+                        complex: false,
                     };
                 }
             }
         }
+        // hb_ot_shape_complex_categorize: the complex shaper of the script (Indic, Khmer, ...)
+        // is used unless the font was designed for 'DFLT' or 'latn' only.
+        let complex = self.mode == ShaperMode::BestEffort
+            && self.gsub.as_ref().is_some_and(|gsub| {
+                gsub.script_list()
+                    .ok()
+                    .and_then(|list| list.select(&ScriptTags::from_unicode(style.script.tag)))
+                    .is_some_and(|selected| !selected.is_fallback)
+            });
         ClusterShaper {
             shaper: self,
             lookup_list: None,
             kind: ClusterShaperKind::Nominal,
+            complex,
         }
     }
 
@@ -331,6 +342,9 @@ pub(crate) struct ClusterShaper<'a> {
     shaper: &'a Shaper<'a>,
     lookup_list: Option<SubstitutionLookupList<'a>>,
     kind: ClusterShaperKind,
+    /// HarfBuzz shapes the script with its complex shaper, because the font has GSUB data for
+    /// it (otherwise the default shaper, which does not insert a dotted circle, is used).
+    complex: bool,
 }
 
 impl ClusterShaper<'_> {
@@ -350,8 +364,7 @@ impl ClusterShaper<'_> {
                 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/afshaper.c#L639>
                 if self.shaper.mode == ShaperMode::Nominal && output.len() > 1 {
                     output.clear();
-                } else if self.shaper.mode != ShaperMode::Nominal && is_lone_dependent_mark(input)
-                {
+                } else if self.complex && is_lone_dependent_mark(input) {
                     // HarfBuzz's complex shapers (Indic, Khmer, Myanmar, USE) insert a dotted
                     // circle before a dependent sign that has no base, if the font has one;
                     // FreeType, which shapes with HarfBuzz, then measures the circle too.
