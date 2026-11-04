@@ -1,5 +1,6 @@
 //! Runtime autohinting support.
 
+mod adjust;
 mod context;
 mod hint;
 mod instance;

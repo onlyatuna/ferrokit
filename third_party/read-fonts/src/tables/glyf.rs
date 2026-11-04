@@ -52,6 +52,12 @@ impl PointMarker {
     ///
     /// Used by the automatic hinter.
     pub const NEAR: PointMarker = Self(0x8);
+
+    /// Marker for points that the auto-hinter ignores when it builds
+    /// segments, as the vertical separation adjustment database requires.
+    ///
+    /// Used by the automatic hinter.
+    pub const IGNORE: PointMarker = Self(0x40);
 }
 
 impl core::ops::BitOr for PointMarker {
