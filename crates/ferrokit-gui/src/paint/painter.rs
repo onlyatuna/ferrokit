@@ -1445,17 +1445,18 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
+            // An engine with horizontal sub-pixel positions (Qt's CoreText engine, and its
+            // DirectWrite engine at a device pixel ratio other than 1) draws the glyph at the
+            // fractional position of its pen, kept in 26.6 pixels (`QFixed::fromReal`), and blits
+            // it at the floor of that position (`QRasterPaintEngine::drawCachedGlyphs`). Qt's
+            // Windows engines without sub-pixel positions blit at that floor too.
+            let pen_x = (f64::from(px) * 64.0).trunc() as i64;
+            let subpixel_glyph = engine.supports_horizontal_subpixel_positions();
             // Qt draws LCD masks when ClearType is on and the face has them
             // (`QRasterPaintEngine::drawCachedGlyphs`, `alphaRGBMapForGlyph`).
             let lcd_glyph = lcd_lut
                 .as_ref()
-                .and_then(|_| engine.rasterize_lcd_glyph(glyph.glyph_id, font.size, dpr));
-            // An engine with horizontal sub-pixel positions (Qt's CoreText engine) draws the glyph
-            // at the fractional position of its pen, kept in 26.6 pixels (`QFixed::fromReal`), and
-            // blits it at the floor of that position (`QRasterPaintEngine::drawCachedGlyphs`).
-            let pen_x = (f64::from(px) * 64.0).trunc() as i64;
-            let subpixel_glyph =
-                lcd_glyph.is_none() && engine.supports_horizontal_subpixel_positions();
+                .and_then(|_| engine.rasterize_lcd_glyph_at(glyph.glyph_id, font.size, dpr, pen_x));
             let (metrics, bitmap) = match &lcd_glyph {
                 Some((metrics, bitmap)) => (*metrics, bitmap.clone()),
                 None if subpixel_glyph => {
@@ -1467,7 +1468,7 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
-            let start_x = if subpixel_glyph {
+            let start_x = if subpixel_glyph || cfg!(windows) {
                 (pen_x >> 6).clamp(-1_000_000_000, 1_000_000_000) as i32 + metrics.xmin
             } else {
                 glyph_pixel(px + metrics.xmin as f32)

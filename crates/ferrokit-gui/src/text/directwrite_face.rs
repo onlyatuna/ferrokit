@@ -7,25 +7,32 @@
 //! * one glyph per `IDWriteGlyphRunAnalysis`, at the origin, em size = the *logical* pixel size and
 //!   the device pixel ratio applied as the run's transform;
 //! * the rendering mode Qt derives from its default hinting preference (`determineHinting` /
-//!   `hintingPreferenceToRenderingMode`): `NATURAL` up to 16 px, `NATURAL_SYMMETRIC` above, with
-//!   grid fit default and ClearType antialiasing;
+//!   `hintingPreferenceToRenderingMode`): at a device pixel ratio other than 1 `NATURAL` up to
+//!   16 px and `NATURAL_SYMMETRIC` above, at ratio 1 (full hinting) `GDI_CLASSIC` up to 16 px
+//!   and `NATURAL_SYMMETRIC` above, with grid fit default and ClearType antialiasing;
 //! * the ClearType 3x1 texture is kept as three coverages per pixel for LCD text
 //!   (`alphaRGBMapForGlyph`, [`GlyphFace::rasterize_lcd_scaled`]) and reduced with `qGray` for
 //!   grey-scale text (`alphaMapForGlyph`); a BGR panel swaps red and blue first;
+//! * at a device pixel ratio other than 1 (`supportsHorizontalSubPixelPositions`) the glyph is
+//!   drawn at the sub-pixel offset of its pen through `DWRITE_MATRIX.dx` (bucket count from
+//!   twelve probe offsets, `QTextureGlyphCache::calculateSubPixelPositionCount`), and the painter
+//!   blits it at the floor of the pen position (`QRasterPaintEngine::drawCachedGlyphs`).
 //!
-//! Checked against Qt (PySide6) glyph by glyph at 125%, 150% and 200% scaling and 12-24 px
-//! with a comparison script: identical placement and bitmap size, mean
-//! coverage difference about 0.5/255, at most 4. The blended LCD pixels at 100% are pixel-exact
-//! for Latin text (`tests/test_lcd_text_parity.rs`); the glyph 中 at 12 px and 100% still differs
-//! from Qt (cause not investigated; Qt draws 100% with its GDI engine, not DirectWrite).
+//! Measured against Qt 6.12 (PySide6): single glyphs at the ratios where the rendering mode
+//! matches are bit-identical (A8 and LCD); the sizes where the `gasp` table of the font selects
+//! another mode at ratio 1 are not modelled yet, and neither is anything listed in the Windows
+//! text series as later work (synthesized weight and slant, font collections' face index,
+//! `needsNaturalMetrics` advances). The goldens in `tests/test_directwrite_placement.rs` pin
+//! whole strings measured from Qt.
 //!
 //! The font stays plain bytes in our memory (`SharedFontData`, handed to DirectWrite through an
 //! in-memory font file loader); character mapping and advances come from [`OutlineFace`], which
 //! reads them straight from the file. Only the coverage bitmap comes from DirectWrite.
 
 use crate::text::font::SharedFontData;
-use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics};
+use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics, subpixel_bucket_offset};
 use crate::text::outline_face::OutlineFace;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
@@ -104,6 +111,11 @@ static FACTORY: LazyLock<Option<Factory>> = LazyLock::new(|| unsafe {
     })
 });
 
+/// `DWRITE_MATRIX.dx` for a sub-pixel offset in 26.6 pixels (`QFixed::toReal`).
+fn subpixel_dx(subpixel: i32) -> f32 {
+    subpixel as f32 / 64.0
+}
+
 /// Whether DirectWrite can be used on this machine.
 pub fn is_available() -> bool {
     FACTORY.is_some()
@@ -116,6 +128,8 @@ pub struct DirectWriteFace {
     face: ManuallyDrop<IDWriteFontFace>,
     base: OutlineFace,
     upem: f32,
+    /// Qt's `m_subPixelPositionCount` per `(size, scale)`, see [`Self::subpixel_count`].
+    subpixel_counts: Mutex<HashMap<(u32, u32), i64>>,
 }
 
 // SAFETY: `Send` requires that the value may move to another thread. Every call on `face`,
@@ -199,6 +213,7 @@ impl DirectWriteFace {
             face: ManuallyDrop::new(face),
             base,
             upem,
+            subpixel_counts: Mutex::new(HashMap::new()),
         })
     }
 
@@ -207,9 +222,11 @@ impl DirectWriteFace {
     ///
     /// With a device pixel ratio other than 1, Qt's default hinting resolves to vertical hinting up
     /// to 16 px (`NATURAL`, "asymmetric") and none above (`NATURAL_SYMMETRIC`), the sizes Microsoft
-    /// recommends. At ratio 1 Qt does not use DirectWrite by default (its GDI engine draws instead),
-    /// so there is nothing to copy: `GDI_CLASSIC` up to 16 px is the DirectWrite mode that imitates
-    /// GDI. That branch has not been compared against Qt (this machine runs at 125%).
+    /// recommends. At ratio 1 Qt's DirectWrite engine (the only engine its Windows platform
+    /// plugin creates; measured against PySide6 6.12 at ratio 1) uses full hinting, whose rendering
+    /// mode is `GDI_CLASSIC` up to 16 px and `NATURAL_SYMMETRIC` above:
+    /// `hintingPreferenceToRenderingMode` picks `GDI_CLASSIC`, it does not imitate GDI. The
+    /// `gasp`/`maxp` overrides of `useSymmetricAntialiasing` (Qt 6.12) are not modelled yet.
     fn rendering_mode(size: f32, scale: f32) -> (DWRITE_RENDERING_MODE, DWRITE_MEASURING_MODE) {
         let scaled = (scale - 1.0).abs() > f32::EPSILON;
         match (scaled, size > 16.0) {
@@ -233,6 +250,7 @@ impl DirectWriteFace {
         glyph_id: u16,
         size: f32,
         scale: f32,
+        dx: f32,
     ) -> Option<(GlyphMetrics, Vec<u8>)> {
         let factory = FACTORY.as_ref()?;
         let advance = self.base.metrics_indexed(glyph_id, size * scale);
@@ -264,7 +282,7 @@ impl DirectWriteFace {
                 m12: 0.0,
                 m21: 0.0,
                 m22: scale,
-                dx: 0.0,
+                dx,
                 dy: 0.0,
             };
             // SAFETY: `run` and `transform` are live locals; the pointers in `run`
@@ -339,6 +357,39 @@ impl DirectWriteFace {
             ..blank
         };
         Some((metrics, texture))
+    }
+
+    /// `QFontEngine::m_subPixelPositionCount` at `size`: the number of different textures
+    /// DirectWrite draws for a glyph at twelve offsets of a pixel, decided by the first glyph with
+    /// an outline that is positioned (`QTextureGlyphCache::calculateSubPixelPositionCount`,
+    /// `populate`). 0 while no such glyph has been seen.
+    fn subpixel_count(&self, glyph_id: u16, size: f32, scale: f32) -> i64 {
+        let key = (size.to_bits(), scale.to_bits());
+        let mut counts = self
+            .subpixel_counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(&count) = counts.get(&key) {
+            return count;
+        }
+        if self.base.glyph_outline(glyph_id, size).is_none() {
+            return 0;
+        }
+        let mut images: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+        for i in 0..12 {
+            // `QFixed::fromReal(i / 12.0)`: truncated to 26.6.
+            let offset = (f64::from(i) / 12.0 * 64.0).trunc() as i32;
+            let (metrics, texture) = self
+                .rasterize_texture(glyph_id, size, scale, subpixel_dx(offset))
+                .unwrap_or_default();
+            let image = (metrics.width, metrics.height, texture);
+            if !images.contains(&image) {
+                images.push(image);
+            }
+        }
+        let count = images.len() as i64;
+        counts.insert(key, count);
+        count
     }
 
     /// The advance Qt's Windows font engines give a glyph when laying text out
@@ -432,10 +483,41 @@ impl GlyphFace for DirectWriteFace {
 
     /// Qt's `alphaMapForGlyph`: the texture reduced with `qGray`.
     fn rasterize_scaled(&self, glyph_id: u16, size: f32, scale: f32) -> (GlyphMetrics, Vec<u8>) {
+        self.rasterize_subpixel(glyph_id, size, scale, 0)
+    }
+
+    /// Qt's `alphaRGBMapForGlyph`: the texture itself.
+    fn rasterize_lcd_scaled(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+    ) -> Option<(GlyphMetrics, Vec<u8>)> {
+        self.rasterize_lcd_subpixel(glyph_id, size, scale, 0)
+    }
+
+    /// `QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions`: `determineHinting` is
+    /// not full hinting, which for the default hinting preference is a device pixel ratio other
+    /// than 1.
+    fn supports_horizontal_subpixel_positions(&self) -> bool {
+        crate::text::font_database::uses_directwrite_engine()
+    }
+
+    fn subpixel_position(&self, glyph_id: u16, size: f32, scale: f32, x: i64) -> i32 {
+        subpixel_bucket_offset(x, self.subpixel_count(glyph_id, size, scale))
+    }
+
+    fn rasterize_subpixel(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        subpixel: i32,
+    ) -> (GlyphMetrics, Vec<u8>) {
         if size <= 0.0 || scale <= 0.0 {
             return (GlyphMetrics::default(), Vec::new());
         }
-        match self.rasterize_texture(glyph_id, size, scale) {
+        match self.rasterize_texture(glyph_id, size, scale, subpixel_dx(subpixel)) {
             Some((metrics, texture)) => {
                 let grey = texture
                     .as_chunks::<3>()
@@ -449,17 +531,17 @@ impl GlyphFace for DirectWriteFace {
         }
     }
 
-    /// Qt's `alphaRGBMapForGlyph`: the texture itself.
-    fn rasterize_lcd_scaled(
+    fn rasterize_lcd_subpixel(
         &self,
         glyph_id: u16,
         size: f32,
         scale: f32,
+        subpixel: i32,
     ) -> Option<(GlyphMetrics, Vec<u8>)> {
         if size <= 0.0 || scale <= 0.0 {
             return None;
         }
-        self.rasterize_texture(glyph_id, size, scale)
+        self.rasterize_texture(glyph_id, size, scale, subpixel_dx(subpixel))
     }
 
     fn layout_advance_width(&self, glyph_id: u16, size: f32, direct_write: bool) -> Option<f32> {
