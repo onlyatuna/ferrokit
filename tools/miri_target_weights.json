@@ -354,6 +354,10 @@
       "SB": 4,
       "TB": 3
     },
+    "test_glyph_blit_placement": {
+      "SB": 2,
+      "TB": 2
+    },
     "test_gui_p2_hardening": {
       "SB": 1,
       "TB": 3

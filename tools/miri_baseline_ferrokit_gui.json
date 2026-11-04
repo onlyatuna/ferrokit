@@ -32,11 +32,13 @@
     "test_font_features",
     "test_text_layout_oracle",
     "test_text_tabs",
-    "test_font_line_metrics_oracle"
+    "test_font_line_metrics_oracle",
+    "test_glyph_blit_placement"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_directwrite_placement": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_font_style": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_macos_system_font": "macOS-only (cfg(target_os = \"macos\")): compiled out on the Linux Miri target",
     "test_qt_text_advances": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -673,6 +675,10 @@
     "lib::text::glyph_layout::tests::grapheme_advances_merge_marks_into_their_base_grapheme::TB": "pass",
     "lib::text::glyph_layout::tests::grapheme_advances_of_empty_text_are_empty::SB": "pass",
     "lib::text::glyph_layout::tests::grapheme_advances_of_empty_text_are_empty::TB": "pass",
+    "lib::text::glyph_layout::tests::lcd_glyph_at_ignores_the_pen_position_without_subpixel_positions::SB": "pass",
+    "lib::text::glyph_layout::tests::lcd_glyph_at_ignores_the_pen_position_without_subpixel_positions::TB": "pass",
+    "lib::text::glyph_layout::tests::lcd_glyph_at_renders_each_subpixel_offset_once::SB": "pass",
+    "lib::text::glyph_layout::tests::lcd_glyph_at_renders_each_subpixel_offset_once::TB": "pass",
     "lib::text::layout::tests::grapheme_advances_are_shaped_not_summed_per_grapheme::SB": "unsupported",
     "lib::text::layout::tests::grapheme_advances_are_shaped_not_summed_per_grapheme::TB": "unsupported",
     "lib::text::layout::tests::wrapping_measures_kerned_runs_as_shaped::SB": "unsupported",
@@ -810,6 +816,8 @@
     "test_font_line_metrics_oracle::linux_and_macos_engines_keep_fractional_metrics_at_a_ratio_of_one::SB": "unsupported",
     "test_font_line_metrics_oracle::linux_and_macos_engines_keep_fractional_metrics_at_a_ratio_of_one::TB": "unsupported",
     "test_font_line_metrics_oracle::default_hint_style_switch_controls_sub_pixel_rounding::SB": "unsupported",
-    "test_font_line_metrics_oracle::default_hint_style_switch_controls_sub_pixel_rounding::TB": "unsupported"
+    "test_font_line_metrics_oracle::default_hint_style_switch_controls_sub_pixel_rounding::TB": "unsupported",
+    "test_glyph_blit_placement::a_glyph_is_blitted_at_the_rounded_or_floored_pen_position_of_the_platform::SB": "unsupported",
+    "test_glyph_blit_placement::a_glyph_is_blitted_at_the_rounded_or_floored_pen_position_of_the_platform::TB": "unsupported"
   }
 }

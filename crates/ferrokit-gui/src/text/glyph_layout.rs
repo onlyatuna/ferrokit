@@ -35,7 +35,9 @@ type MonoGlyphCache = Arc<
     std::sync::Mutex<std::collections::HashMap<(u16, u32, u32, i32), (GlyphMetrics, Arc<[u8]>)>>,
 >;
 type LcdGlyphCache = Arc<
-    std::sync::Mutex<std::collections::HashMap<(u16, u32, u32), Option<(GlyphMetrics, Arc<[u8]>)>>>,
+    std::sync::Mutex<
+        std::collections::HashMap<(u16, u32, u32, i32), Option<(GlyphMetrics, Arc<[u8]>)>>,
+    >,
 >;
 /// Upper bound on cached glyph bitmaps per engine (a CJK font could otherwise grow without limit).
 const MONO_GLYPH_CACHE_LIMIT: usize = 4096;
@@ -268,16 +270,47 @@ impl FontEngine {
         size: f32,
         scale: f32,
     ) -> Option<(GlyphMetrics, Arc<[u8]>)> {
-        let key = (glyph_id, size.to_bits(), scale.to_bits());
+        self.cached_lcd_glyph(glyph_id, size, scale, 0, || {
+            self.face.rasterize_lcd_scaled(glyph_id, size, scale)
+        })
+    }
+
+    /// [`rasterize_lcd_glyph`](Self::rasterize_lcd_glyph) for a glyph whose pen is at `x` (26.6
+    /// device pixels): the LCD bitmap Qt's glyph cache draws for that sub-pixel position
+    /// (`alphaRGBMapForGlyph(glyph, subPixelPosition, transform)`), cached per position. Same as
+    /// `rasterize_lcd_glyph` when the face has no sub-pixel positions.
+    pub fn rasterize_lcd_glyph_at(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        x: i64,
+    ) -> Option<(GlyphMetrics, Arc<[u8]>)> {
+        if !self.supports_horizontal_subpixel_positions() {
+            return self.rasterize_lcd_glyph(glyph_id, size, scale);
+        }
+        let subpixel = self.face.subpixel_position(glyph_id, size, scale, x);
+        self.cached_lcd_glyph(glyph_id, size, scale, subpixel, || {
+            self.face
+                .rasterize_lcd_subpixel(glyph_id, size, scale, subpixel)
+        })
+    }
+
+    fn cached_lcd_glyph(
+        &self,
+        glyph_id: u16,
+        size: f32,
+        scale: f32,
+        subpixel: i32,
+        rasterize: impl FnOnce() -> Option<(GlyphMetrics, Vec<u8>)>,
+    ) -> Option<(GlyphMetrics, Arc<[u8]>)> {
+        let key = (glyph_id, size.to_bits(), scale.to_bits(), subpixel);
         if let Ok(guard) = self.lcd_cache.lock()
             && let Some(entry) = guard.get(&key)
         {
             return entry.clone();
         }
-        let rendered = self
-            .face
-            .rasterize_lcd_scaled(glyph_id, size, scale)
-            .map(|(metrics, bitmap)| (metrics, Arc::<[u8]>::from(bitmap)));
+        let rendered = rasterize().map(|(metrics, bitmap)| (metrics, Arc::<[u8]>::from(bitmap)));
         if let Ok(mut guard) = self.lcd_cache.lock() {
             if guard.len() >= MONO_GLYPH_CACHE_LIMIT {
                 guard.clear();
@@ -1189,6 +1222,111 @@ mod tests {
         let data = raw.as_slice().to_vec();
         let face = parse_face(&SharedFontData::from_vec(data.clone()), 0).unwrap();
         (Arc::new(data), face)
+    }
+
+    /// A face that records which rasterizer the engine asks for LCD coverage.
+    struct LcdStub {
+        subpixel: bool,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl LcdStub {
+        fn engine(subpixel: bool) -> (Arc<LcdStub>, FontEngine) {
+            let stub = Arc::new(LcdStub {
+                subpixel,
+                calls: std::sync::Mutex::new(Vec::new()),
+            });
+            let engine = FontEngine::new(stub.clone());
+            (stub, engine)
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl GlyphFace for LcdStub {
+        fn glyph_index(&self, _ch: char) -> u16 {
+            1
+        }
+
+        fn metrics_indexed(&self, _glyph_id: u16, _px: f32) -> GlyphMetrics {
+            GlyphMetrics::default()
+        }
+
+        fn rasterize_indexed(&self, _glyph_id: u16, _px: f32) -> (GlyphMetrics, Vec<u8>) {
+            (GlyphMetrics::default(), Vec::new())
+        }
+
+        fn rasterize_lcd_scaled(
+            &self,
+            _glyph_id: u16,
+            _size: f32,
+            _scale: f32,
+        ) -> Option<(GlyphMetrics, Vec<u8>)> {
+            self.calls.lock().unwrap().push("scaled".to_string());
+            Some((GlyphMetrics::default(), vec![255, 255, 255]))
+        }
+
+        fn supports_horizontal_subpixel_positions(&self) -> bool {
+            self.subpixel
+        }
+
+        fn subpixel_position(&self, _glyph_id: u16, _size: f32, _scale: f32, x: i64) -> i32 {
+            crate::text::glyph_face::subpixel_bucket_offset(x, 4)
+        }
+
+        fn rasterize_lcd_subpixel(
+            &self,
+            _glyph_id: u16,
+            _size: f32,
+            _scale: f32,
+            subpixel: i32,
+        ) -> Option<(GlyphMetrics, Vec<u8>)> {
+            self.calls.lock().unwrap().push(format!("at {subpixel}"));
+            Some((GlyphMetrics::default(), vec![subpixel as u8; 3]))
+        }
+    }
+
+    /// A face without horizontal sub-pixel positions (FreeType, Qt's DirectWrite engine at ratio 1)
+    /// gets the one LCD bitmap of a glyph wherever its pen is: the position never reaches it.
+    #[test]
+    fn lcd_glyph_at_ignores_the_pen_position_without_subpixel_positions() {
+        let (stub, engine) = LcdStub::engine(false);
+        let first = engine
+            .rasterize_lcd_glyph_at(1, 12.0, 1.0, 10 * 64)
+            .unwrap()
+            .1;
+        let second = engine
+            .rasterize_lcd_glyph_at(1, 12.0, 1.0, 10 * 64 + 40)
+            .unwrap()
+            .1;
+        assert_eq!(&*first, &[255, 255, 255]);
+        assert_eq!(&*second, &[255, 255, 255]);
+        assert_eq!(stub.calls(), ["scaled"]);
+    }
+
+    /// A face with them gets one LCD bitmap per sub-pixel offset of the pen
+    /// (`subPixelPositionFor`), rendered once per offset.
+    #[test]
+    fn lcd_glyph_at_renders_each_subpixel_offset_once() {
+        let (stub, engine) = LcdStub::engine(true);
+        let offset = |x: i64| crate::text::glyph_face::subpixel_bucket_offset(x, 4);
+        let (a, b, c) = (10 * 64 + 2, 10 * 64 + 20, 10 * 64 + 50);
+        assert_ne!(offset(a), offset(b));
+        assert_ne!(offset(b), offset(c));
+        for x in [a, b, c, a, b, c, a] {
+            let bitmap = engine.rasterize_lcd_glyph_at(1, 12.0, 1.0, x).unwrap().1;
+            assert_eq!(&*bitmap, &[offset(x) as u8; 3]);
+        }
+        assert_eq!(
+            stub.calls(),
+            [
+                format!("at {}", offset(a)),
+                format!("at {}", offset(b)),
+                format!("at {}", offset(c)),
+            ]
+        );
     }
 
     /// A face without OpenType data (the macOS system fallback faces) is measured glyph by glyph

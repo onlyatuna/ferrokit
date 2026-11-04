@@ -167,13 +167,15 @@ pub fn set_application_device_pixel_ratio(dpr: f32) {
     }
 }
 
-/// Whether text is laid out as Qt's DirectWrite font engine lays it out rather than as its GDI
-/// one: any application device pixel ratio other than 1 (`qFuzzyCompare`). In the source,
-/// `useDirectWrite` (qwindowsfontdatabase.cpp:42-61) picks DirectWrite for a ratio other than 1 with
-/// the default hinting preference; that at a ratio of 1 the engine is still DirectWrite, with full
-/// hinting, was observed (PySide6 6.11.2 under `QT_SCALE_FACTOR=0.8` on a 125 % display), not read
-/// from the source. A real GDI engine (`windows:nodirectwrite`) differs again, e.g. in
-/// `averageCharWidth` (`tmAveCharWidth`), and is not modelled.
+/// Whether text is laid out as Qt's DirectWrite font engine lays it out for a device pixel ratio
+/// other than 1 (`qFuzzyCompare`): vertical or no hinting, fractional advances and sub-pixel glyph
+/// positions. Qt's Windows platform plugin creates its DirectWrite engine at every ratio
+/// (`qwindowsintegration.cpp`, `qwindowsdirectwritefontdatabase.cpp`; measured against PySide6
+/// 6.11.2 and 6.12.0, including a ratio of exactly 1); at a ratio of 1 the default hinting
+/// preference resolves to full hinting (`determineHinting`), which rounds advances and has no
+/// sub-pixel positions. The GDI font database, whose `useDirectWrite` (qwindowsfontdatabase.cpp)
+/// picks DirectWrite by ratio, is only used with `windows:fontengine=gdi`; a real GDI engine
+/// differs again, e.g. in `averageCharWidth` (`tmAveCharWidth`), and is not modelled.
 pub fn uses_directwrite_engine() -> bool {
     let dpr = f64::from(application_device_pixel_ratio());
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()

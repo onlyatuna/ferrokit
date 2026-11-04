@@ -82,10 +82,24 @@ pub trait GlyphFace: Send + Sync {
         None
     }
 
+    /// [`rasterize_lcd_scaled`](Self::rasterize_lcd_scaled) drawn at the sub-pixel offset
+    /// `subpixel` (26.6 pixels, from [`subpixel_position`](Self::subpixel_position)): Qt's
+    /// `alphaRGBMapForGlyph(glyph, subPixelPosition, transform)`. `None` when the backend has no
+    /// LCD coverage.
+    fn rasterize_lcd_subpixel(
+        &self,
+        _glyph_id: u16,
+        _size: f32,
+        _scale: f32,
+        _subpixel: i32,
+    ) -> Option<(GlyphMetrics, Vec<u8>)> {
+        None
+    }
+
     /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
     /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
-    /// blits it at the floor of that position, instead of at the rounded one. Only Qt's CoreText
-    /// engine here.
+    /// blits it at the floor of that position, instead of at the rounded one. Qt's CoreText
+    /// engine, and its DirectWrite engine at a device pixel ratio other than 1.
     fn supports_horizontal_subpixel_positions(&self) -> bool {
         false
     }

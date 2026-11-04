@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! The DirectWrite backend rasterizes with the OS, but its bitmaps must sit where the outline backend's
 //! do (same pen origin and y convention) and carry the same amount of ink; only edge treatment
-//! (hinting, ClearType filtering) may differ. Pixel-level agreement with Qt is measured by
-//! a separate comparison script, which needs PySide6 and so cannot run here.
+//! (hinting, ClearType filtering) may differ. Whole strings against real Qt are pinned by
+//! `tests/test_directwrite_placement.rs`, whose goldens were measured with PySide6.
 #![cfg(windows)]
 
 use ferrokit_gui::text::directwrite_face::{DirectWriteFace, is_available};
