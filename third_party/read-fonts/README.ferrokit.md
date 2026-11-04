@@ -8,6 +8,17 @@
   (also vendored, `../skrifa`), which `ferrokit-gui` uses for its FreeType-style Linux glyph backend
   (`crates/ferrokit-gui/src/text/skrifa_face.rs`).
 
+## Licences, file by file
+
+Upstream is `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`, kept unchanged; the upstream files have no
+per-file headers). Compared with the unmodified crates.io 0.46.0 package: `src/model/glyph/outline/path.rs`
+and `src/tables/glyf/outline/path.rs` carry ferrokit's `implied_point` hook (original work; FreeType's
+`FT_Outline_Decompose` has no such hook and none of its code is used), `Cargo.toml` has its bench targets and
+dev-dependencies removed, and every other file is unchanged (`src/tables/name/language.rs` differs from the
+package only in its line endings, which the repository's `.gitattributes` normalises). The whole crate is
+therefore `MIT OR Apache-2.0`, ferrokit's changes under the same terms; no file contains FreeType-derived
+code.
+
 ## Changes against upstream
 
 1. `PathSink::implied_point` (new, defaulted, no-op; `src/model/glyph/outline/path.rs`, forwarded by

@@ -1,3 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// `move_original`, `move_point` and `point_displacement` follow FreeType 2.14.2: `Direct_Move`,
+// `Direct_Move_Orig` and `Compute_Point_Displacement` of src/truetype/ttinterp.c, and `mul_fix`
+// is `FT_MulFix` of src/base/ftcalc.c. Portions of this software are copyright (C) 1996-2025 The
+// FreeType Project (www.freetype.org). All rights reserved. Those parts are used under the
+// FreeType License (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit repository); the name of the
+// FreeType Project is not used to endorse or promote anything. The rest of the file is under
+// MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+
 //! Glyph zones.
 
 use read_fonts::{

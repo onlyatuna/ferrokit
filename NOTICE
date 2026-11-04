@@ -44,23 +44,66 @@ which includes LGPL-3.0-only (checked in the qtbase checkout named above):
 
 FreeType
 --------
-crates/ferrokit-gui/src/text/ftgrays.rs is a Rust port of parts of the FreeType 2.14.2 font engine
-(https://freetype.org): the anti-aliasing rasterizer src/smooth/ftgrays.c and src/smooth/ftsmooth.c,
-and the bitmap box and outline walk of src/base/ftobjs.c and src/base/ftoutln.c. Portions of this
+Parts of ferrokit are ports of FreeType 2.14.2 code (https://freetype.org). Portions of this
 software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org). All rights reserved.
-That code is used under the FreeType License (LICENSES/FTL.txt):
+That code is used under the FreeType License (FTL, LICENSES/FTL.txt, the file docs/FTL.TXT of
+FreeType 2.14.2, unchanged), and the name of the FreeType Project is not used to endorse or promote
+anything:
 
   Copyright (C) 1996-2025 by
   David Turner, Robert Wilhelm, and Werner Lemberg.
 
+Where it is, file by file (every one of them says so in its first lines, with the SPDX line
+`... AND FTL`, and names the C functions it follows):
+
+  crates/ferrokit-gui/src/text/ftgrays.rs  `LGPL-3.0-only AND FTL`: a Rust port of the
+      anti-aliasing rasterizer src/smooth/ftgrays.c and src/smooth/ftsmooth.c, and the bitmap box
+      and outline walk of src/base/ftobjs.c and src/base/ftoutln.c.
+  third_party/skrifa/src/outline/glyf/hint/projection.rs, zone.rs, graphics.rs: the arithmetic of
+      `Compute_Funcs`, `Direct_Move`, `Direct_Move_Orig`, `Compute_Point_Displacement` and the
+      `moveVector` member of the TrueType interpreter, src/truetype/ttinterp.c and ttinterp.h, and
+      `FT_MulFix` of src/base/ftcalc.c.
+  third_party/skrifa/src/outline/glyf/mod.rs, third_party/skrifa/src/scaler/truetype.rs: the test of
+      `FT_Load_Glyph` (src/base/ftobjs.c) that sends a TrueType font to the auto-hinter.
+  third_party/skrifa/src/outline/cff/hint/darken.rs, cff/hint.rs, cff/mod.rs: CFF stem darkening,
+      `cf2_computeDarkening`, `cf2_font_setup`, `cf2_getGlyphOutline`, `cf2_glyphpath_*`,
+      `cf2_hintmap_*` and `cf2_blues_init` of src/psaux/psfont.c, pshints.c and psblues.c,
+      `cff_slot_load` of src/cff/cffgload.c, and `FT_MulFix`, `FT_DivFix`, `FT_MulDiv`, `FT_MSB` of
+      src/base/ftcalc.c. Each of those files is `(MIT OR Apache-2.0) AND FTL`: its upstream part is
+      MIT OR Apache-2.0 and the FreeType-derived part is under the FTL.
+
 FreeType is offered under two mutually exclusive licences, of which one must be chosen (its
-LICENSE.TXT): the FreeType License (FTL) or the GNU GPL version 2 or later. ferrokit uses the FTL,
-which is compatible with the GPL version 3 that the LGPL-3.0-only is built on; the GPL alternative
-would put the file under a stronger copyleft than the rest of the library. The file therefore
-carries `LGPL-3.0-only AND FTL`: the FreeType-derived code under the FTL, ferrokit's own changes
-under the project licence. The FTL's credit and no-warranty terms apply to every binary that
-contains it (see above). The FTL text in LICENSES/FTL.txt is the file docs/FTL.TXT of FreeType
-2.14.2, unchanged.
+LICENSE.TXT): the FreeType License (FTL) or the GNU GPL version 2 or later. ferrokit takes the FTL
+(the file headers of ftgrays.c and ttinterp.c say "the FreeType project license, LICENSE.TXT"): it is
+compatible with the GPL version 3 that the LGPL-3.0-only is built on (LICENSE.TXT says so), and the
+GPL alternative would put the code under a stronger copyleft than the rest of the library. The FTL's
+credit and no-warranty terms apply to every program that contains the code (the credit is the
+paragraph above). The Adobe code below is available only under the FTL, so the FTL is the only
+choice for the CFF files whatever one thinks of the rest.
+
+The CFF engine of FreeType (src/psaux/psfont.c, pshints.c, psblues.c) is Adobe's:
+
+  Copyright 2007-2014 Adobe Systems Incorporated (psblues.c: 2009-2014).
+
+  This software, and all works of authorship, whether in source or object code form as indicated
+  by the copyright notice(s) included herein (collectively, the "Work") is made available, and may
+  only be used, modified, and distributed under the FreeType Project License, LICENSE.TXT.
+  Additionally, subject to the terms and conditions of the FreeType Project License, each
+  contributor to the Work hereby grants to any individual or legal entity exercising permissions
+  granted by the FreeType Project License and this section (hereafter, "You" or "Your") a
+  perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in
+  this section) patent license to make, have made, use, offer to sell, sell, import, and otherwise
+  transfer the Work, where such license applies only to those patent claims licensable by such
+  contributor that are necessarily infringed by their contribution(s) alone or by combination of
+  their contribution(s) with the Work to which such contribution(s) was submitted. If You institute
+  patent litigation against any entity (including a cross-claim or counterclaim in a lawsuit)
+  alleging that the Work or a contribution incorporated within the Work constitutes direct or
+  contributory patent infringement, then any patent licenses granted to You under this License for
+  that Work shall terminate as of the date such litigation is filed.
+
+  By using, modifying, or distributing the Work you indicate that you have read and understood the
+  terms and conditions of the FreeType Project License as well as those provided in this section,
+  and you accept them fully.
 
 
 Vendored crates (third_party/)
@@ -69,9 +112,14 @@ third_party/skrifa (skrifa 0.49.0) and third_party/read-fonts (read-fonts 0.46.0
 the crates.io releases of the fontations project (https://github.com/googlefonts/fontations,
 commit 47a301615fd95acf0da9fb7dbcd0ea7c7df36943), Copyright (c) 2019 Fontations Developers,
 licensed under MIT OR Apache-2.0; their LICENSE-MIT and LICENSE-APACHE are in each directory.
-ferrokit uses them under the MIT license. Each directory's README.ferrokit.md lists the changes
-made to the upstream code (among them a port of parts of FreeType 2.14.2's TrueType interpreter
-and CFF engine, under the FreeType License above, as the Rust port of ftgrays is).
+ferrokit uses them under the MIT license, except for the eight files listed above, which are
+`(MIT OR Apache-2.0) AND FTL` (the upstream part under the MIT license, the FreeType-derived part
+under the FTL). Every other file of skrifa, and all of read-fonts, whose only change is the
+`implied_point` hook of the pen interface (original work, not derived from FreeType code), is
+under the upstream terms, MIT OR Apache-2.0, and so are ferrokit's changes to them. The
+Cargo.toml of skrifa says `(MIT OR Apache-2.0) AND FTL` because a package has one expression, and
+lists the files for each; that of read-fonts says `MIT OR Apache-2.0`. Each directory's
+README.ferrokit.md has the table of changes and of licences.
 
 Crates added to Cargo.lock with them (all from crates.io, unmodified): font-types (MIT OR
 Apache-2.0), once_cell (MIT OR Apache-2.0), stable_deref_trait (MIT OR Apache-2.0), foldhash

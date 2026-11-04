@@ -1,3 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// The `move_vector` field mirrors `moveVector` of FreeType 2.14.2's `TT_ExecContext`
+// (src/truetype/ttinterp.h). Portions of this software are copyright (C) 1996-2025 The FreeType
+// Project (www.freetype.org). All rights reserved. That part is used under the FreeType License
+// (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit repository); the name of the FreeType Project
+// is not used to endorse or promote anything. The rest of the file is under MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+
 //! Graphics state for the TrueType interpreter.
 
 use super::{

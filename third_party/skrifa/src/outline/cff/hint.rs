@@ -1,3 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// The stem darkening hooks of this file (`darken_x`, `darken_y`, `stem_darkened`, the delayed
+// hint maps and moves, `HintingSink::unhinted`) follow FreeType 2.14.2: `cf2_font_setup`,
+// `cf2_hintmap_*`, `cf2_glyphpath_moveTo`/`lineTo`/`curveTo`/`closeOpenPath` of
+// src/psaux/pshints.c and psfont.c, and the blue zone changes of `cf2_blues_init` in
+// src/psaux/psblues.c. Portions of this software are copyright (C) 1996-2025 The FreeType
+// Project (www.freetype.org). All rights reserved. The Adobe code of psaux is also
+// Copyright 2007-2014 Adobe Systems Incorporated and is available only under the FreeType
+// License (FTL), with the patent licence that its header gives (reproduced in the NOTICE file of
+// the ferrokit repository, together with the FTL in LICENSES/FTL.txt). Those parts are used under
+// the FTL and the name of the FreeType Project is not used to endorse or promote anything. The
+// rest of the file is under MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+//   Copyright 2007-2014 Adobe Systems Incorporated.
+
 //! CFF hinting.
 
 use read_fonts::{

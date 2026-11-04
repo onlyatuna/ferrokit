@@ -1,3 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// The stem darkening code of this file (`subfont_with`, `draw_darkened`, the unhinted scaling in
+// `UnhintedScalingSink`, the `StdVW`/`StdHW` reading) follows FreeType 2.14.2: `cf2_font_setup`,
+// `cf2_getGlyphOutline` (src/psaux/psfont.c), `cf2_getScaleAndHintFlag` and `ps_builder_add_point`
+// (src/psaux), and `cff_slot_load` (src/cff/cffgload.c). Portions of this software are copyright
+// (C) 1996-2025 The FreeType Project (www.freetype.org). All rights reserved. The Adobe code of
+// psaux is also Copyright 2007-2014 Adobe Systems Incorporated and is available only under the
+// FreeType License (FTL), with the patent licence that its header gives (reproduced in the NOTICE
+// file of the ferrokit repository, together with the FTL in LICENSES/FTL.txt). Those parts are
+// used under the FTL and the name of the FreeType Project is not used to endorse or promote
+// anything. The rest of the file is under MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+//   Copyright 2007-2014 Adobe Systems Incorporated.
+
 //! Support for scaling CFF outlines.
 
 mod hint;

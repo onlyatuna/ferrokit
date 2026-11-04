@@ -1,3 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// The choice between the interpreter and the auto-hinter in `prefer_interpreter` is the test of
+// `FT_Load_Glyph` in FreeType 2.14.2, src/base/ftobjs.c (which this file already followed in
+// FreeType 2.13's form). Portions of this software are copyright (C) 1996-2025 The FreeType
+// Project (www.freetype.org). All rights reserved. That part is used under the FreeType License
+// (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit repository); the name of the FreeType Project
+// is not used to endorse or promote anything. The rest of the file is under MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+
 //! Scaling support for TrueType outlines.
 
 mod hint;

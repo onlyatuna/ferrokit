@@ -28,11 +28,28 @@ categories = [
     "parsing",
     "graphics",
 ]
-license = "MIT OR Apache-2.0"
+# Upstream says `MIT OR Apache-2.0`. Ferrokit's copy has eight files that are also derived from FreeType
+# 2.14.2 and carry `(MIT OR Apache-2.0) AND FTL` in their own SPDX line; every other file is still
+# `MIT OR Apache-2.0`. A Cargo manifest has one expression per package, so it lists the licences of all
+# files and the table below gives the scope (README.ferrokit.md has the same table).
+license = "(MIT OR Apache-2.0) AND FTL"
 repository = "https://github.com/googlefonts/fontations"
 
 [package.metadata.docs.rs]
 all-features = true
+
+[package.metadata.ferrokit-licenses]
+default = "MIT OR Apache-2.0"
+"(MIT OR Apache-2.0) AND FTL" = [
+    "src/outline/cff/hint/darken.rs",
+    "src/outline/cff/hint.rs",
+    "src/outline/cff/mod.rs",
+    "src/outline/glyf/hint/graphics.rs",
+    "src/outline/glyf/hint/projection.rs",
+    "src/outline/glyf/hint/zone.rs",
+    "src/outline/glyf/mod.rs",
+    "src/scaler/truetype.rs",
+]
 
 [features]
 agl = ["read-fonts/agl"]

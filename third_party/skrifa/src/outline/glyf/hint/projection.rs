@@ -1,3 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), changed by ferrokit.
+// `update_projection_state` follows FreeType 2.14.2: `Compute_Funcs` of src/truetype/ttinterp.c
+// (the rounded `F_dot_P`, `moveVector`). Portions of this software are copyright (C) 1996-2025
+// The FreeType Project (www.freetype.org). All rights reserved. Those parts are used under the
+// FreeType License (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit repository); the name of the
+// FreeType Project is not used to endorse or promote anything. The rest of the file is under
+// MIT OR Apache-2.0.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+
 //! Point projection.
 
 use super::graphics::{CoordAxis, GraphicsState};

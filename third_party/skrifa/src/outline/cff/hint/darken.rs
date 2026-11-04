@@ -1,3 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
+// Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate), added by ferrokit.
+// This file is a port of FreeType 2.14.2 code: `cf2_computeDarkening`, `cf2_font_setup` (the
+// darkening amounts), `cf2_getGlyphOutline` and the `cf2_glyphpath_*` functions, in
+// src/psaux/psfont.c and src/psaux/pshints.c, and `FT_MulFix`, `FT_DivFix`, `FT_MulDiv`, `FT_MSB`
+// of src/base/ftcalc.c. Portions of this software are copyright (C) 1996-2025 The FreeType
+// Project (www.freetype.org). All rights reserved. The Adobe code of psaux is also
+// Copyright 2007-2014 Adobe Systems Incorporated and is available only under the FreeType
+// License (FTL), with the patent licence that its header gives (reproduced in the NOTICE file of
+// the ferrokit repository, together with the FTL in LICENSES/FTL.txt). This file is used under the
+// FTL for those parts and the name of the FreeType Project is not used to endorse or promote
+// anything. The other files of this crate keep the terms in their own markings.
+//
+//   Copyright (C) 1996-2025 by David Turner, Robert Wilhelm, and Werner Lemberg.
+//   Copyright 2007-2014 Adobe Systems Incorporated.
+
 //! CFF stem darkening.
 //!
 //! A port of the stem darkening of FreeType 2.14.2's Adobe CFF engine, which

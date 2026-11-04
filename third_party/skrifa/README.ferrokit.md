@@ -15,6 +15,31 @@ FreeType (2.13) in one place and a newer one (2.15) in another, and skrifa does 
 stems of CFF glyphs, which Qt's FreeType engine does. The changes below make its outlines equal
 FreeType 2.14.2's.
 
+## Licences, file by file
+
+Upstream is `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`, kept unchanged; the upstream files have
+no per-file headers). The comparison is against the unmodified crates.io 0.49.0 package and against the
+FreeType 2.14.2 sources:
+
+| Files | Content | Licence |
+|---|---|---|
+| everything not listed below (`src/**`, `generated/`, `README.md`) | upstream, unchanged | `MIT OR Apache-2.0` |
+| `src/outline/hint.rs`, `src/outline/mod.rs`, `src/scaler/tests.rs` | upstream with ferrokit's plumbing: the `cff_stem_darkening` option, `DrawSettings::with_cff_stem_darkening`, `ErasedPen::implied_point`, option literals in tests. Original work, not copied from FreeType | `MIT OR Apache-2.0` (ferrokit's changes under the same terms) |
+| `Cargo.toml` | upstream with the test targets and dev-dependencies removed, the licence expression below and the table in `[package.metadata.ferrokit-licenses]` | n/a |
+| `src/outline/glyf/hint/graphics.rs`, `projection.rs`, `zone.rs` | upstream with the FreeType 2.14.2 arithmetic of `Compute_Funcs`, `Direct_Move`, `Direct_Move_Orig`, `Compute_Point_Displacement` (src/truetype/ttinterp.c) and `FT_MulFix` (src/base/ftcalc.c) | `(MIT OR Apache-2.0) AND FTL` |
+| `src/outline/glyf/mod.rs`, `src/scaler/truetype.rs` | upstream with the test of `FT_Load_Glyph` (src/base/ftobjs.c) for the auto-hinter | `(MIT OR Apache-2.0) AND FTL` |
+| `src/outline/cff/hint/darken.rs` (new), `src/outline/cff/hint.rs`, `src/outline/cff/mod.rs` | upstream with the CFF stem darkening of src/psaux/psfont.c, pshints.c, psblues.c (Adobe) and `cff_slot_load` (src/cff/cffgload.c) | `(MIT OR Apache-2.0) AND FTL` |
+
+The `AND` in the last three rows is per file: the file combines upstream code (MIT OR Apache-2.0) with
+FreeType-derived code (FTL, which asks for credit and for no use of the FreeType Project's name for
+endorsement; the credit and the Adobe notice with its patent licence are in each file's first lines and
+in the `NOTICE` file of the repository, the FTL text in `LICENSES/FTL.txt`). The Adobe files of psaux
+are available only under the FTL (not the GPL), so the FTL is the one chosen for all FreeType code.
+The package's `Cargo.toml` says `(MIT OR Apache-2.0) AND FTL` because a manifest has one expression
+per package: it lists the licences of the files a user of the package meets, and the scope is in the
+table above and in `[package.metadata.ferrokit-licenses]`. A user who takes only the files marked
+`MIT OR Apache-2.0` is under the upstream terms.
+
 ## Changes against upstream
 
 1. TrueType interpreter, FreeType 2.14 arithmetic for moves along a vector that is neither axis
