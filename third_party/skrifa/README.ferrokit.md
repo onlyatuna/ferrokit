@@ -113,9 +113,16 @@ the separation itself of `aflatin.c`. Also ported from 2.14: the real-serif chec
 The bottom blue zone properties of `afblue.dat` are set by hand in `generated/generated_autohint_styles.rs`
 (23 entries; the generator `skrifa/scripts/gen_autohint_styles.py` of fontations predates them and is not
 vendored; every blue string and property of the table was checked against FreeType 2.14.2's `afblue.dat`).
-The reference FreeType (Ubuntu 2.14.2) loads HarfBuzz at run time; known difference: blue zones that
-HarfBuzz computes for Indic clusters (dotted circle inserted) are not reproduced (U+20B9 of Segoe UI),
-and FreeType's GSUB extension of the reverse character map (single/alternate substitutions) is not ported.
+The reference FreeType (Ubuntu 2.14.2) loads HarfBuzz at run time, so two more things are ported:
+`adjust/gsub.rs` extends the reverse character map through the GSUB single and alternate
+substitutions of the style's script (`af_parse_gsub`, `af_map_lookup`, `add_substitute`, with the hash
+table of `fthash.c` for the visiting order and the first-glyph-of-the-last-range quirk of
+`af_coverage_iterator`), and the blue strings of Indic, Khmer, Myanmar and USE scripts measure the
+dotted circle that HarfBuzz inserts before a lone dependent sign (`shape.rs`, only when the font has
+GSUB data for the script, as HarfBuzz then uses its complex shaper). Known differences: the Unicode
+ranges that FreeType 2.14 added to the style tables are not in `generated/generated_autohint_styles.rs`,
+and the style `latn_c2sc` and the Mongolian and Myanmar digits of Segoe UI differ in some glyphs; see
+the module documentation of `skrifa_face.rs` in `ferrokit-gui`.
 
 To update: copy the new crates.io release, redo change 1 (about 30 lines), change 2 and change 3 (the
 new file `darken.rs` and the hooks listed there), then run the FreeType comparison tests of
