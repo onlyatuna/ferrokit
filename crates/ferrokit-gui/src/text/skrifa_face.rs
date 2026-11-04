@@ -201,6 +201,9 @@ enum Hinter {
     Auto,
 }
 
+/// Hinting instances by `ysize` and hinter; `None` where skrifa cannot make one.
+type InstanceCache = HashMap<(i64, Hinter), Option<Arc<HintingInstance>>>;
+
 /// A face rendered as Qt's FreeType engine renders it for one hint style, fixed when the face is
 /// built (`QFontEngineFT::default_hint_style`).
 pub struct SkrifaFace {
@@ -217,7 +220,7 @@ pub struct SkrifaFace {
     /// Auto-hinter glyph styles, computed once per font (`af_face_globals_new`).
     styles: OnceLock<GlyphStyles>,
     /// Hinting instances by `ysize` (`FT_Size` with its `prep` run) and hinter.
-    instances: Mutex<HashMap<(i64, Hinter), Option<Arc<HintingInstance>>>>,
+    instances: Mutex<InstanceCache>,
     /// `TRUNC(ROUND(advance.x))` of hinted glyphs by glyph and `ysize`.
     advances: Mutex<HashMap<(u16, i64), i64>>,
 }

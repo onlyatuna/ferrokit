@@ -117,11 +117,11 @@ pub fn mul_fix(a: i64, b: i64) -> i64 {
 pub fn div_fix(a: i64, b: i64) -> i64 {
     let negative = (a < 0) != (b < 0);
     let (a, b) = (a.unsigned_abs(), b.unsigned_abs());
-    let q = if b > 0 {
-        (a.wrapping_shl(16).wrapping_add(b >> 1) / b) as i64
-    } else {
-        0x7FFF_FFFF
-    };
+    let q = a
+        .wrapping_shl(16)
+        .wrapping_add(b >> 1)
+        .checked_div(b)
+        .map_or(0x7FFF_FFFF, |q| q as i64);
     if negative { q.wrapping_neg() } else { q }
 }
 
@@ -129,11 +129,11 @@ pub fn div_fix(a: i64, b: i64) -> i64 {
 pub fn mul_div(a: i64, b: i64, c: i64) -> i64 {
     let negative = ((a < 0) != (b < 0)) != (c < 0);
     let (a, b, c) = (a.unsigned_abs(), b.unsigned_abs(), c.unsigned_abs());
-    let d = if c > 0 {
-        (a.wrapping_mul(b).wrapping_add(c >> 1) / c) as i64
-    } else {
-        0x7FFF_FFFF
-    };
+    let d = a
+        .wrapping_mul(b)
+        .wrapping_add(c >> 1)
+        .checked_div(c)
+        .map_or(0x7FFF_FFFF, |q| q as i64);
     if negative { d.wrapping_neg() } else { d }
 }
 

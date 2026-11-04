@@ -819,6 +819,8 @@
     "test_font_line_metrics_oracle::default_hint_style_switch_controls_sub_pixel_rounding::SB": "unsupported",
     "test_font_line_metrics_oracle::default_hint_style_switch_controls_sub_pixel_rounding::TB": "unsupported",
     "test_glyph_blit_placement::a_glyph_is_blitted_at_the_rounded_or_floored_pen_position_of_the_platform::SB": "unsupported",
-    "test_glyph_blit_placement::a_glyph_is_blitted_at_the_rounded_or_floored_pen_position_of_the_platform::TB": "unsupported"
+    "test_glyph_blit_placement::a_glyph_is_blitted_at_the_rounded_or_floored_pen_position_of_the_platform::TB": "unsupported",
+    "test_ft_golden::draw_text_equals_qts_draw_text::SB": "unsupported",
+    "test_ft_golden::draw_text_equals_qts_draw_text::TB": "unsupported"
   }
 }
