@@ -211,22 +211,23 @@ impl<'a> Shaper<'a> {
                 }
             }
         }
-        // hb_ot_shape_complex_categorize: the complex shaper of the script (Indic, Khmer, ...)
-        // is used unless the font was designed for 'DFLT' or 'latn' only.
+        // hb_ot_shape_complex_categorize: Khmer and the USE scripts (Saurashtra) always get their
+        // complex shaper (Tahoma has no 'khmr' in GSUB and HarfBuzz still inserts the circle);
+        // the Indic ones only if the font has GSUB data for the script (not just 'DFLT' or
+        // 'latn'), and Myanmar only for the script tag 'mym2' ('mymr' gives no dotted circle).
+        let tag = style.script.tag;
         let complex = self.mode == ShaperMode::BestEffort
-            && self.gsub.as_ref().is_some_and(|gsub| {
-                gsub.script_list()
-                    .ok()
-                    .and_then(|list| list.select(&ScriptTags::from_unicode(style.script.tag)))
-                    .is_some_and(|selected| {
-                        // HarfBuzz shapes Myanmar with its Myanmar shaper only for the new
-                        // script tag 'mym2'; 'mymr' selects the Zawgyi shaper, which inserts
-                        // no dotted circle.
-                        !selected.is_fallback
-                            && (style.script.tag != Tag::new(b"Mymr")
-                                || selected.tag == Tag::new(b"mym2"))
-                    })
-            });
+            && (tag == Tag::new(b"Khmr")
+                || tag == Tag::new(b"Saur")
+                || self.gsub.as_ref().is_some_and(|gsub| {
+                    gsub.script_list()
+                        .ok()
+                        .and_then(|list| list.select(&ScriptTags::from_unicode(tag)))
+                        .is_some_and(|selected| {
+                            !selected.is_fallback
+                                && (tag != Tag::new(b"Mymr") || selected.tag == Tag::new(b"mym2"))
+                        })
+                }));
         ClusterShaper {
             shaper: self,
             lookup_list: None,
