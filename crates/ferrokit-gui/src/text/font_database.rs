@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -1126,10 +1128,28 @@ impl FontDatabase {
 
         #[cfg(windows)]
         {
-            let substitute = family_for_style_hint(hint);
-            if !key.eq_ignore_ascii_case(substitute)
-                && let Some(fallback) = self.load_font_styled(substitute, style, hint)
-            {
+            // A family that is not there is replaced by the first family that exists of what Qt's
+            // fallback pass lists (`QFontDatabasePrivate::findFont`, step 4): the family of the
+            // style hint, then the ones `extraTryFontsForFamily` names for the user's language.
+            let mut candidates = vec![family_for_style_hint(hint).to_string()];
+            if let Some(catalog) = crate::text::directwrite_catalog::catalog() {
+                candidates.extend(windows_fallback_families(
+                    catalog,
+                    &key,
+                    0,
+                    style.italic,
+                    hint,
+                    "Zyyy",
+                    unicode_script::Script::Common,
+                ));
+            }
+            for substitute in candidates {
+                if key.eq_ignore_ascii_case(&substitute) {
+                    continue;
+                }
+                let Some(fallback) = self.load_font_styled(&substitute, style, hint) else {
+                    continue;
+                };
                 self.cache.insert(style_key.clone(), Arc::clone(&fallback));
                 let sub_key = style.cache_key(&substitute.to_ascii_lowercase(), hint);
                 if let Some(raw) = self.raw_cache.get(&sub_key).cloned() {
@@ -1262,6 +1282,10 @@ impl FontDatabase {
             format!("resolve_font_engines_for_text({:?})", font.family)
         });
         let mut engines = self.resolve_primary_engine(font);
+        #[cfg(windows)]
+        if self.append_script_fallback_engines(&mut engines, text, font) {
+            return engines;
+        }
         self.append_fallback_engines(&mut engines, Some(text), FaceStyle::of(font));
         engines
     }
@@ -1406,6 +1430,112 @@ impl FontDatabase {
                 }
             }
         }
+    }
+
+    /// Qt's fallbacks on Windows (`QFontEngineMulti`, `QWindowsDirectWriteFontDatabase::
+    /// fallbacksForFamily`): each script item of `text` has its own list of fallback families,
+    /// and a character the primary font lacks takes the first family of its item's list that has
+    /// a glyph for it. The engines are loaded only as far as the text needs them, appended to
+    /// `engines`, and the order of each script's list is kept in the chains the primary engine
+    /// carries ([`FontEngine::with_script_chains`]).
+    #[cfg(windows)]
+    fn append_script_fallback_engines(
+        &mut self,
+        engines: &mut Vec<FontEngine>,
+        text: &str,
+        font: &Font,
+    ) -> bool {
+        use crate::text::directwrite_catalog as dw;
+        use crate::text::glyph_layout::{ScriptChains, fallback_script_key, is_zero_width};
+        let Some(catalog) = dw::catalog() else {
+            return false;
+        };
+        if engines.is_empty() {
+            return false;
+        }
+        let style = FaceStyle::of(font);
+        let primary_name = if catalog.family_traits(&font.family).is_some() {
+            font.family.clone()
+        } else {
+            family_for_style_hint(font.style_hint).to_string()
+        };
+        let (fixed_pitch, systems) = catalog.family_traits(&primary_name).unwrap_or((false, 0));
+        let hint = if font.style_hint == StyleHint::AnyStyle && fixed_pitch {
+            StyleHint::TypeWriter
+        } else {
+            font.style_hint
+        };
+        let primary = engines[0].clone();
+        let mut lists: HashMap<&'static str, Vec<String>> = HashMap::new();
+        let mut found: HashMap<&'static str, Vec<(usize, usize)>> = HashMap::new();
+        let mut misses: HashSet<(&'static str, char)> = HashSet::new();
+        let items = crate::text::shaping_plan::script_items(text);
+        for (n, &(start, script)) in items.iter().enumerate() {
+            let end = items.get(n + 1).map_or(text.len(), |next| next.0);
+            for ch in text[start..end].chars() {
+                if matches!(ch, '\t' | '\n' | '\r')
+                    || is_zero_width(ch)
+                    || primary.face.glyph_index(ch) != 0
+                {
+                    continue;
+                }
+                let key = fallback_script_key(ch, script);
+                if !misses.insert((key, ch)) {
+                    continue;
+                }
+                let list = lists.entry(key).or_insert_with(|| {
+                    windows_fallback_families(
+                        catalog,
+                        &primary_name,
+                        systems,
+                        style.italic,
+                        hint,
+                        key,
+                        script,
+                    )
+                });
+                for (position, name) in list.iter().enumerate() {
+                    if !catalog.covers(name, style.weight, style.italic, ch) {
+                        continue;
+                    }
+                    let Some(index) = self.fallback_engine_index(engines, name, style) else {
+                        continue;
+                    };
+                    if engines[index].face.glyph_index(ch) == 0 {
+                        continue;
+                    }
+                    let chain = found.entry(key).or_default();
+                    if !chain.iter().any(|&(_, i)| i == index) {
+                        chain.push((position, index));
+                    }
+                    break;
+                }
+            }
+        }
+        let mut chains = ScriptChains::new();
+        for (key, mut chain) in found {
+            chain.sort_by_key(|&(position, _)| position);
+            chains.insert(key, chain.into_iter().map(|(_, index)| index).collect());
+        }
+        engines[0] = engines[0].clone().with_script_chains(chains);
+        true
+    }
+
+    /// The index in `engines` of the engine for the family `name`, loading and appending it when
+    /// it is not there.
+    #[cfg(windows)]
+    fn fallback_engine_index(
+        &mut self,
+        engines: &mut Vec<FontEngine>,
+        name: &str,
+        style: FaceStyle,
+    ) -> Option<usize> {
+        let face = self.load_font_styled(name, style, StyleHint::AnyStyle)?;
+        if let Some(index) = engines.iter().position(|e| Arc::ptr_eq(&e.face, &face)) {
+            return Some(index);
+        }
+        self.try_add_engine(engines, name, style, StyleHint::AnyStyle)
+            .then(|| engines.len() - 1)
     }
 
     fn try_add_engine(
@@ -1881,6 +2011,105 @@ fn preferred_family_name(table: &NameTable) -> Option<String> {
         }
     }
     best.map(|(_, text)| text)
+}
+
+/// The families `QWindowsFontDatabaseBase::extraTryFontsForFamily` tries for the user's language
+/// (`GetUserDefaultLangID`): Chinese for China and Singapore, Chinese for the other regions,
+/// Japanese, Korean, and the others' list.
+#[cfg(windows)]
+fn extra_try_fonts() -> &'static [&'static str] {
+    use windows::Win32::Globalization::GetUserDefaultLangID;
+    static LIST: std::sync::LazyLock<&'static [&'static str]> = std::sync::LazyLock::new(|| {
+        // SAFETY: the call takes no arguments and only reads the user's settings.
+        let lid = unsafe { GetUserDefaultLangID() };
+        match lid & 0xff {
+            0x04 if lid == 0x0804 || lid == 0x1004 => &[
+                "SimSun",
+                "Arial",
+                "PMingLiU",
+                "Gulim",
+                "MS UI Gothic",
+                "Arial Unicode MS",
+            ],
+            0x04 => &[
+                "PMingLiU",
+                "Arial",
+                "SimSun",
+                "Gulim",
+                "MS UI Gothic",
+                "Arial Unicode MS",
+            ],
+            0x11 => &[
+                "Yu Gothic UI",
+                "MS UI Gothic",
+                "Arial",
+                "Gulim",
+                "SimSun",
+                "PMingLiU",
+                "Arial Unicode MS",
+            ],
+            0x12 => &[
+                "Malgun Gothic",
+                "Gulim",
+                "Arial",
+                "PMingLiU",
+                "SimSun",
+                "MS UI Gothic",
+                "Arial Unicode MS",
+            ],
+            _ => &[
+                "Arial",
+                "MS UI Gothic",
+                "Gulim",
+                "SimSun",
+                "PMingLiU",
+                "Arial Unicode MS",
+            ],
+        }
+    });
+    *LIST
+}
+
+/// `fallbacksForFamily(family, style, hint, script)` of Qt's DirectWrite font database as
+/// `QFontDatabasePrivate` filters it: the emoji family for the emoji script, the family of the
+/// style hint, `extraTryFontsForFamily` (the user's language's families that exist, unless the
+/// family is a symbol font, then the emoji and symbol families), then every family that supports
+/// the script's writing system. Entries that are not families of the database are dropped; repeats
+/// stay.
+#[cfg(windows)]
+fn windows_fallback_families(
+    catalog: &crate::text::directwrite_catalog::Catalog,
+    family: &str,
+    family_systems: u64,
+    italic: bool,
+    hint: StyleHint,
+    key: &str,
+    script: unicode_script::Script,
+) -> Vec<String> {
+    use crate::text::directwrite_catalog as dw;
+    let mut list: Vec<String> = Vec::new();
+    if key == "Emoji" {
+        list.push("Segoe UI Emoji".to_string());
+    }
+    list.push(family_for_style_hint(hint).to_string());
+    if !dw::supports_symbol(family_systems) {
+        for name in extra_try_fonts() {
+            if catalog.family_traits(name).is_some() {
+                list.push((*name).to_string());
+            }
+        }
+    }
+    list.push("Segoe UI Emoji".to_string());
+    list.push("Segoe UI Symbol".to_string());
+    let system = if key == "Emoji" {
+        0
+    } else {
+        dw::writing_system_for_script(script)
+    };
+    list.extend(catalog.families_for_writing_system(italic, system));
+    let _ = family;
+    list.retain(|name| catalog.family_traits(name).is_some());
+    list
 }
 
 impl Default for FontDatabase {

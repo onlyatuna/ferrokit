@@ -107,6 +107,110 @@ impl ShapingFace {
     }
 }
 
+/// `Emoji_Presentation` (Unicode 16 `emoji-data.txt`): the characters Qt's emoji segmenter makes
+/// an emoji item of on their own (the ones with text presentation by default need a variation
+/// selector or a ZWJ sequence to become one).
+pub(crate) fn is_emoji_presentation(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x231A..=0x231B
+            | 0x23E9..=0x23EC
+            | 0x23F0
+            | 0x23F3
+            | 0x25FD..=0x25FE
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267F
+            | 0x2693
+            | 0x26A1
+            | 0x26AA..=0x26AB
+            | 0x26BD..=0x26BE
+            | 0x26C4..=0x26C5
+            | 0x26CE
+            | 0x26D4
+            | 0x26EA
+            | 0x26F2..=0x26F3
+            | 0x26F5
+            | 0x26FA
+            | 0x26FD
+            | 0x2705
+            | 0x270A..=0x270B
+            | 0x2728
+            | 0x274C
+            | 0x274E
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27B0
+            | 0x27BF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x1F004
+            | 0x1F0CF
+            | 0x1F18E
+            | 0x1F191..=0x1F19A
+            | 0x1F1E6..=0x1F1FF
+            | 0x1F201
+            | 0x1F21A
+            | 0x1F22F
+            | 0x1F232..=0x1F236
+            | 0x1F238..=0x1F23A
+            | 0x1F250..=0x1F251
+            | 0x1F300..=0x1F320
+            | 0x1F32D..=0x1F335
+            | 0x1F337..=0x1F37C
+            | 0x1F37E..=0x1F393
+            | 0x1F3A0..=0x1F3CA
+            | 0x1F3CF..=0x1F3D3
+            | 0x1F3E0..=0x1F3F0
+            | 0x1F3F4
+            | 0x1F3F8..=0x1F43E
+            | 0x1F440
+            | 0x1F442..=0x1F4FC
+            | 0x1F4FF..=0x1F53D
+            | 0x1F54B..=0x1F54E
+            | 0x1F550..=0x1F567
+            | 0x1F57A
+            | 0x1F595..=0x1F596
+            | 0x1F5A4
+            | 0x1F5FB..=0x1F64F
+            | 0x1F680..=0x1F6C5
+            | 0x1F6CC
+            | 0x1F6D0..=0x1F6D2
+            | 0x1F6D5..=0x1F6D8
+            | 0x1F6DC..=0x1F6DF
+            | 0x1F6EB..=0x1F6EC
+            | 0x1F6F4..=0x1F6FC
+            | 0x1F7E0..=0x1F7EB
+            | 0x1F7F0
+            | 0x1F90C..=0x1F93A
+            | 0x1F93C..=0x1F945
+            | 0x1F947..=0x1F9FF
+            | 0x1FA70..=0x1FA7C
+            | 0x1FA80..=0x1FA8A
+            | 0x1FA8E..=0x1FAC6
+            | 0x1FAC8
+            | 0x1FACD..=0x1FADC
+            | 0x1FADF..=0x1FAEA
+            | 0x1FAEF..=0x1FAF8
+    )
+}
+
+/// The fallback engines of each script item (`QFontEngineMulti::m_fallbackFamilies` per script),
+/// as indexes into the engine list, in Qt's order. Keyed by [`fallback_script_key`].
+pub type ScriptChains = std::collections::HashMap<&'static str, Vec<usize>>;
+
+/// The key of the fallback chain a character of the item script `script` uses: its script, or
+/// the emoji chain for a pictograph (Qt's emoji segmenter makes those their own items).
+pub(crate) fn fallback_script_key(ch: char, script: Script) -> &'static str {
+    if is_emoji_presentation(ch) {
+        "Emoji"
+    } else {
+        script.short_name()
+    }
+}
+
 #[derive(Clone)]
 pub struct FontEngine {
     /// Glyph source for rasterization, metrics, and character-to-glyph mapping.
@@ -123,6 +227,8 @@ pub struct FontEngine {
     lcd_cache: LcdGlyphCache,
     /// Shaping faces per ppem, built on first use; `None` when the font data does not parse.
     shaping_faces: ShapingFaceCache,
+    /// The fallback engines per script item, see [`FontEngine::with_script_chains`].
+    script_chains: Option<Arc<ScriptChains>>,
 }
 
 impl FontEngine {
@@ -136,6 +242,7 @@ impl FontEngine {
             mono_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             lcd_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             shaping_faces: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            script_chains: None,
         }
     }
 
@@ -166,6 +273,15 @@ impl FontEngine {
         self.shaping_faces = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         self
     }
+
+    /// Gives the engine the fallback engines of each script item, as indexes into the list this
+    /// engine heads ([`ScriptChains`]); [`GlyphLayout::partition_into_runs`] then takes, for a
+    /// character the primary font lacks, the first engine of its script's chain with a glyph.
+    pub fn with_script_chains(mut self, chains: ScriptChains) -> Self {
+        self.script_chains = Some(Arc::new(chains));
+        self
+    }
+
     /// Checks whether `glyph_id` is an OpenType color glyph with COLRv0 layers.
     pub fn is_color_glyph(&self, glyph_id: u16) -> bool {
         if let Some(raw) = &self.raw_data {
@@ -1117,7 +1233,10 @@ impl GlyphLayout {
         let mut char_engine_indices = Vec::with_capacity(text.len());
         let mut last_fallback_idx = 0usize;
 
-        for ch in text.chars() {
+        let chains = engines[0].script_chains.as_deref();
+        let items = chains.map(|_| shaping_plan::script_items(text));
+        let mut item = 0;
+        for (offset, ch) in text.char_indices() {
             // A character of no width never takes a fallback font: whatever glyph one has for it
             // is not shown (Qt gives it no advance in any font), and switching fonts would cut
             // the run (and its kerning) around it. It stays with the font before it.
@@ -1131,7 +1250,27 @@ impl GlyphLayout {
 
             // Qt parity: if primary engine has no glyph (0) and character is not whitespace/ignorable,
             // query fallback engines.
-            if gid == 0 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' {
+            if gid == 0 && (ch != ' ' || chains.is_some()) && ch != '\t' && ch != '\n' && ch != '\r'
+            {
+                // Windows follows Qt (`QFontEngineMulti::stringToCMap`): the fallbacks of the
+                // script of the character's item, the first one with a glyph wins.
+                if let (Some(chains), Some(items)) = (chains, &items) {
+                    while item + 1 < items.len() && items[item + 1].0 <= offset {
+                        item += 1;
+                    }
+                    let key = fallback_script_key(ch, items[item].1);
+                    resolved_idx = chains
+                        .get(key)
+                        .and_then(|chain| {
+                            chain
+                                .iter()
+                                .copied()
+                                .find(|&i| engines[i].face.glyph_index(ch) != 0)
+                        })
+                        .unwrap_or(0);
+                    char_engine_indices.push((ch, resolved_idx));
+                    continue;
+                }
                 let mut found = false;
 
                 // Locality heuristic (Qt `lastFallback` in `stringToCMap`):

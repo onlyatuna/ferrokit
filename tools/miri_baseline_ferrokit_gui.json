@@ -40,6 +40,7 @@
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_faces": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_directwrite_fallbacks": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_families": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_gaps": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_modes": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
