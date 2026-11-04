@@ -38,6 +38,7 @@
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_font_style": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_macos_system_font": "macOS-only (cfg(target_os = \"macos\")): compiled out on the Linux Miri target",
     "test_qt_text_advances": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_text_transform_parity": "Windows-only (cfg(windows)): compiled out on the Linux Miri target"
   },
