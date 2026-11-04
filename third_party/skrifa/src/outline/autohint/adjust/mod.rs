@@ -34,6 +34,16 @@
 // These bits drive `base_blues`, and so the ignore limits and the accent height
 // limit; without them the bottom zone of these glyphs is not recognised and the
 // result diverges from FreeType 2.14.2.
+//
+// `generated/generated_autohint_styles.rs` `STYLE_RANGES` was also edited by hand, to be the
+// map that FreeType 2.14.2's `afranges.c` builds (`af_face_globals_compute_style_coverage`:
+// the style classes in order, the first range that holds a character wins, and the non-base
+// ranges mark the characters of the style that they hold). It was derived programmatically by
+// building the map from the `*_uniranges` arrays of `afranges.c` of 2.14.2 and comparing it
+// character by character with the table: the table was FreeType's map of the snapshot it
+// was generated from, with two deviations (Bamum Supplement U+16800-U+16A3F missing, and
+// Nyiakeng Puachue Hmong U+1E100-U+1E14F, a script that FreeType 2.14.2 does not have), and
+// without what 2.14 added.
 
 mod database;
 mod gsub;
