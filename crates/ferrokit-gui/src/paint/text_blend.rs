@@ -22,22 +22,27 @@ pub(crate) fn rgb_average(cov: [u8; 3]) -> u8 {
     ((cov[0] as u32 * 5 + cov[1] as u32 * 6 + cov[2] as u32 * 5) / 16) as u8
 }
 
-/// Source-over of the text colour `target` at coverage `glyph_alpha` times `base_alpha`.
+/// Source-over of the text colour `target` at coverage `glyph_alpha` times `base_alpha`, as
+/// `alphamapblend_argb32` without a colour profile: the pen colour is premultiplied, scaled by the
+/// coverage with `BYTE_MUL`'s rounding, and added to the destination scaled by what it leaves.
 pub(crate) fn blend_grey(px: &mut [u8], glyph_alpha: u8, base_alpha: f32, target: [u32; 3]) {
-    let a_factor = (glyph_alpha as f32 / 255.0) * base_alpha;
-    let src_a = (a_factor * 255.0).round() as u32;
+    let pen_a = ((base_alpha * 255.0).round() as u32).min(255);
+    let coverage = u32::from(glyph_alpha);
+    let src_a = mul_255(pen_a, coverage);
     let inv_a = 255 - src_a;
     for (channel, &t) in target.iter().enumerate() {
-        let src = (t * src_a) / 255;
-        px[channel] = ((src + (px[channel] as u32 * inv_a) / 255).min(255)) as u8;
+        let src = mul_255(mul_255(t, pen_a), coverage);
+        px[channel] = (src + mul_255(u32::from(px[channel]), inv_a)).min(255) as u8;
     }
-    px[3] = ((src_a + (px[3] as u32 * inv_a) / 255).min(255)) as u8;
+    px[3] = (src_a + mul_255(u32::from(px[3]), inv_a)).min(255) as u8;
 }
 
-/// Rounded `x * a / 255` (`BYTE_MUL`).
+/// `x * a / 255` as Qt's `BYTE_MUL` computes it, `(t + (t >> 8) + 0x80) >> 8` for `t = x * a`; the
+/// rounding bias is added after the correction term, so it differs from the exact rounded
+/// quotient for some inputs.
 fn mul_255(x: u32, a: u32) -> u32 {
-    let t = x * a + 0x80;
-    (t + (t >> 8)) >> 8
+    let t = x * a;
+    (t + (t >> 8) + 0x80) >> 8
 }
 
 /// `alphargbblend_argb32` with a gamma table: LCD text over an opaque pixel is blended per
@@ -172,6 +177,28 @@ pub(crate) fn composite_masked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two glyph coverages (49 then 58) over white with the pen (30, 120, 200): the pixel a real
+    /// Qt 6.12 on macOS (raster engine, RGB32 image) draws for Times New Roman 16 px at ratio 2 is
+    /// (171, 204, 233). The blue channel only comes out right with `BYTE_MUL`'s bias added after
+    /// its correction term (`244 * 197` is 48068: 188, where the exact rounded quotient is 189).
+    #[test]
+    fn grey_blend_of_two_overlapping_glyphs_matches_qt() {
+        let mut px = [255u8, 255, 255, 255];
+        blend_grey(&mut px, 49, 1.0, [30, 120, 200]);
+        assert_eq!(px, [212, 229, 244, 255]);
+        blend_grey(&mut px, 58, 1.0, [30, 120, 200]);
+        assert_eq!(px, [171, 204, 233, 255]);
+    }
+
+    #[test]
+    fn grey_blend_of_full_and_zero_coverage_is_exact() {
+        let mut px = [10u8, 20, 30, 255];
+        blend_grey(&mut px, 255, 1.0, [226, 232, 240]);
+        assert_eq!(px, [226, 232, 240, 255]);
+        blend_grey(&mut px, 0, 1.0, [1, 2, 3]);
+        assert_eq!(px, [226, 232, 240, 255]);
+    }
 
     #[test]
     fn lcd_blend_over_transparent_pixel_is_grey_blend_of_averaged_coverage() {

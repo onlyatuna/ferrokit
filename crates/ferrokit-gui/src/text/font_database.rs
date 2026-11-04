@@ -179,6 +179,18 @@ pub fn uses_directwrite_engine() -> bool {
     (dpr - 1.0).abs() * 1_000_000_000_000.0 > dpr.min(1.0).abs()
 }
 
+/// Whether text layout keeps the fractional advances and offsets the font engine reports instead of
+/// rounding them to whole pixels (`QTextEngine::shapeTextWithHarfbuzzNG`:
+/// `!supportsHorizontalSubPixelPositions()`): Qt's DirectWrite engine (see
+/// [`uses_directwrite_engine`]) and its CoreText engine, which always positions at sub-pixels.
+///
+/// Off macOS this is exactly [`uses_directwrite_engine`], independent of the hinting preference:
+/// [`font_has_subpixel_positions`], which the line metrics follow, is `true` for FreeType with light
+/// hinting and for any font preferring no hinting, but layout advances never followed it.
+pub(crate) fn layout_has_subpixel_advances() -> bool {
+    cfg!(target_os = "macos") || uses_directwrite_engine()
+}
+
 /// Font hinting style matching Qt's `QFontEngine::HintStyle` (qfontengine_p.h:60).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -365,8 +377,8 @@ pub fn family_for_style_hint(hint: StyleHint) -> &'static str {
 /// - `Fantasy` -> "Zapfino"
 /// - `TypeWriter` (`Courier`) -> "American Typewriter"
 /// - `AnyStyle` / `System` -> `None` from this pure table (Qt resolves them to the system UI font
-///   via `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`; ferrokit has no CoreText bridge, so
-///   they keep the previous segoe ui, then arial guess, which is not Qt's [inferred])
+///   via `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`; ferrokit resolves them to
+///   the system UI font through CoreText in `load_font_styled`)
 /// - others -> `None` [inferred]
 #[cfg(target_os = "macos")]
 pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
@@ -377,7 +389,62 @@ pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
         StyleHint::Cursive => Some("Apple Chancery"),
         StyleHint::Fantasy => Some("Zapfino"),
         StyleHint::Courier => Some("American Typewriter"),
-        StyleHint::AnyStyle | StyleHint::System | StyleHint::OldEnglish => None,
+        StyleHint::AnyStyle | StyleHint::System => Some(".AppleSystemUIFont"),
+        StyleHint::OldEnglish => None,
+    }
+}
+#[cfg(target_os = "macos")]
+fn query_system_ui_font_path() -> Option<std::path::PathBuf> {
+    #[link(name = "CoreText", kind = "framework")]
+    unsafe extern "C" {
+        fn CTFontCreateUIFontForLanguage(
+            ui_type: i32,
+            size: f64,
+            language: *const std::ffi::c_void,
+        ) -> *const std::ffi::c_void;
+        fn CTFontCopyFontDescriptor(font: *const std::ffi::c_void) -> *const std::ffi::c_void;
+        fn CTFontDescriptorCopyAttribute(
+            descriptor: *const std::ffi::c_void,
+            attribute: *const std::ffi::c_void,
+        ) -> *const std::ffi::c_void;
+        static kCTFontURLAttribute: *const std::ffi::c_void;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFURLGetFileSystemRepresentation(
+            url: *const std::ffi::c_void,
+            resolve: u8,
+            buffer: *mut u8,
+            max_buf_len: isize,
+        ) -> u8;
+        fn CFRelease(cf: *const std::ffi::c_void);
+    }
+
+    // SAFETY: standard CoreText/CoreFoundation calls to get the file path of kCTFontUIFontSystem (2).
+    unsafe {
+        let font = CTFontCreateUIFontForLanguage(2, 0.0, std::ptr::null());
+        if font.is_null() {
+            return None;
+        }
+        let desc = CTFontCopyFontDescriptor(font);
+        CFRelease(font);
+        if desc.is_null() {
+            return None;
+        }
+        let url = CTFontDescriptorCopyAttribute(desc, kCTFontURLAttribute);
+        CFRelease(desc);
+        if url.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u8; 1024];
+        let ok = CFURLGetFileSystemRepresentation(url, 1, buf.as_mut_ptr(), 1024);
+        CFRelease(url);
+        if ok == 0 {
+            return None;
+        }
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(0);
+        let path_str = std::str::from_utf8(&buf[..len]).ok()?;
+        Some(std::path::PathBuf::from(path_str))
     }
 }
 
@@ -907,6 +974,21 @@ impl FontDatabase {
         self.load_font_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
     }
 
+    /// The file of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`),
+    /// read once and kept under a pseudo path that no real file has.
+    #[cfg(target_os = "macos")]
+    fn get_system_ui_font_data(&mut self) -> Option<SharedFontData> {
+        let canonical = std::path::PathBuf::from(".applesystemuifont");
+        if let Some(shared) = self.file_cache.get(&canonical) {
+            return Some(shared.clone());
+        }
+        let path = query_system_ui_font_path()
+            .unwrap_or_else(|| std::path::PathBuf::from("/System/Library/Fonts/SFNS.ttf"));
+        let data = SharedFontData::from_file(&path).ok()?;
+        self.file_cache.insert(canonical, data.clone());
+        Some(data)
+    }
+
     /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
     /// A family without a face for that style yields its nearest one (e.g. regular for bold).
     pub fn load_font_styled(
@@ -980,6 +1062,15 @@ impl FontDatabase {
                 }
                 return Some(fallback);
             }
+
+            if key == ".applesystemuifont"
+                && let Some(sys_data) = self.get_system_ui_font_data()
+                && let Ok(face) = crate::text::glyph_face::parse_system_ui_face(&sys_data)
+            {
+                self.cache.insert(style_key.clone(), Arc::clone(&face));
+                self.raw_cache.insert(style_key, sys_data);
+                return Some(face);
+            }
         }
 
         #[cfg(all(unix, not(target_os = "macos")))]
@@ -1019,9 +1110,8 @@ impl FontDatabase {
 
         // Last resort on every non-Windows target: the pre-existing guess, which is not Qt's. On
         // Linux it applies only when fontconfig is unavailable (or lists nothing loadable, and
-        // under Miri, which cannot call it). On macOS Qt resolves AnyStyle and System to the
-        // system UI font (`CTFontCreateUIFontForLanguage`), which needs a CoreText bridge
-        // ferrokit does not have [inferred].
+        // under Miri, which cannot call it). On macOS it applies only if CoreText fails to load
+        // the style hint substitute or system UI font.
         #[cfg(not(windows))]
         {
             if key != "segoe ui"
@@ -1161,6 +1251,26 @@ impl FontDatabase {
             &["Microsoft JhengHei", "Microsoft YaHei"],
             &["Segoe UI Emoji", "Segoe UI Symbol"],
         ];
+        // macOS: these families are ferrokit's own picks, not Qt's cascade. Qt
+        // (`QCoreTextFontDatabase::fallbacksForFamily`, qcoretextfontdatabase.mm) asks CoreText for
+        // `CTFontCopyDefaultCascadeListForLanguages(font, preferredLanguages)`; measured on macOS 26
+        // with en-US, for the system UI font, that is `.AppleSystemFallback, .SF Georgian,
+        // Helvetica Neue, .Apple Symbols Fallback, .SF Arabic, .AppleUrduFont,
+        // .AppleSimplifiedChineseFont, .AppleTraditionalChineseFont, .AppleHongKongChineseFont,
+        // .AppleMacaoChineseFont, .AppleJapaneseFont, .AppleKoreanFont, ...` (private families,
+        // one per script). Qt moves the two last-resort families to the end, appends `Arial Unicode
+        // MS` and `Apple Symbols`, and uses `.Apple Color Emoji UI` for emoji. ferrokit loads files
+        // by family and has no cascade, so:
+        // * `PingFang TC`, `PingFang SC`, `Heiti TC` (the CJK slot) are ferrokit's choice: one
+        //   Han font, Traditional first, where Qt takes the Simplified family first for en-US
+        //   (`.AppleSimplifiedChineseFont`; for Helvetica it names PingFang SC). `Heiti TC` is the
+        //   system font before PingFang.
+        // * `Apple Color Emoji` is ferrokit's choice (Qt: `.Apple Color Emoji UI`).
+        // * `Apple Symbols` is Qt's (its own final fail-safe; the cascade has it too).
+        // `AppleGothic` was added for machines without PingFang: availability, not Qt parity (Qt
+        // measured `.AppleKoreanFont` or `Apple SD Gothic Neo` for Hangul, PingFang for Han), so it
+        // is not here. Kana, Hangul and the other scripts of the cascade are not covered by these
+        // slots.
         #[cfg(target_os = "macos")]
         const SLOTS: &[&[&str]] = &[
             &["PingFang TC", "PingFang SC", "Heiti TC"],
@@ -1618,6 +1728,26 @@ impl Default for FontDatabase {
 mod tests {
     use super::*;
 
+    /// Off macOS the flag layout rounds its advances by is `uses_directwrite_engine`, whatever the
+    /// hinting: `font_has_subpixel_positions` (what the line metrics follow) is `true` for a font
+    /// preferring no hinting, but Windows and Linux advances are still rounded without
+    /// DirectWrite, as before the CoreText engine existed.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn layout_advances_follow_directwrite_not_hinting_off_macos() {
+        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
+        let font =
+            Font::new("Arial", 16.0).with_hinting_preference(HintingPreference::PreferNoHinting);
+        assert!(font_has_subpixel_positions(&font));
+        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn layout_keeps_fractional_advances_on_macos() {
+        assert!(layout_has_subpixel_advances());
+    }
+
     #[test]
     fn test_font_database_creation_and_lookup() {
         let mut db = FontDatabase::new();
@@ -1856,8 +1986,14 @@ mod tests {
             family_for_style_hint(StyleHint::Courier),
             Some("American Typewriter")
         );
-        assert_eq!(family_for_style_hint(StyleHint::AnyStyle), None);
-        assert_eq!(family_for_style_hint(StyleHint::System), None);
+        assert_eq!(
+            family_for_style_hint(StyleHint::AnyStyle),
+            Some(".AppleSystemUIFont")
+        );
+        assert_eq!(
+            family_for_style_hint(StyleHint::System),
+            Some(".AppleSystemUIFont")
+        );
         assert_eq!(family_for_style_hint(StyleHint::OldEnglish), None);
         assert_eq!(family_for_style_hint(StyleHint::Decorative), None);
     }
