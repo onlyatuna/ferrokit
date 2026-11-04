@@ -1,6 +1,7 @@
 //! Autohinting state for a font instance.
 
 use super::{
+    adjust::ReverseCharMap,
     super::{
         pen::PathStyle, AdjustedMetrics, DrawError, OutlineGlyphCollection, OutlinePen, Target,
     },
@@ -8,7 +9,7 @@ use super::{
     metrics::{fixed_mul, pix_round, Scale, UnscaledStyleMetricsSet},
     outline::Outline,
     shape::{Shaper, ShaperMode},
-    style::{GlyphStyle, GlyphStyleMap},
+    style::{GlyphStyle, GlyphStyleMap, ScriptGroup},
     ScaleFlags,
 };
 use crate::{attribute::Style, font::Font, prelude::Size};
@@ -75,6 +76,10 @@ pub(crate) struct LocatedState {
     /// when first drawn, or all at once without `std`.
     metrics: UnscaledStyleMetricsSet,
     is_fixed_width: bool,
+    /// FreeType's reverse character map, which maps a glyph to the code point of
+    /// the vertical adjustment database that the cmap gives it. It is built the
+    /// first time a glyph of a Latin style is drawn.
+    adjust: Once<ReverseCharMap>,
     style: Style,
 }
 
@@ -93,6 +98,7 @@ impl LocatedState {
             styles,
             metrics,
             is_fixed_width: context.is_fixed_pitch(),
+            adjust: Once::default(),
             style: context.style(),
         }
     }
@@ -275,7 +281,15 @@ impl Instance {
             self.target,
             metrics.style_class().script.group,
         );
-        let adjust_flags = super::adjust::glyph_adjust_flags(glyph_id, |ch| context.map(ch));
+        // Only the Latin writing system has vertical adjustments (aflatin.c).
+        let adjust_flags = if metrics.style_class().script.group == ScriptGroup::Default {
+            state
+                .adjust
+                .get_or_init(|| ReverseCharMap::new(|ch| context.map(ch)))
+                .flags(glyph_id)
+        } else {
+            0
+        };
         let hinted_metrics =
             super::hint::hint_outline(&mut outline, &metrics, &scale, Some(style), adjust_flags);
         let h_advance = outline.advance;

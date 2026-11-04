@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
 //
 // Vertical separation adjustments for accents, ported from FreeType 2.14.2
-// (`src/autofit/afadjust.c`, and the adjustment parts of `src/autofit/aflatin.c`).
+// (`src/autofit/afadjust.c` and the adjustment parts of `src/autofit/aflatin.c`).
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0),
+// changed by ferrokit; the FreeType-derived code is under the FreeType licence.
 //
 // The reference is FreeType built without HarfBuzz: the reverse character map
-// is derived from the cmap alone, as in Ubuntu's 2.14.2 package.
+// is derived from the cmap alone, as in Ubuntu's 2.14.2 package, which Qt links.
 //
-// Hand-edited generated entries: `generated/generated_autohint_styles.rs` was
-// generated without the bottom-zone property bits of FreeType's `afblue.dat`
-// (`AF_BLUE_PROPERTY_LATIN_CAPITAL_BOTTOM` / `AF_BLUE_PROPERTY_LATIN_SMALL_BOTTOM`).
-// The generator script is not in this repository, so these 23 bottom-zone
-// tuples were edited by hand from `BlueZones::NONE` to `CAPITAL_BOTTOM` or
-// `SMALL_BOTTOM`, matching the `afblue.dat` mapping at the lines shown:
+// Hand-edited generated entries: `generated/generated_autohint_styles.rs` comes
+// from fontations' `skrifa/scripts/gen_autohint_styles.py`, which is pinned to a
+// FreeType snapshot that predates the bottom-zone properties of `afblue.dat`
+// (`AF_BLUE_PROPERTY_LATIN_CAPITAL_BOTTOM`, `AF_BLUE_PROPERTY_LATIN_SMALL_BOTTOM`).
+// That script is not vendored, so the 23 bottom-zone tuples below were changed
+// by hand from `BlueZones::NONE` to `CAPITAL_BOTTOM` or `SMALL_BOTTOM`. Every
+// blue string and property of the generated table was checked against the
+// `AF_BLUE_STRINGSET_*` records of FreeType 2.14.2's `afblue.dat` (lines shown):
 //   Adlam: 703 capital (𞤂 𞤖), 706 small (𞤤 𞤨 𞤩 𞤭 𞤴 𞤸 𞤺 𞥀)
 //   Armenian: 717 capital (Ւ Ո Դ Ճ Շ Ս Տ Օ), 721 small (հ ո ճ ա ե ծ ս օ)
 //   Canadian Syllabics: 763 small (ᕃ ᓂ ᓀ ᕂ ᓗ ᓚ ᕆ ᘣ)
@@ -27,12 +31,13 @@
 //   N'Ko: 1006 small (ߎ ߏ ߛ ߋ)
 //   Osage: 1024 capital (𐒰 𐓍 𐓂 𐒿 𐓎 𐒹), 1028 small (𐓘 𐓚 𐓣 𐓵 𐓡 𐓧 𐓪 𐓶)
 //   Shavian: 1055 small (𐑴 𐑻 𐑹)
-// These bits drive `apply_vertical_separation`. Without them the bottom zone
-// of these glyphs is not recognised, and the separation adjustment diverges
-// from FreeType 2.14.2.
-//
+// These bits drive `base_blues`, and so the ignore limits and the accent height
+// limit; without them the bottom zone of these glyphs is not recognised and the
+// result diverges from FreeType 2.14.2.
 
 mod database;
+
+use alloc::vec::Vec;
 
 use read_fonts::{tables::glyf::PointMarker, types::GlyphId};
 
@@ -49,6 +54,69 @@ use database::{
     IGNORE_SMALL_BOTTOM, IGNORE_SMALL_TOP, NO_HEIGHT_CHECK, TILDE_BOTTOM, TILDE_BOTTOM2,
     TILDE_TOP, TILDE_TOP2, UP, UP2,
 };
+
+// FreeType's `FT_Pos` is a `long`, and its `ADD_LONG`, `SUB_LONG` and `MUL_LONG`
+// (ftcalc.h) wrap around instead of overflowing. The extrema of a dimensionless
+// contour are the sentinels `FT_LONG_MAX` and `FT_LONG_MIN`, so these wrap for
+// real on outlines with one- or two-point contours.
+fn add(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+fn sub(a: i64, b: i64) -> i64 {
+    a.wrapping_sub(b)
+}
+
+/// The adjustment flags of every glyph that is in the adjustment database,
+/// as FreeType's reverse character map holds them (afadjust.c:1277).
+///
+/// FreeType builds the map once per Latin style: for each database entry in
+/// table order, the cmap glyph of the entry's code point is mapped to that code
+/// point with `ft_hash_num_insert`, which overwrites. So when two database code
+/// points map to one glyph, the one later in the table wins.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReverseCharMap {
+    /// Glyph ids in ascending order with the flags that the lookup of the
+    /// winning code point gives.
+    glyphs: Vec<(u32, u16)>,
+}
+
+impl ReverseCharMap {
+    /// Builds the map from the cmap lookup `map`.
+    pub(crate) fn new(map: impl Fn(u32) -> Option<GlyphId>) -> Self {
+        // afadjust.c:1314-1354
+        let mut glyphs: Vec<(u32, u16)> = Vec::new();
+        for &(codepoint, _) in ADJUSTMENT_DATABASE.iter() {
+            let Some(glyph) = map(codepoint) else {
+                continue;
+            };
+            // `cmap_glyph == 0` is skipped (afadjust.c:1348).
+            if glyph == GlyphId::NOTDEF {
+                continue;
+            }
+            // FreeType stores the code point and looks its flags up when the glyph
+            // is hinted (aflatin.c:4915). That lookup is a binary search over the
+            // unsorted table and can miss (U+0051), so the flags are what the
+            // search returns for the code point that is stored last.
+            let flags = database::lookup(codepoint);
+            let id = glyph.to_u32();
+            match glyphs.binary_search_by_key(&id, |entry| entry.0) {
+                Ok(ix) => glyphs[ix].1 = flags,
+                Err(ix) => glyphs.insert(ix, (id, flags)),
+            }
+        }
+        Self { glyphs }
+    }
+
+    /// Returns the adjustment flags of `glyph`, or 0 if it has none
+    /// (aflatin.c:4910-4936 and aflatin.c:3606-3622).
+    pub(crate) fn flags(&self, glyph: GlyphId) -> u16 {
+        let id = glyph.to_u32();
+        self.glyphs
+            .binary_search_by_key(&id, |entry| entry.0)
+            .map_or(0, |ix| self.glyphs[ix].1)
+    }
+}
 
 /// Vertical extrema of one contour, in 26.6 units.
 ///
@@ -68,7 +136,7 @@ const EMPTY_EXTREMA: Extrema = Extrema {
 /// Iterates over the point indices of the contour that starts at `first`.
 fn ring(outline: &Outline, first: usize) -> impl Iterator<Item = usize> + '_ {
     let mut next = Some(first);
-    std::iter::from_fn(move || {
+    core::iter::from_fn(move || {
         let ix = next?;
         let following = outline.points[ix].next();
         next = (following != first).then_some(following);
@@ -92,18 +160,21 @@ fn first_point(outline: &Outline, contour: usize) -> usize {
     outline.contours[contour].first()
 }
 
+/// A contour of one or two points, which FreeType's loops skip
+/// (`first_point->next->next == first_point`).
 fn is_dimensionless(outline: &Outline, first: usize) -> bool {
     let second = outline.points[first].next();
     outline.points[second].next() == first
 }
 
+/// The scaled overshoot of a blue zone (`blue->shoot.cur`).
 fn overshoot(blue: &ScaledBlue) -> i64 {
     i64::from(blue.overshoot.scaled)
 }
 
-/// Rounds a 26.6 value to the nearest whole pixel, as `FT_PIX_ROUND`.
+/// Rounds a 26.6 value to the nearest whole pixel (`FT_PIX_ROUND`).
 fn pix_round(value: i64) -> i64 {
-    (value + 32) & !63
+    add(value, 32) & !63
 }
 
 // aflatin.c:2842 af_compute_vertical_extrema
@@ -141,8 +212,8 @@ fn find_highest(extrema: &[Extrema]) -> usize {
 }
 
 // aflatin.c:2916 af_find_second_highest_contour
-/// Returns the contour with the second highest maximum that lies entirely
-/// below the highest contour's minimum, or 0 with fewer than three contours.
+/// Returns the contour with the second highest maximum that starts below the
+/// highest contour's minimum, or 0 with fewer than three contours.
 fn find_second_highest(extrema: &[Extrema]) -> usize {
     if extrema.len() < 3 {
         return 0;
@@ -178,8 +249,8 @@ fn find_lowest(extrema: &[Extrema]) -> usize {
 }
 
 // aflatin.c:2991 af_find_second_lowest_contour
-/// Returns the contour with the second lowest minimum that lies entirely
-/// above the lowest contour's maximum, or 0 with fewer than three contours.
+/// Returns the contour with the second lowest minimum that ends above the
+/// lowest contour's maximum, or 0 with fewer than three contours.
 fn find_second_lowest(extrema: &[Extrema]) -> usize {
     if extrema.len() < 3 {
         return 0;
@@ -215,19 +286,21 @@ fn move_contours_up(outline: &mut Outline, extrema: &[Extrema], limit: i64, delt
 fn move_contours_down(outline: &mut Outline, extrema: &[Extrema], limit: i64, delta: i64) {
     for (contour, e) in extrema.iter().enumerate() {
         if e.min < e.max && e.max < limit {
-            move_contour(outline, first_point(outline, contour), -delta);
+            move_contour(outline, first_point(outline, contour), delta.wrapping_neg());
         }
     }
 }
 
 // aflatin.c:2775 af_move_contour_vertically
+/// Moves a contour vertically. `FT_Int movement` truncates `delta` to 32 bits.
 fn move_contour(outline: &mut Outline, first: usize, delta: i64) {
-    update_contour(outline, first, |p| p.y += delta as i32);
+    let movement = delta as i32;
+    update_contour(outline, first, |p| p.y = p.y.wrapping_add(movement));
 }
 
-// aflatin.c:3146 af_touch_contour (IGNORE flag set at aflatin.c:3157)
+// aflatin.c:3146 af_touch_contour (the IGNORE flag is set at aflatin.c:3157)
 /// Marks every point of a contour as ignored by segment detection, and
-/// touched in y for on-curve points.
+/// on-curve points as touched in y.
 fn touch_contour(outline: &mut Outline, first: usize) {
     update_contour(outline, first, |p| {
         p.flags.set_marker(PointMarker::IGNORE);
@@ -238,8 +311,8 @@ fn touch_contour(outline: &mut Outline, first: usize) {
 }
 
 // aflatin.c:3166 af_touch_top_contours
-/// Touches the contours whose minimum is at or above the minimum of
-/// `limit_contour`, provided they are not dimensionless.
+/// Touches the contours that are not dimensionless and whose minimum is at or
+/// above the minimum of `limit_contour`.
 fn touch_top_contours(outline: &mut Outline, extrema: &[Extrema], limit_contour: usize) {
     let limit = extrema[limit_contour].min;
     for (contour, e) in extrema.iter().enumerate() {
@@ -249,9 +322,10 @@ fn touch_top_contours(outline: &mut Outline, extrema: &[Extrema], limit_contour:
     }
 }
 
-// aflatin.c:3188 af_touch_bottom_contours
-/// Touches the contours whose maximum is at or below the minimum of
-/// `limit_contour`, provided they are not dimensionless.
+// aflatin.c:3188 af_touch_bottom_contours (it compares with the minimum of
+// `limit_contour`, as `af_touch_top_contours` does)
+/// Touches the contours that are not dimensionless and whose maximum is at or
+/// below the minimum of `limit_contour`.
 fn touch_bottom_contours(outline: &mut Outline, extrema: &[Extrema], limit_contour: usize) {
     let limit = extrema[limit_contour].min;
     for (contour, e) in extrema.iter().enumerate() {
@@ -261,16 +335,19 @@ fn touch_bottom_contours(outline: &mut Outline, extrema: &[Extrema], limit_conto
     }
 }
 
-// aflatin.c:3211-3324 and 3327-3418 (measurement loop of af_latin_stretch_top_tilde / af_latin_stretch_bottom_tilde)
-/// Finds the smallest distance from the top (or bottom) of a tilde to a
-/// horizontal stroke within it. Returns `None` if there is no such stroke.
+// aflatin.c:3247-3292 (af_latin_stretch_top_tilde) and aflatin.c:3354-3395
+// (af_latin_stretch_bottom_tilde), which have the same measurement loop
+/// Finds the smallest distance from the top or bottom of a tilde to one of its
+/// other round extrema. Returns `None` if there is no such extremum.
 fn tilde_min_measurement(outline: &Outline, first: usize, min_y: i64, max_y: i64) -> Option<i64> {
-    let threshold = (max_y - min_y) / 8;
+    let threshold = sub(max_y, min_y) / 8;
     let mut min_measurement: Option<i64> = None;
     for ix in ring(outline, first) {
         let p = &outline.points[ix];
         let prev = &outline.points[p.prev()];
         let next = &outline.points[p.next()];
+        // A candidate is an on-curve point between two control points that
+        // all have the same y.
         if !p.is_on_curve() || prev.is_on_curve() || next.is_on_curve() {
             continue;
         }
@@ -291,9 +368,9 @@ fn tilde_min_measurement(outline: &Outline, first: usize, min_y: i64, max_y: i64
         let next_y = i64::from(outline.points[next_on].y);
 
         let measurement = if next_y > y && prev_y > y {
-            y - min_y
+            sub(y, min_y)
         } else if next_y < y && prev_y < y {
-            max_y - y
+            sub(max_y, y)
         } else {
             continue;
         };
@@ -305,9 +382,10 @@ fn tilde_min_measurement(outline: &Outline, first: usize, min_y: i64, max_y: i64
     min_measurement
 }
 
-// aflatin.c:3211 af_latin_stretch_top_tilde; aflatin.c:3327 af_latin_stretch_bottom_tilde
-/// Stretches a tilde contour (top or bottom) so that its height is a whole
-/// number of pixels plus the stroke clearance. Returns the height change.
+// aflatin.c:3212 af_latin_stretch_top_tilde; aflatin.c:3328 af_latin_stretch_bottom_tilde
+/// Stretches a tilde contour so that it is one pixel taller than the distance
+/// of its other wiggle, and touches the contours above (or below) it. Returns
+/// the height change.
 fn stretch_tilde(outline: &mut Outline, extrema: &[Extrema], tilde: usize, top: bool) -> i64 {
     let first = first_point(outline, tilde);
     let Extrema {
@@ -317,50 +395,59 @@ fn stretch_tilde(outline: &mut Outline, extrema: &[Extrema], tilde: usize, top: 
     if min_y == max_y {
         return 0;
     }
-    let height = max_y - min_y;
+    let height = sub(max_y, min_y);
     let min_measurement = tilde_min_measurement(outline, first, min_y, max_y).unwrap_or(0);
+    // aflatin.c:3300 and aflatin.c:3400: this happens before the height check.
     if top {
         touch_top_contours(outline, extrema, tilde);
     } else {
         touch_bottom_contours(outline, extrema, tilde);
     }
 
-    let target = min_measurement + 64;
+    let target = add(min_measurement, 64);
     if height >= target {
         return 0;
     }
+    // aflatin.c:3316-3319 and aflatin.c:3410-3413: C division truncates.
     let base = if top { min_y } else { max_y };
     update_contour(outline, first, |p| {
-        let scaled = (i64::from(p.y) - base) * target / height + base;
-        p.y = scaled as i32;
+        let scaled = sub(i64::from(p.y), base).wrapping_mul(target) / height;
+        p.y = add(scaled, base) as i32;
     });
-    target - height
+    sub(target, height)
 }
 
-// aflatin.c:3444 af_latin_align_top_tilde; aflatin.c:3487 af_latin_align_bottom_tilde
-/// Aligns a stretched tilde contour to the pixel grid. Returns the movement.
+// aflatin.c:3445 af_latin_align_top_tilde; aflatin.c:3487 af_latin_align_bottom_tilde
+/// Aligns a stretched tilde contour to the pixel grid: its bottom (top) edge,
+/// or its centre if it is less than three pixels tall. Returns the movement.
 fn align_tilde(outline: &mut Outline, tilde: usize, top: bool) -> i64 {
     let first = first_point(outline, tilde);
     let (min_y, max_y) = ring(outline, first).fold((i64::MAX, i64::MIN), |(lo, hi), ix| {
         let y = i64::from(outline.points[ix].y);
         (lo.min(y), hi.max(y))
     });
-    let height = max_y - min_y;
+    let height = sub(max_y, min_y);
     let mut delta = if top {
-        pix_round(min_y) - min_y
+        sub(pix_round(min_y), min_y)
     } else {
-        pix_round(max_y) - max_y
+        sub(pix_round(max_y), max_y)
     };
-    if height < 192 {
-        let centering = (pix_round(height) - height) / 2;
-        delta += if top { centering } else { -centering };
+    if height < 64 * 3 {
+        // C division truncates toward zero, which matters for a negative difference.
+        let centering = sub(pix_round(height), height) / 2;
+        delta = if top {
+            add(delta, centering)
+        } else {
+            sub(delta, centering)
+        };
     }
     move_contour(outline, first, delta);
     delta
 }
 
 // aflatin.c:3528 af_check_contour_horizontal_overlap
-/// Returns true if `index` horizontally overlaps with the other contours.
+/// Returns true if `index` horizontally overlaps with the bounding box of all
+/// other contours.
 fn check_horizontal_overlap(outline: &Outline, index: usize) -> bool {
     let (mut c_min, mut c_max) = (i64::MAX, i64::MIN);
     let (mut o_min, mut o_max) = (i64::MAX, i64::MIN);
@@ -403,31 +490,14 @@ fn base_blues(blues: &ScaledBlues, is_capital: bool) -> (Option<&ScaledBlue>, Op
     (top, bottom)
 }
 
-// afadjust.c:1149 af_adjustment_database_lookup; afadjust.c:1277 af_reverse_character_map_new
-/// Returns the adjustment flags of the glyph, or 0 if it has none.
+// aflatin.c:4938-4981 (in af_latin_hints_apply, before the vertical features are detected)
+/// Applies the tilde pre-pass: stretches and aligns tilde accents, and shifts
+/// the contours above or below them.
 ///
-/// FreeType builds a reverse map from the database: for each entry in table
-/// order, the cmap glyph is mapped to the codepoint with overwrite, so the
-/// last matching entry wins. `map` is the cmap lookup.
-pub(crate) fn glyph_adjust_flags(glyph: GlyphId, map: impl Fn(u32) -> Option<GlyphId>) -> u16 {
-    if glyph == GlyphId::NOTDEF {
-        return 0;
-    }
-    let mut codepoint = None;
-    for &(cp, _) in ADJUSTMENT_DATABASE.iter() {
-        if map(cp) == Some(glyph) {
-            codepoint = Some(cp);
-        }
-    }
-    codepoint.map_or(0, database::lookup)
-}
-
-// aflatin.c:4914-4982 (tilde reads and stretch/align calls inside af_latin_hint_edges)
-/// Applies the tilde pre-pass, which runs before segment detection.
-///
-/// Stretches and aligns tilde accents, and shifts the contours above or below
-/// them. All operations share one set of extrema, computed on entry, as in
-/// FreeType.
+/// It runs before the segments of the vertical dimension are built, because it
+/// marks the points of the accent as ignored. All steps share one set of
+/// extrema, computed on entry (aflatin.c:4938-4940), as in FreeType; they go
+/// stale as contours move, and FreeType leaves them so.
 pub(crate) fn apply_tilde_pre_pass(outline: &mut Outline, flags: u16) {
     let is_top = flags & TILDE_TOP != 0;
     let is_bottom = flags & TILDE_BOTTOM != 0;
@@ -438,18 +508,21 @@ pub(crate) fn apply_tilde_pre_pass(outline: &mut Outline, flags: u16) {
     }
     let extrema = compute_extrema(outline);
 
+    // Inner tilde glyphs first (aflatin.c:4942-4966).
     if is_below_top {
         let contour = find_second_highest(&extrema);
         let mut offset = stretch_tilde(outline, &extrema, contour, true);
-        offset += align_tilde(outline, contour, true);
+        offset = add(offset, align_tilde(outline, contour, true));
         move_contours_up(outline, &extrema, extrema[contour].min, offset);
     }
     if is_above_bottom {
         let contour = find_second_lowest(&extrema);
         let mut offset = stretch_tilde(outline, &extrema, contour, false);
-        offset -= align_tilde(outline, contour, false);
+        offset = sub(offset, align_tilde(outline, contour, false));
         move_contours_down(outline, &extrema, extrema[contour].max, offset);
     }
+
+    // aflatin.c:4968-4981
     if is_top {
         let contour = find_highest(&extrema);
         stretch_tilde(outline, &extrema, contour, true);
@@ -462,11 +535,15 @@ pub(crate) fn apply_tilde_pre_pass(outline: &mut Outline, flags: u16) {
     }
 }
 
-// aflatin.c:5025-5039 (ignore_top / ignore_bottom calls in af_latin_hint_edges)
-/// Keeps the blue zone flags from ignoring the top/bottom zones of accents.
-///
-/// Edges beyond the ignore limit lose their blue zone (`NO_BLUE`).
+// aflatin.c:5023-5040 (in af_latin_hints_apply, after the vertical features are detected)
+/// Makes the blue zone alignment ignore the edges that the glyph's flags
+/// mark as belonging to an accent (`NO_BLUE`), which `compute_blue_edges` skips.
 pub(crate) fn apply_blue_ignores(edges: &mut [Edge], blues: &ScaledBlues, flags: u16) {
+    const IGNORE: u16 =
+        IGNORE_CAPITAL_TOP | IGNORE_CAPITAL_BOTTOM | IGNORE_SMALL_TOP | IGNORE_SMALL_BOTTOM;
+    if flags & IGNORE == 0 {
+        return;
+    }
     let (capital_top, capital_bottom) = base_blues(blues, true);
     let (small_top, small_bottom) = base_blues(blues, false);
     if let (Some(top), Some(bottom)) = (capital_top, capital_bottom) {
@@ -487,10 +564,11 @@ pub(crate) fn apply_blue_ignores(edges: &mut [Edge], blues: &ScaledBlues, flags:
     }
 }
 
-// aflatin.c:3110 af_latin_ignore_top
+// aflatin.c:3110 af_latin_ignore_top, with af_prevent_top_blue_alignment (aflatin.c:3035)
 fn ignore_top(edges: &mut [Edge], top: &ScaledBlue, bottom: &ScaledBlue) {
     let top_shoot = overshoot(top);
     let base_height = top_shoot - overshoot(bottom);
+    // aflatin.c:3123: one seventh of the height and a quarter of a pixel.
     let limit = top_shoot + base_height / 7 + 16;
     for edge in edges.iter_mut() {
         if i64::from(edge.pos) > limit {
@@ -499,10 +577,11 @@ fn ignore_top(edges: &mut [Edge], top: &ScaledBlue, bottom: &ScaledBlue) {
     }
 }
 
-// aflatin.c:3130 af_latin_ignore_bottom
+// aflatin.c:3130 af_latin_ignore_bottom, with af_prevent_bottom_blue_alignment (aflatin.c:3052)
 fn ignore_bottom(edges: &mut [Edge], top: &ScaledBlue, bottom: &ScaledBlue) {
     let bottom_shoot = overshoot(bottom);
     let base_height = overshoot(top) - bottom_shoot;
+    // aflatin.c:3139
     let limit = bottom_shoot - base_height / 7 - 16;
     for edge in edges.iter_mut() {
         if i64::from(edge.pos) < limit {
@@ -511,183 +590,225 @@ fn ignore_bottom(edges: &mut [Edge], top: &ScaledBlue, bottom: &ScaledBlue) {
     }
 }
 
-// aflatin.c:5000-5010 (accent height limit with do_height_check)
-/// Returns the accent height limit used by the separation adjustment.
+// aflatin.c:4999-5020
+/// Returns the accent height limit that `apply_vertical_separation` uses.
 fn accent_height_limit(blues: &ScaledBlues, units_per_em: i32, y_scale: i32) -> i64 {
     let (capital_top, capital_bottom) = base_blues(blues, true);
     let (small_top, small_bottom) = base_blues(blues, false);
     if let (Some(top), Some(bottom)) = (small_top, small_bottom) {
+        // 2/3 of the lowercase blue zone height
         2 * (overshoot(top) - overshoot(bottom)) / 3
     } else if let (Some(top), Some(bottom)) = (capital_top, capital_bottom) {
+        // 1/2 of the uppercase blue zone height
         (overshoot(top) - overshoot(bottom)) / 2
     } else {
+        // 2/5 of the em, scaled
         i64::from(fixed_mul(units_per_em * 4 / 10, y_scale))
     }
 }
 
-// aflatin.c:3583 af_glyph_hints_apply_vertical_separation_adjustments, top block 3660-3662
-/// Pushes the top contour up when it nearly touches another contour.
-///
-/// Returns false if FreeType would skip the bottom adjustment as well.
+/// The result of the top (or bottom) block of the separation adjustment.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Separation {
+    /// The block ran or had nothing to do; the other block may run.
+    Done,
+    /// FreeType returned from the whole function (aflatin.c:3677, 3691, 3842, 3856).
+    Return,
+}
+
+// aflatin.c:3634-3797 (top block of af_glyph_hints_apply_vertical_separation_adjustments)
+/// Pushes the highest (or second highest) contour up when it nearly touches
+/// another contour.
 fn separate_top(
     outline: &mut Outline,
     extrema: &[Extrema],
     flags: u16,
     accent_height_limit: i64,
-) -> bool {
+) -> Separation {
+    let adjust_top = flags & UP != 0;
     let adjust_below_top = flags & UP2 != 0;
     let is_top_tilde = flags & TILDE_TOP != 0;
     let is_below_top_tilde = flags & TILDE_TOP2 != 0;
 
+    // aflatin.c:3664
     let high = if adjust_below_top {
         find_second_highest(extrema)
     } else {
         find_highest(extrema)
     };
+    // aflatin.c:3670-3678
     if !check_horizontal_overlap(outline, high) {
-        return false;
+        return Separation::Return;
     }
     let high_min = extrema[high].min;
-    let high_height = extrema[high].max - high_min;
+    let high_height = sub(extrema[high].max, high_min);
+    // aflatin.c:3684-3692
     if high_height > accent_height_limit {
-        return false;
+        return Separation::Return;
     }
 
+    // aflatin.c:3698-3719
     let mut min_distance = 64;
     for (contour, e) in extrema.iter().enumerate() {
         if contour == high {
             continue;
         }
-        let distance = high_min - e.max;
+        let distance = sub(high_min, e.max);
         if distance < 64 && distance < min_distance && e.min < high_min {
             min_distance = distance;
         }
     }
     let adjustment_amount = 64 - min_distance;
 
+    // aflatin.c:3723-3752
     let mut centering_adjustment = 0;
     if is_top_tilde || is_below_top_tilde {
-        // The tilde contour is always the high contour on this path.
-        let tilde_height = high_height;
-        let mut pos = high_min + adjustment_amount;
+        let tilde = if adjust_top || is_below_top_tilde {
+            high
+        } else {
+            find_highest(extrema)
+        };
+        let tilde_height = sub(extrema[tilde].max, extrema[tilde].min);
+        // The separation can undo the grid alignment of a tilde; if it would
+        // align a tilde under three pixels tall, centre it again.
+        let mut pos = add(high_min, adjustment_amount);
         if adjust_below_top && is_top_tilde {
-            pos += high_height;
+            pos = add(pos, high_height);
         }
         if pos % 64 == 0 && tilde_height < 3 * 64 {
-            centering_adjustment = (pix_round(tilde_height) - tilde_height) / 2;
+            centering_adjustment = sub(pix_round(tilde_height), tilde_height) / 2;
         }
     }
 
-    let calculated_amount = if (flags & UP != 0 && is_top_tilde)
-        || (adjust_below_top && is_below_top_tilde)
+    // aflatin.c:3754-3758
+    let calculated_amount = if (adjust_top && is_top_tilde) || (adjust_below_top && is_below_top_tilde)
     {
-        adjustment_amount + centering_adjustment
+        add(adjustment_amount, centering_adjustment)
     } else {
         adjustment_amount
     };
 
+    // aflatin.c:3767-3796: a delta of 2/64 px is tolerated for rounding.
     if calculated_amount != 0
         && calculated_amount >= -2
         && (calculated_amount <= 66 || adjustment_amount <= 66)
     {
-        let min_y_limit = high_min - high_height / 8;
+        let min_y_limit = sub(high_min, high_height / 8);
+        // The amount is applied to all contours that are about as high or higher
+        // (the ring of a Czech accent, the second acute of a double acute).
         move_contours_up(outline, extrema, min_y_limit, adjustment_amount);
         if adjust_below_top && is_top_tilde {
             move_contours_up(
                 outline,
                 extrema,
-                min_y_limit + high_height,
+                add(min_y_limit, high_height),
                 centering_adjustment,
             );
         }
     }
-    true
+    Separation::Done
 }
 
-// aflatin.c:3583 af_glyph_hints_apply_vertical_separation_adjustments, bottom block 3827-3829
-/// Pushes the bottom contour down when it nearly touches another contour.
+// aflatin.c:3799-3942 (bottom block of af_glyph_hints_apply_vertical_separation_adjustments)
+/// Pushes the lowest (or second lowest) contour down when it nearly touches
+/// another contour.
 fn separate_bottom(
     outline: &mut Outline,
     extrema: &[Extrema],
     flags: u16,
     accent_height_limit: i64,
-) {
+) -> Separation {
     let adjust_bottom = flags & DOWN != 0;
     let adjust_above_bottom = flags & DOWN2 != 0;
     let is_bottom_tilde = flags & TILDE_BOTTOM != 0;
     let is_above_bottom_tilde = flags & TILDE_BOTTOM2 != 0;
 
+    // aflatin.c:3831
     let low = if adjust_above_bottom {
         find_second_lowest(extrema)
     } else {
         find_lowest(extrema)
     };
+    // aflatin.c:3835-3843
     if !check_horizontal_overlap(outline, low) {
-        return;
+        return Separation::Return;
     }
     let low_max = extrema[low].max;
-    let low_height = low_max - extrema[low].min;
+    let low_height = sub(low_max, extrema[low].min);
+    // aflatin.c:3849-3857
     if low_height > accent_height_limit {
-        return;
+        return Separation::Return;
     }
 
+    // aflatin.c:3859-3877
     let mut min_distance = 64;
     for (contour, e) in extrema.iter().enumerate() {
         if contour == low {
             continue;
         }
-        let distance = e.min - low_max;
+        let distance = sub(e.min, low_max);
         if distance < 64 && distance < min_distance && e.max > low_max {
             min_distance = distance;
         }
     }
     let adjustment_amount = 64 - min_distance;
 
+    // aflatin.c:3881-3905
     let mut centering_adjustment = 0;
     if is_bottom_tilde || is_above_bottom_tilde {
-        // The tilde contour is always the low contour on this path.
-        let tilde_height = low_height;
-        let mut pos = low_max - adjustment_amount;
+        let tilde = if adjust_bottom || is_above_bottom_tilde {
+            low
+        } else {
+            find_lowest(extrema)
+        };
+        let tilde_height = sub(extrema[tilde].max, extrema[tilde].min);
+        let mut pos = sub(low_max, adjustment_amount);
         if adjust_above_bottom && is_bottom_tilde {
-            pos -= low_height;
+            pos = sub(pos, low_height);
         }
         if pos % 64 == 0 && tilde_height < 3 * 64 {
-            centering_adjustment = (pix_round(tilde_height) - tilde_height) / 2;
+            centering_adjustment = sub(pix_round(tilde_height), tilde_height) / 2;
         }
     }
 
+    // aflatin.c:3907-3911
     let calculated_amount = if (adjust_bottom && is_bottom_tilde)
         || (adjust_above_bottom && is_above_bottom_tilde)
     {
-        adjustment_amount + centering_adjustment
+        add(adjustment_amount, centering_adjustment)
     } else {
         adjustment_amount
     };
 
+    // aflatin.c:3919-3941
     if calculated_amount != 0
         && calculated_amount >= -2
         && (calculated_amount <= 66 || adjustment_amount <= 66)
     {
-        let max_y_limit = low_max + low_height / 8;
+        let max_y_limit = add(low_max, low_height / 8);
         move_contours_down(outline, extrema, max_y_limit, adjustment_amount);
         if adjust_above_bottom && is_bottom_tilde {
             move_contours_down(
                 outline,
                 extrema,
-                max_y_limit - low_height,
+                sub(max_y_limit, low_height),
                 centering_adjustment,
             );
         }
     }
+    Separation::Done
 }
 
-// aflatin.c:3583 af_glyph_hints_apply_vertical_separation_adjustments (body 3596-3955); called from aflatin.c:5060
-/// Applies the vertical separation adjustment for accents.
+// aflatin.c:3583 af_glyph_hints_apply_vertical_separation_adjustments
+// (body 3590-3955); called from aflatin.c:5060 after the vertical edges have
+// been fitted
+/// Applies the vertical separation adjustment: it keeps an accent at least one
+/// pixel away from its base glyph.
 ///
-/// Runs after the vertical edges have been aligned. `flags` are the glyph's
-/// adjustment flags, and `units_per_em` and `y_scale` define the accent height
-/// fallback limit. A glyph with `NO_HEIGHT_CHECK` uses a limit of zero, which
-/// mirrors FreeType's `accent_height_limit`, left at zero in that case.
+/// `flags` are the glyph's adjustment flags, `units_per_em` and `y_scale` give the
+/// fallback accent height limit. A glyph with `NO_HEIGHT_CHECK` keeps FreeType's
+/// limit of zero (aflatin.c:4855, 4904), and so is only adjusted if the accent
+/// has no height at all.
 pub(crate) fn apply_vertical_separation(
     outline: &mut Outline,
     blues: &ScaledBlues,
@@ -708,12 +829,13 @@ pub(crate) fn apply_vertical_separation(
         accent_height_limit(blues, units_per_em, y_scale)
     };
 
+    // aflatin.c:3624-3632: the extrema of the already hinted outline.
     let extrema = compute_extrema(outline);
     let count = extrema.len();
-    if (adjust_top && count >= 2) || (adjust_below_top && count >= 3) {
-        if !separate_top(outline, &extrema, flags, limit) {
-            return;
-        }
+    if ((adjust_top && count >= 2) || (adjust_below_top && count >= 3))
+        && separate_top(outline, &extrema, flags, limit) == Separation::Return
+    {
+        return;
     }
     if (adjust_bottom && count >= 2) || (adjust_above_bottom && count >= 3) {
         separate_bottom(outline, &extrema, flags, limit);

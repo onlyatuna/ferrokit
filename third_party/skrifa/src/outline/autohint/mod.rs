@@ -82,7 +82,11 @@ impl HintPlan {
             metrics.style_class().script.group,
         );
 
-        let adjust_flags = adjust::glyph_adjust_flags(glyph_id, |ch| context.map(ch));
+        let adjust_flags = if metrics.style_class().script.group == style::ScriptGroup::Default {
+            adjust::ReverseCharMap::new(|ch| context.map(ch)).flags(glyph_id)
+        } else {
+            0
+        };
         let mut recorder = recorder::HintsRecorder::default();
         let hinted_plan = hint::hint_outline_with_recorder(
             &mut outline,
