@@ -31,11 +31,12 @@
 //!
 //! Measured against Qt 6.12 (PySide6): single glyphs are bit-identical (A8 and LCD) at every
 //! ratio and size tried, simulated faces and collection members included, and so are the advances
-//! of text. Not modelled yet, as listed in the Windows text series: the per-script `kern` check,
-//! the metrics of fonts with embedded bitmaps, the outlines of `QPainterPath::addText` (Qt takes
-//! them from DirectWrite, simulated faces included, as cubic curves; [`OutlineFace`]'s are quadratic
-//! and unsimulated). The goldens in `tests/test_directwrite_placement.rs`,
-//! `tests/test_directwrite_modes.rs` and `tests/test_directwrite_faces.rs` pin whole strings and
+//! of text, the kerning of Tahoma's `kern` table per script of the run, and the line metrics of
+//! fonts with embedded bitmaps. Not modelled yet, as listed in the Windows text series: the
+//! outlines of `QPainterPath::addText` (Qt takes them from DirectWrite, simulated faces included,
+//! as cubic curves; [`OutlineFace`]'s are quadratic and unsimulated). The goldens in
+//! `tests/test_directwrite_placement.rs`, `tests/test_directwrite_modes.rs`,
+//! `tests/test_directwrite_faces.rs` and `tests/test_directwrite_gaps.rs` pin whole strings and
 //! glyphs measured from Qt.
 //!
 //! The font stays plain bytes in our memory (`SharedFontData`, handed to DirectWrite through an
@@ -623,10 +624,29 @@ impl GlyphFace for DirectWriteFace {
     }
 
     /// Qt's DirectWrite engine fills its ascent, descent and leading from `DWRITE_FONT_METRICS`
-    /// and then lets `QFontEngine::initializeHeightMetrics` replace them with the values of the
-    /// font's own tables (qwindowsfontenginedirectwrite.cpp:353-363), which are what is read here.
+    /// (`initializeHeightMetrics`, qwindowsfontenginedirectwrite.cpp:399-409) and then calls
+    /// `QFontEngine::initializeHeightMetrics`, which replaces them with the values of the font's
+    /// own tables, read by [`OutlineFace::line_metrics`], and rounds them without sub-pixel
+    /// positions. A font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) skips all of that
+    /// (qfontengine.cpp:432-445) and keeps DirectWrite's `DWRITE_FONT_METRICS` (ascent, descent
+    /// and line gap), each through `DESIGN_TO_LOGICAL` and never rounded.
     fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
-        self.base.line_metrics(px)
+        let bitmaps = [b"EBLC", b"CBLC", b"bdat"]
+            .iter()
+            .any(|tag| self.base.sfnt_table(tag).is_some());
+        if !bitmaps {
+            return self.base.line_metrics(px);
+        }
+        let mut metrics = DWRITE_FONT_METRICS::default();
+        // SAFETY: `self.face` is a live `IDWriteFontFace`; `&mut metrics` is a live local that
+        // receives one `DWRITE_FONT_METRICS`; the call holds `DWRITE_LOCK`.
+        serialized(|| unsafe { self.face.GetMetrics(&mut metrics) });
+        Some(LineMetrics {
+            ascent: self.design_to_logical(i32::from(metrics.ascent), px),
+            descent: self.design_to_logical(i32::from(metrics.descent), px),
+            leading: self.design_to_logical(i32::from(metrics.lineGap), px),
+            unrounded: true,
+        })
     }
 
     /// `boundingBox('x').xoff` (the design advance of `x`): Qt's Windows engines do not use the

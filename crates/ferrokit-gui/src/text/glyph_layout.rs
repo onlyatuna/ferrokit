@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use crate::text::font::{Font, FontTag, SharedFontData};
 use crate::text::glyph_face::{GlyphFace, GlyphMetrics, SharedGlyphFace};
+use crate::text::shaping_plan;
 use rustybuzz::ttf_parser::kern as ttf_kern;
 use std::sync::Arc;
+use unicode_script::Script;
 
 /// A single positioned glyph (`QGlyphRun` item equivalent).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -546,14 +548,14 @@ fn user_features(font: &Font) -> Vec<rustybuzz::Feature> {
 /// the font has not set it itself (`QFlatMap::insert` keeps the first value, so
 /// `setFeature` takes precedence over what Qt would pick).
 ///
-/// `kern` goes out as 0 when `legacy_kern` says the pairs of the font's `kern` table are applied
-/// by hand afterwards (see `legacy_kern_table`); a font that set `kern` to 0 itself keeps both
-/// off.
-fn shaping_features(font: &Font, legacy_kern: bool) -> Vec<rustybuzz::Feature> {
+/// `kern` goes out as 0 when `kern_by_hand` says HarfBuzz must not kern the run: its `kern` table
+/// is applied by hand afterwards (see `legacy_kern_table`) or the run's shaper applies none; a
+/// font that set `kern` to 0 itself keeps both off.
+fn shaping_features(font: &Font, kern_by_hand: bool) -> Vec<rustybuzz::Feature> {
     let mut features = user_features(font);
     if !font.is_feature_set(FontTag::KERN) {
-        features.push(feature(FontTag::KERN, u32::from(!legacy_kern)));
-    } else if legacy_kern && font.kerning_enabled() {
+        features.push(feature(FontTag::KERN, u32::from(!kern_by_hand)));
+    } else if kern_by_hand && font.kerning_enabled() {
         // The explicit non-zero `kern` would make HarfBuzz apply the table too.
         features.retain(|f| f.tag != rustybuzz::ttf_parser::Tag::from_bytes(b"kern"));
         features.push(feature(FontTag::KERN, 0));
@@ -569,10 +571,99 @@ fn shaping_features(font: &Font, legacy_kern: bool) -> Vec<rustybuzz::Feature> {
     features
 }
 
+/// How a run is kerned: the pairs of a `kern` table applied by hand (HarfBuzz's `apply_kern`),
+/// and whether HarfBuzz itself (GPOS, `kerx`) may kern the run.
+struct KernPlan<'a> {
+    table: Option<Vec<ttf_kern::Subtable<'a>>>,
+    shaper: bool,
+}
+
+/// Whether the shaping runs are cut at Qt's script items and kerned by the plan HarfBuzz makes
+/// for each script (see [`shaping_plan`]). Measured against Qt on Windows only; the other
+/// platforms keep one run per font and a script-blind kerning check.
+fn qt_shaping_plan() -> bool {
+    cfg!(windows)
+}
+
+/// Cuts the font runs of `text` at Qt's script items and gives each piece the script of its item.
+/// The items are found over the whole string, so a font run that starts with characters of no
+/// script of their own still takes the script of the item before it.
+fn split_runs_by_script<'a>(
+    text: &str,
+    runs: Vec<(FontRun<'a>, Option<Script>)>,
+) -> Vec<(FontRun<'a>, Option<Script>)> {
+    let items = shaping_plan::script_items(text);
+    let mut result = Vec::with_capacity(runs.len());
+    let mut item = 0;
+    for (run, _) in runs {
+        let start = run.text.as_ptr() as usize - text.as_ptr() as usize;
+        let end = start + run.text.len();
+        let mut from = start;
+        while from < end {
+            while item + 1 < items.len() && items[item + 1].0 <= from {
+                item += 1;
+            }
+            let to = items.get(item + 1).map_or(end, |next| next.0.min(end));
+            result.push((
+                FontRun {
+                    text: &run.text[from - start..to - start],
+                    engine_index: run.engine_index,
+                },
+                Some(items[item].1),
+            ));
+            from = to;
+        }
+    }
+    result
+}
+
+/// The kerning of a run of `script` in `face`. Without a script (the platforms that do not
+/// follow Qt's script items) the script-blind check of [`legacy_kern_table`] stands.
+///
+/// A `backward` (right to left) run is left to rustybuzz whatever the plan says: its `kern`-table
+/// code reverses the glyphs of a backward run once too often when the `kern` feature is off (it
+/// reverses them, then skips the reversal back), so the by-hand route that switches the feature
+/// off would put such a run's glyphs in the wrong order. Qt's pairs are then applied by rustybuzz,
+/// which splits a pair's kern in font units before scaling it; that can differ from Qt by 1/64 px.
+fn kern_plan<'a>(
+    face: &'a rustybuzz::Face<'a>,
+    script: Option<Script>,
+    backward: bool,
+) -> KernPlan<'a> {
+    match script.map(|script| shaping_plan::kern_source(face, script)) {
+        None => {
+            let table = legacy_kern_table(face);
+            KernPlan {
+                shaper: table.is_none(),
+                table,
+            }
+        }
+        Some(_) if backward => KernPlan {
+            table: None,
+            shaper: true,
+        },
+        Some(shaping_plan::KernSource::Shaper) => KernPlan {
+            table: None,
+            shaper: true,
+        },
+        Some(shaping_plan::KernSource::Nothing) => KernPlan {
+            table: None,
+            shaper: false,
+        },
+        Some(shaping_plan::KernSource::KernTable) => {
+            let table = kern_table_subtables(face);
+            KernPlan {
+                shaper: table.is_none(),
+                table,
+            }
+        }
+    }
+}
+
 /// The plain horizontal subtables of the font's `kern` table when HarfBuzz applies them itself:
-/// no `kerx`, and no GPOS `kern` feature (`apply_kern` in HarfBuzz's shape plan). `None` when the
-/// font kerns through GPOS, or its `kern` table needs state machines or cross-stream kerning, which
-/// stay with rustybuzz.
+/// no `kerx`, and no GPOS `kern` feature of any script (a script-blind `apply_kern`). `None` when
+/// the font kerns through GPOS, or its `kern` table needs state machines or cross-stream
+/// kerning, which stay with rustybuzz.
 fn legacy_kern_table<'a>(face: &'a rustybuzz::Face<'a>) -> Option<Vec<ttf_kern::Subtable<'a>>> {
     let tables = face.tables();
     if tables.kerx.is_some() {
@@ -586,8 +677,14 @@ fn legacy_kern_table<'a>(face: &'a rustybuzz::Face<'a>) -> Option<Vec<ttf_kern::
     }) {
         return None;
     }
+    kern_table_subtables(face)
+}
+
+/// The plain horizontal subtables of the font's `kern` table; `None` when it has none or needs
+/// state machines or cross-stream kerning, which stay with rustybuzz.
+fn kern_table_subtables<'a>(face: &'a rustybuzz::Face<'a>) -> Option<Vec<ttf_kern::Subtable<'a>>> {
     let mut subtables = Vec::new();
-    for subtable in tables.kern.as_ref()?.subtables {
+    for subtable in face.tables().kern.as_ref()?.subtables {
         if subtable.variable || !subtable.horizontal {
             continue;
         }
@@ -613,7 +710,7 @@ fn qt_glyph_metrics(
     positions: &[rustybuzz::GlyphPosition],
     size: f32,
     subpixel: bool,
-    legacy_kern: Option<&Vec<ttf_kern::Subtable>>,
+    legacy_kern: Option<(&[ttf_kern::Subtable], &[bool])>,
 ) -> Option<Vec<(i64, i64)>> {
     let mult = hb_font_multiplier(size, face.units_per_em());
     let mut metrics = Vec::with_capacity(infos.len());
@@ -630,13 +727,16 @@ fn qt_glyph_metrics(
         };
         metrics.push((advance, hb_scale_font_units(i64::from(pos.x_offset), mult)));
     }
-    if let Some(subtables) = legacy_kern {
+    if let Some((subtables, ignorable)) = legacy_kern {
         let is_mark = |info: &rustybuzz::GlyphInfo| is_mark_glyph(face, info.glyph_id);
         for subtable in subtables {
             let mut i = 0;
             while i < infos.len() {
-                // `IGNORE_MARKS` skipping iterator: the next glyph that is not a mark.
-                let Some(j) = (i + 1..infos.len()).find(|&j| !is_mark(&infos[j])) else {
+                // The skipping iterator of `hb_kern_machine_t` (`IGNORE_MARKS`): the next glyph
+                // that is neither a mark nor a default ignorable, which HarfBuzz hides only
+                // after it has positioned the glyphs.
+                let Some(j) = (i + 1..infos.len()).find(|&j| !is_mark(&infos[j]) && !ignorable[j])
+                else {
                     break;
                 };
                 let raw = subtable
@@ -684,6 +784,40 @@ fn qt_glyph_metrics(
         }
     }
     Some(metrics)
+}
+
+/// For every shaped glyph whether it stands for a default ignorable character: a glyph whose
+/// cluster starts with one of [`is_zero_width`]'s characters, or the space glyph HarfBuzz leaves
+/// for a joiner or variation selector, which it merges into the cluster of the character before
+/// it (so the cluster starts with that one).
+fn ignorable_glyphs(
+    run_text: &str,
+    infos: &[rustybuzz::GlyphInfo],
+    hidden_glyph: u16,
+) -> Vec<bool> {
+    let mut ignorable = Vec::with_capacity(infos.len());
+    for (i, info) in infos.iter().enumerate() {
+        let start = info.cluster as usize;
+        let own = run_text[start..].chars().next();
+        if own.is_some_and(is_zero_width) {
+            ignorable.push(true);
+            continue;
+        }
+        // A further glyph of the same cluster: the characters after the first one are its own.
+        let continues = i > 0 && infos[i - 1].cluster == info.cluster;
+        let end = infos
+            .iter()
+            .map(|other| other.cluster as usize)
+            .filter(|&cluster| cluster > start)
+            .min()
+            .unwrap_or(run_text.len());
+        ignorable.push(
+            continues
+                && info.glyph_id == u32::from(hidden_glyph)
+                && run_text[start..end].chars().skip(1).any(is_zero_width),
+        );
+    }
+    ignorable
 }
 
 /// Whether `c` has no width in Qt in any font, whatever glyph a font has for it (measured with
@@ -1063,7 +1197,13 @@ impl GlyphLayout {
         // which selects the GPOS device-table adjustments.
         let ppem = font.size as u16;
 
-        let mut runs = Self::partition_into_runs(text, engines);
+        let mut runs = Self::partition_into_runs(text, engines)
+            .into_iter()
+            .map(|run| (run, None))
+            .collect::<Vec<_>>();
+        if qt_shaping_plan() {
+            runs = split_runs_by_script(text, runs);
+        }
         // Right to left text is laid out from its right end: the first font run in the text is the
         // rightmost, so the runs go in visual order.
         if right_to_left == Some(true) {
@@ -1074,7 +1214,7 @@ impl GlyphLayout {
         let mut current_y = 0.0;
         let subpixel = crate::text::font_database::layout_has_subpixel_advances();
 
-        for run in runs {
+        for (run, script) in runs {
             // `run.text` is a subslice of `text`, so the pointer difference is its byte offset.
             let run_offset = run.text.as_ptr() as usize - text.as_ptr() as usize;
             let engine = &engines[run.engine_index];
@@ -1084,6 +1224,11 @@ impl GlyphLayout {
                 // Qt `shapeTextWithHarfbuzzNG` path:
                 let mut buffer = rustybuzz::UnicodeBuffer::new();
                 buffer.push_str(run.text);
+                // Qt hands HarfBuzz the script of the item, not what the characters of this font run
+                // would suggest (`QTextEngine::shapeTextWithHarfbuzzNG`).
+                if let Some(script) = script.and_then(shaping_plan::buzz_script) {
+                    buffer.set_script(script);
+                }
                 if let Some(rtl) = right_to_left {
                     buffer.set_direction(if rtl {
                         rustybuzz::Direction::RightToLeft
@@ -1091,12 +1236,18 @@ impl GlyphLayout {
                         rustybuzz::Direction::LeftToRight
                     });
                 }
+                // The direction rustybuzz will shape with, guessed from the script when not given.
+                buffer.guess_segment_properties();
+                let backward = matches!(
+                    buffer.direction(),
+                    rustybuzz::Direction::RightToLeft | rustybuzz::Direction::BottomToTop
+                );
 
                 // HarfBuzz applies a `kern` table itself when the font has no GPOS kerning; the pairs
                 // are then applied below, scaled as HarfBuzz scales them (see `legacy_kern_table`).
-                let legacy_kern = legacy_kern_table(rb_face);
-                let features = shaping_features(font, legacy_kern.is_some());
-                let legacy_kern = legacy_kern.filter(|_| font.kerning_enabled());
+                let kern_plan = kern_plan(rb_face, script, backward);
+                let features = shaping_features(font, !kern_plan.shaper);
+                let legacy_kern = kern_plan.table.filter(|_| font.kerning_enabled());
 
                 let glyph_buffer = rustybuzz::shape(rb_face, &features, buffer);
                 let upem = rb_face.units_per_em() as f32;
@@ -1105,6 +1256,10 @@ impl GlyphLayout {
                 let infos = glyph_buffer.glyph_infos();
                 let positions = glyph_buffer.glyph_positions();
 
+                // A character of no width is hidden as HarfBuzz hides default ignorables: the
+                // space glyph, no advance, whatever glyph or advance the font has for it.
+                let hidden_glyph = rb_face.glyph_index(' ').map_or(0, |g| g.0);
+                let ignorable = ignorable_glyphs(run.text, infos, hidden_glyph);
                 let engine_metrics = qt_glyph_metrics(
                     rb_face,
                     &*engine.face,
@@ -1112,17 +1267,13 @@ impl GlyphLayout {
                     positions,
                     font.size,
                     subpixel,
-                    legacy_kern.as_ref(),
+                    legacy_kern
+                        .as_deref()
+                        .map(|subtables| (subtables, ignorable.as_slice())),
                 );
 
-                // A character of no width is hidden as HarfBuzz hides default ignorables: the
-                // space glyph, no advance, whatever glyph or advance the font has for it.
-                let hidden_glyph = rb_face.glyph_index(' ').map_or(0, |g| g.0);
                 for (i, (info, pos)) in infos.iter().zip(positions.iter()).enumerate() {
-                    let hidden = text[run_offset + info.cluster as usize..]
-                        .chars()
-                        .next()
-                        .is_some_and(is_zero_width);
+                    let hidden = ignorable[i];
                     // `engine_metrics` is Qt's own advance and x offset in 26.6 pixels; without a
                     // font engine advance HarfBuzz's design values stand.
                     let (adv, x_offset) = match &engine_metrics {

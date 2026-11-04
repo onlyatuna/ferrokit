@@ -180,10 +180,6 @@ def child(dpr):
             data = f.read()
         print("sysfont", file, len(data), "%016x" % fnv1a64(data))
         for family, weight, italic, cjk in requests:
-            if family == "Tahoma" and dpr != 1.0:
-                # Qt applies Tahoma's legacy `kern` table at a ratio other than 1 (its GPOS `kern`
-                # feature is for Arabic only); ferrokit's script-blind check does not yet.
-                continue
             measure("sys", family, weight, italic, cjk)
 
 

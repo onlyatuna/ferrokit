@@ -70,11 +70,12 @@ impl OutlineFace {
     /// `QFixed::fromReal(value * px / unitsPerEm)`, truncated to 1/64 px. Read straight from the
     /// table bytes, as Qt does, so the result does not depend on a platform shaper.
     ///
-    /// **Known deviation:** a font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) keeps its
-    /// platform engine's own values in Qt, neither read from the tables nor rounded
-    /// (qfontengine.cpp:432-445: DirectWrite's `DWRITE_FONT_METRICS`, FreeType's scaled size
-    /// metrics, CoreText's). Those are not available here, so such a font only skips the OS/2
-    /// override and is read from `hhea`, and is rounded like any other. [inferred]
+    /// **Known deviation (not on Windows):** a font with embedded bitmaps (`EBLC`, `CBLC` or
+    /// `bdat`) keeps its platform engine's own values in Qt, neither read from the tables nor
+    /// rounded (qfontengine.cpp:432-445: DirectWrite's `DWRITE_FONT_METRICS`, FreeType's scaled
+    /// size metrics, CoreText's). Only the DirectWrite backend has them (`DirectWriteFace`,
+    /// which asks DirectWrite); here such a font only skips the OS/2 override and is read from
+    /// `hhea`, and is rounded like any other. [inferred]
     /// macOS has no override at all: CoreText reports the `hhea` values (`CTFontGetAscent`,
     /// `CTFontGetDescent`, `CTFontGetLeading`, qfontengine_coretext.mm:401-411) unless the
     /// application asks for `QFont::PreferTypoLineMetrics`.
@@ -132,6 +133,7 @@ impl OutlineFace {
             ascent: ascent as f32,
             descent: descent as f32,
             leading: leading as f32,
+            unrounded: false,
         })
     }
 
