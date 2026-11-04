@@ -350,6 +350,20 @@ impl ClusterShaper<'_> {
                 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/afshaper.c#L639>
                 if self.shaper.mode == ShaperMode::Nominal && output.len() > 1 {
                     output.clear();
+                } else if self.shaper.mode != ShaperMode::Nominal && is_lone_dependent_mark(input)
+                {
+                    // HarfBuzz's complex shapers (Indic, Khmer, Myanmar, USE) insert a dotted
+                    // circle before a dependent sign that has no base, if the font has one;
+                    // FreeType, which shapes with HarfBuzz, then measures the circle too.
+                    if let Some(circle) = self.shaper.context.map(DOTTED_CIRCLE) {
+                        output.insert(
+                            0,
+                            ShapedGlyph {
+                                id: circle,
+                                y_offset: 0,
+                            },
+                        );
+                    }
                 }
             }
             ClusterShaperKind::Lookups(lookups) => {
@@ -1352,4 +1366,26 @@ mod tests {
             buf.to_vec()
         }
     }
+}
+
+/// U+25CC, the glyph HarfBuzz inserts before a sign that has no base.
+const DOTTED_CIRCLE: u32 = 0x25CC;
+
+/// The dependent signs of the blue strings of the scripts that HarfBuzz shapes with a complex
+/// shaper (Bengali, Devanagari, Gujarati, Gurmukhi: Indic; Khmer; Myanmar; Saurashtra: USE).
+/// Alone, they make a broken cluster. These are the Mn and Mc characters of those blue strings
+/// (generated/generated_autohint_styles.rs).
+const DEPENDENT_MARKS: &[u32] = &[
+    0x093F, 0x0940, 0x0941, 0x0943, 0x094B, 0x094C, // Devanagari
+    0x09BF, 0x09C0, 0x09C8, 0x09D7, // Bengali
+    0x0A3F, 0x0A40, // Gurmukhi
+    0x0ABF, 0x0AC0, 0x0AC1, 0x0AC3, 0x0AC4, // Gujarati
+    0x17B6, // Khmer
+    0x102B, 0x102D, 0x103C, // Myanmar
+    0xA8BA, // Saurashtra
+];
+
+fn is_lone_dependent_mark(input: &str) -> bool {
+    let mut chars = input.chars();
+    matches!((chars.next(), chars.next()), (Some(ch), None) if DEPENDENT_MARKS.contains(&(ch as u32)))
 }
