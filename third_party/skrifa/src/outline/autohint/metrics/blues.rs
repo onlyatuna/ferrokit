@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// bottom blue zone properties follow FreeType 2.14.2, src/autofit/afblue.dat and aflatin.c.
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Latin blue values.
 
 use super::{

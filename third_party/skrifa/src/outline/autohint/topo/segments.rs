@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// `IGNORE` points follow FreeType 2.14.2, src/autofit/aflatin.c (`af_latin_hints_compute_segments`).
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Segment computation and linking.
 //!
 //! A segment is a series of at least two consecutive points that are

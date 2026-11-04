@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// `NO_BLUE` test follows FreeType 2.14.2, src/autofit/aflatin.c (`af_latin_hints_compute_blue_edges`).
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Edge detection.
 //!
 //! Edges are sets of segments that all lie within a threshold based on
