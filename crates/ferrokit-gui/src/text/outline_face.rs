@@ -51,6 +51,11 @@ impl OutlineFace {
         })
     }
 
+    /// The `hmtx` advance of `glyph_id` in font units.
+    pub(crate) fn glyph_hor_advance(&self, glyph_id: u16) -> Option<u16> {
+        self.face.glyph_hor_advance(GlyphId(glyph_id))
+    }
+
     /// `QFontEngine::initializeHeightMetrics` (qfontengine.cpp:419-448) from the font's own tables,
     /// which Qt 6 uses on every platform instead of the system's values: the `hhea` ascender,
     /// descender and line gap, replaced by the OS/2 typographic ones when `fsSelection` has

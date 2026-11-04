@@ -667,8 +667,16 @@ fn qt_glyph_metrics(
             }
         }
     }
-    if !subpixel {
-        // `g.advances[i].round()` and `g.offsets[i].x.round()` for engines without subpixel positions.
+    // `g.advances[i].round()` and `g.offsets[i].x.round()` for engines without subpixel positions
+    // (`QTextEngine::shapeTextWithHarfbuzzNG`): Qt's FreeType engine by its hint style
+    // (`supportsHorizontalSubPixelPositions`), any other by the platform rule (the GDI engine at a
+    // ratio of 1).
+    let whole_pixels = if engine.freetype_engine() {
+        !engine.supports_horizontal_subpixel_positions()
+    } else {
+        !subpixel
+    };
+    if whole_pixels {
         for (advance, x_offset) in &mut metrics {
             *advance = (*advance + 32) & -64;
             *x_offset = (*x_offset + 32) & -64;

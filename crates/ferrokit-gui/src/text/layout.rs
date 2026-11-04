@@ -1791,14 +1791,36 @@ mod tests {
 
         let runs = layout.span_runs(composite, paragraph, 0..6, Color::BLACK);
         assert_eq!(runs.len(), 1);
-        for (i, glyph) in runs[0].1.iter().enumerate() {
-            let cursor = line.cursor_to_x(i, Edge::Leading) - line.position.x;
+        // Cursor positions are sums of advances. A glyph is drawn at that sum plus its x offset,
+        // which HarfBuzz's kern machine gives the second glyph of a pair that a legacy `kern` table
+        // kerns (the second half of the kern); a font that kerns through GPOS has none. Qt's
+        // `QTextLayout` of "AVAVAV" in the Arial of the Linux reference host (legacy `kern` only):
+        // glyph positions 0, 9.484375, 18.96875, ... and `cursorToX` 0, 10.078125, 19.5625, ...,
+        // a constant -0.59375 from the second glyph on.
+        let metrics = FontMetrics::from_font(&font);
+        let kern = metrics.horizontal_advance_exact("AV", &font)
+            - metrics.horizontal_advance_exact("A", &font)
+            - metrics.horizontal_advance_exact("V", &font);
+        let offset =
+            |i: usize| runs[0].1[i].x - (line.cursor_to_x(i, Edge::Leading) - line.position.x);
+        assert!(offset(0).abs() < 1e-3, "glyph 0: {}", offset(0));
+        for i in 1..6 {
             assert!(
-                (glyph.x - cursor).abs() < 1e-3,
-                "glyph {i}: {} vs {cursor}",
-                glyph.x
+                (offset(i) - offset(1)).abs() < 1e-3,
+                "glyph {i}: offset {} vs {}",
+                offset(i),
+                offset(1)
             );
         }
+        // Either no offset (GPOS kerning) or the second half of the pair's kern (`kern - (kern >> 1)`
+        // in 26.6).
+        let kern_26_6 = (f64::from(kern) * 64.0).round() as i64;
+        let second_half = (kern_26_6 - (kern_26_6 >> 1)) as f32 / 64.0;
+        assert!(
+            offset(1).abs() < 1e-3 || (offset(1) - second_half).abs() < 1e-3,
+            "offset {} is neither 0 nor the second half of the kern {second_half}",
+            offset(1)
+        );
         // The pair kerns: drawing at per-grapheme widths would put the second glyph elsewhere.
         // Only Windows' Arial kerns this pair; the metric-compatible fonts other platforms install
         // for the name "Arial" may not.

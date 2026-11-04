@@ -7,31 +7,39 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::text::font::{Font, FontStyle, HintingPreference, SharedFontData, StyleHint};
-use crate::text::glyph_face::{LineMetrics, SharedGlyphFace, parse_face};
+use crate::text::glyph_face::{LineMetrics, SharedGlyphFace, parse_face_with_hint_style};
 use crate::text::glyph_layout::FontEngine;
 
 use rustybuzz::ttf_parser::name::Table as NameTable;
 use rustybuzz::ttf_parser::{PlatformId, name_id};
 
-/// Weight and slant requested from the font database (`QFontDatabase::bestStyle` key).
+/// Weight and slant requested from the font database (`QFontDatabase::bestStyle` key), and the
+/// hint style the face is built for (Qt's FreeType engine fixes it when it creates the engine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FaceStyle {
     /// CSS/Qt numeric weight, 1..=1000.
     pub weight: u16,
     pub italic: bool,
+    /// See [`face_hint_style`].
+    pub hint_style: HintStyle,
 }
 
 impl FaceStyle {
-    pub const REGULAR: Self = Self {
-        weight: 400,
-        italic: false,
-    };
+    /// The regular face (weight 400, upright) for the process-wide default hint style.
+    pub fn regular() -> Self {
+        Self {
+            weight: 400,
+            italic: false,
+            hint_style: face_hint_style(HintingPreference::PreferDefaultHinting),
+        }
+    }
 
     /// The style `font` asks for.
     pub fn of(font: &Font) -> Self {
         Self {
             weight: font.weight as u16,
             italic: font.style != FontStyle::Normal,
+            hint_style: face_hint_style(font.hinting_preference),
         }
     }
 
@@ -43,13 +51,15 @@ impl FaceStyle {
     }
 
     /// Cache key of `family` at this style and style hint; fonts that differ only in style hint
-    /// do not share a cache entry so substitute resolution is cached independently.
+    /// do not share a cache entry so substitute resolution is cached independently, nor do faces
+    /// built for different hint styles.
     fn cache_key(self, family: &str, hint: StyleHint) -> String {
         format!(
-            "{family}\u{1}{}\u{1}{}\u{1}{:?}",
+            "{family}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{:?}",
             self.weight,
             u8::from(self.italic),
-            hint
+            hint,
+            self.hint_style
         )
     }
 }
@@ -110,6 +120,21 @@ pub struct FontFamilyInfo {
 /// In-memory faces [`FontDatabase`] keeps alive strongly after their last use.
 const RECENT_MEMORY_FACES: usize = 4;
 
+/// `memory_faces` entry: data address, length and hint style, and the face built from them.
+type MemoryFaceEntry = (
+    (usize, usize, HintStyle),
+    std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
+);
+
+/// The `memory_faces` key of the face of `shared` for `hint_style`.
+fn memory_face_key(shared: &SharedFontData, hint_style: HintStyle) -> (usize, usize, HintStyle) {
+    (
+        shared.as_slice().as_ptr() as usize,
+        shared.len(),
+        hint_style,
+    )
+}
+
 /// System font cache database (`QFontDatabase` equivalent).
 ///
 /// Searches, loads, and caches system fonts to avoid redundant disk I/O and parsing.
@@ -134,10 +159,7 @@ pub struct FontDatabase {
     /// held strongly ([`RECENT_MEMORY_FACES`], most recent last) to avoid re-parsing (and, on Windows,
     /// re-registering with DirectWrite) on each draw.
     recent_memory_faces: Vec<SharedGlyphFace>,
-    memory_faces: Vec<(
-        (usize, usize),
-        std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
-    )>,
+    memory_faces: Vec<MemoryFaceEntry>,
     #[cfg(all(unix, not(target_os = "macos")))]
     fontconfig_cache: HashMap<(String, bool, StyleHint), Vec<String>>,
 }
@@ -240,6 +262,22 @@ pub fn default_hint_style() -> HintStyle {
 pub fn set_default_hint_style(style: HintStyle) {
     if DEFAULT_HINT_STYLE.swap(style as u8, Ordering::AcqRel) != style as u8 {
         FONT_GENERATION.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// The hint style a face for a font with `preference` is built for: `defaultHintStyleFromMatch`
+/// (qfontconfigdatabase.cpp) with the process-wide default in place of fontconfig's
+/// `hintstyle`. Only the FreeType-role backend of Linux and the other Unix systems but macOS
+/// hints; elsewhere every preference shares one face ([`HintStyle::default`]).
+pub(crate) fn face_hint_style(preference: HintingPreference) -> HintStyle {
+    if !cfg!(all(unix, not(target_os = "macos"))) {
+        return HintStyle::default();
+    }
+    match preference {
+        HintingPreference::PreferNoHinting => HintStyle::HintNone,
+        HintingPreference::PreferVerticalHinting => HintStyle::HintLight,
+        HintingPreference::PreferFullHinting => HintStyle::HintFull,
+        HintingPreference::PreferDefaultHinting => default_hint_style(),
     }
 }
 
@@ -885,8 +923,15 @@ impl FontDatabase {
         data: impl Into<SharedFontData>,
     ) -> Result<SharedGlyphFace, String> {
         let shared = data.into();
-        let font_arc =
-            parse_face(&shared, 0).map_err(|e| format!("Failed to parse font from memory: {e}"))?;
+        let hint_style = face_hint_style(HintingPreference::PreferDefaultHinting);
+        let font_arc = parse_face_with_hint_style(&shared, 0, hint_style)
+            .map_err(|e| format!("Failed to parse font from memory: {e}"))?;
+        // Faces of this font for other hint styles are built from the same data (see
+        // `load_font_styled`); this one is found there too.
+        self.memory_faces.push((
+            memory_face_key(&shared, hint_style),
+            Arc::downgrade(&font_arc),
+        ));
         let key = family.to_ascii_lowercase();
         let (fixed_pitch, weight, italic) =
             read_faces(&mut std::io::Cursor::new(shared.as_slice()))
@@ -973,7 +1018,7 @@ impl FontDatabase {
 
     /// Loads the regular face of a family, caching the result.
     pub fn load_font(&mut self, family: &str) -> Option<SharedGlyphFace> {
-        self.load_font_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
+        self.load_font_styled(family, FaceStyle::regular(), StyleHint::AnyStyle)
     }
 
     /// The file of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`),
@@ -1027,10 +1072,16 @@ impl FontDatabase {
             return Some(face);
         }
 
-        // An in-memory (application) font has a single face: use it for any style.
+        // An in-memory (application) font has a single face: use it for any style, built for the
+        // hint style asked for.
         if let Some(face) = self.cache.get(&key).cloned() {
+            let raw = self.raw_cache.get(&key).cloned();
+            let face = raw
+                .as_ref()
+                .and_then(|raw| self.memory_face(raw, style.hint_style))
+                .unwrap_or(face);
             self.cache.insert(style_key.clone(), Arc::clone(&face));
-            if let Some(raw) = self.raw_cache.get(&key).cloned() {
+            if let Some(raw) = raw {
                 self.raw_cache.insert(style_key, raw);
             }
             return Some(face);
@@ -1132,7 +1183,7 @@ impl FontDatabase {
 
     /// Returns the raw binary font data of the regular face for OpenType shaping.
     pub fn get_raw_font_data(&mut self, family: &str) -> Option<SharedFontData> {
-        self.get_raw_font_data_styled(family, FaceStyle::REGULAR, StyleHint::AnyStyle)
+        self.get_raw_font_data_styled(family, FaceStyle::regular(), StyleHint::AnyStyle)
     }
 
     /// Returns the raw binary font data of the face [`load_font_styled`](Self::load_font_styled) picks.
@@ -1184,7 +1235,7 @@ impl FontDatabase {
 
         // 1. Primary in-memory font data if specified
         if let Some(shared) = &font.font_data
-            && let Some(face) = self.memory_face(shared)
+            && let Some(face) = self.memory_face(shared, face_hint_style(font.hinting_preference))
         {
             engines.push(
                 FontEngine::new(face)
@@ -1205,11 +1256,15 @@ impl FontDatabase {
         engines
     }
 
-    /// The face built from in-memory font data, parsed once per buffer and remembered (see
-    /// `memory_faces`); `None` when the data does not parse.
-    fn memory_face(&mut self, shared: &SharedFontData) -> Option<SharedGlyphFace> {
+    /// The face built from in-memory font data for `hint_style`, parsed once per buffer and hint
+    /// style and remembered (see `memory_faces`); `None` when the data does not parse.
+    fn memory_face(
+        &mut self,
+        shared: &SharedFontData,
+        hint_style: HintStyle,
+    ) -> Option<SharedGlyphFace> {
         self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
-        let key = (shared.as_slice().as_ptr() as usize, shared.len());
+        let key = memory_face_key(shared, hint_style);
         let cached = self
             .memory_faces
             .iter()
@@ -1217,10 +1272,12 @@ impl FontDatabase {
             .and_then(|(_, f)| f.upgrade());
         let face = match cached {
             Some(face) => Some(face),
-            None => parse_face(shared, 0).ok().inspect(|face| {
-                // Each parse re-registers the font with the platform rasterizer, so remember it.
-                self.memory_faces.push((key, Arc::downgrade(face)));
-            }),
+            None => parse_face_with_hint_style(shared, 0, hint_style)
+                .ok()
+                .inspect(|face| {
+                    // Each parse re-registers the font with the platform rasterizer, so remember it.
+                    self.memory_faces.push((key, Arc::downgrade(face)));
+                }),
         }?;
         self.recent_memory_faces.retain(|f| !Arc::ptr_eq(f, &face));
         if self.recent_memory_faces.len() >= RECENT_MEMORY_FACES {
@@ -1233,7 +1290,7 @@ impl FontDatabase {
     /// The face of the font `font` itself asks for: its in-memory data, else the family it names.
     fn primary_face(&mut self, font: &Font) -> Option<SharedGlyphFace> {
         if let Some(shared) = &font.font_data
-            && let Some(face) = self.memory_face(shared)
+            && let Some(face) = self.memory_face(shared, face_hint_style(font.hinting_preference))
         {
             return Some(face);
         }
@@ -1395,7 +1452,8 @@ impl FontDatabase {
     fn preload_default_fonts(&mut self) {
         let default_families = ["segoe ui", "arial", "consolas"];
         for fam in &default_families {
-            if let Some((raw_data, face)) = self.find_and_load_font_file(fam, FaceStyle::REGULAR) {
+            if let Some((raw_data, face)) = self.find_and_load_font_file(fam, FaceStyle::regular())
+            {
                 self.cache.insert((*fam).to_string(), face);
                 self.raw_cache.insert((*fam).to_string(), raw_data);
                 break;
@@ -1450,7 +1508,7 @@ impl FontDatabase {
         // A styled request first tries the family's bold/italic file by name (no directory scan),
         // then the regular file: the nearest face, like `QFontDatabase::bestStyle`, for the
         // families that ship no such variant. Families not known by name go to the face index.
-        let candidate_filenames: Vec<String> = if style == FaceStyle::REGULAR {
+        let candidate_filenames: Vec<String> = if style.weight == 400 && !style.italic {
             regular_filenames
         } else {
             match known_styled_filenames(family_key, style) {
@@ -1471,7 +1529,7 @@ impl FontDatabase {
                         .canonicalize()
                         .unwrap_or_else(|_| file_path.clone());
                     if let Some(shared) = self.file_cache.get(&canonical)
-                        && let Ok(face) = parse_face(shared, 0)
+                        && let Ok(face) = parse_face_with_hint_style(shared, 0, style.hint_style)
                     {
                         return Some((shared.clone(), face));
                     }
@@ -1486,7 +1544,7 @@ impl FontDatabase {
                                 shared.len() / 1024
                             )
                         });
-                        if let Ok(face) = parse_face(&shared, 0) {
+                        if let Ok(face) = parse_face_with_hint_style(&shared, 0, style.hint_style) {
                             self.file_cache.insert(canonical, shared.clone());
                             return Some((shared, face));
                         }
@@ -1519,7 +1577,7 @@ impl FontDatabase {
             .unwrap_or_else(|_| face_path.clone());
 
         if let Some(shared) = self.file_cache.get(&canonical) {
-            let face = parse_face(shared, face_index).ok()?;
+            let face = parse_face_with_hint_style(shared, face_index, style.hint_style).ok()?;
             return Some((shared.clone(), face));
         }
 
@@ -1527,7 +1585,7 @@ impl FontDatabase {
             format!("map+parse (family index) {}", canonical.display())
         });
         let shared = SharedFontData::from_file(&canonical).ok()?;
-        let face = parse_face(&shared, face_index).ok()?;
+        let face = parse_face_with_hint_style(&shared, face_index, style.hint_style).ok()?;
         self.file_cache.insert(canonical, shared.clone());
         Some((shared, face))
     }
@@ -1828,30 +1886,31 @@ mod tests {
         let missing = "NoSuchFamilyNonExistent123";
 
         // AnyStyle -> Tahoma
-        let face_tahoma = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::AnyStyle);
+        let face_tahoma = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::AnyStyle);
         assert!(face_tahoma.is_some());
-        let tahoma_direct = db.load_font_styled("Tahoma", FaceStyle::REGULAR, StyleHint::AnyStyle);
+        let tahoma_direct =
+            db.load_font_styled("Tahoma", FaceStyle::regular(), StyleHint::AnyStyle);
         assert!(face_tahoma.is_some() && tahoma_direct.is_some());
         assert!(Arc::ptr_eq(&face_tahoma.unwrap(), &tahoma_direct.unwrap()));
 
         // Helvetica -> Arial
-        let face_arial = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::Helvetica);
-        let arial_direct = db.load_font_styled("Arial", FaceStyle::REGULAR, StyleHint::Helvetica);
+        let face_arial = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::Helvetica);
+        let arial_direct = db.load_font_styled("Arial", FaceStyle::regular(), StyleHint::Helvetica);
         assert!(face_arial.is_some() && arial_direct.is_some());
         assert!(Arc::ptr_eq(&face_arial.unwrap(), &arial_direct.unwrap()));
 
         // Courier -> Courier New
-        let face_cour = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::Courier);
+        let face_cour = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::Courier);
         let cour_direct =
-            db.load_font_styled("Courier New", FaceStyle::REGULAR, StyleHint::Courier);
+            db.load_font_styled("Courier New", FaceStyle::regular(), StyleHint::Courier);
         assert!(face_cour.is_some() && cour_direct.is_some());
         assert!(Arc::ptr_eq(&face_cour.unwrap(), &cour_direct.unwrap()));
 
         // Fonts differing only in hint do not share a cache entry
         let key_any =
-            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
+            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
         let key_helv =
-            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::Helvetica);
+            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::Helvetica);
         assert_ne!(key_any, key_helv);
         assert!(db.cache.contains_key(&key_any));
         assert!(db.cache.contains_key(&key_helv));
@@ -1864,7 +1923,7 @@ mod tests {
         let missing = "NoSuchFontXYZ";
 
         if !is_fontconfig_available() {
-            let face = db.load_font_styled(missing, FaceStyle::REGULAR, StyleHint::AnyStyle);
+            let face = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::AnyStyle);
             assert!(
                 face.is_none(),
                 "When fontconfig is absent, no substitute resolves"
@@ -1889,10 +1948,10 @@ mod tests {
             let candidates = query_fontconfig_fallbacks(&missing.to_ascii_lowercase(), false, hint);
             let expected = candidates
                 .iter()
-                .find_map(|c| db.load_font_styled(c, FaceStyle::REGULAR, hint))
+                .find_map(|c| db.load_font_styled(c, FaceStyle::regular(), hint))
                 .expect("fontconfig lists no family this machine can load");
             let face = db
-                .load_font_styled(missing, FaceStyle::REGULAR, hint)
+                .load_font_styled(missing, FaceStyle::regular(), hint)
                 .unwrap_or_else(|| panic!("no substitute resolved for {hint:?}"));
             assert!(
                 Arc::ptr_eq(&face, &expected),
@@ -1902,9 +1961,9 @@ mod tests {
 
         // Fonts that differ only in hint do not share a cache entry.
         let key_any =
-            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
+            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
         let key_serif =
-            FaceStyle::REGULAR.cache_key(&missing.to_ascii_lowercase(), StyleHint::Serif);
+            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::Serif);
         assert_ne!(key_any, key_serif);
         assert!(db.cache.contains_key(&key_any));
         assert!(db.cache.contains_key(&key_serif));
