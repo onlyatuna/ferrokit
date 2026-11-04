@@ -82,12 +82,14 @@ impl HintPlan {
             metrics.style_class().script.group,
         );
 
+        let adjust_flags = adjust::glyph_adjust_flags(glyph_id, |ch| context.map(ch));
         let mut recorder = recorder::HintsRecorder::default();
         let hinted_plan = hint::hint_outline_with_recorder(
             &mut outline,
             &metrics,
             &scale,
             Some(glyph_style),
+            adjust_flags,
             &mut recorder,
         );
 

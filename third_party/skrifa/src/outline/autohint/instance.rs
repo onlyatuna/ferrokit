@@ -275,7 +275,9 @@ impl Instance {
             self.target,
             metrics.style_class().script.group,
         );
-        let hinted_metrics = super::hint::hint_outline(&mut outline, &metrics, &scale, Some(style));
+        let adjust_flags = super::adjust::glyph_adjust_flags(glyph_id, |ch| context.map(ch));
+        let hinted_metrics =
+            super::hint::hint_outline(&mut outline, &metrics, &scale, Some(style), adjust_flags);
         let h_advance = outline.advance;
         let mut pp1x = 0;
         let mut pp2x = fixed_mul(h_advance, hinted_metrics.x_scale);

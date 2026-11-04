@@ -4,6 +4,7 @@ mod edges;
 mod outline;
 
 use super::{
+    adjust,
     metrics::{scale_style_metrics, Scale, UnscaledStyleMetrics},
     outline::Outline,
     recorder::HintsRecorder,
@@ -40,8 +41,9 @@ pub(crate) fn hint_outline(
     metrics: &UnscaledStyleMetrics,
     scale: &Scale,
     glyph_style: Option<GlyphStyle>,
+    adjust_flags: u16,
 ) -> HintedMetrics {
-    hint_outline_impl(outline, metrics, scale, glyph_style, None).hinted_metrics
+    hint_outline_impl(outline, metrics, scale, glyph_style, adjust_flags, None).hinted_metrics
 }
 
 pub(crate) struct HintedPlan {
@@ -54,9 +56,10 @@ pub(crate) fn hint_outline_with_recorder(
     metrics: &UnscaledStyleMetrics,
     scale: &Scale,
     glyph_style: Option<GlyphStyle>,
+    adjust_flags: u16,
     recorder: &mut HintsRecorder,
 ) -> HintedPlan {
-    hint_outline_impl(outline, metrics, scale, glyph_style, Some(recorder))
+    hint_outline_impl(outline, metrics, scale, glyph_style, adjust_flags, Some(recorder))
 }
 
 fn hint_outline_impl(
@@ -64,6 +67,7 @@ fn hint_outline_impl(
     metrics: &UnscaledStyleMetrics,
     scale: &Scale,
     glyph_style: Option<GlyphStyle>,
+    adjust_flags: u16,
     mut recorder: Option<&mut HintsRecorder>,
 ) -> HintedPlan {
     let quirks = if recorder.is_some() {
@@ -98,6 +102,9 @@ fn hint_outline_impl(
             continue;
         }
         axis.reset(dim, outline.orientation);
+        if dim == Dimension::Vertical {
+            adjust::apply_tilde_pre_pass(outline, adjust_flags);
+        }
         topo::compute_segments(outline, &mut axis, group);
         topo::link_segments(
             outline,
@@ -113,6 +120,13 @@ fn hint_outline_impl(
             scaled_metrics.scale.y_scale,
             group,
         );
+        if dim == Dimension::Vertical {
+            adjust::apply_blue_ignores(
+                &mut axis.edges,
+                &scaled_metrics.axes[dim].blues,
+                adjust_flags,
+            );
+        }
         if dim == Dimension::Vertical {
             if group != ScriptGroup::Default
                 || glyph_style
@@ -141,6 +155,16 @@ fn hint_outline_impl(
         outline::align_edge_points(outline, &axis, group, scale);
         outline::align_strong_points(outline, &mut axis, recorder.as_deref_mut());
         outline::align_weak_points(outline, dim);
+        if dim == Dimension::Vertical {
+            let units_per_em = outline.units_per_em as i32;
+            adjust::apply_vertical_separation(
+                outline,
+                &scaled_metrics.axes[dim].blues,
+                adjust_flags,
+                units_per_em,
+                scale.y_scale,
+            );
+        }
         if dim == Dimension::Horizontal && axis.edges.len() > 1 {
             let left = axis.edges.first().unwrap();
             let right = axis.edges.last().unwrap();
