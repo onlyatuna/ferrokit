@@ -479,7 +479,32 @@ impl ClusterShaper<'_> {
             }
             SubstitutionSubtables::Multiple(_tables) => {}
             SubstitutionSubtables::Ligature(_tables) => {}
-            SubstitutionSubtables::Alternate(_tables) => {}
+            // HarfBuzz applies an alternate substitution with the value 1 of the feature that
+            // afshaper.c sets: the first alternate of the glyph.
+            SubstitutionSubtables::Alternate(tables) => {
+                for table in tables.iter().filter_map(|table| table.ok()) {
+                    let substitute = match &table {
+                        read_fonts::tables::gsub::AlternateSubst::Format1(table) => {
+                            let Some(cov_ix) =
+                                table.coverage().ok().and_then(|cov| cov.get(glyph.id))
+                            else {
+                                continue;
+                            };
+                            table
+                                .alternate_sets()
+                                .get(cov_ix as usize)
+                                .ok()
+                                .and_then(|set| set.alternate_glyph_ids().first().copied())
+                                .map(|gid| GlyphId::from(gid.get()))
+                        }
+                        read_fonts::tables::gsub::AlternateSubst::Format2(_) => None,
+                    };
+                    if let Some(substitute) = substitute {
+                        glyph.id = substitute;
+                        return true;
+                    }
+                }
+            }
             SubstitutionSubtables::Contextual(_tables) => {}
             SubstitutionSubtables::ChainContextual(_tables) => {}
             SubstitutionSubtables::Reverse(_tables) => {}
@@ -696,6 +721,18 @@ impl<'a, 'b> GsubHandler<'a, 'b> {
                                 for gid in set.alternate_glyph_ids() {
                                     self.capture_glyph(gid.get().to_u32());
                                 }
+                            }
+                        }
+                    }
+                    // afshaper.c:264-294: hb_ot_layout_lookup_would_substitute for a single
+                    // glyph is true for an alternate substitution that covers it.
+                    if self.need_blue_substs && self.lookup_depth == 1 {
+                        match &table {
+                            read_fonts::tables::gsub::AlternateSubst::Format1(table) => {
+                                self.check_blue_coverage(table.coverage().ok())
+                            }
+                            read_fonts::tables::gsub::AlternateSubst::Format2(table) => {
+                                self.check_blue_coverage(table.coverage().ok())
                             }
                         }
                     }
