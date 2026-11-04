@@ -22,6 +22,16 @@ pub struct HintingOptions {
     /// Defaults to a target with [`SmoothMode::Normal`] which is equivalent
     /// to `FT_RENDER_MODE_NORMAL` in FreeType.
     pub target: Target,
+    /// Applies the stem darkening of FreeType's CFF engine to the glyphs of
+    /// CFF and CFF2 fonts, as FreeType does when the `no-stem-darkening`
+    /// property of its `cff` driver is false (Qt sets it so).
+    ///
+    /// The darkened outlines are those of FreeType 2.14.2. This has no effect
+    /// on other formats and, for PostScript outlines, only on the engine
+    /// that interprets their hints.
+    ///
+    /// Defaults to `false`.
+    pub cff_stem_darkening: bool,
 }
 
 impl From<Target> for HintingOptions {
@@ -29,6 +39,7 @@ impl From<Target> for HintingOptions {
         Self {
             engine: Engine::AutoFallback,
             target: value,
+            cff_stem_darkening: false,
         }
     }
 }
@@ -83,6 +94,7 @@ impl From<Engine> for HintingOptions {
         Self {
             engine: value,
             target: Default::default(),
+            cff_stem_darkening: false,
         }
     }
 }
@@ -334,6 +346,7 @@ impl HintingInstance {
             .extend_from_slice(location.into().effective_coords());
         let options = options.into();
         self.target = options.target;
+        let cff_stem_darkening = options.cff_stem_darkening;
         let engine = options.engine.resolve_auto_fallback(outlines);
         // Reuse memory if the font contains the same outline format
         let current_kind = core::mem::replace(&mut self.kind, HinterKind::None);
@@ -374,7 +387,7 @@ impl HintingInstance {
                     subfonts.clear();
                     let ppem = size.ppem();
                     for i in 0..cff.subfont_count() {
-                        subfonts.push(cff.subfont(i, ppem, &self.coords)?);
+                        subfonts.push(cff.subfont_with(i, ppem, &self.coords, cff_stem_darkening)?);
                     }
                     self.kind = HinterKind::Cff(subfonts);
                 }

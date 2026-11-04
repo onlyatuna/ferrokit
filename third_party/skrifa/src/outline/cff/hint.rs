@@ -5,6 +5,11 @@ use read_fonts::{
     types::Fixed,
 };
 
+mod darken;
+
+use darken::GlyphPath;
+pub(crate) use darken::Darkening;
+
 // "Default values for OS/2 typoAscender/Descender.."
 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/80a507a6b8e3d2906ad2c8ba69329bd2fb2a85ef/src/psaux/psblues.h#L98>
 const ICF_TOP: Fixed = Fixed::from_i32(880);
@@ -85,12 +90,30 @@ pub(crate) struct HintState {
     do_em_box_hints: bool,
     boost: Fixed,
     darken_y: Fixed,
+    /// Amount by which stem darkening moves the edges of an outline outward
+    /// in x, in character space.
+    darken_x: Fixed,
+    /// True if stem darkening is on, whatever the amounts: it turns off the
+    /// boost of the blue zones.
+    stem_darkened: bool,
     zones: [BlueZone; MAX_BLUE_ZONES],
     zone_count: usize,
 }
 
 impl HintState {
     pub fn new(params: &HintParams, scale: Fixed) -> Self {
+        Self::with_darkening(params, scale, None)
+    }
+
+    /// Creates a state that darkens stems like FreeType's CFF engine does if
+    /// its `no-stem-darkening` property is false. `darkening` is `None` if
+    /// it is not.
+    pub fn with_darkening(
+        params: &HintParams,
+        scale: Fixed,
+        darkening: Option<Darkening>,
+    ) -> Self {
+        let amounts = darkening.unwrap_or_default();
         let mut state = Self {
             scale,
             blue_scale: params.blue_scale,
@@ -100,12 +123,32 @@ impl HintState {
             suppress_overshoot: false,
             do_em_box_hints: false,
             boost: Fixed::ZERO,
-            darken_y: Fixed::ZERO,
+            darken_y: amounts.y,
+            darken_x: amounts.x,
+            stem_darkened: darkening.is_some(),
             zones: [BlueZone::default(); MAX_BLUE_ZONES],
             zone_count: 0,
         };
         state.build_zones(params);
         state
+    }
+
+    /// Creates a state for darkening an outline that is not hinted. `scale`
+    /// is the one FreeType gives the CFF engine then, 1/64.
+    pub fn for_unhinted(scale: Fixed, darkening: Darkening) -> Self {
+        Self {
+            scale,
+            darken_x: darkening.x,
+            darken_y: darkening.y,
+            stem_darkened: true,
+            ..Default::default()
+        }
+    }
+
+    /// Returns true if the edges of an outline move: FreeType's
+    /// `font->darkened`.
+    pub fn darkened(&self) -> bool {
+        self.darken_x != Fixed::ZERO || self.darken_y != Fixed::ZERO
     }
 
     fn zones(&self) -> &[BlueZone] {
@@ -242,7 +285,8 @@ impl HintState {
             // boost must remain less than 0.5, or baseline could go negative
             self.boost = self.boost.min(Fixed::from_bits(0x7FFF));
         }
-        if self.darken_y != Fixed::ZERO {
+        // boost and darkening have similar effects; don't do both
+        if self.stem_darkened {
             self.boost = Fixed::ZERO;
         }
         // Set device space alignment for each zone; apply boost amount before
@@ -746,7 +790,7 @@ impl HintMap {
         is_initial: bool,
     ) {
         let scale = state.scale;
-        let darken_y = Fixed::ZERO;
+        let darken_y = state.darken_y;
         if !is_initial {
             if let Some(initial_map) = &mut initial_map {
                 if !initial_map.is_valid {
@@ -919,10 +963,30 @@ pub(crate) struct HintingSink<'a, S> {
     /// Most recent line_to. First two elements are coords in character
     /// space and the last two are in device space.
     pending_line: Option<[Fixed; 4]>,
+    /// False if the outline is only scaled and its stems darkened, not
+    /// hinted. See [`HintingSink::unhinted`].
+    hinted: bool,
+    /// Copy of `map` made at the most recent move (FreeType's
+    /// `firstHintMap`); used only for stem darkening.
+    first_map: HintMap,
+    /// FreeType's `CF2_GlyphPath`; used only if `state.darkened()`.
+    path: GlyphPath,
 }
 
 impl<'a, S: CommandSink> HintingSink<'a, S> {
     pub fn new(state: &'a HintState, sink: &'a mut S) -> Self {
+        Self::with_hinted(state, sink, true)
+    }
+
+    /// Creates a sink that darkens the stems of an outline that is not
+    /// hinted. Its character space is scaled by `state.scale` to what
+    /// FreeType's CFF engine returns in that case: 16.16 values of
+    /// 1/64 pixel per font unit.
+    pub fn unhinted(state: &'a HintState, sink: &'a mut S) -> Self {
+        Self::with_hinted(state, sink, false)
+    }
+
+    fn with_hinted(state: &'a HintState, sink: &'a mut S, hinted: bool) -> Self {
         let scale = state.scale;
         Self {
             state,
@@ -934,7 +998,23 @@ impl<'a, S: CommandSink> HintingSink<'a, S> {
             map: HintMap::new(scale),
             start_point: None,
             pending_line: None,
+            hinted,
+            first_map: HintMap::new(scale),
+            path: GlyphPath::new(state),
         }
+    }
+
+    /// Makes stem darkening move the edges of the outline the other way:
+    /// FreeType's `reverseWinding`, for outlines that run clockwise.
+    pub fn set_reverse_winding(&mut self, reverse: bool) {
+        self.path.reverse_winding = reverse;
+    }
+
+    /// The winding momentum of everything drawn so far, which is negative
+    /// for an outline that runs clockwise. Only counted if the stems are
+    /// darkened.
+    pub fn winding_momentum(&self) -> i32 {
+        self.path.momentum
     }
 
     fn maybe_close_subpath(&mut self) {
@@ -1005,6 +1085,32 @@ impl<'a, S: CommandSink> HintingSink<'a, S> {
             false,
         );
     }
+
+    /// True if FreeType has a new hint mask whose map is not built yet.
+    fn has_new_mask(&self) -> bool {
+        self.hinted && !self.map.is_valid
+    }
+
+    /// The move of `cf2_glyphpath_moveTo` when stems are darkened.
+    fn darkened_move_to(&mut self, x: Fixed, y: Fixed) {
+        self.path
+            .move_to(&self.map, &self.first_map, &mut *self.sink, x.to_bits(), y.to_bits());
+        // ensure we have a valid map with current mask
+        if self.has_new_mask() {
+            self.build_hint_map(Some(self.mask), Fixed::ZERO);
+        }
+        // save a copy of current hint map to use when drawing initial point
+        self.first_map = self.map;
+    }
+
+    /// FreeType makes up the first move if a charstring starts with a line
+    /// or a curve.
+    fn darkened_ensure_move(&mut self) {
+        if !self.path.started {
+            let [x, y] = self.path.start;
+            self.darkened_move_to(Fixed::from_bits(x), Fixed::from_bits(y));
+        }
+    }
 }
 
 impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
@@ -1041,6 +1147,13 @@ impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
     }
 
     fn clear_hints(&mut self) {
+        if self.state.darkened() {
+            // FreeType gives every charstring its own path
+            self.path
+                .close_open_path(&self.map, &self.first_map, &mut *self.sink);
+            self.path.reset();
+            self.first_map = HintMap::new(self.state.scale);
+        }
         // This resets all hinting state that is derived from accumulated
         // stem hints.
         // This is used when evaluating the implied SEAC operator which
@@ -1053,6 +1166,10 @@ impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
     }
 
     fn move_to(&mut self, x: Fixed, y: Fixed) {
+        if self.state.darkened() {
+            self.darkened_move_to(x, y);
+            return;
+        }
         self.maybe_close_subpath();
         self.start_point = Some([x, y]);
         let x = self.scale(x);
@@ -1061,6 +1178,22 @@ impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
     }
 
     fn line_to(&mut self, x: Fixed, y: Fixed) {
+        if self.state.darkened() {
+            self.darkened_ensure_move();
+            let is_new_mask = self.has_new_mask();
+            let build = self.path.line_to(
+                &self.map,
+                &self.first_map,
+                &mut *self.sink,
+                x.to_bits(),
+                y.to_bits(),
+                is_new_mask,
+            );
+            if build {
+                self.build_hint_map(Some(self.mask), Fixed::ZERO);
+            }
+            return;
+        }
         self.flush_pending_line();
         let ds_x = self.scale(x);
         let ds_y = self.hint(y);
@@ -1068,6 +1201,21 @@ impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
     }
 
     fn curve_to(&mut self, cx1: Fixed, cy1: Fixed, cx2: Fixed, cy2: Fixed, x: Fixed, y: Fixed) {
+        if self.state.darkened() {
+            self.darkened_ensure_move();
+            let is_new_mask = self.has_new_mask();
+            let build = self.path.curve_to(
+                &self.map,
+                &self.first_map,
+                &mut *self.sink,
+                [cx1, cy1, cx2, cy2, x, y].map(Fixed::to_bits),
+                is_new_mask,
+            );
+            if build {
+                self.build_hint_map(Some(self.mask), Fixed::ZERO);
+            }
+            return;
+        }
         self.flush_pending_line();
         let cx1 = self.scale(cx1);
         let cy1 = self.hint(cy1);
@@ -1084,7 +1232,12 @@ impl<S: CommandSink> CommandSink for HintingSink<'_, S> {
     }
 
     fn finish(&mut self) {
-        self.maybe_close_subpath();
+        if self.state.darkened() {
+            self.path
+                .finish(&self.map, &self.first_map, &mut *self.sink);
+        } else {
+            self.maybe_close_subpath();
+        }
         self.sink.finish();
     }
 }

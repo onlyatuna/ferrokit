@@ -79,7 +79,7 @@ impl<'a> Outlines<'a> {
             max_twilight_points,
             max_stack_elements,
             max_storage,
-            max_instructions,
+            _max_instructions,
         ) = font
             .selected_maxp()
             .map(|maxp| {
@@ -114,9 +114,10 @@ impl<'a> Outlines<'a> {
             .data_for_tag(Tag::new(b"prep"))
             .unwrap_or_default()
             .as_bytes();
-        // Copy FreeType's logic on whether to use the interpreter:
-        // <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/base/ftobjs.c#L1001>
-        let prefer_interpreter = !(max_instructions == 0 && fpgm.is_empty() && prep.is_empty());
+        // FreeType 2.14's logic on whether to use the interpreter (`FT_Load_Glyph`, ftobjs.c): a
+        // font without `fpgm` and with a `prep` of at most 7 bytes is auto-hinted. (FreeType 2.13,
+        // which this code followed, also asked for `maxSizeOfInstructions == 0` and an empty `prep`.)
+        let prefer_interpreter = !(fpgm.is_empty() && prep.len() <= 7);
         let cvt = font.cvt().unwrap_or_default();
         Some(Self {
             font: font.clone(),

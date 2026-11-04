@@ -30,6 +30,36 @@
 //! the painter's colour glyph path), fontconfig's per-font `hintstyle` and `autohint` (the hint
 //! style is the process default or the font's hinting preference), synthetic bold and oblique,
 //! and the switch to auto-hinting Qt makes after `FT_Err_Execution_Too_Long`.
+//!
+//! # Vendored crates
+//!
+//! `skrifa` and `read-fonts` come from `third_party/` (see the `README.ferrokit.md` of each):
+//! the pen learns which points are implied ones, so `SlotPen` rebuilds FreeType's point array;
+//! the TrueType interpreter uses FreeType 2.14's move arithmetic and its choice of the
+//! auto-hinter; and CFF stem darkening, which Qt switches on (`qt_getFreetypeData`), is ported.
+//! Qt's FreeType engine also blends the grey-scale glyphs of CFF fonts with the text gamma
+//! (`expectsGammaCorrectedBlending`), which [`GlyphFace::gamma_corrected_blending`] tells the painter.
+//! With them, against FreeType 2.14.2 on 24 TrueType and 33 CFF faces (Latin-1 text, 9 to 24 px)
+//! outline point arrays and bitmaps are identical for every TrueType glyph in normal mode
+//! (73,344 renders) and unhinted (293,376), for every CFF glyph in all three modes (907,632), and
+//! for 253,048 of 293,376 TrueType glyphs in light mode.
+//!
+//! # Known difference: light hinting of TrueType accents and dots
+//!
+//! FreeType 2.14.0 added a vertical separation adjustment to its auto-hinter (`afadjust.c`,
+//! `af_glyph_hints_apply_vertical_separation_adjustments`: commit `7099b09e9`, "[autofit]
+//! Implement vertical separation adjustment"). It moves the dot of `i` and `j` and the accents
+//! of accented letters vertically, by up to a few pixels, so that they keep a gap to the letter
+//! below. skrifa's auto-hinter has no such code and it is not ported here: for these glyphs a
+//! light-hinted TrueType glyph differs from FreeType's, and so from Qt's on Linux, where the
+//! default hint style is light. In the measured corpus that is 40,328 of 293,376 TrueType light
+//! glyph renders (13.7%); 59 of the 191 characters of ASCII and Latin-1 are affected: `i j ¡ ³ ¸ ¾ ¿`
+//! and `À`-`ÿ` with an accent (not `Å`, `Æ`, `Ø`, `Þ`, `ß`, `ð`, `ø`, `þ`). The shift is vertical
+//! only, the point count is unchanged, and the bitmap differs wherever the outline does. Strings
+//! without these characters are identical to Qt's (see `tests/test_ft_golden.rs`); every
+//! difference in the strings measured against Qt lies in the boxes of these glyphs. CFF fonts
+//! (hinted by the CFF engine, which has no such adjustment) and every other hint style are not
+//! affected.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -290,6 +320,8 @@ impl SkrifaFace {
                 symmetric_rendering: true,
                 preserve_linear_metrics: false,
             },
+            // Qt's FreeType engine turns CFF stem darkening on (`qt_getFreetypeData`)
+            cff_stem_darkening: self.cff,
         };
         let instance = HintingInstance::new(
             outlines,
@@ -325,7 +357,10 @@ impl SkrifaFace {
             Some((outline, metrics.advance_width))
         };
         let (outline, advance) = match target {
-            None => draw(DrawSettings::unhinted(size, LocationRef::default()))?,
+            None => draw(
+                DrawSettings::unhinted(size, LocationRef::default())
+                    .with_cff_stem_darkening(self.cff),
+            )?,
             Some((mode, hinter)) => {
                 let hinted = self
                     .instance(&outlines, ysize, mode, hinter)
@@ -552,6 +587,10 @@ impl GlyphFace for SkrifaFace {
         subpixel_bucket_offset(x, 4)
     }
 
+    fn gamma_corrected_blending(&self) -> bool {
+        self.cff
+    }
+
     fn rasterize_subpixel(
         &self,
         glyph_id: u16,
@@ -584,5 +623,91 @@ impl GlyphFace for SkrifaFace {
 
     fn right_side_bearing(&self, glyph_id: u16, size: f32) -> Option<f32> {
         self.base.right_side_bearing(glyph_id, size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pts(o: &Outline) -> Vec<(i64, i64, u8)> {
+        o.points
+            .iter()
+            .zip(&o.tags)
+            .map(|(p, &t)| (p.x, p.y, t))
+            .collect()
+    }
+
+    #[test]
+    fn closing_curve_back_to_an_explicit_start_adds_no_point() {
+        let mut pen = SlotPen::default();
+        pen.move_to(0.0, 0.0);
+        pen.line_to(1.0, 0.0);
+        pen.line_to(1.0, 1.0);
+        // skrifa closes the contour with the return to its start, which it announces.
+        pen.implied_point();
+        pen.quad_to(0.5, 1.5, 0.0, 0.0);
+        pen.close();
+        let o = pen.finish();
+        assert_eq!(o.contours, [3]);
+        assert_eq!(
+            pts(&o),
+            [
+                (0, 0, ftgrays::TAG_ON),
+                (64, 0, ftgrays::TAG_ON),
+                (64, 64, ftgrays::TAG_ON),
+                (32, 96, ftgrays::TAG_CONIC)
+            ]
+        );
+    }
+
+    #[test]
+    fn implied_points_are_not_part_of_the_outline() {
+        let mut pen = SlotPen::default();
+        // A contour that starts off the curve: its start, and the points between two consecutive
+        // off-curve points, are implied.
+        pen.implied_point();
+        pen.move_to(0.5, 0.0);
+        pen.quad_to(1.0, 0.0, 1.0, 0.5);
+        pen.implied_point();
+        pen.quad_to(1.0, 1.0, 0.5, 0.0);
+        pen.close();
+        let o = pen.finish();
+        assert_eq!(o.contours, [2]);
+        assert_eq!(
+            pts(&o),
+            [
+                (64, 0, ftgrays::TAG_CONIC),
+                (64, 32, ftgrays::TAG_ON),
+                (64, 64, ftgrays::TAG_CONIC)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_repeated_last_point_is_kept_in_truetype_outlines_and_dropped_in_cff_ones() {
+        let draw = |cff| {
+            let mut pen = SlotPen::new(cff);
+            pen.move_to(0.0, 0.0);
+            pen.line_to(1.0, 0.0);
+            pen.line_to(1.0, 1.0);
+            pen.line_to(0.0, 0.0);
+            pen.close();
+            pen.finish()
+        };
+        assert_eq!(draw(false).contours, [3]);
+        assert_eq!(draw(true).contours, [2]);
+    }
+
+    #[test]
+    fn contours_are_numbered_across_move_commands() {
+        let mut pen = SlotPen::default();
+        for y in [0.0, 2.0] {
+            pen.move_to(0.0, y);
+            pen.line_to(1.0, y);
+            pen.line_to(1.0, y + 1.0);
+            pen.close();
+        }
+        assert_eq!(pen.finish().contours, [2, 5]);
     }
 }

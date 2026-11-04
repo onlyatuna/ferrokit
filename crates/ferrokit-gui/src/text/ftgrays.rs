@@ -1024,3 +1024,218 @@ fn raster_render(outline: &Outline, target: &mut Target, clip: BBox) -> Result<(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An outline from 26.6 points, tags and contour ends.
+    fn outline(points: &[(i64, i64)], tags: &[u8], contours: &[u16], flags: u32) -> Outline {
+        Outline {
+            points: points.iter().map(|&(x, y)| Vector { x, y }).collect(),
+            tags: tags.to_vec(),
+            contours: contours.to_vec(),
+            flags,
+        }
+    }
+
+    fn hex_rows(b: &Bitmap) -> Vec<String> {
+        b.buffer
+            .chunks(b.width as usize)
+            .map(|row| row.iter().map(|v| format!("{v:02x}")).collect())
+            .collect()
+    }
+
+    /// Bitmaps of `FT_Outline_Get_Bitmap` (FreeType 2.14.2) for the same outlines, written by
+    /// `tests/data/gen_ft_golden.py outline`. `render` also places the box as `FT_Render_Glyph`
+    /// does, which for these outlines is the floor and ceiling of the control box.
+    fn check(o: &Outline, left: i32, top: i32, rows: &[&str]) {
+        let b = render(o, (16, 16)).unwrap();
+        assert_eq!(
+            (b.left, b.top, b.width, b.rows),
+            (left, top, rows[0].len() as u32 / 2, rows.len() as u32)
+        );
+        assert_eq!(hex_rows(&b), rows);
+    }
+
+    const ON: u8 = TAG_ON;
+
+    #[test]
+    fn pixel_aligned_square_is_fully_covered() {
+        let o = outline(&[(0, 0), (0, 192), (192, 192), (192, 0)], &[ON; 4], &[3], 0);
+        check(&o, 0, 3, &["ffffff", "ffffff", "ffffff"]);
+    }
+
+    #[test]
+    fn square_on_half_pixels_has_half_covered_edges() {
+        let o = outline(
+            &[(32, 32), (32, 224), (224, 224), (224, 32)],
+            &[ON; 4],
+            &[3],
+            0,
+        );
+        check(&o, 0, 4, &["40808040", "80ffff80", "80ffff80", "40808040"]);
+    }
+
+    #[test]
+    fn triangle_matches_freetype() {
+        let o = outline(&[(0, 0), (160, 320), (320, 0)], &[ON; 3], &[2], 0);
+        check(
+            &o,
+            0,
+            5,
+            &[
+                "0000800000",
+                "0040ff3f00",
+                "00c0ffbf00",
+                "40ffffff3f",
+                "c0ffffffbf",
+            ],
+        );
+    }
+
+    #[test]
+    fn conic_arc_matches_freetype() {
+        let o = outline(
+            &[(0, 0), (128, 384), (256, 0)],
+            &[ON, TAG_CONIC, ON],
+            &[2],
+            0,
+        );
+        check(
+            &o,
+            0,
+            6,
+            &[
+                "00000000", "00000000", "00000000", "04b7b704", "64ffff64", "cfffffcf",
+            ],
+        );
+    }
+
+    /// A contour of conic points only: its on-curve points are the midpoints of neighbouring
+    /// controls, here at odd coordinate sums.
+    #[test]
+    fn contour_of_conic_points_matches_freetype() {
+        let o = outline(
+            &[(0, 65), (130, 321), (257, 65), (131, -191)],
+            &[TAG_CONIC; 4],
+            &[3],
+            0,
+        );
+        check(
+            &o,
+            0,
+            6,
+            &[
+                "0000000000",
+                "0000000000",
+                "009fa80000",
+                "2effff3500",
+                "6effff7400",
+                "6dffff7400",
+                "2bffff3500",
+                "0096a40000",
+                "0000000000",
+            ],
+        );
+    }
+
+    #[test]
+    fn cubic_arc_matches_freetype() {
+        let o = outline(
+            &[(0, 0), (0, 400), (300, 400), (300, 0)],
+            &[ON, TAG_CUBIC, TAG_CUBIC, ON],
+            &[3],
+            0,
+        );
+        check(
+            &o,
+            0,
+            7,
+            &[
+                "0000000000",
+                "0000000000",
+                "0051972700",
+                "3afcffdf06",
+                "a3ffffff51",
+                "dbffffff89",
+                "f4ffffffa3",
+            ],
+        );
+    }
+
+    #[test]
+    fn even_odd_fill_leaves_the_inner_contour_empty() {
+        let pts = [
+            (0, 0),
+            (0, 384),
+            (384, 384),
+            (384, 0),
+            (96, 96),
+            (96, 288),
+            (288, 288),
+            (288, 96),
+        ];
+        let o = outline(&pts, &[ON; 8], &[3, 7], OUTLINE_EVEN_ODD_FILL);
+        check(
+            &o,
+            0,
+            6,
+            &[
+                "ffffffffffff",
+                "ffbf7f7fbfff",
+                "ff7f00007fff",
+                "ff7f00007fff",
+                "ffbf7f7fbfff",
+                "ffffffffffff",
+            ],
+        );
+        // Non-zero winding fills the same two clockwise contours completely.
+        let o = outline(&pts, &[ON; 8], &[3, 7], 0);
+        assert!(
+            render(&o, (16, 16))
+                .unwrap()
+                .buffer
+                .iter()
+                .all(|&v| v == 0xff)
+        );
+    }
+
+    #[test]
+    fn fixed_point_helpers_round_half_away_from_zero() {
+        assert_eq!(mul_fix(3, 0x8000), 2);
+        assert_eq!(mul_fix(-3, 0x8000), -2);
+        assert_eq!(mul_fix(0x10000, 0x10000), 0x10000);
+        assert_eq!(div_fix(1, 2), 0x8000);
+        assert_eq!(div_fix(-1, 2), -0x8000);
+        assert_eq!(div_fix(5, 0), 0x7FFF_FFFF);
+        assert_eq!(mul_div(7, 3, 2), 11);
+        assert_eq!(mul_div(-7, 3, 2), -11);
+        assert_eq!(mul_div(1, 1, 0), 0x7FFF_FFFF);
+    }
+
+    #[test]
+    fn control_box_includes_off_curve_points() {
+        let o = outline(
+            &[(0, 0), (128, 384), (256, -5)],
+            &[ON, TAG_CONIC, ON],
+            &[2],
+            0,
+        );
+        let b = control_box(&o.points);
+        assert_eq!((b.x_min, b.y_min, b.x_max, b.y_max), (0, -5, 256, 384));
+        assert_eq!(control_box(&[]), BBox::default());
+    }
+
+    #[test]
+    fn an_empty_outline_has_no_bitmap_area() {
+        let b = render(&Outline::default(), (16, 16)).unwrap();
+        assert!(b.width == 0 || b.rows == 0);
+    }
+
+    #[test]
+    fn a_glyph_beyond_the_bitmap_limit_is_refused() {
+        let o = outline(&[(0, 0), (0, 64 << 15), (64 << 15, 0)], &[ON; 3], &[2], 0);
+        assert!(render(&o, (16, 16)).is_err());
+    }
+}

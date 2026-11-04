@@ -84,6 +84,50 @@ pub(crate) fn blend_lcd(
     }
 }
 
+/// `multiplyAlpha65535` of one 16-bit channel (`qrgba64_p.h`): `v * a / 65535`, rounded.
+fn mul_65535(v: u32, a: u32) -> u32 {
+    let p = v * a;
+    (p + (p >> 16) + 0x8000) >> 16
+}
+
+/// `alphamapblend_argb32` with a colour profile (`qdrawhelper.cpp`): the grey-scale text of an
+/// engine that `expectsGammaCorrectedBlending` (Qt's FreeType engine for CFF fonts, whose stem
+/// darkening Qt enables). Over an opaque pixel the pen colour is blended in linear light
+/// (`grayBlendPixel`); a translucent pen is first composed over the pixel with the plain blend and
+/// that colour is blended with the coverage. Full coverage and pixels that are not opaque take
+/// the plain blend of [`blend_grey`].
+pub(crate) fn blend_grey_gamma(
+    px: &mut [u8],
+    glyph_alpha: u8,
+    base_alpha: f32,
+    target: [u32; 3],
+    lut: &TrcLut,
+) {
+    if glyph_alpha == 0 {
+        return;
+    }
+    if glyph_alpha == 255 || px[3] < 255 {
+        blend_grey(px, glyph_alpha, base_alpha, target);
+        return;
+    }
+    let pen_a = ((base_alpha * 255.0).round() as u32).min(255);
+    let source: [u8; 3] = if pen_a == 255 {
+        target.map(|t| t.min(255) as u8)
+    } else {
+        let mut composed = [px[0], px[1], px[2], 255];
+        blend_grey(&mut composed, 255, base_alpha, target);
+        [composed[0], composed[1], composed[2]]
+    };
+    let cov = u32::from(glyph_alpha) * 257;
+    let rest = (255 - u32::from(glyph_alpha)) * 257;
+    for channel in 0..3 {
+        let s = u32::from(lut.to_linear(source[channel]));
+        let d = u32::from(lut.to_linear(px[channel]));
+        let blended = mul_65535(s, cov) + mul_65535(d, rest);
+        px[channel] = lut.from_linear(blended.min(65535) as u16);
+    }
+}
+
 /// Composites `source` into the `w` x `h` box at `(x0, y0)` of the premultiplied RGBA surface `pix`
 /// (`pw` x `ph`) with the Porter-Duff / blend `mode`, weighted per pixel by `cov` (`w * h`): where
 /// the coverage is partial the result is the destination lerped towards the composited pixel, as

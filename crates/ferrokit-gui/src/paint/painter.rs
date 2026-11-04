@@ -13,7 +13,7 @@ use crate::paint::paint_device::PaintDevice;
 use crate::paint::path::{FillRule, PainterPath};
 use crate::paint::pixmap::Pixmap;
 use crate::paint::text_blend::{
-    MaskedSource, blend_grey, blend_lcd, composite_masked, rgb_average,
+    MaskedSource, blend_grey, blend_grey_gamma, blend_lcd, composite_masked, rgb_average,
 };
 use crate::text::document::TextDocument;
 use crate::text::font::Font;
@@ -1338,6 +1338,7 @@ impl<'a> Painter<'a> {
 
         let target = [target_r, target_g, target_b];
         let lcd_lut = self.lcd_lut.clone();
+        let a8_lut = gamma_lut(1.7);
         let dpr = self.device.device_pixel_ratio();
         let transform = self.state.transform;
         // A rotated clip is not a pixel box, so the glyph blits read its coverage from the mask.
@@ -1598,6 +1599,9 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
+            // `QFontEngine::expectsGammaCorrectedBlending` (the text gamma of `colorProfileForA8Text`
+            // is 1.7 where the platform integration does not say otherwise).
+            let a8_gamma = lcd_glyph.is_none() && engine.face.gamma_corrected_blending();
             for gy in 0..metrics.height {
                 let dst_y = start_y + gy as i32;
                 if dst_y < 0 || dst_y >= ph as i32 {
@@ -1642,7 +1646,11 @@ impl<'a> Painter<'a> {
                         _ => {
                             let glyph_alpha = bitmap[gy * metrics.width + gx];
                             if glyph_alpha != 0 {
-                                blend_grey(px, glyph_alpha, base_alpha, target);
+                                if a8_gamma {
+                                    blend_grey_gamma(px, glyph_alpha, base_alpha, target, &a8_lut);
+                                } else {
+                                    blend_grey(px, glyph_alpha, base_alpha, target);
+                                }
                             }
                         }
                     }

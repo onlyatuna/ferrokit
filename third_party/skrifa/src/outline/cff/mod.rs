@@ -3,7 +3,7 @@
 mod hint;
 
 use super::{GlyphHMetrics, OutlinePen};
-pub(crate) use hint::{HintParams, HintState, HintingSink};
+pub(crate) use hint::{Darkening, HintParams, HintState, HintingSink};
 use read_fonts::{
     model::Error,
     ps::{
@@ -151,6 +151,21 @@ impl<'a> Outlines<'a> {
         size: Option<f32>,
         coords: &[F2Dot14],
     ) -> Result<Subfont, Error> {
+        self.subfont_with(index, size, coords, false)
+    }
+
+    /// Like [`subfont`](Self::subfont), and with `stem_darkening` the
+    /// outlines of the subfont get the stem darkening that FreeType's CFF
+    /// engine applies when the `no-stem-darkening` property of its `cff`
+    /// driver is false (FreeType 2.14.2, `src/psaux/psfont.c`
+    /// `cf2_font_setup`). It has an effect only for a size.
+    pub fn subfont_with(
+        &self,
+        index: u32,
+        size: Option<f32>,
+        coords: &[F2Dot14],
+        stem_darkening: bool,
+    ) -> Result<Subfont, Error> {
         let font_dict = self.parse_font_dict(index)?;
         let blend_state = self
             .top_dict
@@ -208,13 +223,32 @@ impl<'a> Outlines<'a> {
             font_matrix = None;
         }
         let hint_scale = scale_for_hinting(scale);
-        let hint_state = HintState::new(&private_dict.hint_params, hint_scale);
+        // FreeType darkens only the outlines that it scales
+        let darkening = match size {
+            Some(ppem) if stem_darkening => {
+                // `FT_Size_Metrics::y_ppem` is the size in 26.6 rounded to
+                // whole pixels
+                let ppem = ((ppem * 64.) as i32).saturating_add(32) >> 6;
+                Some(Darkening::new(
+                    upem,
+                    ppem,
+                    private_dict.std_vw,
+                    private_dict.std_hw,
+                ))
+            }
+            _ => None,
+        };
+        let hint_state =
+            HintState::with_darkening(&private_dict.hint_params, hint_scale, darkening);
+        let unhinted_darkening =
+            darkening.map(|darkening| HintState::for_unhinted(UNHINTED_SCALE, darkening));
         Ok(Subfont {
             is_cff2: self.is_cff2(),
             scale,
             scale_requested,
             subrs_offset: private_dict.subrs_offset,
             hint_state,
+            unhinted_darkening,
             store_index: private_dict.store_index,
             font_matrix,
             default_width: private_dict.default_width,
@@ -241,56 +275,65 @@ impl<'a> Outlines<'a> {
         hint: bool,
         pen: &mut impl OutlinePen,
     ) -> Result<Option<f32>, Error> {
-        let cff_data = self.offset_data.as_bytes();
-        let charstrings = self.top_dict.charstrings.clone();
-        let charstring_data = charstrings
-            .get(glyph_id.to_u32() as usize)
-            .ok_or(Error::Malformed)?;
-        let subrs = subfont.subrs(self)?;
-        let blend_state = subfont.blend_state(self, coords)?;
-        let cs_eval = CharstringEvaluator {
-            cff_data,
-            charstrings,
-            global_subrs: self.global_subrs.clone(),
-            subrs,
-            blend_state,
-            charstring_data,
-        };
         // Only apply hinting if we have a scale
         let apply_hinting = hint && subfont.scale_requested;
+        // Stem darkening has its own path through the outline. Its state
+        // exists only for outlines that are scaled.
+        let darkening = if apply_hinting {
+            Some(&subfont.hint_state)
+        } else {
+            subfont.unhinted_darkening.as_ref()
+        }
+        .filter(|state| state.darkened());
         let mut pen_sink = PenSink::new(pen);
         let mut simplifying_adapter = NopFilterSink::new(&mut pen_sink);
         let mut transform = Transform {
             matrix: FontMatrix::IDENTITY,
             scale: subfont.scale,
         };
-        let maybe_width = if let Some(matrix) = subfont.font_matrix {
+        let maybe_width = if let Some(state) = darkening {
+            if let Some(matrix) = subfont.font_matrix {
+                transform.matrix = matrix;
+            }
+            // The glyph path of the darkening drops what FreeType's drops
+            // before the builder gets it; the filter would also drop the
+            // points that FreeType's outline keeps when they coincide at
+            // 26.6
+            self.draw_darkened(
+                subfont,
+                glyph_id,
+                coords,
+                state,
+                apply_hinting,
+                &mut pen_sink,
+            )
+        } else if let Some(matrix) = subfont.font_matrix {
             transform.matrix = matrix;
             if apply_hinting {
                 let mut transform_sink =
                     HintedTransformingSink::new(&mut simplifying_adapter, matrix);
                 let mut hinting_adapter =
                     HintingSink::new(&subfont.hint_state, &mut transform_sink);
-                cs_eval.evaluate(&mut hinting_adapter)
+                self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)
             } else {
                 let mut transform_sink = TransformSink::from_matrix_scale(
                     &mut simplifying_adapter,
                     matrix,
                     subfont.scale,
                 );
-                cs_eval.evaluate(&mut transform_sink)
+                self.evaluate(subfont, glyph_id, coords, &mut transform_sink)
             }
         } else if apply_hinting {
             let mut hinting_adapter =
                 HintingSink::new(&subfont.hint_state, &mut simplifying_adapter);
-            cs_eval.evaluate(&mut hinting_adapter)
+            self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)
         } else {
             let mut scaling_adapter = TransformSink::from_matrix_scale(
                 &mut simplifying_adapter,
                 FontMatrix::IDENTITY,
                 subfont.scale,
             );
-            cs_eval.evaluate(&mut scaling_adapter)
+            self.evaluate(subfont, glyph_id, coords, &mut scaling_adapter)
         }?;
         Ok(maybe_width
             // If charstring eval returned a width, add the nominal width
@@ -318,6 +361,80 @@ impl<'a> Outlines<'a> {
             // we can just filter these out and let the client deal
             // with it, falling back to linear metrics.
             .filter(|w| *w >= 0.0))
+    }
+
+    /// Evaluates the charstring of the glyph into `sink`.
+    fn evaluate(
+        &self,
+        subfont: &Subfont,
+        glyph_id: GlyphId,
+        coords: &[F2Dot14],
+        sink: &mut impl CommandSink,
+    ) -> Result<Option<Fixed>, Error> {
+        let cff_data = self.offset_data.as_bytes();
+        let charstrings = self.top_dict.charstrings.clone();
+        let charstring_data = charstrings
+            .get(glyph_id.to_u32() as usize)
+            .ok_or(Error::Malformed)?;
+        let subrs = subfont.subrs(self)?;
+        let blend_state = subfont.blend_state(self, coords)?;
+        let cs_eval = CharstringEvaluator {
+            cff_data,
+            charstrings,
+            global_subrs: self.global_subrs.clone(),
+            subrs,
+            blend_state,
+            charstring_data,
+        };
+        cs_eval.evaluate(sink)
+    }
+
+    /// Evaluates the charstring with stem darkening, as FreeType's
+    /// `cf2_getGlyphOutline` does: when the first run finds that the
+    /// outline runs clockwise, the stems have to be darkened the other way
+    /// and the charstring is evaluated again.
+    fn draw_darkened(
+        &self,
+        subfont: &Subfont,
+        glyph_id: GlyphId,
+        coords: &[F2Dot14],
+        state: &HintState,
+        hinted: bool,
+        sink: &mut impl CommandSink,
+    ) -> Result<Option<Fixed>, Error> {
+        let mut null_sink = charstring::NullSink;
+        let momentum = if hinted {
+            let mut hinting_adapter = HintingSink::new(state, &mut null_sink);
+            self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)?;
+            hinting_adapter.winding_momentum()
+        } else {
+            let mut hinting_adapter = HintingSink::unhinted(state, &mut null_sink);
+            self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)?;
+            hinting_adapter.winding_momentum()
+        };
+        // CFF outlines run counterclockwise
+        let reverse = momentum < 0;
+        if hinted {
+            if let Some(matrix) = subfont.font_matrix {
+                let mut transform_sink = HintedTransformingSink::new(sink, matrix);
+                let mut hinting_adapter = HintingSink::new(state, &mut transform_sink);
+                hinting_adapter.set_reverse_winding(reverse);
+                self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)
+            } else {
+                let mut hinting_adapter = HintingSink::new(state, sink);
+                hinting_adapter.set_reverse_winding(reverse);
+                self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)
+            }
+        } else {
+            let mut scaling_sink = UnhintedScalingSink::new(
+                sink,
+                subfont.font_matrix,
+                subfont.scale.unwrap_or(Fixed::ONE),
+            );
+            let mut hinting_adapter = HintingSink::unhinted(state, &mut scaling_sink);
+            hinting_adapter.set_reverse_winding(reverse);
+            self.evaluate(subfont, glyph_id, coords, &mut hinting_adapter)
+        }
     }
 
     fn parse_font_dict(&self, subfont_index: u32) -> Result<FontDict, Error> {
@@ -350,6 +467,10 @@ impl<'a> Outlines<'a> {
 pub(crate) fn scale_for_hinting(scale: Option<Fixed>) -> Fixed {
     Fixed::from_bits((scale.unwrap_or(Fixed::ONE).to_bits().saturating_add(32)) / 64)
 }
+
+/// Scale of the outlines that FreeType's CFF engine returns when they are not
+/// hinted: 1/64.
+const UNHINTED_SCALE: Fixed = Fixed::from_bits(0x400);
 
 struct CharstringEvaluator<'a> {
     cff_data: &'a [u8],
@@ -385,6 +506,9 @@ pub(crate) struct Subfont {
     scale_requested: bool,
     subrs_offset: Option<usize>,
     pub(crate) hint_state: HintState,
+    /// State for darkening the stems of outlines that are not hinted, if the
+    /// subfont is scaled and its stems are darkened.
+    unhinted_darkening: Option<HintState>,
     store_index: u16,
     font_matrix: Option<FontMatrix>,
     default_width: Option<Fixed>,
@@ -427,6 +551,10 @@ struct PrivateDict {
     store_index: u16,
     default_width: Option<Fixed>,
     nominal_width: Fixed,
+    /// `StdVW` as FreeType parses it, an unsigned 16 bit integer
+    std_vw: i32,
+    /// `StdHW` as FreeType parses it, an unsigned 16 bit integer
+    std_hw: i32,
 }
 
 impl PrivateDict {
@@ -457,6 +585,9 @@ impl PrivateDict {
                         Some(range.start.checked_add(offset).ok_or(Error::Malformed)?)
                 }
                 VariationStoreIndex(index) => dict.store_index = index,
+                // FreeType stores these as truncated unsigned 16 bit integers
+                StdVw(width) => dict.std_vw = i32::from((width.to_bits() >> 16) as u16),
+                StdHw(width) => dict.std_hw = i32::from((width.to_bits() >> 16) as u16),
                 _ => {}
             }
         }
@@ -634,6 +765,75 @@ impl<S: CommandSink> CommandSink for HintedTransformingSink<'_, S> {
         self.inner.clear_hints();
     }
 
+    fn move_to(&mut self, x: Fixed, y: Fixed) {
+        let (x, y) = self.transform(x, y);
+        self.inner.move_to(x, y);
+    }
+
+    fn line_to(&mut self, x: Fixed, y: Fixed) {
+        let (x, y) = self.transform(x, y);
+        self.inner.line_to(x, y);
+    }
+
+    fn curve_to(&mut self, cx1: Fixed, cy1: Fixed, cx2: Fixed, cy2: Fixed, x: Fixed, y: Fixed) {
+        let (cx1, cy1) = self.transform(cx1, cy1);
+        let (cx2, cy2) = self.transform(cx2, cy2);
+        let (x, y) = self.transform(x, y);
+        self.inner.curve_to(cx1, cy1, cx2, cy2, x, y);
+    }
+
+    fn close(&mut self) {
+        self.inner.close();
+    }
+
+    fn finish(&mut self) {
+        self.inner.finish();
+    }
+}
+
+/// Command sink adapter that finishes the scaling of outlines that were
+/// darkened without hints.
+///
+/// FreeType's CFF engine returns those in font units (see
+/// `cf2_getScaleAndHintFlag`, and `ps_builder_add_point` truncating to
+/// integers) and `cff_slot_load` applies the font matrix and the scale
+/// afterwards. [`TransformSink`] does the same, but from character space.
+struct UnhintedScalingSink<'a, S> {
+    inner: &'a mut S,
+    matrix: Option<FontMatrix>,
+    scale: Fixed,
+}
+
+impl<'a, S> UnhintedScalingSink<'a, S> {
+    fn new(sink: &'a mut S, matrix: Option<FontMatrix>, scale: Fixed) -> Self {
+        Self {
+            inner: sink,
+            matrix,
+            scale,
+        }
+    }
+
+    fn transform(&self, x: Fixed, y: Fixed) -> (Fixed, Fixed) {
+        // The 16.16 values are font units / 64: their integer part is in
+        // font units
+        let bx = Fixed::from_bits(x.to_bits() >> 10);
+        let by = Fixed::from_bits(y.to_bits() >> 10);
+        let (cx, cy) = self
+            .matrix
+            .as_ref()
+            .map(|matrix| matrix.transform(bx, by))
+            .unwrap_or((bx, by));
+        // Scale to 26.6 and convert to 16.16
+        let dx = cx * self.scale;
+        let dy = cy * self.scale;
+        (
+            Fixed::from_bits(dx.to_bits() << 10),
+            Fixed::from_bits(dy.to_bits() << 10),
+        )
+    }
+}
+
+impl<S: CommandSink> CommandSink for UnhintedScalingSink<'_, S> {
     fn move_to(&mut self, x: Fixed, y: Fixed) {
         let (x, y) = self.transform(x, y);
         self.inner.move_to(x, y);

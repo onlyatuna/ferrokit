@@ -53,6 +53,31 @@ That code is used under the FreeType License (LICENSES/FTL.txt):
   Copyright (C) 1996-2025 by
   David Turner, Robert Wilhelm, and Werner Lemberg.
 
+FreeType is offered under two mutually exclusive licences, of which one must be chosen (its
+LICENSE.TXT): the FreeType License (FTL) or the GNU GPL version 2 or later. ferrokit uses the FTL,
+which is compatible with the GPL version 3 that the LGPL-3.0-only is built on; the GPL alternative
+would put the file under a stronger copyleft than the rest of the library. The file therefore
+carries `LGPL-3.0-only AND FTL`: the FreeType-derived code under the FTL, ferrokit's own changes
+under the project licence. The FTL's credit and no-warranty terms apply to every binary that
+contains it (see above). The FTL text in LICENSES/FTL.txt is the file docs/FTL.TXT of FreeType
+2.14.2, unchanged.
+
+
+Vendored crates (third_party/)
+------------------------------
+third_party/skrifa (skrifa 0.49.0) and third_party/read-fonts (read-fonts 0.46.0) are copies of
+the crates.io releases of the fontations project (https://github.com/googlefonts/fontations,
+commit 47a301615fd95acf0da9fb7dbcd0ea7c7df36943), Copyright (c) 2019 Fontations Developers,
+licensed under MIT OR Apache-2.0; their LICENSE-MIT and LICENSE-APACHE are in each directory.
+ferrokit uses them under the MIT license. Each directory's README.ferrokit.md lists the changes
+made to the upstream code (among them a port of parts of FreeType 2.14.2's TrueType interpreter
+and CFF engine, under the FreeType License above, as the Rust port of ftgrays is).
+
+Crates added to Cargo.lock with them (all from crates.io, unmodified): font-types (MIT OR
+Apache-2.0), once_cell (MIT OR Apache-2.0), stable_deref_trait (MIT OR Apache-2.0), foldhash
+(Zlib), bytemuck_derive (Zlib OR Apache-2.0 OR MIT), synstructure (MIT), yoke, yoke-derive,
+zerofrom and zerofrom-derive (Unicode-3.0).
+
 
 Easing equations
 ----------------

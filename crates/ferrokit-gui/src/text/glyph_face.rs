@@ -105,6 +105,14 @@ pub trait GlyphFace: Send + Sync {
         false
     }
 
+    /// `QFontEngine::expectsGammaCorrectedBlending`: the grey-scale glyphs of this face are blended
+    /// with the text gamma (`QGuiApplicationPrivate::colorProfileForA8Text`, 1.7 on Unix). Qt's
+    /// FreeType engine says so for CFF fonts, whose stem darkening it enables; every other engine
+    /// of this crate keeps the plain blend.
+    fn gamma_corrected_blending(&self) -> bool {
+        false
+    }
+
     /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
     /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
     /// blits it at the floor of that position, instead of at the rounded one. Qt's CoreText

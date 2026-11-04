@@ -110,6 +110,7 @@ fn truetype_interpreter_matches_the_hinting_instance() {
                 HintingOptions {
                     engine: Engine::Interpreter,
                     target: outline_target,
+                    cff_stem_darkening: false,
                 },
             );
         }
@@ -128,6 +129,7 @@ fn preserve_linear_metrics_matches_the_hinting_instance() {
                 symmetric_rendering: true,
                 preserve_linear_metrics: true,
             },
+            cff_stem_darkening: false,
         },
     );
 }
@@ -150,6 +152,7 @@ fn autohinter_matches_the_hinting_instance() {
                 HintingOptions {
                     engine: Engine::Auto(None),
                     target: outline_target,
+                    cff_stem_darkening: false,
                 },
             );
         }
@@ -169,6 +172,7 @@ fn postscript_hinter_matches_the_hinting_instance() {
             HintingOptions {
                 engine: Engine::Interpreter,
                 target: OutlineTarget::default(),
+                cff_stem_darkening: false,
             },
         );
     }
@@ -964,6 +968,7 @@ fn autohinted_varied_advances_round_like_the_hinting_instance() {
                 HintingOptions {
                     engine: Engine::Auto(None),
                     target: OutlineTarget::default(),
+                    cff_stem_darkening: false,
                 },
             )
             .unwrap();

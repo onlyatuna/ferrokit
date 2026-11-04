@@ -33,7 +33,8 @@
     "test_text_layout_oracle",
     "test_text_tabs",
     "test_font_line_metrics_oracle",
-    "test_glyph_blit_placement"
+    "test_glyph_blit_placement",
+    "test_ft_golden"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",

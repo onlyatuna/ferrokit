@@ -199,6 +199,7 @@ pub struct DrawSettings<'a> {
     instance: DrawInstance<'a>,
     memory: Option<&'a mut [u8]>,
     path_style: PathStyle,
+    cff_stem_darkening: bool,
 }
 
 impl<'a> DrawSettings<'a> {
@@ -209,6 +210,7 @@ impl<'a> DrawSettings<'a> {
             instance: DrawInstance::Unhinted(size, location.into()),
             memory: None,
             path_style: PathStyle::default(),
+            cff_stem_darkening: false,
         }
     }
 
@@ -229,6 +231,7 @@ impl<'a> DrawSettings<'a> {
             },
             memory: None,
             path_style: PathStyle::default(),
+            cff_stem_darkening: false,
         }
     }
 
@@ -249,6 +252,17 @@ impl<'a> DrawSettings<'a> {
     /// Meant for use when trying to match legacy code behavior in Rust.
     pub fn with_path_style(mut self, path_style: PathStyle) -> Self {
         self.path_style = path_style;
+        self
+    }
+
+    /// Builder method to apply the stem darkening of FreeType's CFF engine
+    /// to CFF and CFF2 glyphs drawn unhinted, as FreeType does when the
+    /// `no-stem-darkening` property of its `cff` driver is false (Qt sets it
+    /// so). Hinted glyphs are darkened through
+    /// [`HintingOptions::cff_stem_darkening`]. It needs a size: unscaled
+    /// outlines are not darkened.
+    pub fn with_cff_stem_darkening(mut self, cff_stem_darkening: bool) -> Self {
+        self.cff_stem_darkening = cff_stem_darkening;
         self
     }
 }
@@ -386,10 +400,24 @@ impl<'a> OutlineGlyph<'a> {
     ) -> Result<AdjustedMetrics, DrawError> {
         match (settings.instance, settings.path_style) {
             (DrawInstance::Unhinted(size, location), PathStyle::FreeType) => {
-                self.draw_unhinted(size, location, settings.memory, settings.path_style, pen)
+                self.draw_unhinted(
+                    size,
+                    location,
+                    settings.memory,
+                    settings.path_style,
+                    settings.cff_stem_darkening,
+                    pen,
+                )
             }
             (DrawInstance::Unhinted(size, location), PathStyle::HarfBuzz) => {
-                self.draw_unhinted(size, location, settings.memory, settings.path_style, pen)
+                self.draw_unhinted(
+                    size,
+                    location,
+                    settings.memory,
+                    settings.path_style,
+                    settings.cff_stem_darkening,
+                    pen,
+                )
             }
             (
                 DrawInstance::Hinted {
@@ -412,6 +440,7 @@ impl<'a> OutlineGlyph<'a> {
                         hinting_instance.location(),
                         settings.memory,
                         settings.path_style,
+                        settings.cff_stem_darkening,
                         pen,
                     )?;
                     // Round advance width when hinting is requested, even if
@@ -434,6 +463,7 @@ impl<'a> OutlineGlyph<'a> {
         location: impl Into<LocationRef<'a>>,
         user_memory: Option<&mut [u8]>,
         path_style: PathStyle,
+        cff_stem_darkening: bool,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
         let ppem = size.ppem();
@@ -472,7 +502,7 @@ impl<'a> OutlineGlyph<'a> {
                 })
             }
             OutlineKind::Cff(cff, glyph_id, subfont_ix) => {
-                let subfont = cff.subfont(*subfont_ix, ppem, coords)?;
+                let subfont = cff.subfont_with(*subfont_ix, ppem, coords, cff_stem_darkening)?;
                 let advance_width = cff.draw(&subfont, *glyph_id, coords, false, pen)?;
                 Ok(AdjustedMetrics {
                     has_overlaps: false,
