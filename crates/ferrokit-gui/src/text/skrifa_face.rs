@@ -59,32 +59,70 @@ struct Slot {
 
 /// Collects a skrifa outline as the points, tags and contour ends of an `FT_Outline`.
 ///
-/// skrifa draws a glyph as FreeType's `FT_Outline_Decompose` walks it (contours starting at the
-/// same point, implied on-curve points at the same 26.6 midpoints); written back as on, conic and
-/// cubic points that walk decomposes to the same segments again, plus a closing line of length
-/// zero where skrifa ends a contour on its start point, which adds nothing to any cell.
+/// skrifa draws a glyph as FreeType's `FT_Outline_Decompose` walks it: contours start at the same
+/// point and two consecutive off-curve points have an implied on-curve point between them. skrifa
+/// hands that point to the pen as an explicit one, rounded to 1/64 pixel, but FreeType's point
+/// array does not have it and its rasterizer works at the exact midpoint (`gray_conic_to`). The
+/// vendored read-fonts (`third_party/read-fonts`) tells the pen about such a point
+/// ([`OutlinePen::implied_point`], called before the command that ends on it): it is dropped, and
+/// the contour keeps the off-curve points around it, as in FreeType. That includes the start of a
+/// contour that begins with an off-curve point and the return to the start that closes a curve.
+///
+/// A CFF contour (`cff`) does not repeat its first point at the end (`cff_builder_close_contour`).
 #[derive(Default)]
 struct SlotPen {
     outline: Outline,
     open: bool,
+    /// The outline comes from the CFF driver.
+    cff: bool,
+    /// The end point of the next command is an implied point.
+    implied: bool,
+    /// Index in `outline.points` of the open contour's first point.
+    first: usize,
 }
 
 impl SlotPen {
-    fn point(&mut self, x: f32, y: f32, tag: u8) {
+    fn new(cff: bool) -> Self {
+        Self {
+            cff,
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, x: f32, y: f32, tag: u8) {
         // skrifa's coordinates are 26.6 (TrueType, auto-hinter) or 16.16 (CFF) values as `f32`;
         // FreeType keeps 26.6.
-        let v = Vector::new(
+        self.outline.points.push(Vector::new(
             (f64::from(x) * 64.0).round() as i64,
             (f64::from(y) * 64.0).round() as i64,
-        );
-        self.outline.points.push(v);
+        ));
         self.outline.tags.push(tag);
     }
 
+    /// The on-curve end point of a command, unless it is an implied one.
+    fn push_end(&mut self, x: f32, y: f32) {
+        if !std::mem::take(&mut self.implied) {
+            self.push(x, y, ftgrays::TAG_ON);
+        }
+    }
+
     fn end_contour(&mut self) {
-        if self.open {
-            self.open = false;
-            let last = self.outline.points.len().saturating_sub(1);
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        let n = self.outline.points.len() - self.first;
+        if self.cff
+            && n > 1
+            && self.outline.tags.last() == Some(&ftgrays::TAG_ON)
+            && self.outline.points.last() == self.outline.points.get(self.first)
+        {
+            // `cff_builder_close_contour`: a contour does not repeat its first point.
+            self.outline.points.pop();
+            self.outline.tags.pop();
+        }
+        if self.outline.points.len() > self.first {
+            let last = self.outline.points.len() - 1;
             self.outline
                 .contours
                 .push(last.min(usize::from(u16::MAX)) as u16);
@@ -101,22 +139,26 @@ impl OutlinePen for SlotPen {
     fn move_to(&mut self, x: f32, y: f32) {
         self.end_contour();
         self.open = true;
-        self.point(x, y, ftgrays::TAG_ON);
+        self.first = self.outline.points.len();
+        self.push_end(x, y);
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        self.point(x, y, ftgrays::TAG_ON);
+        self.push(x, y, ftgrays::TAG_ON);
     }
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.point(cx, cy, ftgrays::TAG_CONIC);
-        self.point(x, y, ftgrays::TAG_ON);
+        self.push(cx, cy, ftgrays::TAG_CONIC);
+        self.push_end(x, y);
     }
     fn curve_to(&mut self, c0x: f32, c0y: f32, c1x: f32, c1y: f32, x: f32, y: f32) {
-        self.point(c0x, c0y, ftgrays::TAG_CUBIC);
-        self.point(c1x, c1y, ftgrays::TAG_CUBIC);
-        self.point(x, y, ftgrays::TAG_ON);
+        self.push(c0x, c0y, ftgrays::TAG_CUBIC);
+        self.push(c1x, c1y, ftgrays::TAG_CUBIC);
+        self.push_end(x, y);
     }
     fn close(&mut self) {
         self.end_contour();
+    }
+    fn implied_point(&mut self) {
+        self.implied = true;
     }
 }
 
@@ -137,6 +179,8 @@ pub struct SkrifaFace {
     face_index: u32,
     hint_style: HintStyle,
     units_per_em: u16,
+    /// The outlines are CFF ones (not TrueType): see [`SlotPen`].
+    cff: bool,
     /// The hinter of `FT_LOAD_TARGET_LIGHT` / `FT_LOAD_TARGET_NORMAL` for this font.
     light_hinter: Hinter,
     normal_hinter: Hinter,
@@ -189,6 +233,7 @@ impl SkrifaFace {
             face_index,
             hint_style,
             units_per_em,
+            cff: !is_glyf,
             light_hinter,
             normal_hinter,
             styles: OnceLock::new(),
@@ -271,7 +316,7 @@ impl SkrifaFace {
         let size = Size::new(ysize as f32 / 64.0);
         let target = if unhinted { None } else { self.load_target() };
         let draw = |settings: DrawSettings| {
-            let mut pen = SlotPen::default();
+            let mut pen = SlotPen::new(self.cff);
             let metrics = glyph.draw(settings, &mut pen).ok()?;
             let mut outline = pen.finish();
             if metrics.has_overlaps {
