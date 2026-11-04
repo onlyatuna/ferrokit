@@ -42,24 +42,33 @@
 //! With them, against FreeType 2.14.2 on 24 TrueType and 33 CFF faces (Latin-1 text, 9 to 24 px)
 //! outline point arrays and bitmaps are identical for every TrueType glyph in normal mode
 //! (73,344 renders) and unhinted (293,376), for every CFF glyph in all three modes (907,632), and
-//! for 253,048 of 293,376 TrueType glyphs in light mode.
+//! for 253,048 of 293,376 TrueType glyphs in light mode before the vertical separation
+//! adjustment below was ported.
 //!
-//! # Known difference: light hinting of TrueType accents and dots
+//! # Light hinting of TrueType accents and dots
 //!
 //! FreeType 2.14.0 added a vertical separation adjustment to its auto-hinter (`afadjust.c`,
-//! `af_glyph_hints_apply_vertical_separation_adjustments`: commit `7099b09e9`, "[autofit]
-//! Implement vertical separation adjustment"). It moves the dot of `i` and `j` and the accents
-//! of accented letters vertically, by up to a few pixels, so that they keep a gap to the letter
-//! below. skrifa's auto-hinter has no such code and it is not ported here: for these glyphs a
-//! light-hinted TrueType glyph differs from FreeType's, and so from Qt's on Linux, where the
-//! default hint style is light. In the measured corpus that is 40,328 of 293,376 TrueType light
-//! glyph renders (13.7%); 59 of the 191 characters of ASCII and Latin-1 are affected: `i j ¡ ³ ¸ ¾ ¿`
-//! and `À`-`ÿ` with an accent (not `Å`, `Æ`, `Ø`, `Þ`, `ß`, `ð`, `ø`, `þ`). The shift is vertical
-//! only, the point count is unchanged, and the bitmap differs wherever the outline does. Strings
-//! without these characters are identical to Qt's (see `tests/test_ft_golden.rs`); every
-//! difference in the strings measured against Qt lies in the boxes of these glyphs. CFF fonts
-//! (hinted by the CFF engine, which has no such adjustment) and every other hint style are not
-//! affected.
+//! commit `7099b09e9`, "[autofit] Implement vertical separation adjustment"). It moves the dot of
+//! `i` and `j` and the accents of accented letters vertically so that they keep a gap to the
+//! letter below. The vendored skrifa auto-hinter has it (see `third_party/skrifa/README.ferrokit.md`
+//! and `adjust/mod.rs`, with the FreeType line of every ported function). Measured over 40
+//! TrueType fonts, about 1,270 characters each (Latin-1, accented Latin, Greek, Cyrillic), 8 to
+//! 24 px: 3,050,548 of 3,050,616 light renders equal FreeType 2.14.2's (system library), 762,637
+//! of 762,654 `QRawFont::alphaMapForGlyph` records equal Qt 6.12.0's, 330,208 of 330,224 single
+//! glyph `drawText` renders equal Qt's. The target is the Ubuntu build of FreeType 2.14.2, which
+//! loads HarfBuzz at run time; other builds of FreeType may differ.
+//!
+//! # Known differences
+//!
+//! - U+20B9 (the rupee sign) in Segoe UI: with HarfBuzz, FreeType shapes the Devanagari blue
+//!   strings with an inserted dotted circle, so that script gets blue zones and the glyph is
+//!   hinted; here that script has none and the glyph is not hinted.
+//! - FreeType extends the reverse character map of the adjustment through the font's GSUB single
+//!   and alternate substitutions (`add_substitute`); that part is not ported, so glyphs reached
+//!   only through a substitution (small capitals, alternates) are not adjusted.
+//!
+//! CFF fonts (hinted by the CFF engine, which has no such adjustment) and every other hint style
+//! are not affected.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
