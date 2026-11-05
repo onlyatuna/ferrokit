@@ -211,12 +211,6 @@ pub trait GlyphFace: Send + Sync {
     fn face_index(&self) -> u32 {
         0
     }
-
-    /// The variation axes (OpenType tag, value) the face was opened with, which the shaper must
-    /// apply too: a named instance of a variable font on Windows. Empty for every other face.
-    fn variations(&self) -> Vec<([u8; 4], f32)> {
-        Vec::new()
-    }
 }
 
 /// Largest glyph bitmap (in pixels) any rasterizer backend will allocate.

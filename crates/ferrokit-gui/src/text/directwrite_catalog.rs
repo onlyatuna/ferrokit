@@ -103,47 +103,116 @@ pub(crate) fn catalog() -> Option<&'static Catalog> {
 }
 
 impl Catalog {
-    /// The face for a request for the family `name` of `weight` that is `italic` or not: the
-    /// family is populated the first time it is asked for (`ensurePopulated`), then the style
-    /// with the least distance wins (`bestStyle`, the first one at a tie, in registration order).
-    pub(crate) fn resolve(&self, name: &str, weight: u16, italic: bool) -> Option<FaceSource> {
-        let style = {
-            let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-            let index = registry.find(name)?;
-            if !registry.families[index].populated {
-                let spelling = registry.families[index].name.clone();
-                if let Some(&owner) = self.owners.get(&spelling)
-                    && registry.populated_names.insert(spelling.clone())
-                {
-                    serialized(|| {
-                        populate(
-                            &mut registry,
-                            &self.collection,
-                            owner,
-                            &spelling,
-                            &self.locales,
-                        )
-                    });
-                }
-            }
-            let family = &registry.families[registry.find(name)?];
-            if !family.populated {
-                return None;
-            }
-            best_style(family, weight, italic)?.clone()
+    /// Populates the family `name` (once) the way `ensurePopulated` does, with the registry locked.
+    fn ensure_populated(&self, registry: &mut Registry, name: &str) {
+        let Some(index) = registry.find(name) else {
+            return;
         };
+        if registry.families[index].populated {
+            return;
+        }
+        let spelling = registry.families[index].name.clone();
+        if let Some(&owner) = self.owners.get(&spelling)
+            && registry.populated_names.insert(spelling.clone())
+        {
+            serialized(|| populate(registry, &self.collection, owner, &spelling, &self.locales));
+        }
+    }
+
+    /// The style of the family `name` a request of `weight` that is `italic` or not gets: the
+    /// family is populated the first time it is asked for, then the style with the least distance
+    /// wins (`bestStyle`, the first one at a tie, in registration order).
+    fn pick_style(&self, name: &str, weight: u16, italic: bool) -> Option<CatalogStyle> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        self.ensure_populated(&mut registry, name);
+        let family = &registry.families[registry.find(name)?];
+        if !family.populated {
+            return None;
+        }
+        best_style(family, weight, italic).cloned()
+    }
+
+    /// The face for a request for the family `name` of `weight` that is `italic` or not.
+    pub(crate) fn resolve(&self, name: &str, weight: u16, italic: bool) -> Option<FaceSource> {
+        let style = self.pick_style(name, weight, italic)?;
         self.face_source(&style)
+    }
+
+    /// Whether a family called `name` has a font registered, and its `(fixed pitch, writing
+    /// systems)`.
+    pub(crate) fn family_traits(&self, name: &str) -> Option<(bool, u64)> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        self.ensure_populated(&mut registry, name);
+        let family = &registry.families[registry.find(name)?];
+        family
+            .populated
+            .then_some((family.fixed_pitch, family.writing_systems))
+    }
+
+    /// Whether the face a request of `weight`/`italic` gets from the family `name` has a glyph for
+    /// `ch` (`IDWriteFont::HasCharacter`, what the engine's `glyphIndex` finds).
+    pub(crate) fn covers(&self, name: &str, weight: u16, italic: bool, ch: char) -> bool {
+        let Some(style) = self.pick_style(name, weight, italic) else {
+            return false;
+        };
+        serialized(|| {
+            let font = self.font_of(&style)?;
+            // SAFETY: `font` is a live `IDWriteFont`; the call takes a code point.
+            let has = unsafe { font.HasCharacter(ch as u32) };
+            Some(has.is_ok_and(|b| b.as_bool()))
+        })
+        .unwrap_or(false)
+    }
+
+    /// `QPlatformFontDatabase::fallbacksForFamily`'s own list: every family that supports
+    /// `writing_system` (any for 0), those with a style of the requested slant first
+    /// (`Preferred`), the others after them (`Other`), each in the order of the database. Every
+    /// family is populated first, as the loop of that function does.
+    pub(crate) fn families_for_writing_system(
+        &self,
+        italic: bool,
+        writing_system: usize,
+    ) -> Vec<String> {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let names: Vec<String> = registry.families.iter().map(|f| f.name.clone()).collect();
+        for name in &names {
+            self.ensure_populated(&mut registry, name);
+        }
+        let (mut preferred, mut other) = (Vec::new(), Vec::new());
+        for family in registry.families.iter().filter(|f| f.populated) {
+            if writing_system != ws::ANY
+                && !supports_writing_system(family.writing_systems, writing_system)
+            {
+                continue;
+            }
+            if family
+                .styles
+                .iter()
+                .any(|s| (s.kind != StyleKind::Normal) == italic)
+            {
+                preferred.push(family.name.clone());
+            } else {
+                other.push(family.name.clone());
+            }
+        }
+        preferred.extend(other);
+        preferred
+    }
+
+    /// The font of `style` (the caller holds the DirectWrite lock).
+    fn font_of(&self, style: &CatalogStyle) -> Option<IDWriteFont> {
+        // SAFETY: `self.collection` is a live collection; the index comes from this collection's
+        // own enumeration (`build`).
+        let family = unsafe { self.collection.GetFontFamily(style.handle.family) }.ok()?;
+        matching_fonts(&family).and_then(|list|
+            // SAFETY: `list` is live and the index is the position this list had at `build`.
+            unsafe { list.GetFont(style.handle.font) }.ok())
     }
 
     /// The file, face index and variation axes of `style`.
     fn face_source(&self, style: &CatalogStyle) -> Option<FaceSource> {
         serialized(|| {
-            // SAFETY: `self.collection` is a live collection; the index comes from this
-            // collection's own enumeration (`build`).
-            let family = unsafe { self.collection.GetFontFamily(style.handle.family) }.ok()?;
-            let font = matching_fonts(&family).and_then(|list|
-                // SAFETY: `list` is live and the index is the position this list had at `build`.
-                unsafe { list.GetFont(style.handle.font) }.ok())?;
+            let font = self.font_of(style)?;
             // SAFETY: `font` is a live `IDWriteFont`; the call takes no arguments.
             let face = unsafe { font.CreateFontFace() }.ok()?;
             let path = font_file_path(&face)?;
@@ -156,6 +225,31 @@ impl Catalog {
             })
         })
     }
+}
+
+/// Whether the writing system bits `systems` include `writing_system`, or for Chinese and
+/// Japanese any of the three up to Japanese (`familySupportsWritingSystem`).
+fn supports_writing_system(systems: u64, writing_system: usize) -> bool {
+    let last = if (ws::SIMPLIFIED_CHINESE..=ws::JAPANESE).contains(&writing_system) {
+        ws::JAPANESE
+    } else {
+        writing_system
+    };
+    (writing_system..=last).any(|system| systems & (1 << system) != 0)
+}
+
+/// `qt_writing_system_for_script`: the first writing system of `script`, `Any` (0) for the
+/// scripts none is for.
+pub(crate) fn writing_system_for_script(script: Script) -> usize {
+    SCRIPT_FOR_WRITING_SYSTEM
+        .iter()
+        .position(|&candidate| candidate == script)
+        .unwrap_or(ws::ANY)
+}
+
+/// `QFontDatabase::writingSystems(family).contains(Symbol)` for the bits of a family.
+pub(crate) fn supports_symbol(systems: u64) -> bool {
+    systems & (1 << ws::SYMBOL) != 0
 }
 
 /// `bestStyle` for a request of `weight` that is `italic` or not, whatever the stretch.
@@ -278,6 +372,17 @@ fn informational(
 struct Locales {
     default: Option<Vec<u16>>,
     english: Vec<u16>,
+}
+
+/// The language of the system as a HarfBuzz language (Qt passes `QLocale().bcp47Name()`; the
+/// Windows locale name of the user gives the same OpenType language tags, e.g. `zh-TW`).
+pub(crate) fn system_language() -> Option<rustybuzz::Language> {
+    static LANGUAGE: LazyLock<Option<rustybuzz::Language>> = LazyLock::new(|| {
+        let locale = Locales::new().default?;
+        let name = String::from_utf16_lossy(&locale);
+        name.trim_end_matches('\0').parse().ok()
+    });
+    LANGUAGE.clone()
 }
 
 impl Locales {

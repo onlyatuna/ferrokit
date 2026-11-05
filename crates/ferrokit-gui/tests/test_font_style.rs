@@ -73,7 +73,9 @@ fn italic_loads_the_italic_face() {
 
 #[test]
 fn bold_text_falls_back_to_the_bold_cjk_face() {
-    // The glyph chain keeps the weight: a CJK character in bold text comes from msjhbd.ttc.
+    // The glyph chain keeps the weight: the CJK fallback of bold text is asked for bold. Qt's
+    // chain for the Chinese (Taiwan) locale starts with PMingLiU, which has no bold face, so the
+    // bold text is that font emboldened by DirectWrite and wider than the regular text.
     let bold = Font::new("Segoe UI", 16.0).with_weight(FontWeight::Bold);
     let regular = Font::new("Segoe UI", 16.0);
     let cjk = "重設於";
@@ -83,7 +85,7 @@ fn bold_text_falls_back_to_the_bold_cjk_face() {
         bold_engines.len() >= 2 && regular_engines.len() >= 2,
         "CJK fallback must resolve"
     );
-    assert_ne!(file_len(&bold_engines[1]), file_len(&regular_engines[1]));
+    assert!(width(&bold, cjk) > width(&regular, cjk));
 }
 
 #[test]
