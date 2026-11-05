@@ -15,11 +15,11 @@
 //!   rendered at the sub-pixel offset of its pen (`DWRITE_MATRIX.dx`, one of the buckets the first
 //!   outlined glyph's twelve probe offsets give), for LCD masks as well as for greyscale ones.
 //!
-//! What it does not cover, because ferrokit does not do it yet: font simulations, the `kern` table
-//! check, font collections' face index. The cases at a ratio of 1 use a font without hinting
-//! (symmetric antialiasing, natural advances) and strings whose advances are whole pixels; the
-//! `gasp`/`maxp` rendering mode and the advance rounding are pinned by
-//! `tests/test_directwrite_modes.rs`.
+//! What it does not cover: the `kern` table check, which ferrokit does not do yet. The cases at a
+//! ratio of 1 use a font without hinting (symmetric antialiasing, natural advances) and strings
+//! whose advances are whole pixels; the `gasp`/`maxp` rendering mode and the advance rounding are
+//! pinned by `tests/test_directwrite_modes.rs`, font simulations and the face of a font collection
+//! by `tests/test_directwrite_faces.rs`.
 //!
 //! The ratio is process-wide state: one test walks every ratio.
 #![cfg(windows)]

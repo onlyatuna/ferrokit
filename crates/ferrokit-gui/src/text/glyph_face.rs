@@ -192,6 +192,15 @@ pub trait GlyphFace: Send + Sync {
     fn right_side_bearing(&self, _glyph_id: u16, _size: f32) -> Option<f32> {
         None
     }
+
+    /// The index of this face within its font file, which a font collection (`.ttc`) holds
+    /// several faces of: what the shaper must open the file with to see the same glyph ids as
+    /// this face. Only the DirectWrite backend reports it. The others answer 0, so on their
+    /// platforms the shaper still reads the first face of a collection, whichever face the
+    /// backend draws.
+    fn face_index(&self) -> u32 {
+        0
+    }
 }
 
 /// Largest glyph bitmap (in pixels) any rasterizer backend will allocate.
@@ -242,24 +251,49 @@ pub fn parse_face(data: &SharedFontData, face_index: u32) -> Result<SharedGlyphF
     )
 }
 
+/// `QFont::DemiBold`: from this weight on, Qt's DirectWrite font database asks DirectWrite for a
+/// synthesized bold when the face is lighter (`DWRITE_FONT_WEIGHT_DEMI_BOLD` is the same number).
+pub(crate) const DEMI_BOLD: u16 = 600;
+
 /// Builds the glyph face for face `face_index` of the font file `data`, rendering with
-/// `hint_style` where the backend hints (Qt fixes an engine's hint style when it creates it).
-///
-/// This is the only place that selects a rasterizer backend.
+/// `hint_style` where the backend hints (Qt fixes an engine's hint style when it creates it), for
+/// a regular upright request.
 pub fn parse_face_with_hint_style(
     data: &SharedFontData,
     face_index: u32,
     hint_style: crate::text::font_database::HintStyle,
 ) -> Result<SharedGlyphFace, String> {
+    parse_face_for_request(data, face_index, hint_style, 400, false)
+}
+
+/// [`parse_face_with_hint_style`] for a request of `weight` (Qt's 1..=1000 scale) that is
+/// `italic` or not. On Windows a face that lacks the requested weight or slant is created with
+/// DirectWrite's simulations, as Qt's DirectWrite font database does
+/// ([`DirectWriteFace::for_request`](crate::text::directwrite_face::DirectWriteFace::for_request));
+/// no other backend of this crate synthesizes, so they ignore the request.
+///
+/// This is the only place that selects a rasterizer backend.
+pub fn parse_face_for_request(
+    data: &SharedFontData,
+    face_index: u32,
+    hint_style: crate::text::font_database::HintStyle,
+    weight: u16,
+    italic: bool,
+) -> Result<SharedGlyphFace, String> {
     #[cfg(windows)]
     if use_platform_engine() && crate::text::directwrite_face::is_available() {
         // A font DirectWrite cannot open is still drawn by the generic backend.
-        if let Ok(face) =
-            crate::text::directwrite_face::DirectWriteFace::new(data.clone(), face_index)
-        {
+        if let Ok(face) = crate::text::directwrite_face::DirectWriteFace::for_request(
+            data.clone(),
+            face_index,
+            weight,
+            italic,
+        ) {
             return Ok(Arc::new(face));
         }
     }
+    #[cfg(not(windows))]
+    let _ = (weight, italic);
     #[cfg(target_os = "macos")]
     if use_coretext() {
         return crate::text::core_text_face::CoreTextFace::new(data.clone(), face_index)
