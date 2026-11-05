@@ -211,6 +211,12 @@ pub trait GlyphFace: Send + Sync {
     fn face_index(&self) -> u32 {
         0
     }
+
+    /// The variation axes (OpenType tag, value) the face was opened with, which the shaper must
+    /// apply too: a named instance of a variable font on Windows. Empty for every other face.
+    fn variations(&self) -> Vec<([u8; 4], f32)> {
+        Vec::new()
+    }
 }
 
 /// Largest glyph bitmap (in pixels) any rasterizer backend will allocate.
@@ -282,6 +288,9 @@ pub fn parse_face_with_hint_style(
 /// ([`DirectWriteFace::for_request`](crate::text::directwrite_face::DirectWriteFace::for_request));
 /// no other backend of this crate synthesizes, so they ignore the request.
 ///
+/// A named instance of a variable font (`axes` not empty, DirectWrite's `DWRITE_FONT_AXIS_TAG`
+/// values) is opened by [`parse_face_for_instance`].
+///
 /// This is the only place that selects a rasterizer backend.
 pub fn parse_face_for_request(
     data: &SharedFontData,
@@ -322,6 +331,34 @@ pub fn parse_face_for_request(
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let _ = hint_style;
     OutlineFace::new(data.clone(), face_index).map(|f| Arc::new(f) as SharedGlyphFace)
+}
+
+/// [`parse_face_for_request`] for a named instance of a variable font, which Qt's DirectWrite font
+/// database hands out as a face with its axis values set
+/// ([`DirectWriteFace::for_instance`](crate::text::directwrite_face::DirectWriteFace::for_instance)).
+#[cfg(windows)]
+pub(crate) fn parse_face_for_instance(
+    data: &SharedFontData,
+    face_index: u32,
+    hint_style: crate::text::font_database::HintStyle,
+    weight: u16,
+    italic: bool,
+    axes: &[(u32, f32)],
+) -> Result<SharedGlyphFace, String> {
+    if !axes.is_empty()
+        && use_platform_engine()
+        && crate::text::directwrite_face::is_available()
+        && let Ok(face) = crate::text::directwrite_face::DirectWriteFace::for_instance(
+            data.clone(),
+            face_index,
+            weight,
+            italic,
+            axes,
+        )
+    {
+        return Ok(Arc::new(face));
+    }
+    parse_face_for_request(data, face_index, hint_style, weight, italic)
 }
 
 /// Builds the face of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`,

@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-only
+"""Regenerates the golden of tests/test_directwrite_families.rs: what real Qt on Windows lays out, draws
+and reports for the cases the DirectWrite backend decides by the font's own tables, at device pixel
+ratios 1 and 1.25.
+
+Needs Windows and PySide6 (measured with 6.12.0). Run it with
+`python gen_directwrite_families_golden.py > directwrite_families_golden.txt`.
+
+Lines (fields separated by one space; families have `_` for a space). A `sysfont <file> <size>
+<fnv1a64>` line names the font file the lines below it were measured with, by name, size and hash of
+its bytes. DirectWrite decides which file serves a family when several carry it (Windows Terminal's
+packaged Cascadia Code is served instead of the one in the Windows fonts directory on GitHub's
+windows-latest), so the file is the one whose `head` table is the one Qt reads for the block's
+first family: the Windows fonts directory first, then the directories of `GOLDEN_EXTRA_FONT_DIRS`
+(glob patterns, separated by `os.pathsep`). `GOLDEN_ONLY=<file>[,<file>]` restricts the output to
+those blocks, for adding a block measured on another machine. The test compares a block only on a
+machine that serves the family from that file.
+* `fam <dpr> <family> <weight> <px> adv <text id> <1/64 px>`: `QFontMetricsF::horizontalAdvance`;
+  `fam ... avg <1/64 px>`: `averageCharWidth`; `fam ... met <ascent> <descent> <leading>`:
+  `QFontMetrics`; `fam ... draw <text id> <width> <height> <fnv1a64>`: `QPainter.drawText` of the
+  text with a black pen on white into an `ARGB32_Premultiplied` image (ClearType as the setting of
+  the machine says, hashed as RGBA bytes).
+The families are the ones Qt's DirectWrite font database registers besides the typographic
+family names of the font files: the GDI-compatible names of styled faces ("Segoe UI Semibold",
+"Arial Narrow"), the named instances of variable fonts ("Segoe UI Variable Text", "Bahnschrift
+SemiBold Condensed") and symbol-encoded fonts (Wingdings).
+"""
+import glob
+import os
+import platform
+import struct
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FONTS_DIR = os.environ.get("WINDIR", "C:/Windows") + "/Fonts"
+EXTRA_DIRS = [d for d in os.environ.get("GOLDEN_EXTRA_FONT_DIRS", "").split(os.pathsep) if d]
+ONLY = {f for f in os.environ.get("GOLDEN_ONLY", "").split(",") if f}
+
+TEXTS = {"a": "Hamburgefonstiv 0123", "b": "AVAWTo.,:;", "c": "iiiiiWWW The quick brown fox"}
+SIZES = (9, 12, 16, 24)
+DPRS = (1.0, 1.25)
+WEIGHTS = (400, 700)
+# file -> [family]
+REQUESTS = {
+    "seguisb.ttf": ["Segoe UI Semibold"],
+    "segoeuisl.ttf": ["Segoe UI Semilight"],
+    "segoeuil.ttf": ["Segoe UI Light"],
+    "seguibl.ttf": ["Segoe UI Black"],
+    "arialn.ttf": ["Arial Narrow"],
+    "ariblk.ttf": ["Arial Black"],
+    "calibril.ttf": ["Calibri Light"],
+    "SegUIVar.ttf": ["Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable Small"],
+    "bahnschrift.ttf": ["Bahnschrift", "Bahnschrift SemiBold", "Bahnschrift Light Condensed", "Bahnschrift SemiBold SemiCondensed"],
+    "CascadiaCode.ttf": ["Cascadia Code", "Cascadia Code SemiLight"],
+    "wingding.ttf": ["Wingdings"],
+}
+
+
+def fnv1a64(data):
+    h = 0xCBF29CE484222325
+    for b in data:
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def child(dpr):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import (QColor, QFont, QFontInfo, QFontMetrics, QFontMetricsF,
+                               QGuiApplication, QImage, QPainter, QRawFont)
+
+    app = QGuiApplication(["x", "-platform", "windows"])
+    assert abs(app.devicePixelRatio() - dpr) < 1e-9, (app.devicePixelRatio(), dpr)
+
+    def draw_hash(font, px, text):
+        w, h = 360, (px * 2 + 15) // 4 * 4  # a multiple of 4: whole pixels at ratio 1.25
+        img = QImage(round(w * dpr), round(h * dpr), QImage.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(QColor(255, 255, 255, 255))
+        p = QPainter(img)
+        p.setPen(QColor(0, 0, 0, 255))
+        p.setFont(font)
+        p.drawText(QPointF(6.0, px + 6.0), text)
+        p.end()
+        raw = bytes(img.constBits())
+        bpl = img.bytesPerLine()
+        out = bytearray()
+        for y in range(img.height()):
+            row = raw[y * bpl:y * bpl + img.width() * 4]
+            for x in range(img.width()):
+                b, g, r, a = row[x * 4:x * 4 + 4]
+                out += bytes((r, g, b, a))
+        return img.width(), img.height(), "%016x" % fnv1a64(out)
+
+    def font_of(family, px, weight, italic):
+        font = QFont(family)
+        font.setPixelSize(px)
+        font.setWeight(QFont.Weight(weight))
+        font.setItalic(italic)
+        assert QFontInfo(font).family() == family, (family, QFontInfo(font).family())
+        return font
+
+    def fixed(value):
+        v = value * 64
+        assert v == int(v), value
+        return int(v)
+
+    if dpr == 1.0:
+        print("# Generated by gen_directwrite_families_golden.py from PySide6 %s (Qt %s), platform "
+              "windows, %s" % (__import__("PySide6").__version__,
+                               __import__("PySide6.QtCore").QtCore.qVersion(), platform.platform()))
+
+    def sfnt_table(data, tag):
+        count = struct.unpack(">H", data[4:6])[0]
+        for i in range(count):
+            name, _, offset, length = struct.unpack(">4sIII", data[12 + 16 * i:28 + 16 * i])
+            if name == tag:
+                return data[offset:offset + length]
+        return b""
+
+    def header(file, family):
+        """`sysfont` for the file Qt reads `family` from: the candidate whose `head` table is
+        the one `QRawFont` returns."""
+        candidates = [os.path.join(FONTS_DIR, file)]
+        for pattern in EXTRA_DIRS:
+            candidates += sorted(glob.glob(os.path.join(pattern, file)))
+        candidates = [path for path in candidates if os.path.exists(path)]
+        if not candidates:
+            sys.stderr.write("skipping %s: not installed\n" % file)
+            return False
+        wanted = bytes(QRawFont.fromFont(font_of(family, 12, 400, False)).fontTable("head"))
+        for path in candidates:
+            with open(path, "rb") as f:
+                data = f.read()
+            if sfnt_table(data, b"head") == wanted:
+                print("sysfont", file, len(data), "%016x" % fnv1a64(data))
+                sys.stderr.write("%s: Qt reads %s from %s\n" % (file, family, path))
+                return True
+        sys.stderr.write("skipping %s: Qt reads %s from another file\n" % (file, family))
+        return False
+
+    for file, families in REQUESTS.items():
+        if ONLY and file not in ONLY:
+            continue
+        if not header(file, families[0]):
+            continue
+        for family in families:
+            for weight in WEIGHTS:
+                for px in SIZES:
+                    font = font_of(family, px, weight, False)
+                    head = "fam %s %s %d %d" % (repr(dpr), family.replace(" ", "_"), weight, px)
+                    mf = QFontMetricsF(font)
+                    for text_id, text in TEXTS.items():
+                        print(head, "adv", text_id, fixed(mf.horizontalAdvance(text)))
+                    print(head, "avg", fixed(mf.averageCharWidth()))
+                    m = QFontMetrics(font)
+                    print(head, "met", m.ascent(), m.descent(), m.leading())
+                    w, h, hs = draw_hash(font, px, TEXTS["c"])
+                    print(head, "draw", "c", w, h, hs)
+
+
+def screen_dpr():
+    env = dict(os.environ)
+    env.pop("QT_SCALE_FACTOR", None)
+    env.pop("QT_ENABLE_HIGHDPI_SCALING", None)
+    return float(subprocess.run(
+        [sys.executable, "-c",
+         "from PySide6.QtGui import QGuiApplication; import sys; "
+         "a = QGuiApplication(sys.argv[:1]); print(a.devicePixelRatio())"],
+        capture_output=True, text=True, env=env, check=True).stdout)
+
+
+def main():
+    base = screen_dpr()
+    chunks = []
+    for dpr in DPRS:
+        env = dict(os.environ)
+        env.pop("QT_SCALE_FACTOR", None)
+        env.pop("QT_ENABLE_HIGHDPI_SCALING", None)
+        if dpr == 1.0:
+            env["QT_ENABLE_HIGHDPI_SCALING"] = "0"
+        elif abs(dpr - base) > 1e-9:
+            env["QT_SCALE_FACTOR"] = repr(dpr / base)
+        out = subprocess.run([sys.executable, __file__, "child", repr(dpr)], capture_output=True,
+                             text=True, env=env, encoding="utf-8")
+        sys.stderr.write(out.stderr)
+        if out.returncode:
+            raise SystemExit("child failed")
+        chunks.append(out.stdout)
+    # Every child prints its own `sysfont` headers; the test applies the header above a line.
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    for chunk in chunks:
+        sys.stdout.write(chunk)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "child":
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+        child(float(sys.argv[2]))
+    else:
+        main()

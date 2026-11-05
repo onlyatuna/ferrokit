@@ -67,7 +67,12 @@ pub struct ShapingFace {
 }
 
 impl ShapingFace {
-    fn new(data: &SharedFontData, face_index: u32, ppem: u16) -> Option<Self> {
+    fn new(
+        data: &SharedFontData,
+        face_index: u32,
+        ppem: u16,
+        variations: &[([u8; 4], f32)],
+    ) -> Option<Self> {
         SHAPING_FACE_PARSES.with(|n| n.set(n.get() + 1));
         let bytes = data.as_slice();
         // SAFETY: `SharedFontData` is an `Arc` over font bytes that are never moved or written
@@ -77,6 +82,16 @@ impl ShapingFace {
         let bytes: &'static [u8] =
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
+        if !variations.is_empty() {
+            let variations: Vec<rustybuzz::Variation> = variations
+                .iter()
+                .map(|&(tag, value)| rustybuzz::Variation {
+                    tag: rustybuzz::ttf_parser::Tag::from_bytes(&tag),
+                    value,
+                })
+                .collect();
+            face.set_variations(&variations);
+        }
         face.set_pixels_per_em(Some((ppem, ppem)));
         // No points per em on purpose: rustybuzz then applies no `trak` tracking (what it adds is
         // not what the HarfBuzz 14 bundled with Qt 6.12 adds, see `hb_tracking`); where Qt applies
@@ -139,7 +154,9 @@ impl FontEngine {
         let mut faces = self.shaping_faces.lock().unwrap_or_else(|e| e.into_inner());
         faces
             .entry(ppem)
-            .or_insert_with(|| ShapingFace::new(data, self.face_index, ppem).map(Arc::new))
+            .or_insert_with(|| {
+                ShapingFace::new(data, self.face_index, ppem, &self.face.variations()).map(Arc::new)
+            })
             .clone()
     }
 

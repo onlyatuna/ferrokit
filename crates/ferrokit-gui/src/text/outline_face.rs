@@ -62,6 +62,18 @@ impl OutlineFace {
         self.face.raw_face().table(Tag::from_bytes(tag))
     }
 
+    /// Whether the font maps characters through a symbol `cmap` (platform 3, encoding 0), which
+    /// DirectWrite maps its own way (`GetGlyphIndices`).
+    #[cfg(windows)]
+    pub(crate) fn has_symbol_cmap(&self) -> bool {
+        self.face.tables().cmap.is_some_and(|cmap| {
+            cmap.subtables.into_iter().any(|subtable| {
+                subtable.platform_id == rustybuzz::ttf_parser::PlatformId::Windows
+                    && subtable.encoding_id == 0
+            })
+        })
+    }
+
     /// `QFontEngine::initializeHeightMetrics` (qfontengine.cpp:419-448) from the font's own tables,
     /// which Qt 6 uses on every platform instead of the system's values: the `hhea` ascender,
     /// descender and line gap, replaced by the OS/2 typographic ones when `fsSelection` has
