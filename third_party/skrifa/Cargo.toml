@@ -41,6 +41,14 @@ all-features = true
 [package.metadata.ferrokit-licenses]
 default = "MIT OR Apache-2.0"
 "(MIT OR Apache-2.0) AND FTL" = [
+    "src/outline/autohint/adjust/database.rs",
+    "src/outline/autohint/adjust/mod.rs",
+    "src/outline/autohint/adjust/tests.rs",
+    "src/outline/autohint/hint/edges.rs",
+    "src/outline/autohint/hint/mod.rs",
+    "src/outline/autohint/metrics/blues.rs",
+    "src/outline/autohint/topo/edges.rs",
+    "src/outline/autohint/topo/segments.rs",
     "src/outline/cff/hint/darken.rs",
     "src/outline/cff/hint.rs",
     "src/outline/cff/mod.rs",

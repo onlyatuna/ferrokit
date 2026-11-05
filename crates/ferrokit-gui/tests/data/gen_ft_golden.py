@@ -41,13 +41,30 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FONTS = ["ft_golden.ttf", "ft_golden.otf", "oracle_text.ttf"]
-CHARS = {"ft_golden.ttf": "osgamvwxpke ", "ft_golden.otf": "osgwxe ", "oracle_text.ttf": "AHVe. "}
+FONTS = ["ft_golden.ttf", "ft_golden.otf", "oracle_text.ttf", "ft_golden_accents.ttf"]
+CHARS = {
+    "ft_golden.ttf": "osgamvwxpke ",
+    "ft_golden.otf": "osgwxe ",
+    "oracle_text.ttf": "AHVe. ",
+    # The glyphs of the vertical separation adjustment (afadjust.c): the dots of i and j, the dot
+    # of ! and ? (no height check), accents above (acute, circumflex, dieresis, ring, tilde on
+    # capitals and on small letters), the cedilla below with the ignored bottom zone, and the
+    # strokes of the slashed o that are ignored in both zones.
+    "ft_golden_accents.ttf": "ij!?\u00aa\u00e9\u00f1\u00d1\u00c7\u00e7\u00d8\u00f8\u00c4\u00fc\u00ff\u00c3",
+}
+# The accents font is small (a few sizes, the two modes that auto-hint it, no sub-pixel offset).
+FONT_SIZES = {"ft_golden_accents.ttf": [9, 12, 16]}
+FONT_MODES = {"ft_golden_accents.ttf": [0, 1]}
 SIZES = [9, 12, 13, 16, 24, 37]
 FULL_BITMAP_MAX_SIZE = 16
 LOAD_BASE = 0x200 | 0x8  # FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH | FT_LOAD_NO_BITMAP
 MODES = {0: (0x0, 0), 1: (1 << 16, 1), 2: (0x2, 0)}  # load flags, FT_Render_Mode
 DELTAS = {0: [0], 1: [0, 32], 2: [0, 32]}
+
+
+def selected_fonts(default=FONTS):
+    """The fonts named on the command line after the mode (all of `default` without any)."""
+    return [f for f in default if f in sys.argv[2:]] if sys.argv[2:] else default
 
 
 def fnv1a(data):
@@ -65,17 +82,19 @@ def ft_records():
         sys.exit(f"freetype-py is bound to FreeType {freetype.version()}, 2.14.2 is required")
     lib = ctypes.CDLL("libfreetype.so.6")
     print("# FreeType %d.%d.%d" % freetype.version() + ", Qt's load flags, see gen_ft_golden.py")
-    for font in FONTS:
+    for font in selected_fonts():
         if font.endswith(".otf"):
             # Qt: FT_Property_Set(library, "cff", "no-stem-darkening", false), before any face exists
             off = ctypes.c_ubyte(0)
             assert lib.FT_Property_Set(freetype.get_handle(), b"cff", b"no-stem-darkening", ctypes.byref(off)) == 0
         face = freetype.Face(os.path.join(HERE, font))
         matrix = freetype.FT_Matrix(0x10000, 0, 0, 0x10000)
-        for size in SIZES:
+        for size in FONT_SIZES.get(font, SIZES):
             face.set_char_size(size * 64, size * 64, 0, 0)
             for mode, (flags, render_mode) in MODES.items():
-                for delta in DELTAS[mode]:
+                if mode not in FONT_MODES.get(font, MODES):
+                    continue
+                for delta in DELTAS[mode] if font not in FONT_MODES else [0]:
                     vec = freetype.FT_Vector(delta, 0)
                     raw.FT_Set_Transform(face._FT_Face, ctypes.byref(matrix), ctypes.byref(vec))
                     for ch in CHARS[font]:
@@ -135,10 +154,12 @@ def qt_records():
     app = QGuiApplication(sys.argv)
     print("# PySide6 %s, offscreen, fontconfig hintslight; see gen_ft_golden.py" % PySide6.__version__)
     prefs = {"d": QFont.PreferDefaultHinting, "n": QFont.PreferNoHinting, "f": QFont.PreferFullHinting}
-    for font in ["ft_golden.ttf", "ft_golden.otf"]:
+    for font in selected_fonts(["ft_golden.ttf", "ft_golden.otf", "ft_golden_accents.ttf"]):
         path = os.path.join(HERE, font)
-        for size in [9, 12, 16, 24]:
+        for size in FONT_SIZES.get(font, [9, 12, 16, 24]):
             for pname, pref in prefs.items():
+                if font in FONT_MODES and pname == "n":
+                    continue  # unhinted: nothing to learn from the font
                 raw = QRawFont(path, size, pref)
                 assert raw.isValid()
                 for ch in CHARS[font]:
@@ -153,7 +174,8 @@ def qt_records():
                     adv = raw.advancesForGlyphIndexes([gi])[0].x()
                     print("A %s %x %d %s %d %d %d %d %d %r %s" % (
                         font, ord(ch), size, pname, gi, w, h, round(br.x()), round(-br.y()), adv, data.hex() or "-"))
-    fid = {f: QFontDatabase.addApplicationFont(os.path.join(HERE, f)) for f in ["ft_golden.ttf", "ft_golden.otf"]}
+    fonts = selected_fonts(["ft_golden.ttf", "ft_golden.otf", "ft_golden_accents.ttf"])
+    fid = {f: QFontDatabase.addApplicationFont(os.path.join(HERE, f)) for f in fonts}
     assert all(i >= 0 for i in fid.values())
     cases = [
         # font, size, spacing, pen, bg, x, y, text
@@ -169,8 +191,13 @@ def qt_records():
         ("ft_golden.otf", 16, 0.0, "000000ff", "ffffff", 4.25, 22.0, "osgwxe wo"),
         ("ft_golden.otf", 12, 0.0, "1e78c8ff", "ffffff", 3.0, 17.0, "osgw xe"),
         ("ft_golden.otf", 14, -3.0, "c82828c8", "f0e678", 6.5, 20.0, "wwxx oo"),
+        # accents: whole strings with the adjustments, at whole and fractional pen positions
+        ("ft_golden_accents.ttf", 12, 0.0, "000000ff", "ffffff", 3.0, 17.0, "i\u00e9\u00f1\u00c7\u00e7\u00d8j\u00c4!?"),
+        ("ft_golden_accents.ttf", 9, 0.0, "000000ff", "ffffff", 2.5, 14.0, "\u00ff\u00fc\u00c3\u00aa\u00f8ij"),
+        ("ft_golden_accents.ttf", 16, 0.0, "000000ff", "ffffff", 4.25, 22.0, "\u00c4\u00e9\u00d1\u00e7\u00ff"),
     ]
-    for i, (font, size, spacing, pen, bg, x, y, text) in enumerate(cases):
+    cases = [(i, c) for i, c in enumerate(cases) if c[0] in fonts]
+    for i, (font, size, spacing, pen, bg, x, y, text) in cases:
         family = QFontDatabase.applicationFontFamilies(fid[font])[0]
         img = QImage(120, 30, QImage.Format_ARGB32_Premultiplied)
         img.fill(QColor("#" + bg))

@@ -65,6 +65,13 @@ Where it is, file by file (every one of them says so in its first lines, with th
       `FT_MulFix` of src/base/ftcalc.c.
   third_party/skrifa/src/outline/glyf/mod.rs, third_party/skrifa/src/scaler/truetype.rs: the test of
       `FT_Load_Glyph` (src/base/ftobjs.c) that sends a TrueType font to the auto-hinter.
+  third_party/skrifa/src/outline/autohint/adjust/ (mod.rs, database.rs), autohint/hint/edges.rs
+      (the real-serif check) and autohint/metrics/blues.rs: the auto-hinter's vertical separation
+      adjustment of src/autofit/afadjust.c (`adjustment_database`, `af_adjustment_database_lookup`,
+      `af_reverse_character_map_new`) and src/autofit/aflatin.c (`af_glyph_hints_apply_vertical_
+      separation_adjustments`, the tilde stretch and alignment, `af_latin_ignore_top/bottom`,
+      `af_latin_get_base_glyph_blues`, the real-serif test of `af_latin_hint_edges`). Each of those
+      files is `(MIT OR Apache-2.0) AND FTL`.
   third_party/skrifa/src/outline/cff/hint/darken.rs, cff/hint.rs, cff/mod.rs: CFF stem darkening,
       `cf2_computeDarkening`, `cf2_font_setup`, `cf2_getGlyphOutline`, `cf2_glyphpath_*`,
       `cf2_hintmap_*` and `cf2_blues_init` of src/psaux/psfont.c, pshints.c and psblues.c,

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// bottom blue zone properties follow FreeType 2.14.2, src/autofit/afblue.dat and aflatin.c.
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Latin blue values.
 
 use super::{
@@ -44,6 +50,10 @@ impl BlueZones {
     pub const ADJUSTMENT: Self = Self(1 << 4);
     pub const X_HEIGHT: Self = Self(1 << 5);
     pub const LONG: Self = Self(1 << 6);
+    /// Bottom blue zone of capital letters; used by the vertical separation adjustment.
+    pub const CAPITAL_BOTTOM: Self = Self(1 << 7);
+    /// Bottom blue zone of small letters; used by the vertical separation adjustment.
+    pub const SMALL_BOTTOM: Self = Self(1 << 8);
     pub const HORIZONTAL: Self = Self(1 << 2);
     pub const RIGHT: Self = Self::TOP;
 
@@ -515,7 +525,8 @@ fn compute_default_blues(shaper: &Shaper, style: &StyleClass) -> UnscaledBlues {
             overshoot: blue_shoot,
             ascender,
             descender,
-            zones: blue_zones.retain_top_like_or_neutral(),
+            zones: blue_zones.retain_top_like_or_neutral()
+                | (*blue_zones & (BlueZones::CAPITAL_BOTTOM | BlueZones::SMALL_BOTTOM)),
         };
         if blue_zones.is_x_height() {
             blue.zones |= BlueZones::ADJUSTMENT;
@@ -786,7 +797,7 @@ mod tests {
                 overshoot: -10,
                 ascender: 725,
                 descender: -10,
-                zones: BlueZones::default(),
+                zones: BlueZones::CAPITAL_BOTTOM,
             },
             UnscaledBlue {
                 position: 760,
@@ -807,7 +818,7 @@ mod tests {
                 overshoot: -10,
                 ascender: 546,
                 descender: -10,
-                zones: BlueZones::default(),
+                zones: BlueZones::SMALL_BOTTOM,
             },
             UnscaledBlue {
                 position: -240,
@@ -905,7 +916,7 @@ mod tests {
                 overshoot: 0,
                 ascender: 571,
                 descender: 0,
-                zones: BlueZones::default(),
+                zones: BlueZones::CAPITAL_BOTTOM,
             },
         ];
         assert_eq!(values, &expected);

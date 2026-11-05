@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// `NO_BLUE` test follows FreeType 2.14.2, src/autofit/aflatin.c (`af_latin_hints_compute_blue_edges`).
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Edge detection.
 //!
 //! Edges are sets of segments that all lie within a threshold based on
@@ -308,6 +314,9 @@ pub(crate) fn compute_blue_edges(
     // Initial threshold
     let initial_best_dest = fixed_mul(scale.units_per_em / 40, axis_scale).min(64 / 2);
     for edge in &mut axis.edges {
+        if edge.flags.0 & TopoFlags::NO_BLUE.0 != 0 {
+            continue;
+        }
         let mut best_blue = None;
         let mut best_is_neutral = false;
         let mut best_blue_idx = None;

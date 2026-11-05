@@ -1,5 +1,6 @@
 //! Runtime autohinting support.
 
+mod adjust;
 mod context;
 mod hint;
 mod instance;
@@ -81,12 +82,18 @@ impl HintPlan {
             metrics.style_class().script.group,
         );
 
+        let adjust_flags = if metrics.style_class().script.group == style::ScriptGroup::Default {
+            adjust::ReverseCharMap::new(|ch| context.map(ch)).flags(glyph_id)
+        } else {
+            0
+        };
         let mut recorder = recorder::HintsRecorder::default();
         let hinted_plan = hint::hint_outline_with_recorder(
             &mut outline,
             &metrics,
             &scale,
             Some(glyph_style),
+            adjust_flags,
             &mut recorder,
         );
 

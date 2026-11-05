@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// real-serif check follows FreeType 2.14.2, src/autofit/aflatin.c (`af_latin_hint_edges`).
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Edge hinting.
 //!
 //! Let's actually do some grid fitting. Here we align edges to the pixel
@@ -6,6 +12,7 @@
 
 use super::super::{
     metrics::{fixed_mul_div, pix_floor, pix_round, Scale, ScaledAxisMetrics, ScaledWidth},
+    outline::Point,
     recorder::{EdgeAction, HintsRecorder},
     style::ScriptGroup,
     topo::{Axis, Dimension, Edge, TopoFlags},
@@ -19,6 +26,7 @@ use super::super::{
 /// See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/aflatin.c#L2999>
 pub(crate) fn hint_edges(
     axis: &mut Axis,
+    points: &[Point],
     metrics: &ScaledAxisMetrics,
     group: ScriptGroup,
     scale: &Scale,
@@ -49,6 +57,7 @@ pub(crate) fn hint_edges(
     if serif_count > 0 || anchor_ix.is_none() {
         align_remaining_edges(
             axis,
+            points,
             group,
             top_to_bottom_hinting,
             serif_count,
@@ -457,6 +466,7 @@ fn hint_lowercase_m(edges: &mut [Edge], group: ScriptGroup) {
 /// Align serif and single segment edges.
 fn align_remaining_edges(
     axis: &mut Axis,
+    points: &[Point],
     group: ScriptGroup,
     top_to_bottom_hinting: bool,
     mut serif_count: usize,
@@ -477,6 +487,14 @@ fn align_remaining_edges(
             };
             if edge_flags.contains(TopoFlags::DONE) {
                 continue;
+            }
+            // aflatin.c:4657-4722 (FreeType 2.14): an edge whose serif partner is
+            // closer than 1.5 pixels is a real serif only if no edge between the
+            // two overlaps or is enclosed by their segment end points.
+            if let Some(serif_ix) = edge_serif_ix {
+                if delta < 64 + 32 && !is_real_serif(axis, points, edge_ix, serif_ix as usize) {
+                    continue;
+                }
             }
             if delta < 64 + 16 {
                 // delta is only < 1000 if edge.serif_ix is Some(_)
@@ -632,6 +650,48 @@ fn align_remaining_edges(
             }
         }
     }
+}
+
+/// Returns the smallest and largest `v` of the end points of the first and
+/// last segment of an edge.
+///
+/// See the `FT_MIN`/`FT_MAX` expressions of aflatin.c:4683-4709.
+fn edge_end_extent(axis: &Axis, points: &[Point], edge_ix: usize) -> (i32, i32) {
+    let edge = &axis.edges[edge_ix];
+    let mut min = i32::MAX;
+    let mut max = i32::MIN;
+    for segment_ix in [edge.first_ix, edge.last_ix] {
+        let segment = &axis.segments[segment_ix as usize];
+        for point_ix in [segment.first_ix, segment.last_ix] {
+            let v = points[point_ix as usize].v;
+            min = min.min(v);
+            max = max.max(v);
+        }
+    }
+    (min, max)
+}
+
+/// Checks whether `serif_ix` is a real serif edge of `edge_ix`: no edge
+/// between the two may overlap or be enclosed by their segment end points.
+///
+/// See aflatin.c:4657-4722; `delta == 1000` there means "not a real serif".
+fn is_real_serif(axis: &Axis, points: &[Point], edge_ix: usize, serif_ix: usize) -> bool {
+    // aflatin.c:4666-4678
+    let (top_ix, bottom_ix) = if axis.edges[serif_ix].opos - axis.edges[edge_ix].opos < 0 {
+        (edge_ix, serif_ix)
+    } else {
+        (serif_ix, edge_ix)
+    };
+    // aflatin.c:4683-4698
+    let (top_min, top_max) = edge_end_extent(axis, points, top_ix);
+    let (bottom_min, bottom_max) = edge_end_extent(axis, points, bottom_ix);
+    let min_pos = top_min.min(bottom_min);
+    let max_pos = top_max.max(bottom_max);
+    // aflatin.c:4700-4717
+    ((bottom_ix + 1)..top_ix).all(|between_ix| {
+        let (e_min, e_max) = edge_end_extent(axis, points, between_ix);
+        (e_min < min_pos && e_max < min_pos) || (e_min > max_pos && e_max > max_pos)
+    })
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -1063,6 +1123,56 @@ mod tests {
     use crate::{attribute::Style, MetadataProvider};
     use raw::{types::GlyphId, FontRef, TableProvider};
 
+    /// An axis with three edges of one segment each, and the points of the segments: segment
+    /// `i` goes from the point with `v[2 * i]` to the one with `v[2 * i + 1]`.
+    fn axis_with_edges(v: [i32; 6], opos: [i32; 3]) -> (Axis, Vec<Point>) {
+        let mut axis = Axis::default();
+        let mut points = Vec::new();
+        for i in 0..3 {
+            for v in &v[2 * i..2 * i + 2] {
+                points.push(Point {
+                    v: *v,
+                    ..Default::default()
+                });
+            }
+            axis.segments.push(crate::outline::autohint::topo::Segment {
+                first_ix: 2 * i as u16,
+                last_ix: 2 * i as u16 + 1,
+                ..Default::default()
+            });
+            axis.edges.push(Edge {
+                opos: opos[i],
+                first_ix: i as u16,
+                last_ix: i as u16,
+                ..Default::default()
+            });
+        }
+        (axis, points)
+    }
+
+    // aflatin.c:4657-4722: another edge between a serif and its base that overlaps their
+    // segment end points makes the serif not real (the top of an accent that is close to its
+    // base: the cedilla of Liberation Sans C-cedilla at 9 to 19 px).
+    #[test]
+    fn serif_with_an_overlapping_edge_between_is_not_real() {
+        // Edge 0 has the v range 0..50 and edge 2 has 10..40, so the extent is 0..50; the
+        // segment of edge 1 (20..30) is inside it.
+        let (axis, points) = axis_with_edges([0, 50, 20, 30, 10, 40], [0, 20, 46]);
+        assert!(!is_real_serif(&axis, &points, 2, 0));
+        // Seen from the bottom edge, with the top edge as its serif, it is the same.
+        assert!(!is_real_serif(&axis, &points, 0, 2));
+        // A segment entirely above or below the extent does not count.
+        let (axis, points) = axis_with_edges([0, 50, 100, 120, 10, 40], [0, 20, 46]);
+        assert!(is_real_serif(&axis, &points, 2, 0));
+        let (axis, points) = axis_with_edges([0, 50, -30, -10, 10, 40], [0, 20, 46]);
+        assert!(is_real_serif(&axis, &points, 2, 0));
+        // One that reaches into the extent counts.
+        let (axis, points) = axis_with_edges([0, 50, 40, 120, 10, 40], [0, 20, 46]);
+        assert!(!is_real_serif(&axis, &points, 2, 0));
+        // Neighbouring edges have nothing between them.
+        assert!(is_real_serif(&axis, &points, 1, 0));
+    }
+
     // Edge 0 is on a blue zone and linked to edge 1; edge 2 is linked to
     // edge 0 too. When the loop reaches edge 2, edge 0 is already on its
     // zone, and edge 2 is still aligned to it, as FreeType aligns it.
@@ -1218,6 +1328,7 @@ mod tests {
             }
             hint_edges(
                 axis,
+                &outline.points,
                 &scaled_metrics.axes[dim],
                 class.script.group,
                 &scale,

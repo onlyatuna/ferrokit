@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0) AND FTL
+//
+// Part of the skrifa crate of the fontations project (MIT OR Apache-2.0), changed by ferrokit: the
+// `IGNORE` points follow FreeType 2.14.2, src/autofit/aflatin.c (`af_latin_hints_compute_segments`).
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org),
+// used under the FreeType License.
 //! Segment computation and linking.
 //!
 //! A segment is a series of at least two consecutive points that are
@@ -13,7 +19,7 @@ use super::super::{
     style::ScriptGroup,
     topo::{Axis, Dimension, Segment, TopoFlags},
 };
-use raw::tables::glyf::PointFlags;
+use raw::tables::glyf::{PointFlags, PointMarker};
 
 // Bounds for score, position and coordinate values.
 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/aflatin.c#L1598>
@@ -313,7 +319,8 @@ fn build_segments(outline: &mut Outline, axis: &mut Axis) -> bool {
         let mut segment_ix = 0;
         // Check if we're starting on an edge and if so, find
         // the starting point
-        if points[point_ix].out_dir.is_same_axis(major_dir)
+        if !points[point_ix].flags.has_marker(PointMarker::IGNORE)
+            && points[point_ix].out_dir.is_same_axis(major_dir)
             && points[last_ix].out_dir.is_same_axis(major_dir)
         {
             last_ix = point_ix;
@@ -352,9 +359,11 @@ fn build_segments(outline: &mut Outline, axis: &mut Axis) -> bool {
                     state.min_on_coord = state.min_on_coord.min(point.v);
                     state.max_on_coord = state.max_on_coord.max(point.v);
                 }
-                if point.out_dir != segment_dir || point_ix == last_ix {
+                let ignored = point.flags.has_marker(PointMarker::IGNORE);
+                if ignored || point.out_dir != segment_dir || point_ix == last_ix {
                     prev_segment_ix.take_if(|idx| {
-                        axis.segments[segment_ix].first_ix != axis.segments[*idx].last_ix
+                        ignored
+                            || axis.segments[segment_ix].first_ix != axis.segments[*idx].last_ix
                     });
                     if let Some(prev_segment_ix) = prev_segment_ix {
                         // The points are the same, so merge the segments
@@ -421,7 +430,10 @@ fn build_segments(outline: &mut Outline, axis: &mut Axis) -> bool {
                 passed = true;
             }
             let point = points[point_ix];
-            if !on_edge && (point.out_dir.is_same_axis(major_dir) || is_single_point_contour) {
+            if !on_edge
+                && !point.flags.has_marker(PointMarker::IGNORE)
+                && (point.out_dir.is_same_axis(major_dir) || is_single_point_contour)
+            {
                 if axis.segments.len() > 1000 {
                     axis.segments.clear();
                     return false;

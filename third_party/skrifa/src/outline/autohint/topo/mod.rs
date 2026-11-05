@@ -164,6 +164,8 @@ impl TopoFlags {
     pub const DONE: Self = Self(4);
     /// Segment or edge aligns to a neutral blue zone.
     pub const NEUTRAL: Self = Self(8);
+    /// Edge is excluded from blue zone snapping by the vertical separation adjustment.
+    pub const NO_BLUE: Self = Self(16);
 }
 
 impl TopoFlags {

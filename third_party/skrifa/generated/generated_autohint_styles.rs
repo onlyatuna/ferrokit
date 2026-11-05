@@ -12,9 +12,9 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "𞤌 𞤮",
         blues: &[
             ("𞤌 𞤅 𞤈 𞤏 𞤔 𞤚", BlueZones::TOP),
-            ("𞤂 𞤖", BlueZones::NONE),
+            ("𞤂 𞤖", BlueZones::CAPITAL_BOTTOM),
             ("𞤬 𞤮 𞤻 𞤼 𞤾", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("𞤤 𞤨 𞤩 𞤭 𞤴 𞤸 𞤺 𞥀", BlueZones::NONE),
+            ("𞤤 𞤨 𞤩 𞤭 𞤴 𞤸 𞤺 𞥀", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {
@@ -37,10 +37,10 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "ս Ս",
         blues: &[
             ("Ա Մ Ւ Ս Բ Գ Դ Օ", BlueZones::TOP),
-            ("Ւ Ո Դ Ճ Շ Ս Տ Օ", BlueZones::NONE),
+            ("Ւ Ո Դ Ճ Շ Ս Տ Օ", BlueZones::CAPITAL_BOTTOM),
             ("ե է ի մ վ ֆ ճ", BlueZones::TOP),
             ("ա յ ւ ս գ շ ր օ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("հ ո ճ ա ե ծ ս օ", BlueZones::NONE),
+            ("հ ո ճ ա ե ծ ս օ", BlueZones::SMALL_BOTTOM),
             ("բ ը ի լ ղ պ փ ց", BlueZones::NONE),
         ],
     },
@@ -114,7 +114,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
             ("ᗜ ᖴ ᐁ ᒣ ᑫ ᑎ ᔑ ᗰ", BlueZones::TOP),
             ("ᗶ ᖵ ᒧ ᐃ ᑌ ᒍ ᔑ ᗢ", BlueZones::NONE),
             ("ᓓ ᓕ ᓀ ᓂ ᓄ ᕄ ᕆ ᘣ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("ᕃ ᓂ ᓀ ᕂ ᓗ ᓚ ᕆ ᘣ", BlueZones::NONE),
+            ("ᕃ ᓂ ᓀ ᕂ ᓗ ᓚ ᕆ ᘣ", BlueZones::SMALL_BOTTOM),
             ("ᐪ ᙆ ᣘ ᐢ ᒾ ᣗ ᔆ", BlueZones::TOP),
             ("ᙆ ᗮ ᒻ ᐞ ᔆ ᒡ ᒢ ᓑ", BlueZones::NONE),
         ],
@@ -153,9 +153,9 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "Ⲟ ⲟ",
         blues: &[
             ("Ⲍ Ⲏ Ⲡ Ⳟ Ⲟ Ⲑ Ⲥ Ⳋ", BlueZones::TOP),
-            ("Ⳑ Ⳙ Ⳟ Ⲏ Ⲟ Ⲑ Ⳝ Ⲱ", BlueZones::NONE),
+            ("Ⳑ Ⳙ Ⳟ Ⲏ Ⲟ Ⲑ Ⳝ Ⲱ", BlueZones::CAPITAL_BOTTOM),
             ("ⲍ ⲏ ⲡ ⳟ ⲟ ⲑ ⲥ ⳋ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("ⳑ ⳙ ⳟ ⲏ ⲟ ⲑ ⳝ Ⳓ", BlueZones::NONE),
+            ("ⳑ ⳙ ⳟ ⲏ ⲟ ⲑ ⳝ Ⳓ", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {
@@ -179,7 +179,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "о О",
         blues: &[
             ("Б В Е П З О С Э", BlueZones::TOP),
-            ("Б В Е Ш З О С Э", BlueZones::NONE),
+            ("Б В Е Ш З О С Э", BlueZones::CAPITAL_BOTTOM),
             ("х п н ш е з о с", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
             ("х п н ш е з о с", BlueZones::NONE),
             ("р у ф", BlueZones::NONE),
@@ -207,9 +207,9 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "𐐄 𐐬",
         blues: &[
             ("𐐂 𐐄 𐐋 𐐗 𐐑", BlueZones::TOP),
-            ("𐐀 𐐂 𐐄 𐐗 𐐛", BlueZones::NONE),
+            ("𐐀 𐐂 𐐄 𐐗 𐐛", BlueZones::CAPITAL_BOTTOM),
             ("𐐪 𐐬 𐐳 𐐿 𐐹", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("𐐨 𐐪 𐐬 𐐿 𐑃", BlueZones::NONE),
+            ("𐐨 𐐪 𐐬 𐐿 𐑃", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {
@@ -261,9 +261,9 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "Ⱅ ⱅ",
         blues: &[
             ("Ⰵ Ⱄ Ⱚ Ⰴ Ⰲ Ⰺ Ⱛ Ⰻ", BlueZones::TOP),
-            ("Ⰵ Ⰴ Ⰲ Ⱚ Ⱎ Ⱑ Ⰺ Ⱄ", BlueZones::NONE),
+            ("Ⰵ Ⰴ Ⰲ Ⱚ Ⱎ Ⱑ Ⰺ Ⱄ", BlueZones::CAPITAL_BOTTOM),
             ("ⰵ ⱄ ⱚ ⰴ ⰲ ⰺ ⱛ ⰻ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("ⰵ ⰴ ⰲ ⱚ ⱎ ⱑ ⰺ ⱄ", BlueZones::NONE),
+            ("ⰵ ⰴ ⰲ ⱚ ⱎ ⱑ ⰺ ⱄ", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {
@@ -285,7 +285,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "ο Ο",
         blues: &[
             ("Γ Β Ε Ζ Θ Ο Ω", BlueZones::TOP),
-            ("Β Δ Ζ Ξ Θ Ο", BlueZones::NONE),
+            ("Β Δ Ζ Ξ Θ Ο", BlueZones::CAPITAL_BOTTOM),
             ("β θ δ ζ λ ξ", BlueZones::TOP),
             ("α ε ι ο π σ τ ω", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
             ("α ε ι ο π σ τ ω", BlueZones::NONE),
@@ -415,10 +415,10 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "o O 0",
         blues: &[
             ("T H E Z O C Q S", BlueZones::TOP),
-            ("H E Z L O C U S", BlueZones::NONE),
+            ("H E Z L O C U S", BlueZones::CAPITAL_BOTTOM),
             ("f i j k d b h", BlueZones::TOP),
             ("u v x z o e s c", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("n r x z o e s c", BlueZones::NONE),
+            ("n r x z o e s c", BlueZones::SMALL_BOTTOM),
             ("p q g j y", BlueZones::NONE),
         ],
     },
@@ -430,7 +430,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "ₒ ₀",
         blues: &[
             ("₀ ₃ ₅ ₇ ₈", BlueZones::TOP),
-            ("₀ ₁ ₂ ₃ ₈", BlueZones::NONE),
+            ("₀ ₁ ₂ ₃ ₈", BlueZones::CAPITAL_BOTTOM),
             ("ᵢ ⱼ ₕ ₖ ₗ", BlueZones::TOP),
             ("ₐ ₑ ₒ ₓ ₙ ₛ ᵥ ᵤ ᵣ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
             ("ₐ ₑ ₒ ₓ ₙ ₛ ᵥ ᵤ ᵣ", BlueZones::NONE),
@@ -445,7 +445,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "ᵒ ᴼ ⁰",
         blues: &[
             ("⁰ ³ ⁵ ⁷ ᵀ ᴴ ᴱ ᴼ", BlueZones::TOP),
-            ("⁰ ¹ ² ³ ᴱ ᴸ ᴼ ᵁ", BlueZones::NONE),
+            ("⁰ ¹ ² ³ ᴱ ᴸ ᴼ ᵁ", BlueZones::CAPITAL_BOTTOM),
             ("ᵇ ᵈ ᵏ ʰ ʲ ᶠ ⁱ", BlueZones::TOP),
             ("ᵉ ᵒ ʳ ˢ ˣ ᶜ ᶻ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
             ("ᵉ ᵒ ʳ ˢ ˣ ᶜ ᶻ", BlueZones::NONE),
@@ -482,10 +482,10 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "𖹡 𖹛 𖹯",
         blues: &[
             ("𖹀 𖹁 𖹂 𖹃 𖹏 𖹚 𖹟", BlueZones::TOP),
-            ("𖹀 𖹁 𖹂 𖹃 𖹏 𖹚 𖹒 𖹓", BlueZones::NONE),
+            ("𖹀 𖹁 𖹂 𖹃 𖹏 𖹚 𖹒 𖹓", BlueZones::CAPITAL_BOTTOM),
             ("𖹤 𖹬 𖹧 𖹴 𖹶 𖹾", BlueZones::TOP),
             ("𖹠 𖹡 𖹢 𖹹 𖹳 𖹮", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("𖹠 𖹡 𖹢 𖹳 𖹭 𖹽", BlueZones::NONE),
+            ("𖹠 𖹡 𖹢 𖹳 𖹭 𖹽", BlueZones::SMALL_BOTTOM),
             ("𖹥 𖹨 𖹩", BlueZones::NONE),
             ("𖺀 𖺅 𖺈 𖺄 𖺍", BlueZones::TOP),
         ],
@@ -524,7 +524,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
             ("ߐ ߉ ߒ ߟ ߖ ߜ ߠ ߥ", BlueZones::TOP),
             ("߀ ߘ ߡ ߠ ߥ", BlueZones::NONE),
             ("ߏ ߛ ߋ", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("ߎ ߏ ߛ ߋ", BlueZones::NONE),
+            ("ߎ ߏ ߛ ߋ", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {
@@ -565,10 +565,10 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
         std_chars: "𐓂 𐓪",
         blues: &[
             ("𐒾 𐓍 𐓒 𐓓 𐒻 𐓂 𐒵 𐓆", BlueZones::TOP),
-            ("𐒰 𐓍 𐓂 𐒿 𐓎 𐒹", BlueZones::NONE),
+            ("𐒰 𐓍 𐓂 𐒿 𐓎 𐒹", BlueZones::CAPITAL_BOTTOM),
             ("𐒼 𐒽 𐒾", BlueZones::NONE),
             ("𐓵 𐓶 𐓺 𐓻 𐓝 𐓣 𐓪 𐓮", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("𐓘 𐓚 𐓣 𐓵 𐓡 𐓧 𐓪 𐓶", BlueZones::NONE),
+            ("𐓘 𐓚 𐓣 𐓵 𐓡 𐓧 𐓪 𐓶", BlueZones::SMALL_BOTTOM),
             ("𐓤 𐓦 𐓸 𐓹 𐓛", BlueZones::TOP),
             ("𐓤 𐓥 𐓦", BlueZones::NONE),
         ],
@@ -618,7 +618,7 @@ pub const SCRIPT_CLASSES: &[ScriptClass] = &[
             ("𐑔 𐑖 𐑗 𐑹 𐑻", BlueZones::NONE),
             ("𐑟 𐑣", BlueZones::NONE),
             ("𐑱 𐑲 𐑳 𐑴 𐑸 𐑺 𐑼", BlueZones::TOP.union(BlueZones::X_HEIGHT)),
-            ("𐑴 𐑻 𐑹", BlueZones::NONE),
+            ("𐑴 𐑻 𐑹", BlueZones::SMALL_BOTTOM),
         ],
     },
     ScriptClass {

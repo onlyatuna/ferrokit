@@ -487,6 +487,7 @@ mod tests {
             &metrics,
             &scale,
             None,
+            0,
             &mut recorder,
         );
 
@@ -729,7 +730,7 @@ mod tests {
             Default::default(),
             metrics.style_class().script.group,
         );
-        let hinted_metrics = super::super::hint_outline(&mut outline, &metrics, &scale, None);
+        let hinted_metrics = super::super::hint_outline(&mut outline, &metrics, &scale, None, 0);
         (outline, hinted_metrics)
     }
 }
