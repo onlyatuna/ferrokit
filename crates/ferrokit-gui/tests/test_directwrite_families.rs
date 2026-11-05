@@ -7,18 +7,25 @@
 //! symbol-encoded fonts (Wingdings), at device pixel ratios 1 and 1.25: advances, average width,
 //! line metrics and whole strings.
 //!
-//! The system fonts are compared only when the file on this machine is the one the golden was
-//! measured with (size and hash in the golden). The ratio is process-wide state.
+//! A block of the golden is real Qt's output for the font file named at its top (`sysfont`, with the
+//! size and hash of the file). It describes a machine that serves its families from that file: when
+//! several files carry a family, DirectWrite decides which one serves it and Qt follows (GitHub's
+//! windows-latest serves "Cascadia Code" from Windows Terminal's packaged copy, not from the Windows
+//! fonts directory), so the block is compared only when the file the family is served from here is
+//! the measured one. The ratio is process-wide state.
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::PointF;
 use ferrokit_gui::paint::{Painter, Pen, Pixmap};
 use ferrokit_gui::text::directwrite_face::is_available;
 use ferrokit_gui::text::font::{Font, FontWeight};
-use ferrokit_gui::text::font_database::set_application_device_pixel_ratio;
+use ferrokit_gui::text::font_database::{
+    resolve_font_engines_for_text_global, set_application_device_pixel_ratio,
+};
 use ferrokit_gui::text::font_metrics::FontMetrics;
 use ferrokit_gui::text::smoothing::TextSmoothing;
 use ferrokit_gui::tiny_skia::Color;
+use std::collections::HashMap;
 
 const GOLDEN: &str = include_str!("data/directwrite_families_golden.txt");
 
@@ -26,6 +33,69 @@ fn fnv1a64(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+fn fonts_dir() -> std::path::PathBuf {
+    let dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:/Windows".to_string());
+    std::path::Path::new(&dir).join("Fonts")
+}
+
+fn has_size_and_hash(path: &std::path::Path, size: usize, hash: u64) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes.len() == size && fnv1a64(&bytes) == hash)
+}
+
+/// Whether the Windows fonts directory holds a file `name` of this size and hash (`Some`), or any
+/// file of it (`None`).
+fn fonts_dir_has(name: Option<&str>, size: usize, hash: u64) -> bool {
+    let dir = fonts_dir();
+    match name {
+        Some(name) => has_size_and_hash(&dir.join(name), size, hash),
+        None => std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry.metadata().is_ok_and(|m| m.len() == size as u64)
+                    && has_size_and_hash(&entry.path(), size, hash)
+            }),
+    }
+}
+
+/// Size and hash of the font file this code serves the regular style of `family` from, `None`
+/// for a family it has no font for.
+fn served_file(family: &str) -> Option<(usize, u64)> {
+    let engines = resolve_font_engines_for_text_global(&Font::new(family, 12.0), "i");
+    let data = engines.first()?.raw_data.as_ref()?;
+    Some((data.len(), fnv1a64(data.as_slice())))
+}
+
+/// Whether the golden block measured with the font file `name` (`size`, `hash`) describes `family`
+/// here, or why not:
+/// * the family is served from that file, wherever it lives; or
+/// * the file is in the Windows fonts directory and the family is served from a file of that
+///   directory (a different one is a wrong resolution, which the compared lines show) or from
+///   none.
+///
+/// Not when the file is not there as measured, or when the family is served from a file outside
+/// the Windows fonts directory: that file is the OS's choice, which real Qt makes too, and the
+/// block does not describe it.
+fn block_applies(family: &str, name: &str, size: usize, hash: u64) -> Result<(), String> {
+    let served = served_file(family);
+    if served == Some((size, hash)) {
+        return Ok(());
+    }
+    if !fonts_dir_has(Some(name), size, hash) {
+        return Err("not installed as measured".to_string());
+    }
+    match served {
+        Some((served_size, served_hash)) if !fonts_dir_has(None, served_size, served_hash) => {
+            Err(format!(
+                "served from another file outside the Windows fonts directory \
+                 ({served_size} bytes, {served_hash:016x})"
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn text(id: &str) -> &'static str {
@@ -78,29 +148,41 @@ fn family_names_of_styled_faces_and_variable_instances_are_identical_to_qt() {
     }
     let mut compared = 0;
     let mut failures = Vec::new();
-    let mut installed = false;
+    let mut block: Option<(String, usize, u64)> = None;
+    let mut applies: HashMap<String, bool> = HashMap::new();
     for line in GOLDEN
         .lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
     {
         let fields: Vec<&str> = line.split(' ').collect();
         if fields[0] == "sysfont" {
-            let (size, hash) = (fields[2].parse::<usize>().unwrap(), hex(fields[3]));
-            let dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:/Windows".to_string());
-            installed = std::fs::read(format!("{dir}/Fonts/{}", fields[1]))
-                .ok()
-                .is_some_and(|bytes| bytes.len() == size && fnv1a64(&bytes) == hash);
-            if !installed {
-                eprintln!("skipping {}: not installed as measured", fields[1]);
-            }
+            block = Some((
+                fields[1].to_string(),
+                fields[2].parse::<usize>().unwrap(),
+                hex(fields[3]),
+            ));
+            applies.clear();
             continue;
         }
-        if !installed {
+        let (name, size, hash) = block
+            .as_ref()
+            .expect("a sysfont line above the first fam line");
+        // `fam <dpr> <family> <weight> <px> ...`
+        let family = fields[2].replace('_', " ");
+        let applicable = *applies.entry(family.clone()).or_insert_with(|| {
+            match block_applies(&family, name, *size, *hash) {
+                Ok(()) => true,
+                Err(why) => {
+                    eprintln!("skipping {family} of {name}: {why}");
+                    false
+                }
+            }
+        });
+        if !applicable {
             continue;
         }
         // `fam <dpr> <family> <weight> <px> ...`
         let dpr: f32 = fields[1].parse().expect("dpr");
-        let family = fields[2].replace('_', " ");
         let weight: u32 = fields[3].parse().expect("weight");
         let px: u32 = fields[4].parse().expect("size");
         set_application_device_pixel_ratio(dpr);
@@ -142,6 +224,10 @@ fn family_names_of_styled_faces_and_variable_instances_are_identical_to_qt() {
         }
     }
     set_application_device_pixel_ratio(1.0);
+    assert!(
+        compared > 0,
+        "no block of the golden describes the fonts of this machine"
+    );
     assert!(
         failures.is_empty(),
         "{} of {compared} differ from Qt:\n{}",
