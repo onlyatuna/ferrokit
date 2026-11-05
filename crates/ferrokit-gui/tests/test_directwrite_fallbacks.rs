@@ -8,8 +8,10 @@
 //! against Latin fonts, icon fonts without Latin, and missing families with a style hint: advances
 //! and whole strings at device pixel ratios 1 and 1.25.
 //!
-//! The chain depends on every installed font, so the golden is compared only when this machine has
-//! the font files it was measured with (`fontset` line). The ratio is process-wide state.
+//! The chain depends on every installed font, so a chunk of the golden (one `fontset` line and the
+//! lines below it) is compared only when this machine has the font files it was measured with. The
+//! golden holds the chunks of a Windows 11 box and of GitHub's windows-latest. The ratio is
+//! process-wide state.
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::PointF;
@@ -131,7 +133,10 @@ fn fallback_fonts_per_script_item_are_identical_to_qt() {
         if fields[0] == "fontset" {
             same_fonts = fields[1].parse::<usize>().unwrap() == count && hex(fields[2]) == hash;
             if !same_fonts {
-                eprintln!("skipping: the installed fonts are not the ones measured");
+                eprintln!(
+                    "skipping the chunk measured with {} font files ({}): this machine has {count} ({hash:016x})",
+                    fields[1], fields[2]
+                );
             }
             continue;
         }
@@ -173,6 +178,14 @@ fn fallback_fonts_per_script_item_are_identical_to_qt() {
         }
     }
     set_application_device_pixel_ratio(1.0);
+    if compared == 0 {
+        // The chain depends on every installed font, so a machine with another font set (a new
+        // runner image) has nothing to compare until `gen_directwrite_fallbacks_golden.py` has
+        // measured it; say so rather than pass quietly.
+        eprintln!(
+            "NOTHING COMPARED: no chunk of the golden was measured with the {count} font files ({hash:016x}) of this machine"
+        );
+    }
     assert!(
         failures.is_empty(),
         "{} of {compared} differ from Qt:\n{}",
