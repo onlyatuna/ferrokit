@@ -1236,7 +1236,55 @@ fix 1.25 700 1 24 glyphs latin 90b50f0f3908c3e9
 fix 1.25 700 1 24 draw fa 400 75 e15a8a0da19fc4ef
 fix 1.25 700 1 24 draw fb 400 75 8943f7a7fe54ac01
 sysfont tahoma.ttf 919260 d8e2a3cbdca5fa9a
+sys 1.25 Tahoma 400 1 9 adv a 6479
+sys 1.25 Tahoma 400 1 9 adv b 11452
+sys 1.25 Tahoma 400 1 9 avg 285
+sys 1.25 Tahoma 400 1 9 glyphs latin 999304c8951ea4c5
+sys 1.25 Tahoma 400 1 9 draw a 400 38 035cf524392572ca
+sys 1.25 Tahoma 400 1 9 draw b 400 38 896ca9e7c154c85f
+sys 1.25 Tahoma 400 1 13 adv a 9360
+sys 1.25 Tahoma 400 1 13 adv b 16541
+sys 1.25 Tahoma 400 1 13 avg 411
+sys 1.25 Tahoma 400 1 13 glyphs latin 86995581fbadd302
+sys 1.25 Tahoma 400 1 13 draw a 400 48 2295e604e7c14fdf
+sys 1.25 Tahoma 400 1 13 draw b 400 48 d4f6341b6555bd39
+sys 1.25 Tahoma 400 1 17 adv a 12245
+sys 1.25 Tahoma 400 1 17 adv b 21643
+sys 1.25 Tahoma 400 1 17 avg 538
+sys 1.25 Tahoma 400 1 17 glyphs latin bc865569cc2eb7b4
+sys 1.25 Tahoma 400 1 17 draw a 400 58 c01588c60615bfc2
+sys 1.25 Tahoma 400 1 17 draw b 400 58 ea82d57bbd0fdffe
+sys 1.25 Tahoma 400 1 24 adv a 17298
+sys 1.25 Tahoma 400 1 24 adv b 30574
+sys 1.25 Tahoma 400 1 24 avg 760
+sys 1.25 Tahoma 400 1 24 glyphs latin 109d788492d20041
+sys 1.25 Tahoma 400 1 24 draw a 400 75 5fd157c6dcb24a54
+sys 1.25 Tahoma 400 1 24 draw b 400 75 8048842dbde70b33
 sysfont tahomabd.ttf 849284 d04d4ea812283623
+sys 1.25 Tahoma 700 1 9 adv a 7471
+sys 1.25 Tahoma 700 1 9 adv b 12969
+sys 1.25 Tahoma 700 1 9 avg 348
+sys 1.25 Tahoma 700 1 9 glyphs latin cb64038a3108ce53
+sys 1.25 Tahoma 700 1 9 draw a 400 38 3381e42cdb0fdd0f
+sys 1.25 Tahoma 700 1 9 draw b 400 38 a90f852a5a786d1e
+sys 1.25 Tahoma 700 1 13 adv a 10798
+sys 1.25 Tahoma 700 1 13 adv b 18746
+sys 1.25 Tahoma 700 1 13 avg 502
+sys 1.25 Tahoma 700 1 13 glyphs latin 7efec40d3aad4af5
+sys 1.25 Tahoma 700 1 13 draw a 400 48 b2dfcaa549257294
+sys 1.25 Tahoma 700 1 13 draw b 400 48 ea0b27ca1b7c0f51
+sys 1.25 Tahoma 700 1 17 adv a 14123
+sys 1.25 Tahoma 700 1 17 adv b 24520
+sys 1.25 Tahoma 700 1 17 avg 657
+sys 1.25 Tahoma 700 1 17 glyphs latin 959f0aa5c28711df
+sys 1.25 Tahoma 700 1 17 draw a 400 58 2f752446bc3aff36
+sys 1.25 Tahoma 700 1 17 draw b 400 58 9e65df1e5cfe7e86
+sys 1.25 Tahoma 700 1 24 adv a 19948
+sys 1.25 Tahoma 700 1 24 adv b 34638
+sys 1.25 Tahoma 700 1 24 avg 928
+sys 1.25 Tahoma 700 1 24 glyphs latin f81290502cc31170
+sys 1.25 Tahoma 700 1 24 draw a 400 75 5d2e518f1cf71da9
+sys 1.25 Tahoma 700 1 24 draw b 400 75 72be8c41830343bb
 sysfont impact.ttf 206784 27c6c5915109afd9
 sys 1.25 Impact 700 0 9 adv a 5973
 sys 1.25 Impact 700 0 9 adv b 10683

@@ -322,7 +322,8 @@ fn the_outline_backend_reads_line_metrics_and_average_width_from_the_tables() {
         LineMetrics {
             ascent: 12.5,
             descent: 3.5,
-            leading: 0.0
+            leading: 0.0,
+            unrounded: false
         }
     );
     let rounded = line.rounded();

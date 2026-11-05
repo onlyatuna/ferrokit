@@ -828,6 +828,7 @@ impl GlyphFace for CoreTextFace {
             ascent: q_fixed(asc) as f32,
             descent: q_fixed(desc) as f32,
             leading: q_fixed(lead) as f32,
+            unrounded: false,
         })
     }
 

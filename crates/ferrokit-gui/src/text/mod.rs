@@ -27,6 +27,7 @@ pub use markup::might_be_rich_text;
 pub mod outline_face;
 pub mod position;
 pub mod qcssparser;
+mod shaping_plan;
 pub mod skrifa_face;
 pub mod smoothing;
 

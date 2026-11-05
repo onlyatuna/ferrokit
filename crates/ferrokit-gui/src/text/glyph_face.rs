@@ -32,6 +32,12 @@ pub struct LineMetrics {
     pub ascent: f32,
     pub descent: f32,
     pub leading: f32,
+    /// The engine keeps these values as it reports them even where it has no sub-pixel
+    /// positions: Qt's `initializeHeightMetrics` skips both the table override and the rounding
+    /// for a font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`, qfontengine.cpp:432-445),
+    /// leaving what the platform engine computed. [`rounded`](Self::rounded) returns such values
+    /// unchanged.
+    pub unrounded: bool,
 }
 
 impl LineMetrics {
@@ -40,6 +46,9 @@ impl LineMetrics {
     /// rounded to whole pixels, the leading absorbing the rounding of the whole line height
     /// (so it can be negative: a 12.5 + 3.5 line is 13 + 4 with a leading of -1).
     pub fn rounded(self) -> Self {
+        if self.unrounded {
+            return self;
+        }
         let ascent = (self.ascent + 0.5).floor();
         let descent = (self.descent + 0.5).floor();
         let line = (self.ascent + self.descent + self.leading + 0.5).floor();
@@ -47,6 +56,7 @@ impl LineMetrics {
             ascent,
             descent,
             leading: line - ascent - descent,
+            unrounded: false,
         }
     }
 }
