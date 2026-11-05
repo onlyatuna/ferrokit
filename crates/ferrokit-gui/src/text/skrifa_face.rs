@@ -51,21 +51,31 @@
 //! commit `7099b09e9`, "[autofit] Implement vertical separation adjustment"). It moves the dot of
 //! `i` and `j` and the accents of accented letters vertically so that they keep a gap to the
 //! letter below. The vendored skrifa auto-hinter has it (see `third_party/skrifa/README.ferrokit.md`
-//! and `adjust/mod.rs`, with the FreeType line of every ported function). Measured over 40
-//! TrueType fonts, about 1,270 characters each (Latin-1, accented Latin, Greek, Cyrillic), 8 to
-//! 24 px: 3,050,548 of 3,050,616 light renders equal FreeType 2.14.2's (system library), 762,637
-//! of 762,654 `QRawFont::alphaMapForGlyph` records equal Qt 6.12.0's, 330,208 of 330,224 single
-//! glyph `drawText` renders equal Qt's. The target is the Ubuntu build of FreeType 2.14.2, which
-//! loads HarfBuzz at run time; other builds of FreeType may differ.
+//! and `adjust/mod.rs`, with the FreeType line of every ported function). It includes what the
+//! HarfBuzz build of FreeType adds: the reverse character map of the adjustment is extended
+//! through the GSUB single and alternate substitutions (`add_substitute`, `adjust/gsub.rs`), the
+//! blue strings of Indic, Khmer, Myanmar and USE scripts measure the dotted circle that HarfBuzz
+//! inserts before a lone dependent sign and hide the default ignorable characters, the
+//! alternate substitutions of a feature style (Verdana's `c2sc`) are applied, and the style
+//! ranges are those of FreeType 2.14.2's `afranges.c`. Measured over 40 TrueType fonts, about
+//! 1,270 characters each (Latin-1, accented Latin, Greek, Cyrillic), 8 to 24 px: 3,050,616 of
+//! 3,050,616 light renders equal FreeType 2.14.2's (system library), 762,654 of 762,654
+//! `QRawFont::alphaMapForGlyph` records equal Qt 6.12.0's, 330,224 of 330,224 single glyph
+//! `drawText` renders equal Qt's. By glyph index (every glyph of the 40 fonts, 9, 12, 16 and
+//! 20 px, Normal and Light with a sub-pixel offset): 1,364,418 of 1,364,424 equal FreeType's and
+//! 454,808 of 454,808 equal Qt's. The target is the Ubuntu build of FreeType 2.14.2, which loads
+//! HarfBuzz at run time; other builds of FreeType may differ.
 //!
 //! # Known differences
 //!
-//! - U+20B9 (the rupee sign) in Segoe UI: with HarfBuzz, FreeType shapes the Devanagari blue
-//!   strings with an inserted dotted circle, so that script gets blue zones and the glyph is
-//!   hinted; here that script has none and the glyph is not hinted.
-//! - FreeType extends the reverse character map of the adjustment through the font's GSUB single
-//!   and alternate substitutions (`add_substitute`); that part is not ported, so glyphs reached
-//!   only through a substitution (small capitals, alternates) are not adjusted.
+//! - 6 of the by-glyph-index records differ: Normal mode (`FT_LOAD_TARGET_NORMAL`) at 9 px for
+//!   U+05D8 and U+FB38 of DejaVu Sans Bold and U+266B in the four Liberation Mono faces. Qt's
+//!   default (light) hinting is not affected; the cause is not established.
+//! - FreeType's coverage computation (`af_shaper_get_coverage_hb`) leaves out the glyphs that
+//!   the GPOS table of a feature covers; the vendored skrifa does not read GPOS. No difference
+//!   was measured in the 40 fonts.
+//! - The style class of Nyiakeng Puachue Hmong, which FreeType 2.14.2 does not have, is still in
+//!   the table of the vendored skrifa, without characters.
 //!
 //! CFF fonts (hinted by the CFF engine, which has no such adjustment) and every other hint style
 //! are not affected.

@@ -42,6 +42,7 @@ all-features = true
 default = "MIT OR Apache-2.0"
 "(MIT OR Apache-2.0) AND FTL" = [
     "src/outline/autohint/adjust/database.rs",
+    "src/outline/autohint/adjust/gsub.rs",
     "src/outline/autohint/adjust/mod.rs",
     "src/outline/autohint/adjust/tests.rs",
     "src/outline/autohint/hint/edges.rs",

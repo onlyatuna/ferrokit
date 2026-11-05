@@ -106,7 +106,11 @@ impl<'a> Shaper<'a> {
         }
     }
 
-    fn lookup_indices(&self, feature_ix: u16, all_locations: bool) -> Option<Vec<u16>> {
+    pub(super) fn gsub(&self) -> Option<&Gsub<'a>> {
+        self.gsub.as_ref()
+    }
+
+    pub(super) fn lookup_indices(&self, feature_ix: u16, all_locations: bool) -> Option<Vec<u16>> {
         let gsub = self.gsub.as_ref()?;
         let feature = gsub.feature_list().ok()?.get(feature_ix).ok()?.element;
         let mut lookups: Vec<_> = feature
@@ -202,14 +206,33 @@ impl<'a> Shaper<'a> {
                         shaper: self,
                         lookup_list: Some(lookup_list),
                         kind: ClusterShaperKind::Lookups(feature),
+                        complex: false,
                     };
                 }
             }
         }
+        // hb_ot_shape_complex_categorize: Khmer and the USE scripts (Saurashtra) always get their
+        // complex shaper (Tahoma has no 'khmr' in GSUB and HarfBuzz still inserts the circle);
+        // the Indic ones only if the font has GSUB data for the script (not just 'DFLT' or
+        // 'latn'), and Myanmar only for the script tag 'mym2' ('mymr' gives no dotted circle).
+        let tag = style.script.tag;
+        let complex = self.mode == ShaperMode::BestEffort
+            && (tag == Tag::new(b"Khmr")
+                || tag == Tag::new(b"Saur")
+                || self.gsub.as_ref().is_some_and(|gsub| {
+                    gsub.script_list()
+                        .ok()
+                        .and_then(|list| list.select(&ScriptTags::from_unicode(tag)))
+                        .is_some_and(|selected| {
+                            !selected.is_fallback
+                                && (tag != Tag::new(b"Mymr") || selected.tag == Tag::new(b"mym2"))
+                        })
+                }));
         ClusterShaper {
             shaper: self,
             lookup_list: None,
             kind: ClusterShaperKind::Nominal,
+            complex,
         }
     }
 
@@ -327,6 +350,9 @@ pub(crate) struct ClusterShaper<'a> {
     shaper: &'a Shaper<'a>,
     lookup_list: Option<SubstitutionLookupList<'a>>,
     kind: ClusterShaperKind,
+    /// HarfBuzz shapes the script with its complex shaper, because the font has GSUB data for
+    /// it (otherwise the default shaper, which does not insert a dotted circle, is used).
+    complex: bool,
 }
 
 impl ClusterShaper<'_> {
@@ -335,6 +361,13 @@ impl ClusterShaper<'_> {
         // to glyph id mapping
         output.clear();
         for ch in input.chars() {
+            // HarfBuzz replaces the default ignorable characters (zero width joiners, variation
+            // selectors, ...) with an invisible glyph after substitution (hb_ot_hide_default_
+            // ignorables), so they add no outline to a blue string cluster; the nominal glyph of
+            // the font (Segoe UI draws a visible U+200D) must not be measured.
+            if self.shaper.mode != ShaperMode::Nominal && is_default_ignorable(ch) {
+                continue;
+            }
             output.push(ShapedGlyph {
                 id: self.shaper.context.map(ch as u32).unwrap_or_default(),
                 y_offset: 0,
@@ -346,6 +379,19 @@ impl ClusterShaper<'_> {
                 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/57617782464411201ce7bbc93b086c1b4d7d84a5/src/autofit/afshaper.c#L639>
                 if self.shaper.mode == ShaperMode::Nominal && output.len() > 1 {
                     output.clear();
+                } else if self.complex && is_lone_dependent_mark(input) {
+                    // HarfBuzz's complex shapers (Indic, Khmer, Myanmar, USE) insert a dotted
+                    // circle before a dependent sign that has no base, if the font has one;
+                    // FreeType, which shapes with HarfBuzz, then measures the circle too.
+                    if let Some(circle) = self.shaper.context.map(DOTTED_CIRCLE) {
+                        output.insert(
+                            0,
+                            ShapedGlyph {
+                                id: circle,
+                                y_offset: 0,
+                            },
+                        );
+                    }
                 }
             }
             ClusterShaperKind::Lookups(lookups) => {
@@ -448,7 +494,32 @@ impl ClusterShaper<'_> {
             }
             SubstitutionSubtables::Multiple(_tables) => {}
             SubstitutionSubtables::Ligature(_tables) => {}
-            SubstitutionSubtables::Alternate(_tables) => {}
+            // HarfBuzz applies an alternate substitution with the value 1 of the feature that
+            // afshaper.c sets: the first alternate of the glyph.
+            SubstitutionSubtables::Alternate(tables) => {
+                for table in tables.iter().filter_map(|table| table.ok()) {
+                    let substitute = match &table {
+                        read_fonts::tables::gsub::AlternateSubst::Format1(table) => {
+                            let Some(cov_ix) =
+                                table.coverage().ok().and_then(|cov| cov.get(glyph.id))
+                            else {
+                                continue;
+                            };
+                            table
+                                .alternate_sets()
+                                .get(cov_ix as usize)
+                                .ok()
+                                .and_then(|set| set.alternate_glyph_ids().first().copied())
+                                .map(|gid| GlyphId::from(gid.get()))
+                        }
+                        read_fonts::tables::gsub::AlternateSubst::Format2(_) => None,
+                    };
+                    if let Some(substitute) = substitute {
+                        glyph.id = substitute;
+                        return true;
+                    }
+                }
+            }
             SubstitutionSubtables::Contextual(_tables) => {}
             SubstitutionSubtables::ChainContextual(_tables) => {}
             SubstitutionSubtables::Reverse(_tables) => {}
@@ -665,6 +736,18 @@ impl<'a, 'b> GsubHandler<'a, 'b> {
                                 for gid in set.alternate_glyph_ids() {
                                     self.capture_glyph(gid.get().to_u32());
                                 }
+                            }
+                        }
+                    }
+                    // afshaper.c:264-294: hb_ot_layout_lookup_would_substitute for a single
+                    // glyph is true for an alternate substitution that covers it.
+                    if self.need_blue_substs && self.lookup_depth == 1 {
+                        match &table {
+                            read_fonts::tables::gsub::AlternateSubst::Format1(table) => {
+                                self.check_blue_coverage(table.coverage().ok())
+                            }
+                            read_fonts::tables::gsub::AlternateSubst::Format2(table) => {
+                                self.check_blue_coverage(table.coverage().ok())
                             }
                         }
                     }
@@ -1348,4 +1431,50 @@ mod tests {
             buf.to_vec()
         }
     }
+}
+
+/// U+25CC, the glyph HarfBuzz inserts before a sign that has no base.
+const DOTTED_CIRCLE: u32 = 0x25CC;
+
+/// The dependent signs of the blue strings of the scripts that HarfBuzz shapes with a complex
+/// shaper (Bengali, Devanagari, Gujarati, Gurmukhi: Indic; Khmer; Myanmar; Saurashtra: USE).
+/// Alone, they make a broken cluster. These are the Mn and Mc characters of those blue strings
+/// (generated/generated_autohint_styles.rs).
+const DEPENDENT_MARKS: &[u32] = &[
+    0x093F, 0x0940, 0x0941, 0x0943, 0x094B, 0x094C, // Devanagari
+    0x09BF, 0x09C0, 0x09C8, 0x09D7, // Bengali
+    0x0A3F, 0x0A40, // Gurmukhi
+    0x0ABF, 0x0AC0, 0x0AC1, 0x0AC3, 0x0AC4, // Gujarati
+    0x17B6, // Khmer
+    0x102B, 0x102D, 0x103C, // Myanmar
+    0xA8BA, // Saurashtra
+];
+
+fn is_lone_dependent_mark(input: &str) -> bool {
+    let mut chars = input.chars();
+    matches!((chars.next(), chars.next()), (Some(ch), None) if DEPENDENT_MARKS.contains(&(ch as u32)))
+}
+
+/// `Default_Ignorable_Code_Point` of the Unicode Character Database.
+fn is_default_ignorable(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x00AD
+            | 0x034F
+            | 0x061C
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFF8
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
 }
