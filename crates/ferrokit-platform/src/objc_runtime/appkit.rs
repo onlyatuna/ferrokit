@@ -430,8 +430,9 @@ impl ObjcMsg {
         }
     }
 
-    /// `-[receiver sel]` returning an `NSInteger` (`-[NSEvent buttonNumber]`, `clickCount`). The
-    /// mock returns the property of that name, 0 if unset.
+    /// `-[receiver sel]` returning an `NSInteger` (`-[NSEvent buttonNumber]`, `clickCount`,
+    /// `-[NSWindow level]`, `windowNumber`). The mock returns the property of that name, 0 if
+    /// unset; `level` falls back to what `setLevel:` stored.
     ///
     /// # Safety
     /// See [`ObjcMsg`].
@@ -451,6 +452,10 @@ impl ObjcMsg {
         {
             match mock_property(receiver, sel) {
                 Some(MockValue::Int(value)) => value as NSInteger,
+                // `-[NSWindow level]` is what `setLevel:` stored.
+                _ if mock_selector_name(sel) == "level" => MockObjcRuntime::instance()
+                    .get_object_data(receiver)
+                    .map_or(0, |data| data.level),
                 _ => 0,
             }
         }
@@ -778,6 +783,44 @@ impl ObjcMsg {
                     MockValue::Id(receiver),
                 );
             }
+            receiver
+        }
+    }
+
+    /// `-[receiver sel:NSInteger relativeTo:NSInteger]` (`-[NSWindow orderWindow:relativeTo:]`),
+    /// logged. The mock only records it; z-order is not modelled.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`].
+    pub unsafe fn send_int_int_logged(
+        receiver: Id,
+        sel: Sel,
+        first: NSInteger,
+        second: NSInteger,
+    ) -> Id {
+        if receiver.is_nil() {
+            return Id::NIL;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees receiver responds to sel with matching types.
+        unsafe {
+            let msg_send: extern "C" fn(
+                *mut c_void,
+                *const c_void,
+                NSInteger,
+                NSInteger,
+            ) -> *mut c_void = msg_send_fn();
+            Id(msg_send(receiver.0, sel.0, first, second))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(
+                receiver,
+                sel,
+                vec![MockValue::Int(first as i64), MockValue::Int(second as i64)],
+            );
             receiver
         }
     }

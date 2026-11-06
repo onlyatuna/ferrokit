@@ -587,6 +587,72 @@ fn raise_orders_window_front_without_activating_or_making_key() {
         "window with native isVisible == false is not raised"
     );
 }
+
+#[test]
+fn stack_under_orders_window_below_sibling_in_its_level_without_making_key() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::NORMAL);
+    let mut other = window(WindowFlags::NORMAL);
+    let (ns_window, other_ns) = (win.ns_window(), other.ns_window());
+    mock.set_property(other_ns, "windowNumber", MockValue::Int(42));
+    // The `orderWindow:relativeTo:` messages `win` has received so far, with their arguments.
+    // The call log is shared by every test of this file, so it is only read, never cleared.
+    let ordered = || {
+        mock.calls_for(ns_window)
+            .into_iter()
+            .filter(|c| c.selector == "orderWindow:relativeTo:")
+            .map(|c| c.args)
+            .collect::<Vec<_>>()
+    };
+
+    // Hidden windows are not ordered: `orderWindow:` would show them.
+    assert!(!win.stack_under(other.native_handle()));
+    win.show();
+    assert!(!win.stack_under(other.native_handle()), "sibling is hidden");
+    assert!(ordered().is_empty());
+
+    // Visible: ordered below the sibling's window number, without taking key.
+    other.show();
+    mock.update_object(ns_window, |d| d.is_key = false);
+    let sent_before = selectors(mock, ns_window).len();
+    assert!(win.stack_under(other.native_handle()));
+    assert_eq!(
+        ordered(),
+        [[MockValue::Int(-1), MockValue::Int(42)]],
+        "NSWindowBelow, relative to the sibling's window number"
+    );
+    assert_eq!(
+        selectors(mock, ns_window)[sent_before..],
+        ["orderWindow:relativeTo:"],
+        "nothing else is sent: the window is not made key"
+    );
+    assert!(!win.is_active(), "stack_under leaves the window non-key");
+
+    // Handles that are not another live window are refused without a message.
+    assert!(!win.stack_under(0));
+    assert!(
+        !win.stack_under(win.native_handle()),
+        "a window is not below itself"
+    );
+    assert!(!win.stack_under(0x1234), "not a live window");
+    mock.clear_property(other_ns, "windowNumber");
+    assert!(!win.stack_under(other.native_handle()), "no window device");
+    mock.set_property(other_ns, "windowNumber", MockValue::Int(42));
+    assert_eq!(ordered().len(), 1);
+
+    // Windows of different levels are not ordered against each other: AppKit orders within a
+    // level. Both floating is the same level again.
+    other.set_stays_on_top(true);
+    assert!(!win.stack_under(other.native_handle()));
+    assert!(!other.stack_under(win.native_handle()));
+    assert_eq!(ordered().len(), 1);
+    win.set_stays_on_top(true);
+    let level_of = |ns: Id| mock.get_object_data(ns).unwrap().level;
+    assert_ne!(level_of(ns_window), NS_NORMAL_WINDOW_LEVEL);
+    assert_eq!(level_of(ns_window), level_of(other_ns));
+    assert!(win.stack_under(other.native_handle()));
+    assert_eq!(ordered().len(), 2);
+}
 #[test]
 fn request_activate_window_activates_app_and_orders_front_unless_hidden_or_tooltip() {
     let mock = MockObjcRuntime::instance();

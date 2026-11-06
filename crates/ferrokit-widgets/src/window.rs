@@ -1303,6 +1303,41 @@ impl Window {
         raise_window(self.object_data.id());
     }
 
+    /// Puts this window immediately below the top-level window `sibling` in the window system's
+    /// stacking order. It does not activate, move or resize either window. Returns whether the
+    /// window ended up directly below `sibling`.
+    ///
+    /// This is a ferrokit extension, modelled on `QWidget::stackUnder`, which only reorders the
+    /// child widgets of one parent; Qt has no call that orders one top-level window against
+    /// another (`QWindow` has only `raise` and `lower`).
+    ///
+    /// Both windows must be in the same stacking band: a window that
+    /// [`set_stays_on_top`](Window::set_stays_on_top) made topmost can only be placed below
+    /// another topmost window, and a normal one only below a normal one. Otherwise nothing
+    /// changes and the result is `false`; put the two in the same band first. The call never
+    /// changes either window's band, so [`window_flags`](Window::window_flags) stays true.
+    ///
+    /// A window created with [`Window::with_parent`] is owned on Windows, and the system keeps an
+    /// owned window above its owner, so it cannot be placed below it (`false`). To put a window
+    /// behind another one, create it with [`Window::new`].
+    ///
+    /// Per platform: Windows `SetWindowPos(self, hWndInsertAfter = sibling, SWP_NOMOVE |
+    /// SWP_NOSIZE | SWP_NOACTIVATE)`; macOS `orderWindow:NSWindowBelow relativeTo:` the sibling's
+    /// window number (both windows must be visible, as `orderWindow:` would show a hidden one);
+    /// X11 has no server connection in this backend yet and Wayland lets clients order nothing,
+    /// so both do nothing and return `false`. See [`PlatformWindow::stack_under`].
+    pub fn stack_under(&self, sibling: &Window) -> bool {
+        let Ok(sibling_window) = sibling.platform_window.try_borrow() else {
+            return false;
+        };
+        let handle = sibling_window.native_handle();
+        drop(sibling_window);
+        let Ok(platform_window) = self.platform_window.try_borrow() else {
+            return false;
+        };
+        platform_window.stack_under(handle)
+    }
+
     /// `QWidget::activateWindow`: asks the window system to make this window the active one.
     /// Nothing happens while the window is hidden. The window system decides: on Windows the
     /// foreground lock lets only the foreground process take the foreground, so for a background
