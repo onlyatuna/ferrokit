@@ -335,7 +335,16 @@ mod imp {
 
     fn library() -> Option<&'static FontConfig> {
         static INSTANCE: std::sync::LazyLock<Option<FontConfig>> = std::sync::LazyLock::new(|| {
-            let library = FontConfig::load()?;
+            let Some(library) = FontConfig::load() else {
+                // Qt cannot run without fontconfig; ferrokit still draws text, but not with the
+                // fonts Qt would choose. Said once, when the library is first needed.
+                eprintln!(
+                    "ferrokit: libfontconfig.so.1 could not be loaded; fonts are taken from the \
+                     font directories, missing families are not substituted and there are no \
+                     fallback fonts, so text differs from Qt's"
+                );
+                return None;
+            };
             // SAFETY: `FcInit` takes no arguments; Qt calls it before listing the fonts.
             unsafe { (library.init)() };
             Some(library)
