@@ -2,6 +2,7 @@
 use crate::geometry::primitives::RectF;
 use crate::text::font::{Font, FontStyle, FontTag, FontWeight, HintingPreference, StyleHint};
 use crate::text::glyph_face::LineMetrics;
+use crate::text::line_items::{LineItems, TextOption};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -371,6 +372,7 @@ impl FontMetrics {
     /// Calculates the exact horizontal advance width using the global font database and OpenType shaper.
     /// Eliminates heuristic rounding discrepancies between layout bounding boxes and rasterized glyphs.
     pub fn horizontal_advance_exact(&self, text: &str, font: &Font) -> f32 {
+        let text = Self::before_variable_length_separator(text);
         if text.is_empty() {
             return 0.0;
         }
@@ -422,25 +424,32 @@ impl FontMetrics {
     }
 
     fn shape_advance(&self, text: &str, font: &Font) -> f32 {
-        // The line and paragraph separators end Qt's shaping items and have no width
-        // (`QTextEngine::itemize` flags them `LineOrParagraphSeparator`); no font shapes them.
-        if text.contains(['\u{2028}', '\u{2029}']) {
-            return text
-                .split(['\u{2028}', '\u{2029}'])
-                .filter(|piece| !piece.is_empty())
-                .map(|piece| self.shape_advance(piece, font))
-                .sum();
-        }
-        let engines = crate::text::font_database::resolve_font_engines_for_text_global(font, text);
-        if !engines.is_empty() {
-            let layout =
-                crate::text::glyph_layout::GlyphLayout::shape_with_engines(text, font, &engines);
-            if layout.width > 0.0 {
-                return layout.width;
-            }
-        }
+        LineItems::new(text, font, &TextOption::default()).width()
+    }
 
-        self.horizontal_advance(text, font)
+    /// `QFontMetricsF::horizontalAdvance(text, option)`: the advance of `text` itemized with the
+    /// text direction and tab stop distance of `option` (qfontmetrics.cpp:1416). With the default
+    /// option it is [`horizontal_advance_exact`](Self::horizontal_advance_exact).
+    pub fn horizontal_advance_with_option(
+        &self,
+        text: &str,
+        font: &Font,
+        option: &TextOption,
+    ) -> f32 {
+        let text = Self::before_variable_length_separator(text);
+        if text.is_empty() {
+            return 0.0;
+        }
+        if *option == TextOption::default() {
+            return self.horizontal_advance_exact(text, font);
+        }
+        LineItems::new(text, font, option).width()
+    }
+
+    /// The part of `text` `QFontMetrics::horizontalAdvance` measures: what comes before the first
+    /// U+009C (`s_variableLengthStringSeparator`, qfontmetrics.cpp:1390), which ends the string.
+    fn before_variable_length_separator(text: &str) -> &str {
+        text.split('\u{9c}').next().unwrap_or("")
     }
 
     /// The advance of every grapheme of `text`, shaped as one string so kerning, ligatures and

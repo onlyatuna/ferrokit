@@ -89,7 +89,7 @@ pub const DEFAULT_TAB_STOP_DISTANCE: f32 = 80.0;
 /// distance, which Qt keeps in 1/64 px. `x / distance` is a 26.6 fixed point quotient that rounds
 /// to nearest, so an `x` less than `distance / 128` below a stop counts as on it, and a tab on a
 /// stop goes to the next one (measured against `QTextLayout`).
-fn tab_width(x: f32, distance: f32) -> f32 {
+pub(crate) fn tab_width(x: f32, distance: f32) -> f32 {
     let distance = if distance.is_finite() && distance > 0.0 {
         f64::from(distance)
     } else {
@@ -107,7 +107,7 @@ fn tab_width(x: f32, distance: f32) -> f32 {
 /// too), the line separator or the paragraph separator U+2029 (`QTextEngine::itemize` flags both
 /// separators `LineOrParagraphSeparator` and gives them no width; unlike U+2028, U+2029 does not
 /// end a line of a `QTextLayout`, it is only a break opportunity).
-fn is_unshaped(grapheme: &str) -> bool {
+pub(crate) fn is_unshaped(grapheme: &str) -> bool {
     matches!(grapheme, "\n" | "\r" | "\r\n")
         || grapheme == LINE_SEPARATOR
         || grapheme == PARAGRAPH_SEPARATOR

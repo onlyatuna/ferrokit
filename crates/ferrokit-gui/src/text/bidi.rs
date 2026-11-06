@@ -5,52 +5,149 @@
 
 use unicode_bidi::{BidiClass, BidiInfo, Level, bidi_class};
 
-/// Whether `text` reads right to left as a whole: its first strong character is a right to left
-/// one (rules P2 and P3, `QString::isRightToLeft`). The whole text counts, line feeds included: a
-/// text that starts with a line feed before its first strong character is not taken as left to
-/// right for that.
+/// Whether `text` reads right to left as a whole: its first strong character outside isolates is
+/// a right to left one (rules P2 and P3, `QtPrivate::isRightToLeft`, qstring.cpp:9606: the
+/// characters between an isolate initiator and its terminator do not count, however strong). The
+/// whole text counts, line feeds included: a text that starts with a line feed before its first
+/// strong character is not taken as left to right for that.
 pub(crate) fn is_rtl(text: &str) -> bool {
     if text.is_ascii() {
         return false;
     }
-    text.chars()
-        .find_map(|c| match bidi_class(c) {
-            BidiClass::L => Some(false),
-            BidiClass::R | BidiClass::AL => Some(true),
-            _ => None,
-        })
-        .unwrap_or(false)
+    let mut isolates = 0u32;
+    for c in text.chars() {
+        match bidi_class(c) {
+            BidiClass::RLI | BidiClass::LRI | BidiClass::FSI => isolates += 1,
+            BidiClass::PDI => isolates = isolates.saturating_sub(1),
+            BidiClass::L if isolates == 0 => return false,
+            BidiClass::R | BidiClass::AL if isolates == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
-/// The embedding level of every grapheme of the paragraph `text`, whose graphemes start at the
-/// byte offsets `starts` (followed by `text.len()`), in a text whose base direction is
-/// `base_rtl`. Empty when every grapheme is at level 0 (the paragraph is left to right all
-/// through), which is the case that needs no bidi handling at all.
+/// Whether a character belongs to the classes that make `QBidiAlgorithm::checkForBidi`
+/// (qtextengine.cpp:1026) run the algorithm for a left to right text: the right to left and
+/// Arabic classes, Arabic numbers, and the explicit embedding, override and isolate controls.
+/// Everything else left to right has level 0 whatever surrounds it.
+fn is_bidi_trigger(c: char) -> bool {
+    c as u32 >= 0x590
+        && matches!(
+            bidi_class(c),
+            BidiClass::R
+                | BidiClass::AN
+                | BidiClass::LRE
+                | BidiClass::LRO
+                | BidiClass::AL
+                | BidiClass::RLE
+                | BidiClass::RLO
+                | BidiClass::PDF
+                | BidiClass::LRI
+                | BidiClass::RLI
+                | BidiClass::FSI
+                | BidiClass::PDI
+        )
+}
+
+/// The embedding level of every grapheme of `text`, whose graphemes start at the byte offsets
+/// `starts` (followed by `text.len()`), in a text whose base direction is `base_rtl`: what
+/// `QBidiAlgorithm::process` (qtextengine.cpp:1046) leaves in `QScriptAnalysis::bidiLevel` for the
+/// first character of the grapheme. Empty when every grapheme is at level 0, which is the case
+/// that needs no bidi handling at all.
+///
+/// After the levels of rules X and W/N/I, Qt applies rule L1 to the whole text (not per line):
+/// segment and paragraph separators, and the white space and isolate and explicit formatting
+/// characters before them or at the end of the text, go back to the base level; then every
+/// explicit formatting character and boundary neutral takes the lower level of its neighbours
+/// (its own level means nothing, it is not in the rendered text). A tab is a segment separator, so it is
+/// at the base level whatever surrounds it and the runs on either side of it do not join.
 pub(crate) fn grapheme_levels(text: &str, starts: &[usize], base_rtl: bool) -> Vec<u8> {
-    if (text.is_ascii() && !base_rtl) || starts.len() < 2 {
+    if starts.len() < 2 || (!base_rtl && !text.chars().any(is_bidi_trigger)) {
         return Vec::new();
     }
     let info = BidiInfo::new(
         text,
         Some(if base_rtl { Level::rtl() } else { Level::ltr() }),
     );
-    // A tab is a segment separator (rule L1): it is at the paragraph level, whatever surrounds it,
-    // so the runs on either side of it do not join (`QTextEngine` gives it the base level).
-    let paragraph_level = if base_rtl { 1 } else { 0 };
-    let levels: Vec<u8> = starts[..starts.len() - 1]
-        .iter()
-        .map(|&byte| {
-            if text.as_bytes()[byte] == b'\t' {
-                paragraph_level
-            } else {
-                info.levels[byte].number()
+    let base = u8::from(base_rtl);
+    let offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let classes: Vec<BidiClass> = offsets.iter().map(|&i| info.original_classes[i]).collect();
+    let mut levels: Vec<u8> = offsets.iter().map(|&i| info.levels[i].number()).collect();
+
+    // Rule L1 (qtextengine.cpp:1077-1091), from the end of the text.
+    let mut reset = true;
+    for (class, level) in classes.iter().zip(levels.iter_mut()).rev() {
+        match class {
+            BidiClass::B | BidiClass::S => {
+                *level = base;
+                reset = true;
             }
+            BidiClass::WS
+            | BidiClass::LRI
+            | BidiClass::RLI
+            | BidiClass::FSI
+            | BidiClass::PDI
+            | BidiClass::LRE
+            | BidiClass::RLE
+            | BidiClass::LRO
+            | BidiClass::RLO
+            | BidiClass::PDF
+            | BidiClass::BN
+                if reset =>
+            {
+                *level = base;
+            }
+            _ => reset = false,
+        }
+    }
+
+    // Boundary neutrals and explicit formatting characters (qtextengine.cpp:1093-1122).
+    let is_bn = |class: BidiClass| {
+        matches!(
+            class,
+            BidiClass::LRE
+                | BidiClass::RLE
+                | BidiClass::LRO
+                | BidiClass::RLO
+                | BidiClass::PDF
+                | BidiClass::BN
+        )
+    };
+    let (mut last_level, mut first_bn) = (base, None);
+    for i in 0..levels.len() {
+        if is_bn(classes[i]) {
+            first_bn.get_or_insert(i);
+            levels[i] = last_level;
+        } else {
+            let level = levels[i];
+            if let Some(from) = first_bn.take()
+                && level < last_level
+            {
+                levels[from..i].fill(level);
+            }
+            last_level = level;
+        }
+    }
+    if let Some(from) = first_bn
+        && base < last_level
+    {
+        levels[from..].fill(base);
+    }
+
+    let grapheme_levels: Vec<u8> = starts[..starts.len() - 1]
+        .iter()
+        .map(|byte| {
+            let char_index = offsets
+                .binary_search(byte)
+                .unwrap_or_else(|at| at.saturating_sub(1));
+            levels[char_index]
         })
         .collect();
-    if levels.iter().all(|&level| level == 0) {
+    if grapheme_levels.iter().all(|&level| level == 0) {
         Vec::new()
     } else {
-        levels
+        grapheme_levels
     }
 }
 
@@ -87,18 +184,17 @@ pub(crate) fn level_runs(levels: &[u8]) -> Vec<LevelRun> {
     runs
 }
 
-/// The visual order of runs with the given levels (rule L2, `QTextEngine::bidiReorder`):
-/// `order[i]` is the logical index of the run shown `i`-th from the left.
+/// The visual order of runs with the given levels (rule L2, `QTextEngine::bidiReorder`,
+/// qtextengine.cpp:1142): `order[i]` is the logical index of the run shown `i`-th from the left.
+/// Qt reverses down to the lowest level of the runs, or the one above it when that is even (not
+/// to the lowest odd level of the rule).
 pub(crate) fn visual_order(levels: &[u8]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..levels.len()).collect();
     let highest = levels.iter().copied().max().unwrap_or(0);
-    let lowest_odd = levels.iter().copied().filter(|l| l % 2 == 1).min();
-    let Some(lowest_odd) = lowest_odd else {
-        return order;
-    };
-    // From the highest level down to the lowest odd one, reverse every sequence of runs at that
-    // level or above.
-    for level in (lowest_odd..=highest).rev() {
+    let lowest = levels.iter().copied().min().unwrap_or(0);
+    let lowest = lowest + u8::from(lowest % 2 == 0);
+    // From the highest level down, reverse every sequence of runs at that level or above.
+    for level in (lowest..=highest).rev() {
         let mut i = 0;
         while i < order.len() {
             if levels[order[i]] >= level {
@@ -172,5 +268,41 @@ mod tests {
         assert_eq!(visual_order(&[1, 2, 1]), vec![2, 1, 0]);
         assert_eq!(visual_order(&[0, 1, 2, 1, 0]), vec![0, 3, 2, 1, 4]);
         assert_eq!(visual_order(&[0, 0]), vec![0, 1]);
+    }
+
+    #[test]
+    fn white_space_before_a_tab_or_the_end_goes_back_to_the_base_level() {
+        // Rule L1 over the whole text, as `QBidiAlgorithm::process` does: the space before the
+        // tab and the one at the end are at the base level, the one between two Latin words of
+        // a right to left text is not.
+        let text = "ab \tcd e ";
+        assert_eq!(
+            grapheme_levels(text, &starts(text), true),
+            vec![2, 2, 1, 1, 2, 2, 2, 2, 1]
+        );
+    }
+
+    #[test]
+    fn boundary_neutrals_take_the_lower_level_of_their_neighbours() {
+        // The joiner between a Hebrew and a Latin letter is at the lower level of the two, not
+        // the one of the character before it (qtextengine.cpp:1093).
+        let text = "\u{5d0}\u{200d}ab";
+        assert_eq!(
+            grapheme_levels(text, &starts(text), false),
+            vec![1, 0, 0, 0]
+        );
+        let text = "ab\u{200d}\u{5d0}";
+        assert_eq!(
+            grapheme_levels(text, &starts(text), false),
+            vec![0, 0, 0, 1]
+        );
+    }
+
+    #[test]
+    fn isolates_hide_their_text_from_the_base_direction() {
+        // `QtPrivate::isRightToLeft` skips what is between an isolate initiator and its end.
+        assert!(!is_rtl("\u{2067}\u{5d0}\u{2069}abc"));
+        assert!(is_rtl("\u{2066}abc\u{2069}\u{5d0}"));
+        assert!(is_rtl("\u{2067}\u{2066}abc\u{2069}\u{5d0}\u{2069} \u{5d1}"));
     }
 }
