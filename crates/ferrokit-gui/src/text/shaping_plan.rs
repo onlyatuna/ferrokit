@@ -69,6 +69,26 @@ pub(crate) fn script_items(text: &str) -> Vec<(usize, Script)> {
     items
 }
 
+/// The script items of `&paragraph[range]` as items of the whole paragraph (offsets from
+/// `range.start`): Qt itemizes the paragraph once (`QTextEngine::itemize`), so characters of no
+/// script at the start of a bidi run keep the script of the text before them.
+pub(crate) fn script_items_in(
+    paragraph: &str,
+    range: std::ops::Range<usize>,
+) -> Vec<(usize, Script)> {
+    let items = script_items(paragraph);
+    // The item the piece starts in (there is always one at offset 0), then those starting in it.
+    let first = items.partition_point(|&(start, _)| start <= range.start) - 1;
+    let mut pieces = vec![(0, items[first].1)];
+    pieces.extend(
+        items[first + 1..]
+            .iter()
+            .take_while(|&&(start, _)| start < range.end)
+            .map(|&(start, script)| (start - range.start, script)),
+    );
+    pieces
+}
+
 fn is_combining_mark(ch: char) -> bool {
     unicode_linebreak::break_property(ch as u32) == unicode_linebreak::BreakClass::CombiningMark
         || unicode_bidi::bidi_class(ch) == unicode_bidi::BidiClass::NSM

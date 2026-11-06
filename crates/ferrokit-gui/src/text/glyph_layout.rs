@@ -752,14 +752,14 @@ fn qt_shaping_plan() -> bool {
     cfg!(windows)
 }
 
-/// Cuts the font runs of `text` at Qt's script items and gives each piece the script of its item.
-/// The items are found over the whole string, so a font run that starts with characters of no
-/// script of their own still takes the script of the item before it.
+/// Cuts the font runs of `text` at Qt's script `items` (offsets in `text`) and gives each piece
+/// the script of its item. The items are found over the whole paragraph, so a font run that starts
+/// with characters of no script of their own still takes the script of the item before it.
 fn split_runs_by_script<'a>(
     text: &str,
     runs: Vec<(FontRun<'a>, Option<Script>)>,
+    items: &[(usize, Script)],
 ) -> Vec<(FontRun<'a>, Option<Script>)> {
-    let items = shaping_plan::script_items(text);
     let mut result = Vec::with_capacity(runs.len());
     let mut item = 0;
     for (run, _) in runs {
@@ -1267,6 +1267,17 @@ impl GlyphLayout {
     /// Step 1 & 2 (Qt parity: `QFontEngineMulti::stringToCMap` + `QTextEngine::itemBoundaries`):
     /// Maps characters to font engines and partitions the string into contiguous runs sharing the same engine.
     pub fn partition_into_runs<'a>(text: &'a str, engines: &[FontEngine]) -> Vec<FontRun<'a>> {
+        Self::partition_piece(text, 0..text.len(), engines)
+    }
+
+    /// [`partition_into_runs`](Self::partition_into_runs) for `&paragraph[range]`, with the script
+    /// items of the whole paragraph.
+    fn partition_piece<'a>(
+        paragraph: &'a str,
+        range: std::ops::Range<usize>,
+        engines: &[FontEngine],
+    ) -> Vec<FontRun<'a>> {
+        let text = &paragraph[range.clone()];
         if text.is_empty() || engines.is_empty() {
             return Vec::new();
         }
@@ -1276,7 +1287,7 @@ impl GlyphLayout {
         let mut last_fallback_idx = 0usize;
 
         let chains = engines[0].script_chains.as_deref();
-        let items = chains.map(|_| shaping_plan::script_items(text));
+        let items = chains.map(|_| shaping_plan::script_items_in(paragraph, range));
         let emoji_flags = if chains.is_some() {
             emoji_sequence_flags(text)
         } else {
@@ -1430,6 +1441,20 @@ impl GlyphLayout {
         engines: &[FontEngine],
         right_to_left: Option<bool>,
     ) -> Self {
+        Self::shape_piece(text, 0..text.len(), font, engines, right_to_left)
+    }
+
+    /// [`shape_with_engines_directed`](Self::shape_with_engines_directed) for `&paragraph[range]`,
+    /// one item of a paragraph Qt itemized as a whole: the characters of no script at its start
+    /// keep the script of the text before them (its font and the script HarfBuzz gets).
+    pub(crate) fn shape_piece(
+        paragraph: &str,
+        range: std::ops::Range<usize>,
+        font: &Font,
+        engines: &[FontEngine],
+        right_to_left: Option<bool>,
+    ) -> Self {
+        let text = &paragraph[range.clone()];
         if text.is_empty() || engines.is_empty() {
             return Self::empty();
         }
@@ -1438,12 +1463,13 @@ impl GlyphLayout {
         // which selects the GPOS device-table adjustments.
         let ppem = font.size as u16;
 
-        let mut runs = Self::partition_into_runs(text, engines)
+        let mut runs = Self::partition_piece(paragraph, range.clone(), engines)
             .into_iter()
             .map(|run| (run, None))
             .collect::<Vec<_>>();
         if qt_shaping_plan() {
-            runs = split_runs_by_script(text, runs);
+            runs =
+                split_runs_by_script(text, runs, &shaping_plan::script_items_in(paragraph, range));
         }
         // Right to left text is laid out from its right end: the first font run in the text is the
         // rightmost, so the runs go in visual order.
