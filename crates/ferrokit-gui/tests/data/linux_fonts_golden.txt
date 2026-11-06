@@ -1,4 +1,7 @@
-# placeholder header
+# Real Qt 6.12.0 (PySide6, offscreen) on Linux, measured by gen_linux_fonts_golden.py (its docstring has the
+# line format): one chunk per machine, each starting with its `fontset` line. Advances marked `cbdt` are
+# skipped by the test: Qt draws part of their text from a color bitmap font (CBDT, Noto Color Emoji), whose
+# advances come from FreeType's bitmap strike; porting those metrics is a separate follow-up.
 fontset 28 f99f7cfa5da488be en_US.UTF-8
 face Arial - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 adv z 11660
 face Arial - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 adv z 11655

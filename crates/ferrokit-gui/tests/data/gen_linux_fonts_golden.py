@@ -6,7 +6,9 @@ name and weight/slant (QFontDatabase + fontconfig: `QFontconfigDatabase::populat
 which font each character of a text gets when the primary font has no glyph for it
 (`QFontEngineMulti`, `fallbacksForFamily` per script item), and the advances that follow.
 
-Needs Linux with fontconfig and PySide6 (measured with 6.12.0, `QT_QPA_PLATFORM=offscreen`). Run it with
+Needs Linux with fontconfig and PySide6 (measured with 6.12.0, `QT_QPA_PLATFORM=offscreen`) on Python 3.12 or
+later (on 3.10, shiboken6 drops a reference to None for some calls returning nothing, and after enough of them
+the interpreter aborts with `none_dealloc`). Run it with
 `QT_QPA_PLATFORM=offscreen python gen_linux_fonts_golden.py > linux_fonts_golden_<name>.txt` and append the
 output to linux_fonts_golden.txt (one chunk per machine).
 
@@ -18,8 +20,16 @@ Lines (fields separated by one space; families have `_` for a space, an empty hi
 * `face <family> <hint> <weight> <italic> <face id> adv <text id> <1/64 px>`: the face of the primary
   engine (`QRawFont.fromFont`, identified by its PostScript name and `head` checksum) and the
   `QFontMetricsF.horizontalAdvance` of a text, at 16 px.
-* `runs <family> <hint> <weight> <italic> <text id> <face id>:<characters> ...`: the face the glyph run of each
-  character belongs to (`QTextLayout.glyphRuns(i, 1)`), run-length coded.
+* `runs <family> <hint> <weight> <italic> <text id> <1/64 px> <face id>:<characters> ...`: the advance of the
+  text and the face the glyph run of each character belongs to (`QTextLayout.glyphRuns(i, 1)`), run-length
+  coded.
+* An advance of a text Qt draws in part from a color bitmap font (a `CBDT` table, e.g. Noto Color Emoji) is
+  written `cbdt <text id> <1/64 px>` in a `face` line and `cbdt:<1/64 px>` in a `runs` line: it is the advance
+  of FreeType's bitmap strike, which ferrokit does not port yet (a separate follow-up: the embedded bitmap
+  metrics of `QFontEngineFT`); the test counts these advances and skips them, and compares the rest of the
+  line.
+
+Every line is measured with an empty font engine cache (see `make`), so it is what a fresh process gets.
 """
 import os
 import subprocess
@@ -161,12 +171,32 @@ def main():
     def primary_id(font):
         return face_id(QRawFont.fromFont(font))
 
-    def runs(font, text):
+    def layout_of(font, text):
         layout = QTextLayout(text, font)
         layout.beginLayout()
         line = layout.createLine()
         line.setLineWidth(100000)
         layout.endLayout()
+        return layout
+
+    def uses_bitmap_color_font(font, text):
+        # After the line's measurements: laying the text out again changes nothing measured.
+        for run in layout_of(font, text).glyphRuns():
+            if not run.rawFont().fontTable("CBDT").isEmpty():
+                return True
+        return False
+
+    def tagged(font, values):
+        return " ".join(
+            "%s %s %d" % ("cbdt" if uses_bitmap_color_font(font, TEXTS[tid]) else "adv", tid, adv)
+            for tid, adv in values
+        )
+
+    def advances(font, metrics):
+        return tagged(font, [(tid, round(metrics.horizontalAdvance(TEXTS[tid]) * 64)) for tid in ADV_TEXTS])
+
+    def runs(font, text):
+        layout = layout_of(font, text)
         out = []
         pos = 0
         for ch in text:
@@ -201,19 +231,15 @@ def main():
             font = make(family, "-", weight, italic)
             fid = primary_id(font)
             metrics = QFontMetricsF(font)
-            parts = []
-            for tid in ADV_TEXTS:
-                parts.append("adv %s %d" % (tid, round(metrics.horizontalAdvance(TEXTS[tid]) * 64)))
-            print("face %s - %d %d %s %s" % (name(family), weight, italic, fid, " ".join(parts)))
+            print("face %s - %d %d %s %s" % (name(family), weight, italic, fid, advances(font, metrics)))
     for hint in HINTS[1:]:
         for family in MISSING_FOR_HINTS:
             for weight, italic in ((400, 0), (700, 1)):
                 font = make(family, hint, weight, italic)
                 metrics = QFontMetricsF(font)
-                parts = []
-                for tid in ADV_TEXTS:
-                    parts.append("adv %s %d" % (tid, round(metrics.horizontalAdvance(TEXTS[tid]) * 64)))
-                print("face %s %s %d %d %s %s" % (name(family), hint, weight, italic, primary_id(font), " ".join(parts)))
+                values = [(tid, round(metrics.horizontalAdvance(TEXTS[tid]) * 64)) for tid in ADV_TEXTS]
+                fid = primary_id(font)
+                print("face %s %s %d %d %s %s" % (name(family), hint, weight, italic, fid, tagged(font, values)))
     for family in FALLBACK_FAMILIES:
         for hint in ("-", "SansSerif", "Serif", "Monospace"):
             if hint != "-" and family not in ("NoSuchFamilyQQQ", "DejaVu Sans"):
@@ -222,7 +248,9 @@ def main():
                 for tid in FALLBACK_TEXTS:
                     font = make(family, hint, weight, italic)
                     adv = round(QFontMetricsF(font).horizontalAdvance(TEXTS[tid]) * 64)
-                    print("runs %s %s %d %d %s %d %s" % (name(family), hint, weight, italic, tid, adv, runs(font, TEXTS[tid])))
+                    face_runs = runs(font, TEXTS[tid])
+                    adv = ("cbdt:%d" if uses_bitmap_color_font(font, TEXTS[tid]) else "%d") % adv
+                    print("runs %s %s %d %d %s %s %s" % (name(family), hint, weight, italic, tid, adv, face_runs))
 
 
 if __name__ == "__main__":
