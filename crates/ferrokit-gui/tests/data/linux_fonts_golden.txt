@@ -1113,3 +1113,1178 @@ runs Comic_Sans_MS - 700 1 e 5377 DejaVuSans-Bold#f5e40f95:4 0:1 DejaVuSans-Bold
 runs Comic_Sans_MS - 700 1 u 3940 DejaVuSans-Bold#f5e40f95:5
 runs Comic_Sans_MS - 700 1 w 1780 DejaVuSans-Bold#f5e40f95:3
 runs Comic_Sans_MS - 700 1 z 13407 DejaVuSans-Bold#f5e40f95:10 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-Bold#f5e40f95:5 box:2 DejaVuSans-Bold#f5e40f95:1
+fontset 116 a8c54e4639f50d37 C.UTF-8
+face Andale_Mono - 400 0 AndaleMono#b6a80d16 adv l 16578 adv a 4312 adv A 7390 adv h 2456 adv c 5120 adv y 4302 cbdt z 14406
+face Andale_Mono - 700 0 AndaleMono#b6a80d16 adv l 16578 adv a 4312 adv A 7390 adv h 2456 adv c 5120 adv y 4302 cbdt z 14406
+face Andale_Mono - 400 1 AndaleMono#b6a80d16 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Andale_Mono - 700 1 AndaleMono#b6a80d16 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Arial - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face Arial - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face Arial - 400 1 Arial-ItalicMT#e2a19fb6 adv l 14526 adv a 5376 adv A 8732 adv h 2050 adv c 5120 adv y 5461 cbdt z 13464
+face Arial - 700 1 Arial-BoldItalicMT#1605b6d4 adv l 15351 adv a 5376 adv A 8732 adv h 2144 adv c 5120 adv y 5461 cbdt z 13577
+face Arial_Black - 400 0 Arial-Black#1b5c6853 adv l 17637 adv a 2798 adv A 5453 adv h 2265 adv c 5120 adv y 5636 cbdt z 12994
+face Arial_Black - 700 0 Arial-Black#1b5c6853 adv l 17637 adv a 3373 adv A 6470 adv h 2459 adv c 5120 adv y 5636 cbdt z 13354
+face Arial_Black - 400 1 Arial-Black#1b5c6853 adv l 17637 adv a 2211 adv A 4442 adv h 2265 adv c 5120 adv y 5636 cbdt z 12432
+face Arial_Black - 700 1 Arial-Black#1b5c6853 adv l 17637 adv a 2211 adv A 4442 adv h 2449 adv c 5120 adv y 5636 cbdt z 12432
+face Comic_Sans_MS - 400 0 ComicSansMS#4fdcb490 adv l 15608 adv a 2798 adv A 5418 adv h 2265 adv c 5120 adv y 5756 cbdt z 12399
+face Comic_Sans_MS - 700 0 ComicSansMS-Bold#d41ad0e4 adv l 16146 adv a 3373 adv A 6573 adv h 2459 adv c 5120 adv y 5764 cbdt z 13494
+face Comic_Sans_MS - 400 1 ComicSansMS#4fdcb490 adv l 15608 adv a 2211 adv A 4407 adv h 2265 adv c 5120 adv y 5756 cbdt z 11837
+face Comic_Sans_MS - 700 1 ComicSansMS-Bold#d41ad0e4 adv l 16146 adv a 3373 adv A 6573 adv h 2459 adv c 5120 adv y 5764 cbdt z 13494
+face Courier_New - 400 0 CourierNewPSMT#8ee5406e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Courier_New - 700 0 CourierNewPS-BoldMT#7b2bcee5 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Courier_New - 400 1 CourierNewPS-ItalicMT#d0d53a1c adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Courier_New - 700 1 CourierNewPS-BoldItalicMT#b813a54e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face DejaVu_Math_TeX_Gyre - 400 0 DejaVuMathTeXGyre-Regular#c4a20a4c adv l 16843 adv a 2798 adv A 5436 adv h 2265 adv c 5120 adv y 6329 cbdt z 12685
+face DejaVu_Math_TeX_Gyre - 700 0 DejaVuMathTeXGyre-Regular#c4a20a4c adv l 16843 adv a 3373 adv A 6453 adv h 2459 adv c 5120 adv y 6329 cbdt z 13045
+face DejaVu_Math_TeX_Gyre - 400 1 DejaVuMathTeXGyre-Regular#c4a20a4c adv l 16843 adv a 2211 adv A 4425 adv h 2265 adv c 5120 adv y 6329 cbdt z 12123
+face DejaVu_Math_TeX_Gyre - 700 1 DejaVuMathTeXGyre-Regular#c4a20a4c adv l 16843 adv a 2211 adv A 4425 adv h 2449 adv c 5120 adv y 6329 cbdt z 12123
+face DejaVu_Sans - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face DejaVu_Sans - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face DejaVu_Sans - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face DejaVu_Sans - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face DejaVu_Sans_Condensed - 400 0 DejaVuSansCondensed#97a5d5d5 adv l 14442 adv a 2516 adv A 4889 adv h 2037 adv c 5120 adv y 5324 cbdt z 11909
+face DejaVu_Sans_Condensed - 700 0 DejaVuSansCondensed-Bold#95920bfe adv l 16297 adv a 3034 adv A 5834 adv h 2212 adv c 5120 adv y 5419 cbdt z 12598
+face DejaVu_Sans_Condensed - 400 1 DejaVuSansCondensed-Oblique#5a9cc3a1 adv l 14556 adv a 3871 adv A 6375 adv h 2037 adv c 5120 adv y 5324 cbdt z 12319
+face DejaVu_Sans_Condensed - 700 1 DejaVuSansCondensed-BoldOblique#b9f881cb adv l 16291 adv a 3871 adv A 6403 adv h 2203 adv c 5120 adv y 5419 cbdt z 12683
+face DejaVu_Sans_Mono - 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face DejaVu_Sans_Mono - 700 0 DejaVuSansMono-Bold#b9aef60f adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face DejaVu_Sans_Mono - 400 1 DejaVuSansMono-Oblique#490cf658 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face DejaVu_Sans_Mono - 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face DejaVu_Serif - 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4426 adv h 1871 adv c 5120 adv y 5986 cbdt z 12129
+face DejaVu_Serif - 700 0 DejaVuSerif-Bold#91283cc5 adv l 18195 adv a 2255 adv A 4477 adv h 1978 adv c 5120 adv y 6087 cbdt z 12372
+face DejaVu_Serif - 400 1 DejaVuSerif-Italic#e786da0a adv l 16615 adv a 4298 adv A 7079 adv h 1828 adv c 5120 adv y 5958 cbdt z 13114
+face DejaVu_Serif - 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 4298 adv A 7110 adv h 1956 adv c 5120 adv y 6059 cbdt z 13475
+face DejaVu_Serif_Condensed - 400 0 DejaVuSerifCondensed#a445dcd3 adv l 14923 adv a 2516 adv A 4889 adv h 2037 adv c 5120 adv y 5360 cbdt z 11910
+face DejaVu_Serif_Condensed - 700 0 DejaVuSerifCondensed-Bold#e431a69a adv l 16341 adv a 3034 adv A 5834 adv h 2212 adv c 5120 adv y 5451 cbdt z 12561
+face DejaVu_Serif_Condensed - 400 1 DejaVuSerifCondensed-Italic#f3e1f4c3 adv l 14923 adv a 3871 adv A 6375 adv h 2265 adv c 5120 adv y 5538 cbdt z 12406
+face DejaVu_Serif_Condensed - 700 1 DejaVuSerifCondensed-BoldItalic#c6f89dbb adv l 16341 adv a 3871 adv A 6403 adv h 2449 adv c 5120 adv y 5629 cbdt z 12732
+face Georgia - 400 0 Georgia#1b624392 adv l 14881 adv a 2211 adv A 4348 adv h 1871 adv c 5120 adv y 5923 cbdt z 11370
+face Georgia - 700 0 Georgia-Bold#729df9c2 adv l 17134 adv a 2255 adv A 4381 adv h 1978 adv c 5120 adv y 6023 cbdt z 11662
+face Georgia - 400 1 Georgia-Italic#8c33277b adv l 15095 adv a 7168 adv A 11511 adv h 1828 adv c 5120 adv y 5895 cbdt z 14468
+face Georgia - 700 1 Georgia-BoldItalic#a684347f adv l 17342 adv a 7168 adv A 11524 adv h 1956 adv c 5120 adv y 5995 cbdt z 14879
+face Impact - 400 0 Impact#2d4e9ea3 adv l 12943 adv a 2798 adv A 5292 adv h 2265 adv c 5120 adv y 5542 cbdt z 11474
+face Impact - 700 0 Impact#2d4e9ea3 adv l 12943 adv a 3373 adv A 6309 adv h 2459 adv c 5120 adv y 5542 cbdt z 11834
+face Impact - 400 1 Impact#2d4e9ea3 adv l 12943 adv a 2211 adv A 4281 adv h 2265 adv c 5120 adv y 5542 cbdt z 10912
+face Impact - 700 1 Impact#2d4e9ea3 adv l 12943 adv a 2211 adv A 4281 adv h 2449 adv c 5120 adv y 5542 cbdt z 10912
+face Lato - 400 0 Lato-Regular#8b334b94 adv l 14649 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 5860 cbdt z 12002
+face Lato - 700 0 Lato-Bold#f9688760 adv l 14848 adv a 3373 adv A 6377 adv h 2459 adv c 5120 adv y 5852 cbdt z 12324
+face Lato - 400 1 Lato-Italic#12b21acc adv l 13846 adv a 3808 adv A 6223 adv h 2265 adv c 5120 adv y 5806 cbdt z 11920
+face Lato - 700 1 Lato-BoldItalic#34eab000 adv l 14049 adv a 3920 adv A 6384 adv h 2449 adv c 5120 adv y 5801 cbdt z 11953
+face Lato_Black - 400 0 Lato-Black#24d7e6e8 adv l 15033 adv a 2798 adv A 5348 adv h 2265 adv c 5120 adv y 5845 cbdt z 11933
+face Lato_Black - 700 0 Lato-Black#24d7e6e8 adv l 15033 adv a 3373 adv A 6365 adv h 2459 adv c 5120 adv y 5845 cbdt z 12293
+face Lato_Black - 400 1 Lato-BlackItalic#84363502 adv l 14242 adv a 4018 adv A 6523 adv h 2265 adv c 5120 adv y 5796 cbdt z 11975
+face Lato_Black - 700 1 Lato-BlackItalic#84363502 adv l 14242 adv a 4018 adv A 6523 adv h 2449 adv c 5120 adv y 5796 cbdt z 11975
+face Lato_Hairline - 400 0 Lato-Hairline#ef30f7ba adv l 14203 adv a 2798 adv A 5403 adv h 2265 adv c 5120 adv y 5877 cbdt z 12079
+face Lato_Hairline - 700 0 Lato-Hairline#ef30f7ba adv l 14203 adv a 3373 adv A 6420 adv h 2459 adv c 5120 adv y 5877 cbdt z 12439
+face Lato_Hairline - 400 1 Lato-HairlineItalic#1c6c7d44 adv l 13370 adv a 3556 adv A 5862 adv h 2265 adv c 5120 adv y 5819 cbdt z 11848
+face Lato_Hairline - 700 1 Lato-HairlineItalic#1c6c7d44 adv l 13370 adv a 3556 adv A 5862 adv h 2449 adv c 5120 adv y 5819 cbdt z 11848
+face Lato_Heavy - 400 0 Lato-Heavy#7f4bff1a adv l 14931 adv a 2798 adv A 5355 adv h 2265 adv c 5120 adv y 5849 cbdt z 11952
+face Lato_Heavy - 700 0 Lato-Heavy#7f4bff1a adv l 14931 adv a 3373 adv A 6372 adv h 2459 adv c 5120 adv y 5849 cbdt z 12312
+face Lato_Heavy - 400 1 Lato-HeavyItalic#c0bdae70 adv l 14135 adv a 3962 adv A 6443 adv h 2265 adv c 5120 adv y 5798 cbdt z 11960
+face Lato_Heavy - 700 1 Lato-HeavyItalic#c0bdae70 adv l 14135 adv a 3962 adv A 6443 adv h 2449 adv c 5120 adv y 5798 cbdt z 11960
+face Lato_Light - 400 0 Lato-Light#932003c8 adv l 14411 adv a 2798 adv A 5390 adv h 2265 adv c 5120 adv y 5869 cbdt z 12046
+face Lato_Light - 700 0 Lato-Light#932003c8 adv l 14411 adv a 3373 adv A 6407 adv h 2459 adv c 5120 adv y 5869 cbdt z 12406
+face Lato_Light - 400 1 Lato-LightItalic#d10d756e adv l 13590 adv a 3668 adv A 6022 adv h 2265 adv c 5120 adv y 5813 cbdt z 11878
+face Lato_Light - 700 1 Lato-LightItalic#d10d756e adv l 13590 adv a 3668 adv A 6022 adv h 2449 adv c 5120 adv y 5813 cbdt z 11878
+face Lato_Medium - 400 0 Lato-Medium#56d54e5c adv l 14681 adv a 2798 adv A 5371 adv h 2265 adv c 5120 adv y 5859 cbdt z 11993
+face Lato_Medium - 700 0 Lato-Medium#56d54e5c adv l 14681 adv a 3373 adv A 6388 adv h 2459 adv c 5120 adv y 5859 cbdt z 12353
+face Lato_Medium - 400 1 Lato-MediumItalic#07b38086 adv l 13879 adv a 3822 adv A 6243 adv h 2265 adv c 5120 adv y 5805 cbdt z 11922
+face Lato_Medium - 700 1 Lato-MediumItalic#07b38086 adv l 13879 adv a 3822 adv A 6243 adv h 2449 adv c 5120 adv y 5805 cbdt z 11922
+face Lato_Semibold - 400 0 Lato-Semibold#954da74e adv l 14751 adv a 2798 adv A 5366 adv h 2265 adv c 5120 adv y 5856 cbdt z 11979
+face Lato_Semibold - 700 0 Lato-Semibold#954da74e adv l 14751 adv a 3373 adv A 6383 adv h 2459 adv c 5120 adv y 5856 cbdt z 12339
+face Lato_Semibold - 400 1 Lato-SemiboldItalic#63b12902 adv l 13952 adv a 3864 adv A 6303 adv h 2265 adv c 5120 adv y 5803 cbdt z 11934
+face Lato_Semibold - 700 1 Lato-SemiboldItalic#63b12902 adv l 13952 adv a 3864 adv A 6303 adv h 2449 adv c 5120 adv y 5803 cbdt z 11934
+face Lato_Thin - 400 0 Lato-Thin#0cbf1de2 adv l 14286 adv a 2798 adv A 5398 adv h 2265 adv c 5120 adv y 5874 cbdt z 12066
+face Lato_Thin - 700 0 Lato-Thin#0cbf1de2 adv l 14286 adv a 3373 adv A 6415 adv h 2459 adv c 5120 adv y 5874 cbdt z 12426
+face Lato_Thin - 400 1 Lato-ThinItalic#2b70a908 adv l 13458 adv a 3605 adv A 5932 adv h 2265 adv c 5120 adv y 5816 cbdt z 11859
+face Lato_Thin - 700 1 Lato-ThinItalic#2b70a908 adv l 13458 adv a 3605 adv A 5932 adv h 2449 adv c 5120 adv y 5816 cbdt z 11859
+face Liberation_Mono - 400 0 LiberationMono#c5a81906 adv l 16578 adv a 4312 adv A 7390 adv h 2456 adv c 5120 adv y 4302 cbdt z 14406
+face Liberation_Mono - 700 0 LiberationMono-Bold#63b96874 adv l 16578 adv a 4312 adv A 7390 adv h 2456 adv c 5120 adv y 4302 cbdt z 14406
+face Liberation_Mono - 400 1 LiberationMono-Italic#089c60a8 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Liberation_Mono - 700 1 LiberationMono-BoldItalic#2cffc16e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Liberation_Sans - 400 0 LiberationSans#90d9ec63 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face Liberation_Sans - 700 0 LiberationSans-Bold#69e20882 adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face Liberation_Sans - 400 1 LiberationSans-Italic#e3a16e55 adv l 14526 adv a 2618 adv A 4398 adv h 2050 adv c 5120 adv y 5458 cbdt z 11494
+face Liberation_Sans - 700 1 LiberationSans-BoldItalic#0a67cc7f adv l 15351 adv a 2618 adv A 4398 adv h 2144 adv c 5120 adv y 5461 cbdt z 11607
+face Liberation_Sans_Narrow - 400 0 LiberationSansNarrow#1ba5466e adv l 11840 adv a 2798 adv A 5345 adv h 2265 adv c 5120 adv y 5223 cbdt z 11600
+face Liberation_Sans_Narrow - 700 0 LiberationSansNarrow-Bold#d830d079 adv l 12567 adv a 3373 adv A 6362 adv h 2459 adv c 5120 adv y 5223 cbdt z 12053
+face Liberation_Sans_Narrow - 400 1 LiberationSansNarrow-Italic#d3167c29 adv l 11772 adv a 1631 adv A 2796 adv h 2265 adv c 5120 adv y 5223 cbdt z 10146
+face Liberation_Sans_Narrow - 700 1 LiberationSansNarrow-BoldItalic#82576c97 adv l 12504 adv a 5572 adv A 8989 adv h 2449 adv c 5120 adv y 5223 cbdt z 13054
+face Liberation_Serif - 400 0 LiberationSerif#9512b74d adv l 13552 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5456 cbdt z 11281
+face Liberation_Serif - 700 0 LiberationSerif-Bold#7f4227e2 adv l 14145 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 5443 cbdt z 11278
+face Liberation_Serif - 400 1 LiberationSerif-Italic#b06f68b0 adv l 13160 adv a 2618 adv A 4370 adv h 1828 adv c 5120 adv y 5427 cbdt z 11068
+face Liberation_Serif - 700 1 LiberationSerif-BoldItalic#81dd20cf adv l 13669 adv a 2618 adv A 4370 adv h 1956 adv c 5120 adv y 5415 cbdt z 11068
+face Monospace - 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face Monospace - 700 0 DejaVuSansMono-Bold#b9aef60f adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face Monospace - 400 1 DejaVuSansMono-Oblique#490cf658 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face Monospace - 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face Noto_Color_Emoji - 400 0 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4312 cbdt A 7864 adv h 2456 adv c 5120 cbdt y 5256 cbdt z 16784
+face Noto_Color_Emoji - 700 0 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4312 cbdt A 7864 adv h 2456 adv c 5120 cbdt y 5256 cbdt z 16784
+face Noto_Color_Emoji - 400 1 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4298 cbdt A 7842 adv h 2456 adv c 5120 cbdt y 5800 cbdt z 17016
+face Noto_Color_Emoji - 700 1 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4298 cbdt A 7842 adv h 2456 adv c 5120 cbdt y 5800 cbdt z 17016
+face Noto_Sans_CJK_HK - 400 0 NotoSansCJKhk-Regular#06600e77 adv l 14846 adv a 2798 adv A 5341 adv h 2265 adv c 5120 adv y 6214 cbdt z 11863
+face Noto_Sans_CJK_HK - 700 0 NotoSansCJKhk-Bold#4b72d2c4 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_HK - 400 1 NotoSansCJKhk-Regular#06600e77 adv l 14846 adv a 2211 adv A 4330 adv h 2265 adv c 5120 adv y 6214 cbdt z 11301
+face Noto_Sans_CJK_HK - 700 1 NotoSansCJKhk-Bold#4b72d2c4 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_JP - 400 0 NotoSansCJKjp-Regular#9504c50c adv l 14846 adv a 2798 adv A 5341 adv h 2265 adv c 5120 adv y 6214 cbdt z 11863
+face Noto_Sans_CJK_JP - 700 0 NotoSansCJKjp-Bold#da13893f adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_JP - 400 1 NotoSansCJKjp-Regular#9504c50c adv l 14846 adv a 2211 adv A 4330 adv h 2265 adv c 5120 adv y 6214 cbdt z 11301
+face Noto_Sans_CJK_JP - 700 1 NotoSansCJKjp-Bold#da13893f adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_KR - 400 0 NotoSansCJKkr-Regular#4e7dc099 adv l 14846 adv a 2798 adv A 5341 adv h 2265 adv c 5120 adv y 6214 cbdt z 11863
+face Noto_Sans_CJK_KR - 700 0 NotoSansCJKkr-Bold#938a84c0 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_KR - 400 1 NotoSansCJKkr-Regular#4e7dc099 adv l 14846 adv a 2211 adv A 4330 adv h 2265 adv c 5120 adv y 6214 cbdt z 11301
+face Noto_Sans_CJK_KR - 700 1 NotoSansCJKkr-Bold#938a84c0 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_SC - 400 0 NotoSansCJKsc-Regular#9d95d424 adv l 14846 adv a 2798 adv A 5341 adv h 2265 adv c 5120 adv y 6214 cbdt z 11863
+face Noto_Sans_CJK_SC - 700 0 NotoSansCJKsc-Bold#e2929869 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_SC - 400 1 NotoSansCJKsc-Regular#9d95d424 adv l 14846 adv a 2211 adv A 4330 adv h 2265 adv c 5120 adv y 6214 cbdt z 11301
+face Noto_Sans_CJK_SC - 700 1 NotoSansCJKsc-Bold#e2929869 adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_TC - 400 0 NotoSansCJKtc-Regular#9ceab0df adv l 14846 adv a 2798 adv A 5341 adv h 2265 adv c 5120 adv y 6214 cbdt z 11863
+face Noto_Sans_CJK_TC - 700 0 NotoSansCJKtc-Bold#e20f757a adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_CJK_TC - 400 1 NotoSansCJKtc-Regular#9ceab0df adv l 14846 adv a 2211 adv A 4330 adv h 2265 adv c 5120 adv y 6214 cbdt z 11301
+face Noto_Sans_CJK_TC - 700 1 NotoSansCJKtc-Bold#e20f757a adv l 15690 adv a 3373 adv A 6361 adv h 2459 adv c 5120 adv y 6309 cbdt z 12389
+face Noto_Sans_Mono_CJK_HK - 400 0 NotoSansMonoCJKhk-Regular#f6f82fed adv l 13824 adv a 2798 adv A 5624 adv h 2265 adv c 5120 adv y 6214 cbdt z 13110
+face Noto_Sans_Mono_CJK_HK - 700 0 NotoSansMonoCJKhk-Bold#589a20f4 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_HK - 400 1 NotoSansMonoCJKhk-Regular#f6f82fed adv l 13824 adv a 2211 adv A 4613 adv h 2265 adv c 5120 adv y 6214 cbdt z 12548
+face Noto_Sans_Mono_CJK_HK - 700 1 NotoSansMonoCJKhk-Bold#589a20f4 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_JP - 400 0 NotoSansMonoCJKjp-Regular#4f6e70f8 adv l 13824 adv a 2798 adv A 5624 adv h 2265 adv c 5120 adv y 6214 cbdt z 13110
+face Noto_Sans_Mono_CJK_JP - 700 0 NotoSansMonoCJKjp-Bold#b112620b adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_JP - 400 1 NotoSansMonoCJKjp-Regular#4f6e70f8 adv l 13824 adv a 2211 adv A 4613 adv h 2265 adv c 5120 adv y 6214 cbdt z 12548
+face Noto_Sans_Mono_CJK_JP - 700 1 NotoSansMonoCJKjp-Bold#b112620b adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_KR - 400 0 NotoSansMonoCJKkr-Regular#5f0fc50b adv l 13824 adv a 2798 adv A 5624 adv h 2265 adv c 5120 adv y 6214 cbdt z 13110
+face Noto_Sans_Mono_CJK_KR - 700 0 NotoSansMonoCJKkr-Bold#c0b3b620 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_KR - 400 1 NotoSansMonoCJKkr-Regular#5f0fc50b adv l 13824 adv a 2211 adv A 4613 adv h 2265 adv c 5120 adv y 6214 cbdt z 12548
+face Noto_Sans_Mono_CJK_KR - 700 1 NotoSansMonoCJKkr-Bold#c0b3b620 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_SC - 400 0 NotoSansMonoCJKsc-Regular#71dc25e4 adv l 13824 adv a 2798 adv A 5624 adv h 2265 adv c 5120 adv y 6214 cbdt z 13110
+face Noto_Sans_Mono_CJK_SC - 700 0 NotoSansMonoCJKsc-Bold#d3421759 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_SC - 400 1 NotoSansMonoCJKsc-Regular#71dc25e4 adv l 13824 adv a 2211 adv A 4613 adv h 2265 adv c 5120 adv y 6214 cbdt z 12548
+face Noto_Sans_Mono_CJK_SC - 700 1 NotoSansMonoCJKsc-Bold#d3421759 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_TC - 400 0 NotoSansMonoCJKtc-Regular#9af2c485 adv l 13824 adv a 2798 adv A 5624 adv h 2265 adv c 5120 adv y 6214 cbdt z 13110
+face Noto_Sans_Mono_CJK_TC - 700 0 NotoSansMonoCJKtc-Bold#faf8b7b0 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Sans_Mono_CJK_TC - 400 1 NotoSansMonoCJKtc-Regular#9af2c485 adv l 13824 adv a 2211 adv A 4613 adv h 2265 adv c 5120 adv y 6214 cbdt z 12548
+face Noto_Sans_Mono_CJK_TC - 700 1 NotoSansMonoCJKtc-Bold#faf8b7b0 adv l 13824 adv a 3373 adv A 6641 adv h 2459 adv c 5120 adv y 6309 cbdt z 13511
+face Noto_Serif_CJK_HK - 400 0 NotoSerifCJKhk-Regular#4913d77e adv l 15609 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 6159 cbdt z 12055
+face Noto_Serif_CJK_HK - 700 0 NotoSerifCJKhk-Bold#a1be7f35 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_HK - 400 1 NotoSerifCJKhk-Regular#4913d77e adv l 15609 adv a 2211 adv A 4363 adv h 2265 adv c 5120 adv y 6159 cbdt z 11493
+face Noto_Serif_CJK_HK - 700 1 NotoSerifCJKhk-Bold#a1be7f35 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_JP - 400 0 NotoSerifCJKjp-Regular#ddbc0065 adv l 15609 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 6159 cbdt z 12055
+face Noto_Serif_CJK_JP - 700 0 NotoSerifCJKjp-Bold#3656a7f2 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_JP - 400 1 NotoSerifCJKjp-Regular#ddbc0065 adv l 15609 adv a 2211 adv A 4363 adv h 2265 adv c 5120 adv y 6159 cbdt z 11493
+face Noto_Serif_CJK_JP - 700 1 NotoSerifCJKjp-Bold#3656a7f2 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_KR - 400 0 NotoSerifCJKkr-Regular#075bc3ae adv l 15609 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 6159 cbdt z 12055
+face Noto_Serif_CJK_KR - 700 0 NotoSerifCJKkr-Bold#5ff06b3f adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_KR - 400 1 NotoSerifCJKkr-Regular#075bc3ae adv l 15609 adv a 2211 adv A 4363 adv h 2265 adv c 5120 adv y 6159 cbdt z 11493
+face Noto_Serif_CJK_KR - 700 1 NotoSerifCJKkr-Bold#5ff06b3f adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_SC - 400 0 NotoSerifCJKsc-Regular#fdb6d2bd adv l 15609 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 6159 cbdt z 12055
+face Noto_Serif_CJK_SC - 700 0 NotoSerifCJKsc-Bold#56977a18 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_SC - 400 1 NotoSerifCJKsc-Regular#fdb6d2bd adv l 15609 adv a 2211 adv A 4363 adv h 2265 adv c 5120 adv y 6159 cbdt z 11493
+face Noto_Serif_CJK_SC - 700 1 NotoSerifCJKsc-Bold#56977a18 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_TC - 400 0 NotoSerifCJKtc-Regular#73b5138c adv l 15609 adv a 2798 adv A 5374 adv h 2265 adv c 5120 adv y 6159 cbdt z 12055
+face Noto_Serif_CJK_TC - 700 0 NotoSerifCJKtc-Bold#ca3bbdd3 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Noto_Serif_CJK_TC - 400 1 NotoSerifCJKtc-Regular#73b5138c adv l 15609 adv a 2211 adv A 4363 adv h 2265 adv c 5120 adv y 6159 cbdt z 11493
+face Noto_Serif_CJK_TC - 700 1 NotoSerifCJKtc-Bold#ca3bbdd3 adv l 16349 adv a 3373 adv A 6385 adv h 2459 adv c 5120 adv y 6264 cbdt z 12549
+face Sans_Serif - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Sans_Serif - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Sans_Serif - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Sans_Serif - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Serif - 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5986 cbdt z 12060
+face Serif - 700 0 DejaVuSerif-Bold#91283cc5 adv l 18195 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 6087 cbdt z 12272
+face Serif - 400 1 DejaVuSerif-Italic#e786da0a adv l 16615 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5958 cbdt z 13955
+face Serif - 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 6059 cbdt z 14285
+face Times_New_Roman - 400 0 TimesNewRomanPSMT#37db14cc adv l 13552 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5456 cbdt z 11281
+face Times_New_Roman - 700 0 TimesNewRomanPS-BoldMT#d04394ce adv l 14145 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 5443 cbdt z 11278
+face Times_New_Roman - 400 1 TimesNewRomanPS-ItalicMT#a7c571fc adv l 13160 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5428 cbdt z 13178
+face Times_New_Roman - 700 1 TimesNewRomanPS-BoldItalicMT#38108fca adv l 13669 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 5415 cbdt z 13178
+face Trebuchet_MS - 400 0 TrebuchetMS#69b098c7 adv l 13877 adv a 2798 adv A 5420 adv h 2265 adv c 5120 adv y 5356 cbdt z 12302
+face Trebuchet_MS - 700 0 TrebuchetMS-Bold#0e633b99 adv l 14780 adv a 3373 adv A 6437 adv h 2459 adv c 5120 adv y 5419 cbdt z 12766
+face Trebuchet_MS - 400 1 TrebuchetMS-Italic#fcb9f40b adv l 13986 adv a 3584 adv A 5940 adv h 2265 adv c 5120 adv y 5356 cbdt z 12207
+face Trebuchet_MS - 700 1 Trebuchet-BoldItalic#57ff14d8 adv l 15064 adv a 3584 adv A 5940 adv h 2449 adv c 5120 adv y 5419 cbdt z 12405
+face Verdana - 400 0 Verdana#16fbfc3a adv l 16296 adv a 2798 adv A 5472 adv h 2265 adv c 5120 adv y 5971 cbdt z 12785
+face Verdana - 700 0 Verdana-Bold#48ae99b8 adv l 18466 adv a 3373 adv A 6479 adv h 2459 adv c 5120 adv y 5982 cbdt z 13384
+face Verdana - 400 1 Verdana-Italic#72472353 adv l 16487 adv a 7168 adv A 11624 adv h 2265 adv c 5120 adv y 5971 cbdt z 15286
+face Verdana - 700 1 Verdana-BoldItalic#f3ccc64b adv l 18463 adv a 7168 adv A 11614 adv h 2449 adv c 5120 adv y 5982 cbdt z 15525
+face Webdings - 400 0 Webdings#b669d705 adv l 25698 adv a 3584 adv A 6144 adv h 2048 adv c 2560 adv y 4096 adv z 12288
+face Webdings - 700 0 Webdings#b669d705 adv l 25698 adv a 3584 adv A 6144 adv h 2048 adv c 2560 adv y 4096 adv z 12288
+face Webdings - 400 1 Webdings#b669d705 adv l 25698 adv a 3584 adv A 6144 adv h 2048 adv c 2560 adv y 4096 adv z 12288
+face Webdings - 700 1 Webdings#b669d705 adv l 25698 adv a 3584 adv A 6144 adv h 2048 adv c 2560 adv y 4096 adv z 12288
+face arial - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face arial - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face arial - 400 1 Arial-ItalicMT#e2a19fb6 adv l 14526 adv a 5376 adv A 8732 adv h 2050 adv c 5120 adv y 5461 cbdt z 13464
+face arial - 700 1 Arial-BoldItalicMT#1605b6d4 adv l 15351 adv a 5376 adv A 8732 adv h 2144 adv c 5120 adv y 5461 cbdt z 13577
+face ARIAL - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face ARIAL - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face ARIAL - 400 1 Arial-ItalicMT#e2a19fb6 adv l 14526 adv a 5376 adv A 8732 adv h 2050 adv c 5120 adv y 5461 cbdt z 13464
+face ARIAL - 700 1 Arial-BoldItalicMT#1605b6d4 adv l 15351 adv a 5376 adv A 8732 adv h 2144 adv c 5120 adv y 5461 cbdt z 13577
+face Helvetica - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face Helvetica - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face Helvetica - 400 1 Arial-ItalicMT#e2a19fb6 adv l 14526 adv a 5376 adv A 8732 adv h 2050 adv c 5120 adv y 5461 cbdt z 13464
+face Helvetica - 700 1 Arial-BoldItalicMT#1605b6d4 adv l 15351 adv a 5376 adv A 8732 adv h 2144 adv c 5120 adv y 5461 cbdt z 13577
+face Helvetica_Neue - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Helvetica_Neue - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Helvetica_Neue - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Helvetica_Neue - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Times - 400 0 TimesNewRomanPSMT#37db14cc adv l 13552 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5456 cbdt z 11281
+face Times - 700 0 TimesNewRomanPS-BoldMT#d04394ce adv l 14145 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 5443 cbdt z 11278
+face Times - 400 1 TimesNewRomanPS-ItalicMT#a7c571fc adv l 13160 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5428 cbdt z 13178
+face Times - 700 1 TimesNewRomanPS-BoldItalicMT#38108fca adv l 13669 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 5415 cbdt z 13178
+face Courier - 400 0 CourierNewPSMT#8ee5406e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Courier - 700 0 CourierNewPS-BoldMT#7b2bcee5 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Courier - 400 1 CourierNewPS-ItalicMT#d0d53a1c adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Courier - 700 1 CourierNewPS-BoldItalicMT#b813a54e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Segoe_UI - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Segoe_UI - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Segoe_UI - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Segoe_UI - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Tahoma - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Tahoma - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Tahoma - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Tahoma - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Calibri - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Calibri - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Calibri - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Calibri - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Cambria - 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5986 cbdt z 12060
+face Cambria - 700 0 DejaVuSerif-Bold#91283cc5 adv l 18195 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 6087 cbdt z 12272
+face Cambria - 400 1 DejaVuSerif-Italic#e786da0a adv l 16615 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5958 cbdt z 13955
+face Cambria - 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 6059 cbdt z 14285
+face Consolas - 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face Consolas - 700 0 DejaVuSansMono-Bold#b9aef60f adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face Consolas - 400 1 DejaVuSansMono-Oblique#490cf658 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face Consolas - 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face Menlo - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Menlo - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Menlo - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Menlo - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Monaco - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Monaco - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Monaco - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Monaco - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face SF_Pro_Text - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face SF_Pro_Text - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face SF_Pro_Text - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face SF_Pro_Text - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Microsoft_JhengHei_UI - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Microsoft_JhengHei_UI - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Microsoft_JhengHei_UI - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Microsoft_JhengHei_UI - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Microsoft_YaHei - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Microsoft_YaHei - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Microsoft_YaHei - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Microsoft_YaHei - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face MS_Gothic - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face MS_Gothic - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face MS_Gothic - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face MS_Gothic - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Arimo - 400 0 ArialMT#7b86e499 adv l 14429 adv a 2211 adv A 4385 adv h 2050 adv c 5120 adv y 5461 cbdt z 11681
+face Arimo - 700 0 Arial-BoldMT#8d0b018d adv l 15313 adv a 2255 adv A 4405 adv h 2144 adv c 5120 adv y 5461 cbdt z 11676
+face Arimo - 400 1 Arial-ItalicMT#e2a19fb6 adv l 14526 adv a 5376 adv A 8732 adv h 2050 adv c 5120 adv y 5461 cbdt z 13464
+face Arimo - 700 1 Arial-BoldItalicMT#1605b6d4 adv l 15351 adv a 5376 adv A 8732 adv h 2144 adv c 5120 adv y 5461 cbdt z 13577
+face Tinos - 400 0 TimesNewRomanPSMT#37db14cc adv l 13552 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5456 cbdt z 11281
+face Tinos - 700 0 TimesNewRomanPS-BoldMT#d04394ce adv l 14145 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 5443 cbdt z 11278
+face Tinos - 400 1 TimesNewRomanPS-ItalicMT#a7c571fc adv l 13160 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5428 cbdt z 13178
+face Tinos - 700 1 TimesNewRomanPS-BoldItalicMT#38108fca adv l 13669 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 5415 cbdt z 13178
+face Cousine - 400 0 CourierNewPSMT#8ee5406e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Cousine - 700 0 CourierNewPS-BoldMT#7b2bcee5 adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4302 cbdt z 14396
+face Cousine - 400 1 CourierNewPS-ItalicMT#d0d53a1c adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face Cousine - 700 1 CourierNewPS-BoldItalicMT#b813a54e adv l 16578 adv a 4298 adv A 7368 adv h 2456 adv c 5120 adv y 4846 cbdt z 14638
+face DejaVu_Sans_Light - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face DejaVu_Sans_Light - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face DejaVu_Sans_Light - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face DejaVu_Sans_Light - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face DejaVu_Sans_Mono_Bold - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face DejaVu_Sans_Mono_Bold - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face DejaVu_Sans_Mono_Bold - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face DejaVu_Sans_Mono_Bold - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Noto_Sans - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Noto_Sans - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Noto_Sans - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Noto_Sans - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Noto_Serif - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Noto_Serif - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Noto_Serif - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Noto_Serif - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Noto_Sans_Mono - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Noto_Sans_Mono - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Noto_Sans_Mono - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Noto_Sans_Mono - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Noto_Emoji - 400 0 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4312 cbdt A 7864 adv h 2456 adv c 5120 cbdt y 5256 cbdt z 16784
+face Noto_Emoji - 700 0 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4312 cbdt A 7864 adv h 2456 adv c 5120 cbdt y 5256 cbdt z 16784
+face Noto_Emoji - 400 1 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4298 cbdt A 7842 adv h 2456 adv c 5120 cbdt y 5800 cbdt z 17016
+face Noto_Emoji - 700 1 NotoColorEmoji#68feb395 cbdt l 19464 adv a 4298 cbdt A 7842 adv h 2456 adv c 5120 cbdt y 5800 cbdt z 17016
+face Noto_Sans_Arabic - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Noto_Sans_Arabic - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Noto_Sans_Arabic - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Noto_Sans_Arabic - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Noto_Sans_Hebrew - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Noto_Sans_Hebrew - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Noto_Sans_Hebrew - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Noto_Sans_Hebrew - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face sans-serif - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face sans-serif - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face sans-serif - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face sans-serif - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face serif - 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5986 cbdt z 12060
+face serif - 700 0 DejaVuSerif-Bold#91283cc5 adv l 18195 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 6087 cbdt z 12272
+face serif - 400 1 DejaVuSerif-Italic#e786da0a adv l 16615 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5958 cbdt z 13955
+face serif - 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 6059 cbdt z 14285
+face monospace - 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face monospace - 700 0 DejaVuSansMono-Bold#b9aef60f adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face monospace - 400 1 DejaVuSansMono-Oblique#490cf658 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face monospace - 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face cursive - 400 0 ComicSansMS#4fdcb490 adv l 15608 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5756 cbdt z 12418
+face cursive - 700 0 ComicSansMS-Bold#d41ad0e4 adv l 16146 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 5764 cbdt z 13406
+face cursive - 400 1 ComicSansMS#4fdcb490 adv l 15608 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5756 cbdt z 12869
+face cursive - 700 1 ComicSansMS-Bold#d41ad0e4 adv l 16146 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 5764 cbdt z 13497
+face fantasy - 400 0 Impact#2d4e9ea3 adv l 12943 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5542 cbdt z 11619
+face fantasy - 700 0 Impact#2d4e9ea3 adv l 12943 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 5542 cbdt z 12010
+face fantasy - 400 1 Impact#2d4e9ea3 adv l 12943 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5542 cbdt z 12070
+face fantasy - 700 1 Impact#2d4e9ea3 adv l 12943 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 5542 cbdt z 12101
+face system-ui - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face system-ui - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face system-ui - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face system-ui - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Ubuntu - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Ubuntu - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Ubuntu - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Ubuntu - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Roboto - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Roboto - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Roboto - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Roboto - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face Open_Sans - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Open_Sans - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Open_Sans - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Open_Sans - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face FreeSans - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face FreeSans - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face FreeSans - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face FreeSans - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face FreeSerif - 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5986 cbdt z 12060
+face FreeSerif - 700 0 DejaVuSerif-Bold#91283cc5 adv l 18195 adv a 2255 adv A 4377 adv h 1978 adv c 5120 adv y 6087 cbdt z 12272
+face FreeSerif - 400 1 DejaVuSerif-Italic#e786da0a adv l 16615 adv a 5572 adv A 9012 adv h 1828 adv c 5120 adv y 5958 cbdt z 13955
+face FreeSerif - 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 6059 cbdt z 14285
+face FreeMono - 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face FreeMono - 700 0 DejaVuSansMono-Bold#b9aef60f adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face FreeMono - 400 1 DejaVuSansMono-Oblique#490cf658 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face FreeMono - 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face Lucida_Grande - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face Lucida_Grande - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face Lucida_Grande - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face Lucida_Grande - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face NoSuchFamilyQQQ - 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face NoSuchFamilyQQQ - 700 0 DejaVuSans-Bold#2a0c8833 adv l 18148 adv a 3373 adv A 6485 adv h 2459 adv c 5120 adv y 6023 cbdt z 13428
+face NoSuchFamilyQQQ - 400 1 DejaVuSans-Oblique#4684df84 adv l 16206 adv a 4298 adv A 7079 adv h 2265 adv c 5120 adv y 5917 cbdt z 13114
+face NoSuchFamilyQQQ - 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face NoSuchFamilyQQQ SansSerif 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face NoSuchFamilyQQQ SansSerif 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face NoSuchFamilyQQQ Serif 400 0 DejaVuSerif#33b5d28d adv l 16615 adv a 2211 adv A 4357 adv h 1871 adv c 5120 adv y 5986 cbdt z 12060
+face NoSuchFamilyQQQ Serif 700 1 DejaVuSerif-BoldItalic#8415884a adv l 18195 adv a 5572 adv A 9012 adv h 1956 adv c 5120 adv y 6059 cbdt z 14285
+face NoSuchFamilyQQQ TypeWriter 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face NoSuchFamilyQQQ TypeWriter 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face NoSuchFamilyQQQ Monospace 400 0 DejaVuSansMono#cd56a79d adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4312 cbdt z 14424
+face NoSuchFamilyQQQ Monospace 700 1 DejaVuSansMono-BoldOblique#7e779fd7 adv l 16632 adv a 4312 adv A 7392 adv h 2456 adv c 5120 adv y 4856 cbdt z 14666
+face NoSuchFamilyQQQ Cursive 400 0 ComicSansMS#4fdcb490 adv l 15608 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5756 cbdt z 12418
+face NoSuchFamilyQQQ Cursive 700 1 ComicSansMS-Bold#d41ad0e4 adv l 16146 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 5764 cbdt z 13497
+face NoSuchFamilyQQQ Fantasy 400 0 Impact#2d4e9ea3 adv l 12943 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5542 cbdt z 11619
+face NoSuchFamilyQQQ Fantasy 700 1 Impact#2d4e9ea3 adv l 12943 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 5542 cbdt z 12101
+face NoSuchFamilyQQQ System 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face NoSuchFamilyQQQ System 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+face NoSuchFamilyQQQ OldEnglish 400 0 DejaVuSans#91bb6389 adv l 16092 adv a 2798 adv A 5437 adv h 2265 adv c 5120 adv y 5917 cbdt z 12663
+face NoSuchFamilyQQQ OldEnglish 700 1 DejaVuSans-BoldOblique#388287e0 adv l 18142 adv a 4298 adv A 7110 adv h 2449 adv c 5120 adv y 6023 cbdt z 13519
+runs DejaVu_Sans - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs DejaVu_Sans - 400 0 A 5437 DejaVuSans#91bb6389:12
+runs DejaVu_Sans - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs DejaVu_Sans - 400 0 d 6144 box:6
+runs DejaVu_Sans - 400 0 b 5120 box:5
+runs DejaVu_Sans - 400 0 m 5120 box:5
+runs DejaVu_Sans - 400 0 t 3684 0:6
+runs DejaVu_Sans - 400 0 s 4096 box:5
+runs DejaVu_Sans - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs DejaVu_Sans - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs DejaVu_Sans - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs DejaVu_Sans - 400 0 g 3741 DejaVuSans#91bb6389:6
+runs DejaVu_Sans - 400 0 r 3182 DejaVuSans#91bb6389:5
+runs DejaVu_Sans - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs DejaVu_Sans - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs DejaVu_Sans - 400 0 y 5917 DejaVuSans#91bb6389:7
+runs DejaVu_Sans - 400 0 x 3422 DejaVuSans#91bb6389:5
+runs DejaVu_Sans - 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs DejaVu_Sans - 400 0 u 3785 DejaVuSans#91bb6389:5
+runs DejaVu_Sans - 400 0 w 1602 DejaVuSans#91bb6389:3
+runs DejaVu_Sans - 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs DejaVu_Sans - 700 1 a 4298 0:7
+runs DejaVu_Sans - 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs DejaVu_Sans - 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs DejaVu_Sans - 700 1 d 6144 box:6
+runs DejaVu_Sans - 700 1 b 5120 box:5
+runs DejaVu_Sans - 700 1 m 5120 box:5
+runs DejaVu_Sans - 700 1 t 3684 0:6
+runs DejaVu_Sans - 700 1 s 4096 box:5
+runs DejaVu_Sans - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs DejaVu_Sans - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs DejaVu_Sans - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs DejaVu_Sans - 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs DejaVu_Sans - 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans - 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans - 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans - 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans - 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans - 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans - 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs DejaVu_Sans SansSerif 400 0 a 2798 DejaVuSans#91bb6389:7
+runs DejaVu_Sans SansSerif 400 0 A 5437 DejaVuSans#91bb6389:12
+runs DejaVu_Sans SansSerif 400 0 h 2265 DejaVuSans#91bb6389:4
+runs DejaVu_Sans SansSerif 400 0 d 6144 box:6
+runs DejaVu_Sans SansSerif 400 0 b 5120 box:5
+runs DejaVu_Sans SansSerif 400 0 m 5120 box:5
+runs DejaVu_Sans SansSerif 400 0 t 3684 0:6
+runs DejaVu_Sans SansSerif 400 0 s 4096 box:5
+runs DejaVu_Sans SansSerif 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs DejaVu_Sans SansSerif 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs DejaVu_Sans SansSerif 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs DejaVu_Sans SansSerif 400 0 g 3741 DejaVuSans#91bb6389:6
+runs DejaVu_Sans SansSerif 400 0 r 3182 DejaVuSans#91bb6389:5
+runs DejaVu_Sans SansSerif 400 0 n 4604 DejaVuSans#91bb6389:7
+runs DejaVu_Sans SansSerif 400 0 o 4835 DejaVuSans#91bb6389:7
+runs DejaVu_Sans SansSerif 400 0 y 5917 DejaVuSans#91bb6389:7
+runs DejaVu_Sans SansSerif 400 0 x 3422 DejaVuSans#91bb6389:5
+runs DejaVu_Sans SansSerif 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs DejaVu_Sans SansSerif 400 0 u 3785 DejaVuSans#91bb6389:5
+runs DejaVu_Sans SansSerif 400 0 w 1602 DejaVuSans#91bb6389:3
+runs DejaVu_Sans SansSerif 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs DejaVu_Sans SansSerif 700 1 a 4298 0:7
+runs DejaVu_Sans SansSerif 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs DejaVu_Sans SansSerif 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs DejaVu_Sans SansSerif 700 1 d 6144 box:6
+runs DejaVu_Sans SansSerif 700 1 b 5120 box:5
+runs DejaVu_Sans SansSerif 700 1 m 5120 box:5
+runs DejaVu_Sans SansSerif 700 1 t 3684 0:6
+runs DejaVu_Sans SansSerif 700 1 s 4096 box:5
+runs DejaVu_Sans SansSerif 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs DejaVu_Sans SansSerif 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs DejaVu_Sans SansSerif 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs DejaVu_Sans SansSerif 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs DejaVu_Sans SansSerif 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans SansSerif 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans SansSerif 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans SansSerif 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans SansSerif 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans SansSerif 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans SansSerif 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans SansSerif 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans SansSerif 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs DejaVu_Sans Serif 400 0 a 2798 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Serif 400 0 A 5437 DejaVuSans#91bb6389:12
+runs DejaVu_Sans Serif 400 0 h 2265 DejaVuSans#91bb6389:4
+runs DejaVu_Sans Serif 400 0 d 6144 box:6
+runs DejaVu_Sans Serif 400 0 b 5120 box:5
+runs DejaVu_Sans Serif 400 0 m 5120 box:5
+runs DejaVu_Sans Serif 400 0 t 3684 0:6
+runs DejaVu_Sans Serif 400 0 s 4096 box:5
+runs DejaVu_Sans Serif 400 0 k 4945 NotoSerifCJKkr-Regular#075bc3ae:5
+runs DejaVu_Sans Serif 400 0 j 8192 NotoSerifCJKjp-Regular#ddbc0065:8
+runs DejaVu_Sans Serif 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs DejaVu_Sans Serif 400 0 g 3741 DejaVuSans#91bb6389:6
+runs DejaVu_Sans Serif 400 0 r 3182 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Serif 400 0 n 4604 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Serif 400 0 o 4835 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Serif 400 0 y 5917 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Serif 400 0 x 3422 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Serif 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs DejaVu_Sans Serif 400 0 u 3785 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Serif 400 0 w 1602 DejaVuSans#91bb6389:3
+runs DejaVu_Sans Serif 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs DejaVu_Sans Serif 700 1 a 4298 0:7
+runs DejaVu_Sans Serif 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs DejaVu_Sans Serif 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs DejaVu_Sans Serif 700 1 d 6144 box:6
+runs DejaVu_Sans Serif 700 1 b 5120 box:5
+runs DejaVu_Sans Serif 700 1 m 5120 box:5
+runs DejaVu_Sans Serif 700 1 t 3684 0:6
+runs DejaVu_Sans Serif 700 1 s 4096 box:5
+runs DejaVu_Sans Serif 700 1 k 4945 NotoSerifCJKkr-Bold#5ff06b3f:5
+runs DejaVu_Sans Serif 700 1 j 8192 NotoSerifCJKjp-Bold#3656a7f2:8
+runs DejaVu_Sans Serif 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs DejaVu_Sans Serif 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs DejaVu_Sans Serif 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Serif 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Serif 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Serif 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Serif 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Serif 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans Serif 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Serif 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans Serif 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs DejaVu_Sans Monospace 400 0 a 2798 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Monospace 400 0 A 5437 DejaVuSans#91bb6389:12
+runs DejaVu_Sans Monospace 400 0 h 2265 DejaVuSans#91bb6389:4
+runs DejaVu_Sans Monospace 400 0 d 6144 box:6
+runs DejaVu_Sans Monospace 400 0 b 5120 box:5
+runs DejaVu_Sans Monospace 400 0 m 5120 box:5
+runs DejaVu_Sans Monospace 400 0 t 3684 0:6
+runs DejaVu_Sans Monospace 400 0 s 4096 box:5
+runs DejaVu_Sans Monospace 400 0 k 4710 NotoSansMonoCJKkr-Regular#5f0fc50b:5
+runs DejaVu_Sans Monospace 400 0 j 8192 NotoSansMonoCJKjp-Regular#4f6e70f8:8
+runs DejaVu_Sans Monospace 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs DejaVu_Sans Monospace 400 0 g 3741 DejaVuSans#91bb6389:6
+runs DejaVu_Sans Monospace 400 0 r 3182 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Monospace 400 0 n 4604 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Monospace 400 0 o 4835 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Monospace 400 0 y 5917 DejaVuSans#91bb6389:7
+runs DejaVu_Sans Monospace 400 0 x 3422 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Monospace 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs DejaVu_Sans Monospace 400 0 u 3785 DejaVuSans#91bb6389:5
+runs DejaVu_Sans Monospace 400 0 w 1602 DejaVuSans#91bb6389:3
+runs DejaVu_Sans Monospace 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs DejaVu_Sans Monospace 700 1 a 4298 0:7
+runs DejaVu_Sans Monospace 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs DejaVu_Sans Monospace 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs DejaVu_Sans Monospace 700 1 d 6144 box:6
+runs DejaVu_Sans Monospace 700 1 b 5120 box:5
+runs DejaVu_Sans Monospace 700 1 m 5120 box:5
+runs DejaVu_Sans Monospace 700 1 t 3684 0:6
+runs DejaVu_Sans Monospace 700 1 s 4096 box:5
+runs DejaVu_Sans Monospace 700 1 k 4710 NotoSansMonoCJKkr-Bold#c0b3b620:5
+runs DejaVu_Sans Monospace 700 1 j 8192 NotoSansMonoCJKjp-Bold#b112620b:8
+runs DejaVu_Sans Monospace 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs DejaVu_Sans Monospace 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs DejaVu_Sans Monospace 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Monospace 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Monospace 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Monospace 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs DejaVu_Sans Monospace 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Monospace 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans Monospace 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs DejaVu_Sans Monospace 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs DejaVu_Sans Monospace 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs Liberation_Sans - 400 0 a 2211 ArialMT#7b86e499:7
+runs Liberation_Sans - 400 0 A 4385 ArialMT#7b86e499:7 LiberationSans#90d9ec63:1 ArialMT#7b86e499:4
+runs Liberation_Sans - 400 0 h 2050 ArialMT#7b86e499:4
+runs Liberation_Sans - 400 0 d 6144 box:6
+runs Liberation_Sans - 400 0 b 5120 box:5
+runs Liberation_Sans - 400 0 m 5120 box:5
+runs Liberation_Sans - 400 0 t 2244 0:6
+runs Liberation_Sans - 400 0 s 4096 box:5
+runs Liberation_Sans - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs Liberation_Sans - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs Liberation_Sans - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Liberation_Sans - 400 0 g 3370 LiberationSans#90d9ec63:6
+runs Liberation_Sans - 400 0 r 2680 LiberationSans#90d9ec63:5
+runs Liberation_Sans - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs Liberation_Sans - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs Liberation_Sans - 400 0 y 5461 DejaVuSans#91bb6389:2 LiberationSans#90d9ec63:5
+runs Liberation_Sans - 400 0 x 3625 LiberationSans#90d9ec63:5
+runs Liberation_Sans - 400 0 e cbdt:5486 LiberationSans#90d9ec63:3 NotoColorEmoji#68feb395:2 LiberationSans#90d9ec63:1 DejaVuSans#91bb6389:2
+runs Liberation_Sans - 400 0 u 3639 DejaVuSans#91bb6389:1 LiberationSans#90d9ec63:1 DejaVuSans#91bb6389:2 LiberationSans#90d9ec63:1
+runs Liberation_Sans - 400 0 w 1422 LiberationSans#90d9ec63:3
+runs Liberation_Sans - 400 0 z cbdt:11681 LiberationSans#90d9ec63:4 ArialMT#7b86e499:5 LiberationSans#90d9ec63:1 NotoSansCJKjp-Regular#9504c50c:2 LiberationSans#90d9ec63:1 DejaVuSans#91bb6389:1 LiberationSans#90d9ec63:1 NotoColorEmoji#68feb395:1 LiberationSans#90d9ec63:1 box:2 LiberationSans#90d9ec63:1
+runs Liberation_Sans - 700 1 a 2618 0:7
+runs Liberation_Sans - 700 1 A 4398 0:7 LiberationSans-BoldItalic#0a67cc7f:1 0:4
+runs Liberation_Sans - 700 1 h 2144 Arial-BoldItalicMT#1605b6d4:4
+runs Liberation_Sans - 700 1 d 6144 box:6
+runs Liberation_Sans - 700 1 b 5120 box:5
+runs Liberation_Sans - 700 1 m 5120 box:5
+runs Liberation_Sans - 700 1 t 2244 0:6
+runs Liberation_Sans - 700 1 s 4096 box:5
+runs Liberation_Sans - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs Liberation_Sans - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs Liberation_Sans - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Liberation_Sans - 700 1 g 3571 LiberationSans-BoldItalic#0a67cc7f:6
+runs Liberation_Sans - 700 1 r 2885 LiberationSans-BoldItalic#0a67cc7f:5
+runs Liberation_Sans - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs Liberation_Sans - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs Liberation_Sans - 700 1 y 5461 DejaVuSans-BoldOblique#388287e0:2 LiberationSans-BoldItalic#0a67cc7f:5
+runs Liberation_Sans - 700 1 x 3625 LiberationSans-BoldItalic#0a67cc7f:5
+runs Liberation_Sans - 700 1 e cbdt:5543 LiberationSans-BoldItalic#0a67cc7f:3 NotoColorEmoji#68feb395:2 LiberationSans-BoldItalic#0a67cc7f:1 DejaVuSans-BoldOblique#388287e0:2
+runs Liberation_Sans - 700 1 u 3766 DejaVuSans-BoldOblique#388287e0:1 LiberationSans-BoldItalic#0a67cc7f:1 DejaVuSans-BoldOblique#388287e0:2 LiberationSans-BoldItalic#0a67cc7f:1
+runs Liberation_Sans - 700 1 w 1478 LiberationSans-BoldItalic#0a67cc7f:3
+runs Liberation_Sans - 700 1 z cbdt:11607 LiberationSans-BoldItalic#0a67cc7f:4 0:5 LiberationSans-BoldItalic#0a67cc7f:1 NotoSansCJKjp-Bold#da13893f:2 LiberationSans-BoldItalic#0a67cc7f:1 DejaVuSans-BoldOblique#388287e0:1 LiberationSans-BoldItalic#0a67cc7f:1 NotoColorEmoji#68feb395:1 LiberationSans-BoldItalic#0a67cc7f:1 box:2 LiberationSans-BoldItalic#0a67cc7f:1
+runs Arial - 400 0 a 2211 ArialMT#7b86e499:7
+runs Arial - 400 0 A 4385 ArialMT#7b86e499:12
+runs Arial - 400 0 h 2050 ArialMT#7b86e499:4
+runs Arial - 400 0 d 6144 box:6
+runs Arial - 400 0 b 5120 box:5
+runs Arial - 400 0 m 5120 box:5
+runs Arial - 400 0 t 4608 0:6
+runs Arial - 400 0 s 4096 box:5
+runs Arial - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs Arial - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs Arial - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Arial - 400 0 g 3370 ArialMT#7b86e499:6
+runs Arial - 400 0 r 2680 ArialMT#7b86e499:5
+runs Arial - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs Arial - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs Arial - 400 0 y 5461 DejaVuSans#91bb6389:2 ArialMT#7b86e499:5
+runs Arial - 400 0 x 3625 ArialMT#7b86e499:5
+runs Arial - 400 0 e cbdt:5486 ArialMT#7b86e499:3 NotoColorEmoji#68feb395:2 ArialMT#7b86e499:1 DejaVuSans#91bb6389:2
+runs Arial - 400 0 u 3639 DejaVuSans#91bb6389:1 ArialMT#7b86e499:1 DejaVuSans#91bb6389:2 ArialMT#7b86e499:1
+runs Arial - 400 0 w 1422 ArialMT#7b86e499:3
+runs Arial - 400 0 z cbdt:11681 ArialMT#7b86e499:10 NotoSansCJKjp-Regular#9504c50c:2 ArialMT#7b86e499:1 DejaVuSans#91bb6389:1 ArialMT#7b86e499:1 NotoColorEmoji#68feb395:1 ArialMT#7b86e499:1 box:2 ArialMT#7b86e499:1
+runs Arial - 700 1 a 5376 0:7
+runs Arial - 700 1 A 8732 0:7 Arial-BoldItalicMT#1605b6d4:1 0:4
+runs Arial - 700 1 h 2144 Arial-BoldItalicMT#1605b6d4:4
+runs Arial - 700 1 d 6144 box:6
+runs Arial - 700 1 b 5120 box:5
+runs Arial - 700 1 m 5120 box:5
+runs Arial - 700 1 t 3072 0:6
+runs Arial - 700 1 s 4096 box:5
+runs Arial - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs Arial - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs Arial - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Arial - 700 1 g 3571 Arial-BoldItalicMT#1605b6d4:6
+runs Arial - 700 1 r 2885 Arial-BoldItalicMT#1605b6d4:5
+runs Arial - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs Arial - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs Arial - 700 1 y 5461 DejaVuSans-BoldOblique#388287e0:2 Arial-BoldItalicMT#1605b6d4:5
+runs Arial - 700 1 x 3625 Arial-BoldItalicMT#1605b6d4:5
+runs Arial - 700 1 e cbdt:5543 Arial-BoldItalicMT#1605b6d4:3 NotoColorEmoji#68feb395:2 Arial-BoldItalicMT#1605b6d4:1 DejaVuSans-BoldOblique#388287e0:2
+runs Arial - 700 1 u 3766 DejaVuSans-BoldOblique#388287e0:1 Arial-BoldItalicMT#1605b6d4:1 DejaVuSans-BoldOblique#388287e0:2 Arial-BoldItalicMT#1605b6d4:1
+runs Arial - 700 1 w 1478 Arial-BoldItalicMT#1605b6d4:3
+runs Arial - 700 1 z cbdt:13577 Arial-BoldItalicMT#1605b6d4:4 0:5 Arial-BoldItalicMT#1605b6d4:1 NotoSansCJKjp-Bold#da13893f:2 Arial-BoldItalicMT#1605b6d4:1 DejaVuSans-BoldOblique#388287e0:1 Arial-BoldItalicMT#1605b6d4:1 NotoColorEmoji#68feb395:1 Arial-BoldItalicMT#1605b6d4:1 box:2 Arial-BoldItalicMT#1605b6d4:1
+runs Times_New_Roman - 400 0 a 2211 TimesNewRomanPSMT#37db14cc:7
+runs Times_New_Roman - 400 0 A 4357 TimesNewRomanPSMT#37db14cc:12
+runs Times_New_Roman - 400 0 h 1871 TimesNewRomanPSMT#37db14cc:4
+runs Times_New_Roman - 400 0 d 6144 box:6
+runs Times_New_Roman - 400 0 b 5120 box:5
+runs Times_New_Roman - 400 0 m 5120 box:5
+runs Times_New_Roman - 400 0 t 4776 0:6
+runs Times_New_Roman - 400 0 s 4096 box:5
+runs Times_New_Roman - 400 0 k 4945 NotoSerifCJKkr-Regular#075bc3ae:5
+runs Times_New_Roman - 400 0 j 8192 NotoSerifCJKjp-Regular#ddbc0065:8
+runs Times_New_Roman - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Times_New_Roman - 400 0 g 3128 TimesNewRomanPSMT#37db14cc:6
+runs Times_New_Roman - 400 0 r 2655 TimesNewRomanPSMT#37db14cc:5
+runs Times_New_Roman - 400 0 n 4619 DejaVuSerif#33b5d28d:7
+runs Times_New_Roman - 400 0 o 5255 DejaVuSerif#33b5d28d:7
+runs Times_New_Roman - 400 0 y 5456 DejaVuSans#91bb6389:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 TimesNewRomanPSMT#37db14cc:5
+runs Times_New_Roman - 400 0 x 3625 TimesNewRomanPSMT#37db14cc:5
+runs Times_New_Roman - 400 0 e cbdt:5487 TimesNewRomanPSMT#37db14cc:3 NotoColorEmoji#68feb395:2 TimesNewRomanPSMT#37db14cc:1 DejaVuSerif#33b5d28d:1 DejaVuSans#91bb6389:1
+runs Times_New_Roman - 400 0 u 3463 DejaVuSerif#33b5d28d:1 TimesNewRomanPSMT#37db14cc:1 DejaVuSerif#33b5d28d:2 TimesNewRomanPSMT#37db14cc:1
+runs Times_New_Roman - 400 0 w 1222 TimesNewRomanPSMT#37db14cc:3
+runs Times_New_Roman - 400 0 z cbdt:11281 TimesNewRomanPSMT#37db14cc:10 NotoSansCJKjp-Regular#9504c50c:2 TimesNewRomanPSMT#37db14cc:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 TimesNewRomanPSMT#37db14cc:1 NotoColorEmoji#68feb395:1 TimesNewRomanPSMT#37db14cc:1 box:2 TimesNewRomanPSMT#37db14cc:1
+runs Times_New_Roman - 700 1 a 5572 0:7
+runs Times_New_Roman - 700 1 A 9012 0:7 TimesNewRomanPS-BoldItalicMT#38108fca:1 0:4
+runs Times_New_Roman - 700 1 h 1956 TimesNewRomanPS-BoldItalicMT#38108fca:4
+runs Times_New_Roman - 700 1 d 6144 box:6
+runs Times_New_Roman - 700 1 b 5120 box:5
+runs Times_New_Roman - 700 1 m 5120 box:5
+runs Times_New_Roman - 700 1 t 3184 0:6
+runs Times_New_Roman - 700 1 s 4096 box:5
+runs Times_New_Roman - 700 1 k 4945 NotoSerifCJKkr-Bold#5ff06b3f:5
+runs Times_New_Roman - 700 1 j 8192 NotoSerifCJKjp-Bold#3656a7f2:8
+runs Times_New_Roman - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Times_New_Roman - 700 1 g 3140 TimesNewRomanPS-BoldItalicMT#38108fca:6
+runs Times_New_Roman - 700 1 r 2909 TimesNewRomanPS-BoldItalicMT#38108fca:5
+runs Times_New_Roman - 700 1 n 5170 DejaVuSerif-BoldItalic#8415884a:7
+runs Times_New_Roman - 700 1 o 5640 DejaVuSerif-BoldItalic#8415884a:7
+runs Times_New_Roman - 700 1 y 5415 DejaVuSans-BoldOblique#388287e0:2 TimesNewRomanPS-BoldItalicMT#38108fca:5
+runs Times_New_Roman - 700 1 x 3625 TimesNewRomanPS-BoldItalicMT#38108fca:5
+runs Times_New_Roman - 700 1 e cbdt:5544 TimesNewRomanPS-BoldItalicMT#38108fca:3 NotoColorEmoji#68feb395:2 TimesNewRomanPS-BoldItalicMT#38108fca:1 DejaVuSerif-BoldItalic#8415884a:1 DejaVuSans-BoldOblique#388287e0:1
+runs Times_New_Roman - 700 1 u 3470 DejaVuSerif-BoldItalic#8415884a:1 TimesNewRomanPS-BoldItalicMT#38108fca:1 DejaVuSerif-BoldItalic#8415884a:1 DejaVuSans-BoldOblique#388287e0:1 TimesNewRomanPS-BoldItalicMT#38108fca:1
+runs Times_New_Roman - 700 1 w 1280 TimesNewRomanPS-BoldItalicMT#38108fca:3
+runs Times_New_Roman - 700 1 z cbdt:13178 TimesNewRomanPS-BoldItalicMT#38108fca:4 0:5 TimesNewRomanPS-BoldItalicMT#38108fca:1 NotoSansCJKjp-Bold#da13893f:2 TimesNewRomanPS-BoldItalicMT#38108fca:1 DejaVuSans-BoldOblique#388287e0:1 TimesNewRomanPS-BoldItalicMT#38108fca:1 NotoColorEmoji#68feb395:1 TimesNewRomanPS-BoldItalicMT#38108fca:1 box:2 TimesNewRomanPS-BoldItalicMT#38108fca:1
+runs Courier_New - 400 0 a 4298 CourierNewPSMT#8ee5406e:7
+runs Courier_New - 400 0 A 7368 CourierNewPSMT#8ee5406e:12
+runs Courier_New - 400 0 h 2456 CourierNewPSMT#8ee5406e:4
+runs Courier_New - 400 0 d 6144 box:6
+runs Courier_New - 400 0 b 5120 box:5
+runs Courier_New - 400 0 m 5120 box:5
+runs Courier_New - 400 0 t 3684 0:6
+runs Courier_New - 400 0 s 4096 box:5
+runs Courier_New - 400 0 k 4710 NotoSansMonoCJKkr-Regular#5f0fc50b:5
+runs Courier_New - 400 0 j 8192 NotoSansMonoCJKjp-Regular#4f6e70f8:8
+runs Courier_New - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Courier_New - 400 0 g 3684 CourierNewPSMT#8ee5406e:6
+runs Courier_New - 400 0 r 3070 CourierNewPSMT#8ee5406e:5
+runs Courier_New - 400 0 n 4312 DejaVuSansMono#cd56a79d:7
+runs Courier_New - 400 0 o 4312 DejaVuSansMono#cd56a79d:7
+runs Courier_New - 400 0 y 4302 DejaVuSansMono#cd56a79d:2 CourierNewPSMT#8ee5406e:5
+runs Courier_New - 400 0 x 3070 CourierNewPSMT#8ee5406e:5
+runs Courier_New - 400 0 e cbdt:5864 CourierNewPSMT#8ee5406e:3 NotoColorEmoji#68feb395:2 CourierNewPSMT#8ee5406e:1 DejaVuSansMono#cd56a79d:2
+runs Courier_New - 400 0 u 3076 DejaVuSansMono#cd56a79d:1 CourierNewPSMT#8ee5406e:1 DejaVuSansMono#cd56a79d:2 CourierNewPSMT#8ee5406e:1
+runs Courier_New - 400 0 w 1842 CourierNewPSMT#8ee5406e:3
+runs Courier_New - 400 0 z cbdt:14396 CourierNewPSMT#8ee5406e:10 NotoSansCJKjp-Regular#9504c50c:2 CourierNewPSMT#8ee5406e:1 DejaVuSansMono#cd56a79d:1 CourierNewPSMT#8ee5406e:1 NotoColorEmoji#68feb395:1 CourierNewPSMT#8ee5406e:1 box:2 CourierNewPSMT#8ee5406e:1
+runs Courier_New - 700 1 a 4298 0:7
+runs Courier_New - 700 1 A 7368 0:7 CourierNewPS-BoldItalicMT#b813a54e:1 0:4
+runs Courier_New - 700 1 h 2456 CourierNewPS-BoldItalicMT#b813a54e:4
+runs Courier_New - 700 1 d 6144 box:6
+runs Courier_New - 700 1 b 5120 box:5
+runs Courier_New - 700 1 m 5120 box:5
+runs Courier_New - 700 1 t 2456 0:6
+runs Courier_New - 700 1 s 4096 box:5
+runs Courier_New - 700 1 k 4710 NotoSansMonoCJKkr-Bold#c0b3b620:5
+runs Courier_New - 700 1 j 8192 NotoSansMonoCJKjp-Bold#b112620b:8
+runs Courier_New - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Courier_New - 700 1 g 3684 CourierNewPS-BoldItalicMT#b813a54e:6
+runs Courier_New - 700 1 r 3070 CourierNewPS-BoldItalicMT#b813a54e:5
+runs Courier_New - 700 1 n 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs Courier_New - 700 1 o 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs Courier_New - 700 1 y 4846 DejaVuSans-BoldOblique#388287e0:2 CourierNewPS-BoldItalicMT#b813a54e:5
+runs Courier_New - 700 1 x 3070 CourierNewPS-BoldItalicMT#b813a54e:5
+runs Courier_New - 700 1 e cbdt:6106 CourierNewPS-BoldItalicMT#b813a54e:3 NotoColorEmoji#68feb395:2 CourierNewPS-BoldItalicMT#b813a54e:1 DejaVuSansMono-BoldOblique#7e779fd7:1 DejaVuSans-BoldOblique#388287e0:1
+runs Courier_New - 700 1 u 3076 DejaVuSansMono-BoldOblique#7e779fd7:1 CourierNewPS-BoldItalicMT#b813a54e:1 DejaVuSansMono-BoldOblique#7e779fd7:2 CourierNewPS-BoldItalicMT#b813a54e:1
+runs Courier_New - 700 1 w 1842 CourierNewPS-BoldItalicMT#b813a54e:3
+runs Courier_New - 700 1 z cbdt:14638 CourierNewPS-BoldItalicMT#b813a54e:4 0:5 CourierNewPS-BoldItalicMT#b813a54e:1 NotoSansCJKjp-Bold#da13893f:2 CourierNewPS-BoldItalicMT#b813a54e:1 DejaVuSans-BoldOblique#388287e0:1 CourierNewPS-BoldItalicMT#b813a54e:1 NotoColorEmoji#68feb395:1 CourierNewPS-BoldItalicMT#b813a54e:1 box:2 CourierNewPS-BoldItalicMT#b813a54e:1
+runs Liberation_Mono - 400 0 a 4312 DejaVuSansMono#cd56a79d:7
+runs Liberation_Mono - 400 0 A 7390 DejaVuSansMono#cd56a79d:7 LiberationMono#c5a81906:1 DejaVuSansMono#cd56a79d:4
+runs Liberation_Mono - 400 0 h 2456 CourierNewPSMT#8ee5406e:4
+runs Liberation_Mono - 400 0 d 6144 box:6
+runs Liberation_Mono - 400 0 b 5120 box:5
+runs Liberation_Mono - 400 0 m 5120 box:5
+runs Liberation_Mono - 400 0 t 3684 0:6
+runs Liberation_Mono - 400 0 s 4096 box:5
+runs Liberation_Mono - 400 0 k 4710 NotoSansMonoCJKkr-Regular#5f0fc50b:5
+runs Liberation_Mono - 400 0 j 8192 NotoSansMonoCJKjp-Regular#4f6e70f8:8
+runs Liberation_Mono - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Liberation_Mono - 400 0 g 3684 LiberationMono#c5a81906:6
+runs Liberation_Mono - 400 0 r 3070 LiberationMono#c5a81906:5
+runs Liberation_Mono - 400 0 n 4312 DejaVuSansMono#cd56a79d:7
+runs Liberation_Mono - 400 0 o 4312 DejaVuSansMono#cd56a79d:7
+runs Liberation_Mono - 400 0 y 4302 DejaVuSansMono#cd56a79d:2 LiberationMono#c5a81906:5
+runs Liberation_Mono - 400 0 x 3070 LiberationMono#c5a81906:5
+runs Liberation_Mono - 400 0 e cbdt:5864 LiberationMono#c5a81906:3 NotoColorEmoji#68feb395:2 LiberationMono#c5a81906:1 DejaVuSansMono#cd56a79d:2
+runs Liberation_Mono - 400 0 u 3076 DejaVuSansMono#cd56a79d:1 LiberationMono#c5a81906:1 DejaVuSansMono#cd56a79d:2 LiberationMono#c5a81906:1
+runs Liberation_Mono - 400 0 w 1842 LiberationMono#c5a81906:3
+runs Liberation_Mono - 400 0 z cbdt:14406 LiberationMono#c5a81906:4 DejaVuSansMono#cd56a79d:5 LiberationMono#c5a81906:1 NotoSansCJKjp-Regular#9504c50c:2 LiberationMono#c5a81906:1 DejaVuSansMono#cd56a79d:1 LiberationMono#c5a81906:1 NotoColorEmoji#68feb395:1 LiberationMono#c5a81906:1 box:2 LiberationMono#c5a81906:1
+runs Liberation_Mono - 700 1 a 4298 0:7
+runs Liberation_Mono - 700 1 A 7368 0:7 LiberationMono-BoldItalic#2cffc16e:1 0:4
+runs Liberation_Mono - 700 1 h 2456 CourierNewPS-BoldItalicMT#b813a54e:4
+runs Liberation_Mono - 700 1 d 6144 box:6
+runs Liberation_Mono - 700 1 b 5120 box:5
+runs Liberation_Mono - 700 1 m 5120 box:5
+runs Liberation_Mono - 700 1 t 3684 0:6
+runs Liberation_Mono - 700 1 s 4096 box:5
+runs Liberation_Mono - 700 1 k 4710 NotoSansMonoCJKkr-Bold#c0b3b620:5
+runs Liberation_Mono - 700 1 j 8192 NotoSansMonoCJKjp-Bold#b112620b:8
+runs Liberation_Mono - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Liberation_Mono - 700 1 g 3684 LiberationMono-BoldItalic#2cffc16e:6
+runs Liberation_Mono - 700 1 r 3070 LiberationMono-BoldItalic#2cffc16e:5
+runs Liberation_Mono - 700 1 n 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs Liberation_Mono - 700 1 o 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs Liberation_Mono - 700 1 y 4846 DejaVuSans-BoldOblique#388287e0:2 LiberationMono-BoldItalic#2cffc16e:5
+runs Liberation_Mono - 700 1 x 3070 LiberationMono-BoldItalic#2cffc16e:5
+runs Liberation_Mono - 700 1 e cbdt:6106 LiberationMono-BoldItalic#2cffc16e:3 NotoColorEmoji#68feb395:2 LiberationMono-BoldItalic#2cffc16e:1 DejaVuSansMono-BoldOblique#7e779fd7:1 DejaVuSans-BoldOblique#388287e0:1
+runs Liberation_Mono - 700 1 u 3076 DejaVuSansMono-BoldOblique#7e779fd7:1 LiberationMono-BoldItalic#2cffc16e:1 DejaVuSansMono-BoldOblique#7e779fd7:2 LiberationMono-BoldItalic#2cffc16e:1
+runs Liberation_Mono - 700 1 w 1842 LiberationMono-BoldItalic#2cffc16e:3
+runs Liberation_Mono - 700 1 z cbdt:14638 LiberationMono-BoldItalic#2cffc16e:4 0:5 LiberationMono-BoldItalic#2cffc16e:1 NotoSansCJKjp-Bold#da13893f:2 LiberationMono-BoldItalic#2cffc16e:1 DejaVuSans-BoldOblique#388287e0:1 LiberationMono-BoldItalic#2cffc16e:1 NotoColorEmoji#68feb395:1 LiberationMono-BoldItalic#2cffc16e:1 box:2 LiberationMono-BoldItalic#2cffc16e:1
+runs DejaVu_Sans_Mono - 400 0 a 4312 DejaVuSansMono#cd56a79d:7
+runs DejaVu_Sans_Mono - 400 0 A 7392 DejaVuSansMono#cd56a79d:12
+runs DejaVu_Sans_Mono - 400 0 h 2456 CourierNewPSMT#8ee5406e:4
+runs DejaVu_Sans_Mono - 400 0 d 6144 box:6
+runs DejaVu_Sans_Mono - 400 0 b 5120 box:5
+runs DejaVu_Sans_Mono - 400 0 m 5120 box:5
+runs DejaVu_Sans_Mono - 400 0 t 3696 0:6
+runs DejaVu_Sans_Mono - 400 0 s 4096 box:5
+runs DejaVu_Sans_Mono - 400 0 k 4710 NotoSansMonoCJKkr-Regular#5f0fc50b:5
+runs DejaVu_Sans_Mono - 400 0 j 8192 NotoSansMonoCJKjp-Regular#4f6e70f8:8
+runs DejaVu_Sans_Mono - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs DejaVu_Sans_Mono - 400 0 g 3696 DejaVuSansMono#cd56a79d:6
+runs DejaVu_Sans_Mono - 400 0 r 3080 DejaVuSansMono#cd56a79d:5
+runs DejaVu_Sans_Mono - 400 0 n 4312 DejaVuSansMono#cd56a79d:7
+runs DejaVu_Sans_Mono - 400 0 o 4312 DejaVuSansMono#cd56a79d:7
+runs DejaVu_Sans_Mono - 400 0 y 4312 DejaVuSansMono#cd56a79d:7
+runs DejaVu_Sans_Mono - 400 0 x 3080 DejaVuSansMono#cd56a79d:5
+runs DejaVu_Sans_Mono - 400 0 e cbdt:5872 DejaVuSansMono#cd56a79d:3 NotoColorEmoji#68feb395:2 DejaVuSansMono#cd56a79d:3
+runs DejaVu_Sans_Mono - 400 0 u 3080 DejaVuSansMono#cd56a79d:5
+runs DejaVu_Sans_Mono - 400 0 w 1848 DejaVuSansMono#cd56a79d:3
+runs DejaVu_Sans_Mono - 400 0 z cbdt:14424 DejaVuSansMono#cd56a79d:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSansMono#cd56a79d:3 NotoColorEmoji#68feb395:1 DejaVuSansMono#cd56a79d:1 box:2 DejaVuSansMono#cd56a79d:1
+runs DejaVu_Sans_Mono - 700 1 a 4312 0:7
+runs DejaVu_Sans_Mono - 700 1 A 7392 0:7 DejaVuSansMono-BoldOblique#7e779fd7:1 0:4
+runs DejaVu_Sans_Mono - 700 1 h 2456 CourierNewPS-BoldItalicMT#b813a54e:4
+runs DejaVu_Sans_Mono - 700 1 d 6144 box:6
+runs DejaVu_Sans_Mono - 700 1 b 5120 box:5
+runs DejaVu_Sans_Mono - 700 1 m 5120 box:5
+runs DejaVu_Sans_Mono - 700 1 t 3696 0:6
+runs DejaVu_Sans_Mono - 700 1 s 4096 box:5
+runs DejaVu_Sans_Mono - 700 1 k 4710 NotoSansMonoCJKkr-Bold#c0b3b620:5
+runs DejaVu_Sans_Mono - 700 1 j 8192 NotoSansMonoCJKjp-Bold#b112620b:8
+runs DejaVu_Sans_Mono - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs DejaVu_Sans_Mono - 700 1 g 3696 DejaVuSansMono-BoldOblique#7e779fd7:6
+runs DejaVu_Sans_Mono - 700 1 r 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs DejaVu_Sans_Mono - 700 1 n 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs DejaVu_Sans_Mono - 700 1 o 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs DejaVu_Sans_Mono - 700 1 y 4856 DejaVuSans-BoldOblique#388287e0:2 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs DejaVu_Sans_Mono - 700 1 x 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs DejaVu_Sans_Mono - 700 1 e cbdt:6114 DejaVuSansMono-BoldOblique#7e779fd7:3 NotoColorEmoji#68feb395:2 DejaVuSansMono-BoldOblique#7e779fd7:2 DejaVuSans-BoldOblique#388287e0:1
+runs DejaVu_Sans_Mono - 700 1 u 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs DejaVu_Sans_Mono - 700 1 w 1848 DejaVuSansMono-BoldOblique#7e779fd7:3
+runs DejaVu_Sans_Mono - 700 1 z cbdt:14666 DejaVuSansMono-BoldOblique#7e779fd7:4 0:5 DejaVuSansMono-BoldOblique#7e779fd7:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSansMono-BoldOblique#7e779fd7:1 DejaVuSans-BoldOblique#388287e0:1 DejaVuSansMono-BoldOblique#7e779fd7:1 NotoColorEmoji#68feb395:1 DejaVuSansMono-BoldOblique#7e779fd7:1 box:2 DejaVuSansMono-BoldOblique#7e779fd7:1
+runs Noto_Sans_CJK_SC - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs Noto_Sans_CJK_SC - 400 0 A 5341 DejaVuSans#91bb6389:7 NotoSansCJKsc-Regular#9d95d424:1 DejaVuSans#91bb6389:4
+runs Noto_Sans_CJK_SC - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs Noto_Sans_CJK_SC - 400 0 d 6144 box:6
+runs Noto_Sans_CJK_SC - 400 0 b 5120 box:5
+runs Noto_Sans_CJK_SC - 400 0 m 5120 box:5
+runs Noto_Sans_CJK_SC - 400 0 t 6144 0:6
+runs Noto_Sans_CJK_SC - 400 0 s 4096 box:5
+runs Noto_Sans_CJK_SC - 400 0 k 4710 NotoSansCJKsc-Regular#9d95d424:5
+runs Noto_Sans_CJK_SC - 400 0 j 8192 NotoSansCJKsc-Regular#9d95d424:8
+runs Noto_Sans_CJK_SC - 400 0 c 5120 NotoSansCJKsc-Regular#9d95d424:5
+runs Noto_Sans_CJK_SC - 400 0 g 3491 NotoSansCJKsc-Regular#9d95d424:6
+runs Noto_Sans_CJK_SC - 400 0 r 2759 NotoSansCJKsc-Regular#9d95d424:5
+runs Noto_Sans_CJK_SC - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs Noto_Sans_CJK_SC - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs Noto_Sans_CJK_SC - 400 0 y 6214 NotoSansCJKsc-Regular#9d95d424:7
+runs Noto_Sans_CJK_SC - 400 0 x 5120 NotoSansCJKsc-Regular#9d95d424:5
+runs Noto_Sans_CJK_SC - 400 0 e cbdt:5542 NotoSansCJKsc-Regular#9d95d424:3 NotoColorEmoji#68feb395:2 NotoSansCJKsc-Regular#9d95d424:2 DejaVuSans#91bb6389:1
+runs Noto_Sans_CJK_SC - 400 0 u 4907 NotoSansCJKsc-Regular#9d95d424:3 DejaVuSans#91bb6389:1 NotoSansCJKsc-Regular#9d95d424:1
+runs Noto_Sans_CJK_SC - 400 0 w 1437 NotoSansCJKsc-Regular#9d95d424:3
+runs Noto_Sans_CJK_SC - 400 0 z cbdt:11863 NotoSansCJKsc-Regular#9d95d424:4 DejaVuSans#91bb6389:5 NotoSansCJKsc-Regular#9d95d424:6 NotoColorEmoji#68feb395:1 NotoSansCJKsc-Regular#9d95d424:1 box:2 NotoSansCJKsc-Regular#9d95d424:1
+runs Noto_Sans_CJK_SC - 700 1 a 3373 DejaVuSans-Bold#2a0c8833:7
+runs Noto_Sans_CJK_SC - 700 1 A 6361 DejaVuSans-Bold#2a0c8833:7 NotoSansCJKsc-Bold#e2929869:1 DejaVuSans-Bold#2a0c8833:4
+runs Noto_Sans_CJK_SC - 700 1 h 2459 DejaVuSans-Bold#2a0c8833:4
+runs Noto_Sans_CJK_SC - 700 1 d 6144 box:6
+runs Noto_Sans_CJK_SC - 700 1 b 5120 box:5
+runs Noto_Sans_CJK_SC - 700 1 m 5120 box:5
+runs Noto_Sans_CJK_SC - 700 1 t 6144 0:6
+runs Noto_Sans_CJK_SC - 700 1 s 4096 box:5
+runs Noto_Sans_CJK_SC - 700 1 k 4710 NotoSansCJKsc-Bold#e2929869:5
+runs Noto_Sans_CJK_SC - 700 1 j 8192 NotoSansCJKsc-Bold#e2929869:8
+runs Noto_Sans_CJK_SC - 700 1 c 5120 NotoSansCJKsc-Bold#e2929869:5
+runs Noto_Sans_CJK_SC - 700 1 g 3718 NotoSansCJKsc-Bold#e2929869:6
+runs Noto_Sans_CJK_SC - 700 1 r 2983 NotoSansCJKsc-Bold#e2929869:5
+runs Noto_Sans_CJK_SC - 700 1 n 4573 DejaVuSans-Bold#2a0c8833:7
+runs Noto_Sans_CJK_SC - 700 1 o 5113 DejaVuSans-Bold#2a0c8833:7
+runs Noto_Sans_CJK_SC - 700 1 y 6309 NotoSansCJKsc-Bold#e2929869:7
+runs Noto_Sans_CJK_SC - 700 1 x 5120 NotoSansCJKsc-Bold#e2929869:5
+runs Noto_Sans_CJK_SC - 700 1 e cbdt:5608 NotoSansCJKsc-Bold#e2929869:3 NotoColorEmoji#68feb395:2 NotoSansCJKsc-Bold#e2929869:2 DejaVuSans-Bold#2a0c8833:1
+runs Noto_Sans_CJK_SC - 700 1 u 4916 NotoSansCJKsc-Bold#e2929869:3 DejaVuSans-Bold#2a0c8833:1 NotoSansCJKsc-Bold#e2929869:1
+runs Noto_Sans_CJK_SC - 700 1 w 1496 NotoSansCJKsc-Bold#e2929869:3
+runs Noto_Sans_CJK_SC - 700 1 z cbdt:12389 NotoSansCJKsc-Bold#e2929869:4 DejaVuSans-Bold#2a0c8833:5 NotoSansCJKsc-Bold#e2929869:6 NotoColorEmoji#68feb395:1 NotoSansCJKsc-Bold#e2929869:1 box:2 NotoSansCJKsc-Bold#e2929869:1
+runs NoSuchFamilyQQQ - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ - 400 0 A 5437 DejaVuSans#91bb6389:12
+runs NoSuchFamilyQQQ - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs NoSuchFamilyQQQ - 400 0 d 6144 box:6
+runs NoSuchFamilyQQQ - 400 0 b 5120 box:5
+runs NoSuchFamilyQQQ - 400 0 m 5120 box:5
+runs NoSuchFamilyQQQ - 400 0 t 3684 0:6
+runs NoSuchFamilyQQQ - 400 0 s 4096 box:5
+runs NoSuchFamilyQQQ - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs NoSuchFamilyQQQ - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs NoSuchFamilyQQQ - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs NoSuchFamilyQQQ - 400 0 g 3741 DejaVuSans#91bb6389:6
+runs NoSuchFamilyQQQ - 400 0 r 3182 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ - 400 0 y 5917 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ - 400 0 x 3422 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ - 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs NoSuchFamilyQQQ - 400 0 u 3785 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ - 400 0 w 1602 DejaVuSans#91bb6389:3
+runs NoSuchFamilyQQQ - 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs NoSuchFamilyQQQ - 700 1 a 4298 0:7
+runs NoSuchFamilyQQQ - 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs NoSuchFamilyQQQ - 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs NoSuchFamilyQQQ - 700 1 d 6144 box:6
+runs NoSuchFamilyQQQ - 700 1 b 5120 box:5
+runs NoSuchFamilyQQQ - 700 1 m 5120 box:5
+runs NoSuchFamilyQQQ - 700 1 t 3684 0:6
+runs NoSuchFamilyQQQ - 700 1 s 4096 box:5
+runs NoSuchFamilyQQQ - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs NoSuchFamilyQQQ - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs NoSuchFamilyQQQ - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs NoSuchFamilyQQQ - 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs NoSuchFamilyQQQ - 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ - 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ - 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ - 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs NoSuchFamilyQQQ - 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ - 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs NoSuchFamilyQQQ - 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs NoSuchFamilyQQQ SansSerif 400 0 a 2798 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ SansSerif 400 0 A 5437 DejaVuSans#91bb6389:12
+runs NoSuchFamilyQQQ SansSerif 400 0 h 2265 DejaVuSans#91bb6389:4
+runs NoSuchFamilyQQQ SansSerif 400 0 d 6144 box:6
+runs NoSuchFamilyQQQ SansSerif 400 0 b 5120 box:5
+runs NoSuchFamilyQQQ SansSerif 400 0 m 5120 box:5
+runs NoSuchFamilyQQQ SansSerif 400 0 t 3684 0:6
+runs NoSuchFamilyQQQ SansSerif 400 0 s 4096 box:5
+runs NoSuchFamilyQQQ SansSerif 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs NoSuchFamilyQQQ SansSerif 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs NoSuchFamilyQQQ SansSerif 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs NoSuchFamilyQQQ SansSerif 400 0 g 3741 DejaVuSans#91bb6389:6
+runs NoSuchFamilyQQQ SansSerif 400 0 r 3182 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ SansSerif 400 0 n 4604 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ SansSerif 400 0 o 4835 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ SansSerif 400 0 y 5917 DejaVuSans#91bb6389:7
+runs NoSuchFamilyQQQ SansSerif 400 0 x 3422 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ SansSerif 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs NoSuchFamilyQQQ SansSerif 400 0 u 3785 DejaVuSans#91bb6389:5
+runs NoSuchFamilyQQQ SansSerif 400 0 w 1602 DejaVuSans#91bb6389:3
+runs NoSuchFamilyQQQ SansSerif 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs NoSuchFamilyQQQ SansSerif 700 1 a 4298 0:7
+runs NoSuchFamilyQQQ SansSerif 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs NoSuchFamilyQQQ SansSerif 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs NoSuchFamilyQQQ SansSerif 700 1 d 6144 box:6
+runs NoSuchFamilyQQQ SansSerif 700 1 b 5120 box:5
+runs NoSuchFamilyQQQ SansSerif 700 1 m 5120 box:5
+runs NoSuchFamilyQQQ SansSerif 700 1 t 3684 0:6
+runs NoSuchFamilyQQQ SansSerif 700 1 s 4096 box:5
+runs NoSuchFamilyQQQ SansSerif 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs NoSuchFamilyQQQ SansSerif 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs NoSuchFamilyQQQ SansSerif 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs NoSuchFamilyQQQ SansSerif 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs NoSuchFamilyQQQ SansSerif 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ SansSerif 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ SansSerif 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ SansSerif 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs NoSuchFamilyQQQ SansSerif 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ SansSerif 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs NoSuchFamilyQQQ SansSerif 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs NoSuchFamilyQQQ SansSerif 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs NoSuchFamilyQQQ SansSerif 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs NoSuchFamilyQQQ Serif 400 0 a 2211 TimesNewRomanPSMT#37db14cc:7
+runs NoSuchFamilyQQQ Serif 400 0 A 4357 TimesNewRomanPSMT#37db14cc:12
+runs NoSuchFamilyQQQ Serif 400 0 h 1871 TimesNewRomanPSMT#37db14cc:4
+runs NoSuchFamilyQQQ Serif 400 0 d 6144 box:6
+runs NoSuchFamilyQQQ Serif 400 0 b 5120 box:5
+runs NoSuchFamilyQQQ Serif 400 0 m 5120 box:5
+runs NoSuchFamilyQQQ Serif 400 0 t 3684 0:6
+runs NoSuchFamilyQQQ Serif 400 0 s 4096 box:5
+runs NoSuchFamilyQQQ Serif 400 0 k 4945 NotoSerifCJKkr-Regular#075bc3ae:5
+runs NoSuchFamilyQQQ Serif 400 0 j 8192 NotoSerifCJKjp-Regular#ddbc0065:8
+runs NoSuchFamilyQQQ Serif 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs NoSuchFamilyQQQ Serif 400 0 g 3808 DejaVuSerif#33b5d28d:6
+runs NoSuchFamilyQQQ Serif 400 0 r 3336 DejaVuSerif#33b5d28d:5
+runs NoSuchFamilyQQQ Serif 400 0 n 4619 DejaVuSerif#33b5d28d:7
+runs NoSuchFamilyQQQ Serif 400 0 o 5255 DejaVuSerif#33b5d28d:7
+runs NoSuchFamilyQQQ Serif 400 0 y 5986 DejaVuSans#91bb6389:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 DejaVuSerif#33b5d28d:5
+runs NoSuchFamilyQQQ Serif 400 0 x 3422 DejaVuSerif#33b5d28d:5
+runs NoSuchFamilyQQQ Serif 400 0 e cbdt:5822 DejaVuSerif#33b5d28d:3 NotoColorEmoji#68feb395:2 DejaVuSerif#33b5d28d:2 DejaVuSans#91bb6389:1
+runs NoSuchFamilyQQQ Serif 400 0 u 3609 DejaVuSerif#33b5d28d:5
+runs NoSuchFamilyQQQ Serif 400 0 w 1590 DejaVuSerif#33b5d28d:3
+runs NoSuchFamilyQQQ Serif 400 0 z cbdt:12060 DejaVuSerif#33b5d28d:4 TimesNewRomanPSMT#37db14cc:6 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSerif#33b5d28d:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 DejaVuSerif#33b5d28d:1 NotoColorEmoji#68feb395:1 DejaVuSerif#33b5d28d:1 box:2 DejaVuSerif#33b5d28d:1
+runs NoSuchFamilyQQQ Serif 700 1 a 5572 0:7
+runs NoSuchFamilyQQQ Serif 700 1 A 9012 0:7 TimesNewRomanPS-BoldItalicMT#38108fca:1 0:4
+runs NoSuchFamilyQQQ Serif 700 1 h 1956 TimesNewRomanPS-BoldItalicMT#38108fca:4
+runs NoSuchFamilyQQQ Serif 700 1 d 6144 box:6
+runs NoSuchFamilyQQQ Serif 700 1 b 5120 box:5
+runs NoSuchFamilyQQQ Serif 700 1 m 5120 box:5
+runs NoSuchFamilyQQQ Serif 700 1 t 3684 0:6
+runs NoSuchFamilyQQQ Serif 700 1 s 4096 box:5
+runs NoSuchFamilyQQQ Serif 700 1 k 4945 NotoSerifCJKkr-Bold#5ff06b3f:5
+runs NoSuchFamilyQQQ Serif 700 1 j 8192 NotoSerifCJKjp-Bold#3656a7f2:8
+runs NoSuchFamilyQQQ Serif 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs NoSuchFamilyQQQ Serif 700 1 g 4205 DejaVuSerif-BoldItalic#8415884a:6
+runs NoSuchFamilyQQQ Serif 700 1 r 3901 DejaVuSerif-BoldItalic#8415884a:5
+runs NoSuchFamilyQQQ Serif 700 1 n 5170 DejaVuSerif-BoldItalic#8415884a:7
+runs NoSuchFamilyQQQ Serif 700 1 o 5640 DejaVuSerif-BoldItalic#8415884a:7
+runs NoSuchFamilyQQQ Serif 700 1 y 6059 DejaVuSans-BoldOblique#388287e0:2 DejaVuSerif-BoldItalic#8415884a:5
+runs NoSuchFamilyQQQ Serif 700 1 x 3422 DejaVuSerif-BoldItalic#8415884a:5
+runs NoSuchFamilyQQQ Serif 700 1 e cbdt:6020 DejaVuSerif-BoldItalic#8415884a:3 NotoColorEmoji#68feb395:2 DejaVuSerif-BoldItalic#8415884a:2 DejaVuSans-BoldOblique#388287e0:1
+runs NoSuchFamilyQQQ Serif 700 1 u 3634 DejaVuSerif-BoldItalic#8415884a:3 DejaVuSans-BoldOblique#388287e0:1 DejaVuSerif-BoldItalic#8415884a:1
+runs NoSuchFamilyQQQ Serif 700 1 w 1735 DejaVuSerif-BoldItalic#8415884a:3
+runs NoSuchFamilyQQQ Serif 700 1 z cbdt:14285 DejaVuSerif-BoldItalic#8415884a:4 0:5 TimesNewRomanPS-BoldItalicMT#38108fca:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSerif-BoldItalic#8415884a:1 DejaVuSans-BoldOblique#388287e0:1 DejaVuSerif-BoldItalic#8415884a:1 NotoColorEmoji#68feb395:1 DejaVuSerif-BoldItalic#8415884a:1 box:2 DejaVuSerif-BoldItalic#8415884a:1
+runs NoSuchFamilyQQQ Monospace 400 0 a 4312 DejaVuSansMono#cd56a79d:7
+runs NoSuchFamilyQQQ Monospace 400 0 A 7392 DejaVuSansMono#cd56a79d:12
+runs NoSuchFamilyQQQ Monospace 400 0 h 2456 CourierNewPSMT#8ee5406e:4
+runs NoSuchFamilyQQQ Monospace 400 0 d 6144 box:6
+runs NoSuchFamilyQQQ Monospace 400 0 b 5120 box:5
+runs NoSuchFamilyQQQ Monospace 400 0 m 5120 box:5
+runs NoSuchFamilyQQQ Monospace 400 0 t 3696 0:6
+runs NoSuchFamilyQQQ Monospace 400 0 s 4096 box:5
+runs NoSuchFamilyQQQ Monospace 400 0 k 4710 NotoSansMonoCJKkr-Regular#5f0fc50b:5
+runs NoSuchFamilyQQQ Monospace 400 0 j 8192 NotoSansMonoCJKjp-Regular#4f6e70f8:8
+runs NoSuchFamilyQQQ Monospace 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs NoSuchFamilyQQQ Monospace 400 0 g 3696 DejaVuSansMono#cd56a79d:6
+runs NoSuchFamilyQQQ Monospace 400 0 r 3080 DejaVuSansMono#cd56a79d:5
+runs NoSuchFamilyQQQ Monospace 400 0 n 4312 DejaVuSansMono#cd56a79d:7
+runs NoSuchFamilyQQQ Monospace 400 0 o 4312 DejaVuSansMono#cd56a79d:7
+runs NoSuchFamilyQQQ Monospace 400 0 y 4312 DejaVuSansMono#cd56a79d:7
+runs NoSuchFamilyQQQ Monospace 400 0 x 3080 DejaVuSansMono#cd56a79d:5
+runs NoSuchFamilyQQQ Monospace 400 0 e cbdt:5872 DejaVuSansMono#cd56a79d:3 NotoColorEmoji#68feb395:2 DejaVuSansMono#cd56a79d:3
+runs NoSuchFamilyQQQ Monospace 400 0 u 3080 DejaVuSansMono#cd56a79d:5
+runs NoSuchFamilyQQQ Monospace 400 0 w 1848 DejaVuSansMono#cd56a79d:3
+runs NoSuchFamilyQQQ Monospace 400 0 z cbdt:14424 DejaVuSansMono#cd56a79d:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSansMono#cd56a79d:3 NotoColorEmoji#68feb395:1 DejaVuSansMono#cd56a79d:1 box:2 DejaVuSansMono#cd56a79d:1
+runs NoSuchFamilyQQQ Monospace 700 1 a 4312 0:7
+runs NoSuchFamilyQQQ Monospace 700 1 A 7392 0:7 DejaVuSansMono-BoldOblique#7e779fd7:1 0:4
+runs NoSuchFamilyQQQ Monospace 700 1 h 2456 CourierNewPS-BoldItalicMT#b813a54e:4
+runs NoSuchFamilyQQQ Monospace 700 1 d 6144 box:6
+runs NoSuchFamilyQQQ Monospace 700 1 b 5120 box:5
+runs NoSuchFamilyQQQ Monospace 700 1 m 5120 box:5
+runs NoSuchFamilyQQQ Monospace 700 1 t 3696 0:6
+runs NoSuchFamilyQQQ Monospace 700 1 s 4096 box:5
+runs NoSuchFamilyQQQ Monospace 700 1 k 4710 NotoSansMonoCJKkr-Bold#c0b3b620:5
+runs NoSuchFamilyQQQ Monospace 700 1 j 8192 NotoSansMonoCJKjp-Bold#b112620b:8
+runs NoSuchFamilyQQQ Monospace 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs NoSuchFamilyQQQ Monospace 700 1 g 3696 DejaVuSansMono-BoldOblique#7e779fd7:6
+runs NoSuchFamilyQQQ Monospace 700 1 r 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs NoSuchFamilyQQQ Monospace 700 1 n 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs NoSuchFamilyQQQ Monospace 700 1 o 4312 DejaVuSansMono-BoldOblique#7e779fd7:7
+runs NoSuchFamilyQQQ Monospace 700 1 y 4856 DejaVuSans-BoldOblique#388287e0:2 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs NoSuchFamilyQQQ Monospace 700 1 x 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs NoSuchFamilyQQQ Monospace 700 1 e cbdt:6114 DejaVuSansMono-BoldOblique#7e779fd7:3 NotoColorEmoji#68feb395:2 DejaVuSansMono-BoldOblique#7e779fd7:2 DejaVuSans-BoldOblique#388287e0:1
+runs NoSuchFamilyQQQ Monospace 700 1 u 3080 DejaVuSansMono-BoldOblique#7e779fd7:5
+runs NoSuchFamilyQQQ Monospace 700 1 w 1848 DejaVuSansMono-BoldOblique#7e779fd7:3
+runs NoSuchFamilyQQQ Monospace 700 1 z cbdt:14666 DejaVuSansMono-BoldOblique#7e779fd7:4 0:5 DejaVuSansMono-BoldOblique#7e779fd7:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSansMono-BoldOblique#7e779fd7:1 DejaVuSans-BoldOblique#388287e0:1 DejaVuSansMono-BoldOblique#7e779fd7:1 NotoColorEmoji#68feb395:1 DejaVuSansMono-BoldOblique#7e779fd7:1 box:2 DejaVuSansMono-BoldOblique#7e779fd7:1
+runs sans-serif - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs sans-serif - 400 0 A 5437 DejaVuSans#91bb6389:12
+runs sans-serif - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs sans-serif - 400 0 d 6144 box:6
+runs sans-serif - 400 0 b 5120 box:5
+runs sans-serif - 400 0 m 5120 box:5
+runs sans-serif - 400 0 t 3684 0:6
+runs sans-serif - 400 0 s 4096 box:5
+runs sans-serif - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs sans-serif - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs sans-serif - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs sans-serif - 400 0 g 3741 DejaVuSans#91bb6389:6
+runs sans-serif - 400 0 r 3182 DejaVuSans#91bb6389:5
+runs sans-serif - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs sans-serif - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs sans-serif - 400 0 y 5917 DejaVuSans#91bb6389:7
+runs sans-serif - 400 0 x 3422 DejaVuSans#91bb6389:5
+runs sans-serif - 400 0 e cbdt:5656 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:2 DejaVuSans#91bb6389:3
+runs sans-serif - 400 0 u 3785 DejaVuSans#91bb6389:5
+runs sans-serif - 400 0 w 1602 DejaVuSans#91bb6389:3
+runs sans-serif - 400 0 z cbdt:12663 DejaVuSans#91bb6389:10 NotoSansCJKjp-Regular#9504c50c:2 DejaVuSans#91bb6389:3 NotoColorEmoji#68feb395:1 DejaVuSans#91bb6389:1 box:2 DejaVuSans#91bb6389:1
+runs sans-serif - 700 1 a 4298 0:7
+runs sans-serif - 700 1 A 7110 0:7 DejaVuSans-BoldOblique#388287e0:1 0:4
+runs sans-serif - 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs sans-serif - 700 1 d 6144 box:6
+runs sans-serif - 700 1 b 5120 box:5
+runs sans-serif - 700 1 m 5120 box:5
+runs sans-serif - 700 1 t 3684 0:6
+runs sans-serif - 700 1 s 4096 box:5
+runs sans-serif - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs sans-serif - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs sans-serif - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs sans-serif - 700 1 g 4151 DejaVuSans-BoldOblique#388287e0:6
+runs sans-serif - 700 1 r 3525 DejaVuSans-BoldOblique#388287e0:5
+runs sans-serif - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs sans-serif - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs sans-serif - 700 1 y 6023 DejaVuSans-BoldOblique#388287e0:7
+runs sans-serif - 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs sans-serif - 700 1 e cbdt:5872 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:2 DejaVuSans-BoldOblique#388287e0:3
+runs sans-serif - 700 1 u 3940 DejaVuSans-BoldOblique#388287e0:5
+runs sans-serif - 700 1 w 1780 DejaVuSans-BoldOblique#388287e0:3
+runs sans-serif - 700 1 z cbdt:13519 DejaVuSans-BoldOblique#388287e0:4 0:5 DejaVuSans-BoldOblique#388287e0:1 NotoSansCJKjp-Bold#da13893f:2 DejaVuSans-BoldOblique#388287e0:3 NotoColorEmoji#68feb395:1 DejaVuSans-BoldOblique#388287e0:1 box:2 DejaVuSans-BoldOblique#388287e0:1
+runs Verdana - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs Verdana - 400 0 A 5472 DejaVuSans#91bb6389:7 Verdana#16fbfc3a:1 DejaVuSans#91bb6389:4
+runs Verdana - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs Verdana - 400 0 d 6144 box:6
+runs Verdana - 400 0 b 5120 box:5
+runs Verdana - 400 0 m 5120 box:5
+runs Verdana - 400 0 t 4096 0:6
+runs Verdana - 400 0 s 4096 box:5
+runs Verdana - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs Verdana - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs Verdana - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Verdana - 400 0 g 3797 Verdana#16fbfc3a:6
+runs Verdana - 400 0 r 3112 Verdana#16fbfc3a:5
+runs Verdana - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs Verdana - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs Verdana - 400 0 y 5971 DejaVuSans#91bb6389:3 Verdana#16fbfc3a:1 DejaVuSans#91bb6389:1 Verdana#16fbfc3a:2
+runs Verdana - 400 0 x 3422 DejaVuSans#91bb6389:5
+runs Verdana - 400 0 e cbdt:5722 Verdana#16fbfc3a:3 NotoColorEmoji#68feb395:2 Verdana#16fbfc3a:1 DejaVuSans#91bb6389:2
+runs Verdana - 400 0 u 4078 DejaVuSans#91bb6389:1 Verdana#16fbfc3a:1 DejaVuSans#91bb6389:2 Verdana#16fbfc3a:1
+runs Verdana - 400 0 w 1613 Verdana#16fbfc3a:3
+runs Verdana - 400 0 z cbdt:12785 Verdana#16fbfc3a:4 DejaVuSans#91bb6389:5 Verdana#16fbfc3a:1 NotoSansCJKjp-Regular#9504c50c:2 Verdana#16fbfc3a:1 DejaVuSans#91bb6389:1 Verdana#16fbfc3a:1 NotoColorEmoji#68feb395:1 Verdana#16fbfc3a:1 box:2 Verdana#16fbfc3a:1
+runs Verdana - 700 1 a 7168 0:7
+runs Verdana - 700 1 A 11614 0:7 Verdana-BoldItalic#f3ccc64b:1 0:4
+runs Verdana - 700 1 h 2449 DejaVuSans-BoldOblique#388287e0:4
+runs Verdana - 700 1 d 6144 box:6
+runs Verdana - 700 1 b 5120 box:5
+runs Verdana - 700 1 m 5120 box:5
+runs Verdana - 700 1 t 4096 0:6
+runs Verdana - 700 1 s 4096 box:5
+runs Verdana - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs Verdana - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs Verdana - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Verdana - 700 1 g 4154 Verdana-BoldItalic#f3ccc64b:6
+runs Verdana - 700 1 r 3540 Verdana-BoldItalic#f3ccc64b:5
+runs Verdana - 700 1 n 5081 DejaVuSans-BoldOblique#388287e0:7
+runs Verdana - 700 1 o 5098 DejaVuSans-BoldOblique#388287e0:7
+runs Verdana - 700 1 y 5982 DejaVuSans-BoldOblique#388287e0:3 Verdana-BoldItalic#f3ccc64b:1 DejaVuSans-BoldOblique#388287e0:1 Verdana-BoldItalic#f3ccc64b:2
+runs Verdana - 700 1 x 3422 DejaVuSans-BoldOblique#388287e0:5
+runs Verdana - 700 1 e cbdt:5859 Verdana-BoldItalic#f3ccc64b:3 NotoColorEmoji#68feb395:2 Verdana-BoldItalic#f3ccc64b:1 DejaVuSans-BoldOblique#388287e0:2
+runs Verdana - 700 1 u 4342 DejaVuSans-BoldOblique#388287e0:1 Verdana-BoldItalic#f3ccc64b:1 DejaVuSans-BoldOblique#388287e0:2 Verdana-BoldItalic#f3ccc64b:1
+runs Verdana - 700 1 w 1750 Verdana-BoldItalic#f3ccc64b:3
+runs Verdana - 700 1 z cbdt:15525 Verdana-BoldItalic#f3ccc64b:4 0:5 Verdana-BoldItalic#f3ccc64b:1 NotoSansCJKjp-Bold#da13893f:2 Verdana-BoldItalic#f3ccc64b:1 DejaVuSans-BoldOblique#388287e0:1 Verdana-BoldItalic#f3ccc64b:1 NotoColorEmoji#68feb395:1 Verdana-BoldItalic#f3ccc64b:1 box:2 Verdana-BoldItalic#f3ccc64b:1
+runs Georgia - 400 0 a 2211 TimesNewRomanPSMT#37db14cc:7
+runs Georgia - 400 0 A 4348 TimesNewRomanPSMT#37db14cc:7 Georgia#1b624392:1 TimesNewRomanPSMT#37db14cc:4
+runs Georgia - 400 0 h 1871 TimesNewRomanPSMT#37db14cc:4
+runs Georgia - 400 0 d 6144 box:6
+runs Georgia - 400 0 b 5120 box:5
+runs Georgia - 400 0 m 5120 box:5
+runs Georgia - 400 0 t 4096 0:6
+runs Georgia - 400 0 s 4096 box:5
+runs Georgia - 400 0 k 4945 NotoSerifCJKkr-Regular#075bc3ae:5
+runs Georgia - 400 0 j 8192 NotoSerifCJKjp-Regular#ddbc0065:8
+runs Georgia - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Georgia - 400 0 g 3437 Georgia#1b624392:6
+runs Georgia - 400 0 r 2834 Georgia#1b624392:5
+runs Georgia - 400 0 n 4619 DejaVuSerif#33b5d28d:7
+runs Georgia - 400 0 o 5255 DejaVuSerif#33b5d28d:7
+runs Georgia - 400 0 y 5923 DejaVuSans#91bb6389:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 DejaVuSerif#33b5d28d:1 Georgia#1b624392:1 DejaVuSerif#33b5d28d:1 Georgia#1b624392:2
+runs Georgia - 400 0 x 3422 DejaVuSerif#33b5d28d:5
+runs Georgia - 400 0 e cbdt:5580 Georgia#1b624392:3 NotoColorEmoji#68feb395:2 Georgia#1b624392:1 DejaVuSerif#33b5d28d:1 DejaVuSans#91bb6389:1
+runs Georgia - 400 0 u 3551 DejaVuSerif#33b5d28d:1 Georgia#1b624392:1 DejaVuSerif#33b5d28d:2 Georgia#1b624392:1
+runs Georgia - 400 0 w 1336 Georgia#1b624392:3
+runs Georgia - 400 0 z cbdt:11370 Georgia#1b624392:4 TimesNewRomanPSMT#37db14cc:5 Georgia#1b624392:1 NotoSansCJKjp-Regular#9504c50c:2 Georgia#1b624392:1 DejaVuMathTeXGyre-Regular#c4a20a4c:1 Georgia#1b624392:1 NotoColorEmoji#68feb395:1 Georgia#1b624392:1 box:2 Georgia#1b624392:1
+runs Georgia - 700 1 a 7168 0:7
+runs Georgia - 700 1 A 11524 0:7 Georgia-BoldItalic#a684347f:1 0:4
+runs Georgia - 700 1 h 1956 TimesNewRomanPS-BoldItalicMT#38108fca:4
+runs Georgia - 700 1 d 6144 box:6
+runs Georgia - 700 1 b 5120 box:5
+runs Georgia - 700 1 m 5120 box:5
+runs Georgia - 700 1 t 4096 0:6
+runs Georgia - 700 1 s 4096 box:5
+runs Georgia - 700 1 k 4945 NotoSerifCJKkr-Bold#5ff06b3f:5
+runs Georgia - 700 1 j 8192 NotoSerifCJKjp-Bold#3656a7f2:8
+runs Georgia - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Georgia - 700 1 g 3872 Georgia-BoldItalic#a684347f:6
+runs Georgia - 700 1 r 3546 Georgia-BoldItalic#a684347f:5
+runs Georgia - 700 1 n 5170 DejaVuSerif-BoldItalic#8415884a:7
+runs Georgia - 700 1 o 5640 DejaVuSerif-BoldItalic#8415884a:7
+runs Georgia - 700 1 y 5995 DejaVuSans-BoldOblique#388287e0:2 DejaVuSerif-BoldItalic#8415884a:1 Georgia-BoldItalic#a684347f:1 DejaVuSerif-BoldItalic#8415884a:1 Georgia-BoldItalic#a684347f:2
+runs Georgia - 700 1 x 3422 DejaVuSerif-BoldItalic#8415884a:5
+runs Georgia - 700 1 e cbdt:5781 Georgia-BoldItalic#a684347f:3 NotoColorEmoji#68feb395:2 Georgia-BoldItalic#a684347f:1 DejaVuSerif-BoldItalic#8415884a:1 DejaVuSans-BoldOblique#388287e0:1
+runs Georgia - 700 1 u 3714 DejaVuSerif-BoldItalic#8415884a:1 Georgia-BoldItalic#a684347f:1 DejaVuSerif-BoldItalic#8415884a:1 DejaVuSans-BoldOblique#388287e0:1 Georgia-BoldItalic#a684347f:1
+runs Georgia - 700 1 w 1600 Georgia-BoldItalic#a684347f:3
+runs Georgia - 700 1 z cbdt:14879 Georgia-BoldItalic#a684347f:4 0:5 Georgia-BoldItalic#a684347f:1 NotoSansCJKjp-Bold#da13893f:2 Georgia-BoldItalic#a684347f:1 DejaVuSans-BoldOblique#388287e0:1 Georgia-BoldItalic#a684347f:1 NotoColorEmoji#68feb395:1 Georgia-BoldItalic#a684347f:1 box:2 Georgia-BoldItalic#a684347f:1
+runs Comic_Sans_MS - 400 0 a 2798 DejaVuSans#91bb6389:7
+runs Comic_Sans_MS - 400 0 A 5418 DejaVuSans#91bb6389:7 ComicSansMS#4fdcb490:1 DejaVuSans#91bb6389:4
+runs Comic_Sans_MS - 400 0 h 2265 DejaVuSans#91bb6389:4
+runs Comic_Sans_MS - 400 0 d 6144 box:6
+runs Comic_Sans_MS - 400 0 b 5120 box:5
+runs Comic_Sans_MS - 400 0 m 5120 box:5
+runs Comic_Sans_MS - 400 0 t 2048 0:6
+runs Comic_Sans_MS - 400 0 s 4096 box:5
+runs Comic_Sans_MS - 400 0 k 4710 NotoSansCJKkr-Regular#4e7dc099:5
+runs Comic_Sans_MS - 400 0 j 8192 NotoSansCJKjp-Regular#9504c50c:8
+runs Comic_Sans_MS - 400 0 c 5120 NotoSansCJKjp-Regular#9504c50c:5
+runs Comic_Sans_MS - 400 0 g 3745 ComicSansMS#4fdcb490:6
+runs Comic_Sans_MS - 400 0 r 2685 ComicSansMS#4fdcb490:5
+runs Comic_Sans_MS - 400 0 n 4604 DejaVuSans#91bb6389:7
+runs Comic_Sans_MS - 400 0 o 4835 DejaVuSans#91bb6389:7
+runs Comic_Sans_MS - 400 0 y 5756 DejaVuSans#91bb6389:3 ComicSansMS#4fdcb490:1 DejaVuSans#91bb6389:1 ComicSansMS#4fdcb490:2
+runs Comic_Sans_MS - 400 0 x 3422 DejaVuSans#91bb6389:5
+runs Comic_Sans_MS - 400 0 e cbdt:5637 ComicSansMS#4fdcb490:3 NotoColorEmoji#68feb395:2 ComicSansMS#4fdcb490:1 DejaVuSans#91bb6389:2
+runs Comic_Sans_MS - 400 0 u 3781 DejaVuSans#91bb6389:1 ComicSansMS#4fdcb490:1 DejaVuSans#91bb6389:2 ComicSansMS#4fdcb490:1
+runs Comic_Sans_MS - 400 0 w 1437 ComicSansMS#4fdcb490:3
+runs Comic_Sans_MS - 400 0 z cbdt:12399 ComicSansMS#4fdcb490:4 DejaVuSans#91bb6389:5 ComicSansMS#4fdcb490:1 NotoSansCJKjp-Regular#9504c50c:2 ComicSansMS#4fdcb490:1 DejaVuSans#91bb6389:1 ComicSansMS#4fdcb490:1 NotoColorEmoji#68feb395:1 ComicSansMS#4fdcb490:1 box:2 ComicSansMS#4fdcb490:1
+runs Comic_Sans_MS - 700 1 a 3373 DejaVuSans-Bold#2a0c8833:7
+runs Comic_Sans_MS - 700 1 A 6573 DejaVuSans-Bold#2a0c8833:7 ComicSansMS-Bold#d41ad0e4:1 DejaVuSans-Bold#2a0c8833:4
+runs Comic_Sans_MS - 700 1 h 2459 DejaVuSans-Bold#2a0c8833:4
+runs Comic_Sans_MS - 700 1 d 6144 box:6
+runs Comic_Sans_MS - 700 1 b 5120 box:5
+runs Comic_Sans_MS - 700 1 m 5120 box:5
+runs Comic_Sans_MS - 700 1 t 2048 0:6
+runs Comic_Sans_MS - 700 1 s 4096 box:5
+runs Comic_Sans_MS - 700 1 k 4710 NotoSansCJKkr-Bold#938a84c0:5
+runs Comic_Sans_MS - 700 1 j 8192 NotoSansCJKjp-Bold#da13893f:8
+runs Comic_Sans_MS - 700 1 c 5120 NotoSansCJKjp-Bold#da13893f:5
+runs Comic_Sans_MS - 700 1 g 3945 ComicSansMS-Bold#d41ad0e4:6
+runs Comic_Sans_MS - 700 1 r 2856 ComicSansMS-Bold#d41ad0e4:5
+runs Comic_Sans_MS - 700 1 n 4573 DejaVuSans-Bold#2a0c8833:7
+runs Comic_Sans_MS - 700 1 o 5113 DejaVuSans-Bold#2a0c8833:7
+runs Comic_Sans_MS - 700 1 y 5764 DejaVuSans-Bold#2a0c8833:3 ComicSansMS-Bold#d41ad0e4:1 DejaVuSans-Bold#2a0c8833:1 ComicSansMS-Bold#d41ad0e4:2
+runs Comic_Sans_MS - 700 1 x 3422 DejaVuSans-Bold#2a0c8833:5
+runs Comic_Sans_MS - 700 1 e cbdt:5913 ComicSansMS-Bold#d41ad0e4:3 NotoColorEmoji#68feb395:2 ComicSansMS-Bold#d41ad0e4:1 DejaVuSans-Bold#2a0c8833:2
+runs Comic_Sans_MS - 700 1 u 3908 DejaVuSans-Bold#2a0c8833:1 ComicSansMS-Bold#d41ad0e4:1 DejaVuSans-Bold#2a0c8833:2 ComicSansMS-Bold#d41ad0e4:1
+runs Comic_Sans_MS - 700 1 w 1663 ComicSansMS-Bold#d41ad0e4:3
+runs Comic_Sans_MS - 700 1 z cbdt:13494 ComicSansMS-Bold#d41ad0e4:4 DejaVuSans-Bold#2a0c8833:5 ComicSansMS-Bold#d41ad0e4:1 NotoSansCJKjp-Bold#da13893f:2 ComicSansMS-Bold#d41ad0e4:1 DejaVuSans-Bold#2a0c8833:1 ComicSansMS-Bold#d41ad0e4:1 NotoColorEmoji#68feb395:1 ComicSansMS-Bold#d41ad0e4:1 box:2 ComicSansMS-Bold#d41ad0e4:1
