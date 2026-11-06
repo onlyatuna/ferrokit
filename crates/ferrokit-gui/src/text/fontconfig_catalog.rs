@@ -60,9 +60,12 @@ impl Slant {
     }
 }
 
-/// What a request asks of a family: `QFontDef`'s weight, slant and stretch.
+/// What a request asks of a family: `QFontDef`'s style name, weight, slant and stretch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Request {
+pub(crate) struct Request<'a> {
+    /// `QFontDef::styleName`: a style of this name is taken whatever its key (`bestStyle`); empty
+    /// for none.
+    pub style_name: &'a str,
     /// `QFont::Weight`, 1..=1000.
     pub weight: u16,
     pub slant: Slant,
@@ -72,9 +75,10 @@ pub(crate) struct Request {
     pub color: bool,
 }
 
-impl Request {
+impl Request<'static> {
     pub fn new(weight: u16, slant: Slant) -> Self {
         Self {
+            style_name: "",
             weight,
             slant,
             stretch: 0,
@@ -584,12 +588,15 @@ impl Registry {
         &self.families[found.family]
     }
 
-    /// `bestStyle`: the style nearest to the request by weight, stretch and slant (the first of
-    /// equals).
+    /// `bestStyle`: the style named as the request's style name, else the style nearest to the
+    /// request by weight, stretch and slant (the first of equals).
     fn best_style(foundry: &Foundry, request: &Request, stretch: i32) -> usize {
         let mut best = 0;
         let mut distance = 0xffff;
         for (i, style) in foundry.styles.iter().enumerate() {
+            if !request.style_name.is_empty() && request.style_name == style.name {
+                return i;
+            }
             let mut d = ((i32::from(request.weight) - i32::from(style.weight)) / 10).abs();
             if stretch != 0 && style.stretch != 0 {
                 d += (stretch - style.stretch).abs();

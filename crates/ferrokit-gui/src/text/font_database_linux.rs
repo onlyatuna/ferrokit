@@ -139,8 +139,88 @@ fn slant_of(style: FaceStyle) -> Slant {
     }
 }
 
-fn request_of(style: FaceStyle) -> Request {
+fn request_of(style: FaceStyle) -> Request<'static> {
     Request::new(style.weight, slant_of(style))
+}
+
+/// `FT_Face::style_name` as FreeType 2.13 sets it for an sfnt font (`sfnt_load_face` with
+/// `tt_face_get_name`, sfobjs.c), which Qt's FreeType engine makes its `fontDef.styleName`
+/// (`QFontEngineFT::init`). With bit 8 of the OS/2 `fsSelection` set: the typographic
+/// subfamily (name 17), else the subfamily (2); without it: the WWS subfamily (22), else 17,
+/// else 2. Empty when the face has none of them.
+fn freetype_style_name(data: &[u8], index: u32) -> String {
+    use rustybuzz::ttf_parser::{Face, PlatformId, Tag};
+    let Ok(face) = Face::parse(data, index) else {
+        return String::new();
+    };
+    let names: Vec<_> = face.names().into_iter().collect();
+    // `tt_face_get_name`: an English Windows name (or the first Windows name when there is no
+    // English one), unless only a Macintosh name is English; then a Macintosh name, then a
+    // Unicode one. Bytes outside printable ASCII read as '?'.
+    let get = |id: u16| -> Option<String> {
+        let (mut apple_roman, mut apple_english, mut win, mut unicode) = (None, None, None, None);
+        let mut is_english = false;
+        for (n, rec) in names.iter().enumerate() {
+            if rec.name_id != id || rec.name.is_empty() {
+                continue;
+            }
+            match rec.platform_id {
+                PlatformId::Unicode | PlatformId::Iso => unicode = Some(n),
+                PlatformId::Macintosh => {
+                    if rec.language_id == 0 {
+                        apple_english = Some(n);
+                    } else if rec.encoding_id == 0 {
+                        apple_roman = Some(n);
+                    }
+                }
+                PlatformId::Windows => {
+                    if (win.is_none() || rec.language_id & 0x3ff == 0x009)
+                        && matches!(rec.encoding_id, 0 | 1 | 10)
+                    {
+                        is_english = rec.language_id & 0x3ff == 0x009;
+                        win = Some(n);
+                    }
+                }
+                PlatformId::Custom => {}
+            }
+        }
+        let apple = apple_english.or(apple_roman);
+        let ascii = |code: u32| match code {
+            32..=127 => char::from(code as u8),
+            _ => '?',
+        };
+        let utf16 = |bytes: &[u8]| -> String {
+            let (pairs, _) = bytes.as_chunks::<2>();
+            pairs
+                .iter()
+                .map(|&pair| u32::from(u16::from_be_bytes(pair)))
+                .take_while(|&code| code != 0)
+                .map(ascii)
+                .collect()
+        };
+        if let Some(n) = win.filter(|_| !(apple.is_some() && !is_english)) {
+            Some(utf16(names[n].name))
+        } else if let Some(n) = apple {
+            Some(
+                names[n]
+                    .name
+                    .iter()
+                    .take_while(|&&byte| byte != 0)
+                    .map(|&byte| ascii(u32::from(byte)))
+                    .collect(),
+            )
+        } else {
+            unicode.map(|n| utf16(names[n].name))
+        }
+    };
+    // OS/2 is read when it has at least the 78 bytes of version 0 (`tt_face_load_os2`).
+    let wws_only = face
+        .raw_face()
+        .table(Tag::from_bytes(b"OS/2"))
+        .filter(|os2| os2.len() >= 78)
+        .is_some_and(|os2| u16::from_be_bytes([os2[62], os2[63]]) & 256 != 0);
+    let order: &[u16] = if wws_only { &[17, 2] } else { &[22, 17, 2] };
+    order.iter().find_map(|&id| get(id)).unwrap_or_default()
 }
 
 /// Opens the font of a registered style, reading its file once.
@@ -187,7 +267,21 @@ const FULL_CHAIN_PROBE: &str = "Aa \u{3a9}\u{3c9} \u{42f}\u{44f} \u{531}\u{561} 
 impl FontDatabase {
     /// The font of `family` the registry resolves a request of `style` to, opened.
     pub(super) fn resolve_registered(&mut self, family: &str, style: FaceStyle) -> Option<Found> {
-        let request = request_of(style);
+        self.resolve_registered_named(family, style, "")
+    }
+
+    /// [`resolve_registered`](Self::resolve_registered) for a request with a style name: the
+    /// style of that name, if the family has one, whatever its weight and slant.
+    fn resolve_registered_named(
+        &mut self,
+        family: &str,
+        style: FaceStyle,
+        style_name: &str,
+    ) -> Option<Found> {
+        let request = Request {
+            style_name,
+            ..request_of(style)
+        };
         let registry = self.linux.registry(&self.search_paths);
         let file_cache = &mut self.file_cache;
         let mut loaded = None;
@@ -408,8 +502,16 @@ impl FontDatabase {
     /// script): the requested family when it exists and, for a script that needs OpenType layout,
     /// supports the script; else the first family `fallbacksForFamily` lists for the script (then
     /// the first family of the database) that does; for emoji, color fonts first and then the
-    /// request's own family; the box engine when nothing can shape the item. Returns the engine's
-    /// index in `engines`, its family and whether that is fixed pitch.
+    /// requested family and the listed ones whatever they are; the box engine when nothing can
+    /// shape the item. Returns the engine's index in `engines`, its family and whether that is
+    /// fixed pitch.
+    ///
+    /// Qt's emoji pass also takes a listed family whose emoji engine an earlier request of the
+    /// same `QFontDef` left in the `QFontCache` (`findMatchingFallback` looks the cache up before
+    /// it requires a color font, qfontdatabase.cpp:2797), so in one process its result depends on
+    /// what was drawn before and on the cache's cost and timer driven eviction
+    /// (`QFontCache::decreaseCache`). This is the result with that cache empty, as in a fresh
+    /// process.
     fn item_font(
         &mut self,
         engines: &mut Vec<FontEngine>,
@@ -470,15 +572,18 @@ impl FontDatabase {
             .iter()
             .find_map(|name| self.find_loadable(name, style, &request, &accept));
         if chosen.is_none() && emoji {
-            // No color font: the families listed for the emoji pattern, whatever they are. Qt's
-            // missing-glyph advance of an emoji with a style hint set differs (open, see the PR).
+            // No color font (`findFont`'s final pass, qfontdatabase.cpp:2842-2850): the requested
+            // family, then the listed ones, whatever they are.
             request.color = false;
+            if exact {
+                candidates.insert(0, own.0.clone());
+            }
             chosen = candidates
                 .iter()
                 .find_map(|name| self.find_loadable(name, style, &request, &accept));
         }
         match chosen {
-            Some(found) => match self.fallback_engine_index(engines, &found.family, style) {
+            Some(found) => match self.fallback_engine_index(engines, &found.family, style, "") {
                 Some(index) => (index, found.family, found.fixed_pitch),
                 None => self.box_engine(engines),
             },
@@ -511,19 +616,21 @@ impl FontDatabase {
         let exact = self.exact_family(font, style);
         let own = exact.clone().unwrap_or_else(|| self.primary_family(font));
         let slant = slant_of(style);
-        // Per script key: the item font (index in `engines`, family, fixed pitch), the fallback
-        // list of that family and the fallbacks found so far with their position in the list.
+        // Per script key: the item font (index in `engines`, family, fixed pitch), the style name
+        // its FreeType face has, the fallback list of that family and the fallbacks found so far
+        // with their position in the list.
         struct Item {
             engine: usize,
             family: String,
+            style_name: String,
             list: Option<Vec<String>>,
             found: Vec<(usize, usize)>,
         }
         let mut chains_of: HashMap<&'static str, Item> = HashMap::new();
         let mut misses: HashSet<(&'static str, char)> = HashSet::new();
-        // The fallback families loaded so far (by folded name) and where their engine is in
-        // `engines`; `None` for one that cannot be loaded.
-        let mut loaded: HashMap<String, Option<usize>> = HashMap::new();
+        // The fallback families loaded so far (by folded name and the style name asked for) and
+        // where their engine is in `engines`; `None` for one that cannot be loaded.
+        let mut loaded: HashMap<(String, String), Option<usize>> = HashMap::new();
         let mut fixed_of: HashMap<&'static str, bool> = HashMap::new();
         let items = crate::text::shaping_plan::script_items(text);
         let emoji_flags = emoji_sequence_flags(text);
@@ -538,11 +645,21 @@ impl FontDatabase {
                     let (engine, family, fixed) =
                         self.item_font(engines, font, style, key, &own, exact.is_some());
                     fixed_of.insert(key, fixed);
+                    // `QFontEngineMulti::loadEngine` asks for each fallback family with the
+                    // `fontDef` of the item font, whose style name is that of its FreeType face
+                    // (`QFontEngineFT::init`): `bestStyle` then takes the fallback family's style
+                    // of that name, whatever weight and slant were asked for.
+                    let style_name = engines[engine]
+                        .raw_data
+                        .as_ref()
+                        .map(|raw| freetype_style_name(raw.as_slice(), engines[engine].face_index))
+                        .unwrap_or_default();
                     chains_of.insert(
                         key,
                         Item {
                             engine,
                             family,
+                            style_name,
                             list: None,
                             found: Vec::new(),
                         },
@@ -570,9 +687,10 @@ impl FontDatabase {
                     item.list = Some(list);
                 }
                 let list = item.list.clone().unwrap_or_default();
+                let style_name = item.style_name.clone();
                 for (position, name) in list.iter().enumerate() {
-                    let folded = name.to_lowercase();
-                    let engine_index = match loaded.get(&folded) {
+                    let slot_key = (name.to_lowercase(), style_name.clone());
+                    let engine_index = match loaded.get(&slot_key) {
                         Some(&slot) => slot,
                         None => {
                             if !self
@@ -582,8 +700,9 @@ impl FontDatabase {
                             {
                                 continue;
                             }
-                            let slot = self.fallback_engine_index(engines, name, style);
-                            loaded.insert(folded, slot);
+                            let slot =
+                                self.fallback_engine_index(engines, name, style, &style_name);
+                            loaded.insert(slot_key, slot);
                             slot
                         }
                     };
@@ -611,14 +730,60 @@ impl FontDatabase {
         engines[0] = engines[0].clone().with_item_chains(chains);
     }
 
-    /// The index in `engines` of the engine for the family `name`, loading and appending it when
-    /// it is not there.
+    /// The index in `engines` of the engine for the family `name` asked for with `style` and
+    /// `style_name` (`QFontEngineMulti::loadEngine`), loading and appending it when it is not
+    /// there.
     fn fallback_engine_index(
         &mut self,
         engines: &mut Vec<FontEngine>,
         name: &str,
         style: FaceStyle,
+        style_name: &str,
     ) -> Option<usize> {
+        if !style_name.is_empty() {
+            let request = request_of(style);
+            let registry = self.linux.registry(&self.search_paths);
+            let named = registry.find(
+                name,
+                "",
+                &Request {
+                    style_name,
+                    ..request
+                },
+                &[],
+            );
+            if named.is_some() && named != registry.find(name, "", &request, &[]) {
+                // The style name picks another face than weight and slant do: cached apart.
+                let key = format!(
+                    "{}\u{1}{style_name}",
+                    style.cache_key(&name.to_ascii_lowercase(), StyleHint::AnyStyle)
+                );
+                let face = match self.cache.get(&key) {
+                    Some(face) => Arc::clone(face),
+                    None => {
+                        let found = self.resolve_registered_named(name, style, style_name)?;
+                        self.store_resolved(key.clone(), found)
+                    }
+                };
+                if let Some(index) = engines.iter().position(|e| Arc::ptr_eq(&e.face, &face)) {
+                    return Some(index);
+                }
+                let engine = match self.engines.get(&key) {
+                    Some(engine) if Arc::ptr_eq(&engine.face, &face) => engine.clone(),
+                    _ => {
+                        let mut engine =
+                            FontEngine::new(Arc::clone(&face)).with_face_index(face.face_index());
+                        if let Some(raw) = self.raw_cache.get(&key).cloned() {
+                            engine = engine.with_raw_data(raw);
+                        }
+                        self.engines.insert(key, engine.clone());
+                        engine
+                    }
+                };
+                engines.push(engine);
+                return Some(engines.len() - 1);
+            }
+        }
         let face = self.load_font_styled(name, style, StyleHint::AnyStyle)?;
         if let Some(index) = engines.iter().position(|e| Arc::ptr_eq(&e.face, &face)) {
             return Some(index);
