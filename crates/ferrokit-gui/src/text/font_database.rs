@@ -1417,7 +1417,7 @@ impl FontDatabase {
                     && !crate::text::glyph_layout::GlyphLayout::has_emoji_sequence(text)
                     && text.chars().all(|ch| {
                         matches!(ch, ' ' | '\t' | '\n' | '\r')
-                            || crate::text::glyph_layout::is_zero_width(ch)
+                            || crate::text::glyph_layout::skips_fallback(ch)
                             || engines.iter().any(|e| e.face.glyph_index(ch) != 0)
                     });
                 if covered {
@@ -1447,7 +1447,7 @@ impl FontDatabase {
     ) -> bool {
         use crate::text::directwrite_catalog as dw;
         use crate::text::glyph_layout::{
-            ScriptChains, emoji_sequence_flags, fallback_script_key, is_zero_width,
+            ScriptChains, emoji_sequence_flags, fallback_script_key, skips_fallback,
         };
         let Some(catalog) = dw::catalog() else {
             return false;
@@ -1483,7 +1483,7 @@ impl FontDatabase {
                 // primary font (the family must be a color font): it goes to the emoji chain even
                 // where the primary font has a glyph for it.
                 if matches!(ch, '\t' | '\n' | '\r')
-                    || is_zero_width(ch)
+                    || skips_fallback(ch)
                     || (primary.face.glyph_index(ch) != 0 && !emoji_flags[index])
                 {
                     continue;

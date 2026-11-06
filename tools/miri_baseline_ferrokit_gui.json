@@ -34,7 +34,8 @@
     "test_text_tabs",
     "test_font_line_metrics_oracle",
     "test_glyph_blit_placement",
-    "test_ft_golden"
+    "test_ft_golden",
+    "test_text_draw_golden"
   ],
   "excluded": {
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
@@ -759,6 +760,14 @@
     "lib::text::bidi::tests::digits_inside_right_to_left_text_go_up_one_level::TB": "pass",
     "lib::text::bidi::tests::visual_order_reverses_odd_runs_and_nested_runs_twice::SB": "pass",
     "lib::text::bidi::tests::visual_order_reverses_odd_runs_and_nested_runs_twice::TB": "pass",
+    "lib::text::bidi::tests::white_space_before_a_tab_or_the_end_goes_back_to_the_base_level::SB": "pass",
+    "lib::text::bidi::tests::white_space_before_a_tab_or_the_end_goes_back_to_the_base_level::TB": "pass",
+    "lib::text::bidi::tests::boundary_neutrals_take_the_lower_level_of_their_neighbours::SB": "pass",
+    "lib::text::bidi::tests::boundary_neutrals_take_the_lower_level_of_their_neighbours::TB": "pass",
+    "lib::text::bidi::tests::isolates_hide_their_text_from_the_base_direction::SB": "pass",
+    "lib::text::bidi::tests::isolates_hide_their_text_from_the_base_direction::TB": "pass",
+    "lib::text::line_items::tests::pen_positions_keep_a_64th_of_a_pixel::SB": "pass",
+    "lib::text::line_items::tests::pen_positions_keep_a_64th_of_a_pixel::TB": "pass",
     "test_text_layout_oracle::synthetic_font_hit_tests_match_qt::SB": "unsupported",
     "test_text_layout_oracle::synthetic_font_hit_tests_match_qt::TB": "unsupported",
     "test_text_layout_oracle::synthetic_font_hit_tests_on_wrapped_lines_match_qt::SB": "unsupported",
@@ -835,6 +844,8 @@
     "test_glyph_blit_placement::a_glyph_is_blitted_at_the_floored_pen_position::TB": "unsupported",
     "test_ft_golden::draw_text_equals_qts_draw_text::SB": "unsupported",
     "test_ft_golden::draw_text_equals_qts_draw_text::TB": "unsupported",
+    "test_text_draw_golden::advances_and_pixels_equal_qts::SB": "unsupported",
+    "test_text_draw_golden::advances_and_pixels_equal_qts::TB": "unsupported",
     "lib::text::font_database::tests::memory_face_keys_split_only_on_what_the_backend_synthesizes::SB": "pass",
     "lib::text::font_database::tests::memory_face_keys_split_only_on_what_the_backend_synthesizes::TB": "pass"
   }

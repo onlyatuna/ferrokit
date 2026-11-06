@@ -4,6 +4,7 @@
 //! Controls stroke styling, fill patterns (gradients, textures, solid), transform stack,
 //! composition modes, clipping, and text rendering.
 
+use crate::application::LayoutDirection;
 use crate::geometry::QPolygonF;
 use crate::geometry::primitives::{PointF, RectF};
 use crate::geometry::transform::Transform2D;
@@ -17,8 +18,8 @@ use crate::paint::text_blend::{
 };
 use crate::text::document::TextDocument;
 use crate::text::font::Font;
-use crate::text::font_database::resolve_font_engines_for_text_global;
-use crate::text::glyph_layout::{FontEngine, GlyphLayout, PositionedGlyph};
+use crate::text::glyph_layout::{FontEngine, PositionedGlyph};
+use crate::text::line_items::{ItemContent, LineItems, TextOption, qfixed_from_real};
 use crate::text::smoothing::{TextSmoothing, TrcLut, gamma_lut, text_smoothing};
 use std::sync::Arc;
 use tiny_skia::{
@@ -163,6 +164,10 @@ pub struct PainterState {
     pub clip_rect: Option<tiny_skia::Rect>,
     /// Rotated rect clips intersected with `clip_rect`; empty while every clip is axis-aligned.
     pub clip_quads: Vec<ClipQuad>,
+    /// `QPainter::layoutDirection`: the base direction `draw_text` gives the text. A painter on an
+    /// image or pixmap starts with `LayoutDirectionAuto`, the direction of the first strong
+    /// character of the text (qpainter.cpp:1824).
+    pub layout_direction: LayoutDirection,
 }
 
 impl Default for PainterState {
@@ -177,6 +182,7 @@ impl Default for PainterState {
             composition_mode: CompositionMode::SourceOver,
             clip_rect: None,
             clip_quads: Vec::new(),
+            layout_direction: LayoutDirection::LayoutDirectionAuto,
         }
     }
 }
@@ -1279,17 +1285,34 @@ impl<'a> Painter<'a> {
     //
     // Raster helpers
     // Sets opacity (0.0 to 1.0).
+    /// `QPainter::drawText(QPointF, QString)` (qpainter.cpp:5698): `pos` is the baseline origin of
+    /// the line. The text is itemized by bidi level and tabs, each item shaped in its own
+    /// direction, and the items are drawn from `pos` in their visual order, each as wide as its
+    /// advance (`text::line_items`). The base direction is the painter's
+    /// [`layout_direction`](Self::layout_direction).
     pub fn draw_text(&mut self, pos: PointF, text: &str, font: &Font) {
-        if text.is_empty() {
-            return;
+        let option = TextOption {
+            text_direction: self.state.layout_direction,
+            ..TextOption::default()
+        };
+        let items = LineItems::new(text, font, &option);
+        // The pen position is a `QFixed` in Qt, 1/64 px.
+        let x = qfixed_from_real(pos.x);
+        for (offset, item) in items.visual() {
+            if let ItemContent::Glyphs { engines, glyphs } = &item.content {
+                self.draw_glyph_run(PointF::new(x + offset, pos.y), glyphs, engines, font);
+            }
         }
-        let engines = resolve_font_engines_for_text_global(font, text);
-        if engines.is_empty() {
-            return;
-        }
+    }
 
-        let layout = GlyphLayout::shape_with_engines(text, font, &engines);
-        self.draw_glyph_run(pos, &layout.glyphs, &engines, font);
+    /// `QPainter::layoutDirection`.
+    pub fn layout_direction(&self) -> LayoutDirection {
+        self.state.layout_direction
+    }
+
+    /// `QPainter::setLayoutDirection`: the base direction of the text `draw_text` draws.
+    pub fn set_layout_direction(&mut self, direction: LayoutDirection) {
+        self.state.layout_direction = direction;
     }
 
     /// Draws glyphs already shaped and placed relative to `pos` (the baseline origin), in the
@@ -1663,15 +1686,19 @@ impl<'a> Painter<'a> {
     /// [`fill_path`](Self::fill_path) and [`stroke_path`](Self::stroke_path). `None` when the text
     /// has no outlines (empty, or a backend that cannot produce them).
     pub fn text_path(pos: PointF, text: &str, font: &Font) -> Option<Path> {
-        if text.is_empty() {
-            return None;
+        // `QPainterPath::addText` lays the text out with a `QTextLayout` (a default `QTextOption`)
+        // and puts the items from `point.x()` in visual order, as `drawText` does.
+        let items = LineItems::new(text, font, &TextOption::default());
+        let mut builder = PathBuilder::new();
+        for (x, item) in items.visual() {
+            if let ItemContent::Glyphs { engines, glyphs } = &item.content
+                && let Some(path) =
+                    Self::glyph_path(PointF::new(pos.x + x, pos.y), glyphs, engines, font)
+            {
+                builder.push_path(&path);
+            }
         }
-        let engines = resolve_font_engines_for_text_global(font, text);
-        if engines.is_empty() {
-            return None;
-        }
-        let layout = GlyphLayout::shape_with_engines(text, font, &engines);
-        Self::glyph_path(pos, &layout.glyphs, &engines, font)
+        builder.finish()
     }
 
     /// The outline of shaped `glyphs` placed relative to `pos`.
