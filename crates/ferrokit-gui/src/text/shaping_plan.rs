@@ -130,6 +130,31 @@ fn select_script(table: Option<&LayoutTable>, tags: &[Tag]) -> Option<(u16, Tag)
         .find_map(|&tag| table.scripts.index(tag).map(|index| (index, tag)))
 }
 
+/// `QFontEngine::supportsScript` for the scripts that need OpenType layout (`scriptRequiresOpenType`:
+/// Syriac to Sinhala, Khmer and N'Ko): whether the font's GSUB table has the script under one of
+/// the tags HarfBuzz would shape it with (`hb_ot_layout_table_select_script` returning true, so
+/// not through `DFLT`, `dflt` or `latn`). A font with an AAT `mort` or `morx` table supports every
+/// script.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn font_supports_open_type_script(data: &[u8], face_index: u32, script: Script) -> bool {
+    let Ok(face) = rustybuzz::ttf_parser::Face::parse(data, face_index) else {
+        return false;
+    };
+    let raw = face.raw_face();
+    if raw.table(Tag::from_bytes(b"mort")).is_some()
+        || raw.table(Tag::from_bytes(b"morx")).is_some()
+    {
+        return true;
+    }
+    let Some(gsub) = face.tables().gsub else {
+        return false;
+    };
+    let (tags, count) = script_tags(script);
+    tags[..count]
+        .iter()
+        .any(|&tag| gsub.scripts.index(tag).is_some())
+}
+
 /// Whether the GPOS table has a `kern` feature under the script HarfBuzz picks for `tags`, in the
 /// default language system (`hb_ot_layout_language_find_feature`: the required feature does not
 /// count, only the listed ones do).

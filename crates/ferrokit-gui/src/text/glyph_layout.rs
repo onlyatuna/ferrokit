@@ -202,6 +202,17 @@ pub(crate) fn fallback_script_key(ch: char, script: Script, in_sequence: bool) -
     }
 }
 
+/// The key of the font chain of the script item a character is in, as Qt's `QFontPrivate::
+/// engineForScript` keys its engines: Latin, Inherited and Unknown items use the engine of the
+/// Common script, every other script has its own, and emoji sequences and `Emoji_Presentation`
+/// characters the emoji one ([`fallback_script_key`]).
+pub(crate) fn item_script_key(ch: char, script: Script, in_sequence: bool) -> &'static str {
+    match fallback_script_key(ch, script, in_sequence) {
+        "Latn" | "Zinh" | "Zzzz" => "Zyyy",
+        key => key,
+    }
+}
+
 /// For each character of `text`, whether it is part of an emoji sequence (a keycap, a character
 /// with the emoji variation selector, a ZWJ sequence, a flag, a tag sequence).
 pub(crate) fn emoji_sequence_flags(text: &str) -> Vec<bool> {
@@ -236,6 +247,10 @@ pub struct FontEngine {
     shaping_faces: ShapingFaceCache,
     /// The fallback engines per script item, see [`FontEngine::with_script_chains`].
     script_chains: Option<Arc<ScriptChains>>,
+    /// The chains hold the engine of every script item, the first of them being the item's own
+    /// font (see [`FontEngine::with_item_chains`]), not only the fallbacks for what the primary
+    /// font lacks.
+    item_chains: bool,
 }
 
 impl FontEngine {
@@ -250,6 +265,7 @@ impl FontEngine {
             lcd_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             shaping_faces: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             script_chains: None,
+            item_chains: false,
         }
     }
 
@@ -284,6 +300,19 @@ impl FontEngine {
     /// character the primary font lacks, the first engine of its script's chain with a glyph.
     pub fn with_script_chains(mut self, chains: ScriptChains) -> Self {
         self.script_chains = Some(Arc::new(chains));
+        self
+    }
+
+    /// Gives the engine the font of each script item as Qt's `QFontEngineMulti` has it per item
+    /// (`QTextEngine::fontEngine(si)`): the chain of a script's key starts with the engine the item
+    /// is shaped with, which is not the primary engine when the family is missing or lacks the
+    /// script's OpenType support, and goes on with that engine's fallbacks in order. A character
+    /// takes the first engine of its item's chain with a glyph for it, else the first (its
+    /// missing-glyph box); every character is resolved by its item's chain, the primary font's
+    /// glyphs included. Keys are [`item_script_key`]s.
+    pub fn with_item_chains(mut self, chains: ScriptChains) -> Self {
+        self.script_chains = Some(Arc::new(chains));
+        self.item_chains = true;
         self
     }
 
@@ -1254,19 +1283,49 @@ impl GlyphLayout {
             Vec::new()
         };
         let mut item = 0;
+        let item_mode = engines[0].item_chains;
+        // Item mode: the engine the previous character took as a fallback (not its item's own
+        // font), what `QFontEngineMulti::stringToCMap`'s `lastFallback` is.
+        let mut item_fallback: Option<usize> = None;
         for (index, (offset, ch)) in text.char_indices().enumerate() {
             // `QFontEngineMulti::stringToCMap` (qfontengine.cpp:2204): a zero width joiner or
             // non-joiner follows the fallback font of the character before it when that font has
             // a glyph for it, to get the shaping rules of that font.
-            let previous_fallback = char_engine_indices
-                .last()
-                .map(|&(_, idx)| idx)
-                .filter(|&idx| idx > 0);
+            let previous_fallback = if item_mode {
+                item_fallback
+            } else {
+                char_engine_indices
+                    .last()
+                    .map(|&(_, idx)| idx)
+                    .filter(|&idx| idx > 0)
+            };
             if matches!(ch, '\u{200d}' | '\u{200c}')
                 && let Some(fallback) = previous_fallback
                 && engines[fallback].face.glyph_index(ch) != 0
             {
                 char_engine_indices.push((ch, fallback));
+                continue;
+            }
+            if item_mode && let (Some(chains), Some(items)) = (chains, &items) {
+                while item + 1 < items.len() && items[item + 1].0 <= offset {
+                    item += 1;
+                }
+                let key = item_script_key(ch, items[item].1, emoji_flags[index]);
+                let chain = chains.get(key).map_or(&[][..], Vec::as_slice);
+                let own = chain.first().copied().unwrap_or(0);
+                // The item's own font first; the missing-glyph box of it when no engine has one.
+                // Controls and variation selectors never take a fallback.
+                let resolved = if skips_fallback(ch) || engines[own].face.glyph_index(ch) != 0 {
+                    own
+                } else {
+                    chain
+                        .iter()
+                        .copied()
+                        .find(|&i| engines[i].face.glyph_index(ch) != 0)
+                        .unwrap_or(own)
+                };
+                item_fallback = (resolved != own).then_some(resolved);
+                char_engine_indices.push((ch, resolved));
                 continue;
             }
             let mut resolved_idx = 0usize;

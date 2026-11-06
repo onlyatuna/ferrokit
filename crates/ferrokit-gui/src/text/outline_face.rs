@@ -20,6 +20,8 @@ use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder, Tag};
 pub struct OutlineFace {
     // Field order matters: `face` borrows from `_data` and must be dropped first.
     face: Face<'static>,
+    /// The index of the face within the font file (a collection holds several).
+    face_index: u32,
     units_per_em: f32,
     /// Design right side bearing, in font units, of every glyph asked for so far (see
     /// [`GlyphFace::right_side_bearing`]): reading it takes the glyph header, and a text asks for
@@ -45,6 +47,7 @@ impl OutlineFace {
         }
         Ok(Self {
             face,
+            face_index,
             units_per_em,
             bearings: std::sync::Mutex::new(std::collections::HashMap::new()),
             _data: data,
@@ -264,6 +267,10 @@ fn be_u16(table: &[u8], offset: usize) -> u16 {
 impl GlyphFace for OutlineFace {
     fn glyph_index(&self, ch: char) -> u16 {
         self.face.glyph_index(ch).map_or(0, |g| g.0)
+    }
+
+    fn face_index(&self) -> u32 {
+        self.face_index
     }
 
     /// FreeType's and CoreText's view: the font's own tables (see [`OutlineFace::line_metrics`]).
