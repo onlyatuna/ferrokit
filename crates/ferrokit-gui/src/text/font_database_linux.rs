@@ -632,6 +632,18 @@ impl FontDatabase {
         // where their engine is in `engines`; `None` for one that cannot be loaded.
         let mut loaded: HashMap<(String, String), Option<usize>> = HashMap::new();
         let mut fixed_of: HashMap<&'static str, bool> = HashMap::new();
+        // `QFontDatabasePrivate::load` (qfontdatabase.cpp:2947-2953): once a script's font is a
+        // symbol font, every script that has no font yet gets it too; a symbol font is not
+        // wrapped in a `QFontEngineMulti` (qfontdatabase.cpp:835), so its items have no fallback.
+        let is_symbol = |engine: &FontEngine| {
+            engine.raw_data.as_ref().is_some_and(|raw| {
+                crate::text::outline_face::OutlineFace::is_symbol_font(
+                    raw.as_slice(),
+                    engine.face_index,
+                )
+            })
+        };
+        let mut symbol_everywhere: Option<(usize, String, bool)> = None;
         let items = crate::text::shaping_plan::script_items(text);
         let emoji_flags = emoji_sequence_flags(text);
         let mut position = 0usize;
@@ -642,8 +654,13 @@ impl FontDatabase {
                 position += 1;
                 let key = item_script_key(ch, script, emoji_flags[index]);
                 if !chains_of.contains_key(key) {
-                    let (engine, family, fixed) =
-                        self.item_font(engines, font, style, key, &own, exact.is_some());
+                    let (engine, family, fixed) = match &symbol_everywhere {
+                        Some(symbol) => symbol.clone(),
+                        None => self.item_font(engines, font, style, key, &own, exact.is_some()),
+                    };
+                    if symbol_everywhere.is_none() && is_symbol(&engines[engine]) {
+                        symbol_everywhere = Some((engine, family.clone(), fixed));
+                    }
                     fixed_of.insert(key, fixed);
                     // `QFontEngineMulti::loadEngine` asks for each fallback family with the
                     // `fontDef` of the item font, whose style name is that of its FreeType face
@@ -667,6 +684,9 @@ impl FontDatabase {
                 }
                 let item = chains_of.get_mut(key).expect("inserted above");
                 if crate::text::glyph_layout::skips_fallback(ch)
+                    || symbol_everywhere
+                        .as_ref()
+                        .is_some_and(|symbol| symbol.0 == item.engine)
                     || engines[item.engine].face.glyph_index(ch) != 0
                     || !misses.insert((key, ch))
                 {
