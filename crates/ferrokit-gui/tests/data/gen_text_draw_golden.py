@@ -119,8 +119,12 @@ SYS_CASES = [
     LRI + HEB_WORD + PDI + " abc",
 ]
 
-# `QFontMetricsF::horizontalAdvance` ends the string at U+009C; `drawText` does not.
-ADVANCE_ONLY_CASES = ["ab\u009ccd", "\u009cab", "a\u009c", AR_WORD + "\u009c" + "abc"]
+# `QFontMetricsF::horizontalAdvance` ends the string at U+009C; `drawText` does not. The Arabic
+# one is for the installed font only: the synthetic font has no Arabic, so its width would be that
+# of whichever fallback font the machine's fontconfig picks (DejaVu Sans in Qt on the machines
+# measured, not what ferrokit's fixed fallback slots pick on every machine).
+ADVANCE_ONLY_CASES = ["ab\u009ccd", "\u009cab", "a\u009c", HEB + "\u009c" + "abc"]
+SYS_ADVANCE_ONLY_CASES = [AR_WORD + "\u009c" + "abc"]
 
 SYN_SIZES_ADVANCE = [16, 32]
 SYN_SIZES_DRAW = [16, 32]
@@ -218,7 +222,7 @@ def main():
         font = make_font(family, px)
         fm, fmi = QFontMetricsF(font), QFontMetrics(font)
         draw = (kind == "syn" and px in SYN_SIZES_DRAW) or kind == "sys"
-        for text in ADVANCE_ONLY_CASES:
+        for text in ADVANCE_ONLY_CASES + (SYS_ADVANCE_ONLY_CASES if kind == "sys" else []):
             print("A %s %s %r %d" % (ident, text.encode().hex(), fm.horizontalAdvance(text),
                                      fmi.horizontalAdvance(text)))
         for text in cases:
