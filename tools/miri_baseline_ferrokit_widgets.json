@@ -121,6 +121,7 @@
     "test_window_activation_events": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_menu_exec_popup": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_window_raise_activate": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_window_stack_under": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_system_tray_menu": "System tray and Application require current_exe/syscalls unsupported under isolated Miri"
   },
   "negative_controls": [

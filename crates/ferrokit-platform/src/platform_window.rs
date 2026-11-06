@@ -33,6 +33,44 @@ pub trait PlatformWindow: 'static {
     /// [`request_activate_window`](Self::request_activate_window). A backend that does not
     /// implement it does nothing, as `QPlatformWindow::raise` does by default.
     fn raise(&self) {}
+    /// Places this top-level window immediately below the top-level window `sibling` (its
+    /// [`native_handle`](Self::native_handle)) in the window system's stacking order, without
+    /// activating, moving or resizing it. Returns whether the window was placed there: `false`
+    /// when `sibling` is not a live window of this window system, is this window itself, is in
+    /// a different stacking band, or the window system keeps the two in another order (a
+    /// window owned by `sibling` on Windows).
+    ///
+    /// This is a ferrokit extension, modelled on `QWidget::stackUnder` (qwidget.cpp), which only
+    /// reorders sibling child widgets. Qt has no call that orders one top-level window against
+    /// another: `QWindow` offers only `raise` and `lower`.
+    ///
+    /// A window stays in its own stacking band: the call never changes whether either window is
+    /// topmost / floating. A window that [`set_stays_on_top`](Self::set_stays_on_top) put in the
+    /// topmost band cannot be placed below a window outside it, nor the other way round; the call
+    /// then does nothing and returns `false`. Put both windows in the same band first.
+    ///
+    /// - Windows: `SetWindowPos(self, hWndInsertAfter = sibling, SWP_NOMOVE | SWP_NOSIZE |
+    ///   SWP_NOACTIVATE)`, which inserts the window right after `sibling` in the z-order, that
+    ///   is, below it. The bands are `WS_EX_TOPMOST` set or clear. An owned window
+    ///   (`set_transient_parent`) is always kept above its owner by the system, so this returns
+    ///   `false` for a window owned by `sibling`; use an unowned window to sit below another one.
+    /// - macOS: `-[NSWindow orderWindow:NSWindowBelow relativeTo:[sibling windowNumber]]`, which
+    ///   does not make the window key. The bands are the `NSWindow` levels. Both windows must be
+    ///   visible, since `orderWindow:` would show a hidden one. AppKit does not report the
+    ///   resulting order cheaply, so `true` means the request was made; Windows reads the order
+    ///   back.
+    /// - X11: the request is `ConfigureWindow` with `sibling` and `stack_mode = Below`, which
+    ///   the window manager may redirect or refuse (it stacks the frame windows it reparents
+    ///   clients into, and keeps `_NET_WM_STATE_ABOVE` / `_NET_WM_STATE_BELOW` windows in
+    ///   layers of its own). The X11 backend has no connection to the X server yet (it does not
+    ///   implement `raise` either), so it does nothing and returns `false`.
+    /// - Wayland: a client cannot order its windows, so nothing happens and the result is `false`.
+    ///
+    /// A backend that does not implement it does nothing and returns `false`, as
+    /// `QPlatformWindow::raise` does nothing by default.
+    fn stack_under(&self, _sibling: isize) -> bool {
+        false
+    }
     /// `QPlatformWindow::requestActivateWindow`: asks the window system to make this window the
     /// active one. It is a request: the window becomes active ([`is_active`](Self::is_active))
     /// only if the window system grants it, which may happen after this call returns. A hidden
