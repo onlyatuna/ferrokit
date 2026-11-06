@@ -422,6 +422,10 @@
       "SB": 3,
       "TB": 9
     },
+    "test_text_draw_golden": {
+      "SB": 20,
+      "TB": 40
+    },
     "test_text_layout_oracle": {
       "SB": 62,
       "TB": 174

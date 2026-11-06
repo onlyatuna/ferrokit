@@ -153,13 +153,22 @@ impl LineItems {
             &engines,
             Some(level % 2 == 1),
         );
+        // The soft hyphen and the form feed are shaped but not drawn: Qt gives their glyph
+        // `dontPrint` (`applyVisibilityRules`, qtextengine.cpp:1329-1356), and
+        // `QFontEngine::getGlyphPositions` leaves such glyphs out.
+        let glyphs = layout
+            .glyphs
+            .into_iter()
+            .filter(|glyph| {
+                !run_text
+                    .get(glyph.cluster..)
+                    .is_some_and(|rest| rest.starts_with(['\u{ad}', '\u{c}']))
+            })
+            .collect();
         Item {
             level,
             width: layout.width,
-            content: ItemContent::Glyphs {
-                engines,
-                glyphs: layout.glyphs,
-            },
+            content: ItemContent::Glyphs { engines, glyphs },
         }
     }
 

@@ -958,6 +958,14 @@ fn ignorable_glyphs(
     ignorable
 }
 
+/// `QFontEngine::isIgnorableChar` (qfontengine_p.h:156): the characters Qt never searches a
+/// fallback font for, whatever the primary font lacks: the controls (category Cc, which holds
+/// the line feed and carriage return), the line and paragraph separators, and the variation
+/// selectors.
+pub(crate) fn skips_fallback(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{fe00}'..='\u{fe0f}')
+}
+
 /// Whether `c` has no width in Qt in any font, whatever glyph a font has for it (measured with
 /// PySide6 6.11.2, oracle font and Arial: `QFontMetricsF::horizontalAdvance` of each is 0 and
 /// `"a" + c + "b"` is as wide as `"ab"`): the default ignorable characters (the soft hyphen, the
@@ -1235,7 +1243,7 @@ impl GlyphLayout {
         }
 
         let primary = &engines[0].face;
-        let mut char_engine_indices = Vec::with_capacity(text.len());
+        let mut char_engine_indices: Vec<(char, usize)> = Vec::with_capacity(text.len());
         let mut last_fallback_idx = 0usize;
 
         let chains = engines[0].script_chains.as_deref();
@@ -1247,21 +1255,29 @@ impl GlyphLayout {
         };
         let mut item = 0;
         for (index, (offset, ch)) in text.char_indices().enumerate() {
-            // A character of no width never takes a fallback font: whatever glyph one has for it
-            // is not shown (Qt gives it no advance in any font), and switching fonts would cut
-            // the run (and its kerning) around it. It stays with the font before it.
-            if is_zero_width(ch) {
-                let previous = char_engine_indices.last().map_or(0, |&(_, idx)| idx);
-                char_engine_indices.push((ch, previous));
+            // `QFontEngineMulti::stringToCMap` (qfontengine.cpp:2204): a zero width joiner or
+            // non-joiner follows the fallback font of the character before it when that font has
+            // a glyph for it, to get the shaping rules of that font.
+            let previous_fallback = char_engine_indices
+                .last()
+                .map(|&(_, idx)| idx)
+                .filter(|&idx| idx > 0);
+            if matches!(ch, '\u{200d}' | '\u{200c}')
+                && let Some(fallback) = previous_fallback
+                && engines[fallback].face.glyph_index(ch) != 0
+            {
+                char_engine_indices.push((ch, fallback));
                 continue;
             }
             let mut resolved_idx = 0usize;
             let gid = primary.glyph_index(ch);
 
             // Qt parity: if primary engine has no glyph (0) and character is not whitespace/ignorable,
-            // query fallback engines.
-            if gid == 0 && (ch != ' ' || chains.is_some()) && ch != '\t' && ch != '\n' && ch != '\r'
-            {
+            // query fallback engines. The characters of no width (joiners, direction marks, the soft
+            // hyphen...) are not exempt: a character the primary font lacks is shaped in a fallback
+            // font item, whose blank glyph is what is drawn (`isIgnorableChar` is only the controls,
+            // the line and paragraph separators and the variation selectors, qfontengine_p.h:156).
+            if gid == 0 && (ch != ' ' || chains.is_some()) && !skips_fallback(ch) {
                 // Windows follows Qt (`QFontEngineMulti::stringToCMap`): the fallbacks of the
                 // script of the character's item, the first one with a glyph wins.
                 if let (Some(chains), Some(items)) = (chains, &items) {

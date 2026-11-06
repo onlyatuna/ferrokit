@@ -24,10 +24,8 @@
 //!
 //! macOS has no golden (Qt could not be run there): the test does nothing on it.
 //!
-//! `KNOWN_DIVERGENCES` lists the draws that differ and why; each must still differ, so a fix makes
-//! its entry fail until the entry is removed. Setting `FERROKIT_TEXT_DRAW_GOLDEN` to the output
-//! of the generator's `full` mode reports, for every image that differs, how many pixels do
-//! (and `FERROKIT_TEXT_DRAW_ASCII` shows them).
+//! Setting `FERROKIT_TEXT_DRAW_GOLDEN` to the output of the generator's `full` mode reports, for
+//! every image that differs, how many pixels do (and `FERROKIT_TEXT_DRAW_ASCII` shows them).
 
 use ferrokit_gui::application::LayoutDirection;
 use ferrokit_gui::geometry::primitives::PointF;
@@ -42,71 +40,6 @@ use std::collections::HashMap;
 
 const GOLDEN: &str = include_str!("data/text_draw_golden.txt");
 const SYNTHETIC_TTF: &[u8] = include_bytes!("data/oracle_text.ttf");
-
-/// The reason of the entries about characters that are never shown. `QTextLayout.glyphRuns()` of
-/// Qt (PySide6 6.12.0) for `"a\u{200d}b"` is a run of the fallback font (DejaVu Sans on Linux,
-/// Tahoma on Windows) with glyph 3 at x = 7.5, next to the run of the synthetic font with `a` and
-/// `b`: the synthetic font has no glyph for the character, so Qt shapes it in an item of a
-/// fallback font and draws that font's blank glyph. ferrokit keeps it in the primary font, where
-/// the glyph that stands for a hidden character is the font's space, which the synthetic font
-/// draws as a box (every glyph of it is one). The advances are equal (the `advance` records), and
-/// the same strings drawn with an installed font, whose space is blank, are pixel identical
-/// (the `sys` records). The fallback font choice is not what this test is about.
-const FALLBACK_WHY: &str = "Qt draws the character in a fallback font's blank glyph, ferrokit as \
-     the synthetic font's space, a box";
-
-/// The soft hyphen: Qt gives its glyph `dontPrint` (`applyVisibilityRules`, qtextengine.cpp:1336)
-/// and does not draw it (its glyph is not in `glyphRuns()` either); ferrokit draws the hidden
-/// glyph, the synthetic font's space, a box.
-const SHY_WHY: &str = "Qt does not draw a soft hyphen, ferrokit draws the space the shaper \
-     puts in its place, a box in the synthetic font";
-
-/// Draws of the synthetic font that differ from Qt: `(platform, text, reason)`. A text stands for
-/// every record of it (sizes and origins); the entry fails if every one of them is now identical,
-/// and a record that differs without an entry fails.
-const KNOWN_DIVERGENCES: &[(char, &str, &str)] = &[
-    ('L', "\u{200f}abc", FALLBACK_WHY),
-    ('L', "\u{200e}\u{5d0}\u{5d1}\u{5d2}", FALLBACK_WHY),
-    ('L', "abc\u{200f}\u{5d0}\u{5d1}\u{5d2}", FALLBACK_WHY),
-    ('L', "\u{5d0}\u{5d1}\u{200e}abc", FALLBACK_WHY),
-    ('L', "\u{5d0}\u{5d1}\u{200f}abc", FALLBACK_WHY),
-    ('L', "a\u{200d}b", FALLBACK_WHY),
-    ('L', "a\u{200c}b", FALLBACK_WHY),
-    ('L', "a\u{ad}b", SHY_WHY),
-    ('L', "a\u{feff}b", FALLBACK_WHY),
-    ('L', "\u{202e}abc\u{202c}", FALLBACK_WHY),
-    ('L', "\u{202d}\u{5d0}\u{5d1}\u{5d2}\u{202c}", FALLBACK_WHY),
-    ('L', "\u{202b}\u{5d0}\u{5d1} abc\u{202c}", FALLBACK_WHY),
-    ('L', "\u{202a}\u{5d0}\u{5d1}\u{202c} abc", FALLBACK_WHY),
-    ('W', "\u{200f}abc", FALLBACK_WHY),
-    ('W', "\u{200e}\u{5d0}\u{5d1}\u{5d2}", FALLBACK_WHY),
-    ('W', "abc\u{200f}\u{5d0}\u{5d1}\u{5d2}", FALLBACK_WHY),
-    ('W', "\u{5d0}\u{5d1}\u{200e}abc", FALLBACK_WHY),
-    ('W', "\u{5d0}\u{5d1}\u{200f}abc", FALLBACK_WHY),
-    ('W', "a\u{200d}b", FALLBACK_WHY),
-    ('W', "a\u{200c}b", FALLBACK_WHY),
-    ('W', "a\u{ad}b", SHY_WHY),
-    ('W', "a\u{feff}b", FALLBACK_WHY),
-    ('W', "\u{202e}abc\u{202c}", FALLBACK_WHY),
-    ('W', "\u{202d}\u{5d0}\u{5d1}\u{5d2}\u{202c}", FALLBACK_WHY),
-    ('W', "\u{202b}\u{5d0}\u{5d1} abc\u{202c}", FALLBACK_WHY),
-    ('W', "\u{202a}\u{5d0}\u{5d1}\u{202c} abc", FALLBACK_WHY),
-    (
-        'W',
-        "abc \u{2067}\u{5d0}\u{5d1} abc\u{2069} def",
-        FALLBACK_WHY,
-    ),
-    ('W', "\u{2067}abc\u{2069} \u{5d0}\u{5d1}", FALLBACK_WHY),
-    ('W', "\u{2068}\u{5d0}\u{5d1}\u{2069} abc", FALLBACK_WHY),
-    ('W', "\u{2066}\u{5d0}\u{5d1}\u{2069} abc", FALLBACK_WHY),
-    ('W', "\u{2067}\u{5d0}\u{5d1}\u{2069} abc", FALLBACK_WHY),
-    ('W', "\u{2066}abc\u{2069} \u{5d0}\u{5d1}", FALLBACK_WHY),
-    (
-        'W',
-        "\u{5d0}\u{5d1} \u{2066}abc\u{2069} \u{5d2}",
-        FALLBACK_WHY,
-    ),
-];
 
 fn fnv1a64(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
@@ -307,6 +240,12 @@ fn printable(text: &str) -> String {
     text.escape_default().to_string()
 }
 
+/// Characters that are never shown (default ignorables of Qt: the soft hyphen, joiners, direction
+/// marks, embedding, override and isolate controls, the byte order mark).
+fn is_hidden(c: char) -> bool {
+    matches!(c, '\u{ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
 #[test]
 fn advances_and_pixels_equal_qts() {
     let Some(platform) = platform() else {
@@ -321,8 +260,17 @@ fn advances_and_pixels_equal_qts() {
     let mut ids: Vec<&String> = fonts.keys().filter(|id| id.starts_with(platform)).collect();
     ids.sort();
     let mut report = Vec::new();
-    let mut known_seen = vec![false; KNOWN_DIVERGENCES.len()];
     let (mut advances, mut images) = (0, 0);
+    let system_font = fonts
+        .iter()
+        .filter(|(id, f)| id.starts_with(platform) && f.kind == "sys")
+        .map(|(_, f)| f.font())
+        .next();
+    let system_font_ok = matches!(system_font, Some(Ok(_)));
+    let system_font_why = match system_font {
+        Some(Err(why)) => why,
+        _ => "no installed font record".to_string(),
+    };
     for id in ids {
         let golden_font = &fonts[id];
         let font = match golden_font.font() {
@@ -359,6 +307,16 @@ fn advances_and_pixels_equal_qts() {
             }
         }
         for draw in &records.draws {
+            // A character the synthetic font lacks and that is never shown is drawn in the glyph
+            // of a fallback font (blank in the measured DejaVu Sans and Tahoma); without the
+            // measured machine's fonts the fallback is another one.
+            if golden_font.kind == "syn" && draw.text.chars().any(is_hidden) && !system_font_ok {
+                eprintln!(
+                    "skipping the draw of {:?}: {system_font_why}",
+                    printable(&draw.text)
+                );
+                continue;
+            }
             let got = render(draw, &font, dpr);
             images += 1;
             let wrong = match &draw.image {
@@ -368,48 +326,32 @@ fn advances_and_pixels_equal_qts() {
                     (n != 0).then(|| format!("{n} pixels differ"))
                 }
             };
-            let known = KNOWN_DIVERGENCES
-                .iter()
-                .position(|&(p, text, _)| p == platform && text == draw.text);
-            match (wrong, known) {
-                (Some(_), Some(entry)) if golden_font.kind == "syn" => known_seen[entry] = true,
-                (Some(wrong), _) => {
-                    report.push(format!(
-                        "{id} drawText at ({}, {}) of {:?}: {wrong}",
+            if let Some(wrong) = wrong {
+                report.push(format!(
+                    "{id} drawText at ({}, {}) of {:?}: {wrong}",
+                    draw.x,
+                    draw.y,
+                    printable(&draw.text)
+                ));
+                if let (Image::Pixels(want), Some(_)) =
+                    (&draw.image, std::env::var_os("FERROKIT_TEXT_DRAW_ASCII"))
+                {
+                    let width = (draw.size.0 as f32 * dpr).round() as usize;
+                    eprintln!(
+                        "{id} {:?} at {}:\nferrokit:\n{}\nQt:\n{}",
+                        printable(&draw.text),
                         draw.x,
-                        draw.y,
-                        printable(&draw.text)
-                    ));
-                    if let (Image::Pixels(want), Some(_)) =
-                        (&draw.image, std::env::var_os("FERROKIT_TEXT_DRAW_ASCII"))
-                    {
-                        let width = (draw.size.0 as f32 * dpr).round() as usize;
-                        eprintln!(
-                            "{id} {:?} at {}:\nferrokit:\n{}\nQt:\n{}",
-                            printable(&draw.text),
-                            draw.x,
-                            ascii(&got, width),
-                            ascii(want, width)
-                        );
-                    }
+                        ascii(&got, width),
+                        ascii(want, width)
+                    );
                 }
-                (None, _) => {}
             }
         }
     }
     set_application_device_pixel_ratio(1.0);
-    for (seen, (p, text, why)) in known_seen.iter().zip(KNOWN_DIVERGENCES) {
-        if *p == platform && !seen {
-            report.push(format!(
-                "known divergence {:?} ({why}) no longer differs: remove its entry",
-                printable(text)
-            ));
-        }
-    }
     eprintln!(
-        "{advances} advances and {images} images compared, {} differ ({} known)",
-        report.len(),
-        known_seen.iter().filter(|&&seen| seen).count()
+        "{advances} advances and {images} images compared, {} differ",
+        report.len()
     );
     assert!(
         report.is_empty(),
