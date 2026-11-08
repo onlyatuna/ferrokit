@@ -561,6 +561,10 @@ impl GlyphFace for SkrifaFace {
         self.base.glyph_index(ch)
     }
 
+    fn face_index(&self) -> u32 {
+        self.face_index
+    }
+
     /// The bitmap box of the glyph (`FT_Render_Glyph` without the coverage).
     fn metrics_indexed(&self, glyph_id: u16, px: f32) -> GlyphMetrics {
         let advance_width = self.layout_advance_26_6(glyph_id, px) as f32 / 64.0;

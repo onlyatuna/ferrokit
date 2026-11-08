@@ -202,6 +202,17 @@ pub(crate) fn fallback_script_key(ch: char, script: Script, in_sequence: bool) -
     }
 }
 
+/// The key of the font chain of the script item a character is in, as Qt's `QFontPrivate::
+/// engineForScript` keys its engines: Latin, Inherited and Unknown items use the engine of the
+/// Common script, every other script has its own, and emoji sequences and `Emoji_Presentation`
+/// characters the emoji one ([`fallback_script_key`]).
+pub(crate) fn item_script_key(ch: char, script: Script, in_sequence: bool) -> &'static str {
+    match fallback_script_key(ch, script, in_sequence) {
+        "Latn" | "Zinh" | "Zzzz" => "Zyyy",
+        key => key,
+    }
+}
+
 /// For each character of `text`, whether it is part of an emoji sequence (a keycap, a character
 /// with the emoji variation selector, a ZWJ sequence, a flag, a tag sequence).
 pub(crate) fn emoji_sequence_flags(text: &str) -> Vec<bool> {
@@ -236,6 +247,10 @@ pub struct FontEngine {
     shaping_faces: ShapingFaceCache,
     /// The fallback engines per script item, see [`FontEngine::with_script_chains`].
     script_chains: Option<Arc<ScriptChains>>,
+    /// The chains hold the engine of every script item, the first of them being the item's own
+    /// font (see [`FontEngine::with_item_chains`]), not only the fallbacks for what the primary
+    /// font lacks.
+    item_chains: bool,
 }
 
 impl FontEngine {
@@ -250,6 +265,7 @@ impl FontEngine {
             lcd_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             shaping_faces: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             script_chains: None,
+            item_chains: false,
         }
     }
 
@@ -284,6 +300,19 @@ impl FontEngine {
     /// character the primary font lacks, the first engine of its script's chain with a glyph.
     pub fn with_script_chains(mut self, chains: ScriptChains) -> Self {
         self.script_chains = Some(Arc::new(chains));
+        self
+    }
+
+    /// Gives the engine the font of each script item as Qt's `QFontEngineMulti` has it per item
+    /// (`QTextEngine::fontEngine(si)`): the chain of a script's key starts with the engine the item
+    /// is shaped with, which is not the primary engine when the family is missing or lacks the
+    /// script's OpenType support, and goes on with that engine's fallbacks in order. A character
+    /// takes the first engine of its item's chain with a glyph for it, else the first (its
+    /// missing-glyph box); every character is resolved by its item's chain, the primary font's
+    /// glyphs included. Keys are [`item_script_key`]s.
+    pub fn with_item_chains(mut self, chains: ScriptChains) -> Self {
+        self.script_chains = Some(Arc::new(chains));
+        self.item_chains = true;
         self
     }
 
@@ -723,14 +752,14 @@ fn qt_shaping_plan() -> bool {
     cfg!(windows)
 }
 
-/// Cuts the font runs of `text` at Qt's script items and gives each piece the script of its item.
-/// The items are found over the whole string, so a font run that starts with characters of no
-/// script of their own still takes the script of the item before it.
+/// Cuts the font runs of `text` at Qt's script `items` (offsets in `text`) and gives each piece
+/// the script of its item. The items are found over the whole paragraph, so a font run that starts
+/// with characters of no script of their own still takes the script of the item before it.
 fn split_runs_by_script<'a>(
     text: &str,
     runs: Vec<(FontRun<'a>, Option<Script>)>,
+    items: &[(usize, Script)],
 ) -> Vec<(FontRun<'a>, Option<Script>)> {
-    let items = shaping_plan::script_items(text);
     let mut result = Vec::with_capacity(runs.len());
     let mut item = 0;
     for (run, _) in runs {
@@ -1238,6 +1267,17 @@ impl GlyphLayout {
     /// Step 1 & 2 (Qt parity: `QFontEngineMulti::stringToCMap` + `QTextEngine::itemBoundaries`):
     /// Maps characters to font engines and partitions the string into contiguous runs sharing the same engine.
     pub fn partition_into_runs<'a>(text: &'a str, engines: &[FontEngine]) -> Vec<FontRun<'a>> {
+        Self::partition_piece(text, 0..text.len(), engines)
+    }
+
+    /// [`partition_into_runs`](Self::partition_into_runs) for `&paragraph[range]`, with the script
+    /// items of the whole paragraph.
+    fn partition_piece<'a>(
+        paragraph: &'a str,
+        range: std::ops::Range<usize>,
+        engines: &[FontEngine],
+    ) -> Vec<FontRun<'a>> {
+        let text = &paragraph[range.clone()];
         if text.is_empty() || engines.is_empty() {
             return Vec::new();
         }
@@ -1247,26 +1287,56 @@ impl GlyphLayout {
         let mut last_fallback_idx = 0usize;
 
         let chains = engines[0].script_chains.as_deref();
-        let items = chains.map(|_| shaping_plan::script_items(text));
+        let items = chains.map(|_| shaping_plan::script_items_in(paragraph, range));
         let emoji_flags = if chains.is_some() {
             emoji_sequence_flags(text)
         } else {
             Vec::new()
         };
         let mut item = 0;
+        let item_mode = engines[0].item_chains;
+        // Item mode: the engine the previous character took as a fallback (not its item's own
+        // font), what `QFontEngineMulti::stringToCMap`'s `lastFallback` is.
+        let mut item_fallback: Option<usize> = None;
         for (index, (offset, ch)) in text.char_indices().enumerate() {
             // `QFontEngineMulti::stringToCMap` (qfontengine.cpp:2204): a zero width joiner or
             // non-joiner follows the fallback font of the character before it when that font has
             // a glyph for it, to get the shaping rules of that font.
-            let previous_fallback = char_engine_indices
-                .last()
-                .map(|&(_, idx)| idx)
-                .filter(|&idx| idx > 0);
+            let previous_fallback = if item_mode {
+                item_fallback
+            } else {
+                char_engine_indices
+                    .last()
+                    .map(|&(_, idx)| idx)
+                    .filter(|&idx| idx > 0)
+            };
             if matches!(ch, '\u{200d}' | '\u{200c}')
                 && let Some(fallback) = previous_fallback
                 && engines[fallback].face.glyph_index(ch) != 0
             {
                 char_engine_indices.push((ch, fallback));
+                continue;
+            }
+            if item_mode && let (Some(chains), Some(items)) = (chains, &items) {
+                while item + 1 < items.len() && items[item + 1].0 <= offset {
+                    item += 1;
+                }
+                let key = item_script_key(ch, items[item].1, emoji_flags[index]);
+                let chain = chains.get(key).map_or(&[][..], Vec::as_slice);
+                let own = chain.first().copied().unwrap_or(0);
+                // The item's own font first; the missing-glyph box of it when no engine has one.
+                // Controls and variation selectors never take a fallback.
+                let resolved = if skips_fallback(ch) || engines[own].face.glyph_index(ch) != 0 {
+                    own
+                } else {
+                    chain
+                        .iter()
+                        .copied()
+                        .find(|&i| engines[i].face.glyph_index(ch) != 0)
+                        .unwrap_or(own)
+                };
+                item_fallback = (resolved != own).then_some(resolved);
+                char_engine_indices.push((ch, resolved));
                 continue;
             }
             let mut resolved_idx = 0usize;
@@ -1371,6 +1441,20 @@ impl GlyphLayout {
         engines: &[FontEngine],
         right_to_left: Option<bool>,
     ) -> Self {
+        Self::shape_piece(text, 0..text.len(), font, engines, right_to_left)
+    }
+
+    /// [`shape_with_engines_directed`](Self::shape_with_engines_directed) for `&paragraph[range]`,
+    /// one item of a paragraph Qt itemized as a whole: the characters of no script at its start
+    /// keep the script of the text before them (its font and the script HarfBuzz gets).
+    pub(crate) fn shape_piece(
+        paragraph: &str,
+        range: std::ops::Range<usize>,
+        font: &Font,
+        engines: &[FontEngine],
+        right_to_left: Option<bool>,
+    ) -> Self {
+        let text = &paragraph[range.clone()];
         if text.is_empty() || engines.is_empty() {
             return Self::empty();
         }
@@ -1379,12 +1463,13 @@ impl GlyphLayout {
         // which selects the GPOS device-table adjustments.
         let ppem = font.size as u16;
 
-        let mut runs = Self::partition_into_runs(text, engines)
+        let mut runs = Self::partition_piece(paragraph, range.clone(), engines)
             .into_iter()
             .map(|run| (run, None))
             .collect::<Vec<_>>();
         if qt_shaping_plan() {
-            runs = split_runs_by_script(text, runs);
+            runs =
+                split_runs_by_script(text, runs, &shaping_plan::script_items_in(paragraph, range));
         }
         // Right to left text is laid out from its right end: the first font run in the text is the
         // rightmost, so the runs go in visual order.

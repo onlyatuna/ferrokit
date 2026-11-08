@@ -205,9 +205,9 @@ pub trait GlyphFace: Send + Sync {
 
     /// The index of this face within its font file, which a font collection (`.ttc`) holds
     /// several faces of: what the shaper must open the file with to see the same glyph ids as
-    /// this face. Only the DirectWrite backend reports it. The others answer 0, so on their
-    /// platforms the shaper still reads the first face of a collection, whichever face the
-    /// backend draws.
+    /// this face. The DirectWrite, FreeType-role (skrifa) and generic outline backends report
+    /// it; CoreText answers 0, so on macOS the shaper still reads the first face of a
+    /// collection, whichever face the backend draws.
     fn face_index(&self) -> u32 {
         0
     }
