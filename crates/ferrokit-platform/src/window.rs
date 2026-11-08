@@ -2390,6 +2390,72 @@ impl NativeWindow {
         }
     }
 
+    /// [`PlatformWindow::stack_under`]: `SetWindowPos(self, hWndInsertAfter = sibling,
+    /// SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)` puts the window right after `sibling` in the
+    /// z-order, which is directly below it. A `sibling` in the other topmost band is refused and
+    /// nothing changes: the system would move the window into the band of the window it is
+    /// inserted after, behind the back of [`WindowFlags::STAYS_ON_TOP`].
+    ///
+    /// The result is read back, because the system keeps an owned window above its owner and a
+    /// `sibling` that is no top-level window cannot precede this one. Windows owned by this
+    /// window (the default IME window the system creates for it, for one) stay above it by
+    /// the same rule, so they may sit between `sibling` and the window and are not counted as
+    /// windows in between.
+    pub fn stack_under(&self, sibling: isize) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GW_HWNDPREV, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, IsWindow,
+        };
+        let sibling = sibling as HWND;
+        if self.hwnd.is_null() || sibling.is_null() || sibling == self.hwnd {
+            return false;
+        }
+        // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle (set in
+        // `new`, nulled only after `DestroyWindow`). `sibling` is a handle the caller got from
+        // `native_handle`; user32 validates handles (`IsWindow`, and a stale one is rejected by
+        // the calls), and none of the calls dereferences a pointer.
+        unsafe {
+            if IsWindow(sibling) == 0 {
+                return false;
+            }
+            let topmost = |hwnd: HWND| GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST;
+            if topmost(self.hwnd) != topmost(sibling) {
+                return false;
+            }
+            if SetWindowPos(
+                self.hwnd,
+                sibling,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            ) == 0
+            {
+                return false;
+            }
+            // Whether `window` is owned by this window, directly or through other owned windows
+            // (the owner chain of a window ends in null and is short).
+            let owned_by_self = |window: HWND| {
+                let mut owner = GetWindow(window, GW_OWNER);
+                for _ in 0..16 {
+                    if owner.is_null() {
+                        return false;
+                    }
+                    if owner == self.hwnd {
+                        return true;
+                    }
+                    owner = GetWindow(owner, GW_OWNER);
+                }
+                false
+            };
+            let mut above = GetWindow(self.hwnd, GW_HWNDPREV);
+            while !above.is_null() && above != sibling && owned_by_self(above) {
+                above = GetWindow(above, GW_HWNDPREV);
+            }
+            above == sibling
+        }
+    }
+
     /// `QWindowsWindow::requestActivateWindow`: `SetForegroundWindow` on a visible window that
     /// takes activation. The system's foreground lock is not worked around: when this process may
     /// not take the foreground, Windows flashes the window's taskbar button instead and the window
@@ -2769,6 +2835,10 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
 
     fn raise(&self) {
         self.raise();
+    }
+
+    fn stack_under(&self, sibling: isize) -> bool {
+        self.stack_under(sibling)
     }
 
     fn request_activate_window(&self) {

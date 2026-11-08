@@ -780,6 +780,53 @@ impl PlatformWindow for CocoaNativeWindow {
             ObjcMsg::send_id_logged(self.ns_window, Sel::register("orderFront:"), self.ns_window)
         };
     }
+
+    /// `-[NSWindow orderWindow:NSWindowBelow relativeTo:[sibling windowNumber]]`: unlike
+    /// `orderFront:` it does not make the window key. `sibling` is the `native_handle` of a live
+    /// `CocoaNativeWindow`; any other handle is refused. `orderWindow:` puts a hidden window on
+    /// screen (as `raise` notes for `orderFront:`), so a window that is not visible, or a
+    /// sibling that is not, is refused too. AppKit orders a window among the windows of its own
+    /// level, so a sibling with another level is refused, and `true` means the request was made:
+    /// AppKit gives no cheap read-back of the order.
+    fn stack_under(&self, sibling: isize) -> bool {
+        let sibling = Id(sibling as *mut std::ffi::c_void);
+        if sibling.is_nil() || sibling == self.ns_window || !self.is_visible() {
+            return false;
+        }
+        if !is_live_window(sibling.0 as usize) {
+            return false;
+        }
+        // SAFETY: `self.ns_window` is live from `new` to `Drop` and `sibling` was just found in
+        // `LIVE_WINDOWS`, so it is the live window of a `CocoaNativeWindow` of this thread.
+        // `isVisible` takes no arguments and returns BOOL (`send_bool_return`), `level` and
+        // `windowNumber` take none and return an NSInteger (`send_isize_return`).
+        let (visible, same_level, number) = unsafe {
+            let level = Sel::register("level");
+            (
+                ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible"))
+                    && ObjcMsg::send_bool_return(sibling, Sel::register("isVisible")),
+                ObjcMsg::send_isize_return(self.ns_window, level)
+                    == ObjcMsg::send_isize_return(sibling, level),
+                ObjcMsg::send_isize_return(sibling, Sel::register("windowNumber")),
+            )
+        };
+        // A window number is positive once the window has a window device.
+        if !visible || !same_level || number <= 0 {
+            return false;
+        }
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `orderWindow:relativeTo:` takes an
+        // `NSWindowOrderingMode` and a window number, both NSInteger, matching
+        // `send_int_int_logged`.
+        unsafe {
+            ObjcMsg::send_int_int_logged(
+                self.ns_window,
+                Sel::register("orderWindow:relativeTo:"),
+                crate::objc_runtime::NS_WINDOW_BELOW,
+                number,
+            )
+        };
+        true
+    }
     fn request_activate_window(&self) {
         // `QCocoaWindow::requestActivateWindow` (qcocoawindow.mm): a tooltip never
         // takes activation, and an invisible window cannot become active.
