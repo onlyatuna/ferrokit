@@ -399,26 +399,22 @@ impl<'a> OutlineGlyph<'a> {
         pen: &mut ErasedPen<'_>,
     ) -> Result<AdjustedMetrics, DrawError> {
         match (settings.instance, settings.path_style) {
-            (DrawInstance::Unhinted(size, location), PathStyle::FreeType) => {
-                self.draw_unhinted(
-                    size,
-                    location,
-                    settings.memory,
-                    settings.path_style,
-                    settings.cff_stem_darkening,
-                    pen,
-                )
-            }
-            (DrawInstance::Unhinted(size, location), PathStyle::HarfBuzz) => {
-                self.draw_unhinted(
-                    size,
-                    location,
-                    settings.memory,
-                    settings.path_style,
-                    settings.cff_stem_darkening,
-                    pen,
-                )
-            }
+            (DrawInstance::Unhinted(size, location), PathStyle::FreeType) => self.draw_unhinted(
+                size,
+                location,
+                settings.memory,
+                settings.path_style,
+                settings.cff_stem_darkening,
+                pen,
+            ),
+            (DrawInstance::Unhinted(size, location), PathStyle::HarfBuzz) => self.draw_unhinted(
+                size,
+                location,
+                settings.memory,
+                settings.path_style,
+                settings.cff_stem_darkening,
+                pen,
+            ),
             (
                 DrawInstance::Hinted {
                     instance: hinting_instance,

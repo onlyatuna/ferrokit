@@ -4,8 +4,8 @@
   directory, commit `47a301615fd95acf0da9fb7dbcd0ea7c7df36943`).
 * Licence: MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`, unchanged). The upstream README is
   `README.md`.
-* Used through `[patch.crates-io]` in the workspace `Cargo.toml` by `ferrokit-gui`
-  (`crates/ferrokit-gui/src/text/skrifa_face.rs`), together with the vendored `../read-fonts`.
+* Used by `ferrokit-gui` (`crates/ferrokit-gui/src/text/skrifa_face.rs`) as a path dependency, together
+  with the vendored `../read-fonts` (the `read-fonts` dependency of this manifest is a path too).
 
 ## Why
 
@@ -93,7 +93,9 @@ table above and in `[package.metadata.ferrokit-licenses]`. A user who takes only
      hint origin (`hintOriginY` of `cf2_interpT2CharString`) stays zero as in upstream skrifa.
    Not darkened, as in FreeType: outlines that the auto-hinter loads (`FT_LOAD_NO_SCALE`), and
    TrueType ones.
-4. `Cargo.toml`: the `[[test]]` targets and the `[dev-dependencies]` are removed and the `tests/`,
+4. `Cargo.toml`: the `read-fonts` dependency gets `path = "../read-fonts"` (next to its upstream version
+   requirement, so that the vendored copy is used without a `[patch]`, which only the root of a
+   workspace honours); the `[[test]]` targets and the `[dev-dependencies]` are removed and the `tests/`,
    `scripts/` and `Cargo.lock` of the package are not vendored. The unit tests inside `src/` need the
    `font-test-data` crate of the fontations repository, which is not vendored, so ferrokit's build
    does not run them. They are run by copying `src/` over a checkout of fontations at the commit above

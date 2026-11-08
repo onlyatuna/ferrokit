@@ -4,9 +4,8 @@
   `read-fonts` directory, commit `47a301615fd95acf0da9fb7dbcd0ea7c7df36943`).
 * Licence: MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`, unchanged). The upstream README is
   `README.md`.
-* Used through `[patch.crates-io]` in the workspace `Cargo.toml`; the only consumer is `skrifa`
-  (also vendored, `../skrifa`), which `ferrokit-gui` uses for its FreeType-style Linux glyph backend
-  (`crates/ferrokit-gui/src/text/skrifa_face.rs`).
+* Used as a path dependency of the vendored `../skrifa`, the only consumer (`ferrokit-gui` uses skrifa
+  for its FreeType-style Linux glyph backend, `crates/ferrokit-gui/src/text/skrifa_face.rs`).
 
 ## Licences, file by file
 
