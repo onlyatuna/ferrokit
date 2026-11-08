@@ -97,12 +97,17 @@ fn test_fallback_chain_is_loaded_only_for_text_the_primary_cannot_cover() {
         assert_eq!(cjk_only.len(), 2, "CJK text must not load the emoji slot");
     }
 
-    let cjk = resolve_font_engines_for_text_global(&font, "狀態: 🔄");
-    assert_eq!(
-        cjk.len(),
-        full.len(),
-        "uncovered characters get the full fallback chain"
-    );
+    // Linux lists fallback fonts per script item (fontconfig's list for each script of the text),
+    // so text gets the fonts of its own scripts, not the chain of the probe text without text.
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        let cjk = resolve_font_engines_for_text_global(&font, "狀態: 🔄");
+        assert_eq!(
+            cjk.len(),
+            full.len(),
+            "uncovered characters get the full fallback chain"
+        );
+    }
 
     // Same shaping result as with the full chain, for covered and uncovered text alike.
     for s in ["Claude HUD 42%", "5 小時 🔄"] {

@@ -311,8 +311,8 @@
   },
   "ferrokit-gui": {
     "lib": {
-      "SB": 975,
-      "TB": 1922
+      "SB": 988,
+      "TB": 1935
     },
     "render_gauge_preview": {
       "SB": 21,
