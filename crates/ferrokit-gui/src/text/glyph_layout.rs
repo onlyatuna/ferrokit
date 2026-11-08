@@ -316,6 +316,12 @@ impl FontEngine {
         self
     }
 
+    /// The chains [`with_script_chains`](Self::with_script_chains) gave the engine.
+    #[cfg(all(test, windows))]
+    pub(crate) fn script_chains(&self) -> Option<&ScriptChains> {
+        self.script_chains.as_deref()
+    }
+
     /// Checks whether `glyph_id` is an OpenType color glyph with COLRv0 layers.
     pub fn is_color_glyph(&self, glyph_id: u16) -> bool {
         if let Some(raw) = &self.raw_data {
