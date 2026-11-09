@@ -501,23 +501,59 @@ fn track_button_release(msg: u32) {
         .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
 }
 
-// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:336-340): the first
-// button down captures the mouse, so moves and the release keep reaching this window outside it.
+#[cfg(windows)]
 thread_local! {
-    /// Set while this thread releases the capture to hand the mouse to the native move/size loop:
-    /// the loop swallows the button release, so the pressed buttons must survive the capture loss.
-    static RELEASING_FOR_SYSTEM_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Windows with a native move/size loop requested (`SC_DRAGMOVE` / `SC_SIZE` posted after
+    /// `ReleaseCapture`) whose `WM_SYSCOMMAND` has not returned yet. The loop swallows the button
+    /// release, and it takes the capture from the window with `WM_CAPTURECHANGED`s of its own
+    /// (no new owner; one when it starts and one when it ends, measured on Windows 11), so the
+    /// pressed buttons must survive them. Qt never resets `QGuiApplication::mouseButtons()` on a
+    /// capture change (the windows plugin of Qt 6.12.0 has no `WM_CAPTURECHANGED` handling);
+    /// `QWindowsContext::handleExitSizeMove` (qwindowscontext.cpp:1261-1290) reconciles the
+    /// buttons when the loop ends: [`sync_mouse_buttons_after_move_loop`].
+    static SYSTEM_LOOP_REQUESTED: std::cell::RefCell<std::collections::HashSet<isize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
-/// `ReleaseCapture` before `SC_DRAGMOVE` / `SC_SIZE`: the `WM_CAPTURECHANGED` it causes must not
-/// forget the pressed buttons (`sync_mouse_buttons_after_move_loop` still needs them).
 #[cfg(windows)]
-fn release_capture_for_system_loop() {
-    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(true));
-    // SAFETY: ReleaseCapture takes no arguments and only affects this thread's mouse capture; the
-    // WM_CAPTURECHANGED it triggers is delivered synchronously, inside the flag set just above.
-    unsafe { ReleaseCapture() };
-    let _ = RELEASING_FOR_SYSTEM_LOOP.try_with(|f| f.set(false));
+fn set_system_loop_requested(hwnd: isize, on: bool) {
+    let _ = SYSTEM_LOOP_REQUESTED.try_with(|s| {
+        if on {
+            s.borrow_mut().insert(hwnd);
+        } else {
+            s.borrow_mut().remove(&hwnd);
+        }
+    });
+}
+
+/// Whether a native move/size loop is requested or running on this thread. `ReleaseCapture` frees
+/// the capture of whichever window holds it, so the check is thread-wide, not per window.
+#[cfg(windows)]
+fn system_loop_active(hwnd: HWND) -> bool {
+    SYSTEM_LOOP_REQUESTED
+        .try_with(|s| !s.borrow().is_empty())
+        .unwrap_or(false)
+        || is_interactive_resize(hwnd)
+}
+
+/// `ReleaseCapture`, then post `SC_DRAGMOVE` / `SC_SIZE*` (`QWindowsWindow::startSystemMove` /
+/// `startSystemResize`, qwindowswindow.cpp:3303-3313). The loop's capture changes must not forget
+/// the pressed buttons (`sync_mouse_buttons_after_move_loop` still needs them): the request is
+/// recorded before the capture is released and withdrawn by the `WM_SYSCOMMAND` that ends it
+/// (also when no loop ran, e.g. no button is down) or when posting fails.
+#[cfg(windows)]
+fn post_system_loop_command(hwnd: HWND, command: usize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
+    set_system_loop_requested(hwnd as isize, true);
+    // SAFETY: ReleaseCapture takes no arguments and only affects this thread's mouse capture;
+    // PostMessageW takes no pointers (user32 validates `hwnd` and fails for a stale one).
+    let posted = unsafe {
+        ReleaseCapture();
+        PostMessageW(hwnd, WM_SYSCOMMAND, command, 0)
+    };
+    if posted == 0 {
+        set_system_loop_requested(hwnd as isize, false);
+    }
 }
 
 #[cfg(windows)]
@@ -638,6 +674,15 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
         }
         result
     }
+}
+
+/// Drops the application's buttons that are physically up, without any event: the reconciliation
+/// of `sync_mouse_buttons_after_move_loop` for a window that no longer exists to receive one.
+#[cfg(windows)]
+fn forget_released_mouse_buttons() {
+    let held = query_mouse_buttons();
+    let _ = APP_MOUSE_BUTTONS
+        .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & held.0)));
 }
 
 /// `QWindowsContext::handleExitSizeMove` (`qwindowscontext.cpp:1261-1290`). The native move/size
@@ -1311,6 +1356,7 @@ unsafe fn native_window_proc_inner(
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
             set_interactive_resize_flag(hwnd, false);
+            set_system_loop_requested(hwnd as isize, false);
             // SAFETY: hwnd is valid window receiving WM_ENTERSIZEMOVE on calling thread.
             unsafe { sync_mouse_buttons_after_move_loop(hwnd) };
             dispatch_window_system_event(
@@ -1322,6 +1368,12 @@ unsafe fn native_window_proc_inner(
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
+            // A window destroyed inside its move/size loop never gets `WM_EXITSIZEMOVE`: forget
+            // the buttons that are physically up, as the loop end would have.
+            if system_loop_active(hwnd) {
+                forget_released_mouse_buttons();
+            }
+            set_system_loop_requested(hwnd as isize, false);
             set_interactive_resize_flag(hwnd, false);
             unregister_window_event_binding(hwnd);
             crate::dark_mode::window_destroyed(hwnd);
@@ -1799,7 +1851,9 @@ unsafe fn native_window_proc_inner(
         }
         WM_CANCELMODE => {
             // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
-            // releases: forget the buttons (`QWindowsContext` resets on `WM_CANCELMODE`).
+            // releases: forget the buttons. A ferrokit addition: the windows plugin of Qt 6.12.0
+            // has no `WM_CANCELMODE` handling. The native move/size loop does not send it
+            // (neither a drag nor an Esc cancel did, measured on Windows 11).
             let _ = APP_MOUSE_BUTTONS
                 .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             def_wnd_proc(hwnd, msg, wparam, lparam)
@@ -1807,13 +1861,13 @@ unsafe fn native_window_proc_inner(
         WM_CAPTURECHANGED => {
             // `lparam` is the window gaining the capture. Capture moving to another window of
             // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
-            // lost to another thread or to nothing swallows their releases.
+            // lost to another thread or to nothing swallows their releases (a ferrokit addition:
+            // Qt 6.12.0 has no `WM_CAPTURECHANGED` handling and keeps `mouseButtons()`), except
+            // while a native move/size loop is requested or running: it takes the capture with
+            // changes of its own and `WM_EXITSIZEMOVE` reconciles the buttons.
             let new_owner = lparam as HWND;
             set_auto_capture_flag(hwnd as isize, false);
-            let for_system_loop = RELEASING_FOR_SYSTEM_LOOP
-                .try_with(|f| f.get())
-                .unwrap_or(false);
-            if !for_system_loop && (new_owner.is_null() || !is_window_thread(new_owner)) {
+            if !system_loop_active(hwnd) && (new_owner.is_null() || !is_window_thread(new_owner)) {
                 let _ = APP_MOUSE_BUTTONS
                     .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
             }
@@ -2023,6 +2077,17 @@ unsafe fn native_window_proc_inner(
                 );
             }
             1
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND => {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{SC_MOVE, SC_SIZE};
+            // The native move/size loop runs inside `DefWindowProc` and is over when it returns;
+            // when no loop started (no button down, a window that cannot move), nothing else
+            // would withdraw the request made by `post_system_loop_command`.
+            let result = def_wnd_proc(hwnd, msg, wparam, lparam);
+            if matches!(wparam as u32 & 0xFFF0, SC_SIZE | SC_MOVE) {
+                set_system_loop_requested(hwnd as isize, false);
+            }
+            result
         }
         _ => def_wnd_proc(hwnd, msg, wparam, lparam),
     }
@@ -2566,13 +2631,7 @@ impl NativeWindow {
 
     pub fn start_system_move(&self) -> bool {
         if !self.hwnd.is_null() {
-            // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle; the
-            // calls take no pointers (PostMessageW queues the message, it does not dereference).
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                release_capture_for_system_loop();
-                PostMessageW(self.hwnd, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
-            }
+            post_system_loop_command(self.hwnd, 0xF012 /*SC_DRAGMOVE*/);
             true
         } else {
             false
@@ -2581,15 +2640,7 @@ impl NativeWindow {
 
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
-            // SAFETY: as in `start_system_move`: `self.hwnd` is this window's own handle (live, or
-            // stale after WM_CLOSE destroyed it, which user32 rejects) and no pointer arguments are
-            // involved.
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-                release_capture_for_system_loop();
-                let orientation = edges_to_win_orientation(edges);
-                PostMessageW(self.hwnd, WM_SYSCOMMAND, orientation, 0);
-            }
+            post_system_loop_command(self.hwnd, edges_to_win_orientation(edges));
             true
         } else {
             false
@@ -3213,13 +3264,7 @@ pub(crate) fn edges_to_win_orientation(edges: crate::platform_window::WindowEdge
 pub fn post_system_move(_hwnd: isize) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
-        // SAFETY: `_hwnd` is non-zero and user32 validates any handle value (PostMessageW takes no
-        // pointers and fails harmlessly for a stale one); ReleaseCapture takes no arguments.
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            release_capture_for_system_loop();
-            PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, 0xF012 /*SC_DRAGMOVE*/, 0);
-        }
+        post_system_loop_command(_hwnd as HWND, 0xF012 /*SC_DRAGMOVE*/);
         return true;
     }
     false
@@ -3228,13 +3273,7 @@ pub fn post_system_move(_hwnd: isize) -> bool {
 pub fn post_system_resize(_hwnd: isize, _edges: crate::platform_window::WindowEdges) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
-        // SAFETY: as in `post_system_move`: `_hwnd` is non-zero and validated by user32; no pointers.
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-            release_capture_for_system_loop();
-            let orientation = edges_to_win_orientation(_edges);
-            PostMessageW(_hwnd as HWND, WM_SYSCOMMAND, orientation, 0);
-        }
+        post_system_loop_command(_hwnd as HWND, edges_to_win_orientation(_edges));
         return true;
     }
     false
