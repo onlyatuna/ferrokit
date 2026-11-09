@@ -26,8 +26,8 @@ use read_fonts::{
 
 mod darken;
 
-use darken::GlyphPath;
 pub(crate) use darken::Darkening;
+use darken::GlyphPath;
 
 // "Default values for OS/2 typoAscender/Descender.."
 // See <https://gitlab.freedesktop.org/freetype/freetype/-/blob/80a507a6b8e3d2906ad2c8ba69329bd2fb2a85ef/src/psaux/psblues.h#L98>
@@ -127,11 +127,7 @@ impl HintState {
     /// Creates a state that darkens stems like FreeType's CFF engine does if
     /// its `no-stem-darkening` property is false. `darkening` is `None` if
     /// it is not.
-    pub fn with_darkening(
-        params: &HintParams,
-        scale: Fixed,
-        darkening: Option<Darkening>,
-    ) -> Self {
+    pub fn with_darkening(params: &HintParams, scale: Fixed, darkening: Option<Darkening>) -> Self {
         let amounts = darkening.unwrap_or_default();
         let mut state = Self {
             scale,
@@ -1112,8 +1108,13 @@ impl<'a, S: CommandSink> HintingSink<'a, S> {
 
     /// The move of `cf2_glyphpath_moveTo` when stems are darkened.
     fn darkened_move_to(&mut self, x: Fixed, y: Fixed) {
-        self.path
-            .move_to(&self.map, &self.first_map, &mut *self.sink, x.to_bits(), y.to_bits());
+        self.path.move_to(
+            &self.map,
+            &self.first_map,
+            &mut *self.sink,
+            x.to_bits(),
+            y.to_bits(),
+        );
         // ensure we have a valid map with current mask
         if self.has_new_mask() {
             self.build_hint_map(Some(self.mask), Fixed::ZERO);

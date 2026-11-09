@@ -3,8 +3,8 @@
 // Tests of the vertical separation adjustment. The expected values were worked out by hand
 // from the C code of FreeType 2.14.2 (the file and line of each function are in `mod.rs`).
 
-use super::*;
 use super::super::{metrics::ScaledWidth, QuirksMode};
+use super::*;
 use raw::{model::glyph::outline::UnscaledOutlineSink, tables::glyf::PointFlags};
 
 /// An outline whose points are in 26.6 units already (`x`, `y` equal the font units, so a
@@ -38,7 +38,12 @@ fn outline_of(contours: &[&[(i32, i32, bool)]]) -> Outline {
 }
 
 const fn rect(x0: i32, y0: i32, x1: i32, y1: i32) -> [(i32, i32, bool); 4] {
-    [(x0, y0, true), (x0, y1, true), (x1, y1, true), (x1, y0, true)]
+    [
+        (x0, y0, true),
+        (x0, y1, true),
+        (x1, y1, true),
+        (x1, y0, true),
+    ]
 }
 
 /// The y coordinates of a contour.
@@ -140,7 +145,8 @@ fn accent_is_raised_to_one_pixel_above_its_base() {
 #[test]
 fn accent_that_is_a_pixel_away_stays() {
     for gap in [64, 100] {
-        let mut outline = outline_of(&[&rect(0, 0, 200, 400), &rect(50, 400 + gap, 150, 480 + gap)]);
+        let mut outline =
+            outline_of(&[&rect(0, 0, 200, 400), &rect(50, 400 + gap, 150, 480 + gap)]);
         apply_vertical_separation(&mut outline, &ScaledBlues::new(), UP, 1000, 0x10000);
         assert_eq!(ys(&outline, 1)[0], 400 + gap);
     }
@@ -227,7 +233,10 @@ fn dimensionless_contours_do_not_overflow() {
         &[(60, 450, true), (90, 460, true)],
     ]);
     apply_vertical_separation(&mut outline, &ScaledBlues::new(), UP | DOWN, 1000, 0x10000);
-    let mut outline = outline_of(&[&[(0, 0, true), (9, 9, true)], &[(0, 90, true), (9, 99, true)]]);
+    let mut outline = outline_of(&[
+        &[(0, 0, true), (9, 9, true)],
+        &[(0, 90, true), (9, 99, true)],
+    ]);
     apply_vertical_separation(&mut outline, &ScaledBlues::new(), UP | DOWN, 1000, 0x10000);
     apply_tilde_pre_pass(&mut outline, TILDE_TOP | TILDE_BOTTOM);
 }
@@ -255,7 +264,9 @@ fn tilde_is_stretched_to_the_distance_of_its_wiggles_plus_a_pixel() {
     assert_eq!(tilde[0].y, -20);
     assert_eq!(tilde[2].y, 38);
     assert_eq!(tilde[8].y, 74);
-    assert!(tilde.iter().all(|p| p.flags.has_marker(PointMarker::IGNORE)));
+    assert!(tilde
+        .iter()
+        .all(|p| p.flags.has_marker(PointMarker::IGNORE)));
     assert!(tilde
         .iter()
         .all(|p| p.flags.has_marker(PointMarker::TOUCHED_Y) == p.is_on_curve()));
@@ -291,12 +302,22 @@ fn bottom_tilde_is_stretched_about_its_maximum() {
 #[test]
 fn tilde_alignment_truncates_the_centering_like_c() {
     // bottom -20, top 75: 95 tall, under three pixels, so the centre is aligned.
-    let mut outline = outline_of(&[&[(0, -20, true), (0, 75, true), (50, 75, true), (50, -20, true)]]);
+    let mut outline = outline_of(&[&[
+        (0, -20, true),
+        (0, 75, true),
+        (50, 75, true),
+        (50, -20, true),
+    ]]);
     // the bottom goes to 0 (+20), the height rounds up to 64 * 2 = 128... pix_round(95) is
     // 64, which is 31 short; half of it is -15 in C (-16 if rounded down)
     assert_eq!(align_tilde(&mut outline, 0, true), 5);
     assert_eq!(ys(&outline, 0), [-15, 80, 80, -15]);
-    let mut outline = outline_of(&[&[(0, -20, true), (0, 75, true), (50, 75, true), (50, -20, true)]]);
+    let mut outline = outline_of(&[&[
+        (0, -20, true),
+        (0, 75, true),
+        (50, 75, true),
+        (50, -20, true),
+    ]]);
     // aligned about the top (75 -> 64: -11), centre correction +15
     assert_eq!(align_tilde(&mut outline, 0, false), -11 + 15);
 }
@@ -351,9 +372,15 @@ fn latin_blues() -> ScaledBlues {
 fn base_blues_are_the_first_active_zones() {
     let blues = latin_blues();
     let (top, bottom) = base_blues(&blues, true);
-    assert_eq!((overshoot(top.unwrap()), overshoot(bottom.unwrap())), (400, -6));
+    assert_eq!(
+        (overshoot(top.unwrap()), overshoot(bottom.unwrap())),
+        (400, -6)
+    );
     let (top, bottom) = base_blues(&blues, false);
-    assert_eq!((overshoot(top.unwrap()), overshoot(bottom.unwrap())), (300, -6));
+    assert_eq!(
+        (overshoot(top.unwrap()), overshoot(bottom.unwrap())),
+        (300, -6)
+    );
     // Without bottom properties there are no base blues (FreeType before 2.14).
     let mut blues = ScaledBlues::new();
     blues.push(blue(BlueZones::TOP, 390, 400, true));

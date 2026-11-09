@@ -1,10 +1,10 @@
 //! Autohinting state for a font instance.
 
 use super::{
-    adjust::ReverseCharMap,
     super::{
         pen::PathStyle, AdjustedMetrics, DrawError, OutlineGlyphCollection, OutlinePen, Target,
     },
+    adjust::ReverseCharMap,
     context::{AutohintContext, FontRefContext},
     metrics::{fixed_mul, pix_round, Scale, UnscaledStyleMetricsSet},
     outline::Outline,

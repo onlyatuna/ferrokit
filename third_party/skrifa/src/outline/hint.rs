@@ -387,7 +387,12 @@ impl HintingInstance {
                     subfonts.clear();
                     let ppem = size.ppem();
                     for i in 0..cff.subfont_count() {
-                        subfonts.push(cff.subfont_with(i, ppem, &self.coords, cff_stem_darkening)?);
+                        subfonts.push(cff.subfont_with(
+                            i,
+                            ppem,
+                            &self.coords,
+                            cff_stem_darkening,
+                        )?);
                     }
                     self.kind = HinterKind::Cff(subfonts);
                 }
