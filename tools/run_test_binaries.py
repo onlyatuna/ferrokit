@@ -1,7 +1,9 @@
 """Run every ferrokit workspace test target on its own, with a time limit per target.
 
 `cargo test` stops the whole run when one test binary hangs. This builds all test targets once
-(`cargo test --workspace --no-run`), then starts each test executable directly, one at a time, with
+(`cargo build --workspace --tests --examples --keep-going`: the units `cargo test --no-run` builds,
+but a target that does not compile does not hide the others), then starts each test executable
+directly, one at a time, with
 the working directory and environment `cargo test` gives it. It kills the whole process tree when a
 target runs past the limit, and reports per target: result, elapsed time, and on timeout the tail of
 its output (libtest names the tests that have been running for over 60 seconds). Diagnostic only;
@@ -203,11 +205,22 @@ def toolchain():
     }
 
 
+class BuildFailed(Exception):
+    pass
+
+
 def test_targets(jobs, packages=None):
     meta = json.loads(run_text(["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]))
     by_manifest = {norm(p["manifest_path"]): p for p in meta["packages"]}
-    out = run_text(["cargo", "test", "--locked", "-j", jobs, "--workspace", "--no-run", "--message-format=json"])
-    return parse_test_targets(out.splitlines(), by_manifest, packages)
+    # `cargo test` has no --keep-going, so the build stops at the first target that does not compile;
+    # `cargo build --tests --examples` builds the same units (same executables) and keeps going, so
+    # one run reports every target that fails to compile. cargo prints those diagnostics itself
+    # (json-render-diagnostics) on stderr; stdout carries the artifact messages.
+    cmd = ["cargo", "build", "--locked", "-j", jobs, "--workspace", "--tests", "--examples", "--keep-going"]
+    proc = subprocess.run(cmd + ["--message-format=json-render-diagnostics"], stdout=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise BuildFailed("cargo build failed (exit {}); every target that does not compile is reported above".format(proc.returncode))
+    return parse_test_targets(proc.stdout.decode("utf-8", "replace").splitlines(), by_manifest, packages)
 
 
 def kill_tree(proc):
@@ -227,7 +240,11 @@ def main():
 
     results = []
     build_start = time.monotonic()
-    targets = test_targets(args.jobs, args.package)
+    try:
+        targets = test_targets(args.jobs, args.package)
+    except BuildFailed as e:
+        print("error: {}".format(e), file=sys.stderr)
+        return 1
     build_seconds = time.monotonic() - build_start
     if not targets:
         print("error: no test targets found; refusing to report success", file=sys.stderr)
