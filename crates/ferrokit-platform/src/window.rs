@@ -62,7 +62,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    WM_CANCELMODE, WM_CAPTURECHANGED, WM_MOUSEHWHEEL, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_CAPTURECHANGED, WM_MOUSEHWHEEL, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -501,58 +501,18 @@ fn track_button_release(msg: u32) {
         .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
 }
 
+/// `ReleaseCapture`, then post `SC_DRAGMOVE` / `SC_SIZE*`: `QWindowsWindow::startSystemMove` /
+/// `startSystemResize` (qwindowswindow.cpp:3303-3313) do exactly this and nothing else. The
+/// native loop swallows the button release; `WM_EXITSIZEMOVE` reconciles the pressed buttons
+/// ([`sync_mouse_buttons_after_move_loop`]).
 #[cfg(windows)]
-thread_local! {
-    /// Windows with a native move/size loop requested (`SC_DRAGMOVE` / `SC_SIZE` posted after
-    /// `ReleaseCapture`) whose `WM_SYSCOMMAND` has not returned yet. The loop swallows the button
-    /// release, and it takes the capture from the window with `WM_CAPTURECHANGED`s of its own
-    /// (no new owner; one when it starts and one when it ends, measured on Windows 11), so the
-    /// pressed buttons must survive them. Qt never resets `QGuiApplication::mouseButtons()` on a
-    /// capture change (the windows plugin of Qt 6.12.0 has no `WM_CAPTURECHANGED` handling);
-    /// `QWindowsContext::handleExitSizeMove` (qwindowscontext.cpp:1261-1290) reconciles the
-    /// buttons when the loop ends: [`sync_mouse_buttons_after_move_loop`].
-    static SYSTEM_LOOP_REQUESTED: std::cell::RefCell<std::collections::HashSet<isize>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
-}
-
-#[cfg(windows)]
-fn set_system_loop_requested(hwnd: isize, on: bool) {
-    let _ = SYSTEM_LOOP_REQUESTED.try_with(|s| {
-        if on {
-            s.borrow_mut().insert(hwnd);
-        } else {
-            s.borrow_mut().remove(&hwnd);
-        }
-    });
-}
-
-/// Whether a native move/size loop is requested or running on this thread. `ReleaseCapture` frees
-/// the capture of whichever window holds it, so the check is thread-wide, not per window.
-#[cfg(windows)]
-fn system_loop_active(hwnd: HWND) -> bool {
-    SYSTEM_LOOP_REQUESTED
-        .try_with(|s| !s.borrow().is_empty())
-        .unwrap_or(false)
-        || is_interactive_resize(hwnd)
-}
-
-/// `ReleaseCapture`, then post `SC_DRAGMOVE` / `SC_SIZE*` (`QWindowsWindow::startSystemMove` /
-/// `startSystemResize`, qwindowswindow.cpp:3303-3313). The loop's capture changes must not forget
-/// the pressed buttons (`sync_mouse_buttons_after_move_loop` still needs them): the request is
-/// recorded before the capture is released and withdrawn by the `WM_SYSCOMMAND` that ends it
-/// (also when no loop ran, e.g. no button is down) or when posting fails.
-#[cfg(windows)]
-fn post_system_loop_command(hwnd: HWND, command: usize) {
+fn post_system_command(hwnd: HWND, command: usize) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
-    set_system_loop_requested(hwnd as isize, true);
     // SAFETY: ReleaseCapture takes no arguments and only affects this thread's mouse capture;
     // PostMessageW takes no pointers (user32 validates `hwnd` and fails for a stale one).
-    let posted = unsafe {
+    unsafe {
         ReleaseCapture();
-        PostMessageW(hwnd, WM_SYSCOMMAND, command, 0)
-    };
-    if posted == 0 {
-        set_system_loop_requested(hwnd as isize, false);
+        PostMessageW(hwnd, WM_SYSCOMMAND, command, 0);
     }
 }
 
@@ -597,13 +557,12 @@ fn capture_on_press(hwnd: HWND) {
     }
 }
 
-/// Release the automatic capture once no button is held (qwindowspointerhandler.cpp:347-352); an
-/// explicit grab stays.
+/// Release the automatic capture once the release message reports no button held
+/// (qwindowspointerhandler.cpp:342-349: `!mouseButtons`, which `translateMouseEvent` takes from the
+/// message's key state, not from `QGuiApplication::mouseButtons()`); an explicit grab stays.
 #[cfg(windows)]
-fn release_capture_when_idle(hwnd: HWND) {
-    let idle = APP_MOUSE_BUTTONS
-        .try_with(|b| b.get().is_empty())
-        .unwrap_or(true);
+fn release_capture_when_idle(hwnd: HWND, held: ferrokit_core::event::MouseButtons) {
+    let idle = held.is_empty();
     // SAFETY: as in `capture_on_press`: `hwnd` is the window handling this message, validated by
     // user32; GetCapture/ReleaseCapture take no pointers.
     unsafe {
@@ -641,12 +600,14 @@ fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
     }
 }
 
-/// `QWindowsPointerHandler::queryMouseButtons`: the physical buttons, as logical buttons.
+/// `QWindowsPointerHandler::queryMouseButtons` (qwindowspointerhandler.cpp:226-241): the physical
+/// buttons (`GetAsyncKeyState`), left and right swapped when `SM_SWAPBUTTON` is set, X buttons
+/// included.
 #[cfg(windows)]
 fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
     use ferrokit_core::event::MouseButtons;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
     // SAFETY: GetSystemMetrics and GetAsyncKeyState take only integer arguments and read global
@@ -672,24 +633,27 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
         if down(VK_MBUTTON) {
             result = result.union(MouseButtons::MIDDLE);
         }
+        if down(VK_XBUTTON1) {
+            result = result.union(MouseButtons::BACK);
+        }
+        if down(VK_XBUTTON2) {
+            result = result.union(MouseButtons::FORWARD);
+        }
         result
     }
 }
 
-/// Drops the application's buttons that are physically up, without any event: the reconciliation
-/// of `sync_mouse_buttons_after_move_loop` for a window that no longer exists to receive one.
-#[cfg(windows)]
-fn forget_released_mouse_buttons() {
-    let held = query_mouse_buttons();
-    let _ = APP_MOUSE_BUTTONS
-        .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & held.0)));
-}
-
-/// `QWindowsContext::handleExitSizeMove` (`qwindowscontext.cpp:1261-1290`). The native move/size
+/// `QWindowsContext::handleExitSizeMove` (qwindowscontext.cpp:1261-1290). The native move/size
 /// loop swallows the button release that ends a drag, so the application still believes the
-/// button is down. Every button the application has pressed but that is physically up gets its
-/// release now: through the normal `WM_*BUTTONUP` path when the cursor is inside the window, and
-/// silently (Qt: `NonClientAreaMouseButtonRelease`, which widgets never see) when it is outside.
+/// button is down. When the application's buttons differ from the physical ones, every one of
+/// left, right and middle that the application has down but the system does not gets a release
+/// carrying the physical buttons (`QGuiApplicationPrivate::mouse_buttons = e->buttons`,
+/// qguiapplication.cpp:2431, which also takes over buttons the application never saw and drops
+/// stale X buttons): as a normal `WM_*BUTTONUP` when the cursor is inside the client area of the
+/// window (`platWin->geometry()`), and without a mouse event for the window when it is outside
+/// (Qt: `NonClientAreaMouseButtonRelease`, which ferrokit has no counterpart for). A button that
+/// is still physically down (the loop was cancelled with Esc) is left alone. X buttons alone
+/// never trigger a release, as in Qt.
 ///
 /// # Safety
 /// `hwnd` must be a live ferrokit window owned by the calling thread: button-up messages are fed
@@ -699,33 +663,41 @@ unsafe fn sync_mouse_buttons_after_move_loop(hwnd: HWND) {
     // SAFETY: caller guarantees hwnd is live and owned by calling thread.
     unsafe {
         use ferrokit_core::event::MouseButtons;
+        let current = query_mouse_buttons();
         let app = APP_MOUSE_BUTTONS
             .try_with(|b| b.get())
             .unwrap_or(MouseButtons::NO_BUTTON);
-        let stale = MouseButtons(app.0 & !query_mouse_buttons().0);
-        if stale.is_empty() {
+        if current == app {
             return;
         }
-        let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(MouseButtons(app.0 & !stale.0)));
-
         let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
-        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-        GetWindowRect(hwnd, &mut rect);
-        let inside =
-            pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.bottom;
-        if !inside {
-            return;
-        }
-        windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-        let lparam = ((pt.x & 0xffff) | ((pt.y & 0xffff) << 16)) as LPARAM;
+        // `QWindowsWindow::geometry()` is the client area in screen coordinates.
+        let mut client: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client);
+        let mut origin = windows_sys::Win32::Foundation::POINT {
+            x: client.left,
+            y: client.top,
+        };
+        ClientToScreen(hwnd, &mut origin);
+        let inside = pt.x >= origin.x
+            && pt.x < origin.x + (client.right - client.left)
+            && pt.y >= origin.y
+            && pt.y < origin.y + (client.bottom - client.top);
+        let mut local = pt;
+        windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut local);
+        let lparam = ((local.x & 0xffff) | ((local.y & 0xffff) << 16)) as LPARAM;
         for (flag, up) in [
             (MouseButtons::LEFT, WM_LBUTTONUP),
             (MouseButtons::RIGHT, WM_RBUTTONUP),
             (MouseButtons::MIDDLE, WM_MBUTTONUP),
         ] {
-            if stale.contains(flag) {
-                native_window_proc(hwnd, up, 0, lparam);
+            if app.contains(flag) && !current.contains(flag) {
+                // Every event of this loop carries the physical buttons.
+                let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(current));
+                if inside {
+                    native_window_proc(hwnd, up, 0, lparam);
+                }
             }
         }
     }
@@ -1356,7 +1328,6 @@ unsafe fn native_window_proc_inner(
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_EXITSIZEMOVE => {
             set_interactive_resize_flag(hwnd, false);
-            set_system_loop_requested(hwnd as isize, false);
             // SAFETY: hwnd is valid window receiving WM_ENTERSIZEMOVE on calling thread.
             unsafe { sync_mouse_buttons_after_move_loop(hwnd) };
             dispatch_window_system_event(
@@ -1368,12 +1339,6 @@ unsafe fn native_window_proc_inner(
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
-            // A window destroyed inside its move/size loop never gets `WM_EXITSIZEMOVE`: forget
-            // the buttons that are physically up, as the loop end would have.
-            if system_loop_active(hwnd) {
-                forget_released_mouse_buttons();
-            }
-            set_system_loop_requested(hwnd as isize, false);
             set_interactive_resize_flag(hwnd, false);
             unregister_window_event_binding(hwnd);
             crate::dark_mode::window_destroyed(hwnd);
@@ -1706,7 +1671,7 @@ unsafe fn native_window_proc_inner(
         }
         WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
             track_button_release(msg);
-            release_capture_when_idle(hwnd);
+            release_capture_when_idle(hwnd, mouse_buttons_from_mk(wparam));
             let dpr = get_window_dpr(hwnd);
             let phys_x = get_x_lparam(lparam);
             let phys_y = get_y_lparam(lparam);
@@ -1849,28 +1814,14 @@ unsafe fn native_window_proc_inner(
             }
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
-        WM_CANCELMODE => {
-            // Whatever ended the mouse interaction (a popup, a modal dialog) swallowed the
-            // releases: forget the buttons. A ferrokit addition: the windows plugin of Qt 6.12.0
-            // has no `WM_CANCELMODE` handling. The native move/size loop does not send it
-            // (neither a drag nor an Esc cancel did, measured on Windows 11).
-            let _ = APP_MOUSE_BUTTONS
-                .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
-            def_wnd_proc(hwnd, msg, wparam, lparam)
-        }
         WM_CAPTURECHANGED => {
-            // `lparam` is the window gaining the capture. Capture moving to another window of
-            // this thread (a popup, or our own `capture_on_press`) keeps the buttons; capture
-            // lost to another thread or to nothing swallows their releases (a ferrokit addition:
-            // Qt 6.12.0 has no `WM_CAPTURECHANGED` handling and keeps `mouseButtons()`), except
-            // while a native move/size loop is requested or running: it takes the capture with
-            // changes of its own and `WM_EXITSIZEMOVE` reconciles the buttons.
+            // `lparam` is the window gaining the capture. Qt 6.12.0's windows plugin has no
+            // `WM_CAPTURECHANGED` (nor `WM_CANCELMODE`) handling: a capture change, including the
+            // ones the native move/size loop causes, never touches the pressed buttons
+            // (`QGuiApplication::mouseButtons()`); they change with mouse events and at
+            // `WM_EXITSIZEMOVE` (`sync_mouse_buttons_after_move_loop`).
             let new_owner = lparam as HWND;
             set_auto_capture_flag(hwnd as isize, false);
-            if !system_loop_active(hwnd) && (new_owner.is_null() || !is_window_thread(new_owner)) {
-                let _ = APP_MOUSE_BUTTONS
-                    .try_with(|b| b.set(ferrokit_core::event::MouseButtons::NO_BUTTON));
-            }
             if new_owner != hwnd {
                 // Alt-Tab, a popup or the system move loop took the capture: the widget layer
                 // reconciles an explicit `grabMouse` that no longer has a native grab behind it.
@@ -2077,17 +2028,6 @@ unsafe fn native_window_proc_inner(
                 );
             }
             1
-        }
-        windows_sys::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND => {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SC_MOVE, SC_SIZE};
-            // The native move/size loop runs inside `DefWindowProc` and is over when it returns;
-            // when no loop started (no button down, a window that cannot move), nothing else
-            // would withdraw the request made by `post_system_loop_command`.
-            let result = def_wnd_proc(hwnd, msg, wparam, lparam);
-            if matches!(wparam as u32 & 0xFFF0, SC_SIZE | SC_MOVE) {
-                set_system_loop_requested(hwnd as isize, false);
-            }
-            result
         }
         _ => def_wnd_proc(hwnd, msg, wparam, lparam),
     }
@@ -2631,7 +2571,7 @@ impl NativeWindow {
 
     pub fn start_system_move(&self) -> bool {
         if !self.hwnd.is_null() {
-            post_system_loop_command(self.hwnd, 0xF012 /*SC_DRAGMOVE*/);
+            post_system_command(self.hwnd, 0xF012 /*SC_DRAGMOVE*/);
             true
         } else {
             false
@@ -2640,7 +2580,7 @@ impl NativeWindow {
 
     pub fn start_system_resize(&self, edges: crate::platform_window::WindowEdges) -> bool {
         if !self.hwnd.is_null() {
-            post_system_loop_command(self.hwnd, edges_to_win_orientation(edges));
+            post_system_command(self.hwnd, edges_to_win_orientation(edges));
             true
         } else {
             false
@@ -3264,7 +3204,7 @@ pub(crate) fn edges_to_win_orientation(edges: crate::platform_window::WindowEdge
 pub fn post_system_move(_hwnd: isize) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
-        post_system_loop_command(_hwnd as HWND, 0xF012 /*SC_DRAGMOVE*/);
+        post_system_command(_hwnd as HWND, 0xF012 /*SC_DRAGMOVE*/);
         return true;
     }
     false
@@ -3273,7 +3213,7 @@ pub fn post_system_move(_hwnd: isize) -> bool {
 pub fn post_system_resize(_hwnd: isize, _edges: crate::platform_window::WindowEdges) -> bool {
     #[cfg(windows)]
     if _hwnd != 0 {
-        post_system_loop_command(_hwnd as HWND, edges_to_win_orientation(_edges));
+        post_system_command(_hwnd as HWND, edges_to_win_orientation(_edges));
         return true;
     }
     false

@@ -2591,8 +2591,10 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     move_cancels_press(global_pos);
                 }
                 ferrokit_platform::window::set_last_cursor_position(global_pos);
-                // `mouse_buttons` follows what the window system reports for the move
-                // (qguiapplication.cpp:2455), including the X buttons, so a missed release heals.
+                // A ferrokit addition, not Qt: `QGuiApplicationPrivate::processMouseEvent` assigns
+                // `mouse_buttons` for non-move events only (qguiapplication.cpp:2420-2431, Qt
+                // 6.12.0). Here a move says which buttons the system reports, so a release that
+                // went elsewhere (a native dialog took it) heals at the next move over the window.
                 ferrokit_platform::window::set_app_mouse_buttons(buttons);
                 self.dispatcher
                     .dispatch_mouse_move(&root, pos, global_pos, buttons);
