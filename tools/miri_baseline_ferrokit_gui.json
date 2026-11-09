@@ -539,6 +539,8 @@
     "lib::application::color_scheme::tests::without_an_application_a_request_is_refused::TB": "unsupported",
     "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::SB": "panic",
     "lib::paint::painter::tests::gradient_fills_honor_painter_opacity::TB": "panic",
+    "lib::text::font_database::tests::a_family_list_resolves_to_its_first_installed_family_with_its_font_data::SB": "unsupported",
+    "lib::text::font_database::tests::a_family_list_resolves_to_its_first_installed_family_with_its_font_data::TB": "unsupported",
     "lib::text::font_database::tests::in_memory_font_face_is_built_once_per_font_data::SB": "unsupported",
     "lib::text::font_database::tests::in_memory_font_face_is_built_once_per_font_data::TB": "unsupported",
     "lib::text::glyph_face::budget_tests::glyph_budget_rejects_crafted_bounding_boxes_without_allocating::SB": "pass",

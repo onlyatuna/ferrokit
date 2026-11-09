@@ -14,7 +14,11 @@
 //!   modes, `DESIGN_TO_LOGICAL`, and rounded once after the shaper added its kerning: the string
 //!   advances (`QFontMetricsF::horizontalAdvance`) of the fixtures and of Windows system fonts
 //!   (Arial, Arial Bold, Arial Italic, Segoe UI, Calibri, Consolas, Tahoma) at 8 to 24 px, and the
-//!   glyph bitmaps of those fonts at the sizes where their `gasp` tables change the mode.
+//!   glyph bitmaps of those fonts at the sizes where their `gasp` tables change the mode;
+//! * a font that is a family list (`QFont::setFamilies`, a style sheet's `font-family: 'Consolas',
+//!   monospace`) is laid out as the first installed family of the list alone: its advances are
+//!   the rounded ones of that family's face (Consolas at 10 px: 6 px per digit, 96 px for the
+//!   HUD's "Updated 12:34:56"), not the unrounded ones of text shaped without the face's data.
 //!
 //! The system fonts are compared only when the file on this machine is the one the golden was
 //! measured with (size and hash in the golden), so another Windows build skips them instead of
@@ -55,6 +59,7 @@ fn sys_text(id: &str) -> &'static str {
         "a" => "Hello, World 123 AVAWTo",
         "b" => "The quick brown fox jumps over the lazy dog",
         "c" => "WWWWW iiiii fi fl ffi 0123456789",
+        "d" => "Updated 12:34:56",
         other => panic!("no text {other}"),
     }
 }
@@ -183,6 +188,21 @@ fn check(fields: &[&str], system_font: Option<&str>) -> Result<(), String> {
             );
             (got == want).then_some(()).ok_or(format!(
                 "advance {file} {} px text {}: {got}/64, Qt {want}/64",
+                fields[2], fields[3]
+            ))
+        }
+        ("syslistadv", Some(file)) => {
+            // `<px> <text id> <1/64> <families joined by |>` (the names may hold spaces): the font
+            // is the list itself, as a style sheet's `font-family: 'Consolas', monospace` sets it,
+            // not the family of the file.
+            let list = fields[5..].join(" ").replace('|', ", ");
+            let font = Font::new(list.as_str(), int(fields[2]) as f32);
+            let (got, want) = (
+                advance64(&font, sys_text(fields[3])),
+                fields[4].parse::<i64>().unwrap(),
+            );
+            (got == want).then_some(()).ok_or(format!(
+                "advance {file} family list {list:?} {} px text {}: {got}/64, Qt {want}/64",
                 fields[2], fields[3]
             ))
         }
