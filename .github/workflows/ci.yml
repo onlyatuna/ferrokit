@@ -65,16 +65,14 @@ jobs:
           sudo apt-get install -y ttf-mscorefonts-installer fonts-noto-cjk
           fc-list | grep -iE "arial|noto sans cjk" | head -n 5
 
-      # Lists every target that does not compile on this platform; `cargo test` stops at the first.
-      - name: Compile every target (cargo check --keep-going)
-        run: cargo check --workspace --all-targets --keep-going --locked
-
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
-      # One binary at a time with a time limit each, so one hang does not hide the rest.
+      # Builds every target once (`cargo build --keep-going`: all targets that do not compile are
+      # listed), then runs one binary at a time with a time limit each, so one hang does not hide
+      # the rest.
       - name: Run test binaries (per-binary timeout)
         # 120 s: about 5x the slowest normal target observed (test_tooltip, 23.1 s on Windows).
         # Builds use every runner core; the targets still run one at a time.

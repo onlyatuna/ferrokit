@@ -188,5 +188,16 @@ class TestMainWithoutTargets(unittest.TestCase):
         self.assertIn("no test targets", err.getvalue())
 
 
+class TestMainWithBrokenBuild(unittest.TestCase):
+    def test_build_failure_fails_the_run_and_says_where_the_errors_are(self):
+        err = io.StringIO()
+        broken = run_test_binaries.BuildFailed("cargo build failed (exit 101)")
+        with mock.patch.object(run_test_binaries, "test_targets", side_effect=broken), mock.patch.object(
+            sys, "argv", ["run_test_binaries.py"]
+        ), contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(run_test_binaries.main(), 1)
+        self.assertIn("cargo build failed", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
