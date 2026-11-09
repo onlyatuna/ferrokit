@@ -28,6 +28,10 @@ Lines (fields separated by one space):
 * `sysfont <file> <size> <fnv1a64>` then `sysadv`/`sysglyphs` lines of that Windows system font
   (`sysadv <file> <px> <text id> <1/64 px>`, `sysglyphs <file> <px> <fnv1a64>`): only valid for
   the font file hashed in the `sysfont` line, which the test checks before it compares.
+* `syslistadv <file> <px> <text id> <1/64 px> <families joined by |>`: the same advance of a font
+  that is a family list (`QFont::setFamilies`, the `font-family: 'Consolas', monospace` of a style
+  sheet), whose first installed family is the one of `<file>`; the family names may hold spaces,
+  so they come last. Text id `d` is the HUD's header status text.
 """
 import io
 import os
@@ -43,6 +47,13 @@ TEXT_A = "Hello Wor-ld 0123 AVTo"
 TEXT_B = "ACEFHJKMOPRTUWY"
 SYS_TEXTS = {"a": "Hello, World 123 AVAWTo", "b": "The quick brown fox jumps over the lazy dog",
              "c": "WWWWW iiiii fi fl ffi 0123456789"}
+LIST_TEXTS = dict(SYS_TEXTS, d="Updated 12:34:56")
+# file -> family lists asked for (first listed name that is installed is the font's family; the
+# generic names are not installed families)
+SYSTEM_LISTS = {
+    "consola.ttf": [("Consolas", "monospace"), ("FerrokitNoSuchFamily", "Consolas", "monospace")],
+    "segoeui.ttf": [("Segoe UI", "sans-serif")],
+}
 SYS_GLYPH_TEXT = "Hamburgefonts 0123"
 PIXEL_SIZES = range(8, 25)
 SYS_GLYPH_SIZES = (8, 9, 10, 12, 13, 16, 17, 18, 19, 20, 21, 24)
@@ -195,6 +206,14 @@ def child():
         for px in SYS_GLYPH_SIZES:
             print("sysglyphs", file, px, glyph_hash(font_of(family, px, weight, italic),
                                                     SYS_GLYPH_TEXT))
+        for families in SYSTEM_LISTS.get(file, ()):
+            for px in PIXEL_SIZES:
+                font = QFont()
+                font.setFamilies(list(families))
+                font.setPixelSize(px)
+                assert QFontInfo(font).family() == family, (families, QFontInfo(font).family())
+                for text_id, text in LIST_TEXTS.items():
+                    print("syslistadv", file, px, text_id, adv64(font, text), "|".join(families))
 
 
 def main():

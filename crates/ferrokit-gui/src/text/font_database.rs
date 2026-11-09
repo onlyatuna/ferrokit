@@ -804,6 +804,66 @@ impl FontDatabase {
         Some(data)
     }
 
+    /// Whether `name` is a family of the system's or the application's fonts, and so one that
+    /// `load_font_styled` loads as itself rather than replaces by a substitute.
+    fn is_installed_family(&mut self, name: &str) -> bool {
+        #[cfg(windows)]
+        if let Some(catalog) = crate::text::directwrite_catalog::catalog() {
+            return catalog.family_traits(name).is_some()
+                || self
+                    .application_faces
+                    .iter()
+                    .any(|face| face.family.eq_ignore_ascii_case(name));
+        }
+        self.has_family(name)
+    }
+
+    /// The name of a comma separated family list (`'Consolas', monospace`) that is used, with its
+    /// face; `None` when `family` is not a list or none of its names loads. `QFontDatabasePrivate::
+    /// load` looks the first family up on its own (`findFont`, passes 1 and 2) and hands the others
+    /// on as `fallBackFamilies`, which the fallback pass (pass 4) tries in order before any
+    /// substitute (`fallbacksForFamily`): the first name that is an installed family wins, and only
+    /// when none is does the first name's substitute count. The generic names (`sans-serif`,
+    /// `serif`, `monospace`) are skipped. Everything keyed by the requested string (raw font data,
+    /// engines) has to follow this one choice, so it is made in one place.
+    fn load_first_listed(
+        &mut self,
+        family: &str,
+        style: FaceStyle,
+        hint: StyleHint,
+    ) -> Option<(String, SharedGlyphFace)> {
+        if !family.contains(',') {
+            return None;
+        }
+        let names: Vec<&str> = family
+            .split(',')
+            .map(|name| name.trim().trim_matches('\'').trim_matches('"'))
+            .filter(|name| {
+                !(name.is_empty()
+                    || name.eq_ignore_ascii_case("sans-serif")
+                    || name.eq_ignore_ascii_case("monospace")
+                    || name.eq_ignore_ascii_case("serif"))
+            })
+            .collect();
+        for installed_only in [true, false] {
+            for &name in &names {
+                if installed_only && !self.is_installed_family(name) {
+                    continue;
+                }
+                if let Some(face) = self.load_font_styled(name, style, hint) {
+                    // The family list resolved to the family of the name that loaded.
+                    #[cfg(all(unix, not(target_os = "macos")))]
+                    self.copy_resolved_family(
+                        &style.cache_key(&name.to_ascii_lowercase(), hint),
+                        style.cache_key(&family.to_ascii_lowercase(), hint),
+                    );
+                    return Some((name.to_owned(), face));
+                }
+            }
+        }
+        None
+    }
+
     /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
     /// A family without a face for that style yields its nearest one (e.g. regular for bold); on
     /// Windows that face is then created with DirectWrite's bold or oblique simulation, as Qt
@@ -814,26 +874,8 @@ impl FontDatabase {
         style: FaceStyle,
         hint: StyleHint,
     ) -> Option<SharedGlyphFace> {
-        if family.contains(',') {
-            for candidate in family.split(',') {
-                let clean = candidate.trim().trim_matches('\'').trim_matches('"');
-                if clean.is_empty()
-                    || clean.eq_ignore_ascii_case("sans-serif")
-                    || clean.eq_ignore_ascii_case("monospace")
-                    || clean.eq_ignore_ascii_case("serif")
-                {
-                    continue;
-                }
-                if let Some(f) = self.load_font_styled(clean, style, hint) {
-                    // The family list resolved to the family of the first name that loaded.
-                    #[cfg(all(unix, not(target_os = "macos")))]
-                    self.copy_resolved_family(
-                        &style.cache_key(&clean.to_ascii_lowercase(), hint),
-                        style.cache_key(&family.to_ascii_lowercase(), hint),
-                    );
-                    return Some(f);
-                }
-            }
+        if let Some((_, face)) = self.load_first_listed(family, style, hint) {
+            return Some(face);
         }
 
         let key = family.to_ascii_lowercase();
@@ -982,6 +1024,11 @@ impl FontDatabase {
         style: FaceStyle,
         hint: StyleHint,
     ) -> Option<SharedFontData> {
+        // A family list has no entry of its own: its raw data is that of the name `load_font_styled`
+        // took from it, so the engine shapes with the face it measures with.
+        if let Some((name, _)) = self.load_first_listed(family, style, hint) {
+            return self.get_raw_font_data_styled(&name, style, hint);
+        }
         let key = style.cache_key(&family.to_ascii_lowercase(), hint);
         if let Some(data) = self.raw_cache.get(&key) {
             return Some(data.clone());
@@ -2117,6 +2164,39 @@ mod tests {
         let a = db.resolve_font_engines(&font);
         let b = db.resolve_font_engines(&font);
         assert!(Arc::ptr_eq(&a[0].face, &b[0].face));
+    }
+
+    /// A family list (`'A', B, monospace`) is the first of its names that is a family, not the
+    /// first one a substitute is found for (Qt's `QFontDatabasePrivate::findFont`), and its raw
+    /// font data is that family's, so the engine shapes with the face it measures with. Without
+    /// the data text is laid out from the face's unrounded advances (92.99 px for Consolas 10 px
+    /// where Qt measures 96).
+    #[test]
+    fn a_family_list_resolves_to_its_first_installed_family_with_its_font_data() {
+        let Some(bytes) = any_font_bytes() else {
+            return;
+        };
+        let mut db = FontDatabase::new();
+        db.add_font_from_memory("FerrokitListProbe", SharedFontData::from_vec(bytes.clone()))
+            .expect("the font parses");
+        let own = db
+            .load_font("FerrokitListProbe")
+            .expect("the application font loads");
+        let list = "'FerrokitNoSuchFamily', 'FerrokitListProbe', monospace";
+        let face = db
+            .load_font_styled(list, FaceStyle::regular(), StyleHint::AnyStyle)
+            .expect("the list resolves");
+        assert!(Arc::ptr_eq(&face, &own), "the list is its installed family");
+        let raw = db
+            .get_raw_font_data_styled(list, FaceStyle::regular(), StyleHint::AnyStyle)
+            .expect("the list has the font data of its family");
+        assert_eq!(raw.as_slice(), bytes.as_slice());
+        let engines = db.resolve_font_engines(&Font::new(list, 12.0));
+        assert!(Arc::ptr_eq(&engines[0].face, &own));
+        assert!(
+            engines[0].raw_data.is_some(),
+            "the engine keeps the family's font data"
+        );
     }
     #[cfg(windows)]
     #[test]
