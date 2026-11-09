@@ -248,6 +248,244 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
     );
 }
 
+const WM_ENTERSIZEMOVE: u32 = 0x0231;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
+const SC_DRAGMOVE: usize = 0xF012;
+
+/// Puts the window's outer top-left corner `dx`, `dy` away from the cursor: `(-50, -50)` puts the
+/// cursor inside it, far positive values put it outside.
+fn place_window_relative_to_cursor(hwnd: HWND, dx: i32, dy: i32) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+    };
+    // SAFETY: `hwnd` is a live window of this thread, supplied by the caller from its own window;
+    // `cursor` is a live `POINT` that `GetCursorPos` fills in; `SetWindowPos` takes integers only.
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            cursor.x + dx,
+            cursor.y + dy,
+            200,
+            200,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+fn press_left(hwnd: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_LBUTTONDOWN;
+    // SAFETY: `hwnd` is a live window of this thread; the message has integer parameters only.
+    unsafe { SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010) };
+}
+
+/// What the system sends when its move loop starts: the loop takes the capture from the window
+/// (`lParam` 0, no new owner; seen 140 ms after the `WM_SYSCOMMAND` with a real press on
+/// Windows 11), then announces itself.
+fn move_loop_starts(hwnd: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED;
+    // SAFETY: `hwnd` is a live window of this thread; the messages have integer parameters only.
+    unsafe {
+        SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
+        SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+    }
+}
+
+/// What the system sends when its move loop ends: another capture change without a new owner,
+/// then the exit notification.
+fn move_loop_ends(hwnd: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED;
+    // SAFETY: `hwnd` is a live window of this thread; the messages have integer parameters only.
+    unsafe {
+        SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
+        SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+    }
+}
+
+/// The move loop takes the mouse from the window with capture changes of its own and swallows the
+/// release. Qt does nothing with them: the windows plugin of Qt 6.12.0 has no
+/// `WM_CAPTURECHANGED` handling, `QGuiApplication::mouseButtons()` keeps the held button for the
+/// whole loop and `WM_EXITSIZEMOVE` reconciles it (`QWindowsContext::handleExitSizeMove`,
+/// qwindowscontext.cpp:1261-1290). An application that asks "is a button held?" while its window
+/// is dragged (to show where the window will dock, say) must get yes.
+#[test]
+fn the_move_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_ends() {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED;
+    let win = NativeWindow::new("MoveLoop", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    press_left(hwnd);
+    assert_eq!(app_mouse_buttons(), MouseButtons::LEFT);
+    assert!(win.start_system_move());
+    move_loop_starts(hwnd);
+    assert_eq!(
+        app_mouse_buttons(),
+        MouseButtons::LEFT,
+        "the held button is not forgotten while the loop runs"
+    );
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
+    unsafe { SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0) };
+    assert_eq!(
+        app_mouse_buttons(),
+        MouseButtons::LEFT,
+        "nor by the capture change that precedes the loop's end"
+    );
+    // SAFETY: as above.
+    unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
+    assert!(
+        app_mouse_buttons().is_empty(),
+        "the loop end syncs the button that is physically up: {:?}",
+        app_mouse_buttons()
+    );
+}
+
+/// A system resize is the same kind of loop (`startSystemResize` releases the capture and posts
+/// `SC_SIZE*` just as `startSystemMove` posts `SC_DRAGMOVE`, qwindowswindow.cpp:3303-3313).
+#[test]
+fn the_resize_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_ends() {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::platform_window::WindowEdges;
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    let win = NativeWindow::new("ResizeLoop", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    press_left(hwnd);
+    assert!(win.start_system_resize(WindowEdges::BOTTOM | WindowEdges::RIGHT));
+    move_loop_starts(hwnd);
+    assert_eq!(app_mouse_buttons(), MouseButtons::LEFT);
+    move_loop_ends(hwnd);
+    assert!(app_mouse_buttons().is_empty());
+}
+
+/// The request for a loop ends with the loop: a second drag keeps the button again, and a capture
+/// loss after the first loop forgets the buttons as it does outside any loop.
+#[test]
+fn each_system_move_protects_only_its_own_loop() {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED;
+    let win = NativeWindow::new("TwoMoves", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    press_left(hwnd);
+    assert!(win.start_system_move());
+    move_loop_starts(hwnd);
+    move_loop_ends(hwnd);
+    assert!(app_mouse_buttons().is_empty());
+
+    press_left(hwnd);
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
+    unsafe { SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0) };
+    assert!(
+        app_mouse_buttons().is_empty(),
+        "no loop is running: the lost capture swallowed the release"
+    );
+
+    press_left(hwnd);
+    assert!(win.start_system_move());
+    move_loop_starts(hwnd);
+    assert_eq!(
+        app_mouse_buttons(),
+        MouseButtons::LEFT,
+        "the second loop keeps the button too"
+    );
+    move_loop_ends(hwnd);
+    assert!(app_mouse_buttons().is_empty());
+}
+
+/// `SC_DRAGMOVE` without a button held ends at once without a loop (`DefWindowProc` returns, no
+/// `WM_ENTERSIZEMOVE`; seen on Windows 11), so nothing would withdraw the request made for it.
+#[test]
+fn a_system_move_that_starts_no_loop_leaves_no_request_behind() {
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CAPTURECHANGED, WM_SYSCOMMAND};
+    let win = NativeWindow::new("NoLoop", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    assert!(win.start_system_move());
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
+    // No mouse button is physically down while the tests run, so this `DefWindowProc` call
+    // returns without entering the loop.
+    unsafe { SendMessageW(hwnd, WM_SYSCOMMAND, SC_DRAGMOVE, 0) };
+    press_left(hwnd);
+    // SAFETY: as above.
+    unsafe { SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0) };
+    assert!(
+        app_mouse_buttons().is_empty(),
+        "the abandoned request does not protect a later press: {:?}",
+        app_mouse_buttons()
+    );
+}
+
+/// A loop that ends with the cursor outside the window: the swallowed release is reconciled
+/// without a mouse event for the window (Qt: `NonClientAreaMouseButtonRelease`, which widgets never
+/// see).
+#[test]
+fn a_move_loop_that_ends_outside_the_window_forgets_the_button_without_a_release() {
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    let win = NativeWindow::new("MoveAway", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    ferrokit_platform::window::set_window_event_handler(
+        hwnd,
+        Box::new(ClosureWindowEventHandler::new(move |ev| {
+            sink.lock().push(ev)
+        })),
+    );
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    press_left(hwnd);
+    assert!(win.start_system_move());
+    move_loop_starts(hwnd);
+    // The loop moved the window away from the cursor.
+    place_window_relative_to_cursor(hwnd, 400, 400);
+    seen.lock().clear();
+    move_loop_ends(hwnd);
+    assert!(app_mouse_buttons().is_empty());
+    assert!(
+        !seen
+            .lock()
+            .iter()
+            .any(|e| matches!(e, WindowSystemEvent::MouseRelease { .. })),
+        "no release reaches the window: {:?}",
+        seen.lock()
+    );
+}
+
+/// A window destroyed inside its move loop never gets `WM_EXITSIZEMOVE`: the buttons that are
+/// physically up must not stay pressed in the application.
+#[test]
+fn a_window_destroyed_inside_its_move_loop_forgets_the_released_buttons() {
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    let mut win = NativeWindow::new(
+        "DestroyedInLoop",
+        Rect::new(0, 0, 200, 200),
+        WindowFlags::NORMAL,
+    )
+    .expect("native window");
+    let hwnd = win.hwnd();
+    press_left(hwnd);
+    assert!(win.start_system_move());
+    move_loop_starts(hwnd);
+    assert!(!app_mouse_buttons().is_empty());
+    win.close();
+    assert!(
+        app_mouse_buttons().is_empty(),
+        "the swallowed release is not kept for a window that no longer exists: {:?}",
+        app_mouse_buttons()
+    );
+}
+
 /// Ending a running composition clears the preedit with an empty event
 /// (`QWindowsInputContext::endComposition`); an end without a start sends nothing.
 #[test]
