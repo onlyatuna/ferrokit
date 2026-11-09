@@ -5,6 +5,17 @@
 // Part of the skrifa crate of the fontations project (MIT OR Apache-2.0),
 // changed by ferrokit; the FreeType-derived code is under the FreeType licence.
 //
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project
+// (www.freetype.org). All rights reserved. The FreeType-derived part is used
+// under the FreeType License (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit
+// repository); the name of the FreeType Project is not used to endorse or
+// promote anything.
+//
+//   Copyright (C) 2023-2025 by David Turner, Robert Wilhelm, and Werner Lemberg
+//   (afadjust.c, written by Craig White), and
+//   Copyright (C) 2003-2025 by David Turner, Robert Wilhelm, and Werner Lemberg
+//   (aflatin.c).
+//
 // The reference is FreeType built without HarfBuzz: the reverse character map
 // is derived from the cmap alone, as in Ubuntu's 2.14.2 package, which Qt links.
 //

@@ -5,6 +5,42 @@
 // `src/base/fthash.c`). Part of the skrifa crate of the fontations project (MIT OR Apache-2.0),
 // changed by ferrokit; the FreeType-derived code is under the FreeType licence.
 //
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project
+// (www.freetype.org). All rights reserved. The FreeType-derived part is used
+// under the FreeType License (FTL, LICENSES/FTL.txt and NOTICE of the ferrokit
+// repository); the name of the FreeType Project is not used to endorse or
+// promote anything.
+//
+//   Copyright (C) 2023-2025 by David Turner, Robert Wilhelm, and Werner Lemberg
+//   (afadjust.c), and
+//   Copyright (C) 2025 by David Turner, Robert Wilhelm, and Werner Lemberg
+//   (afgsub.c).
+//
+// `FtHash` is a port of the hash table of src/base/fthash.c, which FreeType
+// takes from Mark Leisher's xmbdfed package and which is not under the FTL but
+// under this permission notice:
+//
+//   Copyright 2000 Computing Research Labs, New Mexico State University
+//   Copyright 2001-2015 Francesco Zappa Nardelli
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a
+//   copy of this software and associated documentation files (the "Software"),
+//   to deal in the Software without restriction, including without limitation
+//   the rights to use, copy, modify, merge, publish, distribute, sublicense,
+//   and/or sell copies of the Software, and to permit persons to whom the
+//   Software is furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+//   THE COMPUTING RESEARCH LAB OR NEW MEXICO STATE UNIVERSITY BE LIABLE FOR ANY
+//   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT
+//   OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+//   THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
 // The reference FreeType loads HarfBuzz at run time (Ubuntu's 2.14.2), so this is the branch it
 // takes: the glyphs that a single or alternate substitution of the style's script makes from a
 // glyph of the map get the code point of that glyph (small capitals of accented letters, for

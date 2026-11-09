@@ -6,6 +6,15 @@
 // crate of the fontations project (MIT OR Apache-2.0, Copyright (c) 2019
 // Fontations Developers; see LICENSE-MIT and LICENSE-APACHE of this crate),
 // changed by ferrokit.
+//
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project
+// (www.freetype.org). All rights reserved. The FreeType-derived part (the table)
+// is used under the FreeType License (FTL, LICENSES/FTL.txt and NOTICE of the
+// ferrokit repository); the name of the FreeType Project is not used to endorse
+// or promote anything.
+//
+//   Copyright (C) 2023-2025 by David Turner, Robert Wilhelm, and Werner Lemberg
+//   (afadjust.c, written by Craig White).
 
 //! Vertical adjustment database of the auto-hinter.
 
