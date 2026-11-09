@@ -24,6 +24,11 @@ class SelectCratesTests(unittest.TestCase):
         self.assertEqual(scope(changed=["crates/ferrokit-gui/src/a.rs"]), {"gui", "widgets"})
         self.assertEqual(scope(changed=["tools/miri_baseline_ferrokit_gui.json"]), {"gui", "widgets"})
 
+    def test_vendored_crates_run_gui_and_widgets(self):
+        # skrifa and read-fonts are ferrokit-gui's dependencies (path dependencies).
+        self.assertEqual(scope(changed=["third_party/skrifa/src/lib.rs"]), {"gui", "widgets"})
+        self.assertEqual(scope(changed=["third_party/read-fonts/src/lib.rs"]), {"gui", "widgets"})
+
     def test_everything_else_runs_all(self):
         for path in [
             "crates/ferrokit-core/src/a.rs",

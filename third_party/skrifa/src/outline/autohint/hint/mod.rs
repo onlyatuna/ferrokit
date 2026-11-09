@@ -65,7 +65,14 @@ pub(crate) fn hint_outline_with_recorder(
     adjust_flags: u16,
     recorder: &mut HintsRecorder,
 ) -> HintedPlan {
-    hint_outline_impl(outline, metrics, scale, glyph_style, adjust_flags, Some(recorder))
+    hint_outline_impl(
+        outline,
+        metrics,
+        scale,
+        glyph_style,
+        adjust_flags,
+        Some(recorder),
+    )
 }
 
 fn hint_outline_impl(

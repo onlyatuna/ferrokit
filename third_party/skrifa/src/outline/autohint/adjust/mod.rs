@@ -68,8 +68,8 @@ use super::{
 };
 use database::{
     ADJUSTMENT_DATABASE, DOWN, DOWN2, IGNORE_CAPITAL_BOTTOM, IGNORE_CAPITAL_TOP,
-    IGNORE_SMALL_BOTTOM, IGNORE_SMALL_TOP, NO_HEIGHT_CHECK, TILDE_BOTTOM, TILDE_BOTTOM2,
-    TILDE_TOP, TILDE_TOP2, UP, UP2,
+    IGNORE_SMALL_BOTTOM, IGNORE_SMALL_TOP, NO_HEIGHT_CHECK, TILDE_BOTTOM, TILDE_BOTTOM2, TILDE_TOP,
+    TILDE_TOP2, UP, UP2,
 };
 
 // FreeType's `FT_Pos` is a `long`, and its `ADD_LONG`, `SUB_LONG` and `MUL_LONG`
@@ -708,12 +708,12 @@ fn separate_top(
     }
 
     // aflatin.c:3754-3758
-    let calculated_amount = if (adjust_top && is_top_tilde) || (adjust_below_top && is_below_top_tilde)
-    {
-        add(adjustment_amount, centering_adjustment)
-    } else {
-        adjustment_amount
-    };
+    let calculated_amount =
+        if (adjust_top && is_top_tilde) || (adjust_below_top && is_below_top_tilde) {
+            add(adjustment_amount, centering_adjustment)
+        } else {
+            adjustment_amount
+        };
 
     // aflatin.c:3767-3796: a delta of 2/64 px is tolerated for rounding.
     if calculated_amount != 0
@@ -799,13 +799,12 @@ fn separate_bottom(
     }
 
     // aflatin.c:3907-3911
-    let calculated_amount = if (adjust_bottom && is_bottom_tilde)
-        || (adjust_above_bottom && is_above_bottom_tilde)
-    {
-        add(adjustment_amount, centering_adjustment)
-    } else {
-        adjustment_amount
-    };
+    let calculated_amount =
+        if (adjust_bottom && is_bottom_tilde) || (adjust_above_bottom && is_above_bottom_tilde) {
+            add(adjustment_amount, centering_adjustment)
+        } else {
+            adjustment_amount
+        };
 
     // aflatin.c:3919-3941
     if calculated_amount != 0

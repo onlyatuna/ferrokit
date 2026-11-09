@@ -54,7 +54,9 @@ impl FtHash {
         let num = key as i64 as u64;
         let mut res = num & 0xFF;
         for shift in [8, 16, 24] {
-            res = (res << 5).wrapping_sub(res).wrapping_add((num >> shift) & 0xFF);
+            res = (res << 5)
+                .wrapping_sub(res)
+                .wrapping_add((num >> shift) & 0xFF);
         }
         res
     }
@@ -148,7 +150,10 @@ fn coverage_glyphs(coverage: &CoverageTable) -> Option<Vec<u16>> {
             let ranges = table.range_records();
             let mut glyphs = Vec::new();
             for (ix, range) in ranges.iter().enumerate() {
-                let (start, end) = (range.start_glyph_id().to_u16(), range.end_glyph_id().to_u16());
+                let (start, end) = (
+                    range.start_glyph_id().to_u16(),
+                    range.end_glyph_id().to_u16(),
+                );
                 if start > end {
                     return None;
                 }
@@ -482,7 +487,8 @@ mod tests {
         hash_insert(&mut subst, 10, 30);
         hash_insert(&mut subst, 20, 40);
         hash_insert(&mut subst, 40, 10); // a cycle: 10 is already in the map
-        let mut reverse = ReverseCharMap::from_cmap(|cp| (cp == 0xE9).then(|| raw::types::GlyphId::new(10)));
+        let mut reverse =
+            ReverseCharMap::from_cmap(|cp| (cp == 0xE9).then(|| raw::types::GlyphId::new(10)));
         assert!(reverse.insert_no_overwrite(30, 0x41));
         let value = subst.get(10).unwrap();
         add_substitute(10, value, 0xE9, &mut reverse, &subst);
