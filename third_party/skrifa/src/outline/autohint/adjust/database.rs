@@ -1054,7 +1054,17 @@ mod tests {
     #[test]
     fn lookup_misses_what_is_not_in_the_table() {
         // letters without accents, the tilde (`#if 0` in FreeType), controls, the ends
-        for cp in [0x20, 0x41, 0x7E, 0x7F, 0xA0, 0xC6, 0x100_0, 0x20_0000, 0xFFFF_FFFF] {
+        for cp in [
+            0x20,
+            0x41,
+            0x7E,
+            0x7F,
+            0xA0,
+            0xC6,
+            0x100_0,
+            0x20_0000,
+            0xFFFF_FFFF,
+        ] {
             if ADJUSTMENT_DATABASE.iter().all(|&(c, _)| c != cp) {
                 assert_eq!(lookup(cp), NONE, "{cp:#x}");
             }

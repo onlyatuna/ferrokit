@@ -16,9 +16,10 @@
 //! fonts that DirectWrite does not read from a local file.
 
 use crate::text::directwrite_face::{factory6, serialized};
+use crate::text::font::StyleHint;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use unicode_script::{Script, UnicodeScript};
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -75,6 +76,19 @@ pub(crate) struct FaceSource {
     pub axes: Vec<(u32, f32)>,
 }
 
+/// Everything the fallback family list of a script item depends on besides the registry itself
+/// (`fallbacksForFamily(family, style, hint, script)` as `font_database::windows_fallback_families`
+/// builds it): the style hint, whether the slant asked for is italic, whether the primary family
+/// is a symbol font, whether the item is an emoji item, and the item script's writing system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FallbackListKey {
+    pub hint: StyleHint,
+    pub italic: bool,
+    pub symbol_family: bool,
+    pub emoji: bool,
+    pub writing_system: usize,
+}
+
 pub(crate) struct Catalog {
     collection: IDWriteFontCollection2,
     locales: Locales,
@@ -83,6 +97,11 @@ pub(crate) struct Catalog {
     /// The families registered so far, sorted by name, case insensitively
     /// (`QFontDatabasePrivate::family`); a family's styles appear when it is populated.
     registry: Mutex<Registry>,
+    /// The fallback lists built so far (`QFontDatabasePrivate::fallbacksCache`). The registry is
+    /// fixed once every family is populated, which the first list of any key does, and nothing
+    /// outside this catalog enters it (application fonts are registered with the font database
+    /// only), so a list never goes stale. Never held while a list is computed.
+    fallback_lists: Mutex<HashMap<FallbackListKey, Arc<[String]>>>,
 }
 
 // SAFETY: `Send` requires that the value may move to another thread. `collection` is a
@@ -168,15 +187,38 @@ impl Catalog {
     /// `writing_system` (any for 0), those with a style of the requested slant first
     /// (`Preferred`), the others after them (`Other`), each in the order of the database. Every
     /// family is populated first, as the loop of that function does.
+    ///
+    /// Built once per `(italic, writing_system)`: the first call populates every family, after
+    /// which `populate` has nothing left to do (a family either has styles or has had its turn),
+    /// so the registry, and with it the list, is the same on every later call.
     pub(crate) fn families_for_writing_system(
         &self,
         italic: bool,
         writing_system: usize,
-    ) -> Vec<String> {
+    ) -> Arc<[String]> {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(list) = registry.writing_system_lists.get(&(italic, writing_system)) {
+            return list.clone();
+        }
+        let list: Arc<[String]> = self
+            .scan_writing_system(&mut registry, italic, writing_system)
+            .into();
+        registry
+            .writing_system_lists
+            .insert((italic, writing_system), list.clone());
+        list
+    }
+
+    /// [`families_for_writing_system`](Self::families_for_writing_system) without the memo.
+    fn scan_writing_system(
+        &self,
+        registry: &mut Registry,
+        italic: bool,
+        writing_system: usize,
+    ) -> Vec<String> {
         let names: Vec<String> = registry.families.iter().map(|f| f.name.clone()).collect();
         for name in &names {
-            self.ensure_populated(&mut registry, name);
+            self.ensure_populated(registry, name);
         }
         let (mut preferred, mut other) = (Vec::new(), Vec::new());
         for family in registry.families.iter().filter(|f| f.populated) {
@@ -197,6 +239,32 @@ impl Catalog {
         }
         preferred.extend(other);
         preferred
+    }
+
+    /// The fallback list of `key`, from `compute` the first time it is asked for. `compute` runs
+    /// without any lock of the catalog held; two threads asking at once both compute the same
+    /// list and the first one stored wins.
+    pub(crate) fn fallback_list(
+        &self,
+        key: FallbackListKey,
+        compute: impl FnOnce() -> Vec<String>,
+    ) -> Arc<[String]> {
+        let cached = {
+            let lists = self
+                .fallback_lists
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            lists.get(&key).cloned()
+        };
+        if let Some(list) = cached {
+            return list;
+        }
+        let list: Arc<[String]> = compute().into();
+        let mut lists = self
+            .fallback_lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        lists.entry(key).or_insert(list).clone()
     }
 
     /// The font of `style` (the caller holds the DirectWrite lock).
@@ -450,6 +518,8 @@ struct Registry {
     families: Vec<CatalogFamily>,
     /// The names `populate` has run for.
     populated_names: HashSet<String>,
+    /// `families_for_writing_system` per `(italic, writing system)`.
+    writing_system_lists: HashMap<(bool, usize), Arc<[String]>>,
 }
 
 impl Registry {
@@ -571,6 +641,7 @@ fn build() -> Option<Catalog> {
             locales,
             owners,
             registry: Mutex::new(registry),
+            fallback_lists: Mutex::new(HashMap::new()),
         })
     })
 }
@@ -881,4 +952,63 @@ fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
         }
     }
     systems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A list of writing-system families is scanned once per `(italic, writing system)`, and what
+    /// is remembered is what a scan of the registry, which the first one populated, gives.
+    #[test]
+    fn writing_system_lists_are_built_once_and_equal_a_fresh_scan() {
+        let Some(catalog) = catalog() else {
+            return;
+        };
+        for (italic, system) in [
+            (false, ws::ANY),
+            (true, ws::ANY),
+            (false, ws::LATIN),
+            (false, ws::TRADITIONAL_CHINESE),
+            (true, ws::JAPANESE),
+        ] {
+            let first = catalog.families_for_writing_system(italic, system);
+            let again = catalog.families_for_writing_system(italic, system);
+            assert!(Arc::ptr_eq(&first, &again), "{italic} {system}");
+            let mut registry = catalog.registry.lock().unwrap_or_else(|e| e.into_inner());
+            let fresh = catalog.scan_writing_system(&mut registry, italic, system);
+            assert_eq!(&*first, fresh.as_slice(), "{italic} {system}");
+        }
+        assert!(
+            !catalog
+                .families_for_writing_system(false, ws::ANY)
+                .is_empty()
+        );
+    }
+
+    /// A fallback list is computed for the first request of a key only, and the same list answers
+    /// every later one.
+    #[test]
+    fn fallback_lists_are_computed_once_per_key() {
+        let Some(catalog) = catalog() else {
+            return;
+        };
+        let key = FallbackListKey {
+            hint: StyleHint::Fantasy,
+            italic: true,
+            symbol_family: true,
+            emoji: false,
+            // The last writing system: no other test asks for this key.
+            writing_system: ws::COUNT - 1,
+        };
+        let first = catalog.fallback_list(key, || vec!["A".to_string(), "B".to_string()]);
+        let again = catalog.fallback_list(key, || panic!("computed twice"));
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(&*first, ["A", "B"]);
+        let other = FallbackListKey { emoji: true, ..key };
+        assert_eq!(
+            &*catalog.fallback_list(other, || vec!["C".to_string()]),
+            ["C"]
+        );
+    }
 }

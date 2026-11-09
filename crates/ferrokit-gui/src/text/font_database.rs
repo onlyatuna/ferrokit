@@ -206,6 +206,9 @@ pub struct FontDatabase {
     /// re-registering with DirectWrite) on each draw.
     recent_memory_faces: Vec<SharedGlyphFace>,
     memory_faces: Vec<MemoryFaceEntry>,
+    /// What the Windows fallback lookup resolved, see [`FallbackMemo`].
+    #[cfg(windows)]
+    fallback_memo: FallbackMemo,
     /// Qt's registry of families and the families the primary requests resolved to (Linux).
     #[cfg(all(unix, not(target_os = "macos")))]
     linux: linux::LinuxFonts,
@@ -648,6 +651,8 @@ impl FontDatabase {
             engines: HashMap::new(),
             recent_memory_faces: Vec::new(),
             memory_faces: Vec::new(),
+            #[cfg(windows)]
+            fallback_memo: FallbackMemo::default(),
         };
         db.preload_default_fonts();
         db
@@ -885,15 +890,17 @@ impl FontDatabase {
             // style hint, then the ones `extraTryFontsForFamily` names for the user's language.
             let mut candidates = vec![family_for_style_hint(hint).to_string()];
             if let Some(catalog) = crate::text::directwrite_catalog::catalog() {
-                candidates.extend(windows_fallback_families(
+                let list = windows_fallback_families(
                     catalog,
-                    &key,
-                    0,
-                    style.italic,
-                    hint,
-                    "Zyyy",
-                    unicode_script::Script::Common,
-                ));
+                    fallback_list_key(
+                        hint,
+                        style.italic,
+                        crate::text::directwrite_catalog::supports_symbol(0),
+                        "Zyyy",
+                        unicode_script::Script::Common,
+                    ),
+                );
+                candidates.extend(list.iter().cloned());
             }
             for substitute in candidates {
                 if key.eq_ignore_ascii_case(&substitute) {
@@ -1165,6 +1172,9 @@ impl FontDatabase {
     /// a glyph for it. The engines are loaded only as far as the text needs them, appended to
     /// `engines`, and the order of each script's list is kept in the chains the primary engine
     /// carries ([`FontEngine::with_script_chains`]).
+    ///
+    /// Which family a character takes is looked up once per font request and character and
+    /// remembered (see [`FallbackMemo`]); a repeated string only replays the engines it needs.
     #[cfg(windows)]
     fn append_script_fallback_engines(
         &mut self,
@@ -1183,19 +1193,9 @@ impl FontDatabase {
             return false;
         }
         let style = FaceStyle::of(font);
-        let primary_name = if catalog.family_traits(&font.family).is_some() {
-            font.family.clone()
-        } else {
-            family_for_style_hint(font.style_hint).to_string()
-        };
-        let (fixed_pitch, systems) = catalog.family_traits(&primary_name).unwrap_or((false, 0));
-        let hint = if font.style_hint == StyleHint::AnyStyle && fixed_pitch {
-            StyleHint::TypeWriter
-        } else {
-            font.style_hint
-        };
+        self.fallback_memo.for_generation(font_generation());
+        let context = self.fallback_memo.context(catalog, font);
         let primary = engines[0].clone();
-        let mut lists: HashMap<&'static str, Vec<String>> = HashMap::new();
         let mut found: HashMap<&'static str, Vec<(usize, usize)>> = HashMap::new();
         let mut misses: HashSet<(&'static str, char)> = HashSet::new();
         let items = crate::text::shaping_plan::script_items(text);
@@ -1219,32 +1219,25 @@ impl FontDatabase {
                 if !misses.insert((key, ch)) {
                     continue;
                 }
-                let list = lists.entry(key).or_insert_with(|| {
-                    windows_fallback_families(
-                        catalog,
-                        &primary_name,
-                        systems,
-                        style.italic,
-                        hint,
-                        key,
-                        script,
-                    )
-                });
-                for (position, name) in list.iter().enumerate() {
-                    if !catalog.covers(name, style.weight, style.italic, ch) {
-                        continue;
-                    }
-                    let Some(index) = self.fallback_engine_index(engines, name, style) else {
+                let list_key = fallback_list_key(
+                    context.hint,
+                    style.italic,
+                    context.symbol_family,
+                    key,
+                    script,
+                );
+                let pick = self.fallback_pick(catalog, list_key, style, ch);
+                for (at, (list_position, name)) in pick.covering.iter().enumerate() {
+                    let Some(engine) = self.fallback_engine_index(engines, name, style) else {
                         continue;
                     };
-                    if engines[index].face.glyph_index(ch) == 0 {
+                    if !(pick.has_glyph && at + 1 == pick.covering.len()) {
                         continue;
                     }
                     let chain = found.entry(key).or_default();
-                    if !chain.iter().any(|&(_, i)| i == index) {
-                        chain.push((position, index));
+                    if !chain.iter().any(|&(_, i)| i == engine) {
+                        chain.push((*list_position, engine));
                     }
-                    break;
                 }
             }
         }
@@ -1255,6 +1248,49 @@ impl FontDatabase {
         }
         engines[0] = engines[0].clone().with_script_chains(chains);
         true
+    }
+
+    /// The families of `list_key`'s list that cover `ch`, up to the first whose face has a glyph
+    /// for it, remembered per request (see [`FallbackMemo`]).
+    #[cfg(windows)]
+    fn fallback_pick(
+        &mut self,
+        catalog: &crate::text::directwrite_catalog::Catalog,
+        list_key: crate::text::directwrite_catalog::FallbackListKey,
+        style: FaceStyle,
+        ch: char,
+    ) -> Arc<FallbackPick> {
+        let key = FallbackPickKey {
+            list: list_key,
+            style,
+            ch,
+        };
+        if let Some(pick) = self.fallback_memo.picks.get(&key) {
+            return pick.clone();
+        }
+        let list = windows_fallback_families(catalog, list_key);
+        let mut covering = Vec::new();
+        let mut has_glyph = false;
+        for (position, name) in list.iter().enumerate() {
+            if !catalog.covers(name, style.weight, style.italic, ch) {
+                continue;
+            }
+            // The engine of a family is built from this face (`fallback_engine_index`).
+            let Some(face) = self.load_font_styled(name, style, StyleHint::AnyStyle) else {
+                continue;
+            };
+            covering.push((position, Arc::<str>::from(name.as_str())));
+            if face.glyph_index(ch) != 0 {
+                has_glyph = true;
+                break;
+            }
+        }
+        let pick = Arc::new(FallbackPick {
+            covering,
+            has_glyph,
+        });
+        self.fallback_memo.insert_pick(key, pick.clone());
+        pick
     }
 
     /// The index in `engines` of the engine for the family `name`, loading and appending it when
@@ -1821,29 +1857,57 @@ fn extra_try_fonts() -> &'static [&'static str] {
     *LIST
 }
 
+/// The key of `windows_fallback_families`' list for a character of the item script `script`
+/// whose chain is `key` ([`fallback_script_key`](crate::text::glyph_layout::fallback_script_key)).
+/// The emoji chain asks for no writing system.
+#[cfg(windows)]
+fn fallback_list_key(
+    hint: StyleHint,
+    italic: bool,
+    symbol_family: bool,
+    key: &str,
+    script: unicode_script::Script,
+) -> crate::text::directwrite_catalog::FallbackListKey {
+    let emoji = key == "Emoji";
+    crate::text::directwrite_catalog::FallbackListKey {
+        hint,
+        italic,
+        symbol_family,
+        emoji,
+        writing_system: if emoji {
+            0
+        } else {
+            crate::text::directwrite_catalog::writing_system_for_script(script)
+        },
+    }
+}
+
 /// `fallbacksForFamily(family, style, hint, script)` of Qt's DirectWrite font database as
 /// `QFontDatabasePrivate` filters it: the emoji family for the emoji script, the family of the
 /// style hint, `extraTryFontsForFamily` (the user's language's families that exist, unless the
 /// family is a symbol font, then the emoji and symbol families), then every family that supports
 /// the script's writing system. Entries that are not families of the database are dropped; repeats
-/// stay.
+/// stay. Built once per key and kept by the catalog (`QFontDatabasePrivate::fallbacksCache`).
 #[cfg(windows)]
 fn windows_fallback_families(
     catalog: &crate::text::directwrite_catalog::Catalog,
-    family: &str,
-    family_systems: u64,
-    italic: bool,
-    hint: StyleHint,
-    key: &str,
-    script: unicode_script::Script,
+    key: crate::text::directwrite_catalog::FallbackListKey,
+) -> Arc<[String]> {
+    catalog.fallback_list(key, || compute_windows_fallback_families(catalog, key))
+}
+
+/// [`windows_fallback_families`] without the memo.
+#[cfg(windows)]
+fn compute_windows_fallback_families(
+    catalog: &crate::text::directwrite_catalog::Catalog,
+    key: crate::text::directwrite_catalog::FallbackListKey,
 ) -> Vec<String> {
-    use crate::text::directwrite_catalog as dw;
     let mut list: Vec<String> = Vec::new();
-    if key == "Emoji" {
+    if key.emoji {
         list.push("Segoe UI Emoji".to_string());
     }
-    list.push(family_for_style_hint(hint).to_string());
-    if !dw::supports_symbol(family_systems) {
+    list.push(family_for_style_hint(key.hint).to_string());
+    if !key.symbol_family {
         for name in extra_try_fonts() {
             if catalog.family_traits(name).is_some() {
                 list.push((*name).to_string());
@@ -1852,15 +1916,121 @@ fn windows_fallback_families(
     }
     list.push("Segoe UI Emoji".to_string());
     list.push("Segoe UI Symbol".to_string());
-    let system = if key == "Emoji" {
-        0
-    } else {
-        dw::writing_system_for_script(script)
-    };
-    list.extend(catalog.families_for_writing_system(italic, system));
-    let _ = family;
+    list.extend(
+        catalog
+            .families_for_writing_system(key.italic, key.writing_system)
+            .iter()
+            .cloned(),
+    );
     list.retain(|name| catalog.family_traits(name).is_some());
     list
+}
+
+/// What `append_script_fallback_engines` depends on in the family of a request alone: the style
+/// hint its fallback lists use (a fixed-pitch primary family makes `AnyStyle` a typewriter) and
+/// whether the family is a symbol font.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct FallbackContext {
+    hint: StyleHint,
+    symbol_family: bool,
+}
+
+/// What one family takes for one character: the families of a fallback list that cover the
+/// character and whose face loads, in list order with their positions, up to the first whose face
+/// has a glyph for it (`has_glyph`, then it is the last of `covering`).
+#[cfg(windows)]
+struct FallbackPick {
+    covering: Vec<(usize, Arc<str>)>,
+    has_glyph: bool,
+}
+
+/// A [`FallbackPick`] is the answer for this list, request style and character.
+#[cfg(windows)]
+#[derive(PartialEq, Eq, Hash)]
+struct FallbackPickKey {
+    list: crate::text::directwrite_catalog::FallbackListKey,
+    style: FaceStyle,
+    ch: char,
+}
+
+/// Most picks kept before the memo starts over; a character needs one entry per request style.
+#[cfg(windows)]
+const MAX_FALLBACK_PICKS: usize = 1 << 16;
+
+/// The part of the Windows fallback lookup that depends on the font database's own state, kept
+/// so a string measured or drawn again does not search the registry again (Qt keeps its
+/// `fallbacksCache` the same way and drops it when a font is added).
+///
+/// A pick depends on the faces `load_font_styled` returns, which change when a font or search
+/// path is added to the database; every such change (and a change of the default hint style or
+/// device pixel ratio) bumps [`font_generation`], and the memo is emptied the next time it is
+/// used under another generation. The DirectWrite catalog the lists and `covers` come from is
+/// built once per process from the system collection, as Qt builds its database, so a font
+/// installed in the operating system while the process runs is not seen by either.
+#[cfg(windows)]
+#[derive(Default)]
+struct FallbackMemo {
+    /// The [`font_generation`] the entries below belong to.
+    generation: u64,
+    /// [`FallbackContext`] per family string and style hint of a request.
+    contexts: HashMap<String, Vec<(StyleHint, FallbackContext)>>,
+    picks: HashMap<FallbackPickKey, Arc<FallbackPick>>,
+}
+
+#[cfg(windows)]
+impl FallbackMemo {
+    /// Drops every entry made under another generation than `generation`.
+    fn for_generation(&mut self, generation: u64) {
+        if self.generation != generation {
+            self.contexts.clear();
+            self.picks.clear();
+            self.generation = generation;
+        }
+    }
+
+    fn insert_pick(&mut self, key: FallbackPickKey, pick: Arc<FallbackPick>) {
+        if self.picks.len() >= MAX_FALLBACK_PICKS {
+            self.picks.clear();
+        }
+        self.picks.insert(key, pick);
+    }
+
+    /// The context of `font`'s request: the family it names decides the symbol flag if the
+    /// catalog knows it, else the family of its style hint does; a fixed-pitch family turns
+    /// `AnyStyle` into `TypeWriter`.
+    fn context(
+        &mut self,
+        catalog: &crate::text::directwrite_catalog::Catalog,
+        font: &Font,
+    ) -> FallbackContext {
+        if let Some(&(_, context)) = self
+            .contexts
+            .get(font.family.as_str())
+            .and_then(|entries| entries.iter().find(|(hint, _)| *hint == font.style_hint))
+        {
+            return context;
+        }
+        let primary_name = if catalog.family_traits(&font.family).is_some() {
+            font.family.clone()
+        } else {
+            family_for_style_hint(font.style_hint).to_string()
+        };
+        let (fixed_pitch, systems) = catalog.family_traits(&primary_name).unwrap_or((false, 0));
+        let context = FallbackContext {
+            hint: if font.style_hint == StyleHint::AnyStyle && fixed_pitch {
+                StyleHint::TypeWriter
+            } else {
+                font.style_hint
+            },
+            symbol_family: crate::text::directwrite_catalog::supports_symbol(systems),
+        };
+        self.contexts
+            .entry(font.family.clone())
+            .or_default()
+            .push((font.style_hint, context));
+        context
+    }
 }
 
 impl Default for FontDatabase {
@@ -2193,5 +2363,170 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Han, a geometric shape, an emoji, Thai and Hebrew after Latin text: characters Segoe UI
+    /// lacks, in several scripts.
+    #[cfg(windows)]
+    const FALLBACK_TEXT: &str = "5 \u{5c0f}\u{6642} \u{25a5} \u{1F600} \u{e01} \u{5d0}";
+
+    /// The engines a request resolved to (the address of each face) and the fallback chain of
+    /// each script they carry.
+    #[cfg(windows)]
+    fn fallback_signature(engines: &[FontEngine]) -> (Vec<usize>, Vec<(&'static str, Vec<usize>)>) {
+        let faces = engines
+            .iter()
+            .map(|e| Arc::as_ptr(&e.face).cast::<()>() as usize)
+            .collect();
+        let mut chains: Vec<_> = engines[0]
+            .script_chains()
+            .expect("a request with fallbacks carries chains")
+            .iter()
+            .map(|(key, chain)| (*key, chain.clone()))
+            .collect();
+        chains.sort();
+        (faces, chains)
+    }
+
+    /// A memo entry no request makes (U+10FFFF is a noncharacter).
+    #[cfg(windows)]
+    fn sentinel_pick() -> (FallbackPickKey, Arc<FallbackPick>) {
+        let key = FallbackPickKey {
+            list: fallback_list_key(
+                StyleHint::AnyStyle,
+                false,
+                false,
+                "Zyyy",
+                unicode_script::Script::Common,
+            ),
+            style: FaceStyle::regular(),
+            ch: '\u{10ffff}',
+        };
+        let pick = Arc::new(FallbackPick {
+            covering: Vec::new(),
+            has_glyph: false,
+        });
+        (key, pick)
+    }
+
+    /// A string resolved again gets the same engines and chains from the remembered picks as the
+    /// first time, when every pick was searched for.
+    #[cfg(windows)]
+    #[test]
+    fn remembered_fallback_picks_give_the_engines_of_the_first_lookup() {
+        let mut db = FontDatabase::new();
+        let font = Font::new("Segoe UI", 12.0);
+        let cold = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
+        assert!(!cold.1.is_empty(), "the text needs fallback families");
+        assert!(!db.fallback_memo.picks.is_empty());
+        // Another test adding a font empties the memo; try again then.
+        let remembered = (0..100).any(|_| {
+            db.resolve_font_engines_for_text(&font, FALLBACK_TEXT);
+            let generation = font_generation();
+            db.fallback_memo.for_generation(generation);
+            let (key, pick) = sentinel_pick();
+            db.fallback_memo.insert_pick(key, pick);
+            let warm = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
+            assert_eq!(warm, cold);
+            let (key, _) = sentinel_pick();
+            font_generation() == generation && db.fallback_memo.picks.contains_key(&key)
+        });
+        assert!(remembered, "a second lookup must keep the remembered picks");
+    }
+
+    /// Adding a font to the database drops what was remembered, and the lookup after it gives what a
+    /// database that had the font from the start gives.
+    #[cfg(windows)]
+    #[test]
+    fn adding_a_font_drops_the_remembered_fallback_picks() {
+        let Some(bytes) = any_font_bytes() else {
+            return;
+        };
+        let mut db = FontDatabase::new();
+        let font = Font::new("Segoe UI", 12.0);
+        let before = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
+        let (key, pick) = sentinel_pick();
+        db.fallback_memo.insert_pick(key, pick);
+        db.add_font_from_memory(
+            "FerrokitCacheProbe",
+            SharedFontData::from_vec(bytes.clone()),
+        )
+        .expect("the font parses");
+        let (key, _) = sentinel_pick();
+        assert!(
+            db.fallback_memo.picks.contains_key(&key),
+            "the memo is emptied when it is used, not when the font is added"
+        );
+        let after = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
+        assert!(
+            !db.fallback_memo.picks.contains_key(&key),
+            "a font added since the picks were made must drop them"
+        );
+
+        let mut fresh = FontDatabase::new();
+        fresh
+            .add_font_from_memory("FerrokitCacheProbe", SharedFontData::from_vec(bytes))
+            .expect("the font parses");
+        let expected =
+            fallback_signature(&fresh.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
+        assert_eq!(after.1, expected.1);
+        assert_eq!(after.0.len(), expected.0.len());
+        // An application font under a new name is no fallback family: nothing changes.
+        assert_eq!(after.1, before.1);
+    }
+
+    /// A fallback list is the same object on every request and is what building it afresh gives.
+    #[cfg(windows)]
+    #[test]
+    fn fallback_lists_are_remembered_and_equal_a_fresh_build() {
+        let Some(catalog) = crate::text::directwrite_catalog::catalog() else {
+            return;
+        };
+        for (hint, italic, symbol, script) in [
+            (
+                StyleHint::AnyStyle,
+                false,
+                false,
+                unicode_script::Script::Han,
+            ),
+            (
+                StyleHint::Helvetica,
+                true,
+                false,
+                unicode_script::Script::Hangul,
+            ),
+            (
+                StyleHint::TypeWriter,
+                false,
+                true,
+                unicode_script::Script::Thai,
+            ),
+            (
+                StyleHint::AnyStyle,
+                false,
+                false,
+                unicode_script::Script::Common,
+            ),
+        ] {
+            let key = fallback_list_key(hint, italic, symbol, "Zyyy", script);
+            let first = windows_fallback_families(catalog, key);
+            let again = windows_fallback_families(catalog, key);
+            assert!(Arc::ptr_eq(&first, &again), "{key:?}");
+            assert_eq!(
+                &*first,
+                compute_windows_fallback_families(catalog, key).as_slice(),
+                "{key:?}"
+            );
+        }
+        let emoji = fallback_list_key(
+            StyleHint::AnyStyle,
+            false,
+            false,
+            "Emoji",
+            unicode_script::Script::Common,
+        );
+        let list = windows_fallback_families(catalog, emoji);
+        assert_eq!(list.first().map(String::as_str), Some("Segoe UI Emoji"));
+        assert_eq!(&*list, compute_windows_fallback_families(catalog, emoji));
     }
 }

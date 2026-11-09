@@ -27,10 +27,7 @@ impl GraphicsState<'_> {
         // that vector instead of becoming 1.0.
         // FreeType uses function pointers to select between various "modes"
         // but we use the CoordAxis type instead.
-        let (px, py) = (
-            i64::from(self.proj_vector.x),
-            i64::from(self.proj_vector.y),
-        );
+        let (px, py) = (i64::from(self.proj_vector.x), i64::from(self.proj_vector.y));
         let (fx, fy) = (
             i64::from(self.freedom_vector.x),
             i64::from(self.freedom_vector.y),
