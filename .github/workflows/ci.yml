@@ -35,6 +35,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Line tables only: panic and failure backtraces keep file:line, the debug info that only a
+      # debugger reads is not built. Measured faster to build on Windows and Ubuntu; on macOS the
+      # same setting built slower, so macOS keeps the default.
+      - name: Build with line tables only
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_TEST_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+
       - name: Rust version
         run: rustc -V && cargo -V
 
@@ -100,6 +110,13 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+
+      # See the Workspace Test job: same setting, same reason.
+      - name: Build with line tables only
+        shell: bash
+        run: |
+          echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_TEST_DEBUG=line-tables-only" >> "$GITHUB_ENV"
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
