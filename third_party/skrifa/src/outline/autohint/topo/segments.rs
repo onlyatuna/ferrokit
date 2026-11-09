@@ -362,8 +362,7 @@ fn build_segments(outline: &mut Outline, axis: &mut Axis) -> bool {
                 let ignored = point.flags.has_marker(PointMarker::IGNORE);
                 if ignored || point.out_dir != segment_dir || point_ix == last_ix {
                     prev_segment_ix.take_if(|idx| {
-                        ignored
-                            || axis.segments[segment_ix].first_ix != axis.segments[*idx].last_ix
+                        ignored || axis.segments[segment_ix].first_ix != axis.segments[*idx].last_ix
                     });
                     if let Some(prev_segment_ix) = prev_segment_ix {
                         // The points are the same, so merge the segments

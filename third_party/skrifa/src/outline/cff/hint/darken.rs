@@ -97,7 +97,11 @@ impl Darkening {
     /// whole pixel size `ppem` (`FT_Size_Metrics::y_ppem`) whose Private
     /// DICT has the integers `std_vw` (`StdVW`) and `std_hw` (`StdHW`).
     pub fn new(units_per_em: i32, ppem: i32, std_vw: i32, std_hw: i32) -> Self {
-        let units_per_em = if units_per_em == 0 { 1000 } else { units_per_em };
+        let units_per_em = if units_per_em == 0 {
+            1000
+        } else {
+            units_per_em
+        };
         // use minimum ppem of 4
         let ppem = int_to_fixed(ppem).max(int_to_fixed(4));
         let em_ratio = int_to_fixed(1000) / units_per_em;
@@ -344,9 +348,7 @@ impl GlyphPath {
             dy = dy.wrapping_neg();
         }
         // add momentum for this path element
-        self.momentum = self
-            .momentum
-            .wrapping_add(winding_momentum(x1, y1, x2, y2));
+        self.momentum = self.momentum.wrapping_add(winding_momentum(x1, y1, x2, y2));
         let xo = self.x_offset;
         let yo = self.y_offset;
         let twice = |v: i32| v.wrapping_mul(2);
@@ -594,7 +596,8 @@ impl GlyphPath {
         if self.current_cs == [x, y] && !new_hint_map {
             return false;
         }
-        let [x_offset, y_offset] = self.compute_offset(self.current_cs[0], self.current_cs[1], x, y);
+        let [x_offset, y_offset] =
+            self.compute_offset(self.current_cs[0], self.current_cs[1], x, y);
         // construct offset points
         let mut p0 = [
             self.current_cs[0].wrapping_add(x_offset),
@@ -637,9 +640,7 @@ impl GlyphPath {
             self.compute_offset(self.current_cs[0], self.current_cs[1], x1, y1);
         let [x_offset3, y_offset3] = self.compute_offset(x2, y2, x3, y3);
         // add momentum from the middle segment
-        self.momentum = self
-            .momentum
-            .wrapping_add(winding_momentum(x1, y1, x2, y2));
+        self.momentum = self.momentum.wrapping_add(winding_momentum(x1, y1, x2, y2));
         // construct offset points
         let mut p0 = [
             self.current_cs[0].wrapping_add(x_offset1),

@@ -13,7 +13,7 @@ tiny-skia = "0.11"
 png = "0.17"
 ab_glyph_rasterizer = "0.1"
 rustybuzz = "0.20.1"
-skrifa = "=0.49.0"
+skrifa = { path = "../../third_party/skrifa" }
 unicode-segmentation = "1.12"
 unicode-script = "0.5.8"
 serde = { version = "1.0", features = ["derive"], optional = true }

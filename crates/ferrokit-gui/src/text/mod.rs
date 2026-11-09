@@ -2,6 +2,8 @@
 mod bidi;
 pub mod block;
 pub mod block_data;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) mod box_face;
 pub mod color_glyph;
 #[cfg(target_os = "macos")]
 pub mod core_text_face;
@@ -15,6 +17,10 @@ pub mod document_fragment;
 pub mod font;
 pub mod font_database;
 pub mod font_metrics;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) mod fontconfig_catalog;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) mod fontconfig_ffi;
 pub mod format;
 pub mod fragment;
 pub mod ftgrays;

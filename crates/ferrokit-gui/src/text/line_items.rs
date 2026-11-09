@@ -83,9 +83,12 @@ impl LineItems {
             LayoutDirection::RightToLeft => true,
             LayoutDirection::LayoutDirectionAuto => bidi::is_rtl(text),
         };
+        // The fonts of the whole paragraph: Qt itemizes it once, so each item is shaped with the
+        // script items (and their fonts) of the paragraph, not of its own text.
+        let engines = resolve_font_engines_for_text_global(font, text);
         // Printable ASCII has no bidi and no tab: one item, which is most of what is drawn.
         if !base_rtl && text.bytes().all(|b| (0x20..0x7f).contains(&b)) {
-            items.push(Self::shaped_item(text, font, 0));
+            items.push(Self::shaped_item(text, 0..text.len(), font, 0, &engines));
             return Self { items };
         }
 
@@ -104,9 +107,11 @@ impl LineItems {
                 && (own_item || level != run_level)
             {
                 items.push(Self::shaped_item(
-                    &text[from..starts[grapheme]],
+                    text,
+                    from..starts[grapheme],
                     font,
                     run_level,
+                    &engines,
                 ));
                 run = None;
             }
@@ -130,14 +135,27 @@ impl LineItems {
             }
         }
         if let Some((from, run_level)) = run {
-            items.push(Self::shaped_item(&text[from..], font, run_level));
+            items.push(Self::shaped_item(
+                text,
+                from..text.len(),
+                font,
+                run_level,
+                &engines,
+            ));
         }
         Self { items }
     }
 
-    /// The item of `run_text`, shaped in the direction of `level`.
-    fn shaped_item(run_text: &str, font: &Font, level: u8) -> Item {
-        let engines = resolve_font_engines_for_text_global(font, run_text);
+    /// The item `&text[range]` of the paragraph `text`, shaped with the paragraph's `engines` in the
+    /// direction of `level`.
+    fn shaped_item(
+        text: &str,
+        range: std::ops::Range<usize>,
+        font: &Font,
+        level: u8,
+        engines: &[FontEngine],
+    ) -> Item {
+        let run_text = &text[range.clone()];
         if engines.is_empty() {
             // No font at all: the width Qt would not have, from the character classes.
             let width = FontMetrics::from_font(font).horizontal_advance(run_text, font);
@@ -147,12 +165,7 @@ impl LineItems {
                 content: ItemContent::Blank,
             };
         }
-        let layout = GlyphLayout::shape_with_engines_directed(
-            run_text,
-            font,
-            &engines,
-            Some(level % 2 == 1),
-        );
+        let layout = GlyphLayout::shape_piece(text, range, font, engines, Some(level % 2 == 1));
         // The soft hyphen and the form feed are shaped but not drawn: Qt gives their glyph
         // `dontPrint` (`applyVisibilityRules`, qtextengine.cpp:1329-1356), and
         // `QFontEngine::getGlyphPositions` leaves such glyphs out.
@@ -168,7 +181,10 @@ impl LineItems {
         Item {
             level,
             width: layout.width,
-            content: ItemContent::Glyphs { engines, glyphs },
+            content: ItemContent::Glyphs {
+                engines: engines.to_vec(),
+                glyphs,
+            },
         }
     }
 

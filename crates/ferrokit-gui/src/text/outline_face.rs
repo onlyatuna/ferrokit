@@ -20,12 +20,63 @@ use rustybuzz::ttf_parser::{Face, GlyphId, OutlineBuilder, Tag};
 pub struct OutlineFace {
     // Field order matters: `face` borrows from `_data` and must be dropped first.
     face: Face<'static>,
+    /// The index of the face within the font file (a collection holds several).
+    face_index: u32,
     units_per_em: f32,
     /// Design right side bearing, in font units, of every glyph asked for so far (see
     /// [`GlyphFace::right_side_bearing`]): reading it takes the glyph header, and a text asks for
     /// the same few glyphs again for every layout. At most one entry per glyph of the font.
     bearings: std::sync::Mutex<std::collections::HashMap<u16, f64>>,
+    /// For a symbol font (one with a Microsoft symbol `cmap`, platform 3 encoding 0), the
+    /// subtables Qt's FreeType engine maps characters with (see [`Self::symbol_glyph_index`]).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    symbol_cmaps: Option<SymbolCmaps>,
     _data: SharedFontData,
+}
+
+/// `QFreetypeFace::unicode_map` and `symbol_map` (qfontengine_ft.cpp:401-420) of a symbol font,
+/// as indices of `cmap` subtables.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[derive(Clone, Copy)]
+struct SymbolCmaps {
+    /// The last Unicode subtable, else the last Apple Roman one (`FT_ENCODING_UNICODE`,
+    /// `FT_ENCODING_APPLE_ROMAN` as `sfnt_find_encoding` assigns them); FreeType's current
+    /// charmap whenever Qt has looked a character up.
+    unicode: Option<u16>,
+    /// The first Microsoft symbol subtable (`FT_ENCODING_MS_SYMBOL`).
+    symbol: u16,
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+impl SymbolCmaps {
+    fn of(face: &Face<'_>) -> Option<Self> {
+        use rustybuzz::ttf_parser::PlatformId;
+        use rustybuzz::ttf_parser::cmap::Format;
+        let cmap = face.tables().cmap?;
+        let mut unicode: Option<(u16, bool)> = None;
+        let mut symbol = None;
+        for (i, subtable) in cmap.subtables.into_iter().enumerate() {
+            let i = i as u16;
+            // FreeType will not select a format 14 charmap (`FT_Set_Charmap`).
+            if matches!(subtable.format, Format::UnicodeVariationSequences(_)) {
+                continue;
+            }
+            match (subtable.platform_id, subtable.encoding_id) {
+                (PlatformId::Unicode | PlatformId::Iso, _) | (PlatformId::Windows, 1 | 10) => {
+                    unicode = Some((i, true));
+                }
+                (PlatformId::Macintosh, 0) if !unicode.is_some_and(|(_, u)| u) => {
+                    unicode = Some((i, false));
+                }
+                (PlatformId::Windows, 0) if symbol.is_none() => symbol = Some(i),
+                _ => {}
+            }
+        }
+        Some(Self {
+            unicode: unicode.map(|(i, _)| i),
+            symbol: symbol?,
+        })
+    }
 }
 
 impl OutlineFace {
@@ -44,11 +95,55 @@ impl OutlineFace {
             return Err("Font has no units-per-em".to_string());
         }
         Ok(Self {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            symbol_cmaps: SymbolCmaps::of(&face),
             face,
+            face_index,
             units_per_em,
             bearings: std::sync::Mutex::new(std::collections::HashMap::new()),
             _data: data,
         })
+    }
+
+    /// Whether face `index` of `data` is a symbol font to Qt's FreeType engine
+    /// (`QFontEngine::symbol`: it has a symbol charmap, qfontengine_ft.cpp:995). Such an engine
+    /// draws every script itself, with no fallback fonts (qfontdatabase.cpp:835, 2947-2953).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub(crate) fn is_symbol_font(data: &[u8], index: u32) -> bool {
+        Face::parse(data, index).is_ok_and(|face| SymbolCmaps::of(&face).is_some())
+    }
+
+    /// `QFontEngineFT::glyphIndex` (qfontengine_ft.cpp:2399-2429) for a symbol font, which is what
+    /// HarfBuzz is given in Qt: the character code through the current charmap (the Unicode or
+    /// Apple Roman one, the code taken as it is), the space for a no-break space or tab, else
+    /// through the symbol charmap, else, below U+0100, the code plus 0xF000 through the current
+    /// charmap again. Without a Unicode or Apple Roman charmap the current one is the symbol one
+    /// (Qt cannot select a missing charmap, so the symbol one it set stays).
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn symbol_glyph_index(&self, cmaps: SymbolCmaps, ch: char) -> u16 {
+        let Some(cmap) = self.face.tables().cmap else {
+            return 0;
+        };
+        let lookup = |index: u16, code: u32| {
+            cmap.subtables
+                .get(index)
+                .and_then(|subtable| subtable.glyph_index(code))
+                .map_or(0, |g| g.0)
+        };
+        let current = cmaps.unicode.unwrap_or(cmaps.symbol);
+        let code = ch as u32;
+        let glyph = lookup(current, code);
+        if glyph != 0 {
+            return glyph;
+        }
+        if code == 0xa0 || code == 0x9 {
+            return lookup(current, 0x20);
+        }
+        let glyph = lookup(cmaps.symbol, code);
+        if glyph != 0 || code >= 0x100 {
+            return glyph;
+        }
+        lookup(current, code + 0xf000)
     }
 
     /// The `hmtx` advance of `glyph_id` in font units.
@@ -263,7 +358,15 @@ fn be_u16(table: &[u8], offset: usize) -> u16 {
 
 impl GlyphFace for OutlineFace {
     fn glyph_index(&self, ch: char) -> u16 {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(cmaps) = self.symbol_cmaps {
+            return self.symbol_glyph_index(cmaps, ch);
+        }
         self.face.glyph_index(ch).map_or(0, |g| g.0)
+    }
+
+    fn face_index(&self) -> u32 {
+        self.face_index
     }
 
     /// FreeType's and CoreText's view: the font's own tables (see [`OutlineFace::line_metrics`]).

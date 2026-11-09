@@ -69,6 +69,26 @@ pub(crate) fn script_items(text: &str) -> Vec<(usize, Script)> {
     items
 }
 
+/// The script items of `&paragraph[range]` as items of the whole paragraph (offsets from
+/// `range.start`): Qt itemizes the paragraph once (`QTextEngine::itemize`), so characters of no
+/// script at the start of a bidi run keep the script of the text before them.
+pub(crate) fn script_items_in(
+    paragraph: &str,
+    range: std::ops::Range<usize>,
+) -> Vec<(usize, Script)> {
+    let items = script_items(paragraph);
+    // The item the piece starts in (there is always one at offset 0), then those starting in it.
+    let first = items.partition_point(|&(start, _)| start <= range.start) - 1;
+    let mut pieces = vec![(0, items[first].1)];
+    pieces.extend(
+        items[first + 1..]
+            .iter()
+            .take_while(|&&(start, _)| start < range.end)
+            .map(|&(start, script)| (start - range.start, script)),
+    );
+    pieces
+}
+
 fn is_combining_mark(ch: char) -> bool {
     unicode_linebreak::break_property(ch as u32) == unicode_linebreak::BreakClass::CombiningMark
         || unicode_bidi::bidi_class(ch) == unicode_bidi::BidiClass::NSM
@@ -128,6 +148,31 @@ fn select_script(table: Option<&LayoutTable>, tags: &[Tag]) -> Option<(u16, Tag)
     tags.iter()
         .chain(fallbacks.iter())
         .find_map(|&tag| table.scripts.index(tag).map(|index| (index, tag)))
+}
+
+/// `QFontEngine::supportsScript` for the scripts that need OpenType layout (`scriptRequiresOpenType`:
+/// Syriac to Sinhala, Khmer and N'Ko): whether the font's GSUB table has the script under one of
+/// the tags HarfBuzz would shape it with (`hb_ot_layout_table_select_script` returning true, so
+/// not through `DFLT`, `dflt` or `latn`). A font with an AAT `mort` or `morx` table supports every
+/// script.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn font_supports_open_type_script(data: &[u8], face_index: u32, script: Script) -> bool {
+    let Ok(face) = rustybuzz::ttf_parser::Face::parse(data, face_index) else {
+        return false;
+    };
+    let raw = face.raw_face();
+    if raw.table(Tag::from_bytes(b"mort")).is_some()
+        || raw.table(Tag::from_bytes(b"morx")).is_some()
+    {
+        return true;
+    }
+    let Some(gsub) = face.tables().gsub else {
+        return false;
+    };
+    let (tags, count) = script_tags(script);
+    tags[..count]
+        .iter()
+        .any(|&tag| gsub.scripts.index(tag).is_some())
 }
 
 /// Whether the GPOS table has a `kern` feature under the script HarfBuzz picks for `tags`, in the
