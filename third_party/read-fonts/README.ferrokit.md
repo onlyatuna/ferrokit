@@ -12,11 +12,15 @@
 Upstream is `MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`, kept unchanged; the upstream files have no
 per-file headers). Compared with the unmodified crates.io 0.46.0 package: `src/model/glyph/outline/path.rs`
 and `src/tables/glyf/outline/path.rs` carry ferrokit's `implied_point` hook (original work; FreeType's
-`FT_Outline_Decompose` has no such hook and none of its code is used), `Cargo.toml` has its bench targets and
-dev-dependencies removed, and every other file is unchanged (`src/tables/name/language.rs` differs from the
-package only in its line endings, which the repository's `.gitattributes` normalises). The whole crate is
-therefore `MIT OR Apache-2.0`, ferrokit's changes under the same terms; no file contains FreeType-derived
-code.
+`FT_Outline_Decompose` has no such hook and none of its code is used), `src/tables/glyf.rs` has the new
+`PointMarker::IGNORE` constant (`0x40`, the point flag the vertical separation adjustment of the vendored
+skrifa auto-hinter needs; original work), `Cargo.toml` has its bench targets and dev-dependencies removed,
+and every other file is unchanged (`src/tables/name/language.rs` differs from the package only in its line
+endings, which the repository's `.gitattributes` normalises). The whole crate is therefore
+`MIT OR Apache-2.0`, ferrokit's changes under the same terms; no file contains FreeType-derived code.
+`data/glyphlist.txt` and `data/zapfdingbats.txt` (Adobe Glyph List and ZapfDingbats list, used by the `agl`
+feature, which ferrokit does not enable) are Adobe's and carry their own BSD-3-Clause style notice in
+their first lines, unchanged from upstream.
 
 ## Changes against upstream
 

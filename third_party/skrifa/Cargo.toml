@@ -28,8 +28,9 @@ categories = [
     "parsing",
     "graphics",
 ]
-# Upstream says `MIT OR Apache-2.0`. Ferrokit's copy has eight files that are also derived from FreeType
-# 2.14.2 and carry `(MIT OR Apache-2.0) AND FTL` in their own SPDX line; every other file is still
+# Upstream says `MIT OR Apache-2.0`. Ferrokit's copy has 17 files that are also derived from FreeType
+# 2.14.2 and carry `(MIT OR Apache-2.0) AND FTL` in their own SPDX line (`src/outline/autohint/adjust/gsub.rs`
+# also reproduces the permission notice of FreeType's fthash.c); every other file is still
 # `MIT OR Apache-2.0`. A Cargo manifest has one expression per package, so it lists the licences of all
 # files and the table below gives the scope (README.ferrokit.md has the same table).
 license = "(MIT OR Apache-2.0) AND FTL"
