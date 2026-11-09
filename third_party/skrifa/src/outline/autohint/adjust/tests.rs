@@ -2,6 +2,11 @@
 //
 // Tests of the vertical separation adjustment. The expected values were worked out by hand
 // from the C code of FreeType 2.14.2 (the file and line of each function are in `mod.rs`).
+//
+// Portions of this software are copyright (C) 1996-2025 The FreeType Project
+// (www.freetype.org). All rights reserved. The FreeType-derived part (the
+// expected values) is used under the FreeType License (FTL, LICENSES/FTL.txt and
+// NOTICE of the ferrokit repository).
 
 use super::super::{metrics::ScaledWidth, QuirksMode};
 use super::*;

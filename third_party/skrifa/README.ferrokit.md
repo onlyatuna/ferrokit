@@ -23,14 +23,17 @@ FreeType 2.14.2 sources:
 
 | Files | Content | Licence |
 |---|---|---|
-| everything not listed below (`src/**`, `generated/`, `README.md`) | upstream, unchanged | `MIT OR Apache-2.0` |
+| everything not listed below (`src/**`, `generated/`, `README.md`, `LICENSE-*`) | upstream, byte for byte (compared with the crates.io 0.49.0 package) | `MIT OR Apache-2.0` |
 | `src/outline/hint.rs`, `src/outline/mod.rs`, `src/scaler/tests.rs` | upstream with ferrokit's plumbing: the `cff_stem_darkening` option, `DrawSettings::with_cff_stem_darkening`, `ErasedPen::implied_point`, option literals in tests. Original work, not copied from FreeType | `MIT OR Apache-2.0` (ferrokit's changes under the same terms) |
+| `src/outline/autohint/mod.rs`, `instance.rs`, `hint/outline.rs`, `topo/mod.rs`, `metrics/mod.rs`, `shape.rs`, `generated/generated_autohint_styles.rs` | upstream with ferrokit's plumbing for the vertical separation adjustment (the `adjust_flags` argument of `hint_outline`, the per-style `ReverseCharMap`, `TopoFlags::NO_BLUE`, `pub(crate)` on `metrics::blues`, `Shaper::gsub`, the dotted circle and default-ignorable handling of the blue string shaper, the 23 bottom blue zone properties). Original work: the behaviour of HarfBuzz and FreeType is reproduced, no source code of either is copied | `MIT OR Apache-2.0` (ferrokit's changes under the same terms) |
 | `Cargo.toml` | upstream with the test targets and dev-dependencies removed, the licence expression below and the table in `[package.metadata.ferrokit-licenses]` | n/a |
 | `src/outline/glyf/hint/graphics.rs`, `projection.rs`, `zone.rs` | upstream with the FreeType 2.14.2 arithmetic of `Compute_Funcs`, `Direct_Move`, `Direct_Move_Orig`, `Compute_Point_Displacement` (src/truetype/ttinterp.c) and `FT_MulFix` (src/base/ftcalc.c) | `(MIT OR Apache-2.0) AND FTL` |
 | `src/outline/glyf/mod.rs`, `src/scaler/truetype.rs` | upstream with the test of `FT_Load_Glyph` (src/base/ftobjs.c) for the auto-hinter | `(MIT OR Apache-2.0) AND FTL` |
 | `src/outline/cff/hint/darken.rs` (new), `src/outline/cff/hint.rs`, `src/outline/cff/mod.rs` | upstream with the CFF stem darkening of src/psaux/psfont.c, pshints.c, psblues.c (Adobe) and `cff_slot_load` (src/cff/cffgload.c) | `(MIT OR Apache-2.0) AND FTL` |
+| `src/outline/autohint/adjust/mod.rs`, `database.rs`, `tests.rs` (new), `src/outline/autohint/hint/edges.rs`, `hint/mod.rs`, `metrics/blues.rs`, `topo/edges.rs`, `topo/segments.rs` | the vertical separation adjustment of src/autofit/afadjust.c and the matching parts of aflatin.c, the `adjustment_database` table, the `NO_BLUE` / `IGNORE` handling in the edge and segment code, the real-serif check and the bottom blue zone properties of afblue.dat | `(MIT OR Apache-2.0) AND FTL` |
+| `src/outline/autohint/adjust/gsub.rs` (new) | the GSUB reverse-map extension of afadjust.c and src/autofit/afgsub.c (FTL), and `FtHash`, a port of the hash table of src/base/fthash.c (Mark Leisher's xmbdfed code: Copyright 2000 Computing Research Labs, New Mexico State University, 2001-2015 Francesco Zappa Nardelli, under an MIT-style permission notice that is **not** the FTL) | `(MIT OR Apache-2.0) AND FTL`, plus the fthash.c permission notice, which the first lines of the file reproduce in full |
 
-The `AND` in the last three rows is per file: the file combines upstream code (MIT OR Apache-2.0) with
+The `AND` in the last four rows is per file: the file combines upstream code (MIT OR Apache-2.0) with
 FreeType-derived code (FTL, which asks for credit and for no use of the FreeType Project's name for
 endorsement; the credit and the Adobe notice with its patent licence are in each file's first lines and
 in the `NOTICE` file of the repository, the FTL text in `LICENSES/FTL.txt`). The Adobe files of psaux

@@ -65,19 +65,46 @@ Where it is, file by file (every one of them says so in its first lines, with th
       `FT_MulFix` of src/base/ftcalc.c.
   third_party/skrifa/src/outline/glyf/mod.rs, third_party/skrifa/src/scaler/truetype.rs: the test of
       `FT_Load_Glyph` (src/base/ftobjs.c) that sends a TrueType font to the auto-hinter.
-  third_party/skrifa/src/outline/autohint/adjust/ (mod.rs, database.rs), autohint/hint/edges.rs
-      (the real-serif check) and autohint/metrics/blues.rs: the auto-hinter's vertical separation
+  third_party/skrifa/src/outline/autohint/adjust/ (mod.rs, database.rs, gsub.rs, tests.rs),
+      autohint/hint/edges.rs (the real-serif check), autohint/hint/mod.rs, autohint/topo/edges.rs,
+      autohint/topo/segments.rs and autohint/metrics/blues.rs: the auto-hinter's vertical separation
       adjustment of src/autofit/afadjust.c (`adjustment_database`, `af_adjustment_database_lookup`,
-      `af_reverse_character_map_new`) and src/autofit/aflatin.c (`af_glyph_hints_apply_vertical_
+      `af_reverse_character_map_new`), src/autofit/afgsub.c (`af_parse_gsub`, `af_map_lookup`,
+      `af_hash_insert`) and src/autofit/aflatin.c (`af_glyph_hints_apply_vertical_
       separation_adjustments`, the tilde stretch and alignment, `af_latin_ignore_top/bottom`,
-      `af_latin_get_base_glyph_blues`, the real-serif test of `af_latin_hint_edges`). Each of those
-      files is `(MIT OR Apache-2.0) AND FTL`.
+      `af_latin_get_base_glyph_blues`, the real-serif test of `af_latin_hint_edges`, the `NO_BLUE`
+      and `IGNORE` handling), and the bottom blue zone properties of src/autofit/afblue.dat. Each of
+      those files is `(MIT OR Apache-2.0) AND FTL`.
   third_party/skrifa/src/outline/cff/hint/darken.rs, cff/hint.rs, cff/mod.rs: CFF stem darkening,
       `cf2_computeDarkening`, `cf2_font_setup`, `cf2_getGlyphOutline`, `cf2_glyphpath_*`,
       `cf2_hintmap_*` and `cf2_blues_init` of src/psaux/psfont.c, pshints.c and psblues.c,
       `cff_slot_load` of src/cff/cffgload.c, and `FT_MulFix`, `FT_DivFix`, `FT_MulDiv`, `FT_MSB` of
       src/base/ftcalc.c. Each of those files is `(MIT OR Apache-2.0) AND FTL`: its upstream part is
       MIT OR Apache-2.0 and the FreeType-derived part is under the FTL.
+
+  third_party/skrifa/src/outline/autohint/adjust/gsub.rs (`FtHash`): the hash table of
+      src/base/fthash.c, which is not FreeType's own code and is not under the FTL: it comes from
+      Mark Leisher's xmbdfed package and carries this permission notice (MIT style), reproduced in
+      full in the first lines of gsub.rs:
+
+        Copyright 2000 Computing Research Labs, New Mexico State University
+        Copyright 2001-2015 Francesco Zappa Nardelli
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this
+        software and associated documentation files (the "Software"), to deal in the Software
+        without restriction, including without limitation the rights to use, copy, modify, merge,
+        publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+        to whom the Software is furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all copies or
+        substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+        INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+        PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COMPUTING RESEARCH LAB OR NEW MEXICO
+        STATE UNIVERSITY BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+        OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+        THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 FreeType is offered under two mutually exclusive licences, of which one must be chosen (its
 LICENSE.TXT): the FreeType License (FTL) or the GNU GPL version 2 or later. ferrokit takes the FTL
@@ -119,14 +146,21 @@ third_party/skrifa (skrifa 0.49.0) and third_party/read-fonts (read-fonts 0.46.0
 the crates.io releases of the fontations project (https://github.com/googlefonts/fontations,
 commit 47a301615fd95acf0da9fb7dbcd0ea7c7df36943), Copyright (c) 2019 Fontations Developers,
 licensed under MIT OR Apache-2.0; their LICENSE-MIT and LICENSE-APACHE are in each directory.
-ferrokit uses them under the MIT license, except for the eight files listed above, which are
-`(MIT OR Apache-2.0) AND FTL` (the upstream part under the MIT license, the FreeType-derived part
-under the FTL). Every other file of skrifa, and all of read-fonts, whose only change is the
-`implied_point` hook of the pen interface (original work, not derived from FreeType code), is
-under the upstream terms, MIT OR Apache-2.0, and so are ferrokit's changes to them. The
-Cargo.toml of skrifa says `(MIT OR Apache-2.0) AND FTL` because a package has one expression, and
-lists the files for each; that of read-fonts says `MIT OR Apache-2.0`. Each directory's
-README.ferrokit.md has the table of changes and of licences.
+ferrokit uses them under the MIT license, except for the 17 skrifa files listed above (the ttinterp,
+ftobjs, psaux/cff and autofit ports), which are `(MIT OR Apache-2.0) AND FTL` (the upstream part under
+the MIT license, the FreeType-derived part under the FTL). Every other file of skrifa and read-fonts
+is upstream or upstream plus ferrokit's own plumbing (the `implied_point` hook of the pen interface,
+the CFF stem darkening switch, the vertical adjustment flags and shaper changes, the `IGNORE` point
+marker of read-fonts); that is original work, not derived from FreeType code, and is under the
+upstream terms, MIT OR Apache-2.0, as are ferrokit's changes to it. The Cargo.toml of skrifa says
+`(MIT OR Apache-2.0) AND FTL` because a package has one expression, and lists the files for each;
+that of read-fonts says `MIT OR Apache-2.0`. Each directory's README.ferrokit.md has the table of
+changes and of licences, and third_party/README.md lists the vendored crates.
+
+read-fonts also ships Adobe's Adobe Glyph List and ZapfDingbats list (data/glyphlist.txt and
+data/zapfdingbats.txt, "Copyright 2002-2019 Adobe", BSD-3-Clause style terms stated in the first
+lines of each file, unchanged from upstream) for its `agl` feature, and the `generated_agl.rs`
+derived from them; ferrokit-gui does not enable that feature.
 
 Crates added to Cargo.lock with them (all from crates.io, unmodified): font-types (MIT OR
 Apache-2.0), once_cell (MIT OR Apache-2.0), stable_deref_trait (MIT OR Apache-2.0), foldhash
