@@ -110,7 +110,11 @@ jobs:
     # Check name: keep "Nightly Miri (SB & TB)" stable; it aggregates the shards above.
     name: Nightly Miri (SB & TB)
     needs: [miri-changes, miri-shard]
-    if: always() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name))
+    # `!cancelled()`, not `always()`: a run cancelled by the concurrency group above (opening a pull
+    # request with a Miri label fires `opened` and `labeled`; the later run cancels the earlier one)
+    # must not run this job, which would fail on the cancelled `miri-changes` result and report a
+    # red check for a run that was only superseded. A failed or skipped need still reaches the step.
+    if: ${{ !cancelled() && (github.event.action != 'labeled' || contains(fromJSON('["miri","miri-full"]'), github.event.label.name)) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
