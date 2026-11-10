@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostQuitMessage, PostThreadMessageW, WM_KEYDOWN,
+    GetCursor, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW,
+    PostQuitMessage, PostThreadMessageW, WM_KEYDOWN,
 };
 
 /// `PostThreadMessageW` needs the thread's message queue to exist; a peek creates it.
@@ -25,6 +26,7 @@ fn ensure_queue() {
 
 const VK_DOWN: usize = 0x28;
 const VK_RETURN: usize = 0x0D;
+const VK_ESCAPE: usize = 0x1B;
 
 fn post_key(vk: usize) {
     ensure_queue();
@@ -60,6 +62,24 @@ fn exec_popup_triggers_the_action_it_returns() {
         "action and menu `triggered` both fired"
     );
     assert!(action.borrow().is_checked(), "a checkable action toggled");
+}
+
+/// A thread that never set a cursor has the busy one as its default, and Windows sends no
+/// `WM_SETCURSOR` to the window that holds the capture, so the popup has to set the arrow itself
+/// (Qt applies the window's cursor, the arrow for a menu, when the pointer is over it).
+#[test]
+fn the_popup_shows_the_arrow_cursor() {
+    let menu = Menu::new_ref("m");
+    menu.borrow_mut().add_new_action("Go");
+    post_key(VK_ESCAPE);
+
+    let chosen = Menu::exec_popup(&menu, Point::new(50, 50));
+
+    assert!(chosen.is_none(), "Escape closes the menu");
+    // SAFETY: `LoadCursorW` with a null instance and `IDC_ARROW` returns the shared system arrow
+    // and `GetCursor` reads the calling thread's cursor; neither takes a pointer of ours.
+    let (arrow, current) = unsafe { (LoadCursorW(std::ptr::null_mut(), IDC_ARROW), GetCursor()) };
+    assert_eq!(current, arrow, "the thread's cursor is the arrow");
 }
 
 #[test]
