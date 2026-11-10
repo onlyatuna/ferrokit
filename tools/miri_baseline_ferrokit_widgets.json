@@ -363,6 +363,8 @@
     "test_enabled_change::the_focus_moves_on_before_the_widget_is_notified::TB": "pass",
     "test_enabled_change::the_focus_widget_loses_the_focus_in_its_place_in_the_order::SB": "pass",
     "test_enabled_change::the_focus_widget_loses_the_focus_in_its_place_in_the_order::TB": "pass",
+    "test_event_filter_input::a_buttonless_move_over_a_widget_without_tracking_still_reaches_the_application_filters::SB": "pass",
+    "test_event_filter_input::a_buttonless_move_over_a_widget_without_tracking_still_reaches_the_application_filters::TB": "pass",
     "test_event_filter_input::an_application_filter_that_consumes_enter_keeps_under_mouse_unset::SB": "pass",
     "test_event_filter_input::an_application_filter_that_consumes_enter_keeps_under_mouse_unset::TB": "pass",
     "test_event_filter_input::application_filters_run_before_object_filters_and_last_installed_object_filter_first::SB": "pass",

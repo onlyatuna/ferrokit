@@ -81,6 +81,15 @@ fn object_filters_consumed(receiver: ObjectId, event: &mut Event) -> bool {
     consumed_by_filter_chain(object_slot, receiver, event)
 }
 
+/// `QCoreApplicationPrivate::sendThroughApplicationEventFilters` alone (qcoreapplication.cpp:1237-1247):
+/// the application's event filters see `event` for `receiver`, in installation order, until one
+/// consumes it. No object filter and no `event()` follows. `QApplication::notify` uses it for a
+/// buttonless mouse move over a widget without mouse tracking, which it otherwise throws away
+/// (qapplication.cpp:2751-2756). Returns true if a filter consumed the event.
+pub fn send_through_application_event_filters(receiver: ObjectId, event: &mut Event) -> bool {
+    app_filters_consumed(receiver, event)
+}
+
 /// Filter-only delivery for a receiver the caller already holds (`&ObjectData`): application
 /// filters, then the receiver's object filters (`sendThroughApplicationEventFilters` and
 /// `sendThroughObjectEventFilters`, qcoreapplication.cpp:1237-1268). Works for objects that are
