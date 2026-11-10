@@ -855,15 +855,26 @@ fn deliver_with_propagation(path: &[HitStep], make_kind: impl Fn(Point) -> Event
 }
 
 /// The buttonless MouseMove walk of `QApplication::notify` (qapplication.cpp:2738-2766), innermost
-/// first. A widget without mouse tracking is filter-only and ends the walk: `res = true` with the
-/// still-accepted copy (2746-2758). A tracking widget that does not accept the move (the default
+/// first. A widget without mouse tracking throws the move away, but the application event filters
+/// still see it (`sendThroughApplicationEventFilters`, 2751-2756; the widget and its own filters
+/// do not), and the walk ends there: `res = true` with the still-accepted copy. A tracking widget
+/// that does not accept the move (the default
 /// `QWidget::mouseMoveEvent` ignores it, qwidget.cpp:9567-9570; widget.rs `EmptyWidget` returns false)
 /// passes it to its parent. The walk stops at the window root, which is `path[0]` (`isWindow`,
 /// 2759). `WA_NoMousePropagation` has no ferrokit equivalent. Disabled widgets are skipped after the
 /// tracking check, as in `deliver_with_propagation`.
 fn deliver_tracking_move(path: &[HitStep]) -> bool {
     for step in path.iter().rev() {
-        if !step.widget.borrow().widget_base().has_mouse_tracking() {
+        let (tracking, id) = {
+            let widget = step.widget.borrow();
+            (widget.widget_base().has_mouse_tracking(), widget.id())
+        };
+        if !tracking {
+            let mut ev = Event::new_spontaneous(EventKind::MouseMove {
+                x: step.pos.x,
+                y: step.pos.y,
+            });
+            ferrokit_core::event_loop::send_through_application_event_filters(id, &mut ev);
             return true;
         }
         if !step.enabled {

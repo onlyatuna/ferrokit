@@ -187,6 +187,35 @@ fn filters_see_context_menu_press_and_tracking_move() {
 }
 
 #[test]
+fn a_buttonless_move_over_a_widget_without_tracking_still_reaches_the_application_filters() {
+    // `QApplication::notify` throws such a move away but sends it through the application event
+    // filters first (qapplication.cpp:2751-2756); the widget and its own filters never see it.
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let log: Log = Arc::default();
+    let (root, child) = tree();
+    child.borrow().widget_base().set_mouse_tracking(false);
+    let (app_id, _a) = spy("app", &log, &[]);
+    let (own_id, _o) = spy("own", &log, &[]);
+    CoreApplication::install_event_filter(app_id);
+    install(&child, own_id);
+
+    let mut d = EventTreeDispatcher::new();
+    d.dispatch_mouse_move(
+        &root,
+        Point::new(30, 30),
+        Point::new(30, 30),
+        MouseButtons(0),
+    );
+    CoreApplication::remove_event_filter(app_id);
+
+    let moves: Vec<String> = take(&log)
+        .into_iter()
+        .filter(|entry| entry.ends_with(":MouseMove"))
+        .collect();
+    assert_eq!(moves, ["app:MouseMove"]);
+}
+
+#[test]
 fn consuming_filter_hides_the_event_from_the_widget_and_stops_propagation() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let log: Log = Arc::default();
