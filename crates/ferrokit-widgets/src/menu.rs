@@ -184,6 +184,24 @@ impl Drop for CaptureGuard {
     }
 }
 
+/// Shows the arrow over a popup that holds the mouse capture.
+///
+/// Windows sends no `WM_SETCURSOR` to a window that has the mouse captured, and a thread that
+/// never set a cursor has the busy one as its default, so the capturing window has to set the
+/// cursor itself (`SetCursor` documents this: "A window should set the cursor shape only when the
+/// cursor is in its client area or when the window is capturing mouse input"). Qt does the same:
+/// `QWindowsWindow::applyCursor` sets the window's cursor, the arrow for a popup menu, when the
+/// pointer enters the window and while a capturing window sees the pointer leave it
+/// (qwindowspointerhandler.cpp, `handleEnterLeave`). `SetCursor` returns at once when the cursor
+/// already is the one asked for.
+#[cfg(windows)]
+fn show_arrow_cursor() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW, SetCursor};
+    // SAFETY: `LoadCursorW` with a null instance and `IDC_ARROW` returns the shared system arrow,
+    // which needs no release; `SetCursor` takes that handle by value and touches no memory of ours.
+    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)) };
+}
+
 /// Popup menu (`QMenu`).
 ///
 /// A menu paints and routes events for its open sub-menu itself, so a whole cascade
@@ -795,11 +813,10 @@ impl Menu {
             SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-            PostQuitMessage, PostThreadMessageW, SetCursor, SetForegroundWindow, TranslateMessage,
-            WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS,
-            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-            WM_SETCURSOR,
+            DispatchMessageW, GetMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
+            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_ACTIVATEAPP,
+            WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
         };
 
         self.last_triggered = None;
@@ -858,6 +875,7 @@ impl Menu {
             SetForegroundWindow(hwnd);
             SetCapture(hwnd);
         }
+        show_arrow_cursor();
         // Released when this function ends, however it ends (also before the loop starts).
         let capture = CaptureGuard;
 
@@ -889,8 +907,7 @@ impl Menu {
         // pointers), and every Win32 call below gets a pointer to one of them; `GetMessageW` and
         // `PeekMessageW` fill them and `TranslateMessage`/`DispatchMessageW` only read the `msg`
         // just filled. A null window handle means "all windows of this thread". `hwnd` is the
-        // handle of `window`, which lives until after this block (it is dropped below), and
-        // `LoadCursorW(null, IDC_ARROW)` loads a shared system cursor that needs no release.
+        // handle of `window`, which lives until after this block (it is dropped below).
         // Dispatched messages run this thread's window procedures: the popup window's handler
         // only touches an `Rc<Cell<bool>>` and posts a message. Any access to the menu from
         // dispatched code must go through the `&mut` borrow of `self`, which is held for the
@@ -918,15 +935,13 @@ impl Menu {
                     mouse_screen.y - root_origin.y,
                 );
                 match msg.message {
-                    WM_SETCURSOR => {
-                        SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
-                    }
                     WM_RBUTTONUP => {
                         if !self.covers(local_pt) {
                             break;
                         }
                     }
                     WM_MOUSEMOVE => {
+                        show_arrow_cursor();
                         let old_signature = self.hover_signature();
                         let outcome = self.handle_mouse_move(local_pt);
                         let new_signature = self.hover_signature();
