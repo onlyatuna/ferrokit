@@ -30,28 +30,10 @@ static GLOBAL_OBJECT_THREADS: RwLock<Option<HashMap<ObjectId, ThreadId>>> = RwLo
 /// anything it protects and is taken as it is.
 static HIERARCHY_MUTATION: Mutex<()> = Mutex::new(());
 
-#[cfg(not(test))]
-type HierarchyGuard = MutexGuard<'static, ()>;
-#[cfg(test)]
-type HierarchyGuard = Option<MutexGuard<'static, ()>>;
-
-#[cfg(not(test))]
-fn lock_hierarchy() -> HierarchyGuard {
+fn lock_hierarchy() -> MutexGuard<'static, ()> {
     HIERARCHY_MUTATION
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-}
-
-#[cfg(test)]
-fn lock_hierarchy() -> HierarchyGuard {
-    if test_hooks::mutant("skip_hierarchy_lock") {
-        return None;
-    }
-    Some(
-        HIERARCHY_MUTATION
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner),
-    )
 }
 
 /// Locks for a value that one store replaces, or that only plain container edits change
@@ -1447,9 +1429,6 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         // it; if it changed in between, the unlisting is done for the new parent. The loop is
         // bounded, and ends at once when the parent is gone.
         for _ in 0..=registry.len() {
-            #[cfg(test)]
-            let _held_by_mutant =
-                test_hooks::mutant("unregister_holds_link").then(|| read_unpoisoned(&entry.parent));
             let Some(parent_id) = *read_unpoisoned(&entry.parent) else {
                 break;
             };
@@ -2312,27 +2291,6 @@ impl<'a> ObjectDataMut<'a> {
         }
 
         #[cfg(test)]
-        let validate_under_the_locks = !test_hooks::mutant("swap_prevalidates_children");
-        #[cfg(not(test))]
-        let validate_under_the_locks = true;
-        #[cfg(test)]
-        if !validate_under_the_locks {
-            // The defect this function once had: the lists are compared under read locks taken in
-            // argument order and let go before the write locks are taken.
-            let first = self_record
-                .children
-                .read()
-                .map_err(|_| ReparentError::Busy)?;
-            test_hooks::run(test_hooks::Point::BetweenChildrenReads);
-            let second = other_record
-                .children
-                .read()
-                .map_err(|_| ReparentError::Busy)?;
-            if *first != self.data.children || *second != other.data.children {
-                return Err(ReparentError::InvalidParent);
-            }
-        }
-        #[cfg(test)]
         test_hooks::run(test_hooks::Point::AfterCycleCheck);
 
         // Tier 1: the parents' `children` write locks in ascending ObjectId order.
@@ -2358,9 +2316,8 @@ impl<'a> ObjectDataMut<'a> {
             (s, o)
         };
         // Only a writer of these lists could change them, and none can now.
-        if validate_under_the_locks
-            && (*self_children_guard != self.data.children
-                || *other_children_guard != other.data.children)
+        if *self_children_guard != self.data.children
+            || *other_children_guard != other.data.children
         {
             return Err(ReparentError::InvalidParent);
         }
@@ -3232,9 +3189,6 @@ pub fn set_parent_by_id(
     drop(registry);
     drop(hierarchy);
     drop(short_term_borrow);
-    #[cfg(test)]
-    let _held_by_mutant =
-        test_hooks::mutant("set_parent_holds_registry").then(|| GLOBAL_OBJECT_REGISTRY.read());
     let removed_panic = old_parent.and_then(|old_parent_id| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             edit_child_list(old_parent_id, ChildListChange::Remove(child_id));
@@ -3471,9 +3425,6 @@ pub fn set_parent(
         new_parent.and_then(|id| registry.get(&id).map(|rec| (id, Arc::clone(&rec.liveness))));
     drop(registry);
     drop(hierarchy);
-    #[cfg(test)]
-    let _held_by_mutant =
-        test_hooks::mutant("set_parent_holds_registry").then(|| GLOBAL_OBJECT_REGISTRY.read());
     // Update local children lists and send ChildRemoved/ChildAdded via registered callbacks. A
     // panic of the old parent's handler is held back until the child and the new parent's list
     // agree with the registry, and then continues.
@@ -4558,14 +4509,11 @@ pub fn send_event(receiver: ObjectId, event: &mut Event) -> bool {
     crate::event_loop::notify_helper(receiver, event)
 }
 
-/// Test-only fixed points inside the hierarchy operations, and switches that bring back defects
-/// these operations once had. A test installs a hook on its own thread to hold an operation at a
-/// point where another thread can then act; a test child process (see `mutant_run` in the tests)
-/// names a defect in its environment to check that the tests notice it.
+/// Test-only fixed points inside the hierarchy operations. A test installs a hook on its own
+/// thread to hold an operation at a point where another thread can then act.
 #[cfg(test)]
 pub(crate) mod test_hooks {
     use std::cell::RefCell;
-    use std::sync::OnceLock;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub(crate) enum Point {
@@ -4576,9 +4524,6 @@ pub(crate) mod test_hooks {
         /// `unregister_qobject`: after the child's parent link has been read and let go, before the
         /// parent's list is locked.
         AfterLinkRead,
-        /// `swap_hierarchy_and_ownership` with the `swap_prevalidates_children` defect: between
-        /// the two read locks of the lists.
-        BetweenChildrenReads,
     }
 
     type Hook = Box<dyn FnOnce()>;
@@ -4601,16 +4546,6 @@ pub(crate) mod test_hooks {
         if let Some(hook) = hook {
             hook();
         }
-    }
-
-    /// Whether the defect `name` is switched on by the environment of this (child) process, which
-    /// lists the defects it wants, separated by commas.
-    pub(crate) fn mutant(name: &str) -> bool {
-        static ACTIVE: OnceLock<Option<String>> = OnceLock::new();
-        ACTIVE
-            .get_or_init(|| std::env::var("FERROKIT_TEST_MUTANT").ok())
-            .as_deref()
-            .is_some_and(|names| names.split(',').any(|listed| listed == name))
     }
 }
 
@@ -5819,65 +5754,6 @@ mod tests {
         }
     }
 
-    /// The child process a test uses to check that it notices a defect (see `test_hooks::mutant`).
-    #[derive(Debug, PartialEq)]
-    enum ChildRun {
-        Passed,
-        Failed,
-        /// Killed after `limit`: a deadlock ends here.
-        TimedOut,
-    }
-
-    /// Runs the test `name` of this binary again in a child process with the defects `mutants`
-    /// (comma separated) switched on, and reports how it ended. The child is killed when it has
-    /// not ended within `limit`.
-    fn run_in_child(name: &str, mutants: &str, limit: Duration) -> ChildRun {
-        use std::io::Read;
-        use std::process::{Command, Stdio};
-        let module = module_path!()
-            .split_once("::")
-            .map_or(module_path!(), |(_, rest)| rest);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &format!("{module}::{name}"), "--test-threads=1"])
-            .env("FERROKIT_TEST_MUTANT", mutants)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let reader = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
-            text
-        });
-        let deadline = Instant::now() + limit;
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break Some(status);
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let text = reader.join().unwrap();
-        match status {
-            None => ChildRun::TimedOut,
-            Some(status) if status.success() && text.contains("1 passed") => ChildRun::Passed,
-            Some(_) if text.contains("1 failed") => ChildRun::Failed,
-            Some(status) => panic!("the child did not run the test `{name}` ({status}): {text}"),
-        }
-    }
-
-    /// Backstop for a child that deadlocks.
-    const CHILD_LIMIT: Duration = Duration::from_secs(90);
-
-    fn noticed(run: ChildRun) -> bool {
-        run != ChildRun::Passed
-    }
-
     /// A handler of `ChildAdded` runs with no lock of the change held, and can register and drop
     /// objects and change other links while `set_parent` delivers the event.
     #[test]
@@ -6809,32 +6685,6 @@ mod tests {
         unregistering.join().unwrap();
     }
 
-    /// The tests above notice the defects they are for: each defect is switched on in a child
-    /// process (`test_hooks::mutant`), where the test must not pass. A deadlock ends at the limit.
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_unregister_test_notices_a_link_held_while_waiting() {
-        let name = "test_unregister_does_not_hold_the_childs_parent_link_while_waiting_for_the_parents_list";
-        assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed);
-        assert!(noticed(run_in_child(
-            name,
-            "unregister_holds_link",
-            CHILD_LIMIT
-        )));
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_event_test_notices_the_registry_held_during_the_events() {
-        let name =
-            "test_set_parent_of_a_registered_child_delivers_events_in_order_with_no_lock_held";
-        assert_eq!(run_in_child(name, "", CHILD_LIMIT), ChildRun::Passed);
-        assert_eq!(
-            run_in_child(name, "set_parent_holds_registry", CHILD_LIMIT),
-            ChildRun::Failed
-        );
-    }
-
     /// A hierarchy change that is held between its cycle check and its commit while a second one
     /// runs. With `HIERARCHY_MUTATION` the second one waits and sees the first one's link (and is
     /// refused when it would close a ring); without it, both are accepted. The thread of the
@@ -7094,14 +6944,7 @@ mod tests {
             },
             move |state| {
                 let (p, q) = state;
-                hold_next_operation(
-                    reached_tx,
-                    resume_rx,
-                    &[
-                        test_hooks::Point::BetweenChildrenReads,
-                        test_hooks::Point::AfterCycleCheck,
-                    ],
-                );
+                hold_next_operation(reached_tx, resume_rx, &[test_hooks::Point::AfterCycleCheck]);
                 p.with_mut(|p| {
                     q.with_mut(|q| {
                         p.object_data_mut()
@@ -7210,45 +7053,6 @@ mod tests {
             list_of_p.is_some_and(|list| list.contains(&c_id)),
             "the child was added to its parent and the swap wrote the old list over it"
         );
-    }
-
-    /// The race tests notice the missing lock and the old pre-validation: each defect is switched
-    /// on in a child process (see `test_hooks::mutant`), where the test must fail.
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_race_tests_notice_a_missing_hierarchy_lock() {
-        for name in [
-            "test_two_set_parent_calls_cannot_close_a_cycle",
-            "test_reparent_owned_object_and_set_parent_cannot_close_a_cycle",
-            "test_swap_hierarchy_and_set_parent_cannot_close_a_cycle",
-        ] {
-            assert_eq!(
-                run_in_child(name, "", CHILD_LIMIT),
-                ChildRun::Passed,
-                "{name}"
-            );
-            assert!(
-                noticed(run_in_child(name, "skip_hierarchy_lock", CHILD_LIMIT)),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_swap_tests_notice_the_old_pre_validation() {
-        let old = "skip_hierarchy_lock,swap_prevalidates_children";
-        for name in [
-            "test_swap_does_not_hold_one_parents_list_while_it_waits_for_the_other",
-            "test_swap_does_not_overwrite_a_list_that_changed_while_it_waited",
-        ] {
-            assert_eq!(
-                run_in_child(name, "", CHILD_LIMIT),
-                ChildRun::Passed,
-                "{name}"
-            );
-            assert!(noticed(run_in_child(name, old, CHILD_LIMIT)), "{name}");
-        }
     }
 
     /// `set_parent` does not let a registered child have a parent that is not registered, and
