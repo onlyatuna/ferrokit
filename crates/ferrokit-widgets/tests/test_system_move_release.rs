@@ -2,8 +2,9 @@
 //! `QWindowsContext::handleExitSizeMove` (`qwindowscontext.cpp:1261-1290`): a window dragged by the
 //! native move loop never receives `WM_LBUTTONUP` (the loop swallows it), so Qt compares the
 //! application's idea of the pressed buttons with the physical state when `WM_EXITSIZEMOVE`
-//! arrives and synthesizes the missing release. Inside the window it is a normal
-//! `MouseButtonRelease`; outside it is a non-client release, which widgets never see.
+//! arrives and synthesizes the missing release. Inside the client area it is a normal
+//! `MouseButtonRelease`; outside it is a non-client release (`QWidgetWindow` forwards it to the
+//! widget as a non-client event, which ferrokit has no counterpart for).
 //!
 //! Real `ferrokit_widgets::Window`, real HWND, real `WM_LBUTTONDOWN`/`WM_LBUTTONUP`/
 //! `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE` messages, real cursor position. No physical button may be
@@ -91,10 +92,32 @@ fn place(fx: &Fixture, x: i32, y: i32) {
     assert_ne!(ok, 0, "SetWindowPos failed");
 }
 
-/// Places the 200x200 window so the cursor is inside it.
+/// Places the window so the cursor is 20 px inside its client area: Qt's "inside" is the client
+/// geometry (`platWin->geometry()`), and the title bar above it is taller at a high DPI scale.
 fn place_under_cursor(fx: &Fixture) {
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
     let c = cursor();
     place(fx, c.x - 20, c.y - 20);
+    let mut origin = POINT { x: 0, y: 0 };
+    let mut rect = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: `fx.hwnd` is the handle of the fixture's window (`_win`), kept alive by `fx` and
+    // created on this thread; `origin` and `rect` are live locals, the only pointers passed, each
+    // written by the call that receives it.
+    unsafe {
+        ClientToScreen(fx.hwnd, &mut origin);
+        GetWindowRect(fx.hwnd, &mut rect);
+    }
+    place(
+        fx,
+        rect.left + (c.x - 20 - origin.x),
+        rect.top + (c.y - 20 - origin.y),
+    );
 }
 
 fn place_away_from_cursor(fx: &Fixture) {

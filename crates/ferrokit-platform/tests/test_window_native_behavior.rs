@@ -172,38 +172,11 @@ fn an_alt_key_combination_reaches_the_handler() {
     );
 }
 
-#[test]
-fn a_cancelled_mouse_mode_forgets_the_pressed_buttons() {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetCapture;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        WM_CANCELMODE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    };
-    let win = window("Cancel");
-    let hwnd = win.native_handle() as HWND;
-    // SAFETY: `hwnd` is the live window of `win` (alive to the end of the test), messaged from its
-    // own thread with integer parameters only; `GetCapture` takes no arguments.
-    unsafe {
-        SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
-        // A popup or dialog took over: the release of the left button is never seen.
-        SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
-        SendMessageW(hwnd, WM_RBUTTONDOWN, 2, 0x0010_0010);
-        SendMessageW(hwnd, WM_RBUTTONUP, 0, 0x0010_0010);
-        assert_ne!(
-            GetCapture(),
-            hwnd,
-            "no button is held: the capture is released"
-        );
-    }
-}
-
+/// The existing move-loop end: the release the loop swallowed is synthesized for a cursor inside
+/// the client area.
 #[test]
 fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
     use ferrokit_platform::window::NativeWindow;
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_LBUTTONDOWN,
-    };
-    const WM_EXITSIZEMOVE: u32 = 0x0232;
     let win = NativeWindow::new("SystemMove", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
         .expect("native window");
     let hwnd = win.hwnd();
@@ -215,24 +188,8 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
             sink.lock().push(ev)
         })),
     );
-    // Put the window under the cursor so the loop end sees the release inside it.
-    // SAFETY: `hwnd` is the live window of `win`, used from its own thread; `cursor` is a live
-    // `POINT` that `GetCursorPos` fills in; the message and `SetWindowPos` take integers only.
-    unsafe {
-        let mut cursor = POINT { x: 0, y: 0 };
-        GetCursorPos(&mut cursor);
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            cursor.x - 50,
-            cursor.y - 50,
-            200,
-            200,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-        SendMessageW(hwnd, WM_LBUTTONDOWN, 1, 0x0010_0010);
-    }
-    // `ReleaseCapture` for the native loop must not make the window forget the press.
+    place_client_under_cursor(hwnd);
+    press_left(hwnd);
     assert!(win.start_system_move());
     // SAFETY: `hwnd` is the live window of `win` (still alive), messaged from its own thread with
     // integer parameters only.
@@ -250,7 +207,6 @@ fn starting_a_system_move_keeps_the_pressed_button_for_the_loop_end() {
 
 const WM_ENTERSIZEMOVE: u32 = 0x0231;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
-const SC_DRAGMOVE: usize = 0xF012;
 
 /// Puts the window's outer top-left corner `dx`, `dy` away from the cursor: `(-50, -50)` puts the
 /// cursor inside it, far positive values put it outside.
@@ -272,6 +228,45 @@ fn place_window_relative_to_cursor(hwnd: HWND, dx: i32, dy: i32) {
             200,
             200,
             SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// The top-left corner of the window's client area in screen coordinates.
+fn client_origin(hwnd: HWND) -> windows_sys::Win32::Foundation::POINT {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    let mut origin = POINT { x: 0, y: 0 };
+    // SAFETY: `hwnd` is a live window of this thread; `origin` is a live `POINT` that
+    // `ClientToScreen` updates.
+    unsafe { ClientToScreen(hwnd, &mut origin) };
+    origin
+}
+
+/// Puts the window so that the cursor is 20 px inside its client area (not merely inside the
+/// frame: the title bar is taller at a high DPI scale).
+fn place_client_under_cursor(hwnd: HWND) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    };
+    place_window_relative_to_cursor(hwnd, -50, -50);
+    let origin = client_origin(hwnd);
+    // SAFETY: `hwnd` is a live window of this thread; `cursor` is a live `POINT` that
+    // `GetCursorPos` fills in; `SetWindowPos` takes integers only.
+    unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor);
+        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            rect.left + (cursor.x - 20 - origin.x),
+            rect.top + (cursor.y - 20 - origin.y),
+            0,
+            0,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE,
         );
     }
 }
@@ -364,71 +359,66 @@ fn the_resize_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_e
     assert!(app_mouse_buttons().is_empty());
 }
 
-/// The request for a loop ends with the loop: a second drag keeps the button again, and a capture
-/// loss after the first loop forgets the buttons as it does outside any loop.
+/// Qt 6.12.0's windows plugin has no `WM_CAPTURECHANGED` or `WM_CANCELMODE` handling: neither a
+/// capture change (to nothing, to a foreign window) nor a cancelled mouse mode touches
+/// `QGuiApplication::mouseButtons()`; it changes with mouse events and at `WM_EXITSIZEMOVE`.
 #[test]
-fn each_system_move_protects_only_its_own_loop() {
+fn a_capture_change_or_a_cancelled_mouse_mode_keeps_the_pressed_buttons() {
     use ferrokit_core::event::MouseButtons;
     use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
-    use windows_sys::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED;
-    let win = NativeWindow::new("TwoMoves", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetDesktopWindow, WM_CANCELMODE, WM_CAPTURECHANGED,
+    };
+    let win = NativeWindow::new("Capture", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
         .expect("native window");
     let hwnd = win.hwnd();
-    place_window_relative_to_cursor(hwnd, -50, -50);
     press_left(hwnd);
-    assert!(win.start_system_move());
-    move_loop_starts(hwnd);
-    move_loop_ends(hwnd);
-    assert!(app_mouse_buttons().is_empty());
-
-    press_left(hwnd);
-    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
-    unsafe { SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0) };
-    assert!(
-        app_mouse_buttons().is_empty(),
-        "no loop is running: the lost capture swallowed the release"
-    );
-
-    press_left(hwnd);
-    assert!(win.start_system_move());
-    move_loop_starts(hwnd);
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; `GetDesktopWindow`
+    // takes no arguments and its result is only passed along as an integer.
+    unsafe {
+        SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
+        assert_eq!(
+            app_mouse_buttons(),
+            MouseButtons::LEFT,
+            "capture to nothing"
+        );
+        SendMessageW(hwnd, WM_CAPTURECHANGED, 0, GetDesktopWindow() as isize);
+        assert_eq!(
+            app_mouse_buttons(),
+            MouseButtons::LEFT,
+            "capture to a window of another process"
+        );
+        SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
+    }
     assert_eq!(
         app_mouse_buttons(),
         MouseButtons::LEFT,
-        "the second loop keeps the button too"
+        "cancelled mouse mode"
     );
-    move_loop_ends(hwnd);
-    assert!(app_mouse_buttons().is_empty());
 }
 
-/// `SC_DRAGMOVE` without a button held ends at once without a loop (`DefWindowProc` returns, no
-/// `WM_ENTERSIZEMOVE`; seen on Windows 11), so nothing would withdraw the request made for it.
+/// A second drag works like the first.
 #[test]
-fn a_system_move_that_starts_no_loop_leaves_no_request_behind() {
+fn a_second_system_move_keeps_the_button_too() {
+    use ferrokit_core::event::MouseButtons;
     use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CAPTURECHANGED, WM_SYSCOMMAND};
-    let win = NativeWindow::new("NoLoop", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+    let win = NativeWindow::new("TwoMoves", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
         .expect("native window");
     let hwnd = win.hwnd();
-    place_window_relative_to_cursor(hwnd, -50, -50);
-    assert!(win.start_system_move());
-    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
-    // No mouse button is physically down while the tests run, so this `DefWindowProc` call
-    // returns without entering the loop.
-    unsafe { SendMessageW(hwnd, WM_SYSCOMMAND, SC_DRAGMOVE, 0) };
-    press_left(hwnd);
-    // SAFETY: as above.
-    unsafe { SendMessageW(hwnd, WM_CAPTURECHANGED, 0, 0) };
-    assert!(
-        app_mouse_buttons().is_empty(),
-        "the abandoned request does not protect a later press: {:?}",
-        app_mouse_buttons()
-    );
+    place_client_under_cursor(hwnd);
+    for _ in 0..2 {
+        press_left(hwnd);
+        assert!(win.start_system_move());
+        move_loop_starts(hwnd);
+        assert_eq!(app_mouse_buttons(), MouseButtons::LEFT);
+        move_loop_ends(hwnd);
+        assert!(app_mouse_buttons().is_empty());
+    }
 }
 
 /// A loop that ends with the cursor outside the window: the swallowed release is reconciled
-/// without a mouse event for the window (Qt: `NonClientAreaMouseButtonRelease`, which widgets never
-/// see).
+/// without a mouse event for the window (Qt: `NonClientAreaMouseButtonRelease`, which ferrokit has
+/// no counterpart for).
 #[test]
 fn a_move_loop_that_ends_outside_the_window_forgets_the_button_without_a_release() {
     use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
@@ -462,27 +452,119 @@ fn a_move_loop_that_ends_outside_the_window_forgets_the_button_without_a_release
     );
 }
 
-/// A window destroyed inside its move loop never gets `WM_EXITSIZEMOVE`: the buttons that are
-/// physically up must not stay pressed in the application.
+/// `handleExitSizeMove` compares the application's buttons with the physical ones. Left, right and
+/// middle that the application has down and the system does not get a release; every release
+/// carries the physical buttons, so a button the application had down is dropped with them
+/// (`mouse_buttons = e->buttons`, qguiapplication.cpp:2431), the X ones included.
 #[test]
-fn a_window_destroyed_inside_its_move_loop_forgets_the_released_buttons() {
-    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
-    let mut win = NativeWindow::new(
-        "DestroyedInLoop",
+fn the_loop_end_releases_every_stale_button_and_takes_the_physical_ones_over() {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::MouseButton;
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons, set_app_mouse_buttons};
+    let win = NativeWindow::new(
+        "StaleButtons",
         Rect::new(0, 0, 200, 200),
         WindowFlags::NORMAL,
     )
     .expect("native window");
     let hwnd = win.hwnd();
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    ferrokit_platform::window::set_window_event_handler(
+        hwnd,
+        Box::new(ClosureWindowEventHandler::new(move |ev| {
+            sink.lock().push(ev)
+        })),
+    );
+    place_client_under_cursor(hwnd);
+    set_app_mouse_buttons(
+        MouseButtons::LEFT
+            .union(MouseButtons::RIGHT)
+            .union(MouseButtons::MIDDLE)
+            .union(MouseButtons::BACK),
+    );
+    seen.lock().clear();
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
+    unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
+    assert!(
+        app_mouse_buttons().is_empty(),
+        "no button is physically down: {:?}",
+        app_mouse_buttons()
+    );
+    let released: Vec<_> = seen
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            WindowSystemEvent::MouseRelease { button, .. } => Some(*button),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        released,
+        vec![MouseButton::Left, MouseButton::Right, MouseButton::Middle],
+        "left, right, middle in that order, and no release for the X button"
+    );
+}
+
+/// Only left, right and middle are released (`for (Qt::MouseButton button : {Qt::LeftButton,
+/// Qt::RightButton, Qt::MiddleButton})`): a stale X button alone changes nothing, however long it
+/// has been stuck.
+#[test]
+fn a_stale_x_button_alone_is_not_released_at_the_loop_end() {
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons, set_app_mouse_buttons};
+    let win = NativeWindow::new("StaleX", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    set_app_mouse_buttons(MouseButtons::BACK);
+    // SAFETY: `hwnd` is the live window of `win`, messaged from its own thread; integers only.
+    unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
+    assert_eq!(app_mouse_buttons(), MouseButtons::BACK);
+}
+
+/// "Inside" is the client geometry of the window (`platWin->geometry()`), not its frame: a loop
+/// that ends over the title bar is a non-client release, which the window does not get as a mouse
+/// release.
+#[test]
+fn a_move_loop_that_ends_over_the_title_bar_sends_no_client_release() {
+    use ferrokit_platform::window::{NativeWindow, app_mouse_buttons};
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let win = NativeWindow::new("TitleBar", Rect::new(0, 0, 200, 200), WindowFlags::NORMAL)
+        .expect("native window");
+    let hwnd = win.hwnd();
+    let seen = Arc::new(Mutex::new(Vec::<WindowSystemEvent>::new()));
+    let sink = Arc::clone(&seen);
+    ferrokit_platform::window::set_window_event_handler(
+        hwnd,
+        Box::new(ClosureWindowEventHandler::new(move |ev| {
+            sink.lock().push(ev)
+        })),
+    );
+    place_window_relative_to_cursor(hwnd, -50, -4);
+    let client = client_origin(hwnd);
+    let mut cursor = POINT { x: 0, y: 0 };
+    // SAFETY: `cursor` is a live `POINT` that `GetCursorPos` fills in.
+    unsafe { GetCursorPos(&mut cursor) };
+    assert!(
+        cursor.y < client.y,
+        "premise: the cursor is above the client area ({} < {})",
+        cursor.y,
+        client.y
+    );
     press_left(hwnd);
     assert!(win.start_system_move());
     move_loop_starts(hwnd);
-    assert!(!app_mouse_buttons().is_empty());
-    win.close();
+    seen.lock().clear();
+    move_loop_ends(hwnd);
+    assert!(app_mouse_buttons().is_empty());
     assert!(
-        app_mouse_buttons().is_empty(),
-        "the swallowed release is not kept for a window that no longer exists: {:?}",
-        app_mouse_buttons()
+        !seen
+            .lock()
+            .iter()
+            .any(|e| matches!(e, WindowSystemEvent::MouseRelease { .. })),
+        "the title bar is not the client area: {:?}",
+        seen.lock()
     );
 }
 
