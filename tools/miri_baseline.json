@@ -209,16 +209,6 @@
     }
   },
   "results": {
-    "layered_tests::test_level1_compressor_dedup_and_override::SB": "pass",
-    "layered_tests::test_level1_compressor_dedup_and_override::TB": "pass",
-    "layered_tests::test_level1_event_filter_lifo_intercept_and_tombstone::SB": "pass",
-    "layered_tests::test_level1_event_filter_lifo_intercept_and_tombstone::TB": "pass",
-    "layered_tests::test_level1_signal_basic_and_scoped_and_highest_id::SB": "pass",
-    "layered_tests::test_level1_signal_basic_and_scoped_and_highest_id::TB": "pass",
-    "layered_tests::test_level2_loop_livelock_protection::SB": "pass",
-    "layered_tests::test_level2_loop_livelock_protection::TB": "pass",
-    "layered_tests::test_level3_cross_thread_queued_connection::SB": "pass",
-    "layered_tests::test_level3_cross_thread_queued_connection::TB": "pass",
     "layered_tests::test_level3_timer_and_event_loop_exit::SB": "pass",
     "layered_tests::test_level3_timer_and_event_loop_exit::TB": "pass",
     "lib::event::compressor::tests::test_compress_event_reverse_search::SB": "pass",

@@ -15,8 +15,8 @@
 //! 5. Direct `QObject` destructors and foreign thread affinity migrations.
 //!
 //! Production hierarchy invariants are verified through a combination of this abstract model,
-//! ThreadSanitizer native stress testing, production lockdep instrumentation, subprocess mutant
-//! failure injections, and snapshot invariance tests on `qobject.rs`.
+//! ThreadSanitizer native stress testing, production lockdep instrumentation, and snapshot
+//! invariance tests on `qobject.rs`.
 
 use crate::sync::sys::*;
 
