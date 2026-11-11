@@ -17,9 +17,10 @@
 
 use crate::text::directwrite_face::{factory6, serialized};
 use crate::text::font::StyleHint;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use unicode_script::{Script, UnicodeScript};
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -89,19 +90,93 @@ pub(crate) struct FallbackListKey {
     pub writing_system: usize,
 }
 
+/// The fallback family list of a [`FallbackListKey`]: the `head` (the emoji, style hint, user
+/// language, emoji and symbol families that exist), then the families that support the writing
+/// system of the key (`tail`, `QPlatformFontDatabase::fallbacksForFamily`'s own list).
+///
+/// The tail needs every family of the registry populated, which costs the face of every font
+/// of the system to be opened. A caller walks the list in order and mostly stops inside the head,
+/// so [`iter`](Self::iter) builds the tail when the walk reaches it, if the catalog is
+/// independent (`Catalog::is_independent`); otherwise the tail is built with the head. The list
+/// is the same either way.
+pub(crate) struct FallbackList {
+    head: Vec<String>,
+    italic: bool,
+    writing_system: usize,
+    tail: OnceLock<Arc<[String]>>,
+}
+
+impl FallbackList {
+    pub(crate) fn new(head: Vec<String>, key: FallbackListKey) -> Self {
+        Self {
+            head,
+            italic: key.italic,
+            writing_system: key.writing_system,
+            tail: OnceLock::new(),
+        }
+    }
+
+    /// The families of the database that support the writing system, populating every family
+    /// the first time.
+    pub(crate) fn tail(&self, catalog: &Catalog) -> &[String] {
+        self.tail
+            .get_or_init(|| catalog.families_for_writing_system(self.italic, self.writing_system))
+    }
+
+    /// The head, which `retain` filters (the entries that are not families of the database go).
+    pub(crate) fn retain_head(&mut self, keep: impl FnMut(&String) -> bool) {
+        self.head.retain(keep);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn head_len(&self) -> usize {
+        self.head.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tail_built(&self) -> bool {
+        self.tail.get().is_some()
+    }
+
+    /// The families of the list in order; the tail is built once the head is used up.
+    pub(crate) fn iter<'a>(&'a self, catalog: &'a Catalog) -> impl Iterator<Item = &'a str> + 'a {
+        self.head.iter().map(String::as_str).chain(
+            std::iter::once_with(move || self.tail(catalog))
+                .flat_map(|tail| tail.iter().map(String::as_str)),
+        )
+    }
+}
+
 pub(crate) struct Catalog {
     collection: IDWriteFontCollection2,
     locales: Locales,
     /// The family of the collection that owns a name (`m_populatedFonts`).
     owners: HashMap<String, u32>,
+    /// Whether populating a family registers only names that no other family of the collection
+    /// mentions, so that the registry a family ends with does not depend on the order the
+    /// families are populated in, and a family needs no other family populated before it.
+    ///
+    /// `populate` registers a font under the names `build` collects from the same fonts: the
+    /// family names of the collection family it belongs to, and the font's `WIN32` family
+    /// names. Where no name is mentioned by two collection families (case insensitively, the
+    /// way the registry keys them), every family of the registry is registered by one
+    /// `populate` run only, whichever order the runs come in, and a repeated run registers the
+    /// same faces again. `build` also requires that every collection family has a name (so
+    /// that `populate` never falls back to the name it was called for) and that the font list
+    /// `populate` reads is as long as the one `build` read. When it is `false`, every list is
+    /// built the way Qt builds it, populating every family before it is used. That `populate`
+    /// registers only names `build` collected is what
+    /// `population_order_does_not_change_a_registered_family` checks on the system's fonts.
+    independent: bool,
     /// The families registered so far, sorted by name, case insensitively
     /// (`QFontDatabasePrivate::family`); a family's styles appear when it is populated.
     registry: Mutex<Registry>,
-    /// The fallback lists built so far (`QFontDatabasePrivate::fallbacksCache`). The registry is
-    /// fixed once every family is populated, which the first list of any key does, and nothing
-    /// outside this catalog enters it (application fonts are registered with the font database
-    /// only), so a list never goes stale. Never held while a list is computed.
-    fallback_lists: Mutex<HashMap<FallbackListKey, Arc<[String]>>>,
+    /// The fallback lists built so far (`QFontDatabasePrivate::fallbacksCache`). A list's head
+    /// is fixed when it is built and its tail (the registry once every family is populated)
+    /// when it is first needed; nothing outside this catalog enters the registry (application
+    /// fonts are registered with the font database only), so a list never goes stale. Never held
+    /// while a list is computed.
+    fallback_lists: Mutex<HashMap<FallbackListKey, Arc<FallbackList>>>,
 }
 
 // SAFETY: `Send` requires that the value may move to another thread. `collection` is a
@@ -241,14 +316,21 @@ impl Catalog {
         preferred
     }
 
+    /// Whether the registry a family ends with is the same whatever order the families are
+    /// populated in (see the field), which lets a fallback list leave its tail unbuilt until a
+    /// caller walks that far.
+    pub(crate) fn is_independent(&self) -> bool {
+        self.independent
+    }
+
     /// The fallback list of `key`, from `compute` the first time it is asked for. `compute` runs
     /// without any lock of the catalog held; two threads asking at once both compute the same
     /// list and the first one stored wins.
     pub(crate) fn fallback_list(
         &self,
         key: FallbackListKey,
-        compute: impl FnOnce() -> Vec<String>,
-    ) -> Arc<[String]> {
+        compute: impl FnOnce() -> FallbackList,
+    ) -> Arc<FallbackList> {
         let cached = {
             let lists = self
                 .fallback_lists
@@ -259,7 +341,7 @@ impl Catalog {
         if let Some(list) = cached {
             return list;
         }
-        let list: Arc<[String]> = compute().into();
+        let list = Arc::new(compute());
         let mut lists = self
             .fallback_lists
             .lock()
@@ -594,6 +676,12 @@ fn build() -> Option<Catalog> {
         // The family of the collection that owns a name (`m_populatedFonts`).
         let mut owners: HashMap<String, u32> = HashMap::new();
         let mut registered: HashSet<String> = HashSet::new();
+        // Whether populating one family can change nothing another family's registration
+        // depends on (see `Catalog::independent`): every name is mentioned by one collection
+        // family only, every family has a name of its own, and the font list `populate` reads
+        // is as long as the one this loop reads.
+        let independent = Cell::new(true);
+        let mut owner_of: HashMap<String, u32> = HashMap::new();
 
         // SAFETY: `collection` is live; the call takes no arguments.
         let count = unsafe { collection.GetFontFamilyCount() };
@@ -603,20 +691,34 @@ fn build() -> Option<Catalog> {
                 continue;
             };
             let mut register_family = |name: &str| {
-                if name.is_empty() || !registered.insert(name.to_string()) {
+                if name.is_empty() {
+                    return;
+                }
+                if *owner_of.entry(name.to_lowercase()).or_insert(index) != index {
+                    independent.set(false);
+                }
+                if !registered.insert(name.to_string()) {
                     return;
                 }
                 registry.family_index(name);
                 owners.insert(name.to_string(), index);
             };
+            let mut named = false;
             // SAFETY: `family` is a live family; the call takes no arguments.
             if let Ok(names) = unsafe { family.GetFamilyNames() } {
                 let (default, english) = locales.both(&names);
+                named = !default.is_empty() || !english.is_empty();
                 register_family(&default);
                 register_family(&english);
             }
             // SAFETY: as above.
             let fonts = unsafe { family.GetFontCount() };
+            let listed = matching_fonts(&family).map(|list|
+                // SAFETY: `list` is live; the call takes no arguments.
+                unsafe { list.GetFontCount() });
+            if !named || listed != Some(fonts) {
+                independent.set(false);
+            }
             for font_index in 0..fonts {
                 // SAFETY: `font_index` is below the font count just read.
                 let Ok(font) = (unsafe { family.GetFont(font_index) }) else {
@@ -640,6 +742,7 @@ fn build() -> Option<Catalog> {
             collection,
             locales,
             owners,
+            independent: independent.get(),
             registry: Mutex::new(registry),
             fallback_lists: Mutex::new(HashMap::new()),
         })
@@ -954,6 +1057,19 @@ fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
     systems
 }
 
+/// A catalog that populated every family in the order of the registry, the way Qt's loop does
+/// before it lists anything, and lists every fallback list that way (`independent` off): the
+/// reference the deferred population is compared with.
+#[cfg(test)]
+pub(crate) fn eager_catalog() -> Option<Catalog> {
+    let mut catalog = build()?;
+    catalog.independent = false;
+    let mut registry = catalog.registry.lock().unwrap_or_else(|e| e.into_inner());
+    catalog.scan_writing_system(&mut registry, false, ws::ANY);
+    drop(registry);
+    Some(catalog)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,14 +1117,164 @@ mod tests {
             // The last writing system: no other test asks for this key.
             writing_system: ws::COUNT - 1,
         };
-        let first = catalog.fallback_list(key, || vec!["A".to_string(), "B".to_string()]);
+        let head = |list: &FallbackList| list.head.clone();
+        let first = catalog.fallback_list(key, || {
+            FallbackList::new(vec!["A".to_string(), "B".to_string()], key)
+        });
         let again = catalog.fallback_list(key, || panic!("computed twice"));
         assert!(Arc::ptr_eq(&first, &again));
-        assert_eq!(&*first, ["A", "B"]);
+        assert_eq!(head(&first), ["A", "B"]);
         let other = FallbackListKey { emoji: true, ..key };
-        assert_eq!(
-            &*catalog.fallback_list(other, || vec!["C".to_string()]),
-            ["C"]
-        );
+        let other = catalog.fallback_list(other, || FallbackList::new(vec!["C".to_string()], key));
+        assert_eq!(head(&other), ["C"]);
+    }
+
+    fn fingerprint(catalog: &Catalog) -> Vec<String> {
+        let registry = catalog.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .families
+            .iter()
+            .map(|f| {
+                let styles: Vec<String> = f
+                    .styles
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "{:?}/{}/{:?}/{}/{}.{}",
+                            s.style_name,
+                            s.weight,
+                            s.kind,
+                            s.stretch,
+                            s.handle.family,
+                            s.handle.font
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{:?} ws={:#x} color={} fixed={} populated={} {}",
+                    f.name,
+                    f.writing_systems,
+                    f.color,
+                    f.fixed_pitch,
+                    f.populated,
+                    styles.join(";")
+                )
+            })
+            .collect()
+    }
+
+    /// Populating the families in another order, or only some of them, registers the families
+    /// the same: what the family `name` ends with is what populating every family in the order of
+    /// the registry leaves it, for every family of this system's fonts.
+    #[test]
+    fn population_order_does_not_change_a_registered_family() {
+        let (Some(eager), Some(lazy)) = (eager_catalog(), build()) else {
+            return;
+        };
+        if !lazy.independent {
+            // Nothing is deferred on this system's fonts: every list populates everything first.
+            return;
+        }
+        // Every family of the registry holds the faces of the collection family that owns its
+        // name and of no other one, which is why the order cannot matter.
+        {
+            let registry = eager.registry.lock().unwrap_or_else(|e| e.into_inner());
+            for family in registry.families.iter().filter(|f| f.populated) {
+                let owner = eager.owners[&family.name];
+                for style in &family.styles {
+                    assert_eq!(style.handle.family, owner, "{}", family.name);
+                }
+            }
+        }
+        // The other order: last family first, each asked for by its own name.
+        let names: Vec<String> = {
+            let registry = lazy.registry.lock().unwrap_or_else(|e| e.into_inner());
+            registry
+                .families
+                .iter()
+                .rev()
+                .map(|f| f.name.clone())
+                .collect()
+        };
+        for name in &names {
+            lazy.family_traits(name);
+        }
+        assert_eq!(fingerprint(&eager), fingerprint(&lazy));
+        for name in &names {
+            for weight in (100..=900).step_by(100) {
+                for italic in [false, true] {
+                    assert_eq!(
+                        eager
+                            .pick_style(name, weight, italic)
+                            .map(|s| s.handle.font),
+                        lazy.pick_style(name, weight, italic).map(|s| s.handle.font),
+                        "{name} {weight} {italic}"
+                    );
+                }
+            }
+        }
+        for italic in [false, true] {
+            for system in 0..ws::COUNT {
+                assert_eq!(
+                    eager.families_for_writing_system(italic, system),
+                    lazy.families_for_writing_system(italic, system),
+                    "{italic} {system}"
+                );
+            }
+        }
+    }
+
+    /// A catalog that populates only the families asked for gives a family the face and the
+    /// traits the catalog that populated all of them gives it, whatever was asked before.
+    #[test]
+    fn a_family_populated_alone_equals_the_eager_one() {
+        let (Some(eager), Some(lazy)) = (eager_catalog(), build()) else {
+            return;
+        };
+        if !lazy.independent {
+            return;
+        }
+        for name in [
+            "Segoe UI",
+            "Segoe UI Semibold",
+            "Consolas",
+            "Arial",
+            "Arial Narrow",
+            "Microsoft YaHei",
+            "Segoe UI Emoji",
+            "Segoe UI Symbol",
+            "Segoe Fluent Icons",
+            "A Family That Is Not Installed",
+        ] {
+            assert_eq!(
+                eager.family_traits(name),
+                lazy.family_traits(name),
+                "{name}"
+            );
+            for (weight, italic) in [(400, false), (700, false), (400, true), (300, false)] {
+                let source = |catalog: &Catalog| {
+                    catalog
+                        .resolve(name, weight, italic)
+                        .map(|s| (s.path, s.face_index, s.axes))
+                };
+                assert_eq!(source(&eager), source(&lazy), "{name} {weight} {italic}");
+            }
+        }
+        // Only what was asked for has been populated.
+        let populated = lazy
+            .registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .families
+            .iter()
+            .filter(|f| f.populated)
+            .count();
+        let total = lazy
+            .registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .families
+            .len();
+        assert!(populated < total, "{populated} of {total}");
     }
 }
