@@ -390,3 +390,89 @@ fn the_tray_window_lets_taskbar_created_through_the_message_filter() {
     assert_ne!(ok, 0);
     assert_eq!(change.ExtStatus, MSGFLTINFO_ALREADYALLOWED_FORWINDOW);
 }
+
+/// What the shell does with the tray's own `(hwnd, uID 1)` entry, driven directly so that a
+/// `NIM_ADD` made by the tray can be made to fail (an entry with the same identity already
+/// exists) and an Explorer crash can be simulated (the entry vanishes) without a desktop.
+fn shell_entry(
+    hwnd: HWND,
+    message: u32,
+    icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON,
+) -> bool {
+    use windows_sys::Win32::UI::Shell::{
+        NIF_ICON, NIF_MESSAGE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    };
+    // SAFETY: `NOTIFYICONDATAW` is a C struct of integers, raw pointers and arrays; all-zero is a
+    // valid value, and `cbSize` is set right below.
+    let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON;
+    nid.uCallbackMessage = WM_TRAY_CALLBACK;
+    nid.hIcon = icon;
+    // SAFETY: `nid` is initialised with `cbSize` set; `hwnd` is a live tray window of this thread
+    // and `icon` is the live `HICON` of that tray.
+    unsafe { Shell_NotifyIconW(message, &nid) != 0 }
+}
+
+fn shell_has_entry(hwnd: HWND) -> bool {
+    use windows_sys::Win32::UI::Shell::{NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect};
+    // SAFETY: an all-zero `NOTIFYICONIDENTIFIER` (integers, a GUID, a null handle) is a valid
+    // value; `cbSize` is set right below.
+    let mut id: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
+    id.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
+    id.hWnd = hwnd;
+    id.uID = 1;
+    let mut rect = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: `id` is initialised with `cbSize`; `rect` is a live out pointer.
+    unsafe { Shell_NotifyIconGetRect(&id, &mut rect) == 0 }
+}
+
+/// `QWindowsSystemTrayIcon::init` sets `m_visible` before it adds the icon and ignores a failed
+/// add, and its `TaskbarCreated` branch sends `NIM_ADD` for any icon that is installed;
+/// `cleanup` (hide) removes the icon from that handling. So an add that the shell refused is
+/// made good when the taskbar comes back, and a hidden icon is not brought back.
+#[test]
+fn an_icon_whose_add_failed_is_added_when_the_taskbar_comes_back() {
+    use windows_sys::Win32::UI::Shell::{NIM_ADD, NIM_DELETE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+    let name: Vec<u16> = "TaskbarCreated\0".encode_utf16().collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string (explicit `\0`) that outlives the call.
+    let taskbar_created = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+
+    let mut tray = TrayIcon::from_icon("t", &icon()).expect("tray");
+    let hwnd = tray.hwnd();
+    // The shell refuses a second add for the same window and id: an entry made here first makes
+    // the tray's own `NIM_ADD` fail. Without a taskbar this add fails too and nothing can be
+    // observed, so the test has nothing to check.
+    if !shell_entry(hwnd, NIM_ADD, tray.icon()) {
+        eprintln!("no taskbar accepts a tray icon here; skipped");
+        return;
+    }
+    assert!(tray.show().is_err(), "the shell refused the duplicate add");
+    assert!(tray.is_visible(), "Qt: m_visible is set before the add");
+
+    // Explorer restarts: its icons are gone, and it announces the new taskbar.
+    assert!(shell_entry(hwnd, NIM_DELETE, tray.icon()));
+    assert!(!shell_has_entry(hwnd));
+    // SAFETY: `hwnd` is the live tray window of this thread; the message is a registered id with
+    // zero (non-pointer) parameters.
+    unsafe { SendMessageW(hwnd, taskbar_created, 0, 0) };
+    assert!(shell_has_entry(hwnd), "the icon was added again");
+
+    // A hidden icon stays hidden when the taskbar is created.
+    tray.hide().expect("hide");
+    assert!(!shell_has_entry(hwnd));
+    // SAFETY: as above.
+    unsafe { SendMessageW(hwnd, taskbar_created, 0, 0) };
+    assert!(
+        !shell_has_entry(hwnd),
+        "hide() then TaskbarCreated adds nothing"
+    );
+}
