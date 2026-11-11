@@ -17,7 +17,8 @@ use ferrokit_platform::{
 use ferrokit_widgets::{Action, Menu, Widget};
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_CANCELMODE};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_KEYDOWN};
 
 const TASKBAR: i32 = 40;
 
@@ -181,11 +182,11 @@ fn popup_rect(secondary: Rect, pos: Point) -> (Rect, (i32, i32)) {
     menu.add_action(Action::new_ref("First"));
     menu.add_action(Action::new_ref("Second"));
     let size = menu.size_hint();
-    // The popup's own loop ends on the first `WM_CANCELMODE` it reads.
+    // The popup's own loop ends on the first Escape it reads.
     // SAFETY: `PostThreadMessageW` takes integers only (this thread's id from
-    // `GetCurrentThreadId`, `WM_CANCELMODE`, zero parameters), no pointer and no handle; a failed
+    // `GetCurrentThreadId`, `WM_KEYDOWN`, `VK_ESCAPE`, zero), no pointer and no handle; a failed
     // post would only make the popup loop below wait, which the test would report as a hang.
-    unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0) };
+    unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, usize::from(VK_ESCAPE), 0) };
     assert!(Menu::exec_popup(&std::rc::Rc::new(std::cell::RefCell::new(menu)), pos).is_none());
 
     let rect = *created.lock().unwrap().first().expect("the popup window");
