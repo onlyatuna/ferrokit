@@ -2,12 +2,17 @@
 //! Deferred command queue for safely decoupling tree modifications and layout updates
 //! from synchronous event handlers and callbacks.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::LocalKey;
 
-use ferrokit_core::event_loop::set_deferred_delete_hook;
-use ferrokit_core::object::ObjectId;
+use ferrokit_core::event::{Event, EventKind};
+use ferrokit_core::event_loop::{post_event_to_thread, set_deferred_delete_hook};
+use ferrokit_core::object::{ObjectId, ThreadId};
+use ferrokit_core::timer::Timer;
 
 use crate::widget::{WidgetRef, WidgetWeak};
 
@@ -40,6 +45,90 @@ struct PendingDelete {
     parent: Option<WidgetWeak>,
 }
 
+thread_local! {
+    /// A wake-up event is queued or about to be: `post_task` posts one only when this is clear, so
+    /// any number of tasks cost one event. Cleared by [`WakeGuard`] when the event runs or is
+    /// dropped without running.
+    static WAKE_PENDING: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    /// The same for the timer that comes back for tasks that found their target borrowed.
+    static RETRY_WAKE_PENDING: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    /// How many `flush` calls of this thread are running (a task may dispatch an event whose
+    /// end flushes again).
+    static FLUSH_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// How long tasks that found their target borrowed wait before the loop looks at them again. A
+/// zero delay would spin the loop for as long as the target stays borrowed (a native modal loop).
+const RETRY_WAKE_MS: u64 = 20;
+
+/// Clears a "wake pending" flag when dropped. The wake-up closure owns it, so the flag is
+/// cleared whether the closure runs or is discarded with its event (loop or thread teardown). It
+/// holds the flag by `Arc` and is `Send`, as the closure must be, because the event may be dropped
+/// on another thread.
+struct WakeGuard(Arc<AtomicBool>);
+
+impl Drop for WakeGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Arms one wake-up that runs [`WidgetCommandQueue::flush`] on this thread, unless one is armed
+/// already (`flag`). `arm` posts the closure it is given.
+fn arm_wake(flag: &'static LocalKey<Arc<AtomicBool>>, arm: impl FnOnce(Box<dyn FnOnce() + Send>)) {
+    let Ok(flag) = flag.try_with(Arc::clone) else {
+        return;
+    };
+    if flag.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let guard = WakeGuard(flag);
+    arm(Box::new(move || {
+        // Clear first: the flush may queue more work, which needs a new wake-up.
+        drop(guard);
+        WidgetCommandQueue::flush();
+    }));
+}
+
+/// Makes the event loop flush the queue on its next turn, as `QCoreApplication::postEvent`
+/// wakes the dispatcher (qcoreapplication.cpp:1725-1730), so a task posted while no widget event
+/// is dispatched (a system setting change, a timer slot) is not left until one arrives.
+fn wake_loop() {
+    arm_wake(&WAKE_PENDING, |wake| {
+        post_event_to_thread(
+            ThreadId::current(),
+            ObjectId(0),
+            Event::new(EventKind::MetaCall(Box::new(move |_| wake()))),
+        );
+    });
+}
+
+/// Flushes again after `RETRY_WAKE_MS`, for tasks that are still waiting for a borrow.
+fn wake_loop_later() {
+    arm_wake(&RETRY_WAKE_PENDING, |wake| {
+        Timer::single_shot(RETRY_WAKE_MS, wake);
+    });
+}
+
+struct FlushDepth;
+
+impl FlushDepth {
+    fn enter() -> Self {
+        FLUSH_DEPTH.with(|d| d.set(d.get() + 1));
+        Self
+    }
+}
+
+impl Drop for FlushDepth {
+    fn drop(&mut self) {
+        FLUSH_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+fn flushing() -> bool {
+    FLUSH_DEPTH.with(|d| d.get() > 0)
+}
+
 /// Thread-local command queue managing deferred operations.
 pub struct WidgetCommandQueue;
 
@@ -59,9 +148,11 @@ impl WidgetCommandQueue {
         Self::post(WidgetCommand::RequestLayout(widget.clone()));
     }
 
-    /// Enqueues an arbitrary closure to be run when the queue is flushed.
+    /// Enqueues an arbitrary closure to be run when the queue is flushed: at the end of the
+    /// event being dispatched, or, with none, on the next turn of the event loop.
     pub fn post_task<F: FnOnce() + 'static>(task: F) {
         Self::post(WidgetCommand::Task(Box::new(task)));
+        wake_loop();
     }
 
     /// Runs the queued layout requests and leaves every other command queued.
@@ -143,7 +234,9 @@ impl WidgetCommandQueue {
             }
             _ => {
                 let weak = Rc::downgrade(widget);
-                Self::post_task(move || {
+                // A retry, not a new task: a task that put itself back would keep this flush
+                // running for as long as the widget stays borrowed.
+                defer_retry(move || {
                     if let Some(w) = weak.upgrade() {
                         WidgetCommandQueue::delete_later(&w);
                     }
@@ -162,6 +255,7 @@ impl WidgetCommandQueue {
     /// Must be invoked when no widget in the hierarchy is borrowed mutably.
     /// Multiple `RequestLayout` commands on the same container are deduplicated.
     pub fn flush() {
+        let _depth = FlushDepth::enter();
         let retries = RETRY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
         COMMAND_QUEUE.with(|q| q.borrow_mut().extend(retries));
         while COMMAND_QUEUE.with(|q| !q.borrow().is_empty()) {
@@ -217,6 +311,11 @@ impl WidgetCommandQueue {
                 break;
             }
         }
+        // What found its target borrowed (a retry, a layout request) waits for the next flush;
+        // make sure there is one, without spinning the loop.
+        if Self::pending_count() > 0 {
+            wake_loop_later();
+        }
     }
 
     /// Returns the number of currently pending commands in this thread.
@@ -248,6 +347,11 @@ fn on_deferred_delete(id: ObjectId) {
 /// Queues `task` to run at the next flush, after the current one finished.
 pub(crate) fn defer_retry(task: impl FnOnce() + 'static) {
     RETRY_QUEUE.with(|q| q.borrow_mut().push(WidgetCommand::Task(Box::new(task))));
+    // Inside a flush the end of that flush arms the delayed retry; arming a next-turn one here
+    // would run the retry again at once, for as long as its target stays borrowed.
+    if !flushing() {
+        wake_loop();
+    }
 }
 
 /// Removes `id` from `parent`'s children and relayouts `parent`. If `parent`, or a child that

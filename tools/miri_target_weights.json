@@ -492,6 +492,10 @@
       "SB": 1,
       "TB": 1
     },
+    "test_command_idle_flush": {
+      "SB": 3,
+      "TB": 4
+    },
     "test_enabled_change": {
       "SB": 6,
       "TB": 8
