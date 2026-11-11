@@ -930,9 +930,10 @@ impl FontDatabase {
             // A family that is not there is replaced by the first family that exists of what Qt's
             // fallback pass lists (`QFontDatabasePrivate::findFont`, step 4): the family of the
             // style hint, then the ones `extraTryFontsForFamily` names for the user's language.
-            let mut candidates = vec![family_for_style_hint(hint).to_string()];
-            if let Some(catalog) = crate::text::directwrite_catalog::catalog() {
-                let list = windows_fallback_families(
+            let hint_family = family_for_style_hint(hint);
+            let catalog = crate::text::directwrite_catalog::catalog();
+            let list = catalog.map(|catalog| {
+                windows_fallback_families(
                     catalog,
                     fallback_list_key(
                         hint,
@@ -941,14 +942,18 @@ impl FontDatabase {
                         "Zyyy",
                         unicode_script::Script::Common,
                     ),
-                );
-                candidates.extend(list.iter().cloned());
-            }
-            for substitute in candidates {
-                if key.eq_ignore_ascii_case(&substitute) {
+                )
+            });
+            // The list is walked as far as the first substitute that loads.
+            let listed = catalog
+                .zip(list.as_deref())
+                .into_iter()
+                .flat_map(|(catalog, list)| list.iter(catalog));
+            for substitute in std::iter::once(hint_family).chain(listed) {
+                if key.eq_ignore_ascii_case(substitute) {
                     continue;
                 }
-                let Some(fallback) = self.load_font_styled(&substitute, style, hint) else {
+                let Some(fallback) = self.load_font_styled(substitute, style, hint) else {
                     continue;
                 };
                 self.cache.insert(style_key.clone(), Arc::clone(&fallback));
@@ -1318,7 +1323,7 @@ impl FontDatabase {
         let list = windows_fallback_families(catalog, list_key);
         let mut covering = Vec::new();
         let mut has_glyph = false;
-        for (position, name) in list.iter().enumerate() {
+        for (position, name) in list.iter(catalog).enumerate() {
             if !catalog.covers(name, style.weight, style.italic, ch) {
                 continue;
             }
@@ -1326,7 +1331,7 @@ impl FontDatabase {
             let Some(face) = self.load_font_styled(name, style, StyleHint::AnyStyle) else {
                 continue;
             };
-            covering.push((position, Arc::<str>::from(name.as_str())));
+            covering.push((position, Arc::<str>::from(name)));
             if face.glyph_index(ch) != 0 {
                 has_glyph = true;
                 break;
@@ -1934,12 +1939,14 @@ fn fallback_list_key(
 /// style hint, `extraTryFontsForFamily` (the user's language's families that exist, unless the
 /// family is a symbol font, then the emoji and symbol families), then every family that supports
 /// the script's writing system. Entries that are not families of the database are dropped; repeats
-/// stay. Built once per key and kept by the catalog (`QFontDatabasePrivate::fallbacksCache`).
+/// stay. Built once per key and kept by the catalog (`QFontDatabasePrivate::fallbacksCache`); the
+/// families that support the writing system are listed when a walk of the list gets to them
+/// (see [`FallbackList`](crate::text::directwrite_catalog::FallbackList)).
 #[cfg(windows)]
 fn windows_fallback_families(
     catalog: &crate::text::directwrite_catalog::Catalog,
     key: crate::text::directwrite_catalog::FallbackListKey,
-) -> Arc<[String]> {
+) -> Arc<crate::text::directwrite_catalog::FallbackList> {
     catalog.fallback_list(key, || compute_windows_fallback_families(catalog, key))
 }
 
@@ -1948,28 +1955,27 @@ fn windows_fallback_families(
 fn compute_windows_fallback_families(
     catalog: &crate::text::directwrite_catalog::Catalog,
     key: crate::text::directwrite_catalog::FallbackListKey,
-) -> Vec<String> {
-    let mut list: Vec<String> = Vec::new();
+) -> crate::text::directwrite_catalog::FallbackList {
+    let mut head: Vec<String> = Vec::new();
     if key.emoji {
-        list.push("Segoe UI Emoji".to_string());
+        head.push("Segoe UI Emoji".to_string());
     }
-    list.push(family_for_style_hint(key.hint).to_string());
+    head.push(family_for_style_hint(key.hint).to_string());
     if !key.symbol_family {
         for name in extra_try_fonts() {
             if catalog.family_traits(name).is_some() {
-                list.push((*name).to_string());
+                head.push((*name).to_string());
             }
         }
     }
-    list.push("Segoe UI Emoji".to_string());
-    list.push("Segoe UI Symbol".to_string());
-    list.extend(
-        catalog
-            .families_for_writing_system(key.italic, key.writing_system)
-            .iter()
-            .cloned(),
-    );
-    list.retain(|name| catalog.family_traits(name).is_some());
+    head.push("Segoe UI Emoji".to_string());
+    head.push("Segoe UI Symbol".to_string());
+    let mut list = crate::text::directwrite_catalog::FallbackList::new(head, key);
+    if !catalog.is_independent() {
+        // The registry is complete before the head is filtered, as Qt's loop leaves it.
+        list.tail(catalog);
+    }
+    list.retain_head(|name| catalog.family_traits(name).is_some());
     list
 }
 
@@ -2555,48 +2561,60 @@ mod tests {
         assert_eq!(after.1, before.1);
     }
 
-    /// A fallback list is the same object on every request and is what building it afresh gives.
+    /// A fallback list is the same object on every request, and walked it is the list the registry
+    /// gives once every family has been populated in the order of Qt's loop.
     #[cfg(windows)]
     #[test]
-    fn fallback_lists_are_remembered_and_equal_a_fresh_build() {
+    fn fallback_lists_are_remembered_and_equal_the_eager_build() {
         let Some(catalog) = crate::text::directwrite_catalog::catalog() else {
             return;
         };
-        for (hint, italic, symbol, script) in [
-            (
-                StyleHint::AnyStyle,
-                false,
-                false,
-                unicode_script::Script::Han,
-            ),
-            (
-                StyleHint::Helvetica,
-                true,
-                false,
-                unicode_script::Script::Hangul,
-            ),
-            (
-                StyleHint::TypeWriter,
-                false,
-                true,
-                unicode_script::Script::Thai,
-            ),
-            (
-                StyleHint::AnyStyle,
-                false,
-                false,
-                unicode_script::Script::Common,
-            ),
+        let Some(eager) = crate::text::directwrite_catalog::eager_catalog() else {
+            return;
+        };
+        let walked = |catalog: &crate::text::directwrite_catalog::Catalog,
+                      key: crate::text::directwrite_catalog::FallbackListKey| {
+            compute_windows_fallback_families(catalog, key)
+                .iter(catalog)
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        };
+        let mut keys = Vec::new();
+        for hint in [
+            StyleHint::AnyStyle,
+            StyleHint::Helvetica,
+            StyleHint::TypeWriter,
+            StyleHint::Fantasy,
         ] {
-            let key = fallback_list_key(hint, italic, symbol, "Zyyy", script);
+            for italic in [false, true] {
+                for symbol in [false, true] {
+                    for script in [
+                        unicode_script::Script::Han,
+                        unicode_script::Script::Hangul,
+                        unicode_script::Script::Hiragana,
+                        unicode_script::Script::Thai,
+                        unicode_script::Script::Latin,
+                        unicode_script::Script::Arabic,
+                        unicode_script::Script::Common,
+                    ] {
+                        keys.push(fallback_list_key(hint, italic, symbol, "Zyyy", script));
+                    }
+                }
+            }
+        }
+        keys.push(fallback_list_key(
+            StyleHint::AnyStyle,
+            false,
+            false,
+            "Emoji",
+            unicode_script::Script::Common,
+        ));
+        for key in keys {
             let first = windows_fallback_families(catalog, key);
             let again = windows_fallback_families(catalog, key);
             assert!(Arc::ptr_eq(&first, &again), "{key:?}");
-            assert_eq!(
-                &*first,
-                compute_windows_fallback_families(catalog, key).as_slice(),
-                "{key:?}"
-            );
+            let list: Vec<&str> = first.iter(catalog).collect();
+            assert_eq!(list, walked(&eager, key), "{key:?}");
         }
         let emoji = fallback_list_key(
             StyleHint::AnyStyle,
@@ -2606,7 +2624,37 @@ mod tests {
             unicode_script::Script::Common,
         );
         let list = windows_fallback_families(catalog, emoji);
-        assert_eq!(list.first().map(String::as_str), Some("Segoe UI Emoji"));
-        assert_eq!(&*list, compute_windows_fallback_families(catalog, emoji));
+        assert_eq!(list.iter(catalog).next(), Some("Segoe UI Emoji"));
+    }
+
+    /// A walk that stops in the head of a list does not build its tail (where the catalog allows
+    /// it), and walking on gives the same entries again.
+    #[cfg(windows)]
+    #[test]
+    fn a_walk_that_stops_in_the_head_leaves_the_tail_unbuilt() {
+        let Some(catalog) = crate::text::directwrite_catalog::catalog() else {
+            return;
+        };
+        if !catalog.is_independent() {
+            return;
+        }
+        // No other test asks for this key.
+        let key = fallback_list_key(
+            StyleHint::Cursive,
+            true,
+            false,
+            "Zyyy",
+            unicode_script::Script::Ogham,
+        );
+        let list = windows_fallback_families(catalog, key);
+        if list.head_len() == 0 {
+            return;
+        }
+        let first = list.iter(catalog).next();
+        assert!(first.is_some());
+        assert!(!list.tail_built());
+        let all: Vec<&str> = list.iter(catalog).collect();
+        assert!(list.tail_built());
+        assert_eq!(all.first().copied(), first);
     }
 }
