@@ -759,23 +759,29 @@ impl TrayIcon {
         Some(f(menu))
     }
 
+    /// Shows the icon (`QSystemTrayIcon::setVisible(true)`). As in Qt (`QWindowsSystemTrayIcon::init`
+    /// sets `m_visible` before it adds the icon, and ignores the result), the tray is visible from
+    /// here on even if the shell refuses the `NIM_ADD` (Explorer busy or not running yet): the
+    /// error is still returned so the caller can log it, but `is_visible` is `true` and
+    /// `TaskbarCreated` adds the icon again when the taskbar comes back.
     pub fn show(&mut self) -> Result<(), &'static str> {
         if self.shared.visible.get() {
             return Ok(());
         }
-        self.shared.send_notify_icon_message(NIM_ADD)?;
         self.shared.visible.set(true);
-        Ok(())
+        self.shared.send_notify_icon_message(NIM_ADD)
     }
 
+    /// Hides the icon (`QSystemTrayIcon::setVisible(false)`). As in Qt
+    /// (`QWindowsSystemTrayIcon::cleanup` sets `m_visible` before it deletes the icon), the tray is
+    /// hidden even if the shell refuses the `NIM_DELETE`, and `TaskbarCreated` no longer adds it.
     pub fn hide(&mut self) -> Result<(), &'static str> {
         self.set_balloon_icon(None);
         if !self.shared.visible.get() {
             return Ok(());
         }
-        self.shared.send_notify_icon_message(NIM_DELETE)?;
         self.shared.visible.set(false);
-        Ok(())
+        self.shared.send_notify_icon_message(NIM_DELETE)
     }
 
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) -> Result<(), &'static str> {
