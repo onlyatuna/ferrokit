@@ -3,7 +3,7 @@
 //! from synchronous event handlers and callbacks.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,6 +127,46 @@ impl Drop for FlushDepth {
 
 fn flushing() -> bool {
     FLUSH_DEPTH.with(|d| d.get() > 0)
+}
+
+/// The commands of one `flush` pass while they are worked off.
+struct Batch {
+    /// Not looked at yet, in posting order.
+    rest: VecDeque<WidgetCommand>,
+    /// Layout requests whose target was borrowed.
+    kept: Vec<WidgetCommand>,
+    /// Layout targets found, not invalidated yet.
+    layouts: VecDeque<WidgetRef>,
+}
+
+impl Drop for Batch {
+    /// A task that panics unwinds through `flush` (the caller decides what a panic means). The
+    /// rest of the batch must not die with it: a lost task or layout request leaves state that
+    /// only that task would have reset. It goes back in front of what was queued meanwhile, and
+    /// the next turn of the loop flushes it, so the commands do not wait for an event.
+    fn drop(&mut self) {
+        let mut back: Vec<WidgetCommand> = std::mem::take(&mut self.kept);
+        back.extend(
+            self.layouts
+                .drain(..)
+                .map(|target| WidgetCommand::RequestLayout(Rc::downgrade(&target))),
+        );
+        back.extend(self.rest.drain(..));
+        if back.is_empty() {
+            return;
+        }
+        requeue_first(back);
+        wake_loop();
+    }
+}
+
+/// Puts `commands` at the front of the queue, before what was posted since they were taken.
+fn requeue_first(mut commands: Vec<WidgetCommand>) {
+    COMMAND_QUEUE.with(|q| {
+        let mut queue = q.borrow_mut();
+        commands.append(&mut queue);
+        *queue = commands;
+    });
 }
 
 /// Thread-local command queue managing deferred operations.
@@ -264,25 +304,30 @@ impl WidgetCommandQueue {
                 break;
             }
 
-            let mut layout_targets: Vec<WidgetRef> = Vec::new();
             let mut seen_layout_ids = HashSet::new();
-            let mut kept = Vec::new();
             let mut progress = false;
+            // Holds the batch while it is worked off: if a task panics, what has not been run
+            // goes back to the queue on the way out (`Batch::drop`).
+            let mut batch = Batch {
+                rest: commands.into(),
+                kept: Vec::new(),
+                layouts: VecDeque::new(),
+            };
 
-            for cmd in commands {
+            while let Some(cmd) = batch.rest.pop_front() {
                 match cmd {
                     WidgetCommand::RequestLayout(weak) => {
                         if let Some(target) = weak.upgrade() {
                             // A borrowed target (a nested dispatch from its own handler) keeps its
                             // request for the next flush, as `flush_layouts` does.
                             let Ok(widget) = target.try_borrow() else {
-                                kept.push(WidgetCommand::RequestLayout(weak));
+                                batch.kept.push(WidgetCommand::RequestLayout(weak));
                                 continue;
                             };
                             let id = widget.id();
                             drop(widget);
                             if seen_layout_ids.insert(id) {
-                                layout_targets.push(target);
+                                batch.layouts.push_back(target);
                             }
                         }
                     }
@@ -292,17 +337,14 @@ impl WidgetCommandQueue {
                     }
                 }
             }
-            progress |= !layout_targets.is_empty();
+            progress |= !batch.layouts.is_empty();
+            let kept = std::mem::take(&mut batch.kept);
             let some_kept = !kept.is_empty();
             if some_kept {
-                COMMAND_QUEUE.with(|q| {
-                    let mut queue = q.borrow_mut();
-                    kept.append(&mut queue);
-                    *queue = kept;
-                });
+                requeue_first(kept);
             }
 
-            for target in layout_targets {
+            while let Some(target) = batch.layouts.pop_front() {
                 crate::layout_scheduler::LayoutScheduler::invalidate(&target);
             }
             crate::layout_scheduler::LayoutScheduler::activate_pending();
