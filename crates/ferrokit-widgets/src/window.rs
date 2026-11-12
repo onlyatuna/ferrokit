@@ -1708,11 +1708,15 @@ impl Window {
         // This pass paints everything owed so far: a queued deferred render finds nothing to do.
         // While it runs, `update()` raised by layout activation or the backing-store resize is
         // collected by this pass instead of queueing another (see `schedule_widget_update`).
-        let was_rendering = state.currently_rendering.replace(true);
-        if !was_rendering {
-            state.dirty.set(false);
-        }
+        let was_rendering = state.currently_rendering.get();
         {
+            // Restored on unwind too: a paint handler that panics must not leave the window
+            // "rendering" for good, which makes every later `update()` a no-op. (Qt has no
+            // unwinding; this is the panic containment the embedding application needs.)
+            let _rendering = ScopedFlag::set(&state.currently_rendering);
+            if !was_rendering {
+                state.dirty.set(false);
+            }
             let mut bs = self.backing_store.borrow_mut();
             let mut pw = self.platform_window.borrow_mut();
             let presented = do_render_and_present(
@@ -1730,7 +1734,6 @@ impl Window {
                 }
             });
         }
-        state.currently_rendering.set(was_rendering);
         // Borrows released: anything dirtied after this pass collected the region (or a render
         // parked by a borrow conflict) is queued.
         if !was_rendering && state.has_pending_invalidation() && !state.render_pending.get() {
