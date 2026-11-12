@@ -23,8 +23,8 @@ use ferrokit_widgets::{Action, Menu, Widget};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_RIGHT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_CANCELMODE, WM_KEYDOWN};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_RIGHT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_KEYDOWN};
 
 /// `SUBMENU_OVERLAP` (menu.rs:35).
 const SUBMENU_OVERLAP: i32 = 2;
@@ -232,7 +232,7 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
     menu.add_action(Action::new_ref("Second row"));
     menu.add_action(Action::new_ref("Third row"));
 
-    // The popup's own loop reads these in FIFO order and stops on the WM_CANCELMODE.
+    // The popup's own loop reads these in FIFO order and stops on the Escape.
     // SAFETY: `PostThreadMessageW` takes integers only (this thread's id from
     // `GetCurrentThreadId`, message ids and parameters), no pointer and no handle; the id is
     // that of the running thread, which has a message queue as soon as it runs a loop, and a
@@ -242,7 +242,7 @@ fn run(dpr: f32, sub_label: &str, open_sub: bool) -> (Vec<Frame>, Rect) {
         if open_sub {
             PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, usize::from(VK_RIGHT), 0);
         }
-        PostThreadMessageW(GetCurrentThreadId(), WM_CANCELMODE, 0, 0);
+        PostThreadMessageW(GetCurrentThreadId(), WM_KEYDOWN, usize::from(VK_ESCAPE), 0);
     }
     assert!(
         Menu::exec_popup(

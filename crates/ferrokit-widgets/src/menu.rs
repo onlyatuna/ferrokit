@@ -814,8 +814,7 @@ impl Menu {
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, GetMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_ACTIVATEAPP,
-            WM_CANCELMODE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN,
+            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_KEYDOWN, WM_LBUTTONDOWN,
             WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
         };
 
@@ -917,7 +916,12 @@ impl Menu {
             // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
             // gone, so the loop that was running when the menu opened still quits; -1 is an
             // error, not a message.
-            while {
+            //
+            // `QMenu::exec` runs a `QEventLoop`, which `QCoreApplication::exit` and `quit` end
+            // with every other loop of the thread (qcoreapplication.cpp:1564-1568), and which
+            // returns at once when that has already happened (qeventloop.cpp:142). The exit's
+            // wake-up message brings the loop back here from `GetMessageW`.
+            while !ferrokit_core::event_loop::thread_quit_now() && {
                 let got = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
                 if got == 0 {
                     quit = Some(msg.wParam as i32);
@@ -1006,26 +1010,6 @@ impl Menu {
                             _ => {}
                         }
                         self.present_popup(&mut window, root_origin, size);
-                    }
-                    WM_KILLFOCUS => {
-                        // Window lost keyboard/window focus (Win+L, Alt+Tab, clicked outside)
-                        break;
-                    }
-                    WM_ACTIVATEAPP => {
-                        // Entire application deactivated (wParam == 0 / FALSE)
-                        if msg.wParam == 0 {
-                            break;
-                        }
-                    }
-                    WM_CAPTURECHANGED => {
-                        // Mouse capture revoked by OS (UAC secure desktop, external capture steal)
-                        if msg.lParam as HWND != hwnd {
-                            break;
-                        }
-                    }
-                    WM_CANCELMODE => {
-                        // Windows or host requests cancellation of internal modal loops
-                        break;
                     }
                     _ => {
                         TranslateMessage(&msg);

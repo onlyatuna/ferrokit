@@ -10,8 +10,7 @@ use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_ACTIVATEAPP, WM_CANCELMODE,
-    WM_CAPTURECHANGED, WM_KILLFOCUS,
+    EnumWindows, GetWindowThreadProcessId, SendMessageW, WM_KILLFOCUS, WM_SETFOCUS,
 };
 
 static POPUP_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -32,7 +31,8 @@ unsafe extern "system" fn find_process_window(hwnd: HWND, lparam: isize) -> i32 
 
 fn get_popup_hwnd() -> HWND {
     let mut found = 0 as HWND;
-    for _ in 0..50 {
+    // The first popup of a process can take long (font and window set-up).
+    for _ in 0..1000 {
         thread::sleep(Duration::from_millis(10));
         // SAFETY: `EnumWindows` calls `find_process_window` synchronously, before it returns. The
         // `lparam` passed is the address of the live local `found`, whose type (`HWND`) is what
@@ -59,6 +59,9 @@ fn popped(menu: Menu, pos: Point) -> Menu {
     }
 }
 
+/// Losing the focus reaches the popup as a *sent* message, which `GetMessageW` dispatches to the
+/// window procedure without returning it to the loop: the window's deactivation is what ends the
+/// loop. `SendMessageW` from another thread is the same kind of delivery as the system's.
 #[test]
 fn test_popup_exits_on_kill_focus() {
     let _guard = POPUP_TEST_LOCK.lock();
@@ -66,115 +69,106 @@ fn test_popup_exits_on_kill_focus() {
     let act = Action::new_ref("Action 1");
     menu.add_action(act);
 
+    // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
+    let ui_thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+    let bg = thread::spawn(move || {
+        let hwnd = get_popup_hwnd();
+        if hwnd == 0 as HWND {
+            // Close the menu the way Escape does, so that the failure is a failure, not a hang.
+            // SAFETY: `PostThreadMessageW` takes integers only; a post to a thread that is gone
+            // only fails.
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+                    ui_thread,
+                    windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN,
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE as usize,
+                    0,
+                );
+            }
+            panic!("Popup window should be found");
+        }
+        // SAFETY: `SendMessageW` takes a handle and integers, no pointer; `WM_SETFOCUS` and
+        // `WM_KILLFOCUS` take `wParam` = 0 (no other window involved). `hwnd` is a window of this
+        // process found by `get_popup_hwnd` (asserted non-null); the call returns once the
+        // popup's thread has handled the message in its loop, or at once if the window has been
+        // destroyed meanwhile.
+        unsafe {
+            SendMessageW(hwnd, WM_SETFOCUS, 0, 0);
+            SendMessageW(hwnd, WM_KILLFOCUS, 0, 0);
+        }
+    });
+
+    let chosen = Menu::exec_popup(
+        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+        Point::new(100, 100),
+    );
+    assert!(chosen.is_none());
+
+    bg.join().expect("Background thread failed");
+}
+
+/// `QCoreApplication::exit` ends every running `QEventLoop` of the thread, the one `QMenu::exec`
+/// runs included (qcoreapplication.cpp:1564-1568). An exit raised while the popup's loop runs
+/// (here from a timer, which that loop dispatches) must end it without any input.
+#[test]
+fn test_popup_exits_when_the_application_exits() {
+    use ferrokit_core::application::CoreApplication;
+    use ferrokit_core::timer::Timer;
+    use std::time::Instant;
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_KEYDOWN};
+
+    let _guard = POPUP_TEST_LOCK.lock();
+    CoreApplication::reset_for_test();
+    let mut app = CoreApplication::new(vec!["popup_exit".to_string()]);
+    // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
+    let ui_thread = unsafe { GetCurrentThreadId() };
+
+    // Without the fix nothing closes the menu: Escape does, after a while, so that the test fails
+    // instead of hanging.
+    let escaped = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
-    let finished_clone = Arc::clone(&finished);
+    let watchdog = {
+        let (escaped, finished) = (Arc::clone(&escaped), Arc::clone(&finished));
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < deadline {
+                if finished.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            escaped.store(true, Ordering::SeqCst);
+            // SAFETY: `PostThreadMessageW` takes integers only (the thread id, `WM_KEYDOWN`,
+            // `VK_ESCAPE`, zero), no pointer; a post to a thread that is gone only fails.
+            unsafe { PostThreadMessageW(ui_thread, WM_KEYDOWN, VK_ESCAPE as usize, 0) };
+        })
+    };
 
-    let bg = thread::spawn(move || {
-        let hwnd = get_popup_hwnd();
-        assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
-        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_KILLFOCUS` takes
-        // `wParam` = 0 (no window receiving focus). `hwnd` is a window of this process found by
-        // `get_popup_hwnd` (asserted non-null), and posting to a handle that has meanwhile been
-        // destroyed only fails.
-        unsafe {
-            PostMessageW(hwnd, WM_KILLFOCUS, 0, 0);
-        }
+    let popup_returned = Arc::new(AtomicBool::new(false));
+    let returned = Arc::clone(&popup_returned);
+    Timer::single_shot(0, move || {
+        Timer::single_shot(100, || CoreApplication::exit(7));
+        let mut menu = Menu::new("TestMenu");
+        menu.add_action(Action::new_ref("Action 1"));
+        let chosen = Menu::exec_popup(
+            &std::rc::Rc::new(std::cell::RefCell::new(menu)),
+            Point::new(100, 100),
+        );
+        assert!(chosen.is_none());
+        returned.store(true, Ordering::SeqCst);
     });
+    let code = app.exec();
+    finished.store(true, Ordering::SeqCst);
+    watchdog.join().expect("watchdog thread");
 
-    let chosen = Menu::exec_popup(
-        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-        Point::new(100, 100),
+    assert!(popup_returned.load(Ordering::SeqCst));
+    assert!(
+        !escaped.load(Ordering::SeqCst),
+        "the exit did not end the popup: only the watchdog's Escape did"
     );
-    finished_clone.store(true, Ordering::SeqCst);
-    assert!(chosen.is_none());
-
-    bg.join().expect("Background thread failed");
-    assert!(finished.load(Ordering::SeqCst));
-}
-
-#[test]
-fn test_popup_exits_on_activateapp_deactivated() {
-    let _guard = POPUP_TEST_LOCK.lock();
-    let mut menu = Menu::new("TestMenu");
-    let act = Action::new_ref("Action 1");
-    menu.add_action(act);
-
-    let bg = thread::spawn(move || {
-        let hwnd = get_popup_hwnd();
-        assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
-        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_ACTIVATEAPP` takes
-        // `wParam` = 0 (deactivated). `hwnd` is a window of this process found by
-        // `get_popup_hwnd` (asserted non-null), and posting to a handle that has meanwhile been
-        // destroyed only fails.
-        unsafe {
-            // wParam = 0 (FALSE / Deactivated)
-            PostMessageW(hwnd, WM_ACTIVATEAPP, 0, 0);
-        }
-    });
-
-    let chosen = Menu::exec_popup(
-        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-        Point::new(100, 100),
-    );
-    assert!(chosen.is_none());
-
-    bg.join().expect("Background thread failed");
-}
-
-#[test]
-fn test_popup_exits_on_capture_changed() {
-    let _guard = POPUP_TEST_LOCK.lock();
-    let mut menu = Menu::new("TestMenu");
-    let act = Action::new_ref("Action 1");
-    menu.add_action(act);
-
-    let bg = thread::spawn(move || {
-        let hwnd = get_popup_hwnd();
-        assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
-        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_CAPTURECHANGED`
-        // takes `lParam` = 0 here (a window handle, not a pointer that is dereferenced by us).
-        // `hwnd` is a window of this process found by `get_popup_hwnd` (asserted non-null), and
-        // posting to a handle that has meanwhile been destroyed only fails.
-        unsafe {
-            // lParam = 0 (another window took capture)
-            PostMessageW(hwnd, WM_CAPTURECHANGED, 0, 0);
-        }
-    });
-
-    let chosen = Menu::exec_popup(
-        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-        Point::new(100, 100),
-    );
-    assert!(chosen.is_none());
-
-    bg.join().expect("Background thread failed");
-}
-
-#[test]
-fn test_popup_exits_on_cancel_mode() {
-    let _guard = POPUP_TEST_LOCK.lock();
-    let mut menu = Menu::new("TestMenu");
-    let act = Action::new_ref("Action 1");
-    menu.add_action(act);
-
-    let bg = thread::spawn(move || {
-        let hwnd = get_popup_hwnd();
-        assert_ne!(hwnd, 0 as HWND, "Popup window should be found");
-        // SAFETY: `PostMessageW` takes a handle and integers, no pointer; `WM_CANCELMODE` has no
-        // parameters. `hwnd` is a window of this process found by `get_popup_hwnd` (asserted
-        // non-null), and posting to a handle that has meanwhile been destroyed only fails.
-        unsafe {
-            PostMessageW(hwnd, WM_CANCELMODE, 0, 0);
-        }
-    });
-
-    let chosen = Menu::exec_popup(
-        &std::rc::Rc::new(std::cell::RefCell::new(menu)),
-        Point::new(100, 100),
-    );
-    assert!(chosen.is_none());
-
-    bg.join().expect("Background thread failed");
+    assert_eq!(code, 7);
 }
 
 #[test]

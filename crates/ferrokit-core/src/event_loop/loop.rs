@@ -1303,6 +1303,23 @@ pub fn pump_posted_events_modal() -> Option<usize> {
     Some(delivered)
 }
 
+/// Whether an exit (`QCoreApplication::exit` or `quit`, [`EventLoopHandle::exit`], a consumed
+/// `WM_QUIT`) is ending the loops running on the calling thread and they have not all returned
+/// yet: `QThreadData::quitNow` (qcoreapplication.cpp:1564, qeventloop.cpp:142). False when the
+/// thread has no loop or none is running.
+///
+/// A native modal loop that stands in for a `QEventLoop` (the popup menu's, as `QMenu::exec` runs
+/// one) checks it after each message and returns, as Qt's `exit` ends every loop of the thread.
+pub fn thread_quit_now() -> bool {
+    THREAD_LOOP_STATE
+        .try_with(|slot| {
+            slot.borrow()
+                .upgrade()
+                .is_some_and(|state| state.running.lock().quit_now)
+        })
+        .unwrap_or(false)
+}
+
 /// Current (loop level, scope level) of this thread, as `QThreadData::loopLevel` and `scopeLevel`.
 fn current_levels() -> (usize, usize) {
     (
@@ -3790,6 +3807,28 @@ mod tests {
             "the outer loop must end with the cross-thread code"
         );
         assert_eq!(*log.lock().unwrap(), vec!["inner-3".to_string()]);
+    }
+
+    /// A native modal loop that stands in for a `QEventLoop` asks whether an exit is under way
+    /// (`QThreadData::quitNow`): false before it, true from `exit` until the loop has returned,
+    /// false again after.
+    #[test]
+    fn thread_quit_now_is_set_by_exit_until_the_loops_have_returned() {
+        let _watchdog = Watchdog::arm(Duration::from_secs(10));
+        assert!(!thread_quit_now(), "no loop");
+        let el = EventLoop::new();
+        assert!(!thread_quit_now(), "a loop that is not running");
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let log = Arc::clone(&seen);
+        let handle = el.handle();
+        crate::timer::Timer::single_shot(0, move || {
+            log.lock().unwrap().push(thread_quit_now());
+            handle.exit(5);
+            log.lock().unwrap().push(thread_quit_now());
+        });
+        assert_eq!(el.exec(), 5);
+        assert_eq!(*seen.lock().unwrap(), vec![false, true]);
+        assert!(!thread_quit_now(), "cleared when the last loop returned");
     }
 
     /// A loop that registers on a thread already reported as ended (one that starts while the
