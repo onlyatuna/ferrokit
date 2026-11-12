@@ -492,6 +492,10 @@
       "SB": 1,
       "TB": 1
     },
+    "test_command_flush_panic": {
+      "SB": 2,
+      "TB": 2
+    },
     "test_command_idle_flush": {
       "SB": 3,
       "TB": 4
