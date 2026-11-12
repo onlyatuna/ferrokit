@@ -17,22 +17,26 @@ use std::thread;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HC_ACTION,
     KBDLLHOOKSTRUCT, MSG, PM_REMOVE, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_CANCELMODE, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
 };
 
 fn meta_call(f: impl FnOnce() + Send + 'static) -> Event {
     Event::new(EventKind::MetaCall(Box::new(move |_| f())))
 }
 
+/// Closes the menu the way Escape does: a posted key message, which `GetMessageW` returns to the
+/// popup's loop (the loop's old arms for `WM_CANCELMODE` and the like could only ever see a
+/// posted one, since the system sends those).
 fn cancel_menu(thread_id: u32) {
-    // SAFETY: `PostThreadMessageW` takes integers only (`thread_id`, `WM_CANCELMODE`, zero
-    // parameters), no pointer; every caller passes the id of this test's own thread, and a post
-    // to an id that no longer exists only fails.
-    unsafe { PostThreadMessageW(thread_id, WM_CANCELMODE, 0, 0) };
+    // SAFETY: `PostThreadMessageW` takes integers only (`thread_id`, `WM_KEYDOWN`, `VK_ESCAPE`
+    // and a zero `lParam`), no pointer; every caller passes the id of this test's own thread, and
+    // a post to an id that no longer exists only fails.
+    unsafe { PostThreadMessageW(thread_id, WM_KEYDOWN, VK_ESCAPE as usize, 0) };
 }
 
 /// A popup menu holds the mouse capture, so on a shared desktop any real click (or Escape) made
@@ -347,19 +351,19 @@ fn run_scenario(event_loop: &EventLoop, watch: &outside::Watch) -> Attempt {
     Attempt::DismissedExternally { log, evidence }
 }
 
-/// Removes the `WM_CANCELMODE`s still queued for this thread.
+/// Removes the Escape key messages still queued for this thread.
 fn drain_cancel_messages() {
     // SAFETY: `msg` is a live `MSG` local, zero-initialized (all-zero is valid for integers and
     // raw pointers), and the only pointer passed, as the out-parameter `PeekMessageW` fills; a
-    // null window handle means all windows of this thread. Removing only `WM_CANCELMODE`
+    // null window handle means all windows of this thread. Removing only `WM_KEYDOWN`
     // entries touches nothing else in the queue.
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         while PeekMessageW(
             &mut msg,
             std::ptr::null_mut(),
-            WM_CANCELMODE,
-            WM_CANCELMODE,
+            WM_KEYDOWN,
+            WM_KEYDOWN,
             PM_REMOVE,
         ) != 0
         {}

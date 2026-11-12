@@ -113,6 +113,7 @@
     "test_menu_popup_present_offset": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_menu_popup_screen": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_progress_bar_size_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
+    "test_render_panic_recovery": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_resize_deferred_render": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_scroll_area_paint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_single_resize_pipeline": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",

@@ -345,6 +345,8 @@
     "lib::event_loop::r#loop::tests::test_process_events_pumping::TB": "pass",
     "lib::event_loop::r#loop::tests::test_purge_keeps_the_current_turn_boundary::SB": "pass",
     "lib::event_loop::r#loop::tests::test_purge_keeps_the_current_turn_boundary::TB": "pass",
+    "lib::event_loop::r#loop::tests::thread_quit_now_is_set_by_exit_until_the_loops_have_returned::SB": "pass",
+    "lib::event_loop::r#loop::tests::thread_quit_now_is_set_by_exit_until_the_loops_have_returned::TB": "pass",
     "lib::object::qobject::tests::test_child_added_to_borrowed_parent_is_deferred_not_lost::SB": "pass",
     "lib::object::qobject::tests::test_child_added_to_borrowed_parent_is_deferred_not_lost::TB": "pass",
     "lib::object::qobject::tests::test_child_removed_on_drop_while_parent_borrowed_is_deferred_not_lost::SB": "pass",
