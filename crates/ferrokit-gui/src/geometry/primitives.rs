@@ -667,11 +667,7 @@ impl Rect {
         let t2 = other.top().min(other.bottom());
         let b2 = other.top().max(other.bottom());
 
-        if t1 >= b2 || t2 >= b1 {
-            return false;
-        }
-
-        true
+        t1 < b2 && t2 < b1
     }
 
     // Returns intersection of two rectangles.
@@ -875,11 +871,7 @@ impl RectF {
         let t2 = other.top().min(other.bottom());
         let b2 = other.top().max(other.bottom());
 
-        if t1 >= b2 || t2 >= b1 {
-            return false;
-        }
-
-        true
+        !(t1 >= b2 || t2 >= b1)
     }
 
     #[inline]

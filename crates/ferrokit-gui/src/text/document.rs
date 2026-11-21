@@ -532,14 +532,11 @@ impl TextDocument {
         }
         let (sb, sbyte) = self.locate(start);
         let (eb, ebyte) = self.locate(end);
-        for bi in sb..=eb {
+        for (offset, block) in self.blocks[sb..=eb].iter_mut().enumerate() {
+            let bi = sb + offset;
             let from = if bi == sb { sbyte } else { 0 };
-            let to = if bi == eb {
-                ebyte
-            } else {
-                self.blocks[bi].length()
-            };
-            self.blocks[bi].apply_char_format(from, to, &mut f);
+            let to = if bi == eb { ebyte } else { block.length() };
+            block.apply_char_format(from, to, &mut f);
         }
         self.finish_edit();
     }
