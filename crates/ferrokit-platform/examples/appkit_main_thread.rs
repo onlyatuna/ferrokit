@@ -475,11 +475,11 @@ mod checks {
     use ferrokit_platform::theme::PlatformTheme;
     use ferrokit_platform::tray::{CocoaStatusItem, PlatformTrayIcon};
     use ferrokit_platform::{
-        ClosureWindowEventHandler, CocoaCursor, CocoaNativeEvent, CocoaNativeWindow,
-        CocoaPlatformIntegration, CocoaScreen, CocoaTheme, ColorScheme, CursorShape,
-        GlobalHotkeyManager, HotkeyError, HotkeyModifiers, PlatformCursor, PlatformIntegration,
-        PlatformScreen, PlatformWindow, TrayMessageIcon, WindowEdges, WindowFlags,
-        WindowSystemEvent,
+        ClosureWindowEventHandler, CocoaCursor, CocoaHotkeyManager, CocoaNativeEvent,
+        CocoaNativeWindow, CocoaPlatformIntegration, CocoaScreen, CocoaTheme, ColorScheme,
+        CursorShape, GlobalHotkeyManager, HotkeyError, HotkeyModifiers, PlatformCursor,
+        PlatformHotkeyManager, PlatformIntegration, PlatformScreen, PlatformWindow,
+        TrayMessageIcon, WindowEdges, WindowFlags, WindowSystemEvent,
     };
 
     use super::cg;
@@ -2373,5 +2373,57 @@ mod checks {
             Ok(()),
         );
         drop(m2);
+
+        // Coexistence between `CocoaHotkeyManager` and `GlobalHotkeyManager` on one Carbon handler.
+        let cocoa_bg = std::thread::spawn(|| CocoaHotkeyManager::try_new().err())
+            .join()
+            .expect("background CocoaHotkeyManager::try_new must not panic");
+        t.expect(
+            matches!(cocoa_bg, Some(msg) if msg.contains("main thread")),
+            "background thread CocoaHotkeyManager::try_new reports main-thread error",
+        );
+
+        let factory_mgr = CocoaPlatformIntegration::default().create_hotkey_manager();
+        t.expect(
+            factory_mgr.is_ok(),
+            "CocoaPlatformIntegration::create_hotkey_manager succeeds on main thread",
+        );
+        drop(factory_mgr);
+
+        let mut cocoa = match CocoaHotkeyManager::try_new() {
+            Ok(c) => c,
+            Err(e) => {
+                t.expect(
+                    false,
+                    &format!("CocoaHotkeyManager::try_new on main thread: {e}"),
+                );
+                return;
+            }
+        };
+        t.eq(
+            "CocoaHotkeyManager registers F13",
+            cocoa.register_hotkey(100, MODS, VK_F13),
+            Ok(()),
+        );
+
+        let global = GlobalHotkeyManager::new().expect("GlobalHotkeyManager alongside cocoa");
+        let conflict = global.register(200, MODS, VK_F13);
+        t.expect(
+            matches!(&conflict, Err(e) if e.is_already_registered()),
+            &format!("GlobalHotkeyManager sees CocoaHotkeyManager's F13 conflict: {conflict:?}"),
+        );
+        t.eq(
+            "GlobalHotkeyManager concurrently registers F14",
+            global.register(201, MODS, VK_F14),
+            Ok(()),
+        );
+
+        drop(cocoa);
+        t.eq(
+            "dropping CocoaHotkeyManager releases F13 for GlobalHotkeyManager",
+            global.register(200, MODS, VK_F13),
+            Ok(()),
+        );
+        drop(global);
     }
 }
