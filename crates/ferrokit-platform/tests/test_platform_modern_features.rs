@@ -372,31 +372,84 @@ fn test_cross_platform_hotkeys() {
         assert_eq!(standalone_cocoa.registered_ids().len(), 0);
     }
 
-    // Unix hotkeys
-    let unix_integration = UnixPlatformIntegration::default();
-    let mut unix_mgr = unix_integration
-        .create_hotkey_manager()
-        .expect("Unix hotkey manager");
-    assert!(
-        unix_mgr
-            .register_hotkey(9527, HotkeyModifiers::ALT, 67)
-            .is_err()
-    );
-    assert!(
-        unix_mgr
-            .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
-            .is_err()
-    );
-    assert!(unix_mgr.unregister_hotkey(9527).is_err());
-    assert!(unix_mgr.unregister_hotkey(9528).is_err());
+    // Unix hotkeys: off Linux there is no X11 back end and every registration fails. On Linux
+    // with an active X11 display (such as Xvfb) registration succeeds and tracks ids; headless
+    // setups without X11 fail cleanly.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let unix_integration = UnixPlatformIntegration::default();
+        let mut unix_mgr = unix_integration
+            .create_hotkey_manager()
+            .expect("Unix hotkey manager");
+        assert!(
+            unix_mgr
+                .register_hotkey(9527, HotkeyModifiers::ALT, 67)
+                .is_err()
+        );
+        assert!(
+            unix_mgr
+                .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
+                .is_err()
+        );
+        assert!(unix_mgr.unregister_hotkey(9527).is_err());
+        assert!(unix_mgr.unregister_hotkey(9528).is_err());
 
-    let mut standalone_unix = UnixHotkeyManager::new();
-    assert!(
-        standalone_unix
-            .register_hotkey(2, HotkeyModifiers::ALT, 67)
-            .is_err()
-    );
-    assert_eq!(standalone_unix.registered_ids().len(), 0);
+        let mut standalone_unix = UnixHotkeyManager::new();
+        assert!(
+            standalone_unix
+                .register_hotkey(2, HotkeyModifiers::ALT, 67)
+                .is_err()
+        );
+        assert_eq!(standalone_unix.registered_ids().len(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let unix_integration = UnixPlatformIntegration::default();
+        let mut unix_mgr = unix_integration
+            .create_hotkey_manager()
+            .expect("Unix hotkey manager");
+        match unix_mgr.register_hotkey(9527, HotkeyModifiers::ALT, 67) {
+            Ok(()) => {
+                assert!(
+                    unix_mgr
+                        .register_hotkey(9527, HotkeyModifiers::ALT, 67)
+                        .is_err()
+                );
+                unix_mgr
+                    .register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
+                    .expect("second Unix hotkey should register on X11");
+                unix_mgr
+                    .unregister_hotkey(9527)
+                    .expect("unregister first Unix hotkey");
+                unix_mgr
+                    .unregister_hotkey(9528)
+                    .expect("unregister second Unix hotkey");
+                assert!(unix_mgr.unregister_hotkey(9527).is_err());
+
+                let mut standalone_unix = UnixHotkeyManager::new();
+                standalone_unix
+                    .register_hotkey(2, HotkeyModifiers::ALT, 67)
+                    .expect("standalone Unix hotkey should register after release");
+                assert!(standalone_unix.registered_ids().contains(&2));
+                assert_eq!(standalone_unix.registered_ids().len(), 1);
+                standalone_unix
+                    .unregister_hotkey(2)
+                    .expect("unregister standalone Unix hotkey");
+                assert!(standalone_unix.registered_ids().is_empty());
+            }
+            Err(_) => {
+                assert!(unix_mgr.unregister_hotkey(9527).is_err());
+                let mut standalone_unix = UnixHotkeyManager::new();
+                assert!(
+                    standalone_unix
+                        .register_hotkey(2, HotkeyModifiers::ALT, 67)
+                        .is_err()
+                );
+                assert!(standalone_unix.registered_ids().is_empty());
+            }
+        }
+    }
 }
 
 #[test]

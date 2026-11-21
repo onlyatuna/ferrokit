@@ -653,70 +653,18 @@ mod native_executor {
 mod carbon {
     use super::native_executor::is_os_main_thread;
     use super::*;
+    use crate::hotkey::cocoa_hotkey::carbon::{
+        EVENT_CLASS_KEYBOARD, EVENT_HOT_KEY_PRESSED, EVENT_NOT_HANDLED_ERR,
+        EVENT_PARAM_DIRECT_OBJECT, EventHandlerCallRef, EventHandlerRef, EventHotKeyId,
+        EventHotKeyRef, EventRef, EventTypeSpec, GetApplicationEventTarget, GetEventParameter,
+        InstallEventHandler, NO_ERR, OSStatus, RegisterEventHotKey, TYPE_EVENT_HOT_KEY_ID,
+        UnregisterEventHotKey,
+    };
     use std::ffi::c_void;
 
-    type OSStatus = i32;
-    type EventTargetRef = *mut c_void;
-    type EventHandlerRef = *mut c_void;
-    type EventHandlerCallRef = *mut c_void;
-    type EventRef = *mut c_void;
-    type EventHotKeyRef = *mut c_void;
-    type EventHandlerProc = extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
-
-    #[repr(C)]
-    struct EventTypeSpec {
-        event_class: u32,
-        event_kind: u32,
-    }
-
-    /// `EventHotKeyID`, passed to `RegisterEventHotKey` by value.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct EventHotKeyId {
-        signature: u32,
-        id: u32,
-    }
-
-    const NO_ERR: OSStatus = 0;
-    const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
-    const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
-    const EVENT_HOT_KEY_PRESSED: u32 = 5;
-    const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
-    const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
     /// Distinct from `CocoaHotkeyManager`'s `'FKIT'` signature so both managers coexist cleanly on
     /// `GetApplicationEventTarget()`.
     const SIGNATURE: u32 = u32::from_be_bytes(*b"FKGH");
-
-    #[link(name = "Carbon", kind = "framework")]
-    unsafe extern "C" {
-        fn GetApplicationEventTarget() -> EventTargetRef;
-        fn InstallEventHandler(
-            target: EventTargetRef,
-            handler: EventHandlerProc,
-            num_types: usize,
-            list: *const EventTypeSpec,
-            user_data: *mut c_void,
-            out_ref: *mut EventHandlerRef,
-        ) -> OSStatus;
-        fn GetEventParameter(
-            event: EventRef,
-            name: u32,
-            desired_type: u32,
-            actual_type: *mut u32,
-            buffer_size: usize,
-            actual_size: *mut usize,
-            out_data: *mut c_void,
-        ) -> OSStatus;
-        fn RegisterEventHotKey(
-            key_code: u32,
-            modifiers: u32,
-            hot_key_id: EventHotKeyId,
-            target: EventTargetRef,
-            options: u32,
-            out_ref: *mut EventHotKeyRef,
-        ) -> OSStatus;
-        fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
-    }
 
     /// Carbon invokes this on the OS main thread for every `kEventHotKeyPressed`.
     extern "C" fn hot_key_pressed(

@@ -741,57 +741,57 @@ pub mod cocoa_hotkey {
     }
 
     #[cfg(target_os = "macos")]
-    mod carbon {
+    pub(crate) mod carbon {
         use super::*;
         use ferrokit_core::object::ThreadContext;
         use std::ffi::c_void;
 
-        type OSStatus = i32;
-        type EventTargetRef = *mut c_void;
-        type EventHandlerRef = *mut c_void;
-        type EventHandlerCallRef = *mut c_void;
-        type EventRef = *mut c_void;
-        type EventHotKeyRef = *mut c_void;
-        type EventHandlerProc =
+        pub(crate) type OSStatus = i32;
+        pub(crate) type EventTargetRef = *mut c_void;
+        pub(crate) type EventHandlerRef = *mut c_void;
+        pub(crate) type EventHandlerCallRef = *mut c_void;
+        pub(crate) type EventRef = *mut c_void;
+        pub(crate) type EventHotKeyRef = *mut c_void;
+        pub(crate) type EventHandlerProc =
             extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
         #[repr(C)]
-        struct EventTypeSpec {
-            event_class: u32,
-            event_kind: u32,
+        pub(crate) struct EventTypeSpec {
+            pub(crate) event_class: u32,
+            pub(crate) event_kind: u32,
         }
 
         /// `EventHotKeyID`, passed to `RegisterEventHotKey` by value.
         #[repr(C)]
         #[derive(Clone, Copy)]
-        struct EventHotKeyId {
-            signature: u32,
-            id: u32,
+        pub(crate) struct EventHotKeyId {
+            pub(crate) signature: u32,
+            pub(crate) id: u32,
         }
 
-        const NO_ERR: OSStatus = 0;
-        const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
+        pub(crate) const NO_ERR: OSStatus = 0;
+        pub(crate) const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
         const EVENT_HOT_KEY_EXISTS_ERR: OSStatus = -9878;
         const EVENT_HOT_KEY_INVALID_ERR: OSStatus = -9879;
-        const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
-        const EVENT_HOT_KEY_PRESSED: u32 = 5;
-        const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
-        const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
+        pub(crate) const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
+        pub(crate) const EVENT_HOT_KEY_PRESSED: u32 = 5;
+        pub(crate) const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+        pub(crate) const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
         /// Our `EventHotKeyID::signature` ('FKIT'): other hotkey events are not ours.
         const SIGNATURE: u32 = u32::from_be_bytes(*b"FKIT");
 
         #[link(name = "Carbon", kind = "framework")]
         unsafe extern "C" {
-            fn GetApplicationEventTarget() -> EventTargetRef;
-            fn InstallEventHandler(
+            pub(crate) fn GetApplicationEventTarget() -> EventTargetRef;
+            pub(crate) fn InstallEventHandler(
                 target: EventTargetRef,
                 handler: EventHandlerProc,
-                num_types: u32,
+                num_types: usize,
                 list: *const EventTypeSpec,
                 user_data: *mut c_void,
                 out_ref: *mut EventHandlerRef,
             ) -> OSStatus;
-            fn GetEventParameter(
+            pub(crate) fn GetEventParameter(
                 event: EventRef,
                 name: u32,
                 desired_type: u32,
@@ -800,7 +800,7 @@ pub mod cocoa_hotkey {
                 actual_size: *mut usize,
                 out_data: *mut c_void,
             ) -> OSStatus;
-            fn RegisterEventHotKey(
+            pub(crate) fn RegisterEventHotKey(
                 key_code: u32,
                 modifiers: u32,
                 hot_key_id: EventHotKeyId,
@@ -808,7 +808,7 @@ pub mod cocoa_hotkey {
                 options: u32,
                 out_ref: *mut EventHotKeyRef,
             ) -> OSStatus;
-            fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
+            pub(crate) fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
         }
 
         /// Carbon calls this on the main thread, from the application event target, for every
