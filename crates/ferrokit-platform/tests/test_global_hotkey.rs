@@ -6,17 +6,30 @@
 use ferrokit_platform::{GlobalHotkeyManager, HotkeyError};
 
 #[test]
-fn hotkey_error_is_already_registered_recognizes_all_platform_conflict_codes() {
-    for code in [
-        HotkeyError::ERROR_HOTKEY_ALREADY_REGISTERED,
-        HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
-        HotkeyError::X11_BAD_ACCESS,
-    ] {
-        let err = HotkeyError::Os { code };
-        assert_eq!(err.os_code(), Some(code));
-        assert!(err.is_already_registered(), "code {code} must match");
-        assert!(!err.to_string().is_empty());
-    }
+fn hotkey_error_is_already_registered_matches_current_platform_only() {
+    let win_err = HotkeyError::Os {
+        code: HotkeyError::ERROR_HOTKEY_ALREADY_REGISTERED,
+    };
+    let mac_err = HotkeyError::Os {
+        code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
+    };
+    let x11_err = HotkeyError::Os {
+        code: HotkeyError::X11_BAD_ACCESS,
+    };
+
+    assert_eq!(
+        win_err.os_code(),
+        Some(HotkeyError::ERROR_HOTKEY_ALREADY_REGISTERED)
+    );
+    assert_eq!(
+        mac_err.os_code(),
+        Some(HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR)
+    );
+    assert_eq!(x11_err.os_code(), Some(HotkeyError::X11_BAD_ACCESS));
+
+    assert_eq!(win_err.is_already_registered(), cfg!(windows));
+    assert_eq!(mac_err.is_already_registered(), cfg!(target_os = "macos"));
+    assert_eq!(x11_err.is_already_registered(), cfg!(target_os = "linux"));
 
     for code in [0u32, 2, 5, (-9879_i32) as u32] {
         let err = HotkeyError::Os { code };
@@ -104,9 +117,8 @@ mod linux {
     use super::*;
     use ferrokit_platform::HotkeyModifiers;
 
-    const fn f(n: u32) -> u32 {
-        0x70 + n - 1
-    }
+    const KEY_K: u32 = b'K' as u32;
+    const KEY_L: u32 = b'L' as u32;
     const MODS: HotkeyModifiers = HotkeyModifiers::CONTROL
         .union(HotkeyModifiers::ALT)
         .union(HotkeyModifiers::SHIFT)
@@ -115,29 +127,57 @@ mod linux {
 
     #[test]
     fn registers_on_x11_or_returns_unsupported_headless() {
-        let m = match GlobalHotkeyManager::new() {
-            Ok(m) => m,
-            Err(HotkeyError::Unsupported) => return,
-            Err(e) => panic!("unexpected error on Linux: {e:?}"),
-        };
-        assert!(m.registered_ids().is_empty());
-        if m.register(10, MODS, f(13)).is_err() {
-            // Minimal Xvfb keymaps may omit F13.
+        let has_display = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty());
+        if !has_display {
+            assert_eq!(
+                GlobalHotkeyManager::new().unwrap_err(),
+                HotkeyError::Unsupported
+            );
             return;
         }
+
+        let m = GlobalHotkeyManager::new().expect("X11 display is set in DISPLAY");
+        assert!(m.registered_ids().is_empty());
+
+        m.register(10, MODS, KEY_K)
+            .expect("register Ctrl+Alt+Shift+Win+K on X11");
         assert!(m.is_registered(10));
         assert_eq!(m.registered_ids(), [10]);
-        assert_eq!(m.register(10, MODS, f(14)), Err(HotkeyError::IdInUse(10)));
+        assert_eq!(m.register(10, MODS, KEY_L), Err(HotkeyError::IdInUse(10)));
         assert_eq!(m.unregister(11), Err(HotkeyError::NotRegistered(11)));
 
-        let other = GlobalHotkeyManager::new().unwrap();
-        let conflict = other.register(20, MODS, f(13)).unwrap_err();
+        // Same manager rejects duplicate combination.
+        let same_mgr_conflict = m.register(11, MODS, KEY_K).unwrap_err();
+        assert!(
+            same_mgr_conflict.is_already_registered(),
+            "{same_mgr_conflict:?}"
+        );
+        assert!(!m.is_registered(11));
+
+        // Another X11 Display* client gets X11 BadAccess.
+        let other = GlobalHotkeyManager::new().expect("second X11 display connection");
+        let conflict = other.register(20, MODS, KEY_K).unwrap_err();
         assert!(conflict.is_already_registered(), "{conflict:?}");
         assert!(other.registered_ids().is_empty());
 
-        m.unregister(10).unwrap();
-        assert!(!m.is_registered(10));
-        other.register(20, MODS, f(13)).unwrap();
+        // Replace releases K so `other` can claim it, and rollback keeps L on conflict.
+        m.replace(10, MODS, KEY_L).unwrap();
+        assert_eq!(m.registered_ids(), [10]);
+        other.register(20, MODS, KEY_K).unwrap();
+
+        let rollback_err = m.replace(10, MODS, KEY_K).unwrap_err();
+        assert!(rollback_err.is_already_registered(), "{rollback_err:?}");
+        assert!(m.is_registered(10));
+        assert!(
+            other
+                .register(21, MODS, KEY_L)
+                .unwrap_err()
+                .is_already_registered()
+        );
+
+        // Dropping `m` ungrabs L so `other` can register it.
+        drop(m);
+        other.register(21, MODS, KEY_L).unwrap();
     }
 }
 

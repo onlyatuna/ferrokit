@@ -9,9 +9,9 @@
 //! - Every hotkey grab is expanded across the 4 CapsLock/NumLock modifier combinations (`0`,
 //!   `LockMask`, `Mod2Mask`, `LockMask | Mod2Mask`) and those lock bits are masked off on incoming
 //!   `KeyPress` events so hotkeys keep working regardless of CapsLock/NumLock state.
-//! - All OS interaction goes through [`X11HotkeyBackend`] + [`X11Waker`], so the full worker
+//! - All OS interaction goes through `X11HotkeyBackend` + `X11Waker`, so the full worker
 //!   lifecycle, 4-variant lock-mask expansion and rollback, `BadAccess` conflict detection,
-//!   `replace`, `unregister`, `Drop`, and press delivery run against [`MockX11HotkeyBackend`] on
+//!   `replace`, `unregister`, `Drop`, and press delivery run against `MockX11HotkeyBackend` on
 //!   every operating system.
 
 use crate::hotkey::{HotkeyError, HotkeyModifiers};
@@ -21,22 +21,26 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle, ThreadId};
 
 // Standard X11 modifier masks (`<X11/X.h>`).
-pub const X11_SHIFT_MASK: u32 = 1 << 0;
-pub const X11_LOCK_MASK: u32 = 1 << 1;
-pub const X11_CONTROL_MASK: u32 = 1 << 2;
-pub const X11_MOD1_MASK: u32 = 1 << 3;
-pub const X11_MOD2_MASK: u32 = 1 << 4;
-pub const X11_MOD4_MASK: u32 = 1 << 6;
+#[cfg(test)]
+const X11_SHIFT_MASK: u32 = 1 << 0;
+pub(crate) const X11_LOCK_MASK: u32 = 1 << 1;
+#[cfg(test)]
+const X11_CONTROL_MASK: u32 = 1 << 2;
+#[cfg(test)]
+const X11_MOD1_MASK: u32 = 1 << 3;
+const X11_MOD2_MASK: u32 = 1 << 4;
+#[cfg(test)]
+const X11_MOD4_MASK: u32 = 1 << 6;
 
 /// Lock-modifier bits ignored when matching hotkeys (`LockMask` = CapsLock, `Mod2Mask` = NumLock).
-pub const X11_IGNORED_MODIFIER_MASK: u32 = X11_LOCK_MASK | X11_MOD2_MASK;
+const X11_IGNORED_MODIFIER_MASK: u32 = X11_LOCK_MASK | X11_MOD2_MASK;
 
 /// Mask of the 8 X11 keyboard modifier bits (`ShiftMask..=Mod5Mask`); higher bits in
 /// `XKeyEvent::state` hold mouse-button state (`Button1Mask..=Button5Mask`) and the XKB group.
 const X11_KEYBOARD_MODIFIER_BITS: u32 = 0x00FF;
 
 /// The 4 lock-mask combinations grabbed for every hotkey (matching QHotkey).
-pub const X11_LOCK_MASK_VARIANTS: [u32; 4] = [
+const X11_LOCK_MASK_VARIANTS: [u32; 4] = [
     0,
     X11_LOCK_MASK,
     X11_MOD2_MASK,
@@ -44,34 +48,21 @@ pub const X11_LOCK_MASK_VARIANTS: [u32; 4] = [
 ];
 
 /// X11 `BadValue` protocol error code (used when a virtual key has no X11 mapping).
-pub const X11_BAD_VALUE: u32 = 2;
+pub(crate) const X11_BAD_VALUE: u32 = 2;
 
 /// X11 `BadAccess` protocol error code (another client already holds the passive key grab).
-pub const X11_BAD_ACCESS: u32 = HotkeyError::X11_BAD_ACCESS;
+pub(crate) const X11_BAD_ACCESS: u32 = HotkeyError::X11_BAD_ACCESS;
 
 /// Maps [`HotkeyModifiers`] to the base X11 modifier mask (`ShiftMask`, `ControlMask`,
 /// `Mod1Mask`, `Mod4Mask`). `NO_REPEAT` is enforced on received events rather than as a mask bit.
-pub fn x11_modifiers(modifiers: HotkeyModifiers) -> u32 {
-    let mut mask = 0;
-    if modifiers.contains(HotkeyModifiers::SHIFT) {
-        mask |= X11_SHIFT_MASK;
-    }
-    if modifiers.contains(HotkeyModifiers::CONTROL) {
-        mask |= X11_CONTROL_MASK;
-    }
-    if modifiers.contains(HotkeyModifiers::ALT) {
-        mask |= X11_MOD1_MASK;
-    }
-    if modifiers.contains(HotkeyModifiers::WIN) {
-        mask |= X11_MOD4_MASK;
-    }
-    mask
+fn x11_modifiers(modifiers: HotkeyModifiers) -> u32 {
+    crate::hotkey::UnixHotkeyManager::x11_modifiers(modifiers)
 }
 
 /// Strips CapsLock (`LockMask`), NumLock (`Mod2Mask`), pointer-button masks, and XKB group bits
 /// from an X11 `XKeyEvent::state` value so it matches the base modifier mask from
 /// [`x11_modifiers`].
-pub fn normalize_x11_modifiers(state: u32) -> u32 {
+fn normalize_x11_modifiers(state: u32) -> u32 {
     (state & X11_KEYBOARD_MODIFIER_BITS) & !X11_IGNORED_MODIFIER_MASK
 }
 
@@ -79,7 +70,7 @@ pub fn normalize_x11_modifiers(state: u32) -> u32 {
 ///
 /// Covers `'A'..='Z'`, `'0'..='9'`, `VK_F1..=VK_F24`, navigation and editing keys, numeric keypad
 /// keys, and `VK_OEM_*` ANSI punctuation keys. Returns `None` for unmapped virtual keys.
-pub fn vk_to_x11_keysym(vk: u32) -> Option<u32> {
+fn vk_to_x11_keysym(vk: u32) -> Option<u32> {
     Some(match vk {
         // Letters 'A'..='Z' -> XK_a..=XK_z (unshifted level-0 keysyms for XKeysymToKeycode).
         0x41..=0x5A => 0x0061 + (vk - 0x41),
@@ -128,17 +119,17 @@ pub fn vk_to_x11_keysym(vk: u32) -> Option<u32> {
 
 /// An X11 `KeyPress` delivered by an [`X11HotkeyBackend`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct X11KeyPress {
-    pub keycode: u8,
+struct X11KeyPress {
+    keycode: u8,
     /// Raw X11 modifier state (`XKeyEvent::state`), before lock-mask stripping.
-    pub state: u32,
+    state: u32,
     /// `true` when this press is an X11 auto-repeat generated while the key is held down.
-    pub is_repeat: bool,
+    is_repeat: bool,
 }
 
 /// Outcome of blocking in [`X11HotkeyBackend::wait`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum X11WaitResult {
+enum X11WaitResult {
     /// Control requests and/or X11 events may be pending.
     Ready,
     /// The X11 display connection closed or failed fatally; the worker must exit.
@@ -146,15 +137,15 @@ pub enum X11WaitResult {
 }
 
 /// Cross-thread handle that wakes the X11 worker blocked in [`X11HotkeyBackend::wait`].
-pub trait X11Waker: Send + Sync {
+trait X11Waker: Send + Sync {
     fn wake(&self) -> Result<(), HotkeyError>;
 }
 
 /// Low-level X11 operations owned exclusively by the hotkey worker thread.
 ///
 /// Lock-mask expansion across [`X11_LOCK_MASK_VARIANTS`] and hotkey-id bookkeeping live above this
-/// trait so [`MockX11HotkeyBackend`] exercises the exact same logic on every OS.
-pub trait X11HotkeyBackend {
+/// trait so `MockX11HotkeyBackend` exercises the exact same logic on every OS.
+trait X11HotkeyBackend {
     /// Resolves an X11 keysym (`XK_*`) to a hardware `KeyCode` (`1..=255`), or `None` if unmapped.
     fn keysym_to_keycode(&mut self, keysym: u32) -> Option<u8>;
 
@@ -471,7 +462,7 @@ fn worker_main<B, F>(
 ///
 /// Matches [`GlobalHotkeyManager`](crate::GlobalHotkeyManager)'s exact contract: `Send + Sync`,
 /// rollback-on-failure `replace`, reentrant calls from the handler, and full cleanup on `Drop`.
-pub struct X11GlobalHotkeyManager {
+pub(crate) struct X11GlobalHotkeyManager {
     shared: Arc<Shared>,
     waker: Arc<dyn X11Waker>,
     worker_thread: ThreadId,
@@ -497,7 +488,7 @@ impl X11GlobalHotkeyManager {
     ///
     /// Returns [`HotkeyError::Unsupported`] on non-Linux platforms, when `DISPLAY` is unset/empty,
     /// when `libX11.so.6` is unavailable, or when `XOpenDisplay` fails.
-    pub fn new() -> Result<Self, HotkeyError> {
+    pub(crate) fn new() -> Result<Self, HotkeyError> {
         #[cfg(target_os = "linux")]
         {
             x11::preflight_check()?;
@@ -510,7 +501,7 @@ impl X11GlobalHotkeyManager {
     }
 
     /// Starts a manager whose worker thread constructs its backend via `open`.
-    pub fn with_backend<B, F>(open: F) -> Result<Self, HotkeyError>
+    fn with_backend<B, F>(open: F) -> Result<Self, HotkeyError>
     where
         B: X11HotkeyBackend + 'static,
         F: FnOnce() -> Result<(B, Arc<dyn X11Waker>), HotkeyError> + Send + 'static,
@@ -543,8 +534,9 @@ impl X11GlobalHotkeyManager {
         }
     }
 
-    /// Starts a manager backed by a [`MockX11HotkeyBackend`] (runs on every OS).
-    pub fn with_mock(mock: MockX11HotkeyBackend) -> Result<Self, HotkeyError> {
+    /// Starts a manager backed by a `MockX11HotkeyBackend` (runs on every OS in tests).
+    #[cfg(test)]
+    pub(crate) fn with_mock(mock: MockX11HotkeyBackend) -> Result<Self, HotkeyError> {
         Self::with_backend(move || {
             let waker = mock.waker();
             Ok((mock, waker))
@@ -573,7 +565,7 @@ impl X11GlobalHotkeyManager {
         answer.recv().unwrap_or(Err(HotkeyError::Stopped))
     }
 
-    pub fn register(
+    pub(crate) fn register(
         &self,
         id: u32,
         modifiers: HotkeyModifiers,
@@ -588,21 +580,21 @@ impl X11GlobalHotkeyManager {
         })
     }
 
-    pub fn unregister(&self, id: u32) -> Result<(), HotkeyError> {
+    pub(crate) fn unregister(&self, id: u32) -> Result<(), HotkeyError> {
         self.call(Op::Unregister { id })
     }
 
-    pub fn is_registered(&self, id: u32) -> bool {
+    pub(crate) fn is_registered(&self, id: u32) -> bool {
         lock(&self.shared.hotkeys).contains_key(&id)
     }
 
-    pub fn registered_ids(&self) -> Vec<u32> {
+    pub(crate) fn registered_ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = lock(&self.shared.hotkeys).keys().copied().collect();
         ids.sort_unstable();
         ids
     }
 
-    pub fn set_handler(&self, handler: Option<Handler>) {
+    pub(crate) fn set_handler(&self, handler: Option<Handler>) {
         *lock(&self.shared.handler) = handler;
     }
 
@@ -635,6 +627,7 @@ impl Drop for X11GlobalHotkeyManager {
 
 // ---- Cross-platform mock backend (for unit tests on every OS) -----------------------------------
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct MockInner {
     grabs: Vec<(u8, u32)>,
@@ -645,16 +638,19 @@ struct MockInner {
     disconnected: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct MockState {
     inner: Mutex<MockInner>,
     condvar: Condvar,
 }
 
+#[cfg(test)]
 struct MockWaker {
     state: Arc<MockState>,
 }
 
+#[cfg(test)]
 impl X11Waker for MockWaker {
     fn wake(&self) -> Result<(), HotkeyError> {
         let mut inner = lock(&self.state.inner);
@@ -668,18 +664,20 @@ impl X11Waker for MockWaker {
 ///
 /// Clones share the same underlying state, so a test retains one handle while the manager's worker
 /// thread owns the other.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
-pub struct MockX11HotkeyBackend {
+pub(crate) struct MockX11HotkeyBackend {
     state: Arc<MockState>,
 }
 
+#[cfg(test)]
 impl MockX11HotkeyBackend {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Deterministic non-zero hardware `KeyCode` (`8..=254`) assigned by this mock to `keysym`.
-    pub fn mock_keycode_for_keysym(keysym: u32) -> Option<u8> {
+    fn mock_keycode_for_keysym(keysym: u32) -> Option<u8> {
         match keysym {
             0 => None,
             0x0020..=0x007E => Some(((keysym - 0x0020) as u8) + 8),
@@ -698,48 +696,41 @@ impl MockX11HotkeyBackend {
 
     /// Convenience helper: maps a Windows `vk` through [`vk_to_x11_keysym`] and
     /// [`mock_keycode_for_keysym`](Self::mock_keycode_for_keysym).
-    pub fn mock_keycode_for_vk(vk: u32) -> Option<u8> {
+    pub(crate) fn mock_keycode_for_vk(vk: u32) -> Option<u8> {
         vk_to_x11_keysym(vk).and_then(Self::mock_keycode_for_keysym)
     }
 
-    pub fn waker(&self) -> Arc<dyn X11Waker> {
+    fn waker(&self) -> Arc<dyn X11Waker> {
         Arc::new(MockWaker {
             state: Arc::clone(&self.state),
         })
     }
 
     /// Currently active `(keycode, modifiers)` grabs (including all 4 lock-mask variants).
-    pub fn grabs(&self) -> Vec<(u8, u32)> {
+    pub(crate) fn grabs(&self) -> Vec<(u8, u32)> {
         lock(&self.state.inner).grabs.clone()
     }
 
     /// Marks one `(keycode, modifiers)` pair as held by another X11 client (`BadAccess`).
-    pub fn occupy(&self, keycode: u8, modifiers: u32) {
+    fn occupy(&self, keycode: u8, modifiers: u32) {
         lock(&self.state.inner).occupied.push((keycode, modifiers));
     }
 
     /// Marks all 4 lock-mask variants of `(keycode, base_modifiers)` as held by another client.
-    pub fn occupy_all_locks(&self, keycode: u8, base_modifiers: u32) {
+    fn occupy_all_locks(&self, keycode: u8, base_modifiers: u32) {
         let mut inner = lock(&self.state.inner);
         for &lock_mask in &X11_LOCK_MASK_VARIANTS {
             inner.occupied.push((keycode, base_modifiers | lock_mask));
         }
     }
 
-    /// Releases a previously [`occupy`](Self::occupy)ed `(keycode, modifiers)` pair.
-    pub fn unoccupy(&self, keycode: u8, modifiers: u32) {
-        lock(&self.state.inner)
-            .occupied
-            .retain(|&pair| pair != (keycode, modifiers));
-    }
-
     /// Causes `keysym_to_keycode(keysym)` to return `None` (simulating a layout without that key).
-    pub fn unmap_keysym(&self, keysym: u32) {
+    fn unmap_keysym(&self, keysym: u32) {
         lock(&self.state.inner).unmapped_keysyms.insert(keysym);
     }
 
     /// Simulates an X11 `KeyPress` event with raw `state` (may include `LockMask` / `Mod2Mask`).
-    pub fn press(&self, keycode: u8, state: u32) {
+    pub(crate) fn press(&self, keycode: u8, state: u32) {
         let mut inner = lock(&self.state.inner);
         inner.pending_presses.push_back(X11KeyPress {
             keycode,
@@ -750,7 +741,7 @@ impl MockX11HotkeyBackend {
     }
 
     /// Simulates an X11 auto-repeat `KeyPress` event.
-    pub fn press_repeat(&self, keycode: u8, state: u32) {
+    fn press_repeat(&self, keycode: u8, state: u32) {
         let mut inner = lock(&self.state.inner);
         inner.pending_presses.push_back(X11KeyPress {
             keycode,
@@ -761,13 +752,14 @@ impl MockX11HotkeyBackend {
     }
 
     /// Simulates the X server closing the connection.
-    pub fn disconnect(&self) {
+    pub(crate) fn disconnect(&self) {
         let mut inner = lock(&self.state.inner);
         inner.disconnected = true;
         self.state.condvar.notify_all();
     }
 }
 
+#[cfg(test)]
 impl X11HotkeyBackend for MockX11HotkeyBackend {
     fn keysym_to_keycode(&mut self, keysym: u32) -> Option<u8> {
         if lock(&self.state.inner).unmapped_keysyms.contains(&keysym) {
@@ -819,38 +811,21 @@ impl X11HotkeyBackend for MockX11HotkeyBackend {
     }
 }
 
-// ---- Real Linux X11 backend (`dlopen("libX11.so.6")` + self-pipe + `poll`) ---------------------
+// ---- Real Linux X11 backend (`dlopen("libX11.so.6")` + `UnixStream::pair()` + `poll`) ----------
 
 #[cfg(target_os = "linux")]
 mod x11 {
     use super::*;
     use std::ffi::{CStr, c_char, c_int, c_long, c_short, c_uint, c_ulong, c_void};
-    use std::io::ErrorKind;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
     use std::ptr;
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     const RTLD_LAZY: c_int = 1;
     const RTLD_LOCAL: c_int = 0;
-
-    const F_GETFD: c_int = 1;
-    const F_SETFD: c_int = 2;
-    const FD_CLOEXEC: c_int = 1;
-    const F_GETFL: c_int = 3;
-    const F_SETFL: c_int = 4;
-
-    #[cfg(any(target_arch = "mips", target_arch = "mips64"))]
-    const O_NONBLOCK: c_int = 0x0080;
-    #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
-    const O_NONBLOCK: c_int = 0x4000;
-    #[cfg(not(any(
-        target_arch = "mips",
-        target_arch = "mips64",
-        target_arch = "sparc",
-        target_arch = "sparc64"
-    )))]
-    const O_NONBLOCK: c_int = 0x0800;
 
     const POLLIN: c_short = 0x0001;
     const POLLERR: c_short = 0x0008;
@@ -942,10 +917,6 @@ mod x11 {
     }
 
     unsafe extern "C" {
-        fn pipe(fds: *mut c_int) -> c_int;
-        fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
-        fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
-        fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
         fn poll(fds: *mut PollFd, nfds: c_ulong, timeout: c_int) -> c_int;
     }
 
@@ -1154,90 +1125,44 @@ mod x11 {
         }
     }
 
-    // ---- Self-pipe helpers ----------------------------------------------------------------------
+    // ---- Wake socket helpers --------------------------------------------------------------------
 
-    fn set_fd_cloexec_nonblock(fd: c_int) -> Result<(), HotkeyError> {
-        // SAFETY: `fd` is a valid open pipe fd; `F_GETFD` takes no additional arguments.
-        let fd_flags = unsafe { fcntl(fd, F_GETFD) };
-        if fd_flags < 0 {
-            return Err(HotkeyError::Thread(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        // SAFETY: `fd` is open and `F_SETFD` takes a single `c_int` flag argument.
-        if unsafe { fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC) } < 0 {
-            return Err(HotkeyError::Thread(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        // SAFETY: `fd` is open and `F_GETFL` takes no additional arguments.
-        let fl_flags = unsafe { fcntl(fd, F_GETFL) };
-        if fl_flags < 0 {
-            return Err(HotkeyError::Thread(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        // SAFETY: `fd` is open and `F_SETFL` takes a single `c_int` flag argument.
-        if unsafe { fcntl(fd, F_SETFL, fl_flags | O_NONBLOCK) } < 0 {
-            return Err(HotkeyError::Thread(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        Ok(())
+    fn open_wake_pair() -> Result<(UnixStream, UnixStream), HotkeyError> {
+        let (reader, writer) =
+            UnixStream::pair().map_err(|e| HotkeyError::Thread(e.to_string()))?;
+        reader
+            .set_nonblocking(true)
+            .map_err(|e| HotkeyError::Thread(e.to_string()))?;
+        writer
+            .set_nonblocking(true)
+            .map_err(|e| HotkeyError::Thread(e.to_string()))?;
+        Ok((reader, writer))
     }
 
-    fn open_self_pipe() -> Result<(OwnedFd, OwnedFd), HotkeyError> {
-        let mut fds: [c_int; 2] = [-1, -1];
-        // SAFETY: `fds` is a writable 2-element `c_int` array as required by POSIX `pipe(2)`.
-        if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
-            return Err(HotkeyError::Thread(
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        // SAFETY: `pipe` succeeded and created two freshly owned, distinct open file descriptors.
-        let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        // SAFETY: `fds[1]` is the write end distinct from `fds[0]` created by `pipe` above.
-        let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        set_fd_cloexec_nonblock(read_fd.as_raw_fd())?;
-        set_fd_cloexec_nonblock(write_fd.as_raw_fd())?;
-        Ok((read_fd, write_fd))
+    struct SocketWaker {
+        writer: UnixStream,
     }
 
-    struct PipeWaker {
-        write_fd: OwnedFd,
-    }
-
-    impl X11Waker for PipeWaker {
+    impl X11Waker for SocketWaker {
         fn wake(&self) -> Result<(), HotkeyError> {
-            let byte: u8 = 1;
+            let mut stream = &self.writer;
             loop {
-                // SAFETY: `self.write_fd` is a valid open non-blocking pipe write fd, and `&byte`
-                // points to 1 readable byte for the duration of the syscall.
-                let n = unsafe {
-                    write(
-                        self.write_fd.as_raw_fd(),
-                        (&byte as *const u8).cast::<c_void>(),
-                        1,
-                    )
-                };
-                if n > 0 {
-                    return Ok(());
-                }
-                if n < 0 {
-                    let err = std::io::Error::last_os_error();
-                    match err.kind() {
+                match stream.write(&[1]) {
+                    Ok(_) => return Ok(()),
+                    Err(err) => match err.kind() {
                         ErrorKind::Interrupted => continue,
-                        // Pipe already contains unread wake bytes; the worker will wake on POLLIN.
+                        // Socket buffer already holds unread wake bytes; poll will wake on POLLIN.
                         ErrorKind::WouldBlock => return Ok(()),
-                        ErrorKind::BrokenPipe => return Err(HotkeyError::Stopped),
+                        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {
+                            return Err(HotkeyError::Stopped);
+                        }
                         _ => {
                             return Err(HotkeyError::Os {
                                 code: err.raw_os_error().unwrap_or(0) as u32,
                             });
                         }
-                    }
+                    },
                 }
-                return Ok(());
             }
         }
     }
@@ -1261,22 +1186,19 @@ mod x11 {
         display: *mut Display,
         root: c_ulong,
         x11_fd: c_int,
-        wake_read_fd: OwnedFd,
+        wake_reader: UnixStream,
         /// Set once `x11_fd` hangs up or `poll` fails fatally so teardown never calls back into
         /// Xlib (`XUngrabKey`/`XSync`/`XCloseDisplay`), which would trigger `_XIOError` (`exit(1)`).
         disconnected: bool,
     }
 
     impl X11Backend {
-        /// Opens a dedicated `Display*` and self-pipe on the worker thread.
+        /// Opens a dedicated `Display*` and wake socket pair on the worker thread.
         pub(super) fn open() -> Result<(Self, Arc<dyn X11Waker>), HotkeyError> {
-            if std::env::var_os("DISPLAY").is_none_or(|v| v.is_empty()) {
-                return Err(HotkeyError::Unsupported);
-            }
             let Some(lib) = X11Lib::get() else {
                 return Err(HotkeyError::Unsupported);
             };
-            let (wake_read_fd, wake_write_fd) = open_self_pipe()?;
+            let (wake_reader, wake_writer) = open_wake_pair()?;
 
             // SAFETY: `lib.x_open_display` is resolved from `libX11.so.6`; NULL tells Xlib to use
             // the `DISPLAY` environment variable.
@@ -1289,8 +1211,8 @@ mod x11 {
             // SAFETY: `display` is a live `Display*` owned exclusively by this worker thread.
             let x11_fd = unsafe { (lib.x_connection_number)(display) };
 
-            let waker: Arc<dyn X11Waker> = Arc::new(PipeWaker {
-                write_fd: wake_write_fd,
+            let waker: Arc<dyn X11Waker> = Arc::new(SocketWaker {
+                writer: wake_writer,
             });
             Ok((
                 Self {
@@ -1298,32 +1220,23 @@ mod x11 {
                     display,
                     root,
                     x11_fd,
-                    wake_read_fd,
+                    wake_reader,
                     disconnected: false,
                 },
                 waker,
             ))
         }
 
-        fn drain_wake_pipe(&self) {
+        fn drain_wake_socket(&self) {
+            let mut stream = &self.wake_reader;
             let mut buf = [0u8; 64];
             loop {
-                // SAFETY: `self.wake_read_fd` is a valid non-blocking pipe read fd and `buf` is a
-                // writable 64-byte stack buffer valid for the duration of `read`.
-                let n = unsafe {
-                    read(
-                        self.wake_read_fd.as_raw_fd(),
-                        buf.as_mut_ptr().cast::<c_void>(),
-                        buf.len(),
-                    )
-                };
-                if n > 0 {
-                    continue;
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => continue,
+                    Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 }
-                if n < 0 && std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
-                    continue;
-                }
-                break;
             }
         }
     }
@@ -1407,7 +1320,7 @@ mod x11 {
                     revents: 0,
                 },
                 PollFd {
-                    fd: self.wake_read_fd.as_raw_fd(),
+                    fd: self.wake_reader.as_raw_fd(),
                     events: POLLIN,
                     revents: 0,
                 },
@@ -1425,7 +1338,7 @@ mod x11 {
                 break;
             }
             if (fds[1].revents & POLLIN) != 0 {
-                self.drain_wake_pipe();
+                self.drain_wake_socket();
             }
             if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 {
                 self.disconnected = true;
@@ -1687,6 +1600,7 @@ mod tests {
                 code: X11_BAD_ACCESS
             }
         );
+        #[cfg(target_os = "linux")]
         assert!(err.is_already_registered());
         assert!(!mgr.is_registered(1));
         assert!(mock.grabs().is_empty(), "partial grabs must be rolled back");
@@ -1703,7 +1617,7 @@ mod tests {
             mgr.register(1, HotkeyModifiers::CONTROL, b'D' as u32, false),
             Err(HotkeyError::IdInUse(1))
         );
-        // Same combination under another id reports BadAccess (`is_already_registered`).
+        // Same combination under another id reports BadAccess.
         let conflict = mgr
             .register(
                 2,
@@ -1718,6 +1632,7 @@ mod tests {
                 code: X11_BAD_ACCESS
             }
         );
+        #[cfg(target_os = "linux")]
         assert!(conflict.is_already_registered());
         assert!(!mgr.is_registered(2));
 
@@ -1773,6 +1688,13 @@ mod tests {
         let err = mgr
             .register(10, HotkeyModifiers::CONTROL, b'C' as u32, true)
             .unwrap_err();
+        assert_eq!(
+            err,
+            HotkeyError::Os {
+                code: X11_BAD_ACCESS
+            }
+        );
+        #[cfg(target_os = "linux")]
         assert!(err.is_already_registered());
         assert!(mgr.is_registered(10));
         assert_eq!(

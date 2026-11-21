@@ -30,11 +30,13 @@ pub mod drag_drop;
 pub mod high_dpi;
 pub use high_dpi::*;
 pub mod global_hotkey;
-pub mod global_hotkey_macos;
+#[cfg(any(target_os = "macos", test))]
+mod global_hotkey_macos;
 pub use dark_mode::{DarkModeHandling, dark_mode_handling, set_dark_mode_handling};
 pub use global_hotkey::GlobalHotkeyManager;
 pub mod hotkey;
-pub mod hotkey_x11;
+#[cfg(any(target_os = "linux", test))]
+mod hotkey_x11;
 pub mod ime;
 pub mod integration;
 pub mod layered;

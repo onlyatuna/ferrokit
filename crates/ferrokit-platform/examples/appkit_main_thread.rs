@@ -477,8 +477,9 @@ mod checks {
     use ferrokit_platform::{
         ClosureWindowEventHandler, CocoaCursor, CocoaNativeEvent, CocoaNativeWindow,
         CocoaPlatformIntegration, CocoaScreen, CocoaTheme, ColorScheme, CursorShape,
-        PlatformCursor, PlatformIntegration, PlatformScreen, PlatformWindow, TrayMessageIcon,
-        WindowEdges, WindowFlags, WindowSystemEvent,
+        GlobalHotkeyManager, HotkeyError, HotkeyModifiers, PlatformCursor, PlatformIntegration,
+        PlatformScreen, PlatformWindow, TrayMessageIcon, WindowEdges, WindowFlags,
+        WindowSystemEvent,
     };
 
     use super::cg;
@@ -716,6 +717,11 @@ mod checks {
             name: "integration_factory",
             origin: "test_platform_abstractions::test_platform_integration_factory, ::test_cocoa_platform_integration_status_item_and_retina",
             run: integration_factory,
+        },
+        CheckDef {
+            name: "global_hotkey_carbon",
+            origin: "test_global_hotkey::macos::registers_on_main_thread_or_reports_thread_error_on_worker (OS main thread Carbon RegisterEventHotKey)",
+            run: global_hotkey_carbon,
         },
     ];
 
@@ -2279,5 +2285,93 @@ mod checks {
             send::<isize>(view, "state"),
             1,
         );
+    }
+
+    fn global_hotkey_carbon(t: &mut Recorder) {
+        const VK_F13: u32 = 0x7C;
+        const VK_F14: u32 = 0x7D;
+        const MODS: HotkeyModifiers = HotkeyModifiers::CONTROL
+            .union(HotkeyModifiers::ALT)
+            .union(HotkeyModifiers::SHIFT)
+            .union(HotkeyModifiers::WIN)
+            .union(HotkeyModifiers::NO_REPEAT);
+
+        // Background thread without `CoreApplication::exec()` must fail cleanly with `Thread`.
+        let bg = std::thread::spawn(GlobalHotkeyManager::new)
+            .join()
+            .expect("background GlobalHotkeyManager::new must not panic");
+        t.expect(
+            matches!(bg, Err(HotkeyError::Thread(_))),
+            "background thread without active main loop returns HotkeyError::Thread",
+        );
+
+        let m = match GlobalHotkeyManager::new() {
+            Ok(m) => m,
+            Err(e) => {
+                t.expect(
+                    false,
+                    &format!("GlobalHotkeyManager::new on main thread: {e:?}"),
+                );
+                return;
+            }
+        };
+        t.expect(m.registered_ids().is_empty(), "initially empty");
+
+        let reg = m.register(10, MODS, VK_F13);
+        t.expect(
+            reg.is_ok(),
+            &format!("register Ctrl+Alt+Shift+Cmd+F13: {reg:?}"),
+        );
+        if reg.is_err() {
+            return;
+        }
+        t.expect(m.is_registered(10), "id 10 is_registered()");
+        t.eq("registered_ids()", m.registered_ids(), vec![10]);
+
+        t.eq(
+            "duplicate id returns IdInUse",
+            m.register(10, MODS, VK_F14),
+            Err(HotkeyError::IdInUse(10)),
+        );
+        t.eq(
+            "unknown id unregister returns NotRegistered",
+            m.unregister(11),
+            Err(HotkeyError::NotRegistered(11)),
+        );
+
+        let conflict = m.register(11, MODS, VK_F13);
+        t.expect(
+            matches!(&conflict, Err(e) if e.is_already_registered()),
+            &format!("Carbon duplicate combination reports is_already_registered: {conflict:?}"),
+        );
+        t.expect(
+            !m.is_registered(11),
+            "failed conflict leaves id 11 unregistered",
+        );
+
+        t.eq("replace(10 -> F14)", m.replace(10, MODS, VK_F14), Ok(()));
+        t.eq("registered_ids after replace", m.registered_ids(), vec![10]);
+        t.eq(
+            "old combination F13 is free after replace",
+            m.register(12, MODS, VK_F13),
+            Ok(()),
+        );
+        t.eq("unregister(10)", m.unregister(10), Ok(()));
+        t.eq("unregister(12)", m.unregister(12), Ok(()));
+        t.expect(m.registered_ids().is_empty(), "empty after unregisters");
+
+        t.eq(
+            "re-register id 13 before Drop",
+            m.register(13, MODS, VK_F13),
+            Ok(()),
+        );
+        drop(m);
+        let m2 = GlobalHotkeyManager::new().expect("second GlobalHotkeyManager::new");
+        t.eq(
+            "drop releases Carbon registration for reuse",
+            m2.register(13, MODS, VK_F13),
+            Ok(()),
+        );
+        drop(m2);
     }
 }

@@ -14,10 +14,10 @@
 //!   main-thread event loop is running (for example on `cargo test` worker threads), they fail
 //!   immediately with [`HotkeyError::Thread`] rather than panicking or deadlocking.
 //!
-//! Everything that touches Carbon goes through [`MacosHotkeyBackend`] and [`MainThreadExecutor`],
+//! Everything that touches Carbon goes through `MacosHotkeyBackend` and `MainThreadExecutor`,
 //! so the registration lifecycle, `replace()` rollback, conflict detection
 //! (`eventHotKeyExistsErr` = `-9878`), press routing, panic containment, and cross-thread
-//! marshaling are unit-tested on every OS with [`MockMacosHotkeyBackend`].
+//! marshaling are unit-tested on every OS with `MockMacosHotkeyBackend`.
 
 use crate::hotkey::cocoa_hotkey::{carbon_keycode, carbon_modifiers};
 use crate::hotkey::{HotkeyError, HotkeyModifiers};
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 
 /// Carbon `eventHotKeyInvalidErr` (`-9879`) encoded as `u32` for [`HotkeyError::Os`].
-pub const CARBON_EVENT_HOT_KEY_INVALID_ERR: u32 = (-9879_i32) as u32;
+const CARBON_EVENT_HOT_KEY_INVALID_ERR: u32 = (-9879_i32) as u32;
 
 type Handler = Arc<dyn Fn(u32) + Send + Sync>;
 type BoxedTask = Box<dyn FnOnce() + Send>;
@@ -35,9 +35,9 @@ type BoxedTask = Box<dyn FnOnce() + Send>;
 /// Low-level macOS hotkey operations executed on the OS main thread.
 ///
 /// On macOS the production implementation calls Carbon's `InstallEventHandler`,
-/// `RegisterEventHotKey`, and `UnregisterEventHotKey`. Tests inject [`MockMacosHotkeyBackend`] so
+/// `RegisterEventHotKey`, and `UnregisterEventHotKey`. Tests inject `MockMacosHotkeyBackend` so
 /// the full manager runs on any OS.
-pub trait MacosHotkeyBackend: Send {
+trait MacosHotkeyBackend: Send {
     /// Ensures the process-wide hotkey event handler is installed.
     fn initialize(&mut self) -> Result<(), HotkeyError>;
 
@@ -50,7 +50,7 @@ pub trait MacosHotkeyBackend: Send {
 }
 
 /// Runs Carbon operations on the macOS OS main thread without deadlocking.
-pub trait MainThreadExecutor: Send + Sync {
+trait MainThreadExecutor: Send + Sync {
     /// Runs `f` synchronously on the main thread (inline when already on the main thread, or
     /// marshaled when on another thread with an active main-thread event loop).
     fn run_sync(&self, f: BoxedTask) -> Result<(), HotkeyError>;
@@ -181,7 +181,7 @@ pub(crate) fn route_press(slot: u32) -> bool {
 
 /// Thread-safe (`Send + Sync`) macOS global-hotkey manager used behind
 /// [`GlobalHotkeyManager`](crate::global_hotkey::GlobalHotkeyManager) on `target_os = "macos"`.
-pub struct MacosGlobalHotkeyManager {
+pub(crate) struct MacosGlobalHotkeyManager {
     inner: Arc<Inner>,
 }
 
@@ -201,7 +201,7 @@ impl MacosGlobalHotkeyManager {
     /// the main thread, marshals via `CoreApplication`'s active event loop when called from a
     /// background thread while `CoreApplication::in_exec()` is true, or returns
     /// [`HotkeyError::Thread`] if called off the main thread with no running main-thread loop.
-    pub fn new() -> Result<Self, HotkeyError> {
+    pub(crate) fn new() -> Result<Self, HotkeyError> {
         #[cfg(target_os = "macos")]
         {
             Self::with_backend_and_executor(
@@ -215,9 +215,9 @@ impl MacosGlobalHotkeyManager {
         }
     }
 
-    /// Creates a manager with an explicit [`MacosHotkeyBackend`] and [`MainThreadExecutor`].
+    /// Creates a manager with an explicit `MacosHotkeyBackend` and `MainThreadExecutor`.
     /// Initializes the backend on the executor's main thread before returning.
-    pub fn with_backend_and_executor(
+    fn with_backend_and_executor(
         backend: Box<dyn MacosHotkeyBackend>,
         executor: Arc<dyn MainThreadExecutor>,
     ) -> Result<Self, HotkeyError> {
@@ -240,7 +240,7 @@ impl MacosGlobalHotkeyManager {
 
     /// Registers `id` for `modifiers` + `vk` (or replaces its existing combination when `replace`
     /// is true, rolling back to the old combination if registering the new one fails).
-    pub fn register(
+    pub(crate) fn register(
         &self,
         id: u32,
         modifiers: HotkeyModifiers,
@@ -328,7 +328,7 @@ impl MacosGlobalHotkeyManager {
     }
 
     /// Releases `id` ([`HotkeyError::NotRegistered`] if not held by this manager).
-    pub fn unregister(&self, id: u32) -> Result<(), HotkeyError> {
+    pub(crate) fn unregister(&self, id: u32) -> Result<(), HotkeyError> {
         if lock(&self.inner.state).stopped {
             return Err(HotkeyError::Stopped);
         }
@@ -347,19 +347,19 @@ impl MacosGlobalHotkeyManager {
     }
 
     /// Whether this manager currently holds `id`.
-    pub fn is_registered(&self, id: u32) -> bool {
+    pub(crate) fn is_registered(&self, id: u32) -> bool {
         lock(&self.inner.state).hotkeys.contains_key(&id)
     }
 
     /// Ids this manager currently holds, sorted ascending.
-    pub fn registered_ids(&self) -> Vec<u32> {
+    pub(crate) fn registered_ids(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = lock(&self.inner.state).hotkeys.keys().copied().collect();
         ids.sort_unstable();
         ids
     }
 
     /// Sets or clears the callback invoked when a registered hotkey is pressed.
-    pub fn set_handler(&self, handler: Option<Handler>) {
+    pub(crate) fn set_handler(&self, handler: Option<Handler>) {
         let dropped = {
             let mut state = lock(&self.inner.state);
             if state.stopped {
@@ -379,15 +379,17 @@ impl Drop for MacosGlobalHotkeyManager {
     }
 }
 
-/// One hotkey held by a [`MockMacosHotkeyBackend`].
+/// One hotkey held by a `MockMacosHotkeyBackend`.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MockMacosHotkey {
-    pub handle: usize,
-    pub slot: u32,
-    pub keycode: u32,
-    pub modifiers: u32,
+struct MockMacosHotkey {
+    handle: usize,
+    slot: u32,
+    keycode: u32,
+    modifiers: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct MockState {
     initialized: bool,
@@ -401,48 +403,50 @@ struct MockState {
     op_threads: Vec<std::thread::ThreadId>,
 }
 
-/// Thread-safe in-memory Carbon hotkey backend for cross-platform unit and integration tests.
+/// Thread-safe in-memory Carbon hotkey backend for cross-platform unit tests.
 ///
 /// Clones share the underlying table so a test keeps a handle to inspect registrations, inject
 /// conflicts (`occupy`), and trigger hotkey presses (`press`) while the manager owns another clone.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
-pub struct MockMacosHotkeyBackend {
+struct MockMacosHotkeyBackend {
     state: Arc<Mutex<MockState>>,
 }
 
+#[cfg(test)]
 impl MockMacosHotkeyBackend {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self::default()
     }
 
     /// Whether [`MacosHotkeyBackend::initialize`] succeeded on this backend.
-    pub fn is_initialized(&self) -> bool {
+    fn is_initialized(&self) -> bool {
         lock(&self.state).initialized
     }
 
     /// Makes [`MacosHotkeyBackend::initialize`] fail with `err`.
-    pub fn fail_initialize(&self, err: HotkeyError) {
+    fn fail_initialize(&self, err: HotkeyError) {
         lock(&self.state).fail_init = Some(err);
     }
 
     /// Hotkeys currently registered, in registration order.
-    pub fn hotkeys(&self) -> Vec<MockMacosHotkey> {
+    fn hotkeys(&self) -> Vec<MockMacosHotkey> {
         lock(&self.state).hotkeys.clone()
     }
 
     /// Threads on which backend operations (`initialize`, `register`, `unregister`) ran.
-    pub fn op_threads(&self) -> Vec<std::thread::ThreadId> {
+    fn op_threads(&self) -> Vec<std::thread::ThreadId> {
         lock(&self.state).op_threads.clone()
     }
 
     /// Marks Carbon `keycode` + `modifiers` as held by another application (triggers
     /// `HotkeyError::Os { code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR }`).
-    pub fn occupy(&self, keycode: u32, modifiers: u32) {
+    fn occupy(&self, keycode: u32, modifiers: u32) {
         lock(&self.state).occupied.push((keycode, modifiers));
     }
 
     /// Scripts the next `register` call (`Some(err)` forces `Err(err)`, `None` uses normal logic).
-    pub fn push_register_outcome(&self, outcome: Option<HotkeyError>) {
+    fn push_register_outcome(&self, outcome: Option<HotkeyError>) {
         lock(&self.state)
             .scripted_register_errors
             .push_back(outcome);
@@ -450,7 +454,7 @@ impl MockMacosHotkeyBackend {
 
     /// Simulates a user pressing Carbon `keycode` + `modifiers`. Returns whether a registered
     /// hotkey handled it.
-    pub fn press(&self, keycode: u32, modifiers: u32) -> bool {
+    fn press(&self, keycode: u32, modifiers: u32) -> bool {
         let slot = {
             let state = lock(&self.state);
             state
@@ -464,11 +468,12 @@ impl MockMacosHotkeyBackend {
     }
 
     /// Simulates Carbon delivering a raw `slot` press (useful for testing stale/unknown slots).
-    pub fn press_slot(&self, slot: u32) -> bool {
+    fn press_slot(&self, slot: u32) -> bool {
         route_press(slot)
     }
 }
 
+#[cfg(test)]
 impl MacosHotkeyBackend for MockMacosHotkeyBackend {
     fn initialize(&mut self) -> Result<(), HotkeyError> {
         let mut state = lock(&self.state);
@@ -524,9 +529,11 @@ impl MacosHotkeyBackend for MockMacosHotkeyBackend {
 }
 
 /// Inline [`MainThreadExecutor`] for single-thread tests (runs every task immediately in place).
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
-pub struct InlineMainThreadExecutor;
+struct InlineMainThreadExecutor;
 
+#[cfg(test)]
 impl MainThreadExecutor for InlineMainThreadExecutor {
     fn run_sync(&self, f: BoxedTask) -> Result<(), HotkeyError> {
         f();
@@ -1105,6 +1112,7 @@ mod tests {
             }
         );
         assert_eq!(err.os_code(), Some((-9878_i32) as u32));
+        #[cfg(target_os = "macos")]
         assert!(err.is_already_registered());
         assert!(!mgr.is_registered(11));
 
@@ -1113,6 +1121,13 @@ mod tests {
         let err = mgr
             .register(12, HotkeyModifiers::CONTROL, VK_F14, false)
             .unwrap_err();
+        assert_eq!(
+            err,
+            HotkeyError::Os {
+                code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR
+            }
+        );
+        #[cfg(target_os = "macos")]
         assert!(err.is_already_registered());
         assert!(!mgr.is_registered(12));
         assert_eq!(mgr.registered_ids(), [10]);
@@ -1140,12 +1155,19 @@ mod tests {
         assert!(mock.press(CARBON_B, CARBON_OPTION_KEY));
         assert_eq!(*lock(&hits), [40]);
 
-        // Move id 40 onto an occupied combination C: fails with is_already_registered(), and rolls
+        // Move id 40 onto an occupied combination C: fails with eventHotKeyExistsErr, and rolls
         // back to B so B still fires id 40.
         mock.occupy(CARBON_C, CARBON_OPTION_KEY);
         let err = mgr
             .register(40, HotkeyModifiers::ALT, VK_C, true)
             .unwrap_err();
+        assert_eq!(
+            err,
+            HotkeyError::Os {
+                code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR
+            }
+        );
+        #[cfg(target_os = "macos")]
         assert!(err.is_already_registered());
         assert!(mgr.is_registered(40));
         assert_eq!(mock.hotkeys().len(), 1);
