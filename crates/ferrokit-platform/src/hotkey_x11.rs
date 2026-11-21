@@ -16,8 +16,12 @@
 
 use crate::hotkey::{HotkeyError, HotkeyModifiers};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
+#[cfg(test)]
+use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
+#[cfg(test)]
+use std::sync::Condvar;
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle, ThreadId};
 
 // Standard X11 modifier masks (`<X11/X.h>`).
@@ -1146,23 +1150,18 @@ mod x11 {
     impl X11Waker for SocketWaker {
         fn wake(&self) -> Result<(), HotkeyError> {
             let mut stream = &self.writer;
-            loop {
-                match stream.write(&[1]) {
-                    Ok(_) => return Ok(()),
-                    Err(err) => match err.kind() {
-                        ErrorKind::Interrupted => continue,
-                        // Socket buffer already holds unread wake bytes; poll will wake on POLLIN.
-                        ErrorKind::WouldBlock => return Ok(()),
-                        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {
-                            return Err(HotkeyError::Stopped);
-                        }
-                        _ => {
-                            return Err(HotkeyError::Os {
-                                code: err.raw_os_error().unwrap_or(0) as u32,
-                            });
-                        }
-                    },
-                }
+            match stream.write_all(&[1]) {
+                Ok(()) => Ok(()),
+                Err(err) => match err.kind() {
+                    // Socket buffer already holds unread wake bytes; poll will wake on POLLIN.
+                    ErrorKind::WouldBlock => Ok(()),
+                    ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::WriteZero => {
+                        Err(HotkeyError::Stopped)
+                    }
+                    _ => Err(HotkeyError::Os {
+                        code: err.raw_os_error().unwrap_or(0) as u32,
+                    }),
+                },
             }
         }
     }
