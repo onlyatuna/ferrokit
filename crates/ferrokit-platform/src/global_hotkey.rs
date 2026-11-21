@@ -7,22 +7,32 @@
 //! system refused one, and be told when one is pressed.
 //!
 //! Delivery: the handler set with [`GlobalHotkeyManager::set_handler`] runs **on the manager's
-//! worker thread**, never on the thread that registered the hotkey. It is the equivalent of a
-//! `Qt::DirectConnection` from a thread other than the receiver's: forward the press to the GUI
-//! thread yourself (for example with `run_on_main_thread`) when it touches GUI state. The handler
-//! may call [`register`](GlobalHotkeyManager::register) and
+//! dedicated worker thread on Windows and Linux X11**, and **on the OS main thread
+//! (`GetApplicationEventTarget()`) on macOS Carbon** — never on an arbitrary caller thread that
+//! registered the hotkey. Forward the press to the GUI thread yourself (for example with a signal
+//! connected with `ConnectionType::Auto` or `run_on_main_thread`) when it touches GUI state. The
+//! handler may call [`register`](GlobalHotkeyManager::register) and
 //! [`unregister`](GlobalHotkeyManager::unregister) on the manager (they then run in place, on the
-//! worker thread). A press the system queued for a hotkey just before it was unregistered is
-//! dropped if the id is still unregistered when the worker reaches it; if the id was registered
-//! again (or replaced) by then, the stale press is delivered for the new registration.
+//! dispatching thread). A press the system queued for a hotkey just before it was unregistered is
+//! dropped if the id is still unregistered when the dispatcher reaches it; on Windows and Linux
+//! X11, if the id was registered again (or replaced) by then, the stale press is delivered for the
+//! new registration (macOS routes per registration slot, so stale slots are always dropped).
 //!
 //! Registering or unregistering from another thread waits for the worker thread, which is busy
 //! while the handler runs: do not call them while holding something the handler waits for, or
 //! the two deadlock.
 //!
-//! Only Windows has a back end here; elsewhere [`GlobalHotkeyManager::new`] fails with
-//! [`HotkeyError::Unsupported`] (macOS: use [`CocoaHotkeyManager`](crate::hotkey::CocoaHotkeyManager),
-//! which delivers on the owner thread's event loop).
+//! Platform back ends:
+//! - **Windows**: dedicated worker thread with a Win32 message queue (`RegisterHotKey(NULL, ...)`).
+//! - **macOS**: Carbon `RegisterEventHotKey` on `GetApplicationEventTarget()` (runs directly in
+//!   place on the OS main thread, or marshals through an active `CoreApplication` main-thread
+//!   event loop from background threads; returns [`HotkeyError::Thread`] off the main thread when
+//!   no main-thread event loop is running).
+//! - **Linux (X11)**: dedicated worker thread with its own `Display*` connection loaded dynamically
+//!   from `libX11.so.6` (`XGrabKey` across CapsLock/NumLock masks); returns
+//!   [`HotkeyError::Unsupported`] on pure Wayland, headless sessions without `DISPLAY`, or when
+//!   `libX11.so.6` is unavailable.
+//! - **Other platforms**: [`GlobalHotkeyManager::new`] fails with [`HotkeyError::Unsupported`].
 
 use crate::hotkey::{HotkeyError, HotkeyModifiers};
 
@@ -109,7 +119,7 @@ impl GlobalHotkeyManager {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod imp {
     use super::*;
     use std::sync::Arc;
@@ -145,6 +155,16 @@ mod imp {
 
         pub(super) fn set_handler(&self, _handler: Option<Arc<dyn Fn(u32) + Send + Sync>>) {}
     }
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    pub(super) use crate::global_hotkey_macos::MacosGlobalHotkeyManager as Manager;
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    pub(super) use crate::hotkey_x11::X11GlobalHotkeyManager as Manager;
 }
 
 #[cfg(windows)]

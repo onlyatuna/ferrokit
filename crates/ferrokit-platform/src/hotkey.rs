@@ -25,9 +25,10 @@ pub trait PlatformHotkeyManager {
 
 /// Why a global hotkey could not be registered or unregistered.
 ///
-/// [`os_code`](Self::os_code) carries the operating system's error code (on Windows the
-/// `GetLastError` value read right after `RegisterHotKey`/`UnregisterHotKey` failed), so a caller
-/// can tell "another program already owns this combination" from other refusals.
+/// [`os_code`](Self::os_code) carries the operating system's error code (Windows `GetLastError`
+/// after `RegisterHotKey`/`UnregisterHotKey`, macOS Carbon `OSStatus` cast to `u32`, or Linux X11
+/// protocol error code such as `BadAccess`), so a caller can tell "another program already owns
+/// this combination" from other refusals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyError {
     /// This platform has no global-hotkey back end behind the type that reported it.
@@ -38,7 +39,8 @@ pub enum HotkeyError {
     NotRegistered(u32),
     /// The OS refused the call; `code` is its error code.
     Os {
-        /// Windows `GetLastError()` value.
+        /// Platform OS error code (Windows `GetLastError()`, macOS Carbon `OSStatus as u32`, or
+        /// Linux X11 error code).
         code: u32,
     },
     /// The manager's worker thread is no longer running, so it can take no more requests.
@@ -51,6 +53,11 @@ impl HotkeyError {
     /// Windows `ERROR_HOTKEY_ALREADY_REGISTERED`: the combination belongs to another program (or
     /// another registration of this process).
     pub const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
+    /// macOS Carbon `eventHotKeyExistsErr` (`-9878i32 as u32`): the combination is already
+    /// registered.
+    pub const CARBON_EVENT_HOT_KEY_EXISTS_ERR: u32 = (-9878_i32) as u32;
+    /// Linux X11 `BadAccess` (`10`): another client (or registration) already holds the key grab.
+    pub const X11_BAD_ACCESS: u32 = 10;
 
     /// The OS error code, if the OS refused the call.
     pub fn os_code(&self) -> Option<u32> {
@@ -60,10 +67,27 @@ impl HotkeyError {
         }
     }
 
-    /// Whether the OS reported the combination as already registered
-    /// ([`ERROR_HOTKEY_ALREADY_REGISTERED`](Self::ERROR_HOTKEY_ALREADY_REGISTERED)).
+    /// Whether the OS reported the combination as already registered on the current target OS
+    /// (Windows [`ERROR_HOTKEY_ALREADY_REGISTERED`](Self::ERROR_HOTKEY_ALREADY_REGISTERED),
+    /// macOS Carbon [`CARBON_EVENT_HOT_KEY_EXISTS_ERR`](Self::CARBON_EVENT_HOT_KEY_EXISTS_ERR), or
+    /// Linux X11 [`X11_BAD_ACCESS`](Self::X11_BAD_ACCESS)).
     pub fn is_already_registered(&self) -> bool {
-        self.os_code() == Some(Self::ERROR_HOTKEY_ALREADY_REGISTERED)
+        #[cfg(windows)]
+        {
+            self.os_code() == Some(Self::ERROR_HOTKEY_ALREADY_REGISTERED)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.os_code() == Some(Self::CARBON_EVENT_HOT_KEY_EXISTS_ERR)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.os_code() == Some(Self::X11_BAD_ACCESS)
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+        {
+            false
+        }
     }
 }
 
@@ -725,57 +749,57 @@ pub mod cocoa_hotkey {
     }
 
     #[cfg(target_os = "macos")]
-    mod carbon {
+    pub(crate) mod carbon {
         use super::*;
         use ferrokit_core::object::ThreadContext;
         use std::ffi::c_void;
 
-        type OSStatus = i32;
-        type EventTargetRef = *mut c_void;
-        type EventHandlerRef = *mut c_void;
-        type EventHandlerCallRef = *mut c_void;
-        type EventRef = *mut c_void;
-        type EventHotKeyRef = *mut c_void;
-        type EventHandlerProc =
+        pub(crate) type OSStatus = i32;
+        pub(crate) type EventTargetRef = *mut c_void;
+        pub(crate) type EventHandlerRef = *mut c_void;
+        pub(crate) type EventHandlerCallRef = *mut c_void;
+        pub(crate) type EventRef = *mut c_void;
+        pub(crate) type EventHotKeyRef = *mut c_void;
+        pub(crate) type EventHandlerProc =
             extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
         #[repr(C)]
-        struct EventTypeSpec {
-            event_class: u32,
-            event_kind: u32,
+        pub(crate) struct EventTypeSpec {
+            pub(crate) event_class: u32,
+            pub(crate) event_kind: u32,
         }
 
         /// `EventHotKeyID`, passed to `RegisterEventHotKey` by value.
         #[repr(C)]
         #[derive(Clone, Copy)]
-        struct EventHotKeyId {
-            signature: u32,
-            id: u32,
+        pub(crate) struct EventHotKeyId {
+            pub(crate) signature: u32,
+            pub(crate) id: u32,
         }
 
-        const NO_ERR: OSStatus = 0;
-        const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
+        pub(crate) const NO_ERR: OSStatus = 0;
+        pub(crate) const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
         const EVENT_HOT_KEY_EXISTS_ERR: OSStatus = -9878;
         const EVENT_HOT_KEY_INVALID_ERR: OSStatus = -9879;
-        const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
-        const EVENT_HOT_KEY_PRESSED: u32 = 5;
-        const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
-        const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
+        pub(crate) const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
+        pub(crate) const EVENT_HOT_KEY_PRESSED: u32 = 5;
+        pub(crate) const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+        pub(crate) const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
         /// Our `EventHotKeyID::signature` ('FKIT'): other hotkey events are not ours.
         const SIGNATURE: u32 = u32::from_be_bytes(*b"FKIT");
 
         #[link(name = "Carbon", kind = "framework")]
         unsafe extern "C" {
-            fn GetApplicationEventTarget() -> EventTargetRef;
-            fn InstallEventHandler(
+            pub(crate) fn GetApplicationEventTarget() -> EventTargetRef;
+            pub(crate) fn InstallEventHandler(
                 target: EventTargetRef,
                 handler: EventHandlerProc,
-                num_types: u32,
+                num_types: usize,
                 list: *const EventTypeSpec,
                 user_data: *mut c_void,
                 out_ref: *mut EventHandlerRef,
             ) -> OSStatus;
-            fn GetEventParameter(
+            pub(crate) fn GetEventParameter(
                 event: EventRef,
                 name: u32,
                 desired_type: u32,
@@ -784,7 +808,7 @@ pub mod cocoa_hotkey {
                 actual_size: *mut usize,
                 out_data: *mut c_void,
             ) -> OSStatus;
-            fn RegisterEventHotKey(
+            pub(crate) fn RegisterEventHotKey(
                 key_code: u32,
                 modifiers: u32,
                 hot_key_id: EventHotKeyId,
@@ -792,7 +816,7 @@ pub mod cocoa_hotkey {
                 options: u32,
                 out_ref: *mut EventHotKeyRef,
             ) -> OSStatus;
-            fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
+            pub(crate) fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
         }
 
         /// Carbon calls this on the main thread, from the application event target, for every
@@ -929,61 +953,197 @@ pub use cocoa_hotkey::CocoaHotkeyManager;
 
 pub mod unix_hotkey {
     use super::*;
-    use std::collections::HashSet;
+    #[cfg(any(target_os = "linux", test))]
+    use crate::hotkey_x11::{X11_BAD_ACCESS, X11_BAD_VALUE, X11GlobalHotkeyManager};
+    #[cfg(any(target_os = "linux", test))]
+    use std::sync::Arc;
 
-    #[derive(Debug, Default)]
+    /// Global hotkey manager for Unix/X11, backed by `X11GlobalHotkeyManager` on Linux.
+    ///
+    /// On Linux with an active X11 display and `libX11.so.6`, registrations grab the key across all
+    /// 4 CapsLock/NumLock modifier combinations. On pure Wayland, headless CI without `DISPLAY`, or
+    /// non-Linux platforms, [`new`](Self::new) creates an unavailable manager whose registrations
+    /// fail cleanly with [`HotkeyError::Unsupported`].
     pub struct UnixHotkeyManager {
-        registered_ids: HashSet<u32>,
+        #[cfg(any(target_os = "linux", test))]
+        inner: Option<X11GlobalHotkeyManager>,
+    }
+
+    impl std::fmt::Debug for UnixHotkeyManager {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("UnixHotkeyManager")
+                .field("registered_ids", &self.registered_ids())
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl Default for UnixHotkeyManager {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl UnixHotkeyManager {
+        /// Creates a manager backed by X11 when available, or an unavailable manager otherwise.
         pub fn new() -> Self {
-            Self::default()
+            #[cfg(any(target_os = "linux", test))]
+            {
+                Self {
+                    inner: X11GlobalHotkeyManager::new().ok(),
+                }
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            {
+                Self {}
+            }
         }
 
-        pub fn registered_ids(&self) -> &HashSet<u32> {
-            &self.registered_ids
+        /// Like [`new`](Self::new), but returns [`HotkeyError::Unsupported`] if no X11 display is
+        /// available.
+        pub fn try_new() -> Result<Self, HotkeyError> {
+            #[cfg(any(target_os = "linux", test))]
+            {
+                Ok(Self {
+                    inner: Some(X11GlobalHotkeyManager::new()?),
+                })
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            {
+                Err(HotkeyError::Unsupported)
+            }
         }
 
-        /// Map HotkeyModifiers to X11 modifier mask
+        /// Creates a manager backed by a mock X11 backend (for unit tests on any OS).
+        #[cfg(test)]
+        pub(crate) fn with_mock(
+            mock: crate::hotkey_x11::MockX11HotkeyBackend,
+        ) -> Result<Self, HotkeyError> {
+            Ok(Self {
+                inner: Some(X11GlobalHotkeyManager::with_mock(mock)?),
+            })
+        }
+
+        /// Ids this manager currently holds, sorted ascending.
+        pub fn registered_ids(&self) -> Vec<u32> {
+            #[cfg(any(target_os = "linux", test))]
+            {
+                self.inner
+                    .as_ref()
+                    .map_or_else(Vec::new, X11GlobalHotkeyManager::registered_ids)
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            {
+                Vec::new()
+            }
+        }
+
+        /// Sets the function called with the hotkey id when pressed (on the X11 worker thread).
+        pub fn set_triggered_handler(&mut self, handler: impl Fn(u32) + Send + Sync + 'static) {
+            #[cfg(any(target_os = "linux", test))]
+            if let Some(inner) = &self.inner {
+                inner.set_handler(Some(Arc::new(handler)));
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            let _ = handler;
+        }
+
+        /// Removes any previously installed press handler.
+        pub fn clear_triggered_handler(&mut self) {
+            #[cfg(any(target_os = "linux", test))]
+            if let Some(inner) = &self.inner {
+                inner.set_handler(None);
+            }
+        }
+
+        /// Map HotkeyModifiers to X11 modifier mask.
         pub fn x11_modifiers(modifiers: HotkeyModifiers) -> u32 {
             let mut mask = 0;
             if modifiers.contains(HotkeyModifiers::SHIFT) {
-                mask |= 1 << 0; // ShiftMask
+                mask |= 1 << 0;
             }
             if modifiers.contains(HotkeyModifiers::CONTROL) {
-                mask |= 1 << 2; // ControlMask
+                mask |= 1 << 2;
             }
             if modifiers.contains(HotkeyModifiers::ALT) {
-                mask |= 1 << 3; // Mod1Mask (Alt)
+                mask |= 1 << 3;
             }
             if modifiers.contains(HotkeyModifiers::WIN) {
-                mask |= 1 << 6; // Mod4Mask (Super/Meta)
+                mask |= 1 << 6;
             }
             mask
         }
+
+        /// Registers `id` with typed [`HotkeyError`] reporting.
+        pub fn try_register_hotkey(
+            &mut self,
+            id: u32,
+            modifiers: HotkeyModifiers,
+            vk: u32,
+        ) -> Result<(), HotkeyError> {
+            #[cfg(any(target_os = "linux", test))]
+            {
+                let Some(inner) = &self.inner else {
+                    return Err(HotkeyError::Unsupported);
+                };
+                inner.register(id, modifiers, vk, false)
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            {
+                let _ = (id, modifiers, vk);
+                Err(HotkeyError::Unsupported)
+            }
+        }
+
+        /// Unregisters `id` with typed [`HotkeyError`] reporting.
+        pub fn try_unregister_hotkey(&mut self, id: u32) -> Result<(), HotkeyError> {
+            #[cfg(any(target_os = "linux", test))]
+            {
+                let Some(inner) = &self.inner else {
+                    return Err(HotkeyError::Unsupported);
+                };
+                inner.unregister(id)
+            }
+            #[cfg(not(any(target_os = "linux", test)))]
+            {
+                let _ = id;
+                Err(HotkeyError::Unsupported)
+            }
+        }
     }
+
     impl PlatformHotkeyManager for UnixHotkeyManager {
         fn register_hotkey(
             &mut self,
-            _id: u32,
-            _modifiers: HotkeyModifiers,
-            _vk: u32,
+            id: u32,
+            modifiers: HotkeyModifiers,
+            vk: u32,
         ) -> Result<(), &'static str> {
-            Err("UnixHotkeyManager: global hotkeys not implemented")
+            self.try_register_hotkey(id, modifiers, vk)
+                .map_err(|e| match e {
+                    HotkeyError::IdInUse(_) => "UnixHotkeyManager: hotkey id already registered",
+                    HotkeyError::Unsupported => {
+                        "UnixHotkeyManager: global hotkeys require an X11 display"
+                    }
+                    #[cfg(any(target_os = "linux", test))]
+                    HotkeyError::Os {
+                        code: X11_BAD_ACCESS,
+                    } => "XGrabKey failed: hotkey already registered",
+                    #[cfg(any(target_os = "linux", test))]
+                    HotkeyError::Os {
+                        code: X11_BAD_VALUE,
+                    } => "UnixHotkeyManager: unsupported key",
+                    _ => "XGrabKey failed",
+                })
         }
 
-        fn unregister_hotkey(&mut self, _id: u32) -> Result<(), &'static str> {
-            Err("UnixHotkeyManager: global hotkeys not implemented")
-        }
-    }
-
-    impl Drop for UnixHotkeyManager {
-        fn drop(&mut self) {
-            let ids: Vec<u32> = self.registered_ids.iter().copied().collect();
-            for id in ids {
-                let _ = self.unregister_hotkey(id);
-            }
+        fn unregister_hotkey(&mut self, id: u32) -> Result<(), &'static str> {
+            self.try_unregister_hotkey(id).map_err(|e| match e {
+                HotkeyError::NotRegistered(_) => "UnixHotkeyManager: hotkey id not registered",
+                HotkeyError::Unsupported => {
+                    "UnixHotkeyManager: global hotkeys require an X11 display"
+                }
+                _ => "XUngrabKey failed",
+            })
         }
     }
 }
@@ -1189,16 +1349,126 @@ mod tests {
     }
 
     #[test]
-    fn test_unix_hotkey_manager() {
-        let mut mgr = UnixHotkeyManager::new();
+    fn test_hotkey_error_is_already_registered_matches_current_platform_only() {
+        let win_err = HotkeyError::Os {
+            code: HotkeyError::ERROR_HOTKEY_ALREADY_REGISTERED,
+        };
+        let mac_err = HotkeyError::Os {
+            code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
+        };
+        let x11_err = HotkeyError::Os {
+            code: HotkeyError::X11_BAD_ACCESS,
+        };
+
+        assert_eq!(win_err.is_already_registered(), cfg!(windows));
+        assert_eq!(mac_err.is_already_registered(), cfg!(target_os = "macos"));
+        assert_eq!(x11_err.is_already_registered(), cfg!(target_os = "linux"));
+        // Windows error code 10 is ERROR_BAD_ENVIRONMENT, not a hotkey registration conflict.
+        assert!(!HotkeyError::Os { code: 5 }.is_already_registered());
+        assert!(!HotkeyError::Os { code: 2 }.is_already_registered());
+        assert!(!HotkeyError::Unsupported.is_already_registered());
+        assert!(!HotkeyError::IdInUse(1).is_already_registered());
+    }
+
+    #[test]
+    fn test_unix_hotkey_manager_modifier_mapping() {
         let mask = UnixHotkeyManager::x11_modifiers(HotkeyModifiers::ALT | HotkeyModifiers::SHIFT);
         assert_eq!(mask, (1 << 3) | (1 << 0));
+    }
 
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn test_unix_hotkey_manager_off_linux_fails() {
+        assert_eq!(
+            UnixHotkeyManager::try_new().unwrap_err(),
+            HotkeyError::Unsupported
+        );
+        let mut mgr = UnixHotkeyManager::new();
         assert!(
             mgr.register_hotkey(9528, HotkeyModifiers::ALT | HotkeyModifiers::SHIFT, 67)
                 .is_err()
         );
         assert!(!mgr.registered_ids().contains(&9528));
         assert!(mgr.unregister_hotkey(9528).is_err());
+    }
+
+    #[test]
+    fn test_unix_hotkey_manager_with_mock_backend() {
+        use crate::hotkey_x11::{MockX11HotkeyBackend, X11_LOCK_MASK};
+        use std::sync::{Mutex, mpsc};
+        use std::time::Duration;
+
+        let mock = MockX11HotkeyBackend::new();
+        let mut mgr = UnixHotkeyManager::with_mock(mock.clone()).unwrap();
+        let mods = HotkeyModifiers::ALT | HotkeyModifiers::SHIFT;
+        let kc = MockX11HotkeyBackend::mock_keycode_for_vk(b'C' as u32).unwrap();
+        let x11_mods = UnixHotkeyManager::x11_modifiers(mods);
+
+        mgr.register_hotkey(9528, mods, b'C' as u32).unwrap();
+        assert!(mgr.registered_ids().contains(&9528));
+        assert_eq!(mock.grabs().len(), 4);
+
+        // Duplicate id and conflict error paths.
+        assert_eq!(
+            mgr.try_register_hotkey(9528, HotkeyModifiers::ALT, b'A' as u32),
+            Err(HotkeyError::IdInUse(9528))
+        );
+        let err = mgr
+            .try_register_hotkey(9529, mods, b'C' as u32)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            HotkeyError::Os {
+                code: HotkeyError::X11_BAD_ACCESS
+            }
+        );
+        #[cfg(target_os = "linux")]
+        assert!(err.is_already_registered());
+        assert_eq!(
+            mgr.register_hotkey(9529, mods, b'C' as u32),
+            Err("XGrabKey failed: hotkey already registered")
+        );
+        assert_eq!(
+            mgr.register_hotkey(9530, HotkeyModifiers::ALT, 0xFF),
+            Err("UnixHotkeyManager: unsupported key")
+        );
+
+        // Press delivery with CapsLock active reaches triggered handler.
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        mgr.set_triggered_handler(move |id| tx.lock().unwrap().send(id).unwrap());
+        mock.press(kc, x11_mods | X11_LOCK_MASK);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 9528);
+
+        // Unregister releases all grabs.
+        mgr.unregister_hotkey(9528).unwrap();
+        assert!(mgr.registered_ids().is_empty());
+        assert!(mock.grabs().is_empty());
+        assert_eq!(
+            mgr.try_unregister_hotkey(9528),
+            Err(HotkeyError::NotRegistered(9528))
+        );
+
+        // Backend disconnect clears registered_ids with no stale mirror.
+        mgr.register_hotkey(9531, HotkeyModifiers::CONTROL, b'D' as u32)
+            .unwrap();
+        assert_eq!(mgr.registered_ids(), vec![9531]);
+        mock.disconnect();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while mgr.try_unregister_hotkey(9531) != Err(HotkeyError::Stopped) {
+            assert!(std::time::Instant::now() < deadline, "worker still alive");
+            std::thread::yield_now();
+        }
+        assert!(mgr.registered_ids().is_empty());
+        assert!(mock.grabs().is_empty());
+
+        // Fresh manager Drop releases grabs too.
+        let mock2 = MockX11HotkeyBackend::new();
+        let mut mgr2 = UnixHotkeyManager::with_mock(mock2.clone()).unwrap();
+        mgr2.register_hotkey(9532, HotkeyModifiers::CONTROL, b'D' as u32)
+            .unwrap();
+        assert_eq!(mock2.grabs().len(), 4);
+        drop(mgr2);
+        assert!(mock2.grabs().is_empty());
     }
 }

@@ -181,18 +181,19 @@ impl FileInfo {
     /// Returns `true` if the file or directory is hidden.
     pub fn is_hidden(&self) -> bool {
         let name = self.file_name();
-        if name.starts_with('.') && name != "." && name != ".." {
-            return true;
-        }
+        let dot_hidden = name.starts_with('.') && name != "." && name != "..";
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if let Ok(meta) = fs::metadata(&self.path) {
-                const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
-                return (meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN) != 0;
-            }
+            const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
+            dot_hidden
+                || fs::metadata(&self.path)
+                    .is_ok_and(|meta| (meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN) != 0)
         }
-        false
+        #[cfg(not(windows))]
+        {
+            dot_hidden
+        }
     }
 
     /// Returns `true` if the file or directory is readable.
