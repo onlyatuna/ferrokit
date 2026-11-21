@@ -854,6 +854,14 @@ impl ObjcMsg {
                 }
             } else if sel_name == "currentEvent" {
                 return runtime.current_event();
+            } else if sel_name == "set" {
+                let is_cursor = runtime
+                    .get_object_data(receiver)
+                    .is_some_and(|d| d.class_name == "NSCursor");
+                if is_cursor {
+                    runtime.set_current_cursor(receiver);
+                }
+                return Id::NIL;
             } else if sel_name == "release" {
                 runtime.release(receiver);
                 return Id::NIL;
@@ -941,6 +949,21 @@ impl ObjcMsg {
                 array_id
             } else if sel_name == "alloc" {
                 runtime.allocate_object(&class_name)
+            } else if class_name == "NSCursor" {
+                if sel_name == "currentCursor" {
+                    let current = runtime.current_cursor();
+                    if !current.is_nil() {
+                        current
+                    } else {
+                        // SAFETY: `standard_cursor` looks up or allocates the mock `arrowCursor`
+                        // singleton in the mock runtime (non-macOS branch only).
+                        unsafe { appkit::standard_cursor("arrowCursor") }
+                    }
+                } else {
+                    // SAFETY: `standard_cursor` looks up or allocates a mock `NSCursor`
+                    // singleton in the mock runtime (non-macOS branch only).
+                    unsafe { appkit::standard_cursor(&sel_name) }
+                }
             } else if sel_name == "clearColor" || sel_name == "windowBackgroundColor" {
                 let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
                     if v.class_name == "NSColor" && v.title == sel_name {

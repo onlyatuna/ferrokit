@@ -85,7 +85,9 @@ pub use clipboard::{Clipboard, GenericClipboard, MimeData, PlatformClipboard};
 pub use clipboard_cocoa::CocoaClipboard;
 #[cfg(windows)]
 pub use cursor::Win32Cursor;
-pub use cursor::{CocoaCursor, CursorShape, GenericCursor, PlatformCursor, UnixCursor};
+pub use cursor::{
+    CocoaCursor, CursorShape, GenericCursor, PlatformCursor, UnixCursor, set_cursor_shape,
+};
 
 #[cfg(windows)]
 pub use hotkey::Win32HotkeyManager;

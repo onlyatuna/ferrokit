@@ -1910,6 +1910,72 @@ mod checks {
                 wanted,
             );
         }
+        for shape in [
+            CursorShape::SizeFDiag,
+            CursorShape::SizeBDiag,
+            CursorShape::SizeAll,
+            CursorShape::UpArrow,
+            CursorShape::Wait,
+            CursorShape::Busy,
+            CursorShape::WhatsThis,
+            CursorShape::Blank,
+        ] {
+            let wanted = CocoaCursor::native_cursor(shape);
+            t.expect(
+                !wanted.is_nil(),
+                &format!("CocoaCursor::native_cursor({shape:?}) is non-nil"),
+            );
+            t.eq(
+                &format!("CocoaCursor::native_cursor({shape:?}) is cached"),
+                CocoaCursor::native_cursor(shape),
+                wanted,
+            );
+            cursor.change_cursor(shape);
+            t.eq("ferrokit current_shape()", cursor.current_shape(), shape);
+            let current: Id = send(class("NSCursor"), "currentCursor");
+            t.eq(
+                &format!("[NSCursor currentCursor] matches custom {shape:?}"),
+                current,
+                wanted,
+            );
+        }
+
+        cursor.change_cursor(CursorShape::PointingHand);
+        let before: Id = send(class("NSCursor"), "currentCursor");
+        t.eq(
+            "set_override_cursor(SizeFDiag) returns true",
+            cursor.set_override_cursor(CursorShape::SizeFDiag),
+            true,
+        );
+        t.eq(
+            "CocoaCursor::override_shape() after set_override",
+            CocoaCursor::override_shape(),
+            Some(CursorShape::SizeFDiag),
+        );
+        let fdiag = CocoaCursor::native_cursor(CursorShape::SizeFDiag);
+        t.eq(
+            "[NSCursor currentCursor] shows override SizeFDiag",
+            send::<Id>(class("NSCursor"), "currentCursor"),
+            fdiag,
+        );
+        cursor.change_cursor(CursorShape::IBeam);
+        t.eq(
+            "change_cursor does not clobber active override",
+            send::<Id>(class("NSCursor"), "currentCursor"),
+            fdiag,
+        );
+        cursor.clear_override_cursor();
+        t.eq(
+            "CocoaCursor::override_shape() cleared",
+            CocoaCursor::override_shape(),
+            None,
+        );
+        t.eq(
+            "[NSCursor currentCursor] restored after clear_override",
+            send::<Id>(class("NSCursor"), "currentCursor"),
+            before,
+        );
+        cursor.change_cursor(CursorShape::Arrow);
     }
 
     fn integration_factory(t: &mut Recorder) {

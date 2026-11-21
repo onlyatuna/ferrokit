@@ -35,4 +35,13 @@ impl Cursor {
             cursor.set_pos(native);
         }
     }
+
+    /// Sets the active platform cursor shape without requiring a `&mut Window`.
+    ///
+    /// Delegates to [`ferrokit_platform::cursor::set_cursor_shape`]. Prefer
+    /// `Window::set_cursor` / `Widget::set_cursor` when setting a window's or widget's persistent
+    /// cursor.
+    pub fn set_shape(shape: CursorShape) {
+        ferrokit_platform::cursor::set_cursor_shape(shape);
+    }
 }

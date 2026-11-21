@@ -166,6 +166,16 @@ fn is_live_window(handle: usize) -> bool {
     live_windows().contains(&handle)
 }
 
+/// Queries the live content `(width, height)` of a registered `CocoaNativeWindow` handle when
+/// called on the AppKit main thread, or `None` if the handle is not a live Cocoa window.
+pub(crate) fn live_window_size(handle: usize) -> Option<(i32, i32)> {
+    if handle == 0 || !is_live_window(handle) || !appkit::is_main_thread() {
+        return None;
+    }
+    let geo = window_flipped_geometry(Id(handle as *mut std::ffi::c_void));
+    (geo.width > 0 && geo.height > 0).then_some((geo.width, geo.height))
+}
+
 /// Backing-surface extent for a window dimension. Qt accepts empty and negative window sizes,
 /// so they get a 1px surface (the buffer cannot be empty) instead of failing after the NSWindow
 /// is already allocated.
@@ -925,6 +935,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
+        self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setIgnoresMouseEvents:` takes
         // one BOOL.
         unsafe {
@@ -1006,12 +1017,7 @@ impl PlatformWindow for CocoaNativeWindow {
     /// view, which shows it through a cursor rect and `cursorUpdate:` while the pointer is over
     /// the window; AppKit shows it from the next pointer movement.
     fn set_cursor(&mut self, shape: CursorShape) {
-        let selector = CocoaCursor::ns_cursor_selector(shape);
-        // SAFETY: `standard_cursor` looks up a class-method cursor by selector on `NSCursor`;
-        // `ns_cursor_selector` only returns names of standard `NSCursor` class methods, and the
-        // standard cursors are shared AppKit objects that are never freed [inferred: AppKit
-        // documentation], so the returned `Id` stays valid for `replace_cursor`.
-        let cursor = unsafe { appkit::standard_cursor(selector) };
+        let cursor = CocoaCursor::native_cursor(shape);
         input::replace_cursor(self.ns_view, cursor);
     }
 

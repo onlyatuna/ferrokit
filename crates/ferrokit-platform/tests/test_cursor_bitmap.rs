@@ -164,3 +164,156 @@ mod win32 {
         assert_eq!(Win32Cursor::override_shape(), None);
     }
 }
+
+mod cocoa {
+    use ferrokit_platform::cursor::{CocoaCursor, CursorShape};
+    use ferrokit_platform::cursor_bitmap::{bgra_to_rgba, cocoa_custom_cursor_image};
+
+    const COCOA_CUSTOM_SHAPES: [CursorShape; 8] = [
+        CursorShape::SizeBDiag,
+        CursorShape::SizeFDiag,
+        CursorShape::SizeAll,
+        CursorShape::UpArrow,
+        CursorShape::Wait,
+        CursorShape::Busy,
+        CursorShape::WhatsThis,
+        CursorShape::Blank,
+    ];
+
+    #[test]
+    fn bgra_to_rgba_swaps_blue_and_red_channels() {
+        assert_eq!(
+            bgra_to_rgba(&[10, 20, 30, 255, 1, 2, 3, 4]),
+            vec![30, 20, 10, 255, 3, 2, 1, 4]
+        );
+    }
+
+    #[test]
+    fn cocoa_custom_cursor_covers_every_shape_without_native_selector() {
+        for shape in CursorShape::ALL {
+            let custom = cocoa_custom_cursor_image(shape);
+            if COCOA_CUSTOM_SHAPES.contains(&shape) {
+                let img = custom.unwrap_or_else(|| panic!("expected custom image for {shape:?}"));
+                assert_eq!(img.bgra.len(), img.width * img.height * 4, "{shape:?}");
+                assert!(
+                    img.hot_x >= 0 && (img.hot_x as usize) < img.width,
+                    "{shape:?}"
+                );
+                assert!(
+                    img.hot_y >= 0 && (img.hot_y as usize) < img.height,
+                    "{shape:?}"
+                );
+            } else {
+                assert!(
+                    custom.is_none(),
+                    "expected native AppKit selector for {shape:?}"
+                );
+                assert!(CocoaCursor::native_selector(shape).is_some(), "{shape:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cocoa_blank_cursor_is_one_transparent_pixel() {
+        let blank = cocoa_custom_cursor_image(CursorShape::Blank).unwrap();
+        assert_eq!(
+            (blank.width, blank.height, blank.hot_x, blank.hot_y),
+            (1, 1, 0, 0)
+        );
+        assert_eq!(blank.bgra, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn cocoa_diagonal_resize_cursors_are_horizontal_mirrors_with_centred_hotspots() {
+        let fdiag = cocoa_custom_cursor_image(CursorShape::SizeFDiag).unwrap();
+        let bdiag = cocoa_custom_cursor_image(CursorShape::SizeBDiag).unwrap();
+        assert_eq!((fdiag.width, fdiag.height), (17, 17));
+        assert_eq!((fdiag.hot_x, fdiag.hot_y), (8, 8));
+        assert_eq!((bdiag.width, bdiag.height), (17, 17));
+        assert_eq!((bdiag.hot_x, bdiag.hot_y), (8, 8));
+        for y in 0..fdiag.height {
+            for x in 0..fdiag.width {
+                assert_eq!(
+                    fdiag.pixel(x, y),
+                    bdiag.pixel(fdiag.width - 1 - x, y),
+                    "mismatch at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cocoa_drawn_custom_cursors_have_complete_white_outline_around_black_pixels() {
+        for shape in [
+            CursorShape::SizeFDiag,
+            CursorShape::SizeBDiag,
+            CursorShape::SizeAll,
+            CursorShape::UpArrow,
+            CursorShape::Wait,
+            CursorShape::Busy,
+            CursorShape::WhatsThis,
+        ] {
+            let img = cocoa_custom_cursor_image(shape).unwrap();
+            let mut has_black = false;
+            let mut has_white = false;
+            for y in 0..img.height {
+                for x in 0..img.width {
+                    let px = img.pixel(x, y);
+                    if px == [0, 0, 0, 255] {
+                        has_black = true;
+                        for dy in -1isize..=1 {
+                            for dx in -1isize..=1 {
+                                let nx = x as isize + dx;
+                                let ny = y as isize + dy;
+                                assert!(
+                                    nx >= 0
+                                        && nx < img.width as isize
+                                        && ny >= 0
+                                        && ny < img.height as isize,
+                                    "{shape:?}: black pixel at ({x}, {y}) touches image edge"
+                                );
+                                assert_ne!(
+                                    img.pixel(nx as usize, ny as usize)[3],
+                                    0,
+                                    "{shape:?}: black pixel at ({x}, {y}) borders transparent pixel at ({nx}, {ny})"
+                                );
+                            }
+                        }
+                    } else if px == [255, 255, 255, 255] {
+                        has_white = true;
+                    }
+                }
+            }
+            assert!(
+                has_black && has_white,
+                "{shape:?} missing black or white contrast"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn cocoa_native_cursor_covers_all_22_shapes_and_caches_custom_cursors() {
+        for shape in CursorShape::ALL {
+            let id = CocoaCursor::native_cursor(shape);
+            assert!(!id.is_nil(), "expected non-nil mock NSCursor for {shape:?}");
+            assert_eq!(
+                CocoaCursor::native_cursor(shape),
+                id,
+                "cursor for {shape:?} must be cached"
+            );
+        }
+        assert_ne!(
+            CocoaCursor::native_cursor(CursorShape::SizeFDiag),
+            CocoaCursor::native_cursor(CursorShape::Arrow)
+        );
+        assert_ne!(
+            CocoaCursor::native_cursor(CursorShape::SizeFDiag),
+            CocoaCursor::native_cursor(CursorShape::SizeBDiag)
+        );
+        assert_ne!(
+            CocoaCursor::native_cursor(CursorShape::Blank),
+            CocoaCursor::native_cursor(CursorShape::Arrow)
+        );
+    }
+}

@@ -128,6 +128,46 @@ fn scale_smooth(image: &CursorImage, factor: f64) -> CursorImage {
     }
 }
 
+fn from_xpm_at(rows: &[&str], hot_x: i32, hot_y: i32) -> CursorImage {
+    let mut image = from_xpm(rows);
+    image.hot_x = hot_x;
+    image.hot_y = hot_y;
+    image
+}
+
+fn flip_horizontal(image: &CursorImage) -> CursorImage {
+    let mut bgra = vec![0u8; image.bgra.len()];
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let src = (y * image.width + x) * 4;
+            let dst = (y * image.width + (image.width - 1 - x)) * 4;
+            bgra[dst..dst + 4].copy_from_slice(&image.bgra[src..src + 4]);
+        }
+    }
+    let hot_x = if image.width == 0 {
+        0
+    } else {
+        (image.width as i32 - 1 - image.hot_x).clamp(0, image.width as i32 - 1)
+    };
+    CursorImage {
+        width: image.width,
+        height: image.height,
+        hot_x,
+        hot_y: image.hot_y,
+        bgra,
+    }
+}
+
+/// Converts premultiplied BGRA8 pixel bytes (from [`CursorImage::bgra`]) into premultiplied
+/// RGBA8 bytes in top-to-bottom row order, matching AppKit's `NSBitmapImageRep`.
+pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(bgra.len());
+    for &[b, g, r, a] in bgra.as_chunks::<4>().0 {
+        rgba.extend_from_slice(&[r, g, b, a]);
+    }
+    rgba
+}
+
 /// The image Qt's Windows plugin draws for `shape`, or `None` for a shape the system provides.
 /// `screen_cursor_width` is the system cursor width (`SM_CXCURSOR`, 32 at 100%): the bitmap
 /// cursors are made for a 32 pixel cursor and are scaled once it differs by more than 0.4 of that
@@ -324,4 +364,191 @@ const DRAG_LINK_XPM: [&str; 34] = [
     ".............aXXXaXXXXXa",
     ".............aXXXXXXXXXa",
     ".............aaaaaaaaaaa",
+];
+
+/// Custom cursor image for shapes AppKit has no public cross-version `NSCursor` class method
+/// for (`QCocoaCursor::createCursorFromShape` fallback shapes plus diagonal resizes and `Blank`),
+/// or `None` when a public `NSCursor` class selector provides the shape natively.
+pub fn cocoa_custom_cursor_image(shape: CursorShape) -> Option<CursorImage> {
+    match shape {
+        CursorShape::SizeFDiag => Some(from_xpm_at(&COCOA_SIZE_FDIAG_XPM, 8, 8)),
+        CursorShape::SizeBDiag => Some(flip_horizontal(&from_xpm_at(&COCOA_SIZE_FDIAG_XPM, 8, 8))),
+        CursorShape::SizeAll => Some(from_xpm_at(&COCOA_SIZE_ALL_XPM, 8, 8)),
+        CursorShape::UpArrow => Some(from_xpm_at(&COCOA_UP_ARROW_XPM, 6, 1)),
+        CursorShape::Wait => Some(from_xpm_at(&COCOA_WAIT_XPM, 7, 9)),
+        CursorShape::Busy => Some(from_xpm_at(&COCOA_BUSY_XPM, 1, 1)),
+        CursorShape::WhatsThis => Some(from_xpm_at(&COCOA_WHATS_THIS_XPM, 1, 1)),
+        CursorShape::Blank => Some(CursorImage {
+            width: 1,
+            height: 1,
+            hot_x: 0,
+            hot_y: 0,
+            bgra: vec![0, 0, 0, 0],
+        }),
+        _ => None,
+    }
+}
+
+const COCOA_SIZE_FDIAG_XPM: [&str; 21] = [
+    "17 17 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    "XXXXXXXX.........",
+    "XaaaaaaX.........",
+    "XaaaaaXX.........",
+    "XaaaaXX..........",
+    "XaaaaaXX.........",
+    "XaaXaaaXX........",
+    "XaXXXaaaXX.......",
+    "XXX.XXaaaXX......",
+    ".....XXaaaXX.....",
+    "......XXaaaXX.XXX",
+    ".......XXaaaXXXaX",
+    "........XXaaaXaaX",
+    ".........XXaaaaaX",
+    "..........XXaaaaX",
+    ".........XXaaaaaX",
+    ".........XaaaaaaX",
+    ".........XXXXXXXX",
+];
+
+const COCOA_SIZE_ALL_XPM: [&str; 21] = [
+    "17 17 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    ".......XXX.......",
+    "......XXaXX......",
+    ".....XXaaaXX.....",
+    ".....XaaaaaX.....",
+    ".....XXXaXXX.....",
+    "..XXX..XaX..XXX..",
+    ".XXaX..XaX..XaXX.",
+    "XXaaXXXXaXXXXaaXX",
+    "XaaaaaaaaaaaaaaaX",
+    "XXaaXXXXaXXXXaaXX",
+    ".XXaX..XaX..XaXX.",
+    "..XXX..XaX..XXX..",
+    ".....XXXaXXX.....",
+    ".....XaaaaaX.....",
+    ".....XXaaaXX.....",
+    "......XXaXX......",
+    ".......XXX.......",
+];
+
+const COCOA_UP_ARROW_XPM: [&str; 21] = [
+    "13 17 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    ".....XXX.....",
+    "....XXaXX....",
+    "...XXaaaXX...",
+    "..XXaaaaaXX..",
+    ".XXaaaaaaaXX.",
+    "XXaaaaaaaaaXX",
+    "XXXXXaaaXXXXX",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XaaaX....",
+    "....XXXXX....",
+];
+
+const COCOA_WAIT_XPM: [&str; 23] = [
+    "15 19 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    "XXXXXXXXXXXXXXX",
+    "XaaaaaaaaaaaaaX",
+    "XXaaaaaaaaaaaXX",
+    ".XaXXXXXXXXXaX.",
+    ".XaXaaaaaaaXaX.",
+    ".XXaXaaaaaXaXX.",
+    "..XaXXaaaXXaX..",
+    "..XXaXXaXXaXX..",
+    "...XXaXaXaXX...",
+    "....XXaXaXX....",
+    "...XXaXXXaXX...",
+    "..XXaXXaXXaXX..",
+    "..XaXXXXXXXaX..",
+    ".XXaXXXaXXXaXX.",
+    ".XaXXXaaaXXXaX.",
+    ".XaXaaaaaaaXaX.",
+    "XXaaaaaaaaaaaXX",
+    "XaaaaaaaaaaaaaX",
+    "XXXXXXXXXXXXXXX",
+];
+
+const COCOA_BUSY_XPM: [&str; 31] = [
+    "24 27 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    "XXX.....................",
+    "XaXX....................",
+    "XaaXX...................",
+    "XaaaXX..................",
+    "XaaaaXX.................",
+    "XaaaaaXX................",
+    "XaaaaaaXX...............",
+    "XaaaaaaaXX..............",
+    "XaaaaaaaaXX.............",
+    "XaaaaaaaaaXX............",
+    "XaaaaaaXXXXX............",
+    "XaaaXaaXX...............",
+    "XaaXXaaXX...............",
+    "XaXXXXaaXX..............",
+    "XXX..XaaXX..............",
+    ".....XXaaXX.............",
+    "......XaaXX..XXXXXXXXX..",
+    "......XXaaXX.XaaaaaaaX..",
+    ".......XaaXX.XXaXXXaXX..",
+    ".......XXXXX..XaXaXaX...",
+    "..............XXaXaXX...",
+    "...............XaXaX....",
+    "..............XXaXaXX...",
+    "..............XaXaXaX...",
+    ".............XXaXaXaXX..",
+    ".............XaaaaaaaX..",
+    ".............XXXXXXXXX..",
+];
+
+const COCOA_WHATS_THIS_XPM: [&str; 29] = [
+    "24 25 3 1",
+    ".        c None",
+    "a        c #000000",
+    "X        c #FFFFFF",
+    "XXX.....................",
+    "XaXX....................",
+    "XaaXX...................",
+    "XaaaXX..................",
+    "XaaaaXX.................",
+    "XaaaaaXX................",
+    "XaaaaaaXX...............",
+    "XaaaaaaaXX..............",
+    "XaaaaaaaaXX.............",
+    "XaaaaaaaaaXX............",
+    "XaaaaaaXXXXX............",
+    "XaaaXaaXX...............",
+    "XaaXXaaXX...............",
+    "XaXXXXaaXX..............",
+    "XXX..XaaXX..............",
+    ".....XXaaXX...XXXXXXX...",
+    "......XXaaXX.XXaaaaaXX..",
+    ".......XaaXX.XaaXXXaaX..",
+    ".......XaaXX.XXXXXXaaX..",
+    ".......XXXXX....XXaXXX..",
+    "...............XXaXX....",
+    "................XaX.....",
+    "................XXX.....",
+    "................XaX.....",
+    "................XXX.....",
 ];

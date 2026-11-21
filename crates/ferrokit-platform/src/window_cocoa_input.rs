@@ -1264,17 +1264,23 @@ pub fn update_tracking_area(view: Id) {
     }
 }
 
-/// `-resetCursorRects` (Qt `QNSView`): the window cursor covers the visible rect. False when the
-/// window has no cursor of its own, so the caller runs the default implementation.
+/// `-resetCursorRects` (Qt `QNSView`): the window cursor (or active application override cursor)
+/// covers the visible rect. False when neither is set, so the caller runs the default
+/// implementation.
 pub fn reset_cursor_rects(view: Id) -> bool {
-    let cursor = with_slot(view, |slot| slot.cursor).unwrap_or(Id::NIL);
+    let override_cursor = crate::cursor::CocoaCursor::override_shape()
+        .map(crate::cursor::CocoaCursor::native_cursor)
+        .filter(|c| !c.is_nil());
+    let cursor =
+        override_cursor.unwrap_or_else(|| with_slot(view, |slot| slot.cursor).unwrap_or(Id::NIL));
     if cursor.is_nil() {
         return false;
     }
     // SAFETY: `view` is the receiver of the AppKit call being handled, live for that call;
-    // `cursor` is non-nil (checked above) and was retained by the slot (`replace_cursor`), so
-    // it outlives `addCursorRect:cursor:` (AppKit retains it for the rect too) [inferred].
-    // `visibleRect` returns NSRect; `discardCursorRects` takes no arguments.
+    // `cursor` is non-nil (checked above) and is either a live cached/standard `NSCursor` for the
+    // active override or the cursor retained by the slot (`replace_cursor`), so it outlives
+    // `addCursorRect:cursor:` (AppKit retains it for the rect too) [inferred]. `visibleRect`
+    // returns NSRect; `discardCursorRects` takes no arguments.
     unsafe {
         ObjcMsg::send_0_logged(view, sel("discardCursorRects"));
         let visible = ObjcMsg::send_rect_return(view, sel("visibleRect"));
@@ -1283,15 +1289,19 @@ pub fn reset_cursor_rects(view: Id) -> bool {
     true
 }
 
-/// `-cursorUpdate:` (Qt `QNSView`): the pointer entered the view, so the window cursor shows.
-/// False when the window has none, so the caller runs the default implementation.
+/// `-cursorUpdate:` (Qt `QNSView`): the pointer entered the view, so the window cursor (or active
+/// application override cursor) shows. False when neither is set, so the caller runs the default
+/// implementation.
 pub fn cursor_update(view: Id) -> bool {
-    let cursor = with_slot(view, |slot| slot.cursor).unwrap_or(Id::NIL);
+    let override_cursor = crate::cursor::CocoaCursor::override_shape()
+        .map(crate::cursor::CocoaCursor::native_cursor)
+        .filter(|c| !c.is_nil());
+    let cursor =
+        override_cursor.unwrap_or_else(|| with_slot(view, |slot| slot.cursor).unwrap_or(Id::NIL));
     if cursor.is_nil() {
         return false;
     }
-    // SAFETY: `cursor` is the non-nil NSCursor retained by the slot (`replace_cursor`), live
-    // here; `set` takes no arguments.
+    // SAFETY: `cursor` is non-nil (see `reset_cursor_rects`); `set` takes no arguments.
     unsafe { ObjcMsg::send_0_logged(cursor, sel("set")) };
     true
 }
@@ -1319,6 +1329,25 @@ pub(crate) fn replace_cursor(view: Id, cursor: Id) {
     unsafe {
         appkit::release(previous);
         ObjcMsg::send_id_logged(window, sel("invalidateCursorRectsForView:"), view);
+    }
+}
+
+/// Invalidates cursor rects on every registered `QNSView` on the current thread so AppKit asks
+/// `resetCursorRects` to reflect an updated [`CocoaCursor::override_shape`].
+pub(crate) fn invalidate_all_cursor_rects() {
+    let pairs: Vec<(Id, Id)> = VIEWS
+        .try_with(|views| {
+            views
+                .borrow()
+                .iter()
+                .map(|(&view, slot)| (Id(view as *mut std::ffi::c_void), slot.ns_window))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (view, window) in pairs {
+        // SAFETY: `view` and `window` belong to a live `ViewSlot` collected before dropping the
+        // `VIEWS` borrow; `invalidateCursorRectsForView:` takes one `NSView`.
+        unsafe { ObjcMsg::send_id_logged(window, sel("invalidateCursorRectsForView:"), view) };
     }
 }
 

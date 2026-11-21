@@ -3228,26 +3228,32 @@ pub fn calc_frameless_edge(
         return crate::platform_window::WindowEdges::empty();
     }
     const M: i32 = 8;
-    #[cfg(windows)]
-    let (w, h) = if _hwnd != 0 {
-        // SAFETY: RECT is a plain integer struct, so zeroed is valid; `rect` is a local out pointer
-        // valid for the call; GetClientRect validates `_hwnd` (non-zero) and on failure leaves the
-        // zeroed rect.
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-            GetClientRect(_hwnd as HWND, &mut rect);
-            let dpr = get_window_dpr(_hwnd as HWND);
-            (
-                ((rect.right - rect.left) as f32 / dpr).round() as i32,
-                ((rect.bottom - rect.top) as f32 / dpr).round() as i32,
-            )
-        }
+    let (w, h) = if let Some(size) = crate::window_cocoa::live_window_size(_hwnd as usize) {
+        size
     } else {
-        (600, 400)
+        #[cfg(windows)]
+        if _hwnd != 0 {
+            // SAFETY: RECT is a plain integer struct, so zeroed is valid; `rect` is a local out pointer
+            // valid for the call; GetClientRect validates `_hwnd` (non-zero) and on failure leaves the
+            // zeroed rect.
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+                let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+                GetClientRect(_hwnd as HWND, &mut rect);
+                let dpr = get_window_dpr(_hwnd as HWND);
+                (
+                    ((rect.right - rect.left) as f32 / dpr).round() as i32,
+                    ((rect.bottom - rect.top) as f32 / dpr).round() as i32,
+                )
+            }
+        } else {
+            (600, 400)
+        }
+        #[cfg(not(windows))]
+        {
+            (600, 400)
+        }
     };
-    #[cfg(not(windows))]
-    let (w, h) = (600, 400);
 
     let mut edges = crate::platform_window::WindowEdges::empty();
     if pos.x < M {

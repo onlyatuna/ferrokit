@@ -71,6 +71,8 @@ struct MockAppKitState {
     calls: Vec<MockCall>,
     /// Shared `NSCursor` instances by class-method name, like AppKit's immortal singletons.
     cursors: HashMap<String, usize>,
+    /// `[NSCursor currentCursor]`, as an object handle (0: unset, defaults to arrowCursor).
+    current_cursor: usize,
     /// `[NSApp currentEvent]`, as an object handle (0: nil).
     current_event: usize,
     /// Pasteboard items `(ty, bytes)` stored on mock `NSPasteboard` objects by object handle.
@@ -128,6 +130,16 @@ impl MockObjcRuntime {
     /// The event `set_current_event` stored, nil if none.
     pub fn current_event(&self) -> Id {
         Id(mock_state().current_event as *mut c_void)
+    }
+
+    /// Records the mock cursor returned by `[NSCursor currentCursor]` after `[cursor set]`.
+    pub fn set_current_cursor(&self, cursor: Id) {
+        mock_state().current_cursor = cursor.0 as usize;
+    }
+
+    /// The cursor recorded by `set_current_cursor`, or `Id::NIL` before any `[cursor set]`.
+    pub fn current_cursor(&self) -> Id {
+        Id(mock_state().current_cursor as *mut c_void)
     }
 
     /// A new mock object of `class_name` whose properties are `properties`.
@@ -1094,6 +1106,135 @@ impl ObjcMsg {
                     .collect(),
             );
         }
+    }
+}
+
+/// `NSImage` + `NSBitmapImageRep` helpers and AppKit main-thread / cursor primitives.
+///
+/// Whether the calling thread is AppKit's OS main thread (`+[NSThread isMainThread]` on macOS;
+/// always `true` in the cross-platform mock runtime).
+pub(crate) fn is_main_thread() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `NSThread` is a Foundation class; `+isMainThread` takes no arguments, returns
+        // `BOOL` matching `send_bool_return`, and is documented as safe to call from any thread
+        // [inferred: Foundation documentation].
+        unsafe {
+            ObjcMsg::send_bool_return(
+                Id(objc_get_class("NSThread").0),
+                Sel::register("isMainThread"),
+            )
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// `-[NSCursor initWithImage:hotSpot:]` on an allocated `NSCursor`.
+///
+/// # Safety
+/// See [`ObjcMsg`]; `receiver` is nil or an uninitialised `NSCursor` returned by `alloc`, and
+/// `image` is nil or a live `NSImage`.
+pub unsafe fn send_cursor_init(receiver: Id, image: Id, hot_spot: CGPoint) -> Id {
+    if receiver.is_nil() {
+        return Id::NIL;
+    }
+    if image.is_nil() {
+        // Consume the uninitialised +1 `alloc` when no valid image was supplied.
+        // SAFETY: caller guarantees `receiver` responds to `release`.
+        unsafe { ObjcMsg::send_0(receiver, Sel::register("release")) };
+        return Id::NIL;
+    }
+
+    #[cfg(target_os = "macos")]
+    // SAFETY: `receiver` is an uninitialised `NSCursor` and `image` is a live `NSImage`
+    // (checked non-nil above); `initWithImage:hotSpot:` takes `(NSImage *, NSPoint)` where
+    // `NSPoint` is ABI-identical to `CGPoint`, and returns the initialised `NSCursor`.
+    unsafe {
+        let msg_send: extern "C" fn(
+            *mut c_void,
+            *const c_void,
+            *mut c_void,
+            CGPoint,
+        ) -> *mut c_void = msg_send_fn();
+        Id(msg_send(
+            receiver.0,
+            Sel::register("initWithImage:hotSpot:").0,
+            image.0,
+            hot_spot,
+        ))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let runtime = MockObjcRuntime::instance();
+        runtime.retain(image);
+        runtime.update_object(receiver, |data| {
+            data.contents = image;
+        });
+        runtime.set_property(receiver, "hotSpot", MockValue::Point(hot_spot));
+        record(
+            receiver,
+            Sel::register("initWithImage:hotSpot:"),
+            vec![MockValue::Id(image), MockValue::Point(hot_spot)],
+        );
+        receiver
+    }
+}
+
+/// Builds a +1 `NSCursor` from a top-to-bottom premultiplied BGRA `CursorImage`, or `Id::NIL` if
+/// AppKit objects cannot be allocated or initialised.
+///
+/// # Safety
+/// On macOS, must be called on the main thread (caller enforces [`is_main_thread`]). The caller
+/// owns the returned +1 `NSCursor` reference (or keeps it alive permanently in a process-wide
+/// cache).
+pub(crate) unsafe fn custom_cursor_from_image(image: &crate::cursor_bitmap::CursorImage) -> Id {
+    if image.width == 0 || image.height == 0 {
+        return Id::NIL;
+    }
+    let rgba = crate::cursor_bitmap::bgra_to_rgba(&image.bgra);
+    let rep_class = Class::get("NSBitmapImageRep").unwrap_or(Class::NIL);
+    // SAFETY: `alloc` takes no arguments and returns an object; nil class yields nil.
+    let rep_alloc = unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };
+    // SAFETY: `send_bitmap_rep_init` consumes `rep_alloc` (releasing on failure) and copies
+    // `width * height * 4` premultiplied RGBA8 bytes from `rgba`.
+    let rep = unsafe { ObjcMsg::send_bitmap_rep_init(rep_alloc, image.width, image.height, &rgba) };
+    if rep.is_nil() {
+        return Id::NIL;
+    }
+
+    let image_class = Class::get("NSImage").unwrap_or(Class::NIL);
+    // SAFETY: `alloc` takes no arguments and returns an object; nil class yields nil.
+    let image_alloc = unsafe { ObjcMsg::send_class_0(image_class, Sel::register("alloc")) };
+    let size = CGSize::new(image.width as f64, image.height as f64);
+    // SAFETY: `initWithSize:` takes one `NSSize` (`CGSize`) on the unconsumed `alloc` result.
+    let ns_image = unsafe { ObjcMsg::send_size(image_alloc, Sel::register("initWithSize:"), size) };
+    if ns_image.is_nil() {
+        // SAFETY: `rep` is the live +1 `NSBitmapImageRep` created above and nothing retained it.
+        unsafe { ObjcMsg::send_0(rep, Sel::register("release")) };
+        return Id::NIL;
+    }
+    // SAFETY: `ns_image` and `rep` are live non-nil objects; `addRepresentation:` retains `rep`,
+    // and releasing `rep` afterwards balances our +1 from `NSBitmapImageRep`.
+    unsafe {
+        ObjcMsg::send_id(ns_image, Sel::register("addRepresentation:"), rep);
+        ObjcMsg::send_0(rep, Sel::register("release"));
+    }
+
+    let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
+    // SAFETY: `alloc` takes no arguments and returns an object; nil class yields nil.
+    let cursor_alloc = unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register("alloc")) };
+    let hot_spot = CGPoint::new(image.hot_x as f64, image.hot_y as f64);
+    // SAFETY: `send_cursor_init` consumes `cursor_alloc` and initialises it with the live
+    // `ns_image` and `hot_spot`; `NSCursor` retains `ns_image`, so releasing `ns_image` balances
+    // our +1 from `NSImage alloc`.
+    unsafe {
+        let cursor = send_cursor_init(cursor_alloc, ns_image, hot_spot);
+        ObjcMsg::send_0(ns_image, Sel::register("release"));
+        cursor
     }
 }
 
