@@ -5,14 +5,140 @@
 
 use ferrokit_platform::{GlobalHotkeyManager, HotkeyError};
 
-#[cfg(not(windows))]
 #[test]
-fn off_windows_there_is_no_global_hotkey_back_end() {
+fn hotkey_error_is_already_registered_recognizes_all_platform_conflict_codes() {
+    for code in [
+        HotkeyError::ERROR_HOTKEY_ALREADY_REGISTERED,
+        HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
+        HotkeyError::X11_BAD_ACCESS,
+    ] {
+        let err = HotkeyError::Os { code };
+        assert_eq!(err.os_code(), Some(code));
+        assert!(err.is_already_registered(), "code {code} must match");
+        assert!(!err.to_string().is_empty());
+    }
+
+    for code in [0u32, 2, 5, (-9879_i32) as u32] {
+        let err = HotkeyError::Os { code };
+        assert!(!err.is_already_registered(), "code {code} must not match");
+    }
+
+    for err in [
+        HotkeyError::Unsupported,
+        HotkeyError::IdInUse(1),
+        HotkeyError::NotRegistered(2),
+        HotkeyError::Stopped,
+        HotkeyError::Thread("no main loop".to_owned()),
+    ] {
+        assert_eq!(err.os_code(), None);
+        assert!(!err.is_already_registered());
+        assert!(!err.to_string().is_empty());
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[test]
+fn off_supported_platforms_there_is_no_global_hotkey_back_end() {
     assert_eq!(
         GlobalHotkeyManager::new().unwrap_err(),
         HotkeyError::Unsupported
     );
     assert!(!HotkeyError::Unsupported.to_string().is_empty());
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::*;
+    use ferrokit_platform::HotkeyModifiers;
+
+    const fn f(n: u32) -> u32 {
+        0x70 + n - 1
+    }
+    const MODS: HotkeyModifiers = HotkeyModifiers::CONTROL
+        .union(HotkeyModifiers::ALT)
+        .union(HotkeyModifiers::SHIFT)
+        .union(HotkeyModifiers::WIN)
+        .union(HotkeyModifiers::NO_REPEAT);
+
+    #[test]
+    fn background_thread_without_main_loop_returns_thread_error() {
+        let err = std::thread::spawn(GlobalHotkeyManager::new)
+            .join()
+            .expect("must not panic off the main thread")
+            .unwrap_err();
+        assert!(matches!(err, HotkeyError::Thread(_)), "{err:?}");
+    }
+
+    #[test]
+    fn registers_on_main_thread_or_reports_thread_error_on_worker() {
+        let m = match GlobalHotkeyManager::new() {
+            Ok(m) => m,
+            Err(HotkeyError::Thread(_) | HotkeyError::Os { .. }) => return,
+            Err(e) => panic!("unexpected error on macOS: {e:?}"),
+        };
+        assert!(m.registered_ids().is_empty());
+        if m.register(10, MODS, f(13)).is_err() {
+            // Headless macOS CI without WindowServer access may refuse RegisterEventHotKey.
+            return;
+        }
+        assert!(m.is_registered(10));
+        assert_eq!(m.registered_ids(), [10]);
+        assert_eq!(m.register(10, MODS, f(14)), Err(HotkeyError::IdInUse(10)));
+        assert_eq!(m.unregister(11), Err(HotkeyError::NotRegistered(11)));
+
+        let conflict = m.register(11, MODS, f(13)).unwrap_err();
+        assert!(conflict.is_already_registered(), "{conflict:?}");
+        assert!(!m.is_registered(11));
+
+        m.replace(10, MODS, f(14)).unwrap();
+        assert_eq!(m.registered_ids(), [10]);
+
+        m.unregister(10).unwrap();
+        assert!(!m.is_registered(10));
+        assert!(m.registered_ids().is_empty());
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use ferrokit_platform::HotkeyModifiers;
+
+    const fn f(n: u32) -> u32 {
+        0x70 + n - 1
+    }
+    const MODS: HotkeyModifiers = HotkeyModifiers::CONTROL
+        .union(HotkeyModifiers::ALT)
+        .union(HotkeyModifiers::SHIFT)
+        .union(HotkeyModifiers::WIN)
+        .union(HotkeyModifiers::NO_REPEAT);
+
+    #[test]
+    fn registers_on_x11_or_returns_unsupported_headless() {
+        let m = match GlobalHotkeyManager::new() {
+            Ok(m) => m,
+            Err(HotkeyError::Unsupported) => return,
+            Err(e) => panic!("unexpected error on Linux: {e:?}"),
+        };
+        assert!(m.registered_ids().is_empty());
+        if m.register(10, MODS, f(13)).is_err() {
+            // Minimal Xvfb keymaps may omit F13.
+            return;
+        }
+        assert!(m.is_registered(10));
+        assert_eq!(m.registered_ids(), [10]);
+        assert_eq!(m.register(10, MODS, f(14)), Err(HotkeyError::IdInUse(10)));
+        assert_eq!(m.unregister(11), Err(HotkeyError::NotRegistered(11)));
+
+        let other = GlobalHotkeyManager::new().unwrap();
+        let conflict = other.register(20, MODS, f(13)).unwrap_err();
+        assert!(conflict.is_already_registered(), "{conflict:?}");
+        assert!(other.registered_ids().is_empty());
+
+        m.unregister(10).unwrap();
+        assert!(!m.is_registered(10));
+        other.register(20, MODS, f(13)).unwrap();
+    }
 }
 
 #[cfg(windows)]
