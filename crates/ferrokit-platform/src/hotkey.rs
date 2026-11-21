@@ -258,148 +258,20 @@ impl PlatformHotkeyManager for GenericHotkeyManager {
 /// backend on macOS and an always-failing one elsewhere.
 pub mod cocoa_hotkey {
     use super::*;
+    pub use crate::hotkey_macos::{
+        CARBON_CMD_KEY, CARBON_CONTROL_KEY, CARBON_OPTION_KEY, CARBON_SHIFT_KEY, carbon_keycode,
+        carbon_modifiers,
+    };
+    use crate::hotkey_macos::{
+        CocoaRoute, allocate_slot, get_cocoa_route, insert_cocoa_route, remove_route, route_press,
+    };
     use ferrokit_core::event::{Event, EventKind};
     use ferrokit_core::event_loop::post_event_to_thread;
     use ferrokit_core::object::{ObjectId, ThreadId};
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-    use std::sync::{LazyLock, Mutex, MutexGuard};
-
-    // Carbon modifier masks (`Events.h`: cmdKey, shiftKey, optionKey, controlKey).
-    pub const CARBON_CMD_KEY: u32 = 1 << 8;
-    pub const CARBON_SHIFT_KEY: u32 = 1 << 9;
-    pub const CARBON_OPTION_KEY: u32 = 1 << 11;
-    pub const CARBON_CONTROL_KEY: u32 = 1 << 12;
-
-    /// Carbon modifier mask for `modifiers`. The flags name physical keys, as on the other
-    /// back ends: `ALT` is Option, `CONTROL` is Control, `SHIFT` is Shift and `WIN` (the
-    /// Super/Windows key) is Command. `NO_REPEAT` has no Carbon counterpart: a hotkey fires once
-    /// per press, never on key repeat, so it is always in effect.
-    pub fn carbon_modifiers(modifiers: HotkeyModifiers) -> u32 {
-        let mut mask = 0;
-        if modifiers.contains(HotkeyModifiers::ALT) {
-            mask |= CARBON_OPTION_KEY;
-        }
-        if modifiers.contains(HotkeyModifiers::CONTROL) {
-            mask |= CARBON_CONTROL_KEY;
-        }
-        if modifiers.contains(HotkeyModifiers::SHIFT) {
-            mask |= CARBON_SHIFT_KEY;
-        }
-        if modifiers.contains(HotkeyModifiers::WIN) {
-            mask |= CARBON_CMD_KEY;
-        }
-        mask
-    }
-
-    /// Carbon virtual key code (`kVK_ANSI_*`, `kVK_F*`, ... of `Events.h`, ANSI layout) of the
-    /// Windows-style virtual key `vk` that [`PlatformHotkeyManager::register_hotkey`] takes:
-    /// `'A'..='Z'`, `'0'..='9'`, `VK_F1..VK_F20`, the arrows, editing and numeric keypad keys
-    /// and the `VK_OEM_*` punctuation keys. `None` if the key has no Mac counterpart.
-    pub fn carbon_keycode(vk: u32) -> Option<u32> {
-        Some(match vk {
-            0x41 => 0,   // A
-            0x53 => 1,   // S
-            0x44 => 2,   // D
-            0x46 => 3,   // F
-            0x48 => 4,   // H
-            0x47 => 5,   // G
-            0x5A => 6,   // Z
-            0x58 => 7,   // X
-            0x43 => 8,   // C
-            0x56 => 9,   // V
-            0x42 => 11,  // B
-            0x51 => 12,  // Q
-            0x57 => 13,  // W
-            0x45 => 14,  // E
-            0x52 => 15,  // R
-            0x59 => 16,  // Y
-            0x54 => 17,  // T
-            0x4F => 31,  // O
-            0x55 => 32,  // U
-            0x49 => 34,  // I
-            0x50 => 35,  // P
-            0x4C => 37,  // L
-            0x4A => 38,  // J
-            0x4B => 40,  // K
-            0x4E => 45,  // N
-            0x4D => 46,  // M
-            0x31 => 18,  // 1
-            0x32 => 19,  // 2
-            0x33 => 20,  // 3
-            0x34 => 21,  // 4
-            0x35 => 23,  // 5
-            0x36 => 22,  // 6
-            0x37 => 26,  // 7
-            0x38 => 28,  // 8
-            0x39 => 25,  // 9
-            0x30 => 29,  // 0
-            0x0D => 36,  // VK_RETURN
-            0x09 => 48,  // VK_TAB
-            0x20 => 49,  // VK_SPACE
-            0x08 => 51,  // VK_BACK (Delete)
-            0x1B => 53,  // VK_ESCAPE
-            0x2E => 117, // VK_DELETE (forward delete)
-            0x2D => 114, // VK_INSERT (Help)
-            0x24 => 115, // VK_HOME
-            0x23 => 119, // VK_END
-            0x21 => 116, // VK_PRIOR (Page Up)
-            0x22 => 121, // VK_NEXT (Page Down)
-            0x25 => 123, // VK_LEFT
-            0x27 => 124, // VK_RIGHT
-            0x28 => 125, // VK_DOWN
-            0x26 => 126, // VK_UP
-            0x70 => 122, // VK_F1
-            0x71 => 120, // F2
-            0x72 => 99,  // F3
-            0x73 => 118, // F4
-            0x74 => 96,  // F5
-            0x75 => 97,  // F6
-            0x76 => 98,  // F7
-            0x77 => 100, // F8
-            0x78 => 101, // F9
-            0x79 => 109, // F10
-            0x7A => 103, // F11
-            0x7B => 111, // F12
-            0x7C => 105, // F13
-            0x7D => 107, // F14
-            0x7E => 113, // F15
-            0x7F => 106, // F16
-            0x80 => 64,  // F17
-            0x81 => 79,  // F18
-            0x82 => 80,  // F19
-            0x83 => 90,  // F20
-            0x60 => 82,  // VK_NUMPAD0
-            0x61 => 83,  // NUMPAD1
-            0x62 => 84,  // NUMPAD2
-            0x63 => 85,  // NUMPAD3
-            0x64 => 86,  // NUMPAD4
-            0x65 => 87,  // NUMPAD5
-            0x66 => 88,  // NUMPAD6
-            0x67 => 89,  // NUMPAD7
-            0x68 => 91,  // NUMPAD8
-            0x69 => 92,  // NUMPAD9
-            0x6A => 67,  // VK_MULTIPLY
-            0x6B => 69,  // VK_ADD
-            0x6D => 78,  // VK_SUBTRACT
-            0x6E => 65,  // VK_DECIMAL
-            0x6F => 75,  // VK_DIVIDE
-            0xBA => 41,  // VK_OEM_1 ;
-            0xBB => 24,  // VK_OEM_PLUS =
-            0xBC => 43,  // VK_OEM_COMMA ,
-            0xBD => 27,  // VK_OEM_MINUS -
-            0xBE => 47,  // VK_OEM_PERIOD .
-            0xBF => 44,  // VK_OEM_2 /
-            0xC0 => 50,  // VK_OEM_3 `
-            0xDB => 33,  // VK_OEM_4 [
-            0xDC => 42,  // VK_OEM_5 \
-            0xDD => 30,  // VK_OEM_6 ]
-            0xDE => 39,  // VK_OEM_7 '
-            _ => return None,
-        })
-    }
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// What the manager needs from the OS. One implementation talks to Carbon, the other two
     /// ([`MockHotkeyBackend`], the unavailable backend) exist so the manager runs everywhere.
@@ -421,18 +293,6 @@ pub mod cocoa_hotkey {
         fn unregister(&mut self, handle: usize) -> Result<(), &'static str>;
     }
 
-    /// Where a registered slot's presses go: the manager `instance`, the application's hotkey
-    /// `id`, and the thread that owns the manager.
-    #[derive(Clone, Copy)]
-    struct Route {
-        instance: u64,
-        id: u32,
-        owner: ThreadId,
-    }
-
-    static ROUTES: LazyLock<Mutex<HashMap<u32, Route>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
-    static NEXT_SLOT: AtomicU32 = AtomicU32::new(1);
     static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
     type Handler = Rc<dyn Fn(u32)>;
@@ -443,29 +303,19 @@ pub mod cocoa_hotkey {
         static HANDLERS: RefCell<HashMap<u64, Handler>> = RefCell::new(HashMap::new());
     }
 
-    fn routes() -> MutexGuard<'static, HashMap<u32, Route>> {
-        // The map is only mutated by single inserts/removes, so it is valid after a panic.
-        ROUTES.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Called by the OS callback for a press of `slot`: queues the delivery on the owner
-    /// thread's event loop (so the handler never runs inside the Carbon callback and may
-    /// register or unregister hotkeys). Returns whether the slot is known.
-    fn route_press(slot: u32) -> bool {
-        let Some(route) = routes().get(&slot).copied() else {
-            return false;
-        };
+    /// Queues delivery on the owner thread's event loop so the handler never runs inside the
+    /// Carbon callback and may register or unregister hotkeys freely.
+    pub(crate) fn enqueue_press(slot: u32, route: CocoaRoute) {
         post_event_to_thread(
             route.owner,
             ObjectId(0),
             Event::new(EventKind::MetaCallNoTarget(Box::new(move || deliver(slot)))),
         );
-        true
     }
 
     /// Runs on the owner thread. A press queued before its hotkey was unregistered is dropped.
     fn deliver(slot: u32) {
-        let Some(route) = routes().get(&slot).copied() else {
+        let Some(route) = get_cocoa_route(slot) else {
             return;
         };
         let handler = HANDLERS.with(|h| h.borrow().get(&route.instance).cloned());
@@ -539,7 +389,7 @@ pub mod cocoa_hotkey {
         /// thread), otherwise one whose registrations all fail.
         pub fn new() -> Self {
             #[cfg(target_os = "macos")]
-            let backend: Box<dyn HotkeyBackend> = Box::new(carbon::CarbonBackend::new());
+            let backend: Box<dyn HotkeyBackend> = Box::new(CarbonBackend::new());
             #[cfg(not(target_os = "macos"))]
             let backend: Box<dyn HotkeyBackend> = Box::new(UnavailableBackend);
             Self::with_backend(backend)
@@ -550,7 +400,10 @@ pub mod cocoa_hotkey {
         /// `CoreApplication` yet, or another thread). Off macOS it always succeeds.
         pub fn try_new() -> Result<Self, &'static str> {
             #[cfg(target_os = "macos")]
-            require_main_thread(ferrokit_core::object::ThreadContext::is_main_thread())?;
+            require_main_thread(
+                ferrokit_core::object::ThreadContext::is_main_thread()
+                    && crate::hotkey_macos::carbon::is_os_main_thread(),
+            )?;
             Ok(Self::new())
         }
 
@@ -604,11 +457,11 @@ pub mod cocoa_hotkey {
                 return Err("CocoaHotkeyManager: hotkey id already registered");
             }
             let keycode = carbon_keycode(vk).ok_or("CocoaHotkeyManager: unsupported key")?;
-            let slot = NEXT_SLOT.fetch_add(1, Ordering::Relaxed);
+            let slot = allocate_slot();
             // Routed before the OS can report a press, removed again if registering fails.
-            routes().insert(
+            insert_cocoa_route(
                 slot,
-                Route {
+                CocoaRoute {
                     instance: self.instance,
                     id,
                     owner: self.owner,
@@ -624,7 +477,7 @@ pub mod cocoa_hotkey {
                     Ok(())
                 }
                 Err(e) => {
-                    routes().remove(&slot);
+                    remove_route(slot);
                     Err(e)
                 }
             }
@@ -636,7 +489,7 @@ pub mod cocoa_hotkey {
                 return Err("CocoaHotkeyManager: hotkey id not registered");
             };
             // Unrouted first: a press already queued for this slot is dropped on delivery.
-            routes().remove(&reg.slot);
+            remove_route(reg.slot);
             self.backend.unregister(reg.handle)
         }
     }
@@ -748,203 +601,54 @@ pub mod cocoa_hotkey {
         }
     }
 
+    /// The Carbon back end. Delegates to the unified macOS Carbon engine in `hotkey_macos::carbon`
+    /// (`!Send` as a boxed trait object, so it is created on and stays on the main thread).
     #[cfg(target_os = "macos")]
-    pub(crate) mod carbon {
-        use super::*;
-        use ferrokit_core::object::ThreadContext;
-        use std::ffi::c_void;
+    struct CarbonBackend;
 
-        pub(crate) type OSStatus = i32;
-        pub(crate) type EventTargetRef = *mut c_void;
-        pub(crate) type EventHandlerRef = *mut c_void;
-        pub(crate) type EventHandlerCallRef = *mut c_void;
-        pub(crate) type EventRef = *mut c_void;
-        pub(crate) type EventHotKeyRef = *mut c_void;
-        pub(crate) type EventHandlerProc =
-            extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
-
-        #[repr(C)]
-        pub(crate) struct EventTypeSpec {
-            pub(crate) event_class: u32,
-            pub(crate) event_kind: u32,
+    #[cfg(target_os = "macos")]
+    impl CarbonBackend {
+        fn new() -> Self {
+            ferrokit_core::object::ThreadContext::assert_main_thread("CocoaHotkeyManager::new");
+            assert!(
+                crate::hotkey_macos::carbon::is_os_main_thread(),
+                "CocoaHotkeyManager::new: must be called on the macOS OS main thread"
+            );
+            Self
         }
+    }
 
-        /// `EventHotKeyID`, passed to `RegisterEventHotKey` by value.
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        pub(crate) struct EventHotKeyId {
-            pub(crate) signature: u32,
-            pub(crate) id: u32,
-        }
-
-        pub(crate) const NO_ERR: OSStatus = 0;
-        pub(crate) const EVENT_NOT_HANDLED_ERR: OSStatus = -9874;
-        const EVENT_HOT_KEY_EXISTS_ERR: OSStatus = -9878;
-        const EVENT_HOT_KEY_INVALID_ERR: OSStatus = -9879;
-        pub(crate) const EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
-        pub(crate) const EVENT_HOT_KEY_PRESSED: u32 = 5;
-        pub(crate) const EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
-        pub(crate) const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
-        /// Our `EventHotKeyID::signature` ('FKIT'): other hotkey events are not ours.
-        const SIGNATURE: u32 = u32::from_be_bytes(*b"FKIT");
-
-        #[link(name = "Carbon", kind = "framework")]
-        unsafe extern "C" {
-            pub(crate) fn GetApplicationEventTarget() -> EventTargetRef;
-            pub(crate) fn InstallEventHandler(
-                target: EventTargetRef,
-                handler: EventHandlerProc,
-                num_types: usize,
-                list: *const EventTypeSpec,
-                user_data: *mut c_void,
-                out_ref: *mut EventHandlerRef,
-            ) -> OSStatus;
-            pub(crate) fn GetEventParameter(
-                event: EventRef,
-                name: u32,
-                desired_type: u32,
-                actual_type: *mut u32,
-                buffer_size: usize,
-                actual_size: *mut usize,
-                out_data: *mut c_void,
-            ) -> OSStatus;
-            pub(crate) fn RegisterEventHotKey(
-                key_code: u32,
-                modifiers: u32,
-                hot_key_id: EventHotKeyId,
-                target: EventTargetRef,
-                options: u32,
-                out_ref: *mut EventHotKeyRef,
-            ) -> OSStatus;
-            pub(crate) fn UnregisterEventHotKey(hot_key: EventHotKeyRef) -> OSStatus;
-        }
-
-        /// Carbon calls this on the main thread, from the application event target, for every
-        /// hotkey press. It only looks the slot up and queues the delivery.
-        extern "C" fn hot_key_pressed(
-            _call: EventHandlerCallRef,
-            event: EventRef,
-            _user_data: *mut c_void,
-        ) -> OSStatus {
-            let mut id = EventHotKeyId {
-                signature: 0,
-                id: 0,
-            };
-            // SAFETY: `event` is the live event Carbon passed to this handler; `id` is a
-            // writable `EventHotKeyID` of exactly the size given, and the other out parameters
-            // are allowed to be null.
-            let status = unsafe {
-                GetEventParameter(
-                    event,
-                    EVENT_PARAM_DIRECT_OBJECT,
-                    TYPE_EVENT_HOT_KEY_ID,
-                    std::ptr::null_mut(),
-                    std::mem::size_of::<EventHotKeyId>(),
-                    std::ptr::null_mut(),
-                    &mut id as *mut EventHotKeyId as *mut c_void,
-                )
-            };
-            // A panic must not unwind into Carbon's C frames (undefined behaviour): treat it as
-            // "not handled".
-            let routed = std::panic::catch_unwind(|| {
-                status == NO_ERR && id.signature == SIGNATURE && route_press(id.id)
-            })
-            .unwrap_or(false);
-            if routed {
-                NO_ERR
-            } else {
-                EVENT_NOT_HANDLED_ERR
-            }
-        }
-
-        /// The one process-wide hotkey-pressed handler, installed on first use. It carries no
-        /// per-manager state (presses are routed by slot), so it is never removed and cannot
-        /// dangle.
-        static HANDLER_INSTALLED: LazyLock<Result<(), &'static str>> = LazyLock::new(|| {
-            let spec = EventTypeSpec {
-                event_class: EVENT_CLASS_KEYBOARD,
-                event_kind: EVENT_HOT_KEY_PRESSED,
-            };
-            let mut handler_ref: EventHandlerRef = std::ptr::null_mut();
-            // SAFETY: `hot_key_pressed` has the `EventHandlerProcPtr` signature; `spec` is one
-            // valid `EventTypeSpec` (count 1) that Carbon copies during the call; `user_data`
-            // is unused (null); `handler_ref` is a writable out pointer.
-            let status = unsafe {
-                InstallEventHandler(
-                    GetApplicationEventTarget(),
-                    hot_key_pressed,
-                    1,
-                    &spec,
-                    std::ptr::null_mut(),
-                    &mut handler_ref,
-                )
-            };
-            if status == NO_ERR {
-                Ok(())
-            } else {
-                Err("InstallEventHandler failed")
-            }
-        });
-
-        /// The Carbon back end. Hotkeys are delivered through the main thread's event target, so
-        /// it is created on, and (being `!Send`, as a boxed trait object) stays on, the main
-        /// thread.
-        pub(super) struct CarbonBackend;
-
-        impl CarbonBackend {
-            pub(super) fn new() -> Self {
-                ThreadContext::assert_main_thread("CocoaHotkeyManager::new");
-                Self
-            }
-        }
-
-        impl HotkeyBackend for CarbonBackend {
-            fn register(
-                &mut self,
-                slot: u32,
-                keycode: u32,
-                modifiers: u32,
-            ) -> Result<usize, &'static str> {
-                (*HANDLER_INSTALLED)?;
-                let mut hot_key: EventHotKeyRef = std::ptr::null_mut();
-                // SAFETY: `CarbonBackend::new` asserted the main thread, which Carbon hotkey
-                // registration requires [inferred: per Carbon docs, not checked per call];
-                // `hot_key` is a live writable `EventHotKeyRef` out slot read only on success,
-                // and `GetApplicationEventTarget` returns the process-wide application target,
-                // valid for the process lifetime. The handler was installed just above.
-                let status = unsafe {
-                    RegisterEventHotKey(
-                        keycode,
-                        modifiers,
-                        EventHotKeyId {
-                            signature: SIGNATURE,
-                            id: slot,
-                        },
-                        GetApplicationEventTarget(),
-                        0,
-                        &mut hot_key,
-                    )
-                };
-                match status {
-                    NO_ERR if !hot_key.is_null() => Ok(hot_key as usize),
-                    EVENT_HOT_KEY_EXISTS_ERR => {
-                        Err("RegisterEventHotKey failed: hotkey already registered")
+    #[cfg(target_os = "macos")]
+    impl HotkeyBackend for CarbonBackend {
+        fn register(
+            &mut self,
+            slot: u32,
+            keycode: u32,
+            modifiers: u32,
+        ) -> Result<usize, &'static str> {
+            crate::hotkey_macos::carbon::ensure_handler_installed().map_err(|e| match e {
+                HotkeyError::Thread(_) => "CocoaHotkeyManager: must be created on the main thread",
+                _ => "InstallEventHandler failed",
+            })?;
+            crate::hotkey_macos::carbon::register_hotkey(slot, keycode, modifiers).map_err(|e| {
+                match e {
+                    HotkeyError::Os {
+                        code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
+                    } => "RegisterEventHotKey failed: hotkey already registered",
+                    HotkeyError::Os {
+                        code: crate::hotkey_macos::CARBON_EVENT_HOT_KEY_INVALID_ERR,
+                    } => "RegisterEventHotKey failed: invalid hotkey",
+                    HotkeyError::Thread(_) => {
+                        "CocoaHotkeyManager: must be created on the main thread"
                     }
-                    EVENT_HOT_KEY_INVALID_ERR => Err("RegisterEventHotKey failed: invalid hotkey"),
-                    _ => Err("RegisterEventHotKey failed"),
+                    _ => "RegisterEventHotKey failed",
                 }
-            }
+            })
+        }
 
-            fn unregister(&mut self, handle: usize) -> Result<(), &'static str> {
-                // SAFETY: `handle` came from a successful `RegisterEventHotKey` and the manager
-                // passes each handle here exactly once (it forgets the registration first).
-                let status = unsafe { UnregisterEventHotKey(handle as EventHotKeyRef) };
-                if status == NO_ERR {
-                    Ok(())
-                } else {
-                    Err("UnregisterEventHotKey failed")
-                }
-            }
+        fn unregister(&mut self, handle: usize) -> Result<(), &'static str> {
+            crate::hotkey_macos::carbon::unregister_hotkey(handle)
+                .map_err(|_| "UnregisterEventHotKey failed")
         }
     }
 }
