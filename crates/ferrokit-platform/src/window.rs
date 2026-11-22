@@ -3228,10 +3228,8 @@ pub fn calc_frameless_edge(
         return crate::platform_window::WindowEdges::empty();
     }
     const M: i32 = 8;
-    let (w, h) = if let Some(size) = crate::window_cocoa::live_window_size(_hwnd as usize) {
-        size
-    } else {
-        #[cfg(windows)]
+    #[cfg(windows)]
+    let (w, h) = crate::window_cocoa::live_window_size(_hwnd as usize).unwrap_or_else(|| {
         if _hwnd != 0 {
             // SAFETY: RECT is a plain integer struct, so zeroed is valid; `rect` is a local out pointer
             // valid for the call; GetClientRect validates `_hwnd` (non-zero) and on failure leaves the
@@ -3249,11 +3247,9 @@ pub fn calc_frameless_edge(
         } else {
             (600, 400)
         }
-        #[cfg(not(windows))]
-        {
-            (600, 400)
-        }
-    };
+    });
+    #[cfg(not(windows))]
+    let (w, h) = crate::window_cocoa::live_window_size(_hwnd as usize).unwrap_or((600, 400));
 
     let mut edges = crate::platform_window::WindowEdges::empty();
     if pos.x < M {
