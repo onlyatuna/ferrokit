@@ -455,3 +455,547 @@ fn test_system_tray_reentrant_context_menu_does_not_panic() {
             .emit(&Point::new(50, 50));
     }
 }
+
+#[test]
+fn test_system_tray_set_template_smoke() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _app = setup_app();
+
+    let icon = create_test_icon();
+    let mut tray = SystemTrayIcon::from_icon(&icon).expect("from_icon");
+    tray.set_template(false);
+    tray.set_template(true);
+}
+
+#[cfg(not(windows))]
+mod modal_exec_popup {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use ferrokit_core::application::CoreApplication;
+    use ferrokit_core::event::MouseButtons;
+    use ferrokit_core::signal::Signal;
+    use ferrokit_core::timer::Timer;
+    use ferrokit_gui::geometry::Region;
+    use ferrokit_gui::geometry::primitives::{Point, Rect};
+    use ferrokit_gui::image::Icon;
+    use ferrokit_gui::paint::Pixmap;
+    use ferrokit_platform::backdrop::BackdropType;
+    use ferrokit_platform::clipboard::PlatformClipboard;
+    use ferrokit_platform::cursor::PlatformCursor;
+    use ferrokit_platform::hotkey::PlatformHotkeyManager;
+    use ferrokit_platform::integration::{PlatformIntegration, platform, set_platform_integration};
+    use ferrokit_platform::platform_tray::PlatformTrayIcon;
+    use ferrokit_platform::platform_window::PlatformWindow;
+    use ferrokit_platform::screen::PlatformScreen;
+    use ferrokit_platform::theme::PlatformTheme;
+    use ferrokit_platform::window::WindowFlags;
+    use ferrokit_platform::window_system_interface::{
+        KeyboardModifiers, MouseButton, WindowSystemEvent, WindowSystemEventHandler, event_time_ms,
+    };
+    use ferrokit_widgets::Widget;
+    use ferrokit_widgets::menu::Menu;
+
+    const KEY_ESCAPE: u32 = 0x0100_0000;
+    const KEY_RETURN: u32 = 0x0100_0004;
+    const KEY_DOWN: u32 = 0x0100_0015;
+
+    use super::{TEST_LOCK, setup_app};
+
+    thread_local! {
+        static MODAL_HANDLER: RefCell<Option<Box<dyn WindowSystemEventHandler>>> =
+            const { RefCell::new(None) };
+        static MODAL_GEOMETRY: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
+    }
+
+    fn reset_modal_window_state(rect: Rect) {
+        MODAL_HANDLER.with(|slot| *slot.borrow_mut() = None);
+        MODAL_GEOMETRY.with(|g| g.set(rect));
+    }
+
+    fn deliver_modal_event(event: WindowSystemEvent) {
+        let handler = MODAL_HANDLER.with(|slot| slot.borrow_mut().take());
+        if let Some(mut h) = handler {
+            h.handle_window_event(event);
+            MODAL_HANDLER.with(|slot| {
+                if slot.borrow().is_none() {
+                    *slot.borrow_mut() = Some(h);
+                }
+            });
+        }
+    }
+
+    fn modal_geometry() -> Rect {
+        MODAL_GEOMETRY.with(Cell::get)
+    }
+
+    struct PlatformGuard {
+        previous: Arc<dyn PlatformIntegration>,
+    }
+
+    impl PlatformGuard {
+        fn install() -> Self {
+            let previous = platform();
+            set_platform_integration(Arc::new(FakeModalPlatform {
+                inner: Arc::clone(&previous),
+            }));
+            Self { previous }
+        }
+    }
+
+    impl Drop for PlatformGuard {
+        fn drop(&mut self) {
+            MODAL_HANDLER.with(|slot| *slot.borrow_mut() = None);
+            set_platform_integration(Arc::clone(&self.previous));
+        }
+    }
+
+    struct FakeScreen;
+
+    impl PlatformScreen for FakeScreen {
+        fn name(&self) -> String {
+            "FakeModalScreen".to_string()
+        }
+
+        fn geometry(&self) -> Rect {
+            Rect::new(0, 0, 1920, 1080)
+        }
+
+        fn available_geometry(&self) -> Rect {
+            Rect::new(0, 0, 1920, 1040)
+        }
+
+        fn is_primary(&self) -> bool {
+            true
+        }
+
+        fn device_pixel_ratio(&self) -> f32 {
+            1.0
+        }
+    }
+
+    struct FakeModalWindow {
+        geometry: Rect,
+        target_pos: Option<Point>,
+        active: Cell<bool>,
+        opacity: f32,
+        min_size: (i32, i32),
+        max_size: (i32, i32),
+        flags: WindowFlags,
+    }
+
+    impl FakeModalWindow {
+        fn new(rect: Rect, flags: WindowFlags) -> Self {
+            reset_modal_window_state(rect);
+            Self {
+                geometry: rect,
+                target_pos: None,
+                active: Cell::new(false),
+                opacity: 1.0,
+                min_size: (0, 0),
+                max_size: (i32::MAX, i32::MAX),
+                flags,
+            }
+        }
+    }
+
+    impl Drop for FakeModalWindow {
+        fn drop(&mut self) {
+            MODAL_HANDLER.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    impl PlatformWindow for FakeModalWindow {
+        fn show(&self) {
+            self.active.set(true);
+        }
+
+        fn hide(&self) {
+            self.active.set(false);
+        }
+
+        fn is_active(&self) -> bool {
+            self.active.get()
+        }
+
+        fn request_activate_window(&self) {
+            self.active.set(true);
+        }
+
+        fn geometry(&self) -> Rect {
+            self.geometry
+        }
+
+        fn set_geometry(&mut self, rect: Rect) {
+            self.geometry = rect;
+            MODAL_GEOMETRY.with(|g| g.set(rect));
+        }
+
+        fn set_stays_on_top(&mut self, _enabled: bool) {}
+
+        fn set_click_through(&mut self, _enabled: bool) {}
+
+        fn flags(&self) -> WindowFlags {
+            self.flags
+        }
+
+        fn set_opacity(&mut self, opacity: f32) {
+            self.opacity = opacity;
+        }
+
+        fn opacity(&self) -> f32 {
+            self.opacity
+        }
+
+        fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {
+            self.min_size = (min_w, min_h);
+        }
+
+        fn minimum_size(&self) -> (i32, i32) {
+            self.min_size
+        }
+
+        fn set_maximum_size(&mut self, max_w: i32, max_h: i32) {
+            self.max_size = (max_w, max_h);
+        }
+
+        fn maximum_size(&self) -> (i32, i32) {
+            self.max_size
+        }
+
+        fn device_pixel_ratio(&self) -> f32 {
+            1.0
+        }
+
+        fn present(&mut self, _pixmap: &mut Pixmap, _opacity: f32) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn present_region(&mut self, pixmap: &Pixmap, _dirty: &Region) -> Result<(), &'static str> {
+            if let Some(pos) = self.target_pos.take() {
+                self.geometry = Rect::new(
+                    pos.x,
+                    pos.y,
+                    pixmap.logical_width().round() as i32,
+                    pixmap.logical_height().round() as i32,
+                );
+                MODAL_GEOMETRY.with(|g| g.set(self.geometry));
+            }
+            Ok(())
+        }
+
+        fn set_target_pos(&mut self, pos: Option<Point>) {
+            self.target_pos = pos;
+        }
+
+        fn set_event_handler(&mut self, handler: Box<dyn WindowSystemEventHandler>) {
+            MODAL_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+        }
+
+        fn native_handle(&self) -> isize {
+            0
+        }
+
+        fn set_backdrop(&mut self, _backdrop: BackdropType, _dark_mode: bool) -> bool {
+            false
+        }
+
+        fn supports_modal_event_loop(&self) -> bool {
+            true
+        }
+    }
+
+    struct FakeModalPlatform {
+        inner: Arc<dyn PlatformIntegration>,
+    }
+
+    impl PlatformIntegration for FakeModalPlatform {
+        fn create_window(
+            &self,
+            _title: &str,
+            rect: Rect,
+            flags: WindowFlags,
+        ) -> Result<Box<dyn PlatformWindow>, &'static str> {
+            Ok(Box::new(FakeModalWindow::new(rect, flags)))
+        }
+
+        fn create_tray_icon(
+            &self,
+            tooltip: &str,
+            icon: &Icon,
+        ) -> Result<Box<dyn PlatformTrayIcon>, &'static str> {
+            self.inner.create_tray_icon(tooltip, icon)
+        }
+
+        fn primary_screen(&self) -> Box<dyn PlatformScreen> {
+            Box::new(FakeScreen)
+        }
+
+        fn screens(&self) -> Vec<Box<dyn PlatformScreen>> {
+            vec![Box::new(FakeScreen)]
+        }
+
+        fn screen_at(&self, pos: Point) -> Option<Box<dyn PlatformScreen>> {
+            if FakeScreen.geometry().contains(pos) {
+                Some(Box::new(FakeScreen))
+            } else {
+                None
+            }
+        }
+
+        fn screen_changed(&self) -> &Signal<()> {
+            self.inner.screen_changed()
+        }
+
+        fn theme(&self) -> Arc<dyn PlatformTheme> {
+            self.inner.theme()
+        }
+
+        fn clipboard(&self) -> Box<dyn PlatformClipboard> {
+            self.inner.clipboard()
+        }
+
+        fn create_hotkey_manager(&self) -> Result<Box<dyn PlatformHotkeyManager>, &'static str> {
+            self.inner.create_hotkey_manager()
+        }
+
+        fn cursor(&self) -> Box<dyn PlatformCursor> {
+            self.inner.cursor()
+        }
+    }
+
+    #[test]
+    fn exec_popup_modal_keyboard_selects_and_triggers_in_qt_order() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _app = setup_app();
+        let _platform = PlatformGuard::install();
+
+        let menu = Menu::new_ref("modal");
+        let check = menu.borrow_mut().add_new_action("Toggle");
+        check.borrow_mut().set_checkable(true);
+
+        let log = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        {
+            let l = Arc::clone(&log);
+            menu.borrow().about_to_show.connect(move |_| {
+                l.lock().unwrap().push("about_to_show");
+            });
+            let l = Arc::clone(&log);
+            menu.borrow().about_to_hide.connect(move |_| {
+                l.lock().unwrap().push("about_to_hide");
+            });
+            let l = Arc::clone(&log);
+            check.borrow().triggered.connect(move |_| {
+                l.lock().unwrap().push("action.triggered");
+            });
+            let l = Arc::clone(&log);
+            menu.borrow().triggered.connect(move |_| {
+                l.lock().unwrap().push("menu.triggered");
+            });
+        }
+
+        Timer::single_shot(10, || {
+            deliver_modal_event(WindowSystemEvent::KeyPress {
+                key: KEY_DOWN,
+                modifiers: KeyboardModifiers::default(),
+                is_repeat: false,
+            });
+            deliver_modal_event(WindowSystemEvent::KeyPress {
+                key: KEY_RETURN,
+                modifiers: KeyboardModifiers::default(),
+                is_repeat: false,
+            });
+        });
+
+        let chosen = Menu::exec_popup(&menu, Point::new(50, 50)).expect("chosen action");
+        assert!(Rc::ptr_eq(&chosen, &check));
+        assert!(check.borrow().is_checked());
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "about_to_show",
+                "about_to_hide",
+                "action.triggered",
+                "menu.triggered",
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_popup_modal_mouse_submenu_and_left_flip() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _app = setup_app();
+        let _platform = PlatformGuard::install();
+
+        let menu = Menu::new_ref("root");
+        let sub = menu.borrow_mut().add_menu("More");
+        let sub_act = sub.borrow_mut().add_new_action("Nested Item");
+        let sub_trigger_action = {
+            let m = menu.borrow();
+            m.actions()[0].clone()
+        };
+
+        let menu_hover = Rc::clone(&menu);
+        let initial_rect: Rc<Cell<Rect>> = Rc::new(Cell::new(Rect::default()));
+        let initial_for_hover = Rc::clone(&initial_rect);
+        let sub_trigger_hover = Rc::clone(&sub_trigger_action);
+
+        Timer::single_shot_local(10, move || {
+            let init = modal_geometry();
+            initial_for_hover.set(init);
+            let item0 = menu_hover
+                .borrow()
+                .action_geometry(&sub_trigger_hover)
+                .expect("item0 geometry");
+            let hover_pos = Point::new(item0.x + item0.width / 2, item0.y + item0.height / 2);
+            deliver_modal_event(WindowSystemEvent::MouseMove {
+                pos: hover_pos,
+                global_pos: Point::new(init.x + hover_pos.x, init.y + hover_pos.y),
+                buttons: MouseButtons::NO_BUTTON,
+            });
+        });
+
+        let menu_click = Rc::clone(&menu);
+        let initial_for_click = Rc::clone(&initial_rect);
+        let sub_act_click = Rc::clone(&sub_act);
+        let left_flipped = Rc::new(Cell::new(false));
+        let left_flipped_flag = Rc::clone(&left_flipped);
+
+        Timer::single_shot_local(30, move || {
+            let init = initial_for_click.get();
+            let geom = modal_geometry();
+            assert!(
+                geom.x < init.x && geom.width > init.width,
+                "submenu near right edge flips left: init={init:?}, expanded={geom:?}"
+            );
+            left_flipped_flag.set(true);
+
+            let open_sub = menu_click
+                .borrow()
+                .open_submenu()
+                .expect("open left-flipped submenu");
+            let sub_geom = open_sub.borrow().geometry();
+            let sub_item = open_sub
+                .borrow()
+                .action_geometry(&sub_act_click)
+                .expect("submenu item geometry");
+            let win_offset = Point::new(geom.x - init.x, geom.y - init.y);
+            let local_in_win = Point::new(
+                sub_geom.x + sub_item.x + sub_item.width / 2 - win_offset.x,
+                sub_geom.y + sub_item.y + sub_item.height / 2 - win_offset.y,
+            );
+            let global_pos = Point::new(geom.x + local_in_win.x, geom.y + local_in_win.y);
+
+            deliver_modal_event(WindowSystemEvent::MouseMove {
+                pos: local_in_win,
+                global_pos,
+                buttons: MouseButtons::NO_BUTTON,
+            });
+            deliver_modal_event(WindowSystemEvent::MousePress {
+                pos: local_in_win,
+                global_pos,
+                button: MouseButton::Left,
+                modifiers: KeyboardModifiers::default(),
+                timestamp: event_time_ms(),
+            });
+            deliver_modal_event(WindowSystemEvent::MouseRelease {
+                pos: local_in_win,
+                global_pos,
+                button: MouseButton::Left,
+                modifiers: KeyboardModifiers::default(),
+            });
+        });
+
+        let chosen = Menu::exec_popup(&menu, Point::new(1900, 100)).expect("submenu action");
+        assert!(left_flipped.get());
+        assert!(Rc::ptr_eq(&chosen, &sub_act));
+    }
+
+    #[test]
+    fn exec_popup_modal_dismisses_on_escape_outside_click_and_focus_out() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _app = setup_app();
+        let _platform = PlatformGuard::install();
+
+        let menu = Menu::new_ref("dismiss");
+        menu.borrow_mut().add_new_action("One");
+        let hides = Arc::new(Mutex::new(0usize));
+        {
+            let h = Arc::clone(&hides);
+            menu.borrow().about_to_hide.connect(move |_| {
+                *h.lock().unwrap() += 1;
+            });
+        }
+
+        // (a) Escape key
+        Timer::single_shot(10, || {
+            deliver_modal_event(WindowSystemEvent::KeyPress {
+                key: KEY_ESCAPE,
+                modifiers: KeyboardModifiers::default(),
+                is_repeat: false,
+            });
+        });
+        assert!(Menu::exec_popup(&menu, Point::new(100, 100)).is_none());
+        assert_eq!(*hides.lock().unwrap(), 1);
+
+        // (b) Mouse press outside window / root widget bounds
+        Timer::single_shot(10, || {
+            deliver_modal_event(WindowSystemEvent::MousePress {
+                pos: Point::new(-20, -20),
+                global_pos: Point::new(80, 80),
+                button: MouseButton::Left,
+                modifiers: KeyboardModifiers::default(),
+                timestamp: event_time_ms(),
+            });
+        });
+        assert!(Menu::exec_popup(&menu, Point::new(100, 100)).is_none());
+        assert_eq!(*hides.lock().unwrap(), 2);
+
+        // (c) FocusOut
+        Timer::single_shot(10, || {
+            deliver_modal_event(WindowSystemEvent::FocusOut);
+        });
+        assert!(Menu::exec_popup(&menu, Point::new(100, 100)).is_none());
+        assert_eq!(*hides.lock().unwrap(), 3);
+    }
+
+    #[test]
+    fn exec_popup_modal_exits_when_application_exits() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut app = setup_app();
+        let _platform = PlatformGuard::install();
+
+        let menu = Menu::new_ref("exit_test");
+        menu.borrow_mut().add_new_action("Action");
+
+        let hides = Arc::new(AtomicUsize::new(0));
+        let hides_sig = Arc::clone(&hides);
+        menu.borrow().about_to_hide.connect(move |_| {
+            hides_sig.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let popup_ran = Rc::new(Cell::new(false));
+        let popup_none = Rc::new(Cell::new(false));
+        let popup_ran_timer = Rc::clone(&popup_ran);
+        let popup_none_timer = Rc::clone(&popup_none);
+        let menu_timer = Rc::clone(&menu);
+
+        Timer::single_shot_local(5, move || {
+            let res = Menu::exec_popup(&menu_timer, Point::new(40, 40));
+            popup_none_timer.set(res.is_none());
+            popup_ran_timer.set(true);
+        });
+
+        Timer::single_shot(20, || {
+            CoreApplication::exit(7);
+        });
+
+        let exit_code = app.exec();
+        assert_eq!(exit_code, 7);
+        assert!(popup_ran.get());
+        assert!(popup_none.get());
+        assert_eq!(hides.load(Ordering::SeqCst), 1);
+    }
+}

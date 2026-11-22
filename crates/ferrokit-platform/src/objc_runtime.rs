@@ -844,6 +844,10 @@ impl ObjcMsg {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.button;
                 }
+            } else if sel_name == "image" {
+                if let Some(data) = runtime.get_object_data(receiver) {
+                    return data.contents;
+                }
             } else if sel_name == "menu" {
                 if let Some(data) = runtime.get_object_data(receiver) {
                     return data.menu;

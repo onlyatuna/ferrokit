@@ -142,6 +142,10 @@ pub struct CocoaNativeWindow {
     mask_made_transparent: bool,
     /// Notification observers keeping track of window delegate events (focus in/out, close, move, resize).
     window_observers: Vec<crate::objc_runtime::ActionTarget>,
+    /// Corner radius applied to the active effect view layer (`NSVisualEffectView.layer`).
+    backdrop_corner_radius: f32,
+    /// Explicit override for `NSWindow.hidesOnDeactivate` set via `set_hides_on_deactivate`.
+    hides_on_deactivate_override: Option<bool>,
 }
 
 // Deliberately neither `Send` nor `Sync`: AppKit objects (`Id`) may only be messaged from the main
@@ -306,6 +310,9 @@ impl CocoaNativeWindow {
                 ObjcMsg::send_bool_logged(ns_window, Sel::register("setHidesOnDeactivate:"), true)
             };
         }
+        if flags.contains(WindowFlags::LAYERED) {
+            Self::apply_window_transparent(ns_window);
+        }
 
         // SAFETY: `layer` is nil or the backing layer of `ns_view`, which owns it; the view is
         // released only in `Drop`, after the last use of `surface`, which this window owns
@@ -400,7 +407,57 @@ impl CocoaNativeWindow {
             target_pos: None,
             mask_made_transparent: false,
             window_observers,
+            backdrop_corner_radius: 0.0,
+            hides_on_deactivate_override: None,
         })
+    }
+
+    /// Makes `window` non-opaque with a clear background so per-pixel alpha and rounded
+    /// content render without an opaque rectangular backing.
+    fn apply_window_transparent(window: Id) {
+        if window.is_nil() {
+            return;
+        }
+        // SAFETY: `window` is the non-nil `NSWindow` of this window (`new` or `&mut self`);
+        // `setOpaque:` takes one BOOL (`send_bool_logged`).
+        unsafe { ObjcMsg::send_bool_logged(window, Sel::register("setOpaque:"), false) };
+        let color_class = Class::get("NSColor").unwrap_or(Class::NIL);
+        // SAFETY: `clearColor` is a no-argument class method of `NSColor` returning an object
+        // (a nil class from `unwrap_or` makes the send a no-op returning nil).
+        let clear_color =
+            unsafe { ObjcMsg::send_class_0(color_class, Sel::register("clearColor")) };
+        if !clear_color.is_nil() {
+            // SAFETY: `window` is live and `clear_color` was checked non-nil;
+            // `setBackgroundColor:` takes one `NSColor`, matching `send_id_logged`.
+            unsafe {
+                ObjcMsg::send_id_logged(window, Sel::register("setBackgroundColor:"), clear_color)
+            };
+        }
+    }
+
+    /// Applies rounded corner clipping on `effect_view`'s backing layer (`CALayer.cornerRadius`
+    /// and `CALayer.masksToBounds`).
+    fn apply_effect_view_corner_radius(effect_view: Id, radius: f32) {
+        if effect_view.is_nil() {
+            return;
+        }
+        // SAFETY: `effect_view` is a live `NSVisualEffectView` stored in `self.backdrop_view` or
+        // `self.vibrancy_view`; `layer` takes no arguments and returns an object (nil checked next).
+        let layer = unsafe { ObjcMsg::send_0(effect_view, Sel::register("layer")) };
+        if layer.is_nil() {
+            return;
+        }
+        // SAFETY: `layer` is the non-nil `CALayer` of the live effect view; `setCornerRadius:` takes
+        // one `CGFloat` (`send_cgfloat_logged`) and `setMasksToBounds:` takes one `BOOL`
+        // (`send_bool_logged`).
+        unsafe {
+            ObjcMsg::send_cgfloat_logged(
+                layer,
+                Sel::register("setCornerRadius:"),
+                f64::from(radius),
+            );
+            ObjcMsg::send_bool_logged(layer, Sel::register("setMasksToBounds:"), radius > 0.0);
+        }
     }
 
     #[inline]
@@ -518,6 +575,9 @@ impl CocoaNativeWindow {
                 unsafe {
                     ObjcMsg::send_int(effect_view, Sel::register("setMaterial:"), mat as isize)
                 };
+                if self.backdrop_corner_radius > 0.0 {
+                    Self::apply_effect_view_corner_radius(effect_view, self.backdrop_corner_radius);
+                }
             }
         } else {
             let had_vibrancy_view = self.vibrancy_view.is_some();
@@ -658,6 +718,7 @@ impl CocoaNativeWindow {
         if !self.mask_made_transparent
             && self.vibrancy_material.is_none()
             && self.backdrop_view.is_none()
+            && !self.flags.contains(WindowFlags::LAYERED)
             // SAFETY: `window` is `self.ns_window`, live from `new` to `Drop`; `isOpaque` takes no
             // arguments and returns BOOL.
             && unsafe { ObjcMsg::send_bool_prop(window, Sel::register("isOpaque")) }
@@ -692,14 +753,15 @@ impl CocoaNativeWindow {
     }
 
     /// Gives the window back its opaque `windowBackgroundColor` look once nothing needs it
-    /// transparent: no vibrancy view, no backdrop view and no mask that made it transparent.
-    /// Callers invoke it only after removing one of those, so a window that was never made
-    /// transparent is left alone.
+    /// transparent: no vibrancy view, no backdrop view, no `LAYERED` flag and no mask that made it
+    /// transparent. Callers invoke it only after removing one of those, so a window that was never
+    /// made transparent is left alone.
     fn update_window_opacity(&mut self) {
         if self.vibrancy_material.is_some()
             || self.vibrancy_view.is_some()
             || self.backdrop_view.is_some()
             || self.mask_made_transparent
+            || self.flags.contains(WindowFlags::LAYERED)
         {
             return;
         }
@@ -952,8 +1014,8 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     /// `QCocoaWindow::setWindowFlags` (qcocoawindow.mm): the style mask follows the frame
-    /// flags, the level the stacking flags, `hidesOnDeactivate` follows `Qt::Tool`.
-    /// `LAYERED` has no AppKit counterpart and is only remembered.
+    /// flags, the level the stacking flags, `hidesOnDeactivate` follows `Qt::Tool` (unless
+    /// overridden via `set_hides_on_deactivate`), and `LAYERED` toggles window transparency.
     fn set_window_flag(&mut self, flag: WindowFlags, on: bool) {
         let old = self.flags;
         self.flags.set(flag, on);
@@ -988,7 +1050,7 @@ impl PlatformWindow for CocoaNativeWindow {
                 )
             };
         }
-        if changed.contains(WindowFlags::TOOL) {
+        if changed.contains(WindowFlags::TOOL) && self.hides_on_deactivate_override.is_none() {
             // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setHidesOnDeactivate:` takes
             // one BOOL.
             unsafe {
@@ -1010,6 +1072,13 @@ impl PlatformWindow for CocoaNativeWindow {
                     self.click_through,
                 )
             };
+        }
+        if changed.contains(WindowFlags::LAYERED) {
+            if self.flags.contains(WindowFlags::LAYERED) {
+                Self::apply_window_transparent(self.ns_window);
+            } else {
+                self.update_window_opacity();
+            }
         }
     }
 
@@ -1348,10 +1417,47 @@ impl PlatformWindow for CocoaNativeWindow {
             // The removed effect view may have been the only reason the window was transparent.
             self.update_window_opacity();
         }
+        if let Some(view) = self.backdrop_view
+            && self.backdrop_corner_radius > 0.0
+        {
+            Self::apply_effect_view_corner_radius(view, self.backdrop_corner_radius);
+        }
         if self.backdrop_state.is_suspended() {
             self.set_backdrop_effect_active(false);
         }
         applied
+    }
+
+    fn set_backdrop_corner_radius(&mut self, radius: f32) {
+        let radius = if radius.is_finite() {
+            radius.max(0.0)
+        } else {
+            0.0
+        };
+        self.backdrop_corner_radius = radius;
+        if let Some(view) = self.backdrop_view {
+            Self::apply_effect_view_corner_radius(view, radius);
+        }
+        if let Some(view) = self.vibrancy_view {
+            Self::apply_effect_view_corner_radius(view, radius);
+        }
+    }
+
+    fn set_hides_on_deactivate(&mut self, hides: bool) {
+        self.hides_on_deactivate_override = Some(hides);
+        // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setHidesOnDeactivate:` takes one
+        // BOOL (`send_bool_logged`).
+        unsafe {
+            ObjcMsg::send_bool_logged(
+                self.ns_window,
+                Sel::register("setHidesOnDeactivate:"),
+                hides,
+            )
+        };
+    }
+
+    fn supports_modal_event_loop(&self) -> bool {
+        !self.ns_window.is_nil()
     }
 
     /// Suspends an Acrylic blur by making the effect view inactive, which AppKit draws as a flat

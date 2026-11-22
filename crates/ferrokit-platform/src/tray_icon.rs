@@ -943,6 +943,9 @@ impl TrayIcon {
         self.shared.hwnd
     }
 
+    /// No-op on Windows; macOS toggles template monochrome icon rendering.
+    pub fn set_template(&mut self, _is_template: bool) {}
+
     pub fn show_message(
         &mut self,
         title: &str,
@@ -1506,6 +1509,11 @@ impl TrayIcon {
 
     pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
         self.inner.set_icon(icon)
+    }
+
+    /// Controls template (monochrome mask) rendering for the tray icon (`NSImage.template` on macOS).
+    pub fn set_template(&mut self, is_template: bool) {
+        self.inner.set_template(is_template);
     }
 
     /// Shows the icon. On Linux `Ok` only means the StatusNotifierWatcher registration was

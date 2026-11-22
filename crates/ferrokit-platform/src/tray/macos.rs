@@ -105,8 +105,10 @@ impl CocoaStatusItem {
             let image = unsafe { ObjcMsg::send_0(button, Sel::register("image")) };
             if !image.is_nil() {
                 // SAFETY: `image` was checked non-nil and is the button's live NSImage;
-                // `setTemplate:` takes one BOOL.
-                unsafe { ObjcMsg::send_bool(image, Sel::register("setTemplate:"), is_template) };
+                // `setTemplate:` takes one BOOL, matching `send_bool_logged`.
+                unsafe {
+                    ObjcMsg::send_bool_logged(image, Sel::register("setTemplate:"), is_template)
+                };
             }
         }
     }
@@ -346,9 +348,14 @@ impl PlatformTrayIcon for CocoaStatusItem {
                 // SAFETY: `rep` is the +1 representation created above; the image retained it in
                 // `addRepresentation:`, so this releases only our own reference, once.
                 unsafe { ObjcMsg::send_0(rep, Sel::register("release")) };
-                // SAFETY: `image` is live (see above); `setTemplate:` takes one BOOL.
+                // SAFETY: `image` is live (see above); `setTemplate:` takes one BOOL, matching
+                // `send_bool_logged`.
                 unsafe {
-                    ObjcMsg::send_bool(image, Sel::register("setTemplate:"), self.is_template)
+                    ObjcMsg::send_bool_logged(
+                        image,
+                        Sel::register("setTemplate:"),
+                        self.is_template,
+                    )
                 };
                 // The button retains the image (and releases the previous one); drop our +1 from
                 // `alloc`.
@@ -504,6 +511,10 @@ impl PlatformTrayIcon for CocoaStatusItem {
 
     fn supports_messages(&self) -> bool {
         true
+    }
+
+    fn set_template(&mut self, is_template: bool) {
+        CocoaStatusItem::set_template(self, is_template);
     }
 }
 
@@ -754,6 +765,60 @@ mod tests {
                 assert_eq!(activation_reason_for_event(event(kind, 1, 1)), Trigger);
                 assert_eq!(activation_reason_for_event(event(kind, 2, 0)), DoubleClick);
             }
+        }
+
+        #[test]
+        fn set_template_updates_current_and_future_images() {
+            use ferrokit_gui::image::Icon;
+            use ferrokit_gui::paint::Pixmap;
+            use ferrokit_gui::tiny_skia::Color;
+
+            ThreadContext::init_current(true, None);
+            let mock = MockObjcRuntime::instance();
+            let mut pixmap = Pixmap::new(16, 16).expect("pixmap");
+            pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
+            let icon = Icon::from_pixmap(&pixmap);
+
+            let mut item = CocoaStatusItem::new(901);
+            assert!(item.is_template(), "CocoaStatusItem defaults to template");
+            item.set_icon(&icon).expect("first set_icon");
+
+            let button = mock
+                .get_object_data(item.native_status_item())
+                .expect("status item")
+                .button;
+            let first_image = mock.get_object_data(button).expect("button").contents;
+            assert!(!first_image.is_nil(), "button holds first NSImage");
+            let first_calls: Vec<_> = mock
+                .calls_for(first_image)
+                .into_iter()
+                .filter(|c| c.selector == "setTemplate:")
+                .map(|c| c.args[0].clone())
+                .collect();
+            assert_eq!(first_calls, vec![MockValue::Bool(true)]);
+
+            mock.clear_calls();
+            PlatformTrayIcon::set_template(&mut item, false);
+            assert!(!item.is_template());
+            let updated_calls: Vec<_> = mock
+                .calls_for(first_image)
+                .into_iter()
+                .filter(|c| c.selector == "setTemplate:")
+                .map(|c| c.args[0].clone())
+                .collect();
+            assert_eq!(updated_calls, vec![MockValue::Bool(false)]);
+
+            mock.clear_calls();
+            item.set_icon(&icon).expect("second set_icon");
+            let second_image = mock.get_object_data(button).expect("button").contents;
+            assert_ne!(second_image, first_image);
+            let second_calls: Vec<_> = mock
+                .calls_for(second_image)
+                .into_iter()
+                .filter(|c| c.selector == "setTemplate:")
+                .map(|c| c.args[0].clone())
+                .collect();
+            assert_eq!(second_calls, vec![MockValue::Bool(false)]);
         }
     }
 }

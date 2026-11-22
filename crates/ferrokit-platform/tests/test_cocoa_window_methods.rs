@@ -105,7 +105,7 @@ fn window_flags_change_style_level_tool_behaviour_and_click_through() {
     win.set_window_flag(WindowFlags::CLICK_THROUGH, false);
     assert!(!data().ignores_mouse_events);
 
-    // Flags with no AppKit counterpart are remembered; setting what is already set does nothing.
+    // LAYERED toggles transparency; other flags without AppKit counterparts are remembered, and setting what is already set does nothing.
     win.set_window_flag(WindowFlags::LAYERED, true);
     assert!(win.flags().contains(WindowFlags::LAYERED));
     mock.clear_calls();
@@ -1112,4 +1112,165 @@ fn backdrop_none_preserves_transparency_when_vibrancy_or_mask_is_active() {
             .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
         "removing last transparency source restores setOpaque: true"
     );
+}
+
+#[test]
+fn layered_flag_controls_window_opacity_and_preserves_with_backdrop() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::FRAMELESS | WindowFlags::LAYERED);
+    let ns_window = win.ns_window();
+
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(false)]),
+        "WindowFlags::LAYERED at creation marks NSWindow non-opaque"
+    );
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setBackgroundColor:"),
+        "WindowFlags::LAYERED at creation sets clear background color"
+    );
+
+    mock.clear_calls();
+    win.set_window_flag(WindowFlags::LAYERED, false);
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
+        "clearing WindowFlags::LAYERED without backdrop/vibrancy restores opaque"
+    );
+
+    mock.clear_calls();
+    win.set_window_flag(WindowFlags::LAYERED, true);
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(false)]),
+        "enabling WindowFlags::LAYERED marks NSWindow non-opaque"
+    );
+
+    // Enabling a backdrop keeps the window transparent even if LAYERED is cleared afterwards.
+    win.set_backdrop(BackdropType::Acrylic, false);
+    mock.clear_calls();
+    win.set_window_flag(WindowFlags::LAYERED, false);
+    assert!(
+        !mock
+            .calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
+        "active backdrop keeps window non-opaque when LAYERED is cleared"
+    );
+
+    mock.clear_calls();
+    win.set_backdrop(BackdropType::None, false);
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setOpaque:" && c.args == vec![MockValue::Bool(true)]),
+        "removing backdrop when LAYERED is false restores opaque"
+    );
+}
+
+#[test]
+fn backdrop_corner_radius_syncs_before_and_after_backdrop_install() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::FRAMELESS);
+
+    // Pre-set radius before backdrop is installed.
+    win.set_backdrop_corner_radius(12.0);
+    mock.clear_calls();
+    win.set_backdrop(BackdropType::Acrylic, false);
+
+    // Mock `[effectView layer]` returns `effectView` itself; locate the view via `setCornerRadius:`.
+    let effect_view = mock
+        .calls()
+        .into_iter()
+        .find(|c| c.selector == "setCornerRadius:")
+        .map(|c| c.receiver)
+        .expect("backdrop install applies corner radius to effect view layer");
+
+    assert!(
+        mock.calls_for(effect_view)
+            .iter()
+            .any(|c| c.selector == "setCornerRadius:" && c.args == vec![MockValue::Float(12.0)]),
+        "pre-set corner radius applied on backdrop install"
+    );
+    assert!(
+        mock.calls_for(effect_view)
+            .iter()
+            .any(|c| c.selector == "setMasksToBounds:" && c.args == vec![MockValue::Bool(true)]),
+        "masksToBounds enabled when corner radius > 0"
+    );
+
+    mock.clear_calls();
+    win.set_backdrop_corner_radius(6.5);
+    assert!(
+        mock.calls_for(effect_view)
+            .iter()
+            .any(|c| c.selector == "setCornerRadius:" && c.args == vec![MockValue::Float(6.5)]),
+        "updating corner radius syncs active effect view"
+    );
+
+    mock.clear_calls();
+    win.set_backdrop_corner_radius(0.0);
+    assert!(
+        mock.calls_for(effect_view)
+            .iter()
+            .any(|c| c.selector == "setCornerRadius:" && c.args == vec![MockValue::Float(0.0)]),
+        "zeroing corner radius clears layer cornerRadius"
+    );
+    assert!(
+        mock.calls_for(effect_view)
+            .iter()
+            .any(|c| c.selector == "setMasksToBounds:" && c.args == vec![MockValue::Bool(false)]),
+        "zeroing corner radius disables masksToBounds"
+    );
+}
+
+#[test]
+fn set_hides_on_deactivate_overrides_tool_flag() {
+    let mock = MockObjcRuntime::instance();
+    let mut win = window(WindowFlags::FRAMELESS | WindowFlags::TOOL);
+    let ns_window = win.ns_window();
+
+    assert!(
+        mock.calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setHidesOnDeactivate:" && c.args == vec![MockValue::Bool(true)]),
+        "TOOL window starts with hidesOnDeactivate = true"
+    );
+
+    mock.clear_calls();
+    win.set_hides_on_deactivate(false);
+    assert!(
+        mock.calls_for(ns_window).iter().any(|c| {
+            c.selector == "setHidesOnDeactivate:" && c.args == vec![MockValue::Bool(false)]
+        }),
+        "explicit set_hides_on_deactivate(false) clears hidesOnDeactivate"
+    );
+
+    // Toggling WindowFlags::TOOL afterwards must respect the explicit override.
+    mock.clear_calls();
+    win.set_window_flag(WindowFlags::TOOL, false);
+    win.set_window_flag(WindowFlags::TOOL, true);
+    assert!(
+        !mock
+            .calls_for(ns_window)
+            .iter()
+            .any(|c| c.selector == "setHidesOnDeactivate:"),
+        "TOOL flag toggles do not clobber explicit set_hides_on_deactivate override"
+    );
+}
+
+#[test]
+fn supports_modal_event_loop_reflects_window_implementation() {
+    use ferrokit_platform::platform_window::GenericWindow;
+
+    let win = window(WindowFlags::empty());
+    assert!(win.supports_modal_event_loop());
+
+    let generic = GenericWindow::new("", Rect::new(0, 0, 100, 100), WindowFlags::empty());
+    assert!(!generic.supports_modal_event_loop());
 }
