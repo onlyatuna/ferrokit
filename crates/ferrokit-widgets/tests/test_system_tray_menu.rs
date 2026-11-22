@@ -467,7 +467,12 @@ fn test_system_tray_set_template_smoke() {
     tray.set_template(true);
 }
 
-#[cfg(not(windows))]
+/// Non-Windows modal `Menu::exec_popup` tests.
+///
+/// Not on macOS libtest: `setup_app()` installs `DispatcherKind::Gui` (`CocoaEventDispatcher`),
+/// and pumping AppKit's event loop from a libtest worker thread traps on AppKit's main-thread
+/// requirement (same reason as `test_application_layers::dropping_a_window_while_running_does_not_quit`).
+#[cfg(not(any(windows, target_os = "macos")))]
 mod modal_exec_popup {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
