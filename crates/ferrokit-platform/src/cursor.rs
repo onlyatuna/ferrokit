@@ -117,6 +117,22 @@ pub trait PlatformCursor: Send + Sync {
     fn clear_override_cursor(&mut self) {}
 }
 
+/// Sentinel stored in atomic cursor-shape slots when no override cursor is active.
+const NO_SHAPE: u8 = u8::MAX;
+
+fn shape_from_u8(raw: u8) -> Option<CursorShape> {
+    CursorShape::ALL.get(raw as usize).copied()
+}
+
+/// Sets the cursor shape on the active platform integration (`PlatformCursor::change_cursor`).
+///
+/// Prefer `Window::set_cursor` when a `&mut Window` is available so per-window cursor tracking
+/// stays in sync; use this cross-platform helper from global handlers or mouse callbacks without
+/// a window reference instead of calling backend types like `Win32Cursor::set_shape` directly.
+pub fn set_cursor_shape(shape: CursorShape) {
+    crate::integration::platform().cursor().change_cursor(shape);
+}
+
 #[cfg(windows)]
 pub mod win32_cursor {
     use super::*;
@@ -135,9 +151,6 @@ pub mod win32_cursor {
         IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_UPARROW, IDC_WAIT, LoadCursorW, SM_CXCURSOR,
         SetCursor, SetCursorPos,
     };
-
-    /// `OVERRIDE_SHAPE` value while no override cursor is set.
-    const NO_SHAPE: u8 = u8::MAX;
 
     static CURRENT_GLOBAL_SHAPE: AtomicU8 = AtomicU8::new(0);
     /// The application override cursor (`QWindowsCursor::m_overrideCursor`).
@@ -276,9 +289,7 @@ pub mod win32_cursor {
         }
 
         pub fn current_global_shape() -> CursorShape {
-            CursorShape::ALL
-                .get(CURRENT_GLOBAL_SHAPE.load(Ordering::Relaxed) as usize)
-                .copied()
+            shape_from_u8(CURRENT_GLOBAL_SHAPE.load(Ordering::Relaxed))
                 .unwrap_or(CursorShape::Arrow)
         }
 
@@ -290,9 +301,7 @@ pub mod win32_cursor {
 
         /// The application override cursor, if one is set (`QWindowsCursor::hasOverrideCursor`).
         pub fn override_shape() -> Option<CursorShape> {
-            CursorShape::ALL
-                .get(OVERRIDE_SHAPE.load(Ordering::Relaxed) as usize)
-                .copied()
+            shape_from_u8(OVERRIDE_SHAPE.load(Ordering::Relaxed))
         }
 
         /// `QWindowsCursor::setOverrideCursor` (qwindowscursor.cpp:626-639): shows `shape` and
@@ -449,7 +458,23 @@ impl PlatformCursor for GenericCursor {
 
 pub mod cocoa_cursor {
     use super::*;
-    use crate::objc_runtime::{Class, ObjcMsg, Sel};
+    use crate::objc_runtime::{Class, Id, ObjcMsg, Sel, appkit};
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+
+    static CURRENT_GLOBAL_SHAPE: AtomicU8 = AtomicU8::new(0);
+    /// The application override cursor (`QCocoaCursor` override), `NO_SHAPE` when inactive.
+    static OVERRIDE_SHAPE: AtomicU8 = AtomicU8::new(NO_SHAPE);
+    /// Retained `NSCursor` that was showing when `set_override` began, restored and released on
+    /// `clear_override`; 0 while none.
+    static OVERRIDDEN_CURSOR: AtomicUsize = AtomicUsize::new(0);
+    /// Immortal `+1` custom `NSCursor` instances (`Id.0 as usize`) built from
+    /// [`crate::cursor_bitmap::cocoa_custom_cursor_image`], indexed by `CursorShape as usize`.
+    /// `None` means not yet constructed; `Some(0)` caches a creation failure so repeated cursor
+    /// updates never rebuild bitmaps on every mouse move.
+    static CUSTOM_CURSORS: Mutex<[Option<usize>; CursorShape::ALL.len()]> =
+        Mutex::new([None; CursorShape::ALL.len()]);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CocoaCursor {
@@ -473,40 +498,150 @@ pub mod cocoa_cursor {
             self.current_shape
         }
 
-        /// The `NSCursor` class method that returns the cursor for `shape`
-        /// (`QCocoaCursor::createCursorFromShape`, qcocoacursor.mm:103-146).
-        pub fn ns_cursor_selector(shape: CursorShape) -> &'static str {
+        /// The application-wide shape last passed to [`change_cursor`](PlatformCursor::change_cursor)
+        /// or [`set_shape`](Self::set_shape).
+        pub fn current_global_shape() -> CursorShape {
+            shape_from_u8(CURRENT_GLOBAL_SHAPE.load(Ordering::Relaxed))
+                .unwrap_or(CursorShape::Arrow)
+        }
+
+        /// The public `NSCursor` class method for `shape` (`QCocoaCursor::createCursorFromShape`,
+        /// qcocoacursor.mm:103-146), or `None` when `shape` uses a custom `NSImage` cursor from
+        /// [`crate::cursor_bitmap::cocoa_custom_cursor_image`].
+        pub fn native_selector(shape: CursorShape) -> Option<&'static str> {
             match shape {
-                CursorShape::Arrow => "arrowCursor",
-                CursorShape::PointingHand => "pointingHandCursor",
-                CursorShape::IBeam => "IBeamCursor",
-                CursorShape::SizeHor => "resizeLeftRightCursor",
-                CursorShape::SizeVer => "resizeUpDownCursor",
-                CursorShape::Cross => "crosshairCursor",
-                CursorShape::Forbidden => "operationNotAllowedCursor",
-                CursorShape::SplitV => "resizeUpDownCursor",
-                CursorShape::SplitH => "resizeLeftRightCursor",
-                CursorShape::OpenHand => "openHandCursor",
-                CursorShape::ClosedHand => "closedHandCursor",
-                CursorShape::DragMove => "crosshairCursor",
-                CursorShape::DragCopy => "dragCopyCursor",
-                CursorShape::DragLink => "dragLinkCursor",
-                _ => "arrowCursor",
+                CursorShape::Arrow => Some("arrowCursor"),
+                CursorShape::PointingHand => Some("pointingHandCursor"),
+                CursorShape::IBeam => Some("IBeamCursor"),
+                CursorShape::SizeHor | CursorShape::SplitH => Some("resizeLeftRightCursor"),
+                CursorShape::SizeVer | CursorShape::SplitV => Some("resizeUpDownCursor"),
+                CursorShape::Cross | CursorShape::DragMove => Some("crosshairCursor"),
+                CursorShape::Forbidden => Some("operationNotAllowedCursor"),
+                CursorShape::OpenHand => Some("openHandCursor"),
+                CursorShape::ClosedHand => Some("closedHandCursor"),
+                CursorShape::DragCopy => Some("dragCopyCursor"),
+                CursorShape::DragLink => Some("dragLinkCursor"),
+                CursorShape::SizeBDiag
+                | CursorShape::SizeFDiag
+                | CursorShape::SizeAll
+                | CursorShape::UpArrow
+                | CursorShape::Wait
+                | CursorShape::Busy
+                | CursorShape::WhatsThis
+                | CursorShape::Blank => None,
+            }
+        }
+
+        /// The `NSCursor` class method that returns the standard cursor for `shape`, falling back
+        /// to `"arrowCursor"` for shapes built as custom `NSCursor` images; prefer
+        /// [`native_cursor`](Self::native_cursor) when applying cursors.
+        pub fn ns_cursor_selector(shape: CursorShape) -> &'static str {
+            Self::native_selector(shape).unwrap_or("arrowCursor")
+        }
+
+        /// Returns the `NSCursor` for any [`CursorShape`] — either an immortal AppKit singleton or
+        /// a process-wide cached custom `NSCursor` built from `cocoa_custom_cursor_image`.
+        ///
+        /// Returns `Id::NIL` if called off the AppKit main thread on macOS.
+        pub fn native_cursor(shape: CursorShape) -> Id {
+            if !appkit::is_main_thread() {
+                return Id::NIL;
+            }
+            if let Some(selector) = Self::native_selector(shape) {
+                // SAFETY: `selector` is a standard `NSCursor` class method returning an immortal
+                // AppKit singleton, and we verified we are on AppKit's main thread above.
+                return unsafe { appkit::standard_cursor(selector) };
+            }
+
+            let idx = shape as usize;
+            let mut cache = CUSTOM_CURSORS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache[idx] {
+                return Id(cached as *mut c_void);
+            }
+            let cursor = crate::cursor_bitmap::cocoa_custom_cursor_image(shape)
+                // SAFETY: `custom_cursor_from_image` is called on the AppKit main thread (checked
+                // above) and returns a +1 `NSCursor` (or nil), which stays cached permanently.
+                .map(|image| unsafe { appkit::custom_cursor_from_image(&image) })
+                .unwrap_or(Id::NIL);
+            cache[idx] = Some(cursor.0 as usize);
+            cursor
+        }
+
+        fn apply_cursor_id(cursor: Id) {
+            if !cursor.is_nil() {
+                // SAFETY: `cursor` is non-nil (an immortal AppKit singleton or a cached custom
+                // `NSCursor` from `CUSTOM_CURSORS`); `set` takes no arguments and returns void,
+                // and callers already verified `appkit::is_main_thread()`.
+                unsafe { ObjcMsg::send_0(cursor, Sel::register("set")) };
             }
         }
 
         pub fn set_shape(shape: CursorShape) {
-            let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
-            let sel_name = Self::ns_cursor_selector(shape);
-            // SAFETY: `send_class_0` fits a class method with no arguments returning an object, and
-            // every selector from `ns_cursor_selector` is such an `NSCursor` class method; a nil
-            // class (failed lookup) makes the send a no-op returning nil. Main-thread use is the
-            // caller's contract [inferred: not checked here].
-            let cursor = unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register(sel_name)) };
-            if !cursor.is_nil() {
-                // SAFETY: `cursor` is non-nil (checked above), a shared `NSCursor` returned by the
-                // class method; `set` takes no arguments and returns void, matching `send_0`.
-                unsafe { ObjcMsg::send_0(cursor, Sel::register("set")) };
+            CURRENT_GLOBAL_SHAPE.store(shape as u8, Ordering::Relaxed);
+            if Self::override_shape().is_none() && appkit::is_main_thread() {
+                Self::apply_cursor_id(Self::native_cursor(shape));
+            }
+        }
+
+        /// The application override cursor, if one is active (`QCocoaCursor` override).
+        pub fn override_shape() -> Option<CursorShape> {
+            shape_from_u8(OVERRIDE_SHAPE.load(Ordering::Relaxed))
+        }
+
+        /// Shows `shape` as an application-wide override cursor across all Cocoa windows until
+        /// [`clear_override`](Self::clear_override), remembering the cursor that was showing once.
+        pub fn set_override(shape: CursorShape) {
+            if OVERRIDDEN_CURSOR.load(Ordering::Relaxed) == 0 && appkit::is_main_thread() {
+                let cursor_class = Class::get("NSCursor").unwrap_or(Class::NIL);
+                // SAFETY: `currentCursor` is a class method of `NSCursor` taking no arguments
+                // returning an `NSCursor` object (nil class returns nil); called on the AppKit main
+                // thread (checked above).
+                let previous =
+                    unsafe { ObjcMsg::send_class_0(cursor_class, Sel::register("currentCursor")) };
+                if !previous.is_nil() {
+                    // SAFETY: `previous` is a non-nil `NSCursor` returned by `currentCursor`;
+                    // retaining gives `OVERRIDDEN_CURSOR` its own reference balanced in
+                    // `clear_override` (or released immediately below if another call won the CAS).
+                    unsafe { appkit::retain(previous) };
+                    if OVERRIDDEN_CURSOR
+                        .compare_exchange(
+                            0,
+                            previous.0 as usize,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_err()
+                    {
+                        // SAFETY: this thread lost the CAS race above, so nobody owns this extra
+                        // `+1` retain except us; release it once.
+                        unsafe { appkit::release(previous) };
+                    }
+                }
+            }
+            OVERRIDE_SHAPE.store(shape as u8, Ordering::Relaxed);
+            if appkit::is_main_thread() {
+                Self::apply_cursor_id(Self::native_cursor(shape));
+                crate::window_cocoa_input::invalidate_all_cursor_rects();
+            }
+        }
+
+        /// Ends an active override cursor and restores the cursor that was showing beforehand, then
+        /// asks Cocoa windows to rebuild their cursor rects.
+        pub fn clear_override() {
+            OVERRIDE_SHAPE.store(NO_SHAPE, Ordering::Relaxed);
+            let previous = OVERRIDDEN_CURSOR.swap(0, Ordering::AcqRel);
+            if appkit::is_main_thread() {
+                if previous != 0 {
+                    let prev_id = Id(previous as *mut c_void);
+                    Self::apply_cursor_id(prev_id);
+                    // SAFETY: `prev_id` carries the `+1` retain stored by `set_override` and was
+                    // taken out of `OVERRIDDEN_CURSOR` atomically via `swap` above, so releasing it
+                    // after `[prev_id set]` balances that retain exactly once.
+                    unsafe { appkit::release(prev_id) };
+                } else {
+                    Self::apply_cursor_id(Self::native_cursor(Self::current_global_shape()));
+                }
+                crate::window_cocoa_input::invalidate_all_cursor_rects();
             }
         }
     }
@@ -523,6 +658,15 @@ pub mod cocoa_cursor {
 
         fn set_pos(&mut self, pos: ferrokit_gui::geometry::primitives::Point) {
             crate::cursor_cocoa::set_cursor_pos(&crate::cursor_cocoa::NativeCursorServices, pos);
+        }
+
+        fn set_override_cursor(&mut self, shape: CursorShape) -> bool {
+            Self::set_override(shape);
+            true
+        }
+
+        fn clear_override_cursor(&mut self) {
+            Self::clear_override();
         }
     }
 }

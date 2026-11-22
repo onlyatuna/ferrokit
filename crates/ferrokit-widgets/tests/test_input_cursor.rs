@@ -105,7 +105,9 @@ impl PlatformWindow for FakeWindow {
 struct FakeCursor;
 
 impl PlatformCursor for FakeCursor {
-    fn change_cursor(&mut self, _shape: CursorShape) {}
+    fn change_cursor(&mut self, shape: CursorShape) {
+        log(format!("platform change_cursor {shape:?}"));
+    }
     fn pos(&self) -> Option<Point> {
         NATIVE_POS.with(|p| p.get())
     }
@@ -762,5 +764,19 @@ fn a_native_override_is_applied_only_to_the_window_under_the_pointer() {
             .count(),
         1,
         "{entries:?}"
+    );
+}
+
+#[test]
+fn cursor_set_shape_routes_through_active_platform_cursor() {
+    let _g = install();
+    Cursor::set_shape(CursorShape::SizeFDiag);
+    Cursor::set_shape(CursorShape::Arrow);
+    assert_eq!(
+        take(),
+        vec![
+            "platform change_cursor SizeFDiag",
+            "platform change_cursor Arrow",
+        ]
     );
 }
