@@ -202,6 +202,460 @@ fn show_arrow_cursor() {
     unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)) };
 }
 
+#[cfg(windows)]
+fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
+    Menu::emit_unborrowed(menu, |m| m.about_to_show.clone());
+    let pending = {
+        let mut m = menu.borrow_mut();
+        let chosen = m.exec_popup_inner(pos);
+        let mut pending = std::mem::take(&mut m.pending);
+        pending.activation = chosen;
+        pending
+    };
+    // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
+    // menu is hidden, then returns it.
+    let chosen = pending
+        .activation
+        .as_ref()
+        .map(|(action, _)| action.clone());
+    pending.emit();
+    chosen
+}
+
+#[cfg(not(windows))]
+struct PopupMenuSession {
+    menu: MenuRef,
+    window: Weak<RefCell<crate::window::Window>>,
+    root_origin: Point,
+    min_size: Size,
+    event_loop: Rc<ferrokit_core::event_loop::EventLoop>,
+    chosen: RefCell<Option<(ActionRef, Vec<Signal<ActionRef>>)>>,
+    closed: std::cell::Cell<bool>,
+    win_offset: std::cell::Cell<Point>,
+}
+
+#[cfg(not(windows))]
+impl PopupMenuSession {
+    fn dismiss(&self) {
+        if !self.closed.replace(true) {
+            self.event_loop.exit(0);
+        }
+    }
+
+    fn local_pt(&self, win_x: i32, win_y: i32) -> Point {
+        let off = self.win_offset.get();
+        Point::new(win_x + off.x, win_y + off.y)
+    }
+
+    fn present(&self) -> Option<Size> {
+        let win = self.window.upgrade()?;
+        let Ok(mut win) = win.try_borrow_mut() else {
+            return None;
+        };
+        if let Ok(mut m) = self.menu.try_borrow_mut() {
+            m.present_popup(&mut win, self.root_origin, self.min_size);
+        }
+        let geom = win.geometry();
+        self.win_offset.set(Point::new(
+            geom.x - self.root_origin.x,
+            geom.y - self.root_origin.y,
+        ));
+        Some(geom.size())
+    }
+}
+
+#[cfg(not(windows))]
+struct PopupMenuHost {
+    base: WidgetBase,
+    session: Rc<PopupMenuSession>,
+}
+
+#[cfg(not(windows))]
+impl PopupMenuHost {
+    fn create_widget(size: Size, session: Rc<PopupMenuSession>) -> WidgetRef {
+        let base = WidgetBase::with_geometry(Rect::new(0, 0, size.width, size.height));
+        base.set_mouse_tracking(true);
+        base.set_focus_policy(FocusPolicy::StrongFocus);
+        Rc::new(RefCell::new(Box::new(Self { base, session })))
+    }
+}
+
+#[cfg(not(windows))]
+impl QObject for PopupMenuHost {
+    crate::widget::widget_object_properties!();
+
+    fn object_data(&self) -> &ObjectData {
+        &self.base.object_data
+    }
+
+    fn object_data_mut(&mut self) -> ferrokit_core::object::ObjectDataMut<'_> {
+        ferrokit_core::object::ObjectDataMut::new(&mut self.base.object_data)
+    }
+
+    fn as_qobject_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_qobject_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn event(&mut self, event: &mut Event) -> bool {
+        if matches!(event.kind, EventKind::EnabledChange) {
+            self.base.update();
+            return false;
+        }
+        if matches!(
+            event.kind,
+            EventKind::FocusOut { .. } | EventKind::WindowDeactivate | EventKind::Close
+        ) {
+            self.session.dismiss();
+            return true;
+        }
+        if self.session.closed.get() {
+            return false;
+        }
+        match &event.kind {
+            EventKind::MouseMove { x, y } => {
+                let local_pt = self.session.local_pt(*x, *y);
+                let (sig_changed, outcome) = {
+                    let mut m = self.session.menu.borrow_mut();
+                    let old_sig = m.hover_signature();
+                    let outcome = m.handle_mouse_move(local_pt);
+                    let new_sig = m.hover_signature();
+                    (old_sig != new_sig, outcome)
+                };
+                match outcome {
+                    MenuOutcome::Activate(act, signals) => {
+                        *self.session.chosen.borrow_mut() = Some((act, signals));
+                        self.session.dismiss();
+                    }
+                    _ if sig_changed => {
+                        if let Some(size) = self.session.present() {
+                            self.base
+                                .set_geometry(Rect::new(0, 0, size.width, size.height));
+                        }
+                    }
+                    _ => {}
+                }
+                true
+            }
+            EventKind::MouseButtonPress { x, y, button } => {
+                let local_pt = self.session.local_pt(*x, *y);
+                let outcome = {
+                    let mut m = self.session.menu.borrow_mut();
+                    if !m.covers(local_pt) {
+                        m.hide_now(true);
+                        MenuOutcome::Closed
+                    } else {
+                        m.handle_mouse_press(local_pt, *button)
+                    }
+                };
+                if matches!(outcome, MenuOutcome::Closed) {
+                    self.session.dismiss();
+                } else if let Some(size) = self.session.present() {
+                    self.base
+                        .set_geometry(Rect::new(0, 0, size.width, size.height));
+                }
+                true
+            }
+            EventKind::MouseButtonRelease { x, y, button } => {
+                let local_pt = self.session.local_pt(*x, *y);
+                if *button == 2 {
+                    let covers = self.session.menu.borrow().covers(local_pt);
+                    if !covers {
+                        self.session.dismiss();
+                    }
+                    return true;
+                }
+                if *button != 1 {
+                    return true;
+                }
+                let outcome = {
+                    let mut m = self.session.menu.borrow_mut();
+                    if !m.covers(local_pt) {
+                        m.hide_now(true);
+                        MenuOutcome::Closed
+                    } else {
+                        m.handle_mouse_release(local_pt, 1)
+                    }
+                };
+                match outcome {
+                    MenuOutcome::Activate(act, signals) => {
+                        *self.session.chosen.borrow_mut() = Some((act, signals));
+                        self.session.dismiss();
+                    }
+                    MenuOutcome::Closed => self.session.dismiss(),
+                    _ => {
+                        if let Some(size) = self.session.present() {
+                            self.base
+                                .set_geometry(Rect::new(0, 0, size.width, size.height));
+                        }
+                    }
+                }
+                true
+            }
+            EventKind::KeyPress { key, modifiers, .. } => {
+                let outcome = self.session.menu.borrow_mut().handle_key(*key, *modifiers);
+                match outcome {
+                    MenuOutcome::Activate(act, signals) => {
+                        *self.session.chosen.borrow_mut() = Some((act, signals));
+                        self.session.dismiss();
+                    }
+                    MenuOutcome::Closed => self.session.dismiss(),
+                    _ => {
+                        if let Some(size) = self.session.present() {
+                            self.base
+                                .set_geometry(Rect::new(0, 0, size.width, size.height));
+                        }
+                    }
+                }
+                true
+            }
+            EventKind::Leave => {
+                self.session.menu.borrow_mut().handle_leave();
+                if let Some(size) = self.session.present() {
+                    self.base
+                        .set_geometry(Rect::new(0, 0, size.width, size.height));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Widget for PopupMenuHost {
+    fn widget_base(&self) -> &WidgetBase {
+        &self.base
+    }
+
+    fn id(&self) -> ObjectId {
+        self.base.object_data.id()
+    }
+
+    fn geometry(&self) -> Rect {
+        self.base.geometry()
+    }
+
+    fn set_geometry(&self, rect: Rect) {
+        self.base.set_geometry(rect);
+    }
+
+    fn size_hint(&self) -> Size {
+        self.base.geometry().size()
+    }
+
+    fn minimum_size_hint(&self) -> Size {
+        self.base.geometry().size()
+    }
+
+    fn is_visible(&self) -> bool {
+        self.base.is_visible()
+    }
+
+    fn set_visible(&self, visible: bool) {
+        self.base.set_visible(visible);
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.base.is_enabled()
+    }
+
+    fn update(&self) {
+        self.base.update();
+    }
+
+    fn dirty_rect(&self) -> Option<Rect> {
+        self.base.dirty_rect()
+    }
+
+    fn clear_dirty(&self) {
+        self.base.clear_dirty();
+    }
+
+    fn layout(&self) -> Option<&dyn Layout> {
+        None
+    }
+
+    fn layout_mut(&mut self) -> Option<&mut Box<dyn Layout>> {
+        None
+    }
+
+    fn set_layout(&mut self, _layout: Box<dyn Layout>) {}
+
+    fn parent_widget(&self) -> Option<WidgetWeak> {
+        self.base.parent_widget()
+    }
+
+    fn set_parent_widget(&self, parent: Option<WidgetWeak>) {
+        self.base.set_parent_widget(parent);
+    }
+
+    fn window_id(&self) -> Option<ObjectId> {
+        self.base.window_id()
+    }
+
+    fn set_window_id(&self, window_id: Option<ObjectId>) {
+        self.base.set_window_id(window_id);
+    }
+
+    fn children(&self) -> Vec<WidgetRef> {
+        Vec::new()
+    }
+
+    fn add_child(&mut self, _child: WidgetRef) {}
+
+    fn remove_child(&mut self, _child_id: ObjectId) {}
+
+    fn focus_policy(&self) -> FocusPolicy {
+        self.base.focus_policy()
+    }
+
+    fn set_focus_policy(&self, policy: FocusPolicy) {
+        self.base.set_focus_policy(policy);
+    }
+
+    fn has_focus(&self) -> bool {
+        self.base.has_focus()
+    }
+
+    fn set_has_focus(&self, focus: bool) {
+        self.base.set_has_focus(focus);
+    }
+
+    fn paint_event(&mut self, painter: &mut Painter) {
+        let off = self.session.win_offset.get();
+        let dpr = painter.device_pixel_ratio();
+        if let Ok(mut m) = self.session.menu.try_borrow_mut() {
+            painter.save();
+            painter.translate_device(
+                (-off.x as f32 * dpr).round() as i32,
+                (-off.y as f32 * dpr).round() as i32,
+            );
+            m.paint_event(painter);
+            painter.restore();
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[cfg(not(windows))]
+fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
+    use crate::window::Window;
+    use ferrokit_core::event_loop::{DispatcherKind, EventLoop};
+    use ferrokit_platform::WindowFlags;
+
+    Menu::emit_unborrowed(menu, |m| m.about_to_show.clone());
+
+    let (root_origin, size) = {
+        let mut m = menu.borrow_mut();
+        m.last_triggered = None;
+        let size = m.size_hint();
+        let (root_origin, s_geom) = m.popup_window_origin(pos, size);
+        m.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
+        m.popup_at_inner(Point::new(0, 0), None);
+        (root_origin, size)
+    };
+
+    let initial_rect = Rect::new(root_origin.x, root_origin.y, size.width, size.height);
+    let window = match Window::new(
+        "",
+        initial_rect,
+        WindowFlags::FRAMELESS
+            | WindowFlags::TOOL
+            | WindowFlags::STAYS_ON_TOP
+            | WindowFlags::LAYERED,
+    ) {
+        Ok(w) => w,
+        Err(_) => {
+            let pending = {
+                let mut m = menu.borrow_mut();
+                m.hide_now(true);
+                std::mem::take(&mut m.pending)
+            };
+            pending.emit();
+            return None;
+        }
+    };
+
+    if !window.supports_modal_event_loop() {
+        drop(window);
+        let mut m = menu.borrow_mut();
+        let result = m.last_triggered.clone();
+        m.hide_now(false);
+        return result;
+    }
+
+    let chosen = if !ferrokit_core::event_loop::thread_quit_now() {
+        let window_rc = Rc::new(RefCell::new(window));
+        let event_loop = Rc::new(EventLoop::with_dispatcher_kind(DispatcherKind::Gui));
+        let session = Rc::new(PopupMenuSession {
+            menu: Rc::clone(menu),
+            window: Rc::downgrade(&window_rc),
+            root_origin,
+            min_size: size,
+            event_loop: Rc::clone(&event_loop),
+            chosen: RefCell::new(None),
+            closed: std::cell::Cell::new(false),
+            win_offset: std::cell::Cell::new(Point::new(0, 0)),
+        });
+        let host = PopupMenuHost::create_widget(size, Rc::clone(&session));
+        {
+            let mut win = window_rc.borrow_mut();
+            win.set_root_widget(Rc::clone(&host));
+            win.set_cursor(ferrokit_platform::cursor::CursorShape::Arrow);
+            let dismiss_press = Rc::clone(&session);
+            win.set_mouse_press_handler(move |_pos, _button| {
+                dismiss_press.dismiss();
+                true
+            });
+            let dismiss_win = Rc::clone(&session);
+            win.set_window_event_handler(move |ev: &mut Event| {
+                if matches!(ev.kind, EventKind::WindowDeactivate | EventKind::Close) {
+                    dismiss_win.dismiss();
+                }
+            });
+            win.show();
+            win.activate_window();
+        }
+        if let Some(updated_size) = session.present() {
+            host.borrow()
+                .set_geometry(Rect::new(0, 0, updated_size.width, updated_size.height));
+        }
+
+        event_loop.exec();
+        let chosen = session.chosen.borrow_mut().take();
+        drop(window_rc);
+        chosen
+    } else {
+        drop(window);
+        None
+    };
+
+    let pending = {
+        let mut m = menu.borrow_mut();
+        m.hide_now(true);
+        let mut pending = std::mem::take(&mut m.pending);
+        pending.activation = chosen;
+        pending
+    };
+    let chosen_action = pending
+        .activation
+        .as_ref()
+        .map(|(action, _)| action.clone());
+    pending.emit();
+    chosen_action
+}
+
 /// Popup menu (`QMenu`).
 ///
 /// A menu paints and routes events for its open sub-menu itself, so a whole cascade
@@ -783,43 +1237,14 @@ impl Menu {
     /// Pops the menu up and runs it modally (`QMenu::exec`); `about_to_show`, `about_to_hide` and
     /// the chosen action's signals are emitted with the menu not borrowed.
     pub fn exec_popup(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
-        Self::emit_unborrowed(menu, |m| m.about_to_show.clone());
-        let pending = {
-            let mut m = menu.borrow_mut();
-            let chosen = m.exec_popup_inner(pos);
-            let mut pending = std::mem::take(&mut m.pending);
-            pending.activation = chosen;
-            pending
-        };
-        // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
-        // menu is hidden, then returns it.
-        let chosen = pending
-            .activation
-            .as_ref()
-            .map(|(action, _)| action.clone());
-        pending.emit();
-        chosen
+        exec_popup_platform(menu, pos)
     }
 
-    /// Pops up the menu as a top-level transparent frameless layered window and runs
-    /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
-    #[cfg(windows)]
-    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
-        use crate::window::Window;
-        use ferrokit_platform::{WindowFlags, platform};
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-            SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_KEYDOWN, WM_LBUTTONDOWN,
-            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-        };
+    /// Computes the top-left desktop origin and clamped work area of `pos`'s screen for a popup
+    /// menu of `size`.
+    fn popup_window_origin(&self, pos: Point, size: Size) -> (Point, Rect) {
+        use ferrokit_platform::platform;
 
-        self.last_triggered = None;
-        let size = self.size_hint();
         // `popupGeometry(QGuiApplication::screenAt(p))` (qmenu.cpp:2382, 292-308): the work area of
         // the screen whose geometry contains the point; without one, the primary screen's.
         let s_geom = platform()
@@ -845,8 +1270,30 @@ impl Menu {
         x = x.max(s_geom.x + DESKTOP_MARGIN);
         y = y.max(s_geom.y + DESKTOP_MARGIN);
 
-        let root_origin = Point::new(x, y);
-        let initial_rect = Rect::new(x, y, size.width, size.height);
+        (Point::new(x, y), s_geom)
+    }
+
+    /// Pops up the menu as a top-level transparent frameless layered window and runs
+    /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
+    #[cfg(windows)]
+    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
+        use crate::window::Window;
+        use ferrokit_platform::WindowFlags;
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
+            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_KEYDOWN, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        };
+
+        self.last_triggered = None;
+        let size = self.size_hint();
+        let (root_origin, s_geom) = self.popup_window_origin(pos, size);
+        let initial_rect = Rect::new(root_origin.x, root_origin.y, size.width, size.height);
         self.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
         self.popup_at_inner(Point::new(0, 0), None);
 
@@ -1052,7 +1499,6 @@ impl Menu {
     /// relative to the pixel grid when a sub-menu opens or closes and widens the window. A
     /// fractional logical shift would round each glyph of every item differently and make the
     /// letter spacing jump.
-    #[cfg(windows)]
     fn present_popup(
         &mut self,
         window: &mut crate::window::Window,
@@ -1077,15 +1523,6 @@ impl Menu {
             self.paint_event(painter);
             painter.restore();
         });
-    }
-    #[cfg(not(windows))]
-    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
-        // No modal loop without a native window system here: an earlier result is not this one.
-        self.last_triggered = None;
-        self.popup_at_inner(pos, None);
-        let result = self.last_triggered.clone().map(|a| (a, Vec::new()));
-        self.hide_now(false);
-        result
     }
 
     /// Hides the menu and every open sub-menu without emitting `about_to_hide`: this menu's

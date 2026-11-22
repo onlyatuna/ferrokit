@@ -178,6 +178,16 @@ pub trait PlatformWindow: 'static {
     fn set_backdrop(&mut self, _backdrop: crate::backdrop::BackdropType, _dark_mode: bool) -> bool {
         false
     }
+    /// Sets the corner radius of an active native backdrop surface (no-op where unsupported).
+    fn set_backdrop_corner_radius(&mut self, _radius: f32) {}
+    /// Controls whether the native window hides automatically when the application deactivates
+    /// (`NSWindow.hidesOnDeactivate` on macOS; no-op elsewhere).
+    fn set_hides_on_deactivate(&mut self, _hides: bool) {}
+    /// Whether this platform window runs on a live native window system that delivers input and
+    /// focus events to an inner `EventLoop::exec()` modal popup loop.
+    fn supports_modal_event_loop(&self) -> bool {
+        false
+    }
     /// Replaces an applied Acrylic blur with the flat tint of the same colour (used while the
     /// window is dragged or resized). Returns whether the applied backdrop changed.
     fn suspend_backdrop(&mut self) -> bool {

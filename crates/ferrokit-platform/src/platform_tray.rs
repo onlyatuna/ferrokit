@@ -128,12 +128,17 @@ pub trait PlatformTrayIcon {
     fn supports_messages(&self) -> bool {
         true
     }
+
+    /// Controls whether the tray icon image uses template (monochrome mask) rendering
+    /// (`NSImage.template` on macOS; no-op elsewhere).
+    fn set_template(&mut self, _is_template: bool) {}
 }
 
 pub struct GenericTrayIcon {
     tooltip: String,
     icon: Icon,
     visible: bool,
+    is_template: bool,
     menu: Option<Box<dyn PlatformMenu>>,
     last_message: Option<(String, String, TrayMessageIcon, u32)>,
     last_message_icon: Option<Icon>,
@@ -145,10 +150,15 @@ impl GenericTrayIcon {
             tooltip: tooltip.to_string(),
             icon: icon.clone(),
             visible: false,
+            is_template: false,
             menu: None,
             last_message: None,
             last_message_icon: None,
         }
+    }
+
+    pub fn is_template(&self) -> bool {
+        self.is_template
     }
 
     pub fn tooltip(&self) -> &str {
@@ -233,5 +243,9 @@ impl PlatformTrayIcon for GenericTrayIcon {
 
     fn supports_messages(&self) -> bool {
         true
+    }
+
+    fn set_template(&mut self, is_template: bool) {
+        self.is_template = is_template;
     }
 }

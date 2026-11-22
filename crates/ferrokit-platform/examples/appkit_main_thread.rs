@@ -58,7 +58,7 @@ mod harness {
 
     use ferrokit_gui::application::GuiApplication;
 
-    use super::checks::{CHECKS, Recorder};
+    use super::checks::{CHECKS, CheckFn, Recorder};
     use super::objc;
 
     const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -187,11 +187,14 @@ mod harness {
         }
 
         // `QTEST_MAIN`: the application first, on this thread.
-        let _app = GuiApplication::new(vec!["appkit_main_thread".to_string()]);
+        let mut app = GuiApplication::new(vec!["appkit_main_thread".to_string()]);
         objc::log_exceptions_for(name);
 
         let mut rec = Recorder::default();
-        (check.run)(&mut rec);
+        match check.run {
+            CheckFn::Plain(f) => f(&mut rec),
+            CheckFn::WithApp(f) => f(&mut rec, &mut app),
+        }
         rec.exit_code()
     }
 }
@@ -535,193 +538,204 @@ mod checks {
         }
     }
 
+    #[derive(Clone, Copy)]
+    pub enum CheckFn {
+        Plain(fn(&mut Recorder)),
+        WithApp(fn(&mut Recorder, &mut ferrokit_gui::application::GuiApplication)),
+    }
+
     pub struct CheckDef {
         pub name: &'static str,
         /// The libtest test whose macOS (real AppKit) part this check replaces.
         pub origin: &'static str,
-        pub run: fn(&mut Recorder),
+        pub run: CheckFn,
     }
 
     pub const CHECKS: &[CheckDef] = &[
         CheckDef {
             name: "window_title_and_style",
             origin: "test_platform_abstractions::test_macos_objc_runtime_and_cocoa_window_lifecycle, ::test_platform_parity_gaps_verification",
-            run: window_title_and_style,
+            run: CheckFn::Plain(window_title_and_style),
         },
         CheckDef {
             name: "window_geometry",
             origin: "new: CocoaNativeWindow geometry against the NSWindow frame",
-            run: window_geometry,
+            run: CheckFn::Plain(window_geometry),
         },
         CheckDef {
             name: "window_level",
             origin: "test_window_activation::cocoa_window_is_active_only_when_it_is_the_key_window (tooltip level), test_platform_abstractions::test_macos_objc_runtime_and_cocoa_window_lifecycle (stays-on-top level)",
-            run: window_level,
+            run: CheckFn::Plain(window_level),
         },
         CheckDef {
             name: "window_show_hide",
             origin: "test_platform_abstractions::test_macos_objc_runtime_and_cocoa_window_lifecycle",
-            run: window_show_hide,
+            run: CheckFn::Plain(window_show_hide),
         },
         CheckDef {
             name: "window_key_status",
             origin: "test_window_activation::cocoa_window_is_active_only_when_it_is_the_key_window",
-            run: window_key_status,
+            run: CheckFn::Plain(window_key_status),
         },
         CheckDef {
             name: "app_activation_policy",
             origin: "new: QCocoaIntegration makes an executable without LSUIElement a regular app",
-            run: app_activation_policy,
+            run: CheckFn::Plain(app_activation_policy),
         },
         CheckDef {
             name: "window_opacity_min_size_move",
             origin: "test_platform_modern_features::test_platform_window_move_resize_opacity_minsize",
-            run: window_opacity_min_size_move,
+            run: CheckFn::Plain(window_opacity_min_size_move),
         },
         CheckDef {
             name: "window_click_through",
             origin: "test_platform_modern_features::test_cross_platform_backdrop_and_click_through",
-            run: window_click_through,
+            run: CheckFn::Plain(window_click_through),
         },
         CheckDef {
             name: "window_flipped",
             origin: "test_platform_abstractions::test_macos_flipped_coordinates_and_wayland_wheel_scale",
-            run: window_flipped,
+            run: CheckFn::Plain(window_flipped),
         },
         CheckDef {
             name: "window_present_orientation",
             origin: "test_platform_abstractions::test_platform_parity_gaps_verification (CocoaLayerSurface present)",
-            run: window_present_orientation,
+            run: CheckFn::Plain(window_present_orientation),
         },
         CheckDef {
             name: "window_event_bridge",
             origin: "test_platform_abstractions::test_macos_objc_runtime_and_cocoa_window_lifecycle, ::test_cross_platform_input_event_bridge_queuing_and_polling",
-            run: window_event_bridge,
+            run: CheckFn::Plain(window_event_bridge),
         },
         CheckDef {
             name: "window_present",
             origin: "test_platform_abstractions::test_platform_parity_gaps_verification (CocoaLayerSurface present)",
-            run: window_present,
+            run: CheckFn::Plain(window_present),
         },
         CheckDef {
             name: "window_present_pixels",
             origin: "test_platform_abstractions::test_platform_parity_gaps_verification (CocoaLayerSurface present)",
-            run: window_present_pixels,
+            run: CheckFn::Plain(window_present_pixels),
         },
         CheckDef {
             name: "window_present_opacity",
             origin: "test_platform_abstractions::test_platform_parity_gaps_verification (CocoaLayerSurface present)",
-            run: window_present_opacity,
+            run: CheckFn::Plain(window_present_opacity),
         },
         CheckDef {
             name: "window_present_frame_immutable",
             origin: "test_platform_abstractions::test_platform_parity_gaps_verification (CocoaLayerSurface present)",
-            run: window_present_frame_immutable,
+            run: CheckFn::Plain(window_present_frame_immutable),
         },
         CheckDef {
             name: "backdrop_on",
             origin: "test_platform_modern_features::test_cross_platform_backdrop_and_click_through",
-            run: backdrop_on,
+            run: CheckFn::Plain(backdrop_on),
         },
         CheckDef {
             name: "backdrop_off",
             origin: "test_platform_modern_features::test_cross_platform_backdrop_and_click_through",
-            run: backdrop_off,
+            run: CheckFn::Plain(backdrop_off),
         },
         CheckDef {
             name: "backdrop_off_without_backdrop",
             origin: "application startup without a backdrop",
-            run: backdrop_off_without_backdrop,
+            run: CheckFn::Plain(backdrop_off_without_backdrop),
         },
         CheckDef {
             name: "backdrop_on_off_on_off",
             origin: "application theme and mode switches",
-            run: backdrop_on_off_on_off,
+            run: CheckFn::Plain(backdrop_on_off_on_off),
         },
         CheckDef {
             name: "backdrop_on_twice",
             origin: "application theme and mode switches",
-            run: backdrop_on_twice,
+            run: CheckFn::Plain(backdrop_on_twice),
         },
         CheckDef {
             name: "status_item_lifecycle",
             origin: "test_platform_abstractions::test_cross_platform_tray_icon_implementations, ::test_macos_cocoa_status_item_and_menu_objc_integration",
-            run: status_item_lifecycle,
+            run: CheckFn::Plain(status_item_lifecycle),
         },
         CheckDef {
             name: "status_item_menu",
             origin: "test_platform_abstractions::test_macos_cocoa_status_item_and_menu_objc_integration",
-            run: status_item_menu,
+            run: CheckFn::Plain(status_item_menu),
         },
         CheckDef {
             name: "status_item_message",
             origin: "test_platform_modern_features::test_platform_tray_messages",
-            run: status_item_message,
+            run: CheckFn::Plain(status_item_message),
         },
         CheckDef {
             name: "menu_native",
             origin: "test_platform_abstractions::test_cross_platform_menu_implementations",
-            run: menu_native,
+            run: CheckFn::Plain(menu_native),
         },
         CheckDef {
             name: "screen_metrics",
             origin: "test_platform_modern_features::test_cross_platform_screens_parity, test_platform_abstractions::test_platform_singleton_does_not_panic",
-            run: screen_metrics,
+            run: CheckFn::Plain(screen_metrics),
         },
         CheckDef {
             name: "theme_color_scheme",
             origin: "test_platform_modern_features::test_cross_platform_theme_and_dynamic_detection",
-            run: theme_color_scheme,
+            run: CheckFn::Plain(theme_color_scheme),
         },
         CheckDef {
             name: "cursor_shape",
             origin: "test_platform_modern_features::test_cross_platform_cursor_shapes",
-            run: cursor_shape,
+            run: CheckFn::Plain(cursor_shape),
         },
         CheckDef {
             name: "window_view_methods",
             origin: "new: QNSView overrides the input methods, takes first responder and tracks the pointer",
-            run: window_view_methods,
+            run: CheckFn::Plain(window_view_methods),
         },
         CheckDef {
             name: "window_native_mouse_events",
             origin: "test_cocoa_window_input::mouse_press_and_release_report_top_left_logical_positions_and_every_button, ::control_click_is_a_right_click_and_its_release_matches",
-            run: window_native_mouse_events,
+            run: CheckFn::Plain(window_native_mouse_events),
         },
         CheckDef {
             name: "window_native_key_events",
             origin: "test_cocoa_window_input::key_down_goes_through_the_input_method_unless_it_is_a_shortcut",
-            run: window_native_key_events,
+            run: CheckFn::Plain(window_native_key_events),
         },
         CheckDef {
             name: "window_flags_native",
             origin: "test_cocoa_window_methods::window_flags_change_style_level_tool_behaviour_and_click_through",
-            run: window_flags_native,
+            run: CheckFn::Plain(window_flags_native),
         },
         CheckDef {
             name: "window_transient_parent_native",
             origin: "test_cocoa_window_methods::transient_parent_attaches_the_window_as_a_child_window",
-            run: window_transient_parent_native,
+            run: CheckFn::Plain(window_transient_parent_native),
         },
         CheckDef {
             name: "window_mask_native",
             origin: "test_cocoa_window_methods::mask_clips_the_content_layer_to_the_region_and_makes_the_window_see_through",
-            run: window_mask_native,
+            run: CheckFn::Plain(window_mask_native),
         },
         CheckDef {
             name: "window_backdrop_suspend_native",
             origin: "test_cocoa_window_methods::suspending_acrylic_makes_the_effect_view_inactive_and_resuming_makes_it_active_again",
-            run: window_backdrop_suspend_native,
+            run: CheckFn::Plain(window_backdrop_suspend_native),
         },
         CheckDef {
             name: "integration_factory",
             origin: "test_platform_abstractions::test_platform_integration_factory, ::test_cocoa_platform_integration_status_item_and_retina",
-            run: integration_factory,
+            run: CheckFn::Plain(integration_factory),
         },
         CheckDef {
             name: "global_hotkey_carbon",
             origin: "test_global_hotkey::macos::registers_on_main_thread_or_reports_thread_error_on_worker (OS main thread Carbon RegisterEventHotKey)",
-            run: global_hotkey_carbon,
+            run: CheckFn::Plain(global_hotkey_carbon),
+        },
+        CheckDef {
+            name: "global_hotkey_carbon_background_marshal",
+            origin: "test_global_hotkey::macos: background-thread GlobalHotkeyManager marshals through live GuiApplication::exec()",
+            run: CheckFn::WithApp(global_hotkey_carbon_background_marshal),
         },
     ];
 
@@ -1586,6 +1600,27 @@ mod checks {
             "[[statusItem button] image] is set",
         );
         t.expect(
+            yes(send::<Id>(button, "image"), "isTemplate"),
+            "default status item image is template",
+        );
+        ferrokit_platform::platform_tray::PlatformTrayIcon::set_template(&mut item, false);
+        t.expect(
+            !yes(send::<Id>(button, "image"), "isTemplate"),
+            "set_template(false) clears [image isTemplate]",
+        );
+        t.expect(
+            item.set_icon(&ferrokit_gui::image::Icon::from_pixmap(&pixmap(
+                18,
+                Color::from_rgba8(0, 128, 255, 255),
+            )))
+            .is_ok(),
+            "second set_icon returns Ok",
+        );
+        t.expect(
+            !yes(send::<Id>(button, "image"), "isTemplate"),
+            "non-template mode persists across subsequent set_icon",
+        );
+        t.expect(
             item.set_tooltip("Claude HUD macOS").is_ok(),
             "set_tooltip returns Ok",
         );
@@ -2258,6 +2293,39 @@ mod checks {
         win.set_window_flag(WindowFlags::CLICK_THROUGH, true);
         t.expect(yes(w, "ignoresMouseEvents"), "[window ignoresMouseEvents]");
         t.eq("flags()", win.flags(), WindowFlags::CLICK_THROUGH);
+
+        let mut win2 = window(
+            "flags_layered",
+            Rect::new(140, 140, 200, 120),
+            WindowFlags::FRAMELESS | WindowFlags::TOOL | WindowFlags::LAYERED,
+        );
+        let w2 = win2.ns_window();
+        t.expect(
+            !yes(w2, "isOpaque"),
+            "LAYERED window is not opaque (![window isOpaque])",
+        );
+        t.expect(
+            yes(w2, "hidesOnDeactivate"),
+            "TOOL window starts with [window hidesOnDeactivate]",
+        );
+        ferrokit_platform::platform_window::PlatformWindow::set_hides_on_deactivate(
+            &mut win2, false,
+        );
+        t.expect(
+            !yes(w2, "hidesOnDeactivate"),
+            "set_hides_on_deactivate(false) clears [window hidesOnDeactivate]",
+        );
+        win2.set_window_flag(WindowFlags::TOOL, false);
+        win2.set_window_flag(WindowFlags::TOOL, true);
+        t.expect(
+            !yes(w2, "hidesOnDeactivate"),
+            "TOOL flag toggles preserve set_hides_on_deactivate(false) override",
+        );
+        win2.set_window_flag(WindowFlags::LAYERED, false);
+        t.expect(
+            yes(w2, "isOpaque"),
+            "clearing LAYERED restores [window isOpaque]",
+        );
     }
 
     fn window_transient_parent_native(t: &mut Recorder) {
@@ -2350,6 +2418,32 @@ mod checks {
             "[effectView state] after resuming (Active)",
             send::<isize>(view, "state"),
             1,
+        );
+
+        ferrokit_platform::platform_window::PlatformWindow::set_backdrop_corner_radius(
+            &mut win, 12.0,
+        );
+        let layer: Id = send(view, "layer");
+        t.expect(!layer.is_nil(), "[effectView layer] is non-nil");
+        t.expect(
+            (send::<f64>(layer, "cornerRadius") - 12.0).abs() < 0.01,
+            "[effectView.layer cornerRadius] is 12.0",
+        );
+        t.expect(
+            yes(layer, "masksToBounds"),
+            "[effectView.layer masksToBounds] is enabled",
+        );
+
+        ferrokit_platform::platform_window::PlatformWindow::set_backdrop_corner_radius(
+            &mut win, 0.0,
+        );
+        t.expect(
+            send::<f64>(layer, "cornerRadius").abs() < 0.01,
+            "[effectView.layer cornerRadius] clears to 0.0",
+        );
+        t.expect(
+            !yes(layer, "masksToBounds"),
+            "[effectView.layer masksToBounds] clears on 0.0",
         );
     }
 
@@ -2491,5 +2585,99 @@ mod checks {
             Ok(()),
         );
         drop(global);
+    }
+
+    fn global_hotkey_carbon_background_marshal(
+        t: &mut Recorder,
+        app: &mut ferrokit_gui::application::GuiApplication,
+    ) {
+        use ferrokit_core::event::{Event, EventKind};
+        use ferrokit_core::event_loop::post_event_to_thread;
+        use ferrokit_core::object::{ObjectId, ThreadId};
+        use ferrokit_core::timer::Timer;
+        use ferrokit_gui::application::GuiApplication;
+        use std::sync::{Arc, Mutex};
+
+        const VK_F15: u32 = 0x7E;
+        const VK_F16: u32 = 0x7F;
+        let mods = HotkeyModifiers::CONTROL
+            | HotkeyModifiers::ALT
+            | HotkeyModifiers::SHIFT
+            | HotkeyModifiers::WIN
+            | HotkeyModifiers::NO_REPEAT;
+
+        let worker_handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let worker_result: Arc<Mutex<Result<(), String>>> =
+            Arc::new(Mutex::new(Err("worker did not run".to_string())));
+        let cleanup_ok: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+
+        let handle_slot = Arc::clone(&worker_handle);
+        let worker_res_slot = Arc::clone(&worker_result);
+        let cleanup_slot = Arc::clone(&cleanup_ok);
+        let main_tid = ThreadId::current();
+
+        // Safety net so a missed event never hangs CI until the supervisor timeout.
+        Timer::single_shot(5000, || GuiApplication::exit(99));
+
+        Timer::single_shot(0, move || {
+            let res_out = Arc::clone(&worker_res_slot);
+            let cleanup_out = Arc::clone(&cleanup_slot);
+            let jh = std::thread::spawn(move || {
+                let outcome = (|| -> Result<(), String> {
+                    let mgr = GlobalHotkeyManager::new().map_err(|e| format!("new: {e}"))?;
+                    mgr.register(77, mods, VK_F15)
+                        .map_err(|e| format!("register F15: {e}"))?;
+                    if !mgr.is_registered(77) {
+                        return Err("is_registered(77) was false".to_string());
+                    }
+                    mgr.replace(77, mods, VK_F16)
+                        .map_err(|e| format!("replace F16: {e}"))?;
+                    mgr.unregister(77)
+                        .map_err(|e| format!("unregister(77): {e}"))?;
+                    mgr.register(78, mods, VK_F15)
+                        .map_err(|e| format!("register(78) F15: {e}"))?;
+                    drop(mgr);
+                    Ok(())
+                })();
+                *res_out.lock().unwrap() = outcome;
+
+                // Posted after `drop(mgr)` in FIFO order to verify Carbon cleanup already ran
+                // on the main thread before this callback executes.
+                post_event_to_thread(
+                    main_tid,
+                    ObjectId(0),
+                    Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                        let ok = GlobalHotkeyManager::new()
+                            .and_then(|m2| {
+                                let reg = m2.register(79, mods, VK_F15);
+                                drop(m2);
+                                reg
+                            })
+                            .is_ok();
+                        *cleanup_out.lock().unwrap() = Some(ok);
+                        GuiApplication::exit(0);
+                    }))),
+                );
+            });
+            *handle_slot.lock().unwrap() = Some(jh);
+        });
+
+        let exit_code = app.exec();
+        if let Some(jh) = worker_handle.lock().unwrap().take() {
+            jh.join().expect("hotkey worker thread panicked");
+        }
+
+        t.eq("GuiApplication::exec() exit code", exit_code, 0);
+        t.eq(
+            "background GlobalHotkeyManager marshal lifecycle",
+            worker_result.lock().unwrap().clone(),
+            Ok(()),
+        );
+        t.eq(
+            "drop cleanup freed Carbon F15 before FIFO MetaCallNoTarget",
+            *cleanup_ok.lock().unwrap(),
+            Some(true),
+        );
     }
 }

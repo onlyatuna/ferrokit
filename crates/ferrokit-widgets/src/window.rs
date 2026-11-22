@@ -1656,6 +1656,25 @@ impl Window {
             .set_backdrop(backdrop, dark_mode)
     }
 
+    /// Sets the corner radius of an active native backdrop surface (e.g. macOS frosted-glass view).
+    pub fn set_backdrop_corner_radius(&mut self, radius: f32) {
+        self.platform_window
+            .borrow_mut()
+            .set_backdrop_corner_radius(radius);
+    }
+
+    /// Overrides whether the window hides when the application deactivates (macOS `WindowFlags::TOOL`).
+    pub fn set_hides_on_deactivate(&mut self, hides: bool) {
+        self.platform_window
+            .borrow_mut()
+            .set_hides_on_deactivate(hides);
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn supports_modal_event_loop(&self) -> bool {
+        self.platform_window.borrow().supports_modal_event_loop()
+    }
+
     /// Replaces an applied Acrylic blur with the flat tint of the same colour while the window
     /// is dragged or resized. Returns whether the applied backdrop changed.
     pub fn suspend_backdrop(&mut self) -> bool {

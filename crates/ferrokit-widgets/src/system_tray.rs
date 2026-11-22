@@ -148,6 +148,12 @@ impl SystemTrayIcon {
         self.current_icon.as_ref()
     }
 
+    /// Controls whether the platform tray icon uses template (monochrome mask) rendering on macOS.
+    pub fn set_template(&mut self, is_template: bool) {
+        ThreadContext::assert_main_thread("SystemTrayIcon::set_template");
+        self.platform_tray.set_template(is_template);
+    }
+
     /// Sets the tooltip shown on hover (`QSystemTrayIcon::setToolTip`).
     pub fn set_tooltip(&mut self, tooltip: impl Into<String>) -> Result<(), &'static str> {
         ThreadContext::assert_main_thread("SystemTrayIcon::set_tooltip");
