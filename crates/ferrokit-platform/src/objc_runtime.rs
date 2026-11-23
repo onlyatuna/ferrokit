@@ -381,7 +381,7 @@ pub fn qcocoa_application_delegate() -> Id {
         _cmd: *const c_void,
         _notification: *mut c_void,
     ) {
-        crate::clipboard_cocoa::CocoaClipboard::new().poll_changes();
+        crate::clipboard::macos::CocoaClipboard::new().poll_changes();
     }
     // SAFETY: the closure runs once (LazyLock). Every runtime call receives values built here:
     // `name` is a NUL-terminated `CString` (or a `c"..."` literal) alive across the call,

@@ -159,12 +159,12 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    pub(super) use crate::hotkey_macos::MacosGlobalHotkeyManager as Manager;
+    pub(super) use crate::hotkey::macos::MacosGlobalHotkeyManager as Manager;
 }
 
 #[cfg(target_os = "linux")]
 mod imp {
-    pub(super) use crate::hotkey_x11::X11GlobalHotkeyManager as Manager;
+    pub(super) use crate::hotkey::x11::X11GlobalHotkeyManager as Manager;
 }
 
 #[cfg(windows)]

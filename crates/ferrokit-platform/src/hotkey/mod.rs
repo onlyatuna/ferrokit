@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+pub(crate) mod macos;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod x11;
+
 use bitflags::bitflags;
 
 bitflags! {
@@ -258,11 +262,11 @@ impl PlatformHotkeyManager for GenericHotkeyManager {
 /// backend on macOS and an always-failing one elsewhere.
 pub mod cocoa_hotkey {
     use super::*;
-    pub use crate::hotkey_macos::{
+    pub use crate::hotkey::macos::{
         CARBON_CMD_KEY, CARBON_CONTROL_KEY, CARBON_OPTION_KEY, CARBON_SHIFT_KEY, carbon_keycode,
         carbon_modifiers,
     };
-    use crate::hotkey_macos::{
+    use crate::hotkey::macos::{
         CocoaRoute, allocate_slot, get_cocoa_route, insert_cocoa_route, remove_route, route_press,
     };
     use ferrokit_core::event::{Event, EventKind};
@@ -402,7 +406,7 @@ pub mod cocoa_hotkey {
             #[cfg(target_os = "macos")]
             require_main_thread(
                 ferrokit_core::object::ThreadContext::is_main_thread()
-                    && crate::hotkey_macos::carbon::is_os_main_thread(),
+                    && crate::hotkey::macos::carbon::is_os_main_thread(),
             )?;
             Ok(Self::new())
         }
@@ -611,7 +615,7 @@ pub mod cocoa_hotkey {
         fn new() -> Self {
             ferrokit_core::object::ThreadContext::assert_main_thread("CocoaHotkeyManager::new");
             assert!(
-                crate::hotkey_macos::carbon::is_os_main_thread(),
+                crate::hotkey::macos::carbon::is_os_main_thread(),
                 "CocoaHotkeyManager::new: must be called on the macOS OS main thread"
             );
             Self
@@ -626,17 +630,17 @@ pub mod cocoa_hotkey {
             keycode: u32,
             modifiers: u32,
         ) -> Result<usize, &'static str> {
-            crate::hotkey_macos::carbon::ensure_handler_installed().map_err(|e| match e {
+            crate::hotkey::macos::carbon::ensure_handler_installed().map_err(|e| match e {
                 HotkeyError::Thread(_) => "CocoaHotkeyManager: must be created on the main thread",
                 _ => "InstallEventHandler failed",
             })?;
-            crate::hotkey_macos::carbon::register_hotkey(slot, keycode, modifiers).map_err(|e| {
+            crate::hotkey::macos::carbon::register_hotkey(slot, keycode, modifiers).map_err(|e| {
                 match e {
                     HotkeyError::Os {
                         code: HotkeyError::CARBON_EVENT_HOT_KEY_EXISTS_ERR,
                     } => "RegisterEventHotKey failed: hotkey already registered",
                     HotkeyError::Os {
-                        code: crate::hotkey_macos::CARBON_EVENT_HOT_KEY_INVALID_ERR,
+                        code: crate::hotkey::macos::CARBON_EVENT_HOT_KEY_INVALID_ERR,
                     } => "RegisterEventHotKey failed: invalid hotkey",
                     HotkeyError::Thread(_) => {
                         "CocoaHotkeyManager: must be created on the main thread"
@@ -647,7 +651,7 @@ pub mod cocoa_hotkey {
         }
 
         fn unregister(&mut self, handle: usize) -> Result<(), &'static str> {
-            crate::hotkey_macos::carbon::unregister_hotkey(handle)
+            crate::hotkey::macos::carbon::unregister_hotkey(handle)
                 .map_err(|_| "UnregisterEventHotKey failed")
         }
     }
@@ -658,7 +662,7 @@ pub use cocoa_hotkey::CocoaHotkeyManager;
 pub mod unix_hotkey {
     use super::*;
     #[cfg(any(target_os = "linux", test))]
-    use crate::hotkey_x11::{X11_BAD_ACCESS, X11_BAD_VALUE, X11GlobalHotkeyManager};
+    use crate::hotkey::x11::{X11_BAD_ACCESS, X11_BAD_VALUE, X11GlobalHotkeyManager};
     #[cfg(any(target_os = "linux", test))]
     use std::sync::Arc;
 
@@ -720,7 +724,7 @@ pub mod unix_hotkey {
         /// Creates a manager backed by a mock X11 backend (for unit tests on any OS).
         #[cfg(test)]
         pub(crate) fn with_mock(
-            mock: crate::hotkey_x11::MockX11HotkeyBackend,
+            mock: crate::hotkey::x11::MockX11HotkeyBackend,
         ) -> Result<Self, HotkeyError> {
             Ok(Self {
                 inner: Some(X11GlobalHotkeyManager::with_mock(mock)?),
@@ -1098,7 +1102,7 @@ mod tests {
 
     #[test]
     fn test_unix_hotkey_manager_with_mock_backend() {
-        use crate::hotkey_x11::{MockX11HotkeyBackend, X11_LOCK_MASK};
+        use crate::hotkey::x11::{MockX11HotkeyBackend, X11_LOCK_MASK};
         use std::sync::{Mutex, mpsc};
         use std::time::Duration;
 

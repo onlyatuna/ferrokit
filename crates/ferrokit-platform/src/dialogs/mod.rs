@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+pub mod macos;
+
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,8 +185,8 @@ impl PlatformDialogs for SystemDialogs {
 #[cfg(not(target_os = "macos"))]
 static SYSTEM_DIALOGS: SystemDialogs = SystemDialogs;
 #[cfg(target_os = "macos")]
-static COCOA_DIALOGS: crate::dialogs_cocoa::CocoaDialogs<crate::dialogs_cocoa::NativeRuntime> =
-    crate::dialogs_cocoa::CocoaDialogs::new(crate::dialogs_cocoa::NativeRuntime);
+static COCOA_DIALOGS: crate::dialogs::macos::CocoaDialogs<crate::dialogs::macos::NativeRuntime> =
+    crate::dialogs::macos::CocoaDialogs::new(crate::dialogs::macos::NativeRuntime);
 
 /// Returns the OS-native dialog implementation (AppKit panels and alerts on macOS).
 pub fn platform_dialogs() -> &'static dyn PlatformDialogs {

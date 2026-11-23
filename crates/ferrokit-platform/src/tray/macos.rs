@@ -167,7 +167,7 @@ impl CocoaStatusItem {
                 && let Some(handler) = context_menu
             {
                 let pos =
-                    crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
+                    crate::cursor::macos::cursor_pos(&crate::cursor::macos::NativeCursorServices)
                         .unwrap_or_default();
                 handler(pos);
             }

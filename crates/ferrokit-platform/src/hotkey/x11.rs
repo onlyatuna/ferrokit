@@ -495,8 +495,8 @@ impl X11GlobalHotkeyManager {
     pub(crate) fn new() -> Result<Self, HotkeyError> {
         #[cfg(target_os = "linux")]
         {
-            x11::preflight_check()?;
-            Self::with_backend(x11::X11Backend::open)
+            native::preflight_check()?;
+            Self::with_backend(native::X11Backend::open)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -818,7 +818,7 @@ impl X11HotkeyBackend for MockX11HotkeyBackend {
 // ---- Real Linux X11 backend (`dlopen("libX11.so.6")` + `UnixStream::pair()` + `poll`) ----------
 
 #[cfg(target_os = "linux")]
-mod x11 {
+mod native {
     use super::*;
     use std::ffi::{CStr, c_char, c_int, c_long, c_short, c_uint, c_ulong, c_void};
     use std::io::{ErrorKind, Read, Write};

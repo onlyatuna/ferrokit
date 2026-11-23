@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+pub mod bitmap;
+pub mod macos;
+
 /// `Qt::CursorShape` without `BitmapCursor` (a bitmap cursor is not supported). `Busy` is
 /// `Qt::BusyCursor`; the variants follow the order of the Qt enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -180,7 +183,7 @@ pub mod win32_cursor {
     /// `createPixmapCursor` (qwindowscursor.cpp:69-97): a 32-bit premultiplied colour bitmap with
     /// an AND mask, as `CreateIconIndirect` takes it, for the image's hot spot.
     fn create_custom_cursor(shape: CursorShape, system_cursor_width: i32) -> HCURSOR {
-        let Some(image) = crate::cursor_bitmap::custom_cursor_image(shape, system_cursor_width)
+        let Some(image) = crate::cursor::bitmap::custom_cursor_image(shape, system_cursor_width)
         else {
             return std::ptr::null_mut();
         };
@@ -470,7 +473,7 @@ pub mod cocoa_cursor {
     /// `clear_override`; 0 while none.
     static OVERRIDDEN_CURSOR: AtomicUsize = AtomicUsize::new(0);
     /// Immortal `+1` custom `NSCursor` instances (`Id.0 as usize`) built from
-    /// [`crate::cursor_bitmap::cocoa_custom_cursor_image`], indexed by `CursorShape as usize`.
+    /// [`crate::cursor::bitmap::cocoa_custom_cursor_image`], indexed by `CursorShape as usize`.
     /// `None` means not yet constructed; `Some(0)` caches a creation failure so repeated cursor
     /// updates never rebuild bitmaps on every mouse move.
     static CUSTOM_CURSORS: Mutex<[Option<usize>; CursorShape::ALL.len()]> =
@@ -507,7 +510,7 @@ pub mod cocoa_cursor {
 
         /// The public `NSCursor` class method for `shape` (`QCocoaCursor::createCursorFromShape`,
         /// qcocoacursor.mm:103-146), or `None` when `shape` uses a custom `NSImage` cursor from
-        /// [`crate::cursor_bitmap::cocoa_custom_cursor_image`].
+        /// [`crate::cursor::bitmap::cocoa_custom_cursor_image`].
         pub fn native_selector(shape: CursorShape) -> Option<&'static str> {
             match shape {
                 CursorShape::Arrow => Some("arrowCursor"),
@@ -558,7 +561,7 @@ pub mod cocoa_cursor {
             if let Some(cached) = cache[idx] {
                 return Id(cached as *mut c_void);
             }
-            let cursor = crate::cursor_bitmap::cocoa_custom_cursor_image(shape)
+            let cursor = crate::cursor::bitmap::cocoa_custom_cursor_image(shape)
                 // SAFETY: `custom_cursor_from_image` is called on the AppKit main thread (checked
                 // above) and returns a +1 `NSCursor` (or nil), which stays cached permanently.
                 .map(|image| unsafe { appkit::custom_cursor_from_image(&image) })
@@ -653,11 +656,11 @@ pub mod cocoa_cursor {
         }
 
         fn pos(&self) -> Option<ferrokit_gui::geometry::primitives::Point> {
-            crate::cursor_cocoa::cursor_pos(&crate::cursor_cocoa::NativeCursorServices)
+            crate::cursor::macos::cursor_pos(&crate::cursor::macos::NativeCursorServices)
         }
 
         fn set_pos(&mut self, pos: ferrokit_gui::geometry::primitives::Point) {
-            crate::cursor_cocoa::set_cursor_pos(&crate::cursor_cocoa::NativeCursorServices, pos);
+            crate::cursor::macos::set_cursor_pos(&crate::cursor::macos::NativeCursorServices, pos);
         }
 
         fn set_override_cursor(&mut self, shape: CursorShape) -> bool {
