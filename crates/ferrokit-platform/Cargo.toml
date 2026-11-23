@@ -2,6 +2,7 @@
 name = "ferrokit-platform"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 description = "Native windows, screens, tray icons and other platform services of ferrokit (Windows first; other back ends are experimental)."
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"
@@ -30,3 +31,22 @@ windows-sys = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "platform"
+path = "tests/platform.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_style_hints_main_thread"
+path = "tests/test_style_hints_main_thread.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_single_instance"
+path = "tests/test_single_instance.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_native_behavior"
+path = "tests/test_window_native_behavior.rs"
