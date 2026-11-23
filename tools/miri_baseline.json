@@ -83,6 +83,7 @@
     "test_serialization_bounds"
   ],
   "excluded": {
+    "core": "Merged wrapper binary for tests/core.rs; individual modules are listed in targets/excluded",
     "test_object_timer_native_release": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_precise_timer_contract": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_precise_timer_lifecycle": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",

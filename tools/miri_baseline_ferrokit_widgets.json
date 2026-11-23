@@ -103,6 +103,7 @@
     "test_label_tabs"
   ],
   "excluded": {
+    "widgets": "Merged wrapper binary for tests/widgets.rs; individual modules are listed in targets/excluded",
     "test_geometry_invalidation": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_label_letter_spacing_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_label_natural_width_hint": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",

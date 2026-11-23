@@ -93,6 +93,43 @@ ALLOWED_STATUS_TRANSITIONS = {
     "error": {"pass"},
     "UB": {"pass"},
 }
+_TARGET_MAP_CACHE = {}
+
+
+def _merged_target_map(crate, repo_root):
+    key = (crate, str(repo_root))
+    if key in _TARGET_MAP_CACHE:
+        return _TARGET_MAP_CACHE[key]
+    crate_dir = os.path.join(repo_root, "crates", crate)
+    toml_path = os.path.join(crate_dir, "Cargo.toml")
+    mapping = {}
+    if os.path.isfile(toml_path):
+        toml_text = open(toml_path, encoding="utf-8", errors="replace").read()
+        if re.search(r"^\s*autotests\s*=\s*false\b", toml_text, re.M):
+            tests = re.findall(
+                r'\[\[test\]\]\s*name\s*=\s*"([^"]+)"\s*path\s*=\s*"([^"]+)"',
+                toml_text,
+            )
+            declared = {name for name, _ in tests}
+            for name, rel_path in tests:
+                full = os.path.join(crate_dir, rel_path)
+                if not os.path.isfile(full):
+                    continue
+                src = open(full, encoding="utf-8", errors="replace").read()
+                for mod in re.findall(r"^\s*mod\s+([A-Za-z0-9_]+)\s*;", src, re.M):
+                    if mod not in declared:
+                        mapping[mod] = (name, f"{mod}::")
+    _TARGET_MAP_CACHE[key] = mapping
+    return mapping
+
+
+def resolve_target(crate, target, repo_root=None):
+    """Map an integration test stem to `(binary_target, module_prefix)` when merged."""
+    if target == "lib":
+        return "lib", ""
+    return _merged_target_map(crate, repo_root or REPO_ROOT).get(target, (target, ""))
+
+
 def target_args(target):
     return ["--lib"] if target == "lib" else ["--test", target]
 
@@ -110,10 +147,14 @@ def bucket_of(kind):
 
 
 def list_tests(args, target):
+    bin_target, prefix = resolve_target(args.crate, target)
     cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "--locked", "-p", args.crate]
     if args.cross:
         cmd += ["--target", args.cross]
-    cmd += target_args(target) + ["--", "--list", "--format", "terse"]
+    cmd += target_args(bin_target) + ["--"]
+    if prefix:
+        cmd.append(prefix)
+    cmd += ["--list", "--format", "terse"]
     p = subprocess.run(
         cmd,
         creationflags=NO_WINDOW,
@@ -124,7 +165,11 @@ def list_tests(args, target):
     )
     if p.returncode != 0:
         print(f"list failed for {target}: {p.stderr[-400:]}", flush=True)
-    return [line[: -len(": test")] for line in p.stdout.splitlines() if line.endswith(": test")]
+    return [
+        line[len(prefix) : -len(": test")]
+        for line in p.stdout.splitlines()
+        if line.endswith(": test") and line.startswith(prefix)
+    ]
 
 
 def normalize(text):
@@ -203,23 +248,28 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None, 
         env["MIRIFLAGS"] = " ".join(flags)
     else:
         env.pop("MIRIFLAGS", None)
+    bin_target, prefix = resolve_target(args.crate, target)
     cmd = ["cargo", f"+{args.toolchain}", "miri", "test", "--locked", "-p", args.crate]
     if args.cross:
         cmd += ["--target", args.cross]
-    cmd += target_args(target) + ["--", "--test-threads=1"]
+    cmd += target_args(bin_target) + ["--", "--test-threads=1"]
     if exact_test is not None:
-        cmd += ["--exact", exact_test]
+        cmd += ["--exact", prefix + exact_test]
     elif only is not None:
         # Part of a target (its chunk of a sharded sweep): name exactly the tests still to run.
         remaining = sorted(set(only) - set(skip))
         if not remaining:
             raise ValueError(f"no tests left to run in {target}")
         cmd.append("--exact")
-        cmd += remaining
-    elif skip:
-        cmd.append("--exact")
-        for name in sorted(skip):
-            cmd += ["--skip", name]
+        cmd += [prefix + name for name in remaining]
+    else:
+        if prefix:
+            cmd.append(prefix)
+        if skip:
+            if not prefix:
+                cmd.append("--exact")
+            for name in sorted(skip):
+                cmd += ["--skip", prefix + name]
     try:
         p = subprocess.run(
             cmd,
@@ -231,10 +281,15 @@ def run_miri(args, target, model, skip, exact_test=None, extra_miri_flags=None, 
             errors="replace",
             creationflags=NO_WINDOW,
         )
-        return p.stdout + "\n" + p.stderr, False
+        out = p.stdout + "\n" + p.stderr
+        timed_out = False
     except subprocess.TimeoutExpired as e:
         parts = [(x.decode("utf-8", "replace") if isinstance(x, bytes) else x or "") for x in (e.stdout, e.stderr)]
-        return "\n".join(parts), True
+        out = "\n".join(parts)
+        timed_out = True
+    if prefix:
+        out = re.sub(r"^(test |---- )" + re.escape(prefix), r"\1", out, flags=re.M)
+    return out, timed_out
 
 
 # libtest tags `#[should_panic]` tests as `test <name> - should panic ... <outcome>`. The bare name is

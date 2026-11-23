@@ -38,6 +38,7 @@
     "test_text_draw_golden"
   ],
   "excluded": {
+    "gui": "Merged wrapper binary for tests/gui.rs; individual modules are listed in targets/excluded",
     "test_color_emoji_rendering": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_face": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
     "test_directwrite_faces": "Windows-only (cfg(windows)): compiled out on the Linux Miri target",
