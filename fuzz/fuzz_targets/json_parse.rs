@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 #![no_main]
 //! JSON parser: arbitrary bytes must never panic; whatever parses must survive
 //! parse -> serialize -> parse unchanged (compact and indented).

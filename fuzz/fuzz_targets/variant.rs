@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 #![no_main]
 //! `Variant` binary format: arbitrary bytes must deserialize or fail cleanly, a deserialized
 //! value must serialize back to a value that deserializes equal, and every generated `Variant`

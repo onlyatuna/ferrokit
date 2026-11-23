@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 #![no_main]
 //! D-Bus frame decoding: `frame_len`/`from_bytes` on arbitrary bytes, a decoded message must
 //! re-encode to something that decodes to the same message, and `DbusConnection::read_incoming`
