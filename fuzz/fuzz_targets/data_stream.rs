@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 #![no_main]
 //! `DataStream`: every typed read on arbitrary bytes must fail cleanly (no panic, no huge
 //! allocation), and a sequence of typed writes must read back unchanged in either byte order.

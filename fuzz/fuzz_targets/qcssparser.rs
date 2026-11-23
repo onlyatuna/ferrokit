@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 #![no_main]
 //! Qt style sheet parser: arbitrary text must never panic, hang or exhaust memory.
 

@@ -4,7 +4,8 @@ Copyright (C) 2026 The ferrokit contributors
 ferrokit is licensed under the GNU Lesser General Public License, version 3 only
 (SPDX: LGPL-3.0-only). The license text is in LICENSE. The LGPL is a set of additional
 permissions on top of the GNU General Public License, version 3, whose text is in
-LICENSES/GPL-3.0-only.txt.
+LICENSES/GPL-3.0-only.txt. LICENSES/GPL-3.0-only.txt is included solely as the base
+license text referenced by LGPL-3.0-only (per REUSE); ferrokit itself is not GPL-3.0-only.
 
 
 Upstream: Qt

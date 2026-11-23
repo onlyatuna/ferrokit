@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 //! P2 QImage parity regressions: size caps, stride validation, padded stride, copy, scaling, unpremultiply.
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_gui::image::*;
