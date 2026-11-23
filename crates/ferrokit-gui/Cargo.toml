@@ -7,6 +7,7 @@ description = "Geometry, painting and text layout of ferrokit, a Rust implementa
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"
 publish = false
+exclude = ["tests/data/**"]
 
 [dependencies]
 ferrokit-core = { path = "../ferrokit-core" }
