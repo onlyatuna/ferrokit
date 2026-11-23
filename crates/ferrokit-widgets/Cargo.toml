@@ -2,10 +2,12 @@
 name = "ferrokit-widgets"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 description = "Widgets, layouts and style sheets of ferrokit, a Rust implementation of a subset of Qt."
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"
 publish = false
+exclude = ["tests/fixtures/**"]
 
 [dependencies]
 ferrokit-core = { path = "../ferrokit-core" }
@@ -20,3 +22,292 @@ parking_lot = "0.12"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "widgets"
+path = "tests/widgets.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_accessibility"
+path = "tests/test_accessibility.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_application_focus_widget"
+path = "tests/test_application_focus_widget.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_application_layers"
+path = "tests/test_application_layers.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_command_flush_panic"
+path = "tests/test_command_flush_panic.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_command_idle_flush"
+path = "tests/test_command_idle_flush.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_event_filter_input"
+path = "tests/test_event_filter_input.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_event_filter_notify"
+path = "tests/test_event_filter_notify.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_event_propagation"
+path = "tests/test_event_propagation.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_generic_double_click"
+path = "tests/test_generic_double_click.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_geometry_invalidation"
+path = "tests/test_geometry_invalidation.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_input_cursor"
+path = "tests/test_input_cursor.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_issue18_thread_review"
+path = "tests/test_issue18_thread_review.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_key_sequence_hotkey"
+path = "tests/test_key_sequence_hotkey.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_label_font_metrics_oracle"
+path = "tests/test_label_font_metrics_oracle.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_last_window_closed_signal"
+path = "tests/test_last_window_closed_signal.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_layered_geometry_sync"
+path = "tests/test_layered_geometry_sync.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_layout_alignment_residual"
+path = "tests/test_layout_alignment_residual.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_layout_direction"
+path = "tests/test_layout_direction.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_layout_metric_caching"
+path = "tests/test_layout_metric_caching.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_exec_popup"
+path = "tests/test_menu_exec_popup.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_popup_focus"
+path = "tests/test_menu_popup_focus.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_popup_posted_events"
+path = "tests/test_menu_popup_posted_events.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_popup_present_offset"
+path = "tests/test_menu_popup_present_offset.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_popup_screen"
+path = "tests/test_menu_popup_screen.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_reentrancy"
+path = "tests/test_menu_reentrancy.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_set_visible_false"
+path = "tests/test_menu_set_visible_false.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_menu_style_box_model"
+path = "tests/test_menu_style_box_model.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_native_dpi_changed"
+path = "tests/test_native_dpi_changed.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_per_monitor_dpi_sync"
+path = "tests/test_per_monitor_dpi_sync.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_reentrancy_and_deferred"
+path = "tests/test_reentrancy_and_deferred.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_render_panic_recovery"
+path = "tests/test_render_panic_recovery.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_resize_deferred_render"
+path = "tests/test_resize_deferred_render.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_root_resize_once"
+path = "tests/test_root_resize_once.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_scroll_area_paint"
+path = "tests/test_scroll_area_paint.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_single_resize_pipeline"
+path = "tests/test_single_resize_pipeline.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_style_scope"
+path = "tests/test_style_scope.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_system_move_release"
+path = "tests/test_system_move_release.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_system_tray_menu"
+path = "tests/test_system_tray_menu.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_tooltip"
+path = "tests/test_tooltip.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_top_level_minimum"
+path = "tests/test_top_level_minimum.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_update_reaches_window"
+path = "tests/test_update_reaches_window.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_widgets_system"
+path = "tests/test_widgets_system.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_widget_extensions"
+path = "tests/test_widget_extensions.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_widget_helpers_api"
+path = "tests/test_widget_helpers_api.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_widget_invalidation"
+path = "tests/test_widget_invalidation.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_widget_update_cross_thread"
+path = "tests/test_widget_update_cross_thread.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_activate_in_show_handler"
+path = "tests/test_window_activate_in_show_handler.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_activation_events"
+path = "tests/test_window_activation_events.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_backdrop_suspend"
+path = "tests/test_window_backdrop_suspend.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_device_pixel_ratio"
+path = "tests/test_window_device_pixel_ratio.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_drop_releases_graph"
+path = "tests/test_window_drop_releases_graph.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_flags_api"
+path = "tests/test_window_flags_api.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_mask_and_transient"
+path = "tests/test_window_mask_and_transient.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_raise_activate"
+path = "tests/test_window_raise_activate.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_screen_mapping"
+path = "tests/test_window_screen_mapping.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_size_limits"
+path = "tests/test_window_size_limits.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_window_stack_under"
+path = "tests/test_window_stack_under.rs"

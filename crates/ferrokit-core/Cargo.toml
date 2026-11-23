@@ -2,6 +2,7 @@
 name = "ferrokit-core"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 description = "Object model, events, signals and slots, timers and event loop of ferrokit, a Rust implementation of a subset of Qt."
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"
@@ -29,3 +30,27 @@ libc = "0.2"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "core"
+path = "tests/core.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_compressor_panic_cleanup"
+path = "tests/test_compressor_panic_cleanup.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_main_thread_first_caller"
+path = "tests/test_main_thread_first_caller.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_parent_thread_affinity"
+path = "tests/test_parent_thread_affinity.rs"
+
+# Kept as its own binary: needs a fresh process.
+[[test]]
+name = "test_pool_worker_not_main"
+path = "tests/test_pool_worker_not_main.rs"
