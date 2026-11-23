@@ -2,6 +2,7 @@
 name = "ferrokit-gui"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 description = "Geometry, painting and text layout of ferrokit, a Rust implementation of a subset of Qt."
 license = "LGPL-3.0-only"
 repository = "https://github.com/onlyatuna/ferrokit"
@@ -36,3 +37,7 @@ memmap2 = "0.9.11"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "gui"
+path = "tests/gui.rs"
