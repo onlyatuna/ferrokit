@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 pub use crate::platform_tray::PlatformTrayIcon;
 
-#[cfg(windows)]
 pub mod win32;
 #[cfg(windows)]
 pub use win32::Win32TrayIcon;
