@@ -58,7 +58,7 @@ mod theme_portal;
 #[cfg(test)]
 mod thread_affinity;
 pub mod tray;
-pub mod tray_icon;
+pub use tray::win32 as tray_icon;
 #[cfg(windows)]
 pub(crate) mod win32_handles;
 pub mod window;
