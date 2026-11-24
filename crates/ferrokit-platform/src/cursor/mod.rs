@@ -624,7 +624,7 @@ pub mod cocoa_cursor {
             OVERRIDE_SHAPE.store(shape as u8, Ordering::Relaxed);
             if appkit::is_main_thread() {
                 Self::apply_cursor_id(Self::native_cursor(shape));
-                crate::window_cocoa_input::invalidate_all_cursor_rects();
+                crate::window::macos_input::invalidate_all_cursor_rects();
             }
         }
 
@@ -644,7 +644,7 @@ pub mod cocoa_cursor {
                 } else {
                     Self::apply_cursor_id(Self::native_cursor(Self::current_global_shape()));
                 }
-                crate::window_cocoa_input::invalidate_all_cursor_rects();
+                crate::window::macos_input::invalidate_all_cursor_rects();
             }
         }
     }

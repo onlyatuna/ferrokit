@@ -58,17 +58,15 @@ pub use tray::win32 as tray_icon;
 #[cfg(windows)]
 pub(crate) mod win32_handles;
 pub mod window;
-pub mod window_cocoa;
-pub mod window_cocoa_input;
-#[cfg(windows)]
-mod window_region;
+pub use window::{
+    macos as window_cocoa, macos_input as window_cocoa_input, wayland as window_wayland,
+    x11 as window_x11,
+};
 // Window handle -> shared state routing for window procedures (the tray's); platform neutral so
 // Miri can check its protocol off Windows.
 #[cfg(any(windows, test))]
 mod window_registry;
 pub mod window_system_interface;
-pub mod window_wayland;
-pub mod window_x11;
 pub use single_instance::*;
 
 #[cfg(windows)]
