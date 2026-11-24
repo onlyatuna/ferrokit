@@ -1556,7 +1556,7 @@ pub unsafe fn dragging_entered(view: Id, sender: Id) -> NSUInteger {
     let (pos, allowed, proposed, formats) = unsafe {
         let (pos, allowed, proposed) = drag_info_location_and_actions(view, sender);
         let pboard = ObjcMsg::send_id_prop(sender, sel("draggingPasteboard"));
-        let formats = crate::clipboard_cocoa::pasteboard_formats(pboard);
+        let formats = crate::clipboard::macos::pasteboard_formats(pboard);
         (pos, allowed, proposed, formats)
     };
     let active = !formats.is_empty() && allowed != 0;
@@ -1645,7 +1645,7 @@ pub unsafe fn perform_drag_operation(view: Id, sender: Id) -> bool {
     let (pos, allowed, proposed, formats, data) = unsafe {
         let (pos, allowed, proposed) = drag_info_location_and_actions(view, sender);
         let pboard = ObjcMsg::send_id_prop(sender, sel("draggingPasteboard"));
-        let mime_data = crate::clipboard_cocoa::pasteboard_mime_data(pboard);
+        let mime_data = crate::clipboard::macos::pasteboard_mime_data(pboard);
         let formats: Vec<String> = mime_data.formats().map(str::to_owned).collect();
         let data: Vec<(String, Vec<u8>)> = formats
             .iter()

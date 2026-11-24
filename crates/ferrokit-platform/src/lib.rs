@@ -12,7 +12,7 @@ pub(crate) fn current_uid() -> u32 {
 }
 
 pub mod dialogs;
-pub mod dialogs_cocoa;
+pub use dialogs::macos as dialogs_cocoa;
 pub use dialogs::{
     DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs, SystemDialogs,
     platform_dialogs,
@@ -21,10 +21,9 @@ pub mod desktop_services;
 pub use desktop_services::{UrlHandler, open_file, open_url, set_url_handler};
 pub mod backdrop;
 pub mod clipboard;
-pub mod clipboard_cocoa;
+pub use clipboard::macos as clipboard_cocoa;
 pub mod cursor;
-pub mod cursor_bitmap;
-pub mod cursor_cocoa;
+pub use cursor::{bitmap as cursor_bitmap, macos as cursor_cocoa};
 pub mod dark_mode;
 pub mod drag_drop;
 pub mod high_dpi;
@@ -33,9 +32,6 @@ pub mod global_hotkey;
 pub use dark_mode::{DarkModeHandling, dark_mode_handling, set_dark_mode_handling};
 pub use global_hotkey::GlobalHotkeyManager;
 pub mod hotkey;
-mod hotkey_macos;
-#[cfg(any(target_os = "linux", test))]
-mod hotkey_x11;
 pub mod ime;
 pub mod integration;
 pub mod layered;

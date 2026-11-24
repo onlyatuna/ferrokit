@@ -588,7 +588,7 @@ pub mod cocoa {
         fn clipboard(&self) -> Box<dyn PlatformClipboard> {
             #[cfg(target_os = "macos")]
             {
-                Box::new(crate::clipboard_cocoa::CocoaClipboard::new())
+                Box::new(crate::clipboard::macos::CocoaClipboard::new())
             }
             #[cfg(not(target_os = "macos"))]
             {

@@ -1191,11 +1191,11 @@ pub unsafe fn send_cursor_init(receiver: Id, image: Id, hot_spot: CGPoint) -> Id
 /// On macOS, must be called on the main thread (caller enforces [`is_main_thread`]). The caller
 /// owns the returned +1 `NSCursor` reference (or keeps it alive permanently in a process-wide
 /// cache).
-pub(crate) unsafe fn custom_cursor_from_image(image: &crate::cursor_bitmap::CursorImage) -> Id {
+pub(crate) unsafe fn custom_cursor_from_image(image: &crate::cursor::bitmap::CursorImage) -> Id {
     if image.width == 0 || image.height == 0 {
         return Id::NIL;
     }
-    let rgba = crate::cursor_bitmap::bgra_to_rgba(&image.bgra);
+    let rgba = crate::cursor::bitmap::bgra_to_rgba(&image.bgra);
     let rep_class = Class::get("NSBitmapImageRep").unwrap_or(Class::NIL);
     // SAFETY: `alloc` takes no arguments and returns an object; nil class yields nil.
     let rep_alloc = unsafe { ObjcMsg::send_class_0(rep_class, Sel::register("alloc")) };

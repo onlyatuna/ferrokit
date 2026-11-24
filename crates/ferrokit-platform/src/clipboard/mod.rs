@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+pub mod macos;
+
 #[cfg(windows)]
 use crate::win32_handles::{ClipboardSession, GlobalMem};
 use std::collections::BTreeMap;
