@@ -1472,8 +1472,8 @@ pub unsafe fn make_region_mask_layer(rects: &[CGRect], bounds: CGRect, flipped: 
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
-    use crate::window_cocoa_input as input;
-    use crate::window_cocoa_input::NsEventKind;
+    use crate::window::macos_input as input;
+    use crate::window::macos_input::NsEventKind;
     use std::ffi::CStr;
 
     #[link(name = "objc")]

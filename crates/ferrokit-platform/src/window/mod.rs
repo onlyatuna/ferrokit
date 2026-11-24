@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 // On Windows `HWND` is a pointer; elsewhere it is already an `isize`.
 #![cfg_attr(not(windows), allow(clippy::unnecessary_cast))]
+
+pub mod macos;
+pub mod macos_input;
+#[cfg(windows)]
+pub(crate) mod region;
+pub mod wayland;
+pub mod x11;
 #[cfg(not(windows))]
 pub use crate::HWND;
 #[allow(unused_imports)]
@@ -2773,7 +2780,7 @@ impl NativeWindow {
         self.drop_target = None;
         if !self.hwnd.is_null() {
             // Windows would destroy the windows this one owns with it (QTBUG-35499).
-            crate::window_region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
+            crate::window::region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
             remove_window_size_limits(self.hwnd);
             // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle, created
             // in `new`; this is its only DestroyWindow call because `hwnd` is nulled right after, and
@@ -3060,15 +3067,15 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     }
 
     fn set_mask(&mut self, region: &ferrokit_gui::geometry::Region) {
-        crate::window_region::set_window_mask(self.hwnd, region);
+        crate::window::region::set_window_mask(self.hwnd, region);
     }
 
     fn set_transient_parent(&mut self, parent: Option<isize>) {
-        crate::window_region::set_owner(self.hwnd, parent.map(|p| p as HWND));
+        crate::window::region::set_owner(self.hwnd, parent.map(|p| p as HWND));
     }
 
     fn transient_parent(&self) -> Option<isize> {
-        crate::window_region::owner_of(self.hwnd).map(|h| h as isize)
+        crate::window::region::owner_of(self.hwnd).map(|h| h as isize)
     }
 
     fn set_backdrop(&mut self, backdrop: crate::backdrop::BackdropType, dark_mode: bool) -> bool {
@@ -3229,7 +3236,7 @@ pub fn calc_frameless_edge(
     }
     const M: i32 = 8;
     #[cfg(windows)]
-    let (w, h) = crate::window_cocoa::live_window_size(_hwnd as usize).unwrap_or_else(|| {
+    let (w, h) = crate::window::macos::live_window_size(_hwnd as usize).unwrap_or_else(|| {
         if _hwnd != 0 {
             // SAFETY: RECT is a plain integer struct, so zeroed is valid; `rect` is a local out pointer
             // valid for the call; GetClientRect validates `_hwnd` (non-zero) and on failure leaves the
@@ -3249,7 +3256,7 @@ pub fn calc_frameless_edge(
         }
     });
     #[cfg(not(windows))]
-    let (w, h) = crate::window_cocoa::live_window_size(_hwnd as usize).unwrap_or((600, 400));
+    let (w, h) = crate::window::macos::live_window_size(_hwnd as usize).unwrap_or((600, 400));
 
     let mut edges = crate::platform_window::WindowEdges::empty();
     if pos.x < M {

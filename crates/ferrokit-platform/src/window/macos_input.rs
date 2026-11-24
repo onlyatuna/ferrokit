@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Native input and event delivery of [`CocoaNativeWindow`](crate::window_cocoa::CocoaNativeWindow).
+//! Native input and event delivery of [`CocoaNativeWindow`](crate::window::macos::CocoaNativeWindow).
 //!
 //! AppKit calls the methods of the content view (`QNSView`, see `objc_runtime::appkit`) with
 //! `NSEvent`s. Those methods do not know the Rust window: the window struct moves (it is boxed
@@ -24,7 +24,7 @@ use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 
 use crate::objc_runtime::appkit::{self, NS_NOT_FOUND, NSRange};
 use crate::objc_runtime::{CGFloat, CGPoint, CGRect, Id, NSUInteger, ObjcMsg, Sel};
-use crate::window_cocoa::{CocoaNativeEvent, qt_mac_primary_screen_height};
+use crate::window::macos::{CocoaNativeEvent, qt_mac_primary_screen_height};
 use crate::window_system_interface::{
     KeyboardModifiers, MouseButton, PressedButtons, WheelDelta, WindowSystemEvent,
     WindowSystemEventHandler,
@@ -351,7 +351,7 @@ pub(crate) fn register_view(view: Id, window: Id) {
         // Seeded with the window's current geometry, so the first notification of an unmoved
         // window does not report a change.
         last_geometry: (!window.is_nil())
-            .then(|| crate::window_cocoa::window_flipped_geometry(window)),
+            .then(|| crate::window::macos::window_flipped_geometry(window)),
         drop_target_enabled: false,
         drag_accepts: false,
     };
@@ -707,7 +707,7 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
 /// The window's current geometry and the one the handler was last told about, recording the
 /// current one as the new last-told geometry.
 fn take_geometry_change(view: Id, window: Id) -> (Rect, Option<Rect>) {
-    let geometry = crate::window_cocoa::window_flipped_geometry(window);
+    let geometry = crate::window::macos::window_flipped_geometry(window);
     let prev_geo = with_slot(view, |slot| slot.last_geometry.replace(geometry)).flatten();
     (geometry, prev_geo)
 }

@@ -21,7 +21,7 @@ use crate::objc_runtime::{
 use crate::platform_window::PlatformWindow;
 use crate::surface::{CocoaLayerSurface, PlatformSurface};
 use crate::window::WindowFlags;
-use crate::window_cocoa_input as input;
+use crate::window::macos_input as input;
 use crate::window_system_interface::WindowSystemEventHandler;
 
 /// `NSWindowAbove`: the child window is ordered above its parent.

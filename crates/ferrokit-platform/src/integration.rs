@@ -210,8 +210,8 @@ pub mod unix {
     use crate::platform_window::GenericWindow;
     use crate::theme::UnixTheme;
     use crate::tray::DbusStatusNotifierItem;
-    use crate::window_wayland::{WAYLAND_CONNECT_FAILED, WaylandNativeWindow};
-    use crate::window_x11::{X11_CONNECT_FAILED, X11NativeWindow};
+    use crate::window::wayland::{WAYLAND_CONNECT_FAILED, WaylandNativeWindow};
+    use crate::window::x11::{X11_CONNECT_FAILED, X11NativeWindow};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum DisplayServerKind {
@@ -371,7 +371,7 @@ pub mod cocoa {
     use crate::platform_window::GenericWindow;
     use crate::theme::CocoaTheme;
     use crate::tray::CocoaStatusItem;
-    use crate::window_cocoa::CocoaNativeWindow;
+    use crate::window::macos::CocoaNativeWindow;
 
     impl CocoaPlatformIntegration {
         pub fn is_headless() -> bool {
@@ -721,7 +721,7 @@ mod unreachable_display_tests {
             "t",
             Rect::new(0, 0, 100, 100),
             WindowFlags::default(),
-            |_, _, _, _| Err(crate::window_x11::X11_CONNECT_FAILED),
+            |_, _, _, _| Err(crate::window::x11::X11_CONNECT_FAILED),
         );
         assert!(win.is_ok());
     }
