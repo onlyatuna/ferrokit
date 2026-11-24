@@ -90,7 +90,10 @@ impl FaceStyle {
 /// scan. `Some(&[])` means the family is known but has no such face (the caller falls back to
 /// its regular file); `None` means the family is not known by name.
 #[cfg(not(all(unix, not(target_os = "macos"))))]
-fn known_styled_filenames(family_key: &str, style: FaceStyle) -> Option<&'static [&'static str]> {
+pub(super) fn known_styled_filenames(
+    family_key: &str,
+    style: FaceStyle,
+) -> Option<&'static [&'static str]> {
     // Of the faces these families ship, regular (400) and bold (700) are the nearest to any weight.
     let bold = style.weight >= 550;
     Some(match (family_key, bold, style.italic) {
@@ -144,14 +147,14 @@ pub struct FontFamilyInfo {
 }
 
 /// In-memory faces [`FontDatabase`] keeps alive strongly after their last use.
-const RECENT_MEMORY_FACES: usize = 4;
+pub(super) const RECENT_MEMORY_FACES: usize = 4;
 
 /// Identity of a face built from in-memory font data: the data address and length, the hint style,
 /// and what the request asks for that DirectWrite would synthesize (see [`memory_face_key`]).
-type MemoryFaceKey = (usize, usize, HintStyle, bool, bool);
+pub(super) type MemoryFaceKey = (usize, usize, HintStyle, bool, bool);
 
 /// `memory_faces` entry: the key of a face and the face.
-type MemoryFaceEntry = (
+pub(super) type MemoryFaceEntry = (
     MemoryFaceKey,
     std::sync::Weak<dyn crate::text::glyph_face::GlyphFace>,
 );
@@ -161,7 +164,7 @@ type MemoryFaceEntry = (
 /// and whether it is italic, the two things Qt's DirectWrite font database synthesizes (see
 /// [`parse_face_for_request`]); the other backends build one face whatever the request, so they
 /// share it.
-fn memory_face_key(
+pub(super) fn memory_face_key(
     shared: &SharedFontData,
     hint_style: HintStyle,
     weight: u16,
@@ -185,16 +188,16 @@ fn memory_face_key(
 ///
 /// Searches, loads, and caches system fonts to avoid redundant disk I/O and parsing.
 pub struct FontDatabase {
-    cache: HashMap<String, SharedGlyphFace>,
-    raw_cache: HashMap<String, SharedFontData>,
-    file_cache: HashMap<PathBuf, SharedFontData>,
-    search_paths: Vec<PathBuf>,
+    pub(super) cache: HashMap<String, SharedGlyphFace>,
+    pub(super) raw_cache: HashMap<String, SharedFontData>,
+    pub(super) file_cache: HashMap<PathBuf, SharedFontData>,
+    pub(super) search_paths: Vec<PathBuf>,
     /// Faces found by scanning `search_paths`; built lazily by [`FontDatabase::families`].
-    system_faces: Option<Vec<FontFamilyInfo>>,
+    pub(super) system_faces: Option<Vec<FontFamilyInfo>>,
     /// Faces registered through [`FontDatabase::add_font_from_memory`].
-    application_faces: Vec<FontFamilyInfo>,
+    pub(super) application_faces: Vec<FontFamilyInfo>,
     /// One engine per requested family string, shared so glyph caches persist across draw calls.
-    engines: HashMap<String, FontEngine>,
+    pub(super) engines: HashMap<String, FontEngine>,
     /// Faces built from `Font::font_data`, so a draw or metrics call does not re-parse the font.
     ///
     /// Weak, so the cache never pins a (possibly huge) font blob: once every engine using a face is
@@ -204,8 +207,8 @@ pub struct FontDatabase {
     /// The draw and metrics paths drop their engines after every call, so the last few faces are also
     /// held strongly ([`RECENT_MEMORY_FACES`], most recent last) to avoid re-parsing (and, on Windows,
     /// re-registering with DirectWrite) on each draw.
-    recent_memory_faces: Vec<SharedGlyphFace>,
-    memory_faces: Vec<MemoryFaceEntry>,
+    pub(super) recent_memory_faces: Vec<SharedGlyphFace>,
+    pub(super) memory_faces: Vec<MemoryFaceEntry>,
     /// What the Windows fallback lookup resolved, see [`FallbackMemo`].
     #[cfg(windows)]
     fallback_memo: FallbackMemo,
@@ -216,7 +219,7 @@ pub struct FontDatabase {
 
 /// Bumped whenever the set of available fonts changes, so caches derived from font data
 /// (e.g. text advance widths) know to drop their entries.
-static FONT_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub(super) static FONT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Current font-set generation; changes whenever a search path or an in-memory font is added.
 pub fn font_generation() -> u64 {
@@ -579,7 +582,6 @@ pub fn is_fontconfig_available() -> bool {
 /// Qt's Linux font database (`QFontconfigDatabase`): the registry of families, the family a
 /// request resolves to and the fallback fonts per script.
 #[cfg(all(unix, not(target_os = "macos")))]
-#[path = "font_database_linux.rs"]
 mod linux;
 /// The fallback families Qt lists for `family` (`fallbacksForFamily` of its font database) from the
 /// process-wide database, for tests that derive what a missing family resolves to.
@@ -756,7 +758,7 @@ impl FontDatabase {
     }
 
     /// Every face known to the database (system fonts plus application fonts).
-    fn faces(&mut self) -> impl Iterator<Item = &FontFamilyInfo> {
+    pub(super) fn faces(&mut self) -> impl Iterator<Item = &FontFamilyInfo> {
         if self.system_faces.is_none() {
             #[cfg(all(unix, not(target_os = "macos")))]
             {
@@ -773,7 +775,10 @@ impl FontDatabase {
             .chain(self.application_faces.iter())
     }
 
-    fn collect_families(&mut self, mut keep: impl FnMut(&FontFamilyInfo) -> bool) -> Vec<String> {
+    pub(super) fn collect_families(
+        &mut self,
+        mut keep: impl FnMut(&FontFamilyInfo) -> bool,
+    ) -> Vec<String> {
         let mut names: Vec<String> = self
             .faces()
             .filter(|face| keep(face))
@@ -792,7 +797,7 @@ impl FontDatabase {
     /// The file of macOS's system UI font (`CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)`),
     /// read once and kept under a pseudo path that no real file has.
     #[cfg(target_os = "macos")]
-    fn get_system_ui_font_data(&mut self) -> Option<SharedFontData> {
+    pub(super) fn get_system_ui_font_data(&mut self) -> Option<SharedFontData> {
         let canonical = std::path::PathBuf::from(".applesystemuifont");
         if let Some(shared) = self.file_cache.get(&canonical) {
             return Some(shared.clone());
@@ -806,7 +811,7 @@ impl FontDatabase {
 
     /// Whether `name` is a family of the system's or the application's fonts, and so one that
     /// `load_font_styled` loads as itself rather than replaces by a substitute.
-    fn is_installed_family(&mut self, name: &str) -> bool {
+    pub(super) fn is_installed_family(&mut self, name: &str) -> bool {
         #[cfg(windows)]
         if let Some(catalog) = crate::text::directwrite_catalog::catalog() {
             return catalog.family_traits(name).is_some()
@@ -826,7 +831,7 @@ impl FontDatabase {
     /// when none is does the first name's substitute count. The generic names (`sans-serif`,
     /// `serif`, `monospace`) are skipped. Everything keyed by the requested string (raw font data,
     /// engines) has to follow this one choice, so it is made in one place.
-    fn load_first_listed(
+    pub(super) fn load_first_listed(
         &mut self,
         family: &str,
         style: FaceStyle,
@@ -1041,367 +1046,6 @@ impl FontDatabase {
         self.load_font_styled(family, style, hint);
         self.raw_cache.get(&key).cloned()
     }
-    /// Resolves the primary font engine and its platform-aware fallback chain (`QFontEngineMulti` equivalent).
-    ///
-    /// The resulting engines are ordered:
-    /// 1. Primary requested font (or in-memory custom font if provided in `font.font_data`)
-    /// 2. CJK / Multilingual script fallback fonts
-    /// 3. Symbol and Emoji fallback fonts
-    ///
-    /// On Linux, which fallback fonts there are depends on the script of the text (Qt asks
-    /// fontconfig per script item); without text, those of one character of each script are listed
-    /// (see [`resolve_font_engines_for_text`](Self::resolve_font_engines_for_text)).
-    pub fn resolve_font_engines(&mut self, font: &Font) -> Vec<FontEngine> {
-        let _t = crate::startup_trace::span_min(0.5, || {
-            format!("resolve_font_engines({:?})", font.family)
-        });
-        let mut engines = self.resolve_primary_engine(font);
-        #[cfg(all(unix, not(target_os = "macos")))]
-        self.append_probe_fallback_engines(&mut engines, font);
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        self.append_fallback_engines(&mut engines, None, FaceStyle::of(font));
-        engines
-    }
-
-    /// [`resolve_font_engines`](Self::resolve_font_engines), but fallback fonts are loaded only
-    /// while `text` still has a character no engine resolved so far has a glyph for.
-    ///
-    /// The result is a prefix of the full chain, and `GlyphLayout::partition_into_runs` only
-    /// consults a fallback for characters the earlier engines lack, so shaping is unchanged.
-    pub fn resolve_font_engines_for_text(&mut self, font: &Font, text: &str) -> Vec<FontEngine> {
-        let _t = crate::startup_trace::span_min(0.5, || {
-            format!("resolve_font_engines_for_text({:?})", font.family)
-        });
-        let mut engines = self.resolve_primary_engine(font);
-        #[cfg(windows)]
-        if self.append_script_fallback_engines(&mut engines, text, font) {
-            return engines;
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        self.append_script_fallback_engines(&mut engines, text, font);
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
-        self.append_fallback_engines(&mut engines, Some(text), FaceStyle::of(font));
-        engines
-    }
-
-    /// The font requested by `font` alone (empty when the family cannot be loaded).
-    fn resolve_primary_engine(&mut self, font: &Font) -> Vec<FontEngine> {
-        let mut engines: Vec<FontEngine> = Vec::with_capacity(4);
-
-        // 1. Primary in-memory font data if specified
-        if let Some(shared) = &font.font_data
-            && let Some(face) =
-                self.memory_face(shared, face_hint_style(font.hinting_preference), 400, false)
-        {
-            engines.push(
-                FontEngine::new(face)
-                    .with_raw_data(shared.clone())
-                    .with_face_index(0),
-            );
-        }
-
-        // If no in-memory font or in-memory font failed to parse, load primary by family
-        if engines.is_empty() {
-            self.try_add_engine(
-                &mut engines,
-                &font.family,
-                FaceStyle::of(font),
-                font.style_hint,
-            );
-        }
-        engines
-    }
-
-    /// The face built from in-memory font data for `hint_style` and a request of `weight` that is
-    /// `italic` or not, parsed once per buffer and request and remembered (see `memory_faces`);
-    /// `None` when the data does not parse.
-    fn memory_face(
-        &mut self,
-        shared: &SharedFontData,
-        hint_style: HintStyle,
-        weight: u16,
-        italic: bool,
-    ) -> Option<SharedGlyphFace> {
-        self.memory_faces.retain(|(_, f)| f.strong_count() > 0);
-        let key = memory_face_key(shared, hint_style, weight, italic);
-        let cached = self
-            .memory_faces
-            .iter()
-            .find(|(k, _)| *k == key)
-            .and_then(|(_, f)| f.upgrade());
-        let face = match cached {
-            Some(face) => Some(face),
-            None => parse_face_for_request(shared, 0, hint_style, weight, italic)
-                .ok()
-                .inspect(|face| {
-                    // Each parse re-registers the font with the platform rasterizer, so remember it.
-                    self.memory_faces.push((key, Arc::downgrade(face)));
-                }),
-        }?;
-        self.recent_memory_faces.retain(|f| !Arc::ptr_eq(f, &face));
-        if self.recent_memory_faces.len() >= RECENT_MEMORY_FACES {
-            self.recent_memory_faces.remove(0);
-        }
-        self.recent_memory_faces.push(face.clone());
-        Some(face)
-    }
-
-    /// The face of the font `font` itself asks for: its in-memory data, else the family it names.
-    fn primary_face(&mut self, font: &Font) -> Option<SharedGlyphFace> {
-        if let Some(shared) = &font.font_data
-            && let Some(face) =
-                self.memory_face(shared, face_hint_style(font.hinting_preference), 400, false)
-        {
-            return Some(face);
-        }
-        self.load_font_styled(&font.family, FaceStyle::of(font), font.style_hint)
-    }
-
-    /// Appends the platform's fallback fonts in priority order: CJK first, then emoji/symbols.
-    /// With `needed_for`, stops as soon as every character of that text has a glyph in `engines`.
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
-    fn append_fallback_engines(
-        &mut self,
-        engines: &mut Vec<FontEngine>,
-        needed_for: Option<&str>,
-        style: FaceStyle,
-    ) {
-        #[cfg(target_os = "windows")]
-        const SLOTS: &[&[&str]] = &[
-            &["Microsoft JhengHei", "Microsoft YaHei"],
-            &["Segoe UI Emoji", "Segoe UI Symbol"],
-        ];
-        // macOS: these families are ferrokit's own picks, not Qt's cascade. Qt
-        // (`QCoreTextFontDatabase::fallbacksForFamily`, qcoretextfontdatabase.mm) asks CoreText for
-        // `CTFontCopyDefaultCascadeListForLanguages(font, preferredLanguages)`; measured on macOS 26
-        // with en-US, for the system UI font, that is `.AppleSystemFallback, .SF Georgian,
-        // Helvetica Neue, .Apple Symbols Fallback, .SF Arabic, .AppleUrduFont,
-        // .AppleSimplifiedChineseFont, .AppleTraditionalChineseFont, .AppleHongKongChineseFont,
-        // .AppleMacaoChineseFont, .AppleJapaneseFont, .AppleKoreanFont, ...` (private families,
-        // one per script). Qt moves the two last-resort families to the end, appends `Arial Unicode
-        // MS` and `Apple Symbols`, and uses `.Apple Color Emoji UI` for emoji. ferrokit loads files
-        // by family and has no cascade, so:
-        // * `PingFang TC`, `PingFang SC`, `Heiti TC` (the CJK slot) are ferrokit's choice: one
-        //   Han font, Traditional first, where Qt takes the Simplified family first for en-US
-        //   (`.AppleSimplifiedChineseFont`; for Helvetica it names PingFang SC). `Heiti TC` is the
-        //   system font before PingFang.
-        // * `Apple Color Emoji` is ferrokit's choice (Qt: `.Apple Color Emoji UI`).
-        // * `Apple Symbols` is Qt's (its own final fail-safe; the cascade has it too).
-        // `AppleGothic` was added for machines without PingFang: availability, not Qt parity (Qt
-        // measured `.AppleKoreanFont` or `Apple SD Gothic Neo` for Hangul, PingFang for Han), so it
-        // is not here. Kana, Hangul and the other scripts of the cascade are not covered by these
-        // slots.
-        #[cfg(target_os = "macos")]
-        const SLOTS: &[&[&str]] = &[
-            &["PingFang TC", "PingFang SC", "Heiti TC"],
-            &["Apple Color Emoji", "Apple Symbols"],
-        ];
-
-        for slot in SLOTS {
-            if let Some(text) = needed_for {
-                let covered = !engines.is_empty()
-                    && !crate::text::glyph_layout::GlyphLayout::has_emoji_sequence(text)
-                    && text.chars().all(|ch| {
-                        matches!(ch, ' ' | '\t' | '\n' | '\r')
-                            || crate::text::glyph_layout::skips_fallback(ch)
-                            || engines.iter().any(|e| e.face.glyph_index(ch) != 0)
-                    });
-                if covered {
-                    break;
-                }
-            }
-            for family in *slot {
-                if self.try_add_engine(engines, family, style, StyleHint::AnyStyle) {
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Qt's fallbacks on Windows (`QFontEngineMulti`, `QWindowsDirectWriteFontDatabase::
-    /// fallbacksForFamily`): each script item of `text` has its own list of fallback families,
-    /// and a character the primary font lacks takes the first family of its item's list that has
-    /// a glyph for it. The engines are loaded only as far as the text needs them, appended to
-    /// `engines`, and the order of each script's list is kept in the chains the primary engine
-    /// carries ([`FontEngine::with_script_chains`]).
-    ///
-    /// Which family a character takes is looked up once per font request and character and
-    /// remembered (see [`FallbackMemo`]); a repeated string only replays the engines it needs.
-    #[cfg(windows)]
-    fn append_script_fallback_engines(
-        &mut self,
-        engines: &mut Vec<FontEngine>,
-        text: &str,
-        font: &Font,
-    ) -> bool {
-        use crate::text::directwrite_catalog as dw;
-        use crate::text::glyph_layout::{
-            ScriptChains, emoji_sequence_flags, fallback_script_key, skips_fallback,
-        };
-        let Some(catalog) = dw::catalog() else {
-            return false;
-        };
-        if engines.is_empty() {
-            return false;
-        }
-        let style = FaceStyle::of(font);
-        self.fallback_memo.for_generation(font_generation());
-        let context = self.fallback_memo.context(catalog, font);
-        let primary = engines[0].clone();
-        let mut found: HashMap<&'static str, Vec<(usize, usize)>> = HashMap::new();
-        let mut misses: HashSet<(&'static str, char)> = HashSet::new();
-        let items = crate::text::shaping_plan::script_items(text);
-        let emoji_flags = emoji_sequence_flags(text);
-        let mut position = 0usize;
-        for (n, &(start, script)) in items.iter().enumerate() {
-            let end = items.get(n + 1).map_or(text.len(), |next| next.0);
-            for ch in text[start..end].chars() {
-                let index = position;
-                position += 1;
-                // A character of an emoji sequence is an item of the emoji script, which has no
-                // primary font (the family must be a color font): it goes to the emoji chain even
-                // where the primary font has a glyph for it.
-                if matches!(ch, '\t' | '\n' | '\r')
-                    || skips_fallback(ch)
-                    || (primary.face.glyph_index(ch) != 0 && !emoji_flags[index])
-                {
-                    continue;
-                }
-                let key = fallback_script_key(ch, script, emoji_flags[index]);
-                if !misses.insert((key, ch)) {
-                    continue;
-                }
-                let list_key = fallback_list_key(
-                    context.hint,
-                    style.italic,
-                    context.symbol_family,
-                    key,
-                    script,
-                );
-                let pick = self.fallback_pick(catalog, list_key, style, ch);
-                for (at, (list_position, name)) in pick.covering.iter().enumerate() {
-                    let Some(engine) = self.fallback_engine_index(engines, name, style) else {
-                        continue;
-                    };
-                    if !(pick.has_glyph && at + 1 == pick.covering.len()) {
-                        continue;
-                    }
-                    let chain = found.entry(key).or_default();
-                    if !chain.iter().any(|&(_, i)| i == engine) {
-                        chain.push((*list_position, engine));
-                    }
-                }
-            }
-        }
-        let mut chains = ScriptChains::new();
-        for (key, mut chain) in found {
-            chain.sort_by_key(|&(position, _)| position);
-            chains.insert(key, chain.into_iter().map(|(_, index)| index).collect());
-        }
-        engines[0] = engines[0].clone().with_script_chains(chains);
-        true
-    }
-
-    /// The families of `list_key`'s list that cover `ch`, up to the first whose face has a glyph
-    /// for it, remembered per request (see [`FallbackMemo`]).
-    #[cfg(windows)]
-    fn fallback_pick(
-        &mut self,
-        catalog: &crate::text::directwrite_catalog::Catalog,
-        list_key: crate::text::directwrite_catalog::FallbackListKey,
-        style: FaceStyle,
-        ch: char,
-    ) -> Arc<FallbackPick> {
-        let key = FallbackPickKey {
-            list: list_key,
-            style,
-            ch,
-        };
-        if let Some(pick) = self.fallback_memo.picks.get(&key) {
-            return pick.clone();
-        }
-        let list = windows_fallback_families(catalog, list_key);
-        let mut covering = Vec::new();
-        let mut has_glyph = false;
-        for (position, name) in list.iter(catalog).enumerate() {
-            if !catalog.covers(name, style.weight, style.italic, ch) {
-                continue;
-            }
-            // The engine of a family is built from this face (`fallback_engine_index`).
-            let Some(face) = self.load_font_styled(name, style, StyleHint::AnyStyle) else {
-                continue;
-            };
-            covering.push((position, Arc::<str>::from(name)));
-            if face.glyph_index(ch) != 0 {
-                has_glyph = true;
-                break;
-            }
-        }
-        let pick = Arc::new(FallbackPick {
-            covering,
-            has_glyph,
-        });
-        self.fallback_memo.insert_pick(key, pick.clone());
-        pick
-    }
-
-    /// The index in `engines` of the engine for the family `name`, loading and appending it when
-    /// it is not there.
-    #[cfg(windows)]
-    fn fallback_engine_index(
-        &mut self,
-        engines: &mut Vec<FontEngine>,
-        name: &str,
-        style: FaceStyle,
-    ) -> Option<usize> {
-        let face = self.load_font_styled(name, style, StyleHint::AnyStyle)?;
-        if let Some(index) = engines.iter().position(|e| Arc::ptr_eq(&e.face, &face)) {
-            return Some(index);
-        }
-        self.try_add_engine(engines, name, style, StyleHint::AnyStyle)
-            .then(|| engines.len() - 1)
-    }
-
-    fn try_add_engine(
-        &mut self,
-        engines: &mut Vec<FontEngine>,
-        fam: &str,
-        style: FaceStyle,
-        hint: StyleHint,
-    ) -> bool {
-        match self.load_font_styled(fam, style, hint) {
-            Some(font_face) => {
-                if engines.iter().any(|e| Arc::ptr_eq(&e.face, &font_face)) {
-                    return false;
-                }
-                // Reuse the engine built for this exact request so its glyph caches survive across calls
-                // (Qt keeps one QFontEngine per font and caches glyphs in it). Keyed by the requested
-                // family string and style, not by font: a CSS-style list such as "'Segoe UI', sans-serif"
-                // has no raw data while the plain name "Segoe UI" does, and the two shape differently
-                // (face metrics vs rustybuzz). A replaced font has a new Arc, so a stale entry is
-                // never matched.
-                let engine_key = style.cache_key(fam, hint);
-                if let Some(engine) = self
-                    .engines
-                    .get(&engine_key)
-                    .filter(|e| Arc::ptr_eq(&e.face, &font_face))
-                {
-                    engines.push(engine.clone());
-                    return true;
-                }
-                let raw_data = self.get_raw_font_data_styled(fam, style, hint);
-                let face_index = font_face.face_index();
-                let mut engine = FontEngine::new(font_face).with_face_index(face_index);
-                if let Some(raw) = raw_data {
-                    engine = engine.with_raw_data(raw);
-                }
-                self.engines.insert(engine_key, engine.clone());
-                engines.push(engine);
-                true
-            }
-            _ => false,
-        }
-    }
 
     /// Returns the raw binary font data by canonical or relative file path.
     pub fn get_raw_font_data_by_path(&mut self, path: &Path) -> Option<SharedFontData> {
@@ -1446,7 +1090,7 @@ impl FontDatabase {
     }
 
     /// Preloads common default system fonts.
-    fn preload_default_fonts(&mut self) {
+    pub(super) fn preload_default_fonts(&mut self) {
         let default_families = ["segoe ui", "arial", "consolas"];
         for fam in &default_families {
             if let Some((raw_data, face)) = self.find_and_load_font_file(fam, FaceStyle::regular())
@@ -1463,7 +1107,7 @@ impl FontDatabase {
     /// names of styled faces ("Segoe UI Semibold") and the named instances of variable fonts
     /// ([`directwrite_catalog`](crate::text::directwrite_catalog)).
     #[cfg(windows)]
-    fn load_catalog_font(
+    pub(super) fn load_catalog_font(
         &mut self,
         family_key: &str,
         style: FaceStyle,
@@ -1497,7 +1141,7 @@ impl FontDatabase {
     /// Searches search paths for a font file matching family key, reusing existing
     /// cached binary buffers from `file_cache` to eliminate redundant disk I/O and memory duplication.
     #[cfg(not(all(unix, not(target_os = "macos"))))]
-    fn find_and_load_font_file(
+    pub(super) fn find_and_load_font_file(
         &mut self,
         family_key: &str,
         style: FaceStyle,
@@ -1651,1010 +1295,25 @@ impl FontDatabase {
     }
 }
 
-/// Maximum directory depth scanned below each search path (Linux font trees are nested).
-const MAX_SCAN_DEPTH: usize = 4;
-
-/// Scans font directories for `.ttf`/`.otf`/`.ttc`/`.otc` files and reads their family names.
-fn scan_font_directories(roots: &[PathBuf]) -> Vec<FontFamilyInfo> {
-    let mut faces = Vec::new();
-    let mut pending: Vec<(PathBuf, usize)> = roots.iter().map(|root| (root.clone(), 0)).collect();
-    while let Some((dir, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if depth < MAX_SCAN_DEPTH {
-                    pending.push((path, depth + 1));
-                }
-                continue;
-            }
-            let is_font = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "ttf" | "otf" | "ttc" | "otc"
-                    )
-                })
-                .unwrap_or(false);
-            if !is_font {
-                continue;
-            }
-            let Ok(mut file) = File::open(&path) else {
-                continue;
-            };
-            for mut face in read_faces(&mut file) {
-                face.path = Some(path.clone());
-                faces.push(face);
-            }
-        }
-    }
-    faces
-}
-
-fn be_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn read_exact_at<R: Read + Seek>(reader: &mut R, offset: u64, len: usize) -> Option<Vec<u8>> {
-    reader.seek(SeekFrom::Start(offset)).ok()?;
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).ok()?;
-    Some(buf)
-}
-
-/// Reads family metadata for every face of an sfnt file or collection, touching only
-/// the header, table directory, `name` and `post` tables.
-fn read_faces<R: Read + Seek>(reader: &mut R) -> Vec<FontFamilyInfo> {
-    let Some(header) = read_exact_at(reader, 0, 12) else {
-        return Vec::new();
-    };
-    let face_offsets: Vec<u32> = if &header[0..4] == b"ttcf" {
-        let count = be_u32(&header, 8).unwrap_or(0).min(256) as usize;
-        match read_exact_at(reader, 12, count * 4) {
-            Some(table) => (0..count).filter_map(|i| be_u32(&table, i * 4)).collect(),
-            None => return Vec::new(),
-        }
-    } else {
-        vec![0]
-    };
-    face_offsets
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, offset)| read_face(reader, offset as u64, index as u32))
-        .collect()
-}
-
-/// Maximum `name` table size accepted (real tables are a few KiB).
-const MAX_NAME_TABLE_LEN: u32 = 1 << 20;
-
-fn read_face<R: Read + Seek>(
-    reader: &mut R,
-    offset: u64,
-    face_index: u32,
-) -> Option<FontFamilyInfo> {
-    let offset_table = read_exact_at(reader, offset, 12)?;
-    let num_tables = be_u16(&offset_table, 4)? as usize;
-    let records = read_exact_at(reader, offset + 12, num_tables * 16)?;
-    let mut name_table = None;
-    let mut post_table = None;
-    let mut os2_table = None;
-    for i in 0..num_tables {
-        let record = &records[i * 16..i * 16 + 16];
-        let table_offset = be_u32(record, 8)?;
-        let table_len = be_u32(record, 12)?;
-        match &record[0..4] {
-            b"name" => name_table = Some((table_offset, table_len)),
-            b"post" => post_table = Some((table_offset, table_len)),
-            b"OS/2" => os2_table = Some((table_offset, table_len)),
-            _ => {}
-        }
-    }
-    let (name_offset, name_len) = name_table?;
-    if name_len > MAX_NAME_TABLE_LEN {
-        return None;
-    }
-    let name_data = read_exact_at(reader, name_offset as u64, name_len as usize)?;
-    let family = preferred_family_name(&NameTable::parse(&name_data)?)?;
-    // post table: version (4), italicAngle (4), underlinePosition (2), underlineThickness (2), isFixedPitch (4).
-    let fixed_pitch = post_table
-        .filter(|&(_, len)| len >= 16)
-        .and_then(|(post_offset, _)| read_exact_at(reader, post_offset as u64 + 12, 4))
-        .and_then(|bytes| be_u32(&bytes, 0))
-        .map(|flag| flag != 0)
-        .unwrap_or(false);
-    // OS/2 table: usWeightClass at 4, usWidthClass at 6, fsSelection at 62 (bit 0 italic, bit 9
-    // oblique).
-    let (weight, italic, stretch) = os2_table
-        .filter(|&(_, len)| len >= 64)
-        .and_then(|(os2_offset, _)| read_exact_at(reader, os2_offset as u64, 64))
-        .map(|os2| {
-            let weight = be_u16(&os2, 4).unwrap_or(400);
-            // The `QFont::Stretch` fontconfig derives from the width class (`FC_WIDTH`).
-            let stretch = match be_u16(&os2, 6).unwrap_or(5) {
-                1 => 50,
-                2 => 63,
-                3 => 75,
-                4 => 87,
-                6 => 113,
-                7 => 125,
-                8 => 150,
-                9 => 200,
-                _ => 100,
-            };
-            let selection = be_u16(&os2, 62).unwrap_or(0);
-            (weight, selection & ((1 << 0) | (1 << 9)) != 0, stretch)
-        })
-        .unwrap_or((400, false, 100));
-    Some(FontFamilyInfo {
-        family,
-        path: None,
-        face_index,
-        fixed_pitch,
-        weight,
-        italic,
-        stretch,
-    })
-}
-
-/// Picks the family name, preferring the typographic family (name ID 16) over the legacy
-/// family (ID 1) and US-English Windows records over other languages.
-fn preferred_family_name(table: &NameTable) -> Option<String> {
-    const WINDOWS_EN_US: u16 = 0x0409;
-    let mut best: Option<(u32, String)> = None;
-    for name in table.names {
-        let id_rank = match name.name_id {
-            name_id::TYPOGRAPHIC_FAMILY => 0,
-            name_id::FAMILY => 1,
-            _ => continue,
-        };
-        let lang_rank = match (name.platform_id, name.language_id) {
-            (PlatformId::Windows, WINDOWS_EN_US) => 0,
-            (PlatformId::Unicode, _) => 1,
-            (PlatformId::Macintosh, 0) => 2,
-            _ => 3,
-        };
-        let rank = id_rank * 4 + lang_rank;
-        if best
-            .as_ref()
-            .is_some_and(|(best_rank, _)| *best_rank <= rank)
-        {
-            continue;
-        }
-        let text = if name.is_unicode() {
-            name.to_string()
-        } else if name.platform_id == PlatformId::Macintosh && name.encoding_id == 0 {
-            // Mac Roman: ASCII range is identical; drop anything outside it.
-            Some(
-                name.name
-                    .iter()
-                    .filter(|b| b.is_ascii())
-                    .map(|&b| b as char)
-                    .collect(),
-            )
-        } else {
-            None
-        };
-        if let Some(text) = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-            best = Some((rank, text));
-        }
-    }
-    best.map(|(_, text)| text)
-}
-
-/// The families `QWindowsFontDatabaseBase::extraTryFontsForFamily` tries for the user's language
-/// (`GetUserDefaultLangID`): Chinese for China and Singapore, Chinese for the other regions,
-/// Japanese, Korean, and the others' list.
-#[cfg(windows)]
-fn extra_try_fonts() -> &'static [&'static str] {
-    use windows::Win32::Globalization::GetUserDefaultLangID;
-    static LIST: std::sync::LazyLock<&'static [&'static str]> = std::sync::LazyLock::new(|| {
-        // SAFETY: the call takes no arguments and only reads the user's settings.
-        let lid = unsafe { GetUserDefaultLangID() };
-        match lid & 0xff {
-            0x04 if lid == 0x0804 || lid == 0x1004 => &[
-                "SimSun",
-                "Arial",
-                "PMingLiU",
-                "Gulim",
-                "MS UI Gothic",
-                "Arial Unicode MS",
-            ],
-            0x04 => &[
-                "PMingLiU",
-                "Arial",
-                "SimSun",
-                "Gulim",
-                "MS UI Gothic",
-                "Arial Unicode MS",
-            ],
-            0x11 => &[
-                "Yu Gothic UI",
-                "MS UI Gothic",
-                "Arial",
-                "Gulim",
-                "SimSun",
-                "PMingLiU",
-                "Arial Unicode MS",
-            ],
-            0x12 => &[
-                "Malgun Gothic",
-                "Gulim",
-                "Arial",
-                "PMingLiU",
-                "SimSun",
-                "MS UI Gothic",
-                "Arial Unicode MS",
-            ],
-            _ => &[
-                "Arial",
-                "MS UI Gothic",
-                "Gulim",
-                "SimSun",
-                "PMingLiU",
-                "Arial Unicode MS",
-            ],
-        }
-    });
-    *LIST
-}
-
-/// The key of `windows_fallback_families`' list for a character of the item script `script`
-/// whose chain is `key` ([`fallback_script_key`](crate::text::glyph_layout::fallback_script_key)).
-/// The emoji chain asks for no writing system.
-#[cfg(windows)]
-fn fallback_list_key(
-    hint: StyleHint,
-    italic: bool,
-    symbol_family: bool,
-    key: &str,
-    script: unicode_script::Script,
-) -> crate::text::directwrite_catalog::FallbackListKey {
-    let emoji = key == "Emoji";
-    crate::text::directwrite_catalog::FallbackListKey {
-        hint,
-        italic,
-        symbol_family,
-        emoji,
-        writing_system: if emoji {
-            0
-        } else {
-            crate::text::directwrite_catalog::writing_system_for_script(script)
-        },
-    }
-}
-
-/// `fallbacksForFamily(family, style, hint, script)` of Qt's DirectWrite font database as
-/// `QFontDatabasePrivate` filters it: the emoji family for the emoji script, the family of the
-/// style hint, `extraTryFontsForFamily` (the user's language's families that exist, unless the
-/// family is a symbol font, then the emoji and symbol families), then every family that supports
-/// the script's writing system. Entries that are not families of the database are dropped; repeats
-/// stay. Built once per key and kept by the catalog (`QFontDatabasePrivate::fallbacksCache`); the
-/// families that support the writing system are listed when a walk of the list gets to them
-/// (see [`FallbackList`](crate::text::directwrite_catalog::FallbackList)).
-#[cfg(windows)]
-fn windows_fallback_families(
-    catalog: &crate::text::directwrite_catalog::Catalog,
-    key: crate::text::directwrite_catalog::FallbackListKey,
-) -> Arc<crate::text::directwrite_catalog::FallbackList> {
-    catalog.fallback_list(key, || compute_windows_fallback_families(catalog, key))
-}
-
-/// [`windows_fallback_families`] without the memo.
-#[cfg(windows)]
-fn compute_windows_fallback_families(
-    catalog: &crate::text::directwrite_catalog::Catalog,
-    key: crate::text::directwrite_catalog::FallbackListKey,
-) -> crate::text::directwrite_catalog::FallbackList {
-    let mut head: Vec<String> = Vec::new();
-    if key.emoji {
-        head.push("Segoe UI Emoji".to_string());
-    }
-    head.push(family_for_style_hint(key.hint).to_string());
-    if !key.symbol_family {
-        for name in extra_try_fonts() {
-            if catalog.family_traits(name).is_some() {
-                head.push((*name).to_string());
-            }
-        }
-    }
-    head.push("Segoe UI Emoji".to_string());
-    head.push("Segoe UI Symbol".to_string());
-    let mut list = crate::text::directwrite_catalog::FallbackList::new(head, key);
-    if !catalog.is_independent() {
-        // The registry is complete before the head is filtered, as Qt's loop leaves it.
-        list.tail(catalog);
-    }
-    list.retain_head(|name| catalog.family_traits(name).is_some());
-    list
-}
-
-/// What `append_script_fallback_engines` depends on in the family of a request alone: the style
-/// hint its fallback lists use (a fixed-pitch primary family makes `AnyStyle` a typewriter) and
-/// whether the family is a symbol font.
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-struct FallbackContext {
-    hint: StyleHint,
-    symbol_family: bool,
-}
-
-/// What one family takes for one character: the families of a fallback list that cover the
-/// character and whose face loads, in list order with their positions, up to the first whose face
-/// has a glyph for it (`has_glyph`, then it is the last of `covering`).
-#[cfg(windows)]
-struct FallbackPick {
-    covering: Vec<(usize, Arc<str>)>,
-    has_glyph: bool,
-}
-
-/// A [`FallbackPick`] is the answer for this list, request style and character.
-#[cfg(windows)]
-#[derive(PartialEq, Eq, Hash)]
-struct FallbackPickKey {
-    list: crate::text::directwrite_catalog::FallbackListKey,
-    style: FaceStyle,
-    ch: char,
-}
-
-/// Most picks kept before the memo starts over; a character needs one entry per request style.
-#[cfg(windows)]
-const MAX_FALLBACK_PICKS: usize = 1 << 16;
-
-/// The part of the Windows fallback lookup that depends on the font database's own state, kept
-/// so a string measured or drawn again does not search the registry again (Qt keeps its
-/// `fallbacksCache` the same way and drops it when a font is added).
-///
-/// A pick depends on the faces `load_font_styled` returns, which change when a font or search
-/// path is added to the database; every such change (and a change of the default hint style or
-/// device pixel ratio) bumps [`font_generation`], and the memo is emptied the next time it is
-/// used under another generation. The DirectWrite catalog the lists and `covers` come from is
-/// built once per process from the system collection, as Qt builds its database, so a font
-/// installed in the operating system while the process runs is not seen by either.
-#[cfg(windows)]
-#[derive(Default)]
-struct FallbackMemo {
-    /// The [`font_generation`] the entries below belong to.
-    generation: u64,
-    /// [`FallbackContext`] per family string and style hint of a request.
-    contexts: HashMap<String, Vec<(StyleHint, FallbackContext)>>,
-    picks: HashMap<FallbackPickKey, Arc<FallbackPick>>,
-}
-
-#[cfg(windows)]
-impl FallbackMemo {
-    /// Drops every entry made under another generation than `generation`.
-    fn for_generation(&mut self, generation: u64) {
-        if self.generation != generation {
-            self.contexts.clear();
-            self.picks.clear();
-            self.generation = generation;
-        }
-    }
-
-    fn insert_pick(&mut self, key: FallbackPickKey, pick: Arc<FallbackPick>) {
-        if self.picks.len() >= MAX_FALLBACK_PICKS {
-            self.picks.clear();
-        }
-        self.picks.insert(key, pick);
-    }
-
-    /// The context of `font`'s request: the family it names decides the symbol flag if the
-    /// catalog knows it, else the family of its style hint does; a fixed-pitch family turns
-    /// `AnyStyle` into `TypeWriter`.
-    fn context(
-        &mut self,
-        catalog: &crate::text::directwrite_catalog::Catalog,
-        font: &Font,
-    ) -> FallbackContext {
-        if let Some(&(_, context)) = self
-            .contexts
-            .get(font.family.as_str())
-            .and_then(|entries| entries.iter().find(|(hint, _)| *hint == font.style_hint))
-        {
-            return context;
-        }
-        let primary_name = if catalog.family_traits(&font.family).is_some() {
-            font.family.clone()
-        } else {
-            family_for_style_hint(font.style_hint).to_string()
-        };
-        let (fixed_pitch, systems) = catalog.family_traits(&primary_name).unwrap_or((false, 0));
-        let context = FallbackContext {
-            hint: if font.style_hint == StyleHint::AnyStyle && fixed_pitch {
-                StyleHint::TypeWriter
-            } else {
-                font.style_hint
-            },
-            symbol_family: crate::text::directwrite_catalog::supports_symbol(systems),
-        };
-        self.contexts
-            .entry(font.family.clone())
-            .or_default()
-            .push((font.style_hint, context));
-        context
-    }
-}
-
 impl Default for FontDatabase {
     fn default() -> Self {
         Self::new()
     }
 }
 
+mod resolve;
+mod scan;
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
+#[cfg(windows)]
+mod windows_fallback;
 
-    /// Off macOS the flag layout rounds its advances by is `uses_directwrite_engine`, whatever the
-    /// hinting: `font_has_subpixel_positions` (what the line metrics follow) is `true` for a font
-    /// preferring no hinting, but Windows and Linux advances are still rounded without
-    /// DirectWrite, as before the CoreText engine existed.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn layout_advances_follow_directwrite_not_hinting_off_macos() {
-        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
-        let font =
-            Font::new("Arial", 16.0).with_hinting_preference(HintingPreference::PreferNoHinting);
-        assert!(font_has_subpixel_positions(&font));
-        assert_eq!(layout_has_subpixel_advances(), uses_directwrite_engine());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn layout_keeps_fractional_advances_on_macos() {
-        assert!(layout_has_subpixel_advances());
-    }
-
-    #[test]
-    fn test_font_database_creation_and_lookup() {
-        let mut db = FontDatabase::new();
-        let font = db.load_font("Arial").or_else(|| db.load_font("Segoe UI"));
-        assert!(
-            font.is_some(),
-            "Windows system fonts should include Arial or Segoe UI"
-        );
-
-        let cached = db.load_font("Arial").or_else(|| db.load_font("Segoe UI"));
-        assert!(cached.is_some());
-        assert!(Arc::ptr_eq(&font.unwrap(), &cached.unwrap()));
-    }
-
-    #[test]
-    fn test_font_database_memory_registration() {
-        let mut db = FontDatabase::new();
-        let path = Path::new("C:/Windows/Fonts/arial.ttf");
-        if path.exists() {
-            let data = Arc::new(std::fs::read(path).unwrap());
-            let res = db.add_font_from_memory("CustomArial", data.clone());
-            assert!(res.is_ok());
-
-            let loaded = db.load_font("CustomArial");
-            assert!(loaded.is_some());
-
-            let raw = db.get_raw_font_data("CustomArial");
-            assert!(raw.is_some());
-            assert_eq!(raw.unwrap().len(), data.len());
-        }
-    }
-
-    /// Candidate font files for tests that need real font data on any host.
-    fn any_font_bytes() -> Option<Vec<u8>> {
-        [
-            "C:/Windows/Fonts/arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-        ]
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
-    }
-
-    #[test]
-    fn in_memory_font_face_is_built_once_per_font_data() {
-        let Some(bytes) = any_font_bytes() else {
-            return;
-        };
-        let mut db = FontDatabase::new();
-        let font = Font::new("NoSuchFamily", 12.0).with_font_data(SharedFontData::from_vec(bytes));
-        let a = db.resolve_font_engines(&font);
-        let b = db.resolve_font_engines(&font);
-        assert!(Arc::ptr_eq(&a[0].face, &b[0].face));
-    }
-
-    /// A family list (`'A', B, monospace`) is the first of its names that is a family, not the
-    /// first one a substitute is found for (Qt's `QFontDatabasePrivate::findFont`), and its raw
-    /// font data is that family's, so the engine shapes with the face it measures with. Without
-    /// the data text is laid out from the face's unrounded advances (92.99 px for Consolas 10 px
-    /// where Qt measures 96).
-    #[test]
-    fn a_family_list_resolves_to_its_first_installed_family_with_its_font_data() {
-        let Some(bytes) = any_font_bytes() else {
-            return;
-        };
-        let mut db = FontDatabase::new();
-        db.add_font_from_memory("FerrokitListProbe", SharedFontData::from_vec(bytes.clone()))
-            .expect("the font parses");
-        let own = db
-            .load_font("FerrokitListProbe")
-            .expect("the application font loads");
-        let list = "'FerrokitNoSuchFamily', 'FerrokitListProbe', monospace";
-        let face = db
-            .load_font_styled(list, FaceStyle::regular(), StyleHint::AnyStyle)
-            .expect("the list resolves");
-        assert!(Arc::ptr_eq(&face, &own), "the list is its installed family");
-        let raw = db
-            .get_raw_font_data_styled(list, FaceStyle::regular(), StyleHint::AnyStyle)
-            .expect("the list has the font data of its family");
-        assert_eq!(raw.as_slice(), bytes.as_slice());
-        let engines = db.resolve_font_engines(&Font::new(list, 12.0));
-        assert!(Arc::ptr_eq(&engines[0].face, &own));
-        assert!(
-            engines[0].raw_data.is_some(),
-            "the engine keeps the family's font data"
-        );
-    }
-    #[cfg(windows)]
-    #[test]
-    fn test_font_database_style_hint_substitute() {
-        assert!(
-            Path::new("C:/Windows/Fonts/tahoma.ttf").exists()
-                || Path::new("C:/Windows/Fonts/Tahoma.ttf").exists(),
-            "Tahoma must be installed on Windows"
-        );
-        assert!(
-            Path::new("C:/Windows/Fonts/arial.ttf").exists()
-                || Path::new("C:/Windows/Fonts/Arial.ttf").exists(),
-            "Arial must be installed on Windows"
-        );
-        assert!(
-            Path::new("C:/Windows/Fonts/cour.ttf").exists()
-                || Path::new("C:/Windows/Fonts/Cour.ttf").exists(),
-            "Courier New must be installed on Windows"
-        );
-
-        let mut db = FontDatabase::new();
-        let missing = "NoSuchFamilyNonExistent123";
-
-        // AnyStyle -> Tahoma
-        let face_tahoma = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::AnyStyle);
-        assert!(face_tahoma.is_some());
-        let tahoma_direct =
-            db.load_font_styled("Tahoma", FaceStyle::regular(), StyleHint::AnyStyle);
-        assert!(face_tahoma.is_some() && tahoma_direct.is_some());
-        assert!(Arc::ptr_eq(&face_tahoma.unwrap(), &tahoma_direct.unwrap()));
-
-        // Helvetica -> Arial
-        let face_arial = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::Helvetica);
-        let arial_direct = db.load_font_styled("Arial", FaceStyle::regular(), StyleHint::Helvetica);
-        assert!(face_arial.is_some() && arial_direct.is_some());
-        assert!(Arc::ptr_eq(&face_arial.unwrap(), &arial_direct.unwrap()));
-
-        // Courier -> Courier New
-        let face_cour = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::Courier);
-        let cour_direct =
-            db.load_font_styled("Courier New", FaceStyle::regular(), StyleHint::Courier);
-        assert!(face_cour.is_some() && cour_direct.is_some());
-        assert!(Arc::ptr_eq(&face_cour.unwrap(), &cour_direct.unwrap()));
-
-        // Fonts differing only in hint do not share a cache entry
-        let key_any =
-            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
-        let key_helv =
-            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::Helvetica);
-        assert_ne!(key_any, key_helv);
-        assert!(db.cache.contains_key(&key_any));
-        assert!(db.cache.contains_key(&key_helv));
-        assert!(!Arc::ptr_eq(&db.cache[&key_any], &db.cache[&key_helv]));
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn test_font_database_style_hint_substitute_linux() {
-        let mut db = FontDatabase::new();
-        let missing = "NoSuchFontXYZ";
-
-        if !is_fontconfig_available() {
-            let face = db.load_font_styled(missing, FaceStyle::regular(), StyleHint::AnyStyle);
-            assert!(
-                face.is_none(),
-                "When fontconfig is absent, no substitute resolves"
-            );
-            return;
-        }
-
-        // The substitute is the first family `FcFontSort` lists that this machine can load (which
-        // family that is depends on its fontconfig configuration and installed fonts, so it is
-        // derived here, not hard-coded).
-        let all_hints = [
-            StyleHint::AnyStyle,
-            StyleHint::SansSerif,
-            StyleHint::Serif,
-            StyleHint::Monospace,
-            StyleHint::TypeWriter,
-            StyleHint::Cursive,
-            StyleHint::Fantasy,
-            StyleHint::System,
-        ];
-        for hint in all_hints {
-            let candidates = db.linux.registry(&db.search_paths).fallbacks_for_family(
-                missing,
-                crate::text::fontconfig_catalog::Slant::Normal,
-                hint,
-                "Zyyy",
-            );
-            let expected = candidates
-                .iter()
-                .find_map(|c| db.load_font_styled(c, FaceStyle::regular(), hint))
-                .expect("fontconfig lists no family this machine can load");
-            let face = db
-                .load_font_styled(missing, FaceStyle::regular(), hint)
-                .unwrap_or_else(|| panic!("no substitute resolved for {hint:?}"));
-            assert!(
-                Arc::ptr_eq(&face, &expected),
-                "substitute for {hint:?} must be the first listed family that loads"
-            );
-        }
-
-        // Fonts that differ only in hint do not share a cache entry.
-        let key_any =
-            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::AnyStyle);
-        let key_serif =
-            FaceStyle::regular().cache_key(&missing.to_ascii_lowercase(), StyleHint::Serif);
-        assert_ne!(key_any, key_serif);
-        assert!(db.cache.contains_key(&key_any));
-        assert!(db.cache.contains_key(&key_serif));
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn test_fc_family_for_style_hint_pure_mapping() {
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::SansSerif),
-            Some("sans-serif")
-        );
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::Helvetica),
-            Some("sans-serif")
-        );
-        assert_eq!(fc_family_for_style_hint(StyleHint::Serif), Some("serif"));
-        assert_eq!(fc_family_for_style_hint(StyleHint::Times), Some("serif"));
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::Monospace),
-            Some("monospace")
-        );
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::TypeWriter),
-            Some("monospace")
-        );
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::Courier),
-            Some("monospace")
-        );
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::Cursive),
-            Some("cursive")
-        );
-        assert_eq!(
-            fc_family_for_style_hint(StyleHint::Fantasy),
-            Some("fantasy")
-        );
-        assert_eq!(fc_family_for_style_hint(StyleHint::AnyStyle), None);
-        assert_eq!(fc_family_for_style_hint(StyleHint::System), None);
-        assert_eq!(fc_family_for_style_hint(StyleHint::OldEnglish), None);
-        assert_eq!(fc_family_for_style_hint(StyleHint::Decorative), None);
-
-        // family_for_style_hint alias
-        assert_eq!(
-            family_for_style_hint(StyleHint::SansSerif),
-            Some("sans-serif")
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn test_family_for_style_hint_macos_table() {
-        assert_eq!(
-            family_for_style_hint(StyleHint::SansSerif),
-            Some("Helvetica")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::Helvetica),
-            Some("Helvetica")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::Serif),
-            Some("Times New Roman")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::Times),
-            Some("Times New Roman")
-        );
-        assert_eq!(family_for_style_hint(StyleHint::Monospace), Some("Menlo"));
-        assert_eq!(
-            family_for_style_hint(StyleHint::Cursive),
-            Some("Apple Chancery")
-        );
-        assert_eq!(family_for_style_hint(StyleHint::Fantasy), Some("Zapfino"));
-        assert_eq!(
-            family_for_style_hint(StyleHint::TypeWriter),
-            Some("American Typewriter")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::Courier),
-            Some("American Typewriter")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::AnyStyle),
-            Some(".AppleSystemUIFont")
-        );
-        assert_eq!(
-            family_for_style_hint(StyleHint::System),
-            Some(".AppleSystemUIFont")
-        );
-        assert_eq!(family_for_style_hint(StyleHint::OldEnglish), None);
-        assert_eq!(family_for_style_hint(StyleHint::Decorative), None);
-    }
-
-    /// A face built from memory is shared between requests unless the backend would build a
-    /// different one: on Windows DirectWrite synthesizes bold from `DemiBold` up and oblique for
-    /// an italic request, so those split the cache; elsewhere every request shares one face.
-    #[test]
-    fn memory_face_keys_split_only_on_what_the_backend_synthesizes() {
-        let data = SharedFontData::from_vec(vec![0u8; 16]);
-        let hint = HintStyle::HintFull;
-        let key = |weight, italic| memory_face_key(&data, hint, weight, italic);
-        assert_eq!(key(400, false), key(500, false));
-        assert_eq!(key(300, false), key(400, false));
-        assert_eq!(key(600, false) == key(400, false), !cfg!(windows));
-        assert_eq!(key(600, false), key(900, false));
-        assert_eq!(key(400, true) == key(400, false), !cfg!(windows));
-        assert_eq!(key(400, true), key(500, true));
-        assert_eq!(key(700, true) == key(700, false), !cfg!(windows));
-        // The hint style always splits, and so does another buffer.
-        assert_ne!(
-            key(400, false),
-            memory_face_key(&data, HintStyle::HintNone, 400, false)
-        );
-        let other = SharedFontData::from_vec(vec![0u8; 16]);
-        assert_ne!(key(400, false), memory_face_key(&other, hint, 400, false));
-    }
-
-    /// The shaper must open a collection file with the face index of the glyph face, or its glyph
-    /// ids are those of another member (MS PGothic is the third face of `msgothic.ttc`, whose
-    /// glyph ids differ from the first face's).
-    #[cfg(windows)]
-    #[test]
-    fn engines_of_collection_members_shape_with_their_own_face() {
-        let mut db = FontDatabase::new();
-        for (family, index) in [("MS Gothic", 0), ("MS UI Gothic", 1), ("MS PGothic", 2)] {
-            let engines = db.resolve_font_engines(&Font::new(family, 16.0));
-            let engine = &engines[0];
-            assert_eq!(engine.face_index, index, "{family}");
-            let shaping = engine.shaping_face(16).expect("shaping face");
-            for ch in ['i', 'A', 'あ', '日'] {
-                assert_eq!(
-                    shaping.face().glyph_index(ch).unwrap_or_default().0,
-                    engine.face.glyph_index(ch),
-                    "{family}: {ch:?}"
-                );
-            }
-        }
-    }
-
-    /// Han, a geometric shape, an emoji, Thai and Hebrew after Latin text: characters Segoe UI
-    /// lacks, in several scripts.
-    #[cfg(windows)]
-    const FALLBACK_TEXT: &str = "5 \u{5c0f}\u{6642} \u{25a5} \u{1F600} \u{e01} \u{5d0}";
-
-    /// The engines a request resolved to (the address of each face) and the fallback chain of
-    /// each script they carry.
-    #[cfg(windows)]
-    fn fallback_signature(engines: &[FontEngine]) -> (Vec<usize>, Vec<(&'static str, Vec<usize>)>) {
-        let faces = engines
-            .iter()
-            .map(|e| Arc::as_ptr(&e.face).cast::<()>() as usize)
-            .collect();
-        let mut chains: Vec<_> = engines[0]
-            .script_chains()
-            .expect("a request with fallbacks carries chains")
-            .iter()
-            .map(|(key, chain)| (*key, chain.clone()))
-            .collect();
-        chains.sort();
-        (faces, chains)
-    }
-
-    /// A memo entry no request makes (U+10FFFF is a noncharacter).
-    #[cfg(windows)]
-    fn sentinel_pick() -> (FallbackPickKey, Arc<FallbackPick>) {
-        let key = FallbackPickKey {
-            list: fallback_list_key(
-                StyleHint::AnyStyle,
-                false,
-                false,
-                "Zyyy",
-                unicode_script::Script::Common,
-            ),
-            style: FaceStyle::regular(),
-            ch: '\u{10ffff}',
-        };
-        let pick = Arc::new(FallbackPick {
-            covering: Vec::new(),
-            has_glyph: false,
-        });
-        (key, pick)
-    }
-
-    /// A string resolved again gets the same engines and chains from the remembered picks as the
-    /// first time, when every pick was searched for.
-    #[cfg(windows)]
-    #[test]
-    fn remembered_fallback_picks_give_the_engines_of_the_first_lookup() {
-        let mut db = FontDatabase::new();
-        let font = Font::new("Segoe UI", 12.0);
-        let cold = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
-        assert!(!cold.1.is_empty(), "the text needs fallback families");
-        assert!(!db.fallback_memo.picks.is_empty());
-        // Another test adding a font empties the memo; try again then.
-        let remembered = (0..100).any(|_| {
-            db.resolve_font_engines_for_text(&font, FALLBACK_TEXT);
-            let generation = font_generation();
-            db.fallback_memo.for_generation(generation);
-            let (key, pick) = sentinel_pick();
-            db.fallback_memo.insert_pick(key, pick);
-            let warm = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
-            assert_eq!(warm, cold);
-            let (key, _) = sentinel_pick();
-            font_generation() == generation && db.fallback_memo.picks.contains_key(&key)
-        });
-        assert!(remembered, "a second lookup must keep the remembered picks");
-    }
-
-    /// Adding a font to the database drops what was remembered, and the lookup after it gives what a
-    /// database that had the font from the start gives.
-    #[cfg(windows)]
-    #[test]
-    fn adding_a_font_drops_the_remembered_fallback_picks() {
-        let Some(bytes) = any_font_bytes() else {
-            return;
-        };
-        let mut db = FontDatabase::new();
-        let font = Font::new("Segoe UI", 12.0);
-        let before = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
-        let (key, pick) = sentinel_pick();
-        db.fallback_memo.insert_pick(key, pick);
-        db.add_font_from_memory(
-            "FerrokitCacheProbe",
-            SharedFontData::from_vec(bytes.clone()),
-        )
-        .expect("the font parses");
-        let (key, _) = sentinel_pick();
-        assert!(
-            db.fallback_memo.picks.contains_key(&key),
-            "the memo is emptied when it is used, not when the font is added"
-        );
-        let after = fallback_signature(&db.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
-        assert!(
-            !db.fallback_memo.picks.contains_key(&key),
-            "a font added since the picks were made must drop them"
-        );
-
-        let mut fresh = FontDatabase::new();
-        fresh
-            .add_font_from_memory("FerrokitCacheProbe", SharedFontData::from_vec(bytes))
-            .expect("the font parses");
-        let expected =
-            fallback_signature(&fresh.resolve_font_engines_for_text(&font, FALLBACK_TEXT));
-        assert_eq!(after.1, expected.1);
-        assert_eq!(after.0.len(), expected.0.len());
-        // An application font under a new name is no fallback family: nothing changes.
-        assert_eq!(after.1, before.1);
-    }
-
-    /// A fallback list is the same object on every request, and walked it is the list the registry
-    /// gives once every family has been populated in the order of Qt's loop.
-    #[cfg(windows)]
-    #[test]
-    fn fallback_lists_are_remembered_and_equal_the_eager_build() {
-        let Some(catalog) = crate::text::directwrite_catalog::catalog() else {
-            return;
-        };
-        let Some(eager) = crate::text::directwrite_catalog::eager_catalog() else {
-            return;
-        };
-        let walked = |catalog: &crate::text::directwrite_catalog::Catalog,
-                      key: crate::text::directwrite_catalog::FallbackListKey| {
-            compute_windows_fallback_families(catalog, key)
-                .iter(catalog)
-                .map(str::to_string)
-                .collect::<Vec<String>>()
-        };
-        let mut keys = Vec::new();
-        for hint in [
-            StyleHint::AnyStyle,
-            StyleHint::Helvetica,
-            StyleHint::TypeWriter,
-            StyleHint::Fantasy,
-        ] {
-            for italic in [false, true] {
-                for symbol in [false, true] {
-                    for script in [
-                        unicode_script::Script::Han,
-                        unicode_script::Script::Hangul,
-                        unicode_script::Script::Hiragana,
-                        unicode_script::Script::Thai,
-                        unicode_script::Script::Latin,
-                        unicode_script::Script::Arabic,
-                        unicode_script::Script::Common,
-                    ] {
-                        keys.push(fallback_list_key(hint, italic, symbol, "Zyyy", script));
-                    }
-                }
-            }
-        }
-        keys.push(fallback_list_key(
-            StyleHint::AnyStyle,
-            false,
-            false,
-            "Emoji",
-            unicode_script::Script::Common,
-        ));
-        for key in keys {
-            let first = windows_fallback_families(catalog, key);
-            let again = windows_fallback_families(catalog, key);
-            assert!(Arc::ptr_eq(&first, &again), "{key:?}");
-            let list: Vec<&str> = first.iter(catalog).collect();
-            assert_eq!(list, walked(&eager, key), "{key:?}");
-        }
-        let emoji = fallback_list_key(
-            StyleHint::AnyStyle,
-            false,
-            false,
-            "Emoji",
-            unicode_script::Script::Common,
-        );
-        let list = windows_fallback_families(catalog, emoji);
-        assert_eq!(list.iter(catalog).next(), Some("Segoe UI Emoji"));
-    }
-
-    /// A walk that stops in the head of a list does not build its tail (where the catalog allows
-    /// it), and walking on gives the same entries again.
-    #[cfg(windows)]
-    #[test]
-    fn a_walk_that_stops_in_the_head_leaves_the_tail_unbuilt() {
-        let Some(catalog) = crate::text::directwrite_catalog::catalog() else {
-            return;
-        };
-        if !catalog.is_independent() {
-            return;
-        }
-        // No other test asks for this key.
-        let key = fallback_list_key(
-            StyleHint::Cursive,
-            true,
-            false,
-            "Zyyy",
-            unicode_script::Script::Ogham,
-        );
-        let list = windows_fallback_families(catalog, key);
-        if list.head_len() == 0 {
-            return;
-        }
-        let first = list.iter(catalog).next();
-        assert!(first.is_some());
-        assert!(!list.tail_built());
-        let all: Vec<&str> = list.iter(catalog).collect();
-        assert!(list.tail_built());
-        assert_eq!(all.first().copied(), first);
-    }
-}
+#[allow(unused_imports)]
+use scan::{preferred_family_name, read_faces, scan_font_directories};
+#[cfg(windows)]
+#[allow(unused_imports)]
+use windows_fallback::{
+    FallbackContext, FallbackMemo, FallbackPick, FallbackPickKey,
+    compute_windows_fallback_families, extra_try_fonts, fallback_list_key,
+    windows_fallback_families,
+};
