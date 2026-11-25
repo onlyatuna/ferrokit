@@ -8,7 +8,7 @@
 //!
 //! The gamma table mirrors `QColorTrcLut` (`qcolortrclut.cpp`, `qcolortrclut_p.h`).
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 /// What the platform says about text smoothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,8 +92,13 @@ impl TrcLut {
 
 /// The shared table for `gamma`; tables are tiny but built per gamma only once.
 pub fn gamma_lut(gamma: f32) -> Arc<TrcLut> {
+    // Painter::draw_glyph_run requests 1.7 on every call; serve it lock-free.
+    static LUT_1_7: LazyLock<Arc<TrcLut>> = LazyLock::new(|| Arc::new(TrcLut::from_gamma(1.7)));
     static CACHE: Mutex<Vec<(u32, Arc<TrcLut>)>> = Mutex::new(Vec::new());
     let key = gamma.to_bits();
+    if key == 1.7_f32.to_bits() {
+        return Arc::clone(&LUT_1_7);
+    }
     let Ok(mut cache) = CACHE.lock() else {
         return Arc::new(TrcLut::from_gamma(gamma));
     };
@@ -101,6 +106,9 @@ pub fn gamma_lut(gamma: f32) -> Arc<TrcLut> {
         return Arc::clone(lut);
     }
     let lut = Arc::new(TrcLut::from_gamma(gamma));
+    if cache.len() >= 64 {
+        cache.clear();
+    }
     cache.push((key, Arc::clone(&lut)));
     lut
 }
