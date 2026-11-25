@@ -226,8 +226,9 @@ impl Drop for ObjectBorrowGuard {
                 .has_pending_child_changes
                 .swap(false, Ordering::AcqRel)
             {
-                let changes =
-                    std::mem::take(&mut *lock_ignoring_poison(&self._entry.pending_child_changes));
+                let changes = std::mem::take(&mut *lock_ignoring_poison(
+                    &self._entry.pending_child_changes,
+                ));
                 // A destroyed object is not written to: its memory may already be freed. Every
                 // drop of an object marks its memory destroyed before the memory goes. An object
                 // that was only unregistered (its liveness token is false) still owns its
