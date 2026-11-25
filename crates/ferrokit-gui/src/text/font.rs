@@ -6,14 +6,28 @@ use std::sync::Arc;
 /// Shared binary font data representation supporting zero-copy slicing and deduplication.
 ///
 /// The bytes live behind an `Arc`, so every `FontEngine`/`Font` sharing a file shares one buffer.
-/// The buffer is either heap memory ([`from_vec`](Self::from_vec)) or, on Windows, a read-only
-/// mapping of the font file ([`from_file`](Self::from_file)). A mapping is backed by the file
-/// itself: it is not charged to the process's commit, and only the pages actually read (a few
-/// glyph tables out of a 16 MB CJK collection) become resident. Qt maps system font files the
-/// same way.
+/// The buffer is either heap memory ([`from_vec`](Self::from_vec), [`from_file`](Self::from_file))
+/// or, on Windows via [`from_file_mmap`](Self::from_file_mmap), a read-only mapping of an
+/// immutable system font file. A mapping is backed by the file itself: it is not charged to the
+/// process's commit, and only the pages actually read (a few glyph tables out of a 16 MB CJK
+/// collection) become resident. Qt maps system font files the same way.
 #[derive(Clone)]
 pub struct SharedFontData {
     data: Arc<dyn AsRef<[u8]> + Send + Sync>,
+}
+
+#[cfg(windows)]
+struct MappedFontFile {
+    mmap: memmap2::Mmap,
+    // Kept open with `FILE_SHARE_READ` only so concurrent writers are rejected while mapped.
+    _file: std::fs::File,
+}
+
+#[cfg(windows)]
+impl AsRef<[u8]> for MappedFontFile {
+    fn as_ref(&self) -> &[u8] {
+        self.mmap.as_ref()
+    }
 }
 
 impl SharedFontData {
@@ -29,31 +43,47 @@ impl SharedFontData {
         Self { data }
     }
 
-    /// Loads the font file at `path`: on Windows maps it read-only (reading it into memory if it
-    /// cannot be mapped), elsewhere reads it into memory.
+    /// Loads the font file at `path` into heap memory.
     ///
-    /// Windows cannot shrink a file while a view of it is mapped (`SetEndOfFile` fails with
-    /// `ERROR_USER_MAPPED_FILE`), so every mapped page stays backed. On Linux and macOS any process
-    /// may truncate a mapped file, after which touching the lost pages raises `SIGBUS`; a safe
-    /// function cannot rule that out, so the bytes are copied there.
+    /// Copying into an owned buffer guarantees the returned slice cannot be mutated or truncated
+    /// underneath by another process. For immutable system/catalog font files on Windows where
+    /// zero-copy mapping is desired, use [`from_file_mmap`](Self::from_file_mmap).
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
+        Ok(Self::from_vec(std::fs::read(path)?))
+    }
+
+    /// Maps an immutable font file at `path` read-only on Windows, falling back to
+    /// [`from_file`](Self::from_file) on other platforms or when mapping is unavailable.
+    ///
+    /// On Windows, opens the file with `FILE_SHARE_READ` only and keeps the handle alive alongside
+    /// the mapping so other processes cannot open the file for writing or truncate it while mapped.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the underlying file is not modified in place (including via
+    /// pre-existing writable handles or external non-shared writes) for as long as the returned
+    /// `SharedFontData` or any clone of it is alive.
+    pub unsafe fn from_file_mmap(path: &Path) -> std::io::Result<Self> {
         #[cfg(windows)]
         {
-            let file = std::fs::File::open(path)?;
-            if file.metadata()?.len() > 0 {
-                // SAFETY: `memmap2::Mmap::map` creates a read-only shared mapping (`FILE_MAP_READ`
-                // on Windows, not a private copy-on-write mapping), and Windows keeps the file
-                // from shrinking under it (see above). Soundness relies on system/installed font
-                // files not being rewritten in place while mapped; callers loading mutable or
-                // untrusted files should use `SharedFontData::from_vec`.
-                if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 1;
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(path)
+                && file.metadata()?.len() > 0
+            {
+                // SAFETY: caller upholds that the file is not modified in place while mapped, and
+                // `_file` holds a `FILE_SHARE_READ`-only handle for the mapping's lifetime.
+                if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
                     return Ok(Self {
-                        data: Arc::new(map),
+                        data: Arc::new(MappedFontFile { mmap, _file: file }),
                     });
                 }
             }
         }
-        Ok(Self::from_vec(std::fs::read(path)?))
+        Self::from_file(path)
     }
 
     /// Returns the underlying byte slice.

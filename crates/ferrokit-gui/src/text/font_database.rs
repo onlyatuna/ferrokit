@@ -1123,7 +1123,7 @@ impl FontDatabase {
         let shared = match self.file_cache.get(&canonical) {
             Some(shared) => shared.clone(),
             None => {
-                let shared = SharedFontData::from_file(&canonical).ok()?;
+                let shared = load_system_font_file(&canonical).ok()?;
                 self.file_cache.insert(canonical, shared.clone());
                 shared
             }
@@ -1221,7 +1221,7 @@ impl FontDatabase {
                     }
                     let read =
                         crate::startup_trace::span(|| format!("map {}", canonical.display()));
-                    if let Ok(shared) = SharedFontData::from_file(&canonical) {
+                    if let Ok(shared) = load_system_font_file(&canonical) {
                         drop(read);
                         let _p = crate::startup_trace::span(|| {
                             format!(
@@ -1283,7 +1283,7 @@ impl FontDatabase {
         let _t = crate::startup_trace::span(|| {
             format!("map+parse (family index) {}", canonical.display())
         });
-        let shared = SharedFontData::from_file(&canonical).ok()?;
+        let shared = load_system_font_file(&canonical).ok()?;
         let face = parse_face_for_request(
             &shared,
             face_index,
@@ -1295,6 +1295,18 @@ impl FontDatabase {
         self.file_cache.insert(canonical, shared.clone());
         Some((shared, face))
     }
+}
+
+#[cfg(windows)]
+fn load_system_font_file(path: &Path) -> std::io::Result<SharedFontData> {
+    // SAFETY: system/catalog font files are immutable; `from_file_mmap` holds a
+    // `FILE_SHARE_READ`-only handle so concurrent writers are rejected while mapped.
+    unsafe { SharedFontData::from_file_mmap(path) }
+}
+
+#[cfg(target_os = "macos")]
+fn load_system_font_file(path: &Path) -> std::io::Result<SharedFontData> {
+    SharedFontData::from_file(path)
 }
 
 impl Default for FontDatabase {
