@@ -579,11 +579,11 @@ impl Application {
     }
 
     pub fn cursor_flash_time() -> u32 {
-        *GLOBAL_CURSOR_FLASH_TIME_MS.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_CURSOR_FLASH_TIME_MS)
     }
 
     pub fn set_cursor_flash_time(ms: u32) {
-        *GLOBAL_CURSOR_FLASH_TIME_MS.write().unwrap() = ms;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_CURSOR_FLASH_TIME_MS) = ms;
     }
 
     /// `QGuiApplication::mouseButtons` (qguiapplication.cpp:1974): the buttons the application has
@@ -645,27 +645,27 @@ impl Application {
     }
 
     pub fn wheel_scroll_lines() -> i32 {
-        *GLOBAL_WHEEL_SCROLL_LINES.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_WHEEL_SCROLL_LINES)
     }
 
     pub fn set_wheel_scroll_lines(lines: i32) {
-        *GLOBAL_WHEEL_SCROLL_LINES.write().unwrap() = lines;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_WHEEL_SCROLL_LINES) = lines;
     }
 
     pub fn start_drag_distance() -> i32 {
-        *GLOBAL_START_DRAG_DISTANCE.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_START_DRAG_DISTANCE)
     }
 
     pub fn set_start_drag_distance(l: i32) {
-        *GLOBAL_START_DRAG_DISTANCE.write().unwrap() = l;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_START_DRAG_DISTANCE) = l;
     }
 
     pub fn start_drag_time() -> u32 {
-        *GLOBAL_START_DRAG_TIME_MS.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_START_DRAG_TIME_MS)
     }
 
     pub fn set_start_drag_time(ms: u32) {
-        *GLOBAL_START_DRAG_TIME_MS.write().unwrap() = ms;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_START_DRAG_TIME_MS) = ms;
     }
 
     /// Resets all application singletons and thread-local state for tests.
@@ -683,11 +683,11 @@ impl Application {
         let mut hints = ferrokit_gui::application::GuiApplication::style_hints();
         hints.mouse_double_click_interval_ms = 400;
         ferrokit_gui::application::GuiApplication::set_style_hints(hints);
-        *GLOBAL_CURSOR_FLASH_TIME_MS.write().unwrap() = 1000;
-        *GLOBAL_WHEEL_SCROLL_LINES.write().unwrap() = 3;
-        *GLOBAL_START_DRAG_DISTANCE.write().unwrap() = 10;
-        *GLOBAL_START_DRAG_TIME_MS.write().unwrap() = 500;
-        *GLOBAL_STYLESHEET.write().unwrap() = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_CURSOR_FLASH_TIME_MS) = 1000;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_WHEEL_SCROLL_LINES) = 3;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_START_DRAG_DISTANCE) = 10;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_START_DRAG_TIME_MS) = 500;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_STYLESHEET) = None;
         // The native override (`QWindowsCursor::m_overrideCursor` / `m_overriddenCursor`) lives
         // in the platform, so clearing the stack alone would leave it behind.
         let had_override =

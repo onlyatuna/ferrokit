@@ -155,19 +155,19 @@ impl GuiApplication {
 
         // Ensure default palette and font are established
         {
-            let mut pal_guard = GLOBAL_PALETTE.write().unwrap();
+            let mut pal_guard = ferrokit_core::poison::write_unpoisoned(&GLOBAL_PALETTE);
             if pal_guard.is_none() {
                 *pal_guard = Some(Palette::dark());
             }
         }
         {
-            let mut font_guard = GLOBAL_FONT.write().unwrap();
+            let mut font_guard = ferrokit_core::poison::write_unpoisoned(&GLOBAL_FONT);
             if font_guard.is_none() {
                 *font_guard = Some(Font::default());
             }
         }
         {
-            let mut hints_guard = GLOBAL_STYLE_HINTS.write().unwrap();
+            let mut hints_guard = ferrokit_core::poison::write_unpoisoned(&GLOBAL_STYLE_HINTS);
             if hints_guard.is_none() {
                 *hints_guard = Some(StyleHints::default());
             }
@@ -177,9 +177,11 @@ impl GuiApplication {
         color_scheme::update_from_source();
 
         let last_window_closed = Signal::new();
-        *LAST_WINDOW_CLOSED_SIGNAL.write().unwrap() = Some(last_window_closed.clone());
+        *ferrokit_core::poison::write_unpoisoned(&LAST_WINDOW_CLOSED_SIGNAL) =
+            Some(last_window_closed.clone());
         let focus_window_changed = Signal::new();
-        *FOCUS_WINDOW_CHANGED_SIGNAL.write().unwrap() = Some(focus_window_changed.clone());
+        *ferrokit_core::poison::write_unpoisoned(&FOCUS_WINDOW_CHANGED_SIGNAL) =
+            Some(focus_window_changed.clone());
 
         Self {
             core_app,
@@ -237,46 +239,40 @@ impl GuiApplication {
     // --- Palette ---
 
     pub fn palette() -> Palette {
-        GLOBAL_PALETTE
-            .read()
-            .unwrap()
+        ferrokit_core::poison::read_unpoisoned(&GLOBAL_PALETTE)
             .as_ref()
             .cloned()
             .unwrap_or_else(Palette::dark)
     }
 
     pub fn set_palette(palette: Palette) {
-        *GLOBAL_PALETTE.write().unwrap() = Some(palette);
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_PALETTE) = Some(palette);
     }
 
     // --- Font ---
 
     pub fn font() -> Font {
-        GLOBAL_FONT
-            .read()
-            .unwrap()
+        ferrokit_core::poison::read_unpoisoned(&GLOBAL_FONT)
             .as_ref()
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn set_font(font: Font) {
-        *GLOBAL_FONT.write().unwrap() = Some(font);
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_FONT) = Some(font);
     }
 
     // --- Style Hints ---
 
     pub fn style_hints() -> StyleHints {
-        GLOBAL_STYLE_HINTS
-            .read()
-            .unwrap()
+        ferrokit_core::poison::read_unpoisoned(&GLOBAL_STYLE_HINTS)
             .as_ref()
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn set_style_hints(hints: StyleHints) {
-        *GLOBAL_STYLE_HINTS.write().unwrap() = Some(hints);
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_STYLE_HINTS) = Some(hints);
     }
 
     /// `QStyleHints::motionPreference`: the system setting handed over by the platform layer.
@@ -301,11 +297,11 @@ impl GuiApplication {
     // --- Layout Direction ---
 
     pub fn layout_direction() -> LayoutDirection {
-        *GLOBAL_LAYOUT_DIRECTION.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_LAYOUT_DIRECTION)
     }
 
     pub fn set_layout_direction(direction: LayoutDirection) {
-        *GLOBAL_LAYOUT_DIRECTION.write().unwrap() = direction;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_LAYOUT_DIRECTION) = direction;
     }
 
     pub fn is_left_to_right() -> bool {
@@ -319,12 +315,12 @@ impl GuiApplication {
     // --- Application State ---
 
     pub fn application_state() -> ApplicationState {
-        *GLOBAL_APP_STATE.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_APP_STATE)
     }
 
     pub fn set_application_state(&self, state: ApplicationState) {
         let changed = {
-            let mut guard = GLOBAL_APP_STATE.write().unwrap();
+            let mut guard = ferrokit_core::poison::write_unpoisoned(&GLOBAL_APP_STATE);
             if *guard != state {
                 *guard = state;
                 true
@@ -340,29 +336,25 @@ impl GuiApplication {
     // --- Display & Desktop File Name ---
 
     pub fn application_display_name() -> String {
-        GLOBAL_DISPLAY_NAME
-            .read()
-            .unwrap()
+        ferrokit_core::poison::read_unpoisoned(&GLOBAL_DISPLAY_NAME)
             .as_ref()
             .cloned()
             .unwrap_or_else(CoreApplication::application_name)
     }
 
     pub fn set_application_display_name(name: impl Into<String>) {
-        *GLOBAL_DISPLAY_NAME.write().unwrap() = Some(name.into());
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_DISPLAY_NAME) = Some(name.into());
     }
 
     pub fn desktop_file_name() -> String {
-        GLOBAL_DESKTOP_FILE_NAME
-            .read()
-            .unwrap()
+        ferrokit_core::poison::read_unpoisoned(&GLOBAL_DESKTOP_FILE_NAME)
             .as_ref()
             .cloned()
             .unwrap_or_default()
     }
 
     pub fn set_desktop_file_name(name: impl Into<String>) {
-        *GLOBAL_DESKTOP_FILE_NAME.write().unwrap() = Some(name.into());
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_DESKTOP_FILE_NAME) = Some(name.into());
     }
 
     // --- Quit on Last Window Closed ---
@@ -378,34 +370,37 @@ impl GuiApplication {
     // --- High DPI Policy ---
 
     pub fn high_dpi_scale_factor_rounding_policy() -> HighDpiScaleFactorRoundingPolicy {
-        *GLOBAL_ROUNDING_POLICY.read().unwrap()
+        *ferrokit_core::poison::read_unpoisoned(&GLOBAL_ROUNDING_POLICY)
     }
 
     pub fn set_high_dpi_scale_factor_rounding_policy(policy: HighDpiScaleFactorRoundingPolicy) {
-        *GLOBAL_ROUNDING_POLICY.write().unwrap() = policy;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_ROUNDING_POLICY) = policy;
     }
 
     /// Resets internal singleton and styling state for testing isolation.
     #[doc(hidden)]
     pub fn reset_for_test() {
         CoreApplication::reset_for_test();
-        *GLOBAL_PALETTE.write().unwrap() = None;
-        *GLOBAL_FONT.write().unwrap() = None;
-        *GLOBAL_STYLE_HINTS.write().unwrap() = None;
-        *GLOBAL_LAYOUT_DIRECTION.write().unwrap() = LayoutDirection::LeftToRight;
-        *GLOBAL_APP_STATE.write().unwrap() = ApplicationState::ApplicationActive;
-        *GLOBAL_DISPLAY_NAME.write().unwrap() = None;
-        *GLOBAL_DESKTOP_FILE_NAME.write().unwrap() = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_PALETTE) = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_FONT) = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_STYLE_HINTS) = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_LAYOUT_DIRECTION) =
+            LayoutDirection::LeftToRight;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_APP_STATE) =
+            ApplicationState::ApplicationActive;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_DISPLAY_NAME) = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_DESKTOP_FILE_NAME) = None;
         GLOBAL_QUIT_ON_LAST_WINDOW_CLOSED.store(true, Ordering::SeqCst);
-        *GLOBAL_ROUNDING_POLICY.write().unwrap() = HighDpiScaleFactorRoundingPolicy::PassThrough;
-        *LAST_WINDOW_CLOSED_SIGNAL.write().unwrap() = None;
-        *FOCUS_WINDOW_CHANGED_SIGNAL.write().unwrap() = None;
+        *ferrokit_core::poison::write_unpoisoned(&GLOBAL_ROUNDING_POLICY) =
+            HighDpiScaleFactorRoundingPolicy::PassThrough;
+        *ferrokit_core::poison::write_unpoisoned(&LAST_WINDOW_CLOSED_SIGNAL) = None;
+        *ferrokit_core::poison::write_unpoisoned(&FOCUS_WINDOW_CHANGED_SIGNAL) = None;
         color_scheme::reset_for_test();
     }
 
     /// Emits `lastWindowClosed` if registered (`qguiapplication.cpp:3939`).
     pub fn emit_last_window_closed() {
-        let sig = LAST_WINDOW_CLOSED_SIGNAL.read().unwrap().clone();
+        let sig = ferrokit_core::poison::read_unpoisoned(&LAST_WINDOW_CLOSED_SIGNAL).clone();
         if let Some(sig) = sig {
             sig.emit(&());
         }
@@ -413,7 +408,7 @@ impl GuiApplication {
 
     /// Emits `focusWindowChanged` if registered (`qguiapplication.cpp:2417`).
     pub fn emit_focus_window_changed(window_id: Option<ObjectId>) {
-        let sig = FOCUS_WINDOW_CHANGED_SIGNAL.read().unwrap().clone();
+        let sig = ferrokit_core::poison::read_unpoisoned(&FOCUS_WINDOW_CHANGED_SIGNAL).clone();
         if let Some(sig) = sig {
             sig.emit(&window_id);
         }
