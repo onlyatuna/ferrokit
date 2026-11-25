@@ -7,6 +7,8 @@ pub mod cocoa_menu;
 pub mod dbus_menu;
 #[cfg(windows)]
 pub mod win32_menu;
+#[cfg(windows)]
+pub mod win32_popup;
 
 #[cfg(windows)]
 pub use win32_menu::{Win32Menu, Win32MenuItem};

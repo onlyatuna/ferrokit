@@ -170,38 +170,6 @@ fn hide_quietly(submenu: &MenuRef) {
     }
 }
 
-/// Releases the mouse capture when a popup loop ends, also when it unwinds.
-#[cfg(windows)]
-struct CaptureGuard;
-
-#[cfg(windows)]
-impl Drop for CaptureGuard {
-    fn drop(&mut self) {
-        // SAFETY: `ReleaseCapture` takes no arguments and only clears the calling thread's mouse
-        // capture; the guard is created and dropped on the popup loop's own thread, which is the
-        // thread that called `SetCapture`, so it releases exactly that capture.
-        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture() };
-    }
-}
-
-/// Shows the arrow over a popup that holds the mouse capture.
-///
-/// Windows sends no `WM_SETCURSOR` to a window that has the mouse captured, and a thread that
-/// never set a cursor has the busy one as its default, so the capturing window has to set the
-/// cursor itself (`SetCursor` documents this: "A window should set the cursor shape only when the
-/// cursor is in its client area or when the window is capturing mouse input"). Qt does the same:
-/// `QWindowsWindow::applyCursor` sets the window's cursor, the arrow for a popup menu, when the
-/// pointer enters the window and while a capturing window sees the pointer leave it
-/// (qwindowspointerhandler.cpp, `handleEnterLeave`). `SetCursor` returns at once when the cursor
-/// already is the one asked for.
-#[cfg(windows)]
-fn show_arrow_cursor() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, LoadCursorW, SetCursor};
-    // SAFETY: `LoadCursorW` with a null instance and `IDC_ARROW` returns the shared system arrow,
-    // which needs no release; `SetCursor` takes that handle by value and touches no memory of ours.
-    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)) };
-}
-
 #[cfg(windows)]
 fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
     Menu::emit_unborrowed(menu, |m| m.about_to_show.clone());
@@ -1282,15 +1250,9 @@ impl Menu {
     fn exec_popup_win32(menu: &MenuRef, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
         use crate::window::Window;
         use ferrokit_platform::WindowFlags;
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-            SetCapture, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-            PostThreadMessageW, SetForegroundWindow, TranslateMessage, WM_KEYDOWN, WM_LBUTTONDOWN,
-            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        use ferrokit_platform::menu::win32_popup::{
+            ModalPopupCapture, PopupEvent, PopupKey, PopupLoopControl, PopupLoopWaker, repost_quit,
+            run_modal_popup_loop,
         };
 
         let (size, root_origin, initial_rect) = {
@@ -1319,34 +1281,19 @@ impl Menu {
             }
         };
 
-        let hwnd = window.native_handle() as HWND;
-        // SAFETY: `hwnd` is the native handle of `window`, which is alive until the end of this
-        // function, and `window` was created on this thread, so it is a window of the calling
-        // thread as `SetCapture` requires (an invalid handle would only make the call fail).
-        // Both calls take integer/handle arguments only and touch no memory of ours.
-        unsafe {
-            SetForegroundWindow(hwnd);
-            SetCapture(hwnd);
-        }
-        show_arrow_cursor();
-        // Released when this function ends, however it ends (also before the loop starts).
-        let capture = CaptureGuard;
+        let hwnd = window.native_handle();
+        let capture = ModalPopupCapture::acquire(hwnd);
 
         // Losing the active window (Alt+Tab, another application) dismisses a popup. That
         // arrives as a sent message, which `GetMessageW` handles without returning, so the
         // window's deactivation flags it and wakes the loop.
         let dismissed = Rc::new(std::cell::Cell::new(false));
         let flag = Rc::clone(&dismissed);
-        // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
-        let thread = unsafe { GetCurrentThreadId() };
+        let waker = PopupLoopWaker::current_thread();
         window.set_window_event_handler(move |ev: &mut Event| {
             if matches!(ev.kind, EventKind::WindowDeactivate) {
                 flag.set(true);
-                // SAFETY: `PostThreadMessageW` takes integers only (`thread`, `WM_NULL`, zero
-                // parameters); no pointer is involved. `thread` is the id of the thread that
-                // owns `window` and runs this handler, and if the thread id were stale the call
-                // would just fail, which is ignored.
-                unsafe { PostThreadMessageW(thread, WM_NULL, 0, 0) };
+                waker.wake();
             }
         });
         window.show();
@@ -1354,85 +1301,62 @@ impl Menu {
             .present_popup(&mut window, root_origin, size);
 
         let mut chosen = None;
-        let mut quit = None;
-        // The cursor position is a native desktop position: it maps through the screen it is on.
-        // SAFETY: this is the modal message loop of the calling thread. `msg` and `discard_msg`
-        // are live `MSG` locals, for which the all-zero pattern is valid (integers and raw
-        // pointers), and every Win32 call below gets a pointer to one of them; `GetMessageW` and
-        // `PeekMessageW` fill them and `TranslateMessage`/`DispatchMessageW` only read the `msg`
-        // just filled. A null window handle means "all windows of this thread". `hwnd` is the
-        // handle of `window`, which lives until after this block (it is dropped below).
-        // `menu` is not borrowed across `GetMessageW` or `DispatchMessageW`, so dispatched
-        // callbacks and timers on this thread may borrow `menu` safely.
-        unsafe {
-            let mut msg: MSG = std::mem::zeroed();
-            // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
-            // gone, so the loop that was running when the menu opened still quits; -1 is an
-            // error, not a message.
-            //
-            // `QMenu::exec` runs a `QEventLoop`, which `QCoreApplication::exit` and `quit` end
-            // with every other loop of the thread (qcoreapplication.cpp:1564-1568), and which
-            // returns at once when that has already happened (qeventloop.cpp:142). The exit's
-            // wake-up message brings the loop back here from `GetMessageW`.
-            while !ferrokit_core::event_loop::thread_quit_now() && {
-                let got = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
-                if got == 0 {
-                    quit = Some(msg.wParam as i32);
-                }
-                got > 0
-            } {
-                let mouse_pt = Point::new(msg.pt.x, msg.pt.y);
-                let mouse_screen =
-                    ferrokit_platform::screen::win32_screen::from_native_global_point(
-                        mouse_pt,
-                        hwnd as isize,
-                    );
-                let local_pt = Point::new(
-                    mouse_screen.x - root_origin.x,
-                    mouse_screen.y - root_origin.y,
-                );
-                match msg.message {
-                    WM_RBUTTONUP => {
-                        if !menu.borrow().covers(local_pt) {
-                            break;
+        let quit = run_modal_popup_loop(
+            hwnd,
+            capture,
+            || !menu.borrow().base.is_visible() || dismissed.get(),
+            |event| match event {
+                PopupEvent::MouseMove { screen_pos } => {
+                    let local_pt =
+                        Point::new(screen_pos.x - root_origin.x, screen_pos.y - root_origin.y);
+                    let outcome = {
+                        let mut m = menu.borrow_mut();
+                        let old_signature = m.hover_signature();
+                        let outcome = m.handle_mouse_move(local_pt);
+                        let new_signature = m.hover_signature();
+                        if old_signature != new_signature {
+                            m.present_popup(&mut window, root_origin, size);
                         }
+                        outcome
+                    };
+                    if let MenuOutcome::Activate(act, signals) = outcome {
+                        chosen = Some((act, signals));
+                        PopupLoopControl::Break
+                    } else {
+                        PopupLoopControl::Continue
                     }
-                    WM_MOUSEMOVE => {
-                        show_arrow_cursor();
-                        let outcome = {
-                            let mut m = menu.borrow_mut();
-                            let old_signature = m.hover_signature();
-                            let outcome = m.handle_mouse_move(local_pt);
-                            let new_signature = m.hover_signature();
-                            if old_signature != new_signature {
+                }
+                PopupEvent::MouseDown { screen_pos, .. } => {
+                    let local_pt =
+                        Point::new(screen_pos.x - root_origin.x, screen_pos.y - root_origin.y);
+                    let outcome = {
+                        let mut m = menu.borrow_mut();
+                        if !m.covers(local_pt) {
+                            MenuOutcome::Closed
+                        } else {
+                            let outcome = m.handle_mouse_press(local_pt, 1);
+                            if !matches!(outcome, MenuOutcome::Closed) {
                                 m.present_popup(&mut window, root_origin, size);
                             }
                             outcome
-                        };
-
-                        if let MenuOutcome::Activate(act, signals) = outcome {
-                            chosen = Some((act, signals));
-                            break;
                         }
+                    };
+                    if matches!(outcome, MenuOutcome::Closed) {
+                        PopupLoopControl::Break
+                    } else {
+                        PopupLoopControl::Continue
                     }
-                    WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-                        let outcome = {
-                            let mut m = menu.borrow_mut();
-                            if !m.covers(local_pt) {
-                                MenuOutcome::Closed
-                            } else {
-                                let outcome = m.handle_mouse_press(local_pt, 1);
-                                if !matches!(outcome, MenuOutcome::Closed) {
-                                    m.present_popup(&mut window, root_origin, size);
-                                }
-                                outcome
-                            }
-                        };
-                        if let MenuOutcome::Closed = outcome {
-                            break;
+                }
+                PopupEvent::MouseUp { screen_pos, button } => {
+                    let local_pt =
+                        Point::new(screen_pos.x - root_origin.x, screen_pos.y - root_origin.y);
+                    if button == 2 {
+                        if !menu.borrow().covers(local_pt) {
+                            PopupLoopControl::Break
+                        } else {
+                            PopupLoopControl::Continue
                         }
-                    }
-                    WM_LBUTTONUP => {
+                    } else {
                         let outcome = {
                             let mut m = menu.borrow_mut();
                             if !m.covers(local_pt) {
@@ -1451,76 +1375,56 @@ impl Menu {
                         match outcome {
                             MenuOutcome::Activate(act, signals) => {
                                 chosen = Some((act, signals));
-                                break;
+                                PopupLoopControl::Break
                             }
-                            MenuOutcome::Closed => break,
-                            _ => {}
+                            MenuOutcome::Closed => PopupLoopControl::Break,
+                            _ => PopupLoopControl::Continue,
                         }
-                    }
-                    WM_KEYDOWN => {
-                        let key = msg.wParam as u16;
-                        if key == VK_ESCAPE {
-                            break;
-                        }
-                        let mut m = menu.borrow_mut();
-                        let mut activated = None;
-                        match key {
-                            VK_UP => {
-                                m.handle_key(keys::UP, 0);
-                            }
-                            VK_DOWN => {
-                                m.handle_key(keys::DOWN, 0);
-                            }
-                            VK_LEFT => {
-                                m.handle_key(keys::LEFT, 0);
-                            }
-                            VK_RIGHT => {
-                                m.handle_key(keys::RIGHT, 0);
-                            }
-                            VK_RETURN => {
-                                if let MenuOutcome::Activate(act, signals) =
-                                    m.handle_key(keys::RETURN, 0)
-                                {
-                                    activated = Some((act, signals));
-                                }
-                            }
-                            _ => {}
-                        }
-                        if let Some((act, signals)) = activated {
-                            chosen = Some((act, signals));
-                            break;
-                        }
-                        m.present_popup(&mut window, root_origin, size);
-                    }
-                    _ => {
-                        TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
                     }
                 }
-
-                if !menu.borrow().base.is_visible() || dismissed.get() {
-                    break;
+                PopupEvent::KeyDown { key } => {
+                    if key == PopupKey::Escape {
+                        return PopupLoopControl::Break;
+                    }
+                    let mut m = menu.borrow_mut();
+                    let mut activated = None;
+                    match key {
+                        PopupKey::Escape => unreachable!(),
+                        PopupKey::Up => {
+                            m.handle_key(keys::UP, 0);
+                        }
+                        PopupKey::Down => {
+                            m.handle_key(keys::DOWN, 0);
+                        }
+                        PopupKey::Left => {
+                            m.handle_key(keys::LEFT, 0);
+                        }
+                        PopupKey::Right => {
+                            m.handle_key(keys::RIGHT, 0);
+                        }
+                        PopupKey::Return => {
+                            if let MenuOutcome::Activate(act, signals) =
+                                m.handle_key(keys::RETURN, 0)
+                            {
+                                activated = Some((act, signals));
+                            }
+                        }
+                        PopupKey::Other => {}
+                    }
+                    if let Some((act, signals)) = activated {
+                        chosen = Some((act, signals));
+                        return PopupLoopControl::Break;
+                    }
+                    m.present_popup(&mut window, root_origin, size);
+                    PopupLoopControl::Continue
                 }
-            }
-            drop(capture);
-            // Discard any residual mouse button messages queued during the modal menu
-            let mut discard_msg: MSG = std::mem::zeroed();
-            while PeekMessageW(
-                &mut discard_msg,
-                std::ptr::null_mut(),
-                WM_LBUTTONDOWN,
-                WM_RBUTTONUP,
-                PM_REMOVE,
-            ) != 0
-            {}
-        }
+            },
+        );
         menu.borrow_mut().hide_now(true);
         // Destroying the popup window may pump messages; the quit is re-posted after that.
         drop(window);
         if let Some(code) = quit {
-            // SAFETY: `PostQuitMessage` takes an integer exit code only and posts `WM_QUIT` to the
-            // calling thread's queue; it touches no memory of ours and has no precondition.
-            unsafe { PostQuitMessage(code) };
+            repost_quit(code);
         }
         chosen
     }

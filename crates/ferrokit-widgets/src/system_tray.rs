@@ -249,14 +249,7 @@ impl SystemTrayIcon {
     }
 
     /// The underlying tray window handle.
-    #[cfg(windows)]
-    pub fn hwnd(&self) -> windows_sys::Win32::Foundation::HWND {
-        self.platform_tray.hwnd()
-    }
-
-    /// The underlying tray window handle on non-Windows.
-    #[cfg(not(windows))]
-    pub fn hwnd(&self) -> isize {
+    pub fn hwnd(&self) -> ferrokit_platform::HWND {
         self.platform_tray.hwnd()
     }
 }
