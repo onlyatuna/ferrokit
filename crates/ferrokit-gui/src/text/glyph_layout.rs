@@ -43,6 +43,10 @@ type LcdGlyphCache = Arc<
 >;
 /// Upper bound on cached glyph bitmaps per engine (a CJK font could otherwise grow without limit).
 const MONO_GLYPH_CACHE_LIMIT: usize = 4096;
+/// Upper bound on cached color glyph pixmaps per engine.
+const COLOR_GLYPH_CACHE_LIMIT: usize = 1024;
+/// Upper bound on cached HarfBuzz shaping faces (one per ppem) per engine.
+const SHAPING_FACE_CACHE_LIMIT: usize = 64;
 type ShapingFaceCache =
     Arc<std::sync::Mutex<std::collections::HashMap<u16, Option<Arc<ShapingFace>>>>>;
 
@@ -245,6 +249,8 @@ pub struct FontEngine {
     lcd_cache: LcdGlyphCache,
     /// Shaping faces per ppem, built on first use; `None` when the font data does not parse.
     shaping_faces: ShapingFaceCache,
+    /// Whether `raw_data` at `face_index` has both `COLR` and `CPAL` tables.
+    has_color_table: Arc<std::sync::OnceLock<bool>>,
     /// The fallback engines per script item, see [`FontEngine::with_script_chains`].
     script_chains: Option<Arc<ScriptChains>>,
     /// The chains hold the engine of every script item, the first of them being the item's own
@@ -264,6 +270,7 @@ impl FontEngine {
             mono_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             lcd_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             shaping_faces: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            has_color_table: Arc::new(std::sync::OnceLock::new()),
             script_chains: None,
             item_chains: false,
         }
@@ -274,6 +281,7 @@ impl FontEngine {
         self.raw_data = Some(raw_data.into());
         // Faces built from other data (shared with clones of this engine) do not apply.
         self.shaping_faces = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        self.has_color_table = Arc::new(std::sync::OnceLock::new());
         self
     }
 
@@ -282,16 +290,22 @@ impl FontEngine {
     pub fn shaping_face(&self, ppem: u16) -> Option<Arc<ShapingFace>> {
         let data = self.raw_data.as_ref()?;
         let mut faces = self.shaping_faces.lock().unwrap_or_else(|e| e.into_inner());
-        faces
-            .entry(ppem)
-            .or_insert_with(|| ShapingFace::new(data, self.face_index, ppem).map(Arc::new))
-            .clone()
+        if let Some(entry) = faces.get(&ppem) {
+            return entry.clone();
+        }
+        let entry = ShapingFace::new(data, self.face_index, ppem).map(Arc::new);
+        if faces.len() >= SHAPING_FACE_CACHE_LIMIT {
+            faces.clear();
+        }
+        faces.insert(ppem, entry.clone());
+        entry
     }
 
     /// Sets the face index within a font collection file.
     pub fn with_face_index(mut self, face_index: u32) -> Self {
         self.face_index = face_index;
         self.shaping_faces = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        self.has_color_table = Arc::new(std::sync::OnceLock::new());
         self
     }
 
@@ -322,18 +336,22 @@ impl FontEngine {
         self.script_chains.as_deref()
     }
 
+    fn has_color_table(&self, raw: &SharedFontData) -> bool {
+        *self.has_color_table.get_or_init(|| {
+            crate::text::color_glyph::has_colr_table(raw.as_slice(), self.face_index)
+        })
+    }
+
     /// Checks whether `glyph_id` is an OpenType color glyph with COLRv0 layers.
     pub fn is_color_glyph(&self, glyph_id: u16) -> bool {
-        if let Some(raw) = &self.raw_data {
-            crate::text::color_glyph::parse_colr_v0_layers(
-                raw.as_slice(),
-                self.face_index,
-                glyph_id,
-            )
-            .is_some()
-        } else {
-            false
+        let Some(raw) = &self.raw_data else {
+            return false;
+        };
+        if !self.has_color_table(raw) {
+            return false;
         }
+        crate::text::color_glyph::parse_colr_v0_layers(raw.as_slice(), self.face_index, glyph_id)
+            .is_some()
     }
 
     /// Rasterizes an OpenType color glyph into a 32-bit premultiplied ARGB/RGBA `Pixmap`.
@@ -344,6 +362,10 @@ impl FontEngine {
         glyph_id: u16,
         px_size: f32,
     ) -> Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)> {
+        let raw = self.raw_data.as_ref()?;
+        if !self.has_color_table(raw) {
+            return None;
+        }
         let key = (glyph_id, (px_size * 64.0).round() as u32);
         if let Ok(guard) = self.color_cache.lock()
             && let Some(entry) = guard.get(&key)
@@ -351,7 +373,6 @@ impl FontEngine {
             return entry.clone();
         }
 
-        let raw = self.raw_data.as_ref()?;
         let rendered = crate::text::color_glyph::rasterize_color_glyph(
             raw.as_slice(),
             self.face_index,
@@ -362,6 +383,9 @@ impl FontEngine {
         .map(|(m, p)| (m, Arc::new(p)));
 
         if let Ok(mut guard) = self.color_cache.lock() {
+            if guard.len() >= COLOR_GLYPH_CACHE_LIMIT {
+                guard.clear();
+            }
             guard.insert(key, rendered.clone());
         }
 
@@ -2236,5 +2260,16 @@ mod tests {
         let face = rustybuzz::Face::from_slice(&without_stat, 0).unwrap();
         assert!(face.tables().trak.is_some());
         assert_eq!(hb_tracking(&face, 20.0, 20.0), 0);
+    }
+
+    #[test]
+    fn non_color_font_skips_color_cache() {
+        let data =
+            SharedFontData::from_vec(include_bytes!("../../tests/data/oracle_text.ttf").to_vec());
+        let face: SharedGlyphFace =
+            Arc::new(crate::text::outline_face::OutlineFace::new(data.clone(), 0).unwrap());
+        let engine = FontEngine::new(face).with_raw_data(data);
+        assert!(engine.rasterize_color_glyph(1, 16.0).is_none());
+        assert!(engine.color_cache.lock().unwrap().is_empty());
     }
 }

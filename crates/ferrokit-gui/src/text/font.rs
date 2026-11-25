@@ -41,9 +41,11 @@ impl SharedFontData {
         {
             let file = std::fs::File::open(path)?;
             if file.metadata()?.len() > 0 {
-                // SAFETY: the mapping is read-only and private, and Windows keeps the file from
-                // shrinking under it (see above). Installed font files are not rewritten in
-                // place [inferred], so the mapped bytes do not change while borrowed.
+                // SAFETY: `memmap2::Mmap::map` creates a read-only shared mapping (`FILE_MAP_READ`
+                // on Windows, not a private copy-on-write mapping), and Windows keeps the file
+                // from shrinking under it (see above). Soundness relies on system/installed font
+                // files not being rewritten in place while mapped; callers loading mutable or
+                // untrusted files should use `SharedFontData::from_vec`.
                 if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
                     return Ok(Self {
                         data: Arc::new(map),

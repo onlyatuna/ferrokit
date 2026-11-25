@@ -146,6 +146,9 @@ pub(crate) fn factory6() -> Option<IDWriteFactory6> {
     serialized(|| factory.base.cast::<IDWriteFactory6>().ok())
 }
 
+/// Upper bound on cached sub-pixel position counts per face.
+const SUBPIXEL_COUNT_CACHE_LIMIT: usize = 256;
+
 /// A font face rasterized by DirectWrite.
 pub struct DirectWriteFace {
     /// Released in `Drop` under `DWRITE_LOCK`, before `base` (whose font bytes DirectWrite's
@@ -601,6 +604,9 @@ impl DirectWriteFace {
             }
         }
         let count = images.len() as i64;
+        if counts.len() >= SUBPIXEL_COUNT_CACHE_LIMIT {
+            counts.clear();
+        }
         counts.insert(key, count);
         count
     }

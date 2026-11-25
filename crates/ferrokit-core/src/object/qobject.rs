@@ -43,15 +43,15 @@ fn lock_hierarchy() -> MutexGuard<'static, ()> {
 /// thread into one of every later caller. Unlike the helpers of the `poison` module they leave the
 /// poison flag set: the commits of a hierarchy change use the plain `read`/`write` calls on these
 /// locks and return `ReparentError::Busy` for a poisoned one, and cleanup must not change that.
-fn read_unpoisoned<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+fn read_ignoring_poison<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+fn write_ignoring_poison<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -226,8 +226,9 @@ impl Drop for ObjectBorrowGuard {
                 .has_pending_child_changes
                 .swap(false, Ordering::AcqRel)
             {
-                let changes =
-                    std::mem::take(&mut *lock_unpoisoned(&self._entry.pending_child_changes));
+                let changes = std::mem::take(&mut *lock_ignoring_poison(
+                    &self._entry.pending_child_changes,
+                ));
                 // A destroyed object is not written to: its memory may already be freed. Every
                 // drop of an object marks its memory destroyed before the memory goes. An object
                 // that was only unregistered (its liveness token is false) still owns its
@@ -246,7 +247,7 @@ impl Drop for ObjectBorrowGuard {
                 .has_pending_parent_sync
                 .swap(false, Ordering::AcqRel)
             {
-                let sync = lock_unpoisoned(&self._entry.pending_parent_sync).take();
+                let sync = lock_ignoring_poison(&self._entry.pending_parent_sync).take();
                 if let Some((new_parent, target_liveness)) = sync
                     && !self.borrow_state.memory_destroyed.load(Ordering::Acquire)
                 {
@@ -389,7 +390,7 @@ fn destroy_here(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
     // The object is dead from here on, and `destroyed` goes out before any descendant is
     // unregistered (and so before theirs).
     state.emit_destroyed_once(id);
-    *lock_unpoisoned(&state.parked) = Some(SendFree(free));
+    *lock_ignoring_poison(&state.parked) = Some(SendFree(free));
     state.free_when_released.store(true, Ordering::Release);
     unregister_descendants(id);
     // SAFETY: the running callback holds the borrow flag and its own `Arc` to the record, and the
@@ -444,7 +445,7 @@ fn unregister_descendants(id: ObjectId) {
 /// the borrow flag free after parking) and the callback's guard both call this: the slot is
 /// emptied under its lock, so one of them runs it.
 fn run_parked(state: &ObjectBorrowState) {
-    let free = lock_unpoisoned(&state.parked).take();
+    let free = lock_ignoring_poison(&state.parked).take();
     if let Some(SendFree(free)) = free {
         free(true);
     }
@@ -514,7 +515,7 @@ fn store_link(
         .get(&record.id)
         .is_some_and(|current| Arc::ptr_eq(current, record))
     {
-        lock_unpoisoned(&PARENT_LINK_INDEX).relink(record.id, new);
+        lock_ignoring_poison(&PARENT_LINK_INDEX).relink(record.id, new);
     }
     *link = new;
 }
@@ -524,16 +525,16 @@ fn store_link(
 /// while no other thread changes a link.
 #[doc(hidden)]
 pub fn verify_parent_link_index() -> Result<(), String> {
-    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    let registry = read_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
     // The links are read before the index is locked: a link (L2) is never requested while the
     // index, a leaf, is held.
     let mut derived: HashMap<ObjectId, ObjectId> = HashMap::new();
     for (&id, record) in registry.iter() {
-        if let Some(parent) = *read_unpoisoned(&record.parent) {
+        if let Some(parent) = *read_ignoring_poison(&record.parent) {
             derived.insert(id, parent);
         }
     }
-    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    let index = lock_ignoring_poison(&PARENT_LINK_INDEX);
     if derived != index.parent_of {
         return Err(format!(
             "links of the registry {derived:?} differ from the index's {:?}",
@@ -563,7 +564,7 @@ pub fn verify_parent_link_index() -> Result<(), String> {
 
 fn registered_ptr(id: ObjectId) -> Option<(Arc<ObjectRecord>, *mut dyn QObject)> {
     let entry = GLOBAL_OBJECT_REGISTRY.read().ok()?.get(&id)?.clone();
-    if *read_unpoisoned(&entry.registration_thread) != ThreadId::current()
+    if *read_ignoring_poison(&entry.registration_thread) != ThreadId::current()
         || !entry.liveness.load(Ordering::Acquire)
     {
         return None;
@@ -653,7 +654,7 @@ fn edit_child_list(parent: ObjectId, change: ChildListChange) {
             drop(released);
         }
         None => {
-            lock_unpoisoned(&entry.pending_child_changes).push(change);
+            lock_ignoring_poison(&entry.pending_child_changes).push(change);
             entry
                 .has_pending_child_changes
                 .store(true, Ordering::Release);
@@ -728,7 +729,7 @@ pub fn dispatch_to_object(receiver: ObjectId, event: &mut Event) -> bool {
 /// together so that two calls for one id leave both stores with the same last writer. No caller
 /// holds L0, L1, L2 or `HIERARCHY_MUTATION`.
 pub(crate) fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
-    let mut lock = write_unpoisoned(&GLOBAL_OBJECT_THREADS);
+    let mut lock = write_ignoring_poison(&GLOBAL_OBJECT_THREADS);
     if lock.is_none() {
         *lock = Some(HashMap::new());
     }
@@ -738,14 +739,14 @@ pub(crate) fn register_object_thread(id: ObjectId, thread_id: ThreadId) {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
         && let Some(entry) = reg.get(&id)
     {
-        *write_unpoisoned(&entry.thread_id) = thread_id;
+        *write_ignoring_poison(&entry.thread_id) = thread_id;
     }
 }
 
 /// Unregisters an object's thread affinity from the global registry. It is part of the cleanup of
 /// a destroyed object, which cannot report a failure, so a poisoned map is used as it is.
 pub(crate) fn unregister_object_thread(id: ObjectId) {
-    if let Some(map) = write_unpoisoned(&GLOBAL_OBJECT_THREADS).as_mut() {
+    if let Some(map) = write_ignoring_poison(&GLOBAL_OBJECT_THREADS).as_mut() {
         map.remove(&id);
     }
 }
@@ -756,7 +757,7 @@ pub(crate) fn registration_thread_of(id: ObjectId) -> Option<ThreadId> {
     if !entry.liveness.load(Ordering::Acquire) {
         return None;
     }
-    let thread_id = *read_unpoisoned(&entry.registration_thread);
+    let thread_id = *read_ignoring_poison(&entry.registration_thread);
     Some(thread_id)
 }
 
@@ -836,7 +837,7 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
         && let Some(entry) = reg.get(&id)
     {
-        *write_unpoisoned(&entry.registration_thread) = thread_id;
+        *write_ignoring_poison(&entry.registration_thread) = thread_id;
     }
 }
 
@@ -846,8 +847,8 @@ pub(crate) fn set_registration_thread(id: ObjectId, thread_id: ThreadId) {
 /// [`PARENT_LINK_INDEX`] under the registry's read lock, so it holds for the registered objects at
 /// that moment and costs what `id` has below it, not what is registered.
 fn registered_children_below(id: ObjectId) -> Vec<ObjectId> {
-    let _registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
-    let index = lock_unpoisoned(&PARENT_LINK_INDEX);
+    let _registry = read_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
+    let index = lock_ignoring_poison(&PARENT_LINK_INDEX);
     let children = index.children.get(&id).cloned().unwrap_or_default();
     INDEX_ENTRIES_READ.with(|read| read.set(read.get() + children.len()));
     children
@@ -931,7 +932,7 @@ fn inspect_owned_tree(
             if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
                 return Err(MoveError::Busy);
             }
-            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+            if *read_ignoring_poison(&entry.registration_thread) != ThreadId::current() {
                 return Err(MoveError::WrongThread);
             }
             scan.enqueue(owned_id);
@@ -977,7 +978,7 @@ fn collect_queued_descendants(scan: &mut SubtreeScan) -> Result<(), super::threa
             if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
                 return Err(MoveError::Busy);
             }
-            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+            if *read_ignoring_poison(&entry.registration_thread) != ThreadId::current() {
                 return Err(MoveError::WrongThread);
             }
             with_object(child_id, |obj| {
@@ -1026,9 +1027,9 @@ pub(crate) fn prepare_move_to_thread(
         return Err(MoveByIdError::Busy);
     }
     let on_registration_thread =
-        *read_unpoisoned(&entry.registration_thread) == ThreadId::current();
+        *read_ignoring_poison(&entry.registration_thread) == ThreadId::current();
     if !on_registration_thread {
-        if read_unpoisoned(&entry.parent).is_some() {
+        if read_ignoring_poison(&entry.parent).is_some() {
             return Err(MoveByIdError::HasParent);
         }
         return Err(MoveByIdError::WrongThread);
@@ -1093,7 +1094,7 @@ pub(crate) fn prepare_move_to_thread_from_data(
             if entry.borrow_state.borrow_flag.load(Ordering::Acquire) {
                 return Err(MoveError::Busy);
             }
-            if *read_unpoisoned(&entry.registration_thread) != ThreadId::current() {
+            if *read_ignoring_poison(&entry.registration_thread) != ThreadId::current() {
                 return Err(MoveError::WrongThread);
             }
         }
@@ -1175,9 +1176,9 @@ pub fn query_object_thread(id: ObjectId) -> Option<ThreadId> {
     if let Ok(reg) = GLOBAL_OBJECT_REGISTRY.read()
         && let Some(entry) = reg.get(&id)
     {
-        return Some(*read_unpoisoned(&entry.thread_id));
+        return Some(*read_ignoring_poison(&entry.thread_id));
     }
-    if let Some(map) = read_unpoisoned(&GLOBAL_OBJECT_THREADS).as_ref() {
+    if let Some(map) = read_ignoring_poison(&GLOBAL_OBJECT_THREADS).as_ref() {
         return map.get(&id).copied();
     }
     None
@@ -1223,18 +1224,18 @@ fn register_record(
     let thread_id = data.thread_id();
     {
         let _hierarchy = lock_hierarchy();
-        let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let mut registry = write_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
         let same_object = registry
             .get(&id)
             .filter(|previous| Arc::ptr_eq(&previous.liveness, &data.liveness))
             .cloned();
         let mut parent = match (&same_object, adopted_by) {
             (_, Some(parent_id)) => Some(parent_id),
-            (Some(previous), None) => *read_unpoisoned(&previous.parent),
+            (Some(previous), None) => *read_ignoring_poison(&previous.parent),
             (None, None) => data.parent(),
         };
         let mut children = match &same_object {
-            Some(previous) => read_unpoisoned(&previous.children).clone(),
+            Some(previous) => read_ignoring_poison(&previous.children).clone(),
             None => data.children.clone(),
         };
         let verdict = match parent {
@@ -1253,7 +1254,7 @@ fn register_record(
                 && !ancestors.contains(child_id)
                 && registry
                     .get(child_id)
-                    .is_none_or(|record| *read_unpoisoned(&record.parent) == Some(id))
+                    .is_none_or(|record| *read_ignoring_poison(&record.parent) == Some(id))
         });
         // The parent's list is taken before anything is inserted, so that a poisoned list refuses
         // the adoption with nothing changed, as every other commit does. The parent is borrowed by
@@ -1295,7 +1296,7 @@ fn register_record(
                 previous.liveness.store(false, Ordering::Release);
             }
         }
-        lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, parent);
+        lock_ignoring_poison(&PARENT_LINK_INDEX).relink(id, parent);
         if let Some(list) = parent_list.as_mut()
             && !list.contains(&id)
         {
@@ -1405,12 +1406,12 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     // This cleanup cannot report a failure, and a step that is skipped leaves a record that
     // points to freed memory, an id in a parent's list, or a child with a dead parent. The locks
     // below guard single stores and plain container edits, which a panic cannot leave half done,
-    // so a poisoned lock is used as it is (see `read_unpoisoned`).
+    // so a poisoned lock is used as it is (see `read_ignoring_poison`).
     let removed = {
-        let mut registry = write_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let mut registry = write_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
         let removed = registry.remove(&id);
         if removed.is_some() {
-            lock_unpoisoned(&PARENT_LINK_INDEX).relink(id, None);
+            lock_ignoring_poison(&PARENT_LINK_INDEX).relink(id, None);
         }
         removed
     };
@@ -1421,7 +1422,7 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         entry.liveness.store(false, Ordering::Release);
         // Lock order: the registry (L0), then the `children` of a parent (L1), then the `parent`
         // of a child (L2). This function does not take `HIERARCHY_MUTATION`: it only removes links.
-        let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+        let registry = read_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
         // Unlist from the parent. The parent is named by this object's own `parent` (L2),
         // which must not be held while the parent's list (L1) is locked: it is read and let
         // go, the parent's list is locked, and the link is read again under that lock.
@@ -1429,7 +1430,7 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
         // it; if it changed in between, the unlisting is done for the new parent. The loop is
         // bounded, and ends at once when the parent is gone.
         for _ in 0..=registry.len() {
-            let Some(parent_id) = *read_unpoisoned(&entry.parent) else {
+            let Some(parent_id) = *read_ignoring_poison(&entry.parent) else {
                 break;
             };
             #[cfg(test)]
@@ -1437,8 +1438,8 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
             let Some(parent) = registry.get(&parent_id) else {
                 break;
             };
-            let mut children = write_unpoisoned(&parent.children);
-            if *read_unpoisoned(&entry.parent) == Some(parent_id) {
+            let mut children = write_ignoring_poison(&parent.children);
+            if *read_ignoring_poison(&entry.parent) == Some(parent_id) {
                 // A parent deleting its children in list order finds each one at the front.
                 if let Some(at) = children.iter().position(|&child_id| child_id == id) {
                     children.remove(at);
@@ -1446,11 +1447,11 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
                 break;
             }
         }
-        for child_id in read_unpoisoned(&entry.children).iter() {
+        for child_id in read_ignoring_poison(&entry.children).iter() {
             if let Some(child) = registry.get(child_id) {
                 // A listed child whose own link names another parent (a stale entry) is not
                 // this object's child and keeps its parent.
-                let mut link = write_unpoisoned(&child.parent);
+                let mut link = write_ignoring_poison(&child.parent);
                 if *link == Some(id) {
                     store_link(&registry, child, &mut link, None);
                 }
@@ -1496,7 +1497,7 @@ pub(crate) fn destroy_deferred(id: ObjectId) {
     else {
         return;
     };
-    let parent = *read_unpoisoned(&record.parent);
+    let parent = *read_ignoring_poison(&record.parent);
     // Ownership is read from the parent's list: the object itself may be borrowed by a callback
     // further up the stack, which its own flag would hide.
     if let Some(parent_id) = parent {

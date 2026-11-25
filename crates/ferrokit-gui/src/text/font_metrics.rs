@@ -83,6 +83,8 @@ struct AdvanceCache {
 
 /// Upper bound on cached strings; the cache is simply cleared when it is exceeded.
 const ADVANCE_CACHE_MAX: usize = 4096;
+/// Upper bound on cached line-metrics entries per thread.
+const LINE_CACHE_MAX: usize = 512;
 
 thread_local! {
     static ADVANCE_CACHE: RefCell<AdvanceCache> = RefCell::new(AdvanceCache {
@@ -322,7 +324,13 @@ impl FontMetrics {
             return found;
         }
         let found = crate::text::font_database::primary_face_metrics(font);
-        LINE_CACHE.with(|c| c.borrow_mut().map.insert(key, found));
+        LINE_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.map.len() >= LINE_CACHE_MAX {
+                c.map.clear();
+            }
+            c.map.insert(key, found);
+        });
         found
     }
 

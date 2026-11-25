@@ -31,6 +31,47 @@ fn get_sfnt_offset(font_data: &[u8], face_index: u32) -> Option<usize> {
     }
 }
 
+/// Returns `true` when the face at `face_index` has both `COLR` and `CPAL` tables.
+pub fn has_colr_table(font_data: &[u8], face_index: u32) -> bool {
+    let Some(sfnt_offset) = get_sfnt_offset(font_data, face_index) else {
+        return false;
+    };
+    let Some(header) = sfnt_offset
+        .checked_add(12)
+        .and_then(|end| font_data.get(sfnt_offset..end))
+    else {
+        return false;
+    };
+    let num_tables = u16::from_be_bytes([header[4], header[5]]) as usize;
+    let mut has_colr = false;
+    let mut has_cpal = false;
+    for i in 0..num_tables {
+        let Some(entry_off) = i
+            .checked_mul(16)
+            .and_then(|off| off.checked_add(sfnt_offset))
+            .and_then(|off| off.checked_add(12))
+        else {
+            return false;
+        };
+        let Some(entry) = entry_off
+            .checked_add(16)
+            .and_then(|end| font_data.get(entry_off..end))
+        else {
+            break;
+        };
+        let tag = &entry[0..4];
+        if tag == b"COLR" {
+            has_colr = true;
+        } else if tag == b"CPAL" {
+            has_cpal = true;
+        }
+        if has_colr && has_cpal {
+            return true;
+        }
+    }
+    false
+}
+
 /// Parses OpenType COLRv0 layers and CPAL palette colors for `glyph_id`.
 pub fn parse_colr_v0_layers(
     font_data: &[u8],
