@@ -992,7 +992,7 @@ impl GlyphFace for CoreTextFace {
             return None;
         }
         let ctfont = self.ctfont(size)?;
-        let (_, advance) = Self::glyph_rect(ctfont, glyph_id);
+        let (_, advance) = Self::glyph_rect(ctfont.as_ptr(), glyph_id);
         Some(q_fixed(advance.width) as f32)
     }
 
