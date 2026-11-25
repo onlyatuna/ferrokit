@@ -618,7 +618,7 @@ static PLATFORM_INTEGRATION: std::sync::RwLock<Option<Arc<dyn PlatformIntegratio
     std::sync::RwLock::new(None);
 
 pub fn platform() -> Arc<dyn PlatformIntegration> {
-    if let Some(integration) = &*PLATFORM_INTEGRATION.read().unwrap() {
+    if let Some(integration) = &*ferrokit_core::poison::read_unpoisoned(&PLATFORM_INTEGRATION) {
         return Arc::clone(integration);
     }
 
@@ -640,7 +640,7 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
     let default_integration: Arc<dyn PlatformIntegration> =
         Arc::new(generic::GenericPlatformIntegration::default());
 
-    let mut writer = PLATFORM_INTEGRATION.write().unwrap();
+    let mut writer = ferrokit_core::poison::write_unpoisoned(&PLATFORM_INTEGRATION);
     // A racing caller (or `set_platform_integration`) may have installed one meanwhile.
     let installed_here = writer.is_none();
     let integration = Arc::clone(writer.get_or_insert(default_integration));
@@ -655,7 +655,7 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
 
 pub fn set_platform_integration(integration: Arc<dyn PlatformIntegration>) {
     {
-        let mut writer = PLATFORM_INTEGRATION.write().unwrap();
+        let mut writer = ferrokit_core::poison::write_unpoisoned(&PLATFORM_INTEGRATION);
         *writer = Some(Arc::clone(&integration));
     }
     crate::theme::install_style_hints_theme(integration.theme());

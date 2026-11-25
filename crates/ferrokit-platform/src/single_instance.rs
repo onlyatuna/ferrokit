@@ -59,13 +59,13 @@ impl SingleInstanceGuard {
     where
         F: Fn(SingleInstanceCommand) + Send + Sync + 'static,
     {
-        let mut list = self.command_callbacks.lock().unwrap();
+        let mut list = ferrokit_core::poison::lock_unpoisoned(&self.command_callbacks);
         list.push(Box::new(callback));
     }
 
     /// Triggers registered command callbacks manually (e.g. from native window message filter).
     pub fn dispatch_command(&self, cmd: SingleInstanceCommand) {
-        let callbacks = self.command_callbacks.lock().unwrap();
+        let callbacks = ferrokit_core::poison::lock_unpoisoned(&self.command_callbacks);
         for cb in callbacks.iter() {
             cb(cmd);
         }
@@ -294,7 +294,7 @@ impl SingleInstance {
                             if stream.read_exact(&mut buf).is_ok()
                                 && let Some(cmd) = SingleInstanceCommand::from_u8(buf[0])
                             {
-                                let cbs = callbacks.lock().unwrap();
+                                let cbs = ferrokit_core::poison::lock_unpoisoned(&callbacks);
                                 for cb in cbs.iter() {
                                     cb(cmd);
                                 }

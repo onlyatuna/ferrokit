@@ -292,7 +292,7 @@ impl GenericWindow {
     }
 
     pub fn queue_event(&self, event: crate::window_system_interface::WindowSystemEvent) {
-        self.pending_events.lock().unwrap().push(event);
+        ferrokit_core::poison::lock_unpoisoned(&self.pending_events).push(event);
     }
 
     /// The mask `set_mask` stored (this backend has no window system to apply it to).
@@ -398,7 +398,7 @@ impl PlatformWindow for GenericWindow {
     }
 
     fn present(&mut self, pixmap: &mut Pixmap, opacity: f32) -> Result<(), &'static str> {
-        let mut guard = self.last_pixmap.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.last_pixmap);
         *guard = Some((*pixmap).clone());
         self.opacity = opacity;
         Ok(())
@@ -413,7 +413,9 @@ impl PlatformWindow for GenericWindow {
     }
 
     fn poll_events(&mut self) -> usize {
-        let events = std::mem::take(&mut *self.pending_events.lock().unwrap());
+        let events = std::mem::take(&mut *ferrokit_core::poison::lock_unpoisoned(
+            &self.pending_events,
+        ));
         let count = events.len();
         for event in &events {
             match event {

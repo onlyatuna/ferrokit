@@ -167,7 +167,7 @@ impl DbusStatusNotifierItem {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connection.lock().unwrap().is_some()
+        ferrokit_core::poison::lock_unpoisoned(&self.connection).is_some()
     }
 
     /// Uses `connection` instead of connecting to the session bus on first use. A notifier
@@ -176,7 +176,7 @@ impl DbusStatusNotifierItem {
         if let Some(notifier) = self.notifier.take() {
             notifier.set_enabled(false);
         }
-        *self.connection.lock().unwrap() = Some(connection);
+        *ferrokit_core::poison::lock_unpoisoned(&self.connection) = Some(connection);
     }
 
     /// Watches the bus socket; `Ok(None)` when there is no bus connection or it has no
@@ -187,7 +187,7 @@ impl DbusStatusNotifierItem {
         &mut self,
         dispatcher: &mut dyn EventDispatcher,
     ) -> Result<Option<std::sync::Arc<SocketNotifier>>, SocketNotifierError> {
-        let mut conn_guard = self.connection.lock().unwrap();
+        let mut conn_guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if conn_guard.is_none() {
             *conn_guard = DbusConnection::connect_session_bus().ok();
         }
@@ -301,7 +301,7 @@ impl DbusStatusNotifierItem {
         };
         const NO_REPLY_EXPECTED: u8 = 0x1;
         if msg.flags & NO_REPLY_EXPECTED == 0
-            && let Some(conn) = self.connection.lock().unwrap().as_mut()
+            && let Some(conn) = ferrokit_core::poison::lock_unpoisoned(&self.connection).as_mut()
         {
             let serial = conn.next_serial();
             let destination = msg.sender.as_deref().unwrap_or("");
@@ -449,7 +449,7 @@ impl DbusStatusNotifierItem {
         if new_owner.is_empty() {
             return;
         }
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if let Some(conn) = guard.as_mut() {
             self.pending_registration = conn
                 .register_status_notifier_item("/StatusNotifierItem")
@@ -470,7 +470,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.icon_pixmap = DbusImage::images_for_icon(icon);
 
         // Emit NewIcon signal on Session Bus
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if let Some(conn) = guard.as_mut() {
             let serial = conn.next_serial();
             let sig = DbusMessage::signal(
@@ -488,7 +488,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.tooltip = tooltip.to_string();
 
         // Emit NewTitle signal on Session Bus
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if let Some(conn) = guard.as_mut() {
             let serial = conn.next_serial();
             let mut sig = DbusMessage::signal(
@@ -538,7 +538,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
     /// [`handle_message`]: DbusStatusNotifierItem::handle_message
     fn process_events(&mut self) {
         let incoming = {
-            let mut guard = self.connection.lock().unwrap();
+            let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
             let Some(conn) = guard.as_mut() else {
                 return;
             };
@@ -583,7 +583,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
     fn show(&mut self) -> Result<(), &'static str> {
         self.status = "Active".to_string();
 
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if guard.is_none() {
             *guard = DbusConnection::connect_session_bus().ok();
         }
@@ -620,7 +620,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
     fn hide(&mut self) -> Result<(), &'static str> {
         self.status = "Passive".to_string();
 
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if let Some(conn) = guard.as_mut() {
             let serial = conn.next_serial();
             let mut sig = DbusMessage::signal(
@@ -652,7 +652,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
             crate::platform_tray::TrayMessageIcon::NoIcon => "",
         };
 
-        let mut guard = self.connection.lock().unwrap();
+        let mut guard = ferrokit_core::poison::lock_unpoisoned(&self.connection);
         if guard.is_none() {
             *guard = DbusConnection::connect_session_bus().ok();
         }

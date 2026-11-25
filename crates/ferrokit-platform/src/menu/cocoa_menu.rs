@@ -169,7 +169,7 @@ impl CocoaMenuItem {
     }
 
     pub fn ns_control_state(&self) -> isize {
-        if *self.checked.lock().unwrap() {
+        if *ferrokit_core::poison::lock_unpoisoned(&self.checked) {
             NS_CONTROL_STATE_VALUE_ON
         } else {
             NS_CONTROL_STATE_VALUE_OFF
@@ -177,9 +177,9 @@ impl CocoaMenuItem {
     }
 
     pub fn trigger(&self) {
-        if *self.enabled.lock().unwrap() {
+        if *ferrokit_core::poison::lock_unpoisoned(&self.enabled) {
             if self.checkable {
-                let mut chk = self.checked.lock().unwrap();
+                let mut chk = ferrokit_core::poison::lock_unpoisoned(&self.checked);
                 *chk = !*chk;
                 let state = if *chk {
                     NS_CONTROL_STATE_VALUE_ON
@@ -201,11 +201,11 @@ impl CocoaMenuItem {
         // NSMenu (`ns_menu_of`, kept alive by `menu` in `self.submenu` and retained by
         // `setSubmenu:`); `setSubmenu:` takes one NSMenu or nil.
         unsafe { ObjcMsg::send_id(self.ns_item, Sel::register("setSubmenu:"), sub_id) };
-        *self.submenu.lock().unwrap() = Some(menu);
+        *ferrokit_core::poison::lock_unpoisoned(&self.submenu) = Some(menu);
     }
 
     pub fn has_submenu(&self) -> bool {
-        self.submenu.lock().unwrap().is_some()
+        ferrokit_core::poison::lock_unpoisoned(&self.submenu).is_some()
     }
 }
 
@@ -244,11 +244,11 @@ impl PlatformMenuItem for CocoaMenuItem {
     }
 
     fn text(&self) -> String {
-        self.text.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.text).clone()
     }
 
     fn set_text(&mut self, text: &str) {
-        *self.text.lock().unwrap() = text.to_string();
+        *ferrokit_core::poison::lock_unpoisoned(&self.text) = text.to_string();
         // SAFETY: `self.ns_item` is live (released only in `Drop`); `setTitle:` takes one
         // NSString, which `send_str` builds from `text`.
         unsafe { ObjcMsg::send_str(self.ns_item, Sel::register("setTitle:"), text) };
@@ -263,11 +263,11 @@ impl PlatformMenuItem for CocoaMenuItem {
     }
 
     fn is_checked(&self) -> bool {
-        *self.checked.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked)
     }
 
     fn set_checked(&mut self, checked: bool) {
-        *self.checked.lock().unwrap() = checked;
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked) = checked;
         let state = if checked {
             NS_CONTROL_STATE_VALUE_ON
         } else {
@@ -278,11 +278,11 @@ impl PlatformMenuItem for CocoaMenuItem {
     }
 
     fn is_enabled(&self) -> bool {
-        *self.enabled.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        *self.enabled.lock().unwrap() = enabled;
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled) = enabled;
         // SAFETY: `self.ns_item` is live (released only in `Drop`); `setEnabled:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(self.ns_item, Sel::register("setEnabled:"), enabled) };
     }
@@ -338,34 +338,31 @@ impl CocoaMenu {
     }
 
     pub fn title(&self) -> String {
-        self.title.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.title).clone()
     }
 
     pub fn set_title(&self, title: &str) {
-        *self.title.lock().unwrap() = title.to_string();
+        *ferrokit_core::poison::lock_unpoisoned(&self.title) = title.to_string();
         // SAFETY: `self.ns_menu` is live (released only in `Drop`); `setTitle:` takes one
         // NSString, which `send_str` builds from `title`.
         unsafe { ObjcMsg::send_str(self.ns_menu, Sel::register("setTitle:"), title) };
     }
 
     pub fn items(&self) -> Vec<Arc<CocoaMenuItem>> {
-        self.items.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.items).clone()
     }
 
     pub fn is_popped_up(&self) -> bool {
-        *self.is_popped_up.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.is_popped_up)
     }
 
     pub fn popup_pos(&self) -> Option<Point> {
-        *self.popup_pos.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.popup_pos)
     }
 
     pub fn trigger_item(&self, id: u32) -> bool {
         // Release the lock before emitting: a slot may call back into this menu.
-        let item = self
-            .items
-            .lock()
-            .unwrap()
+        let item = ferrokit_core::poison::lock_unpoisoned(&self.items)
             .iter()
             .find(|item| item.id == id)
             .cloned();
@@ -409,7 +406,7 @@ impl PlatformMenu for CocoaMenu {
         // live NSMenuItem just created (kept alive by `item` in `self.items` and by its own +1);
         // `addItem:` takes one NSMenuItem and retains it.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
-        self.items.lock().unwrap().push(item.clone());
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item.clone());
         item
     }
 
@@ -420,7 +417,7 @@ impl PlatformMenu for CocoaMenu {
         // live NSMenuItem just created (kept alive by `item` in `self.items` and by its own +1);
         // `addItem:` takes one NSMenuItem and retains it.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
-        self.items.lock().unwrap().push(item.clone());
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item.clone());
         item
     }
 
@@ -429,12 +426,14 @@ impl PlatformMenu for CocoaMenu {
         // SAFETY: `self.ns_menu` is live (released only in `Drop`) and `item.native_item()` is the
         // live separator NSMenuItem just obtained; `addItem:` takes one NSMenuItem.
         unsafe { ObjcMsg::send_id(self.ns_menu, Sel::register("addItem:"), item.native_item()) };
-        self.items.lock().unwrap().push(item);
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item);
     }
 
     fn add_submenu(&mut self, text: &str, submenu: Box<dyn PlatformMenu>) {
-        let item =
-            CocoaMenuItem::new_action((self.items.lock().unwrap().len() + 1000) as u32, text);
+        let item = CocoaMenuItem::new_action(
+            (ferrokit_core::poison::lock_unpoisoned(&self.items).len() + 1000) as u32,
+            text,
+        );
         item.set_submenu(submenu);
         // A submenu parent has no action of its own: with an action but no target AppKit would
         // disable it.
@@ -452,25 +451,25 @@ impl PlatformMenu for CocoaMenu {
                 arc_item.native_item(),
             )
         };
-        self.items.lock().unwrap().push(arc_item);
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(arc_item);
     }
 
     fn show_popup(&self, screen_pos: Point) {
-        *self.is_popped_up.lock().unwrap() = true;
-        *self.popup_pos.lock().unwrap() = Some(screen_pos);
+        *ferrokit_core::poison::lock_unpoisoned(&self.is_popped_up) = true;
+        *ferrokit_core::poison::lock_unpoisoned(&self.popup_pos) = Some(screen_pos);
     }
 
     fn dismiss(&self) {
-        *self.is_popped_up.lock().unwrap() = false;
-        *self.popup_pos.lock().unwrap() = None;
+        *ferrokit_core::poison::lock_unpoisoned(&self.is_popped_up) = false;
+        *ferrokit_core::poison::lock_unpoisoned(&self.popup_pos) = None;
     }
 
     fn find_item(&self, id: u32) -> Option<Arc<dyn PlatformMenuItem>> {
-        for item in self.items.lock().unwrap().iter() {
+        for item in ferrokit_core::poison::lock_unpoisoned(&self.items).iter() {
             if item.id == id {
                 return Some(item.clone() as Arc<dyn PlatformMenuItem>);
             }
-            if let Some(ref sub) = *item.submenu.lock().unwrap()
+            if let Some(ref sub) = *ferrokit_core::poison::lock_unpoisoned(&item.submenu)
                 && let Some(found) = sub.find_item(id)
             {
                 return Some(found);
