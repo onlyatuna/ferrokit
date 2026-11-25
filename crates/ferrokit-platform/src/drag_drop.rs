@@ -273,11 +273,21 @@ pub mod win32_ole {
             let target = this as *mut OleDropTarget;
             // SAFETY: `this` is a live `OleDropTarget` while any reference is outstanding; the caller
             // (OLE or `DropTargetRegistration::drop`) owns one, so the allocation has not been freed.
-            let count = (*target).ref_count.fetch_sub(1, Ordering::SeqCst) - 1;
+            let prev =
+                match (*target)
+                    .ref_count
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |c| c.checked_sub(1))
+                {
+                    Ok(prev) => prev,
+                    Err(_) => return 0,
+                };
+            let count = prev - 1;
             if count == 0 {
                 // SAFETY: the count reached 0, so this was the last reference; `target` came from
                 // `Box::into_raw` in `OleDropTarget::new`, and no one else can use it after this.
-                let _ = Box::from_raw(target);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = Box::from_raw(target);
+                }));
             }
             count
         }

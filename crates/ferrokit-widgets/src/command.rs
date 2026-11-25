@@ -206,7 +206,8 @@ impl WidgetCommandQueue {
     /// requests its parent's layout in turn; those requests are delivered too, one level per
     /// round, until a round posts none.
     pub fn flush_layouts() {
-        loop {
+        const MAX_FLUSH_ROUNDS: usize = 64;
+        for round in 0..MAX_FLUSH_ROUNDS {
             let commands = COMMAND_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
             if commands.is_empty() {
                 return;
@@ -247,6 +248,11 @@ impl WidgetCommandQueue {
                 crate::layout_scheduler::LayoutScheduler::invalidate(&target);
             }
             crate::layout_scheduler::LayoutScheduler::activate_pending();
+
+            if round + 1 == MAX_FLUSH_ROUNDS && COMMAND_QUEUE.with(|q| !q.borrow().is_empty()) {
+                wake_loop_later();
+                return;
+            }
         }
     }
 
@@ -298,7 +304,11 @@ impl WidgetCommandQueue {
         let _depth = FlushDepth::enter();
         let retries = RETRY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
         COMMAND_QUEUE.with(|q| q.borrow_mut().extend(retries));
-        while COMMAND_QUEUE.with(|q| !q.borrow().is_empty()) {
+        const MAX_FLUSH_ROUNDS: usize = 64;
+        for _ in 0..MAX_FLUSH_ROUNDS {
+            if COMMAND_QUEUE.with(|q| q.borrow().is_empty()) {
+                break;
+            }
             let commands = COMMAND_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
             if commands.is_empty() {
                 break;
@@ -407,6 +417,7 @@ pub fn remove_child_from(parent: &WidgetRef, id: ObjectId) {
             }
         };
         RETRY_QUEUE.with(|q| q.borrow_mut().push(WidgetCommand::Task(Box::new(task))));
+        wake_loop();
     };
     let Ok(mut w) = parent.try_borrow_mut() else {
         retry(parent);

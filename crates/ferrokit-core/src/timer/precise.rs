@@ -31,11 +31,13 @@ struct Posted {
 struct Active {
     handle: u32,
     hwnd: usize,
-    _posted: Box<Posted>,
+    /// Raw pointer to the heap-allocated `Posted` shared with `callback`.
+    /// Freed only in `Drop` after `timeKillEvent` (`TIME_KILL_SYNCHRONOUS`) returns.
+    posted: *mut Posted,
 }
 
 impl Drop for Active {
-    /// `TIME_KILL_SYNCHRONOUS` makes `timeKillEvent` wait for a running callback, so `_posted` is
+    /// `TIME_KILL_SYNCHRONOUS` makes `timeKillEvent` wait for a running callback, so `posted` is
     /// not freed while the callback thread can still read it.
     fn drop(&mut self) {
         // SAFETY: `self.handle` is the id `timeSetEvent` returned in `arm` for this `Active`,
@@ -43,6 +45,12 @@ impl Drop for Active {
         // and reports an unknown id as an error instead of touching memory.
         unsafe {
             timeKillEvent(self.handle);
+        }
+        // SAFETY: `TIME_KILL_SYNCHRONOUS` guarantees no `callback` invocation is still running or
+        // will run after `timeKillEvent` returns, and `self.posted` came from `Box::into_raw` in
+        // `arm` and has not been freed yet.
+        unsafe {
+            drop(Box::from_raw(self.posted));
         }
     }
 }
@@ -85,17 +93,17 @@ pub(crate) fn arm(hwnd: HWND, id: TimerId, interval_ms: u64) -> bool {
         return false;
     }
     let delay = super::win32_timer_elapse(interval_ms).max(1);
-    let posted = Box::new(Posted {
+    let posted = Box::into_raw(Box::new(Posted {
         hwnd: hwnd as usize,
         id: id.0,
         queued: AtomicBool::new(false),
-    });
-    let user = &*posted as *const Posted as usize;
+    }));
+    let user = posted as usize;
     // SAFETY: `callback` has the `extern "system"` signature `timeSetEvent` expects, and `user`
-    // is the address of the heap `Posted` that `callback` reads back. On success, `posted`
-    // is moved into `Active` below, which keeps the box alive and at that address until
-    // `Active::drop` has run `timeKillEvent`; with `TIME_KILL_SYNCHRONOUS` no callback runs
-    // once that returns. On failure no callback was scheduled and `posted` is simply dropped.
+    // is the raw pointer to the heap `Posted` that `callback` reads back through `&*`. On success,
+    // `active_entry` takes ownership before any `RefCell` borrow so even a panic kills the timer
+    // and frees `posted` in `Active::drop`. On failure no callback was scheduled, so freeing
+    // `posted` immediately is sound.
     let handle = unsafe {
         timeSetEvent(
             delay,
@@ -106,18 +114,19 @@ pub(crate) fn arm(hwnd: HWND, id: TimerId, interval_ms: u64) -> bool {
         )
     };
     if handle == 0 {
+        // SAFETY: `timeSetEvent` failed so no callback was registered; `posted` was allocated via
+        // `Box::into_raw` above and has no other owner.
+        unsafe {
+            drop(Box::from_raw(posted));
+        }
         return false;
     }
-    let previous = ACTIVE.with(|active| {
-        active.borrow_mut().insert(
-            id.0,
-            Active {
-                handle,
-                hwnd: hwnd as usize,
-                _posted: posted,
-            },
-        )
-    });
+    let active_entry = Active {
+        handle,
+        hwnd: hwnd as usize,
+        posted,
+    };
+    let previous = ACTIVE.with(|active| active.borrow_mut().insert(id.0, active_entry));
     drop(previous);
     true
 }
@@ -160,7 +169,11 @@ pub(crate) fn is_precise(id: u32) -> bool {
 pub(crate) fn acknowledge(id: u32) {
     let _ = ACTIVE.try_with(|active| {
         if let Some(entry) = active.borrow().get(&id) {
-            entry._posted.queued.store(false, Ordering::Release);
+            // SAFETY: `entry.posted` stays alive and immutable in structure until `Active::drop`
+            // runs `timeKillEvent(TIME_KILL_SYNCHRONOUS)`, and `queued` is an `AtomicBool`.
+            unsafe { &*entry.posted }
+                .queued
+                .store(false, Ordering::Release);
         }
     });
 }

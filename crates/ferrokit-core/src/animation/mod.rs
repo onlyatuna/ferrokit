@@ -94,11 +94,13 @@ impl VariantAnimation {
 
     /// Sets a keyframe value at relative step `[0.0, 1.0]`.
     pub fn set_key_value_at(&mut self, step: f32, val: impl Into<Variant>) {
+        if step.is_nan() {
+            return;
+        }
         let step = step.clamp(0.0, 1.0);
         self.key_values.retain(|(s, _)| (*s - step).abs() > 1e-4);
         self.key_values.push((step, val.into()));
-        self.key_values
-            .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        self.key_values.sort_by(|a, b| a.0.total_cmp(&b.0));
     }
 
     /// Sets the easing curve.
@@ -336,5 +338,19 @@ impl PropertyAnimation {
         }
 
         active
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_key_value_at_ignores_nan_without_panicking() {
+        let mut anim = VariantAnimation::new();
+        anim.set_key_value_at(0.0, 0i64);
+        anim.set_key_value_at(f32::NAN, 42i64);
+        anim.set_key_value_at(1.0, 100i64);
+        assert_eq!(anim.key_values.len(), 2);
     }
 }

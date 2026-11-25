@@ -907,7 +907,7 @@ impl DCompSurface {
             let hr_dc = get_dc_fn(dxgi_surface1, 0, &mut dxgi_dc);
             if hr_dc < 0 || dxgi_dc.is_null() {
                 let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
-                    std::mem::transmute(**(dxgi_surface1 as *mut *mut usize).add(2));
+                    std::mem::transmute(*surf_vtbl.add(2));
                 release_fn(dxgi_surface1);
                 return Err("IDXGISurface1::GetDC failed");
             }

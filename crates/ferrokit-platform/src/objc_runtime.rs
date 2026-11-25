@@ -335,44 +335,48 @@ pub fn qcocoa_application_delegate() -> Id {
         _cmd: *const c_void,
         _notification: *mut c_void,
     ) {
-        if std::env::var_os("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")
-            .is_some_and(|value| !value.is_empty())
-        {
-            return;
-        }
-        // SAFETY: `currentApplication` is a class method of `NSRunningApplication` taking no
-        // arguments and returning an object, matching `send_class_0`; AppKit invokes the delegate
-        // callback on the main thread [inferred from the AppKit delegate contract].
-        let current = unsafe {
-            ObjcMsg::send_class_0(
-                objc_get_class("NSRunningApplication"),
-                Sel::register("currentApplication"),
-            )
-        };
-        // SAFETY: `current` is the object returned above (nil is tolerated: `send_bool_return`
-        // returns false for nil); `isActive` takes no arguments and returns `BOOL`, matching
-        // `send_bool_return`.
-        if !unsafe { ObjcMsg::send_bool_return(current, Sel::register("isActive")) } {
-            // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication`
-            // returning an object, matching `send_class_0`; still on the main thread.
-            let app = unsafe {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if std::env::var_os("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")
+                .is_some_and(|value| !value.is_empty())
+            {
+                return;
+            }
+            // SAFETY: `currentApplication` is a class method of `NSRunningApplication` taking no
+            // arguments and returning an object, matching `send_class_0`; AppKit invokes the delegate
+            // callback on the main thread [inferred from the AppKit delegate contract].
+            let current = unsafe {
                 ObjcMsg::send_class_0(
-                    objc_get_class("NSApplication"),
-                    Sel::register("sharedApplication"),
+                    objc_get_class("NSRunningApplication"),
+                    Sel::register("currentApplication"),
                 )
             };
-            // SAFETY: `app` is the shared `NSApplication` from the line above;
-            // `activateIgnoringOtherApps:` takes one `BOOL`, matching `send_bool`.
-            unsafe { ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true) };
-        }
-        if is_macos_at_least(14) {
-            // NSApplicationActivateAllWindows
-            // SAFETY: `current` is the `NSRunningApplication` from above; `activateWithOptions:`
-            // takes one `NSApplicationActivationOptions` (an NSUInteger bit set; `1` is
-            // `NSApplicationActivateAllWindows`), passed through `send_int` which has the same
-            // register layout [inferred: same-size integer argument].
-            unsafe { ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1) };
-        }
+            // SAFETY: `current` is the object returned above (nil is tolerated: `send_bool_return`
+            // returns false for nil); `isActive` takes no arguments and returns `BOOL`, matching
+            // `send_bool_return`.
+            if !unsafe { ObjcMsg::send_bool_return(current, Sel::register("isActive")) } {
+                // SAFETY: `sharedApplication` is a no-argument class method of `NSApplication`
+                // returning an object, matching `send_class_0`; still on the main thread.
+                let app = unsafe {
+                    ObjcMsg::send_class_0(
+                        objc_get_class("NSApplication"),
+                        Sel::register("sharedApplication"),
+                    )
+                };
+                // SAFETY: `app` is the shared `NSApplication` from the line above;
+                // `activateIgnoringOtherApps:` takes one `BOOL`, matching `send_bool`.
+                unsafe {
+                    ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true)
+                };
+            }
+            if is_macos_at_least(14) {
+                // NSApplicationActivateAllWindows
+                // SAFETY: `current` is the `NSRunningApplication` from above; `activateWithOptions:`
+                // takes one `NSApplicationActivationOptions` (an NSUInteger bit set; `1` is
+                // `NSApplicationActivateAllWindows`), passed through `send_int` which has the same
+                // register layout [inferred: same-size integer argument].
+                unsafe { ObjcMsg::send_int(current, Sel::register("activateWithOptions:"), 1) };
+            }
+        }));
     }
     // `-applicationDidBecomeActive:`: report a pasteboard change made while the application was in
     // the background (`dataChanged`); AppKit has no change notification.
@@ -381,7 +385,9 @@ pub fn qcocoa_application_delegate() -> Id {
         _cmd: *const c_void,
         _notification: *mut c_void,
     ) {
-        crate::clipboard::macos::CocoaClipboard::new().poll_changes();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::clipboard::macos::CocoaClipboard::new().poll_changes();
+        }));
     }
     // SAFETY: the closure runs once (LazyLock). Every runtime call receives values built here:
     // `name` is a NUL-terminated `CString` (or a `c"..."` literal) alive across the call,

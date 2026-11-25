@@ -413,12 +413,21 @@ impl ImageReader {
             32 => 4,
             _ => return Err(format!("Unsupported BMP bits per pixel: {bpp}")),
         };
-        let row_bytes = (abs_width as u64 * bytes_per_pixel).div_ceil(4) * 4;
-        let needed = row_bytes * abs_height as u64;
+        let row_bytes = (abs_width as u64)
+            .checked_mul(bytes_per_pixel)
+            .map(|n| n.div_ceil(4))
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| "BMP row size overflow".to_string())?;
+        let needed = row_bytes
+            .checked_mul(abs_height as u64)
+            .ok_or_else(|| "BMP pixel data size overflow".to_string())?;
         if (pixel_offset as u64).saturating_add(needed) > bytes.len() as u64 {
             return Err("BMP pixel data shorter than its header declares".to_string());
         }
         let mut image = Image::new(abs_width, abs_height, ImageFormat::Rgba8888);
+        if image.is_null() {
+            return Err("BMP image dimensions exceed supported limits".to_string());
+        }
 
         if bpp == 24 {
             let row_stride = (abs_width as usize * 3).div_ceil(4) * 4;
@@ -798,5 +807,19 @@ mod codec_tests {
         bmp[22..26].copy_from_slice(&i32::MAX.to_le_bytes());
         bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
         assert!(ImageReader::read_from_memory(&bmp).is_err());
+    }
+
+    #[test]
+    fn bmp_overflowing_stride_times_height_is_rejected() {
+        // Choose width/height whose 64-bit row_bytes * height wraps past u64::MAX in release.
+        let mut bmp = vec![0u8; 54];
+        bmp[0..2].copy_from_slice(b"BM");
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&(i32::MAX).to_le_bytes());
+        bmp[22..26].copy_from_slice(&(i32::MAX).to_le_bytes());
+        bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+        let err = ImageReader::read_from_memory(&bmp).unwrap_err();
+        assert!(err.contains("shorter") || err.contains("overflow"), "{err}");
     }
 }

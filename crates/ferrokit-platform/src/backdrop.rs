@@ -241,37 +241,40 @@ fn set_win10_accent(
         windows_sys::Win32::Foundation::HWND,
         *mut WindowCompositionAttributeData,
     ) -> i32;
-    // SAFETY: both names are NUL-terminated C-string literals. `LoadLibraryA` of the always-loaded
-    // system `user32.dll` is null-checked, and a null `GetProcAddress` result takes the `else`
-    // branch. The transmute converts the non-null `SetWindowCompositionAttribute` export to the
-    // `extern "system"` signature of that undocumented function (HWND, *mut
-    // WINDOWCOMPOSITIONATTRIBDATA) -> BOOL, which `SetWindowCompositionAttributeFn` and the
-    // `#[repr(C)]` structs mirror [inferred: undocumented API, layout taken from common use].
-    // `policy` and `data` are live locals outliving the call; `data.data` points at `policy` and
-    // `size_of_data` is its size.
+    static SET_WCA: std::sync::OnceLock<Option<SetWindowCompositionAttributeFn>> =
+        std::sync::OnceLock::new();
+    let set_wca = *SET_WCA.get_or_init(|| {
+        // SAFETY: both names are NUL-terminated C-string literals. `LoadLibraryA` is called at
+        // most once for system `user32.dll` (kept loaded for the process lifetime) and
+        // `GetProcAddress` is null-checked before transmuting to `SetWindowCompositionAttributeFn`.
+        unsafe {
+            let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
+            if user32.is_null() {
+                return None;
+            }
+            GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast())
+                .map(|fn_ptr| std::mem::transmute::<_, SetWindowCompositionAttributeFn>(fn_ptr))
+        }
+    });
+    let Some(set_wca) = set_wca else {
+        return false;
+    };
+    // SAFETY: `SetWindowCompositionAttributeFn` mirrors the undocumented `(HWND, *mut
+    // WINDOWCOMPOSITIONATTRIBDATA) -> BOOL` signature; `policy` and `data` are live locals
+    // outliving the call, `data.data` points at `policy`, and `size_of_data` is its size.
     unsafe {
-        let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
-        if user32.is_null() {
-            return false;
-        }
-        let fn_ptr = GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast());
-        if let Some(set_wca) = fn_ptr {
-            let set_wca: SetWindowCompositionAttributeFn = std::mem::transmute(set_wca);
-            let mut policy = AccentPolicy {
-                accent_state: state,
-                accent_flags: flags,
-                gradient_color,
-                animation_id: 0,
-            };
-            let mut data = WindowCompositionAttributeData {
-                attribute: 19, // WCA_ACCENT_POLICY
-                data: &mut policy,
-                size_of_data: std::mem::size_of::<AccentPolicy>(),
-            };
-            set_wca(hwnd, &mut data) != 0
-        } else {
-            false
-        }
+        let mut policy = AccentPolicy {
+            accent_state: state,
+            accent_flags: flags,
+            gradient_color,
+            animation_id: 0,
+        };
+        let mut data = WindowCompositionAttributeData {
+            attribute: 19, // WCA_ACCENT_POLICY
+            data: &mut policy,
+            size_of_data: std::mem::size_of::<AccentPolicy>(),
+        };
+        set_wca(hwnd, &mut data) != 0
     }
 }
 
