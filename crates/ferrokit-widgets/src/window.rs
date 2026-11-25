@@ -1856,8 +1856,7 @@ impl Drop for Window {
     fn drop(&mut self) {
         #[cfg(windows)]
         {
-            let hwnd = self.platform_window.borrow().native_handle()
-                as windows_sys::Win32::Foundation::HWND;
+            let hwnd = self.platform_window.borrow().native_handle() as ferrokit_platform::HWND;
             ferrokit_platform::unregister_window_event_binding(hwnd);
         }
         // Deferred renders already queued for this window become no-ops.
@@ -3021,7 +3020,7 @@ mod tests {
             use ferrokit_platform::handle_geometry_change;
             use ferrokit_platform::window_system_interface::Delivery;
 
-            let hwnd = win.native_handle() as windows_sys::Win32::Foundation::HWND;
+            let hwnd = win.native_handle() as ferrokit_platform::HWND;
 
             // 1. Initial geometry change (both pos and size change: 0,0,300,200 -> 50,60,500,400)
             handle_geometry_change(Delivery::Default, hwnd, Rect::new(50, 60, 500, 400));

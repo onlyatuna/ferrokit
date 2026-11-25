@@ -14,11 +14,11 @@ ferrokit-core = { path = "../ferrokit-core" }
 ferrokit-gui = { path = "../ferrokit-gui" }
 ferrokit-platform = { path = "../ferrokit-platform" }
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
-
 [dev-dependencies]
 parking_lot = "0.12"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true }
 
 [lints]
 workspace = true
