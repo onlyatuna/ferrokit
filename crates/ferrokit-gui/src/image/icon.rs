@@ -203,7 +203,10 @@ impl Icon {
                             base
                         }
                     }
-                    None => return Pixmap::new(tw, th).unwrap(),
+                    None => {
+                        return Pixmap::new(tw, th)
+                            .unwrap_or_else(|| Pixmap::new(1, 1).expect("1x1 pixmap"));
+                    }
                 }
             }
         };
@@ -220,7 +223,9 @@ impl Icon {
             )
         };
 
-        Pixmap::from_image(&final_image).unwrap_or_else(|| Pixmap::new(tw, th).unwrap())
+        Pixmap::from_image(&final_image).unwrap_or_else(|| {
+            Pixmap::new(tw, th).unwrap_or_else(|| Pixmap::new(1, 1).expect("1x1 pixmap"))
+        })
     }
 
     fn find_best_image(

@@ -1075,6 +1075,8 @@ impl FontDatabase {
     /// Mirrors Qt's `QFontCache::decreaseCache`: inspects strong reference counts and
     /// purges unused raw buffers from memory.
     pub fn cleanup_unused_fonts(&mut self) -> usize {
+        self.engines.clear();
+        self.recent_memory_faces.clear();
         let mut freed_bytes = 0;
         self.file_cache.retain(|_path, data| {
             if data.strong_count() <= 2 {

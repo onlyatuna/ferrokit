@@ -105,7 +105,10 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Property<T> {
 impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
     /// Creates a new property with an initial value.
     pub fn new(initial: T) -> Self {
-        let id = PropertyId::next();
+        Self::with_id(PropertyId::next(), initial, None)
+    }
+
+    fn with_id(id: PropertyId, initial: T, binding: Option<BindingFn<T>>) -> Self {
         let dirty = Arc::new(AtomicBool::new(false));
         let in_evaluation = Arc::new(AtomicBool::new(false));
         let dependents = Arc::new(RwLock::new(HashSet::new()));
@@ -129,7 +132,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
         Self {
             id,
             value: Arc::new(RwLock::new(initial)),
-            binding: Arc::new(RwLock::new(None)),
+            binding: Arc::new(RwLock::new(binding)),
             dependents,
             notify_signal: Signal::new(),
             dirty,
@@ -143,11 +146,13 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().clear());
-        let initial_val = compute();
-        let prop = Self::new(initial_val);
-        prop.set_binding(compute);
-        prop
+        let id = PropertyId::next();
+        let initial_val = {
+            let _stack_guard = BindingStackGuard;
+            CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().push(id));
+            compute()
+        };
+        Self::with_id(id, initial_val, Some(Arc::new(compute)))
     }
 
     pub fn id(&self) -> PropertyId {
@@ -224,11 +229,12 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             // Clear before computing: an invalidation that lands during compute()
             // leaves the flag set so the next read recomputes.
             self.dirty.store(false, Ordering::Release);
-            CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().push(self.id));
-            let new_val = compute();
-            CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().pop());
-
-            self.in_evaluation.store(false, Ordering::Release);
+            let new_val = {
+                let _eval_guard = EvaluationGuard(&self.in_evaluation);
+                let _stack_guard = BindingStackGuard;
+                CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().push(self.id));
+                compute()
+            };
 
             let changed = {
                 let mut val_lock = self.value.write().unwrap();
@@ -281,5 +287,75 @@ impl<'a, T: Clone + PartialEq + Send + Sync + 'static> Bindable<'a, T> {
 
     pub fn has_binding(&self) -> bool {
         self.property.has_binding()
+    }
+}
+
+struct BindingStackGuard;
+
+impl Drop for BindingStackGuard {
+    fn drop(&mut self) {
+        let _ = CURRENT_BINDING_STACK.try_with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+struct EvaluationGuard<'a>(&'a AtomicBool);
+
+impl Drop for EvaluationGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn with_binding_evaluates_once_and_preserves_outer_stack() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+        let source = Property::new(10i32);
+        let source_clone = source.clone();
+
+        let outer = Property::with_binding(move || {
+            let calls_nested = Arc::clone(&calls_inner);
+            let s = source_clone.clone();
+            let nested = Property::with_binding(move || {
+                calls_nested.fetch_add(1, Ordering::SeqCst);
+                s.get() * 2
+            });
+            nested.get() + 1
+        });
+        assert_eq!(outer.get(), 21);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Outer binding was still on CURRENT_BINDING_STACK when `nested.get()` ran.
+        source.set(20);
+        assert_eq!(outer.get(), 41);
+    }
+
+    #[test]
+    fn recompute_panic_restores_evaluation_flag_and_stack() {
+        let should_panic = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&should_panic);
+        let prop = Property::new(1i32);
+        let p_clone = prop.clone();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            p_clone.set_binding(move || {
+                if flag.load(Ordering::SeqCst) {
+                    panic!("boom");
+                }
+                42
+            });
+        }));
+        assert!(res.is_err());
+        assert!(!prop.in_evaluation.load(Ordering::SeqCst));
+        assert!(CURRENT_BINDING_STACK.with(|s| s.borrow().is_empty()));
+
+        should_panic.store(false, Ordering::SeqCst);
+        assert_eq!(prop.get(), 42);
     }
 }
