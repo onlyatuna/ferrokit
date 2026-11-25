@@ -108,7 +108,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
         Self::with_id(PropertyId::next(), initial, None)
     }
 
-    fn with_id(id: PropertyId, initial: T, binding: Option<BindingFn<T>>) -> Self {
+    fn with_id(id: PropertyId, initial: T, binding: Option<PropertyBinding<T>>) -> Self {
         let dirty = Arc::new(AtomicBool::new(false));
         let in_evaluation = Arc::new(AtomicBool::new(false));
         let dependents = Arc::new(RwLock::new(HashSet::new()));
@@ -227,14 +227,22 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             }
 
             // Clear before computing: an invalidation that lands during compute()
-            // leaves the flag set so the next read recomputes.
+            // leaves the flag set so the next read recomputes. If `compute()` panics,
+            // `EvaluationGuard` restores `dirty = true` so the aborted evaluation is not
+            // treated as clean.
             self.dirty.store(false, Ordering::Release);
+            let mut eval_guard = EvaluationGuard {
+                in_evaluation: &self.in_evaluation,
+                dirty: &self.dirty,
+                completed: false,
+            };
             let new_val = {
-                let _eval_guard = EvaluationGuard(&self.in_evaluation);
                 let _stack_guard = BindingStackGuard;
                 CURRENT_BINDING_STACK.with(|stack| stack.borrow_mut().push(self.id));
                 compute()
             };
+            eval_guard.completed = true;
+            drop(eval_guard);
 
             let changed = {
                 let mut val_lock = self.value.write().unwrap();
@@ -300,11 +308,18 @@ impl Drop for BindingStackGuard {
     }
 }
 
-struct EvaluationGuard<'a>(&'a AtomicBool);
+struct EvaluationGuard<'a> {
+    in_evaluation: &'a AtomicBool,
+    dirty: &'a AtomicBool,
+    completed: bool,
+}
 
 impl Drop for EvaluationGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        if !self.completed {
+            self.dirty.store(true, Ordering::Release);
+        }
+        self.in_evaluation.store(false, Ordering::Release);
     }
 }
 
@@ -322,17 +337,16 @@ mod tests {
 
         let outer = Property::with_binding(move || {
             let calls_nested = Arc::clone(&calls_inner);
-            let s = source_clone.clone();
-            let nested = Property::with_binding(move || {
+            let _nested = Property::with_binding(move || {
                 calls_nested.fetch_add(1, Ordering::SeqCst);
-                s.get() * 2
+                1
             });
-            nested.get() + 1
+            source_clone.get() * 2 + 1
         });
         assert_eq!(outer.get(), 21);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        // Outer binding was still on CURRENT_BINDING_STACK when `nested.get()` ran.
+        // Outer binding was still on CURRENT_BINDING_STACK when `source_clone.get()` ran.
         source.set(20);
         assert_eq!(outer.get(), 41);
     }

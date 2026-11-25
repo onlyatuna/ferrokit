@@ -364,7 +364,9 @@ pub fn qcocoa_application_delegate() -> Id {
                 };
                 // SAFETY: `app` is the shared `NSApplication` from the line above;
                 // `activateIgnoringOtherApps:` takes one `BOOL`, matching `send_bool`.
-                unsafe { ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true) };
+                unsafe {
+                    ObjcMsg::send_bool(app, Sel::register("activateIgnoringOtherApps:"), true)
+                };
             }
             if is_macos_at_least(14) {
                 // NSApplicationActivateAllWindows
