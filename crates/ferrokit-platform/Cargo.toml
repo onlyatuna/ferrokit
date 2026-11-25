@@ -12,6 +12,7 @@ publish = false
 ferrokit-core = { path = "../ferrokit-core" }
 ferrokit-gui = { path = "../ferrokit-gui" }
 bitflags = "2.4"
+raw-window-handle = "0.6"
 tinyfiledialogs = "3.9.1"
 [features]
 default = []

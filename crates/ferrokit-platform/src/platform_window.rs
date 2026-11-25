@@ -172,6 +172,18 @@ pub trait PlatformWindow: 'static {
     /// The native desktop position the next `present_region` moves a layered window to.
     fn set_target_pos(&mut self, _pos: Option<ferrokit_gui::geometry::Point>) {}
     fn native_handle(&self) -> isize;
+    /// Borrows the underlying native window handle (`raw-window-handle`).
+    fn raw_window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        Err(raw_window_handle::HandleError::Unavailable)
+    }
+    /// Borrows the underlying native display handle (`raw-window-handle`).
+    fn raw_display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        Err(raw_window_handle::HandleError::Unavailable)
+    }
     fn poll_events(&mut self) -> usize {
         0
     }
@@ -434,5 +446,21 @@ impl PlatformWindow for GenericWindow {
             }
         }
         count
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for dyn PlatformWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        self.raw_window_handle()
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for dyn PlatformWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        self.raw_display_handle()
     }
 }

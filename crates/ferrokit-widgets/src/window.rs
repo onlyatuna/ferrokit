@@ -1850,6 +1850,24 @@ impl Window {
         let s = &self.render_state;
         !s.dirty.get() && !s.render_pending.get() && !s.currently_rendering.get()
     }
+
+    /// Borrows the underlying `raw-window-handle` window and display handles for the duration of `f`.
+    pub fn with_raw_handles<R>(
+        &self,
+        f: impl FnOnce(
+            Result<
+                ferrokit_platform::raw_window_handle::WindowHandle<'_>,
+                ferrokit_platform::raw_window_handle::HandleError,
+            >,
+            Result<
+                ferrokit_platform::raw_window_handle::DisplayHandle<'_>,
+                ferrokit_platform::raw_window_handle::HandleError,
+            >,
+        ) -> R,
+    ) -> R {
+        let pw = self.platform_window.borrow();
+        f(pw.raw_window_handle(), pw.raw_display_handle())
+    }
 }
 
 impl Drop for Window {

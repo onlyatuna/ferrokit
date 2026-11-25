@@ -1385,6 +1385,18 @@ impl PlatformWindow for CocoaNativeWindow {
         self.ns_window.0 as isize
     }
 
+    fn raw_window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        cocoa_raw_window_handle(self)
+    }
+
+    fn raw_display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        cocoa_raw_display_handle(self)
+    }
+
     fn device_pixel_ratio(&self) -> f32 {
         // AppKit's `-[NSWindow backingScaleFactor]` reports the scaling factor of the screen
         // this window is currently on (qcocoawindow.mm:1450).
@@ -1483,6 +1495,66 @@ impl PlatformWindow for CocoaNativeWindow {
             self.dispatch_cocoa_event(event);
         }
         count
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cocoa_raw_window_handle(
+    window: &CocoaNativeWindow,
+) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+    let Some(ns_view) = std::ptr::NonNull::new(window.ns_view.0) else {
+        return Err(raw_window_handle::HandleError::Unavailable);
+    };
+    let handle = raw_window_handle::AppKitWindowHandle::new(ns_view);
+    // SAFETY: `window.ns_view` is non-null and stays live for the lifetime of `&window` (released
+    // only in `CocoaNativeWindow::drop`).
+    Ok(unsafe {
+        raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::AppKit(
+            handle,
+        ))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cocoa_raw_window_handle(
+    _window: &CocoaNativeWindow,
+) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+    Err(raw_window_handle::HandleError::Unavailable)
+}
+
+#[cfg(target_os = "macos")]
+fn cocoa_raw_display_handle(
+    _window: &CocoaNativeWindow,
+) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+    // SAFETY: AppKit display handles carry no borrowed pointer; `AppKitDisplayHandle` is valid for
+    // `&window`.
+    Ok(unsafe {
+        raw_window_handle::DisplayHandle::borrow_raw(raw_window_handle::RawDisplayHandle::AppKit(
+            raw_window_handle::AppKitDisplayHandle::new(),
+        ))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cocoa_raw_display_handle(
+    _window: &CocoaNativeWindow,
+) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+    Err(raw_window_handle::HandleError::Unavailable)
+}
+
+impl raw_window_handle::HasWindowHandle for CocoaNativeWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        PlatformWindow::raw_window_handle(self)
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for CocoaNativeWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        PlatformWindow::raw_display_handle(self)
     }
 }
 
