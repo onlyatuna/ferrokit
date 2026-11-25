@@ -391,3 +391,78 @@ fn events_posted_while_a_menu_is_open_are_delivered_before_it_closes() {
          never ran: {dismissals:?}"
     );
 }
+
+#[test]
+fn timer_callback_during_modal_menu_can_borrow_and_hide_menu() {
+    thread_local! {
+        static UI_MENU: std::cell::RefCell<Option<ferrokit_widgets::MenuRef>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let event_loop = EventLoop::new();
+    // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
+    let native_thread = unsafe { GetCurrentThreadId() };
+    let mut raw_menu = Menu::new("ReentrancyTest");
+    raw_menu.add_action(Action::new_ref("Item"));
+    let menu = std::rc::Rc::new(std::cell::RefCell::new(raw_menu));
+    UI_MENU.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::clone(&menu)));
+
+    let timer_ran = Arc::new(AtomicBool::new(false));
+    let observed_visible = Arc::new(AtomicBool::new(false));
+    let menu_closed = Arc::new(AtomicBool::new(false));
+    let exec_returned_none = Arc::new(AtomicBool::new(false));
+
+    let watchdog_closed = Arc::clone(&menu_closed);
+    let watchdog = thread::spawn(move || {
+        let deadline = Instant::now() + GIVE_UP_AFTER;
+        while Instant::now() < deadline {
+            if watchdog_closed.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        cancel_menu(native_thread);
+    });
+
+    let timer_ran_clone = Arc::clone(&timer_ran);
+    let observed_visible_clone = Arc::clone(&observed_visible);
+    let closed_for_exec = Arc::clone(&menu_closed);
+    let exec_none_for_exec = Arc::clone(&exec_returned_none);
+
+    Timer::single_shot(0, move || {
+        Timer::single_shot(30, move || {
+            UI_MENU.with(|slot| {
+                if let Some(m) = slot.borrow().as_ref() {
+                    let visible = m.borrow().is_visible();
+                    observed_visible_clone.store(visible, Ordering::SeqCst);
+                    timer_ran_clone.store(true, Ordering::SeqCst);
+                    Menu::hide_menu(m);
+                }
+            });
+        });
+        let chosen = UI_MENU.with(|slot| {
+            let m = slot.borrow().as_ref().cloned().expect("UI_MENU set");
+            Menu::exec_popup(&m, Point::new(100, 100))
+        });
+        exec_none_for_exec.store(chosen.is_none(), Ordering::SeqCst);
+        closed_for_exec.store(true, Ordering::SeqCst);
+    });
+
+    event_loop.send_posted_events();
+    event_loop.send_posted_events();
+    let _ = watchdog.join();
+    UI_MENU.with(|slot| *slot.borrow_mut() = None);
+    drain_cancel_messages();
+
+    assert!(
+        timer_ran.load(Ordering::SeqCst),
+        "timer callback must run during modal menu"
+    );
+    assert!(
+        observed_visible.load(Ordering::SeqCst),
+        "menu must be visible when timer borrows it"
+    );
+    assert!(
+        exec_returned_none.load(Ordering::SeqCst),
+        "hiding the menu from the timer must dismiss Menu::exec_popup cleanly"
+    );
+}

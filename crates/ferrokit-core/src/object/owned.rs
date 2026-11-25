@@ -44,6 +44,8 @@ pub struct OwnedObject<T: QObject + ?Sized> {
     /// Read once, when the owner is made. A parent decides what to do with a child whose callback
     /// is running without reading the child: a `&` to it would alias the callback's `&mut self`.
     id: ObjectId,
+    /// Whether `ObjectData::with_thread_moves_allowed` was enabled on this object.
+    movable_across_threads: bool,
     /// Shared callback-borrow state, read without touching the object or looking up the registry.
     borrow_state: Arc<ObjectBorrowState>,
     // `Box<T>` states ownership for the drop check and is `Unpin` for every `T`. A bare
@@ -66,6 +68,7 @@ impl<T: QObject> OwnedObject<T> {
         OwnedObject {
             ptr: this.ptr,
             id: this.id,
+            movable_across_threads: this.movable_across_threads,
             borrow_state,
             _owns: PhantomData,
         }
@@ -96,11 +99,13 @@ impl<T: QObject + ?Sized> OwnedObject<T> {
     pub fn from_box(boxed: Box<T>) -> Self {
         let data = boxed.object_data();
         let id = data.id();
+        let movable_across_threads = data.can_move_to_thread();
         let borrow_state = Arc::clone(&data.borrow_state);
         let ptr = Box::into_non_null(boxed);
         Self {
             ptr,
             id,
+            movable_across_threads,
             borrow_state,
             _owns: PhantomData,
         }
@@ -225,27 +230,35 @@ impl<T: QObject + ?Sized> Drop for OwnedObject<T> {
     /// destruction is then posted to the registration thread, like `deleteLater`).
     fn drop(&mut self) {
         let ptr = self.ptr;
+        let free_fn = move |parked| {
+            // SAFETY: `destroy_owned` runs this once, after it took the borrow flag (or after
+            // the guard of the callback that held it released it), and after the object was
+            // unregistered, so no callback holds a reference to `*ptr` and none can start.
+            // `ptr` came from `Box::into_raw` in `from_box` and is freed only here: the owner
+            // is turned back into a `Box` only by `into_box`, for an object that was never
+            // registered through it.
+            let mut boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
+            // Clear `parent` only when the object was parked from its parent's
+            // `owned_children` (`delete_children` on a dying owning parent). A standalone
+            // `OwnedObject` attached to a live non-owning parent (`set_parent_by_id`)
+            // keeps `parent` so `T::drop` can read `object_data().parent()` and
+            // `ObjectData::drop` unlinks from the parent and sends `ChildRemoved`.
+            if parked && boxed.object_data().owned_by_parent {
+                boxed.object_data_mut().clear_parent();
+            }
+            drop(boxed);
+        };
+        // SAFETY: `OwnedObject<T>` is `!Send`, so `drop` runs on the thread that created it.
+        // `destroy_owned` only forwards the closure to another thread when `registration_thread_of`
+        // differs from `ThreadId::current()`, which requires `move_to_thread_by_id` to have
+        // succeeded after `unsafe { ObjectData::with_thread_moves_allowed() }` promised `T` is
+        // safe to drop on any thread.
+        let free = unsafe { SendFree::new(free_fn) };
         super::qobject::destroy_owned(
             self.id,
             Arc::clone(&self.borrow_state),
-            SendFree::new(move |parked| {
-                // SAFETY: `destroy_owned` runs this once, after it took the borrow flag (or after
-                // the guard of the callback that held it released it), and after the object was
-                // unregistered, so no callback holds a reference to `*ptr` and none can start.
-                // `ptr` came from `Box::into_raw` in `from_box` and is freed only here: the owner
-                // is turned back into a `Box` only by `into_box`, for an object that was never
-                // registered through it.
-                let mut boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
-                // Clear `parent` only when the object was parked from its parent's
-                // `owned_children` (`delete_children` on a dying owning parent). A standalone
-                // `OwnedObject` attached to a live non-owning parent (`set_parent_by_id`)
-                // keeps `parent` so `T::drop` can read `object_data().parent()` and
-                // `ObjectData::drop` unlinks from the parent and sends `ChildRemoved`.
-                if parked && boxed.object_data().owned_by_parent {
-                    boxed.object_data_mut().clear_parent();
-                }
-                drop(boxed);
-            }),
+            self.movable_across_threads,
+            free,
         );
     }
 }

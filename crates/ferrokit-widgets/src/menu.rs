@@ -205,13 +205,12 @@ fn show_arrow_cursor() {
 #[cfg(windows)]
 fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
     Menu::emit_unborrowed(menu, |m| m.about_to_show.clone());
-    let pending = {
+    let chosen = Menu::exec_popup_win32(menu, pos);
+    let mut pending = {
         let mut m = menu.borrow_mut();
-        let chosen = m.exec_popup_inner(pos);
-        let mut pending = std::mem::take(&mut m.pending);
-        pending.activation = chosen;
-        pending
+        std::mem::take(&mut m.pending)
     };
+    pending.activation = chosen;
     // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
     // menu is hidden, then returns it.
     let chosen = pending
@@ -1275,8 +1274,12 @@ impl Menu {
 
     /// Pops up the menu as a top-level transparent frameless layered window and runs
     /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
+    ///
+    /// Borrows `menu` only in short scopes around state updates and painting, never across
+    /// `GetMessageW` or `DispatchMessageW`, so timers and window callbacks running on the same
+    /// thread can reentrantly inspect or hide the menu without hitting a `BorrowMutError`.
     #[cfg(windows)]
-    fn exec_popup_inner(&mut self, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
+    fn exec_popup_win32(menu: &MenuRef, pos: Point) -> Option<(ActionRef, Vec<Signal<ActionRef>>)> {
         use crate::window::Window;
         use ferrokit_platform::WindowFlags;
         use windows_sys::Win32::Foundation::HWND;
@@ -1290,12 +1293,16 @@ impl Menu {
             WM_LBUTTONUP, WM_MOUSEMOVE, WM_NULL, WM_RBUTTONDOWN, WM_RBUTTONUP,
         };
 
-        self.last_triggered = None;
-        let size = self.size_hint();
-        let (root_origin, s_geom) = self.popup_window_origin(pos, size);
-        let initial_rect = Rect::new(root_origin.x, root_origin.y, size.width, size.height);
-        self.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
-        self.popup_at_inner(Point::new(0, 0), None);
+        let (size, root_origin, initial_rect) = {
+            let mut m = menu.borrow_mut();
+            m.last_triggered = None;
+            let size = m.size_hint();
+            let (root_origin, s_geom) = m.popup_window_origin(pos, size);
+            let initial_rect = Rect::new(root_origin.x, root_origin.y, size.width, size.height);
+            m.popup_bounds = Some(s_geom.translated(-root_origin.x, -root_origin.y));
+            m.popup_at_inner(Point::new(0, 0), None);
+            (size, root_origin, initial_rect)
+        };
 
         let mut window = match Window::new(
             "",
@@ -1307,7 +1314,7 @@ impl Menu {
         ) {
             Ok(w) => w,
             Err(_) => {
-                self.hide_now(true);
+                menu.borrow_mut().hide_now(true);
                 return None;
             }
         };
@@ -1343,7 +1350,8 @@ impl Menu {
             }
         });
         window.show();
-        self.present_popup(&mut window, root_origin, size);
+        menu.borrow_mut()
+            .present_popup(&mut window, root_origin, size);
 
         let mut chosen = None;
         let mut quit = None;
@@ -1354,10 +1362,8 @@ impl Menu {
         // `PeekMessageW` fill them and `TranslateMessage`/`DispatchMessageW` only read the `msg`
         // just filled. A null window handle means "all windows of this thread". `hwnd` is the
         // handle of `window`, which lives until after this block (it is dropped below).
-        // Dispatched messages run this thread's window procedures: the popup window's handler
-        // only touches an `Rc<Cell<bool>>` and posts a message. Any access to the menu from
-        // dispatched code must go through the `&mut` borrow of `self`, which is held for the
-        // whole loop.
+        // `menu` is not borrowed across `GetMessageW` or `DispatchMessageW`, so dispatched
+        // callbacks and timers on this thread may borrow `menu` safely.
         unsafe {
             let mut msg: MSG = std::mem::zeroed();
             // `WM_QUIT` makes `GetMessageW` return 0: remember it and pass it on when the menu is
@@ -1387,19 +1393,22 @@ impl Menu {
                 );
                 match msg.message {
                     WM_RBUTTONUP => {
-                        if !self.covers(local_pt) {
+                        if !menu.borrow().covers(local_pt) {
                             break;
                         }
                     }
                     WM_MOUSEMOVE => {
                         show_arrow_cursor();
-                        let old_signature = self.hover_signature();
-                        let outcome = self.handle_mouse_move(local_pt);
-                        let new_signature = self.hover_signature();
-
-                        if old_signature != new_signature {
-                            self.present_popup(&mut window, root_origin, size);
-                        }
+                        let outcome = {
+                            let mut m = menu.borrow_mut();
+                            let old_signature = m.hover_signature();
+                            let outcome = m.handle_mouse_move(local_pt);
+                            let new_signature = m.hover_signature();
+                            if old_signature != new_signature {
+                                m.present_popup(&mut window, root_origin, size);
+                            }
+                            outcome
+                        };
 
                         if let MenuOutcome::Activate(act, signals) = outcome {
                             chosen = Some((act, signals));
@@ -1407,56 +1416,81 @@ impl Menu {
                         }
                     }
                     WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
-                        if !self.covers(local_pt) {
-                            break;
-                        }
-                        let outcome = self.handle_mouse_press(local_pt, 1);
+                        let outcome = {
+                            let mut m = menu.borrow_mut();
+                            if !m.covers(local_pt) {
+                                MenuOutcome::Closed
+                            } else {
+                                let outcome = m.handle_mouse_press(local_pt, 1);
+                                if !matches!(outcome, MenuOutcome::Closed) {
+                                    m.present_popup(&mut window, root_origin, size);
+                                }
+                                outcome
+                            }
+                        };
                         if let MenuOutcome::Closed = outcome {
                             break;
                         }
-                        self.present_popup(&mut window, root_origin, size);
                     }
                     WM_LBUTTONUP => {
-                        if !self.covers(local_pt) {
-                            break;
-                        }
-                        let outcome = self.handle_mouse_release(local_pt, 1);
+                        let outcome = {
+                            let mut m = menu.borrow_mut();
+                            if !m.covers(local_pt) {
+                                MenuOutcome::Closed
+                            } else {
+                                let outcome = m.handle_mouse_release(local_pt, 1);
+                                if !matches!(
+                                    outcome,
+                                    MenuOutcome::Activate(_, _) | MenuOutcome::Closed
+                                ) {
+                                    m.present_popup(&mut window, root_origin, size);
+                                }
+                                outcome
+                            }
+                        };
                         match outcome {
                             MenuOutcome::Activate(act, signals) => {
                                 chosen = Some((act, signals));
                                 break;
                             }
                             MenuOutcome::Closed => break,
-                            _ => {
-                                self.present_popup(&mut window, root_origin, size);
-                            }
+                            _ => {}
                         }
                     }
                     WM_KEYDOWN => {
-                        match msg.wParam as u16 {
-                            VK_ESCAPE => break,
+                        let key = msg.wParam as u16;
+                        if key == VK_ESCAPE {
+                            break;
+                        }
+                        let mut m = menu.borrow_mut();
+                        let mut activated = None;
+                        match key {
                             VK_UP => {
-                                self.handle_key(keys::UP, 0);
+                                m.handle_key(keys::UP, 0);
                             }
                             VK_DOWN => {
-                                self.handle_key(keys::DOWN, 0);
+                                m.handle_key(keys::DOWN, 0);
                             }
                             VK_LEFT => {
-                                self.handle_key(keys::LEFT, 0);
+                                m.handle_key(keys::LEFT, 0);
                             }
                             VK_RIGHT => {
-                                self.handle_key(keys::RIGHT, 0);
+                                m.handle_key(keys::RIGHT, 0);
                             }
                             VK_RETURN => {
-                                let outcome = self.handle_key(keys::RETURN, 0);
-                                if let MenuOutcome::Activate(act, signals) = outcome {
-                                    chosen = Some((act, signals));
-                                    break;
+                                if let MenuOutcome::Activate(act, signals) =
+                                    m.handle_key(keys::RETURN, 0)
+                                {
+                                    activated = Some((act, signals));
                                 }
                             }
                             _ => {}
                         }
-                        self.present_popup(&mut window, root_origin, size);
+                        if let Some((act, signals)) = activated {
+                            chosen = Some((act, signals));
+                            break;
+                        }
+                        m.present_popup(&mut window, root_origin, size);
                     }
                     _ => {
                         TranslateMessage(&msg);
@@ -1464,7 +1498,7 @@ impl Menu {
                     }
                 }
 
-                if !self.base.is_visible() || dismissed.get() {
+                if !menu.borrow().base.is_visible() || dismissed.get() {
                     break;
                 }
             }
@@ -1480,7 +1514,7 @@ impl Menu {
             ) != 0
             {}
         }
-        self.hide_now(true);
+        menu.borrow_mut().hide_now(true);
         // Destroying the popup window may pump messages; the quit is re-posted after that.
         drop(window);
         if let Some(code) = quit {

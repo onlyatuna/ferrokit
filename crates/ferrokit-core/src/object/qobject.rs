@@ -288,7 +288,12 @@ unsafe impl Send for SendFree {}
 impl SendFree {
     /// `free(parked)` drops the object's memory; `parked` is true when a callback of the object
     /// had to return first.
-    pub(crate) fn new(free: impl FnOnce(bool) + 'static) -> Self {
+    ///
+    /// # Safety
+    /// The caller must guarantee that either `free` is only invoked/dropped on the thread that
+    /// created it, or every value captured by `free` is safe to use and drop on another thread
+    /// (for example, an object opted in via `ObjectData::with_thread_moves_allowed`).
+    pub(crate) unsafe fn new(free: impl FnOnce(bool) + 'static) -> Self {
         SendFree(Box::new(free))
     }
 }
@@ -315,13 +320,23 @@ impl SendFree {
 ///
 ///   A thread that is alive but never runs its event loop (or whose loop ended while the thread
 ///   goes on without one) keeps the object until it ends or starts a loop.
-pub(crate) fn destroy_owned(id: ObjectId, state: Arc<ObjectBorrowState>, free: SendFree) {
+pub(crate) fn destroy_owned(
+    id: ObjectId,
+    state: Arc<ObjectBorrowState>,
+    movable_across_threads: bool,
+    free: SendFree,
+) {
     match registration_thread_of(id) {
         Some(thread) if thread != ThreadId::current() => {
+            assert!(
+                movable_across_threads,
+                "cannot forward destruction of non-movable QObject across threads"
+            );
             let mut job = ForwardedDestroy {
                 id,
                 state: Some(state),
                 free: Some(free),
+                movable_across_threads,
             };
             crate::event_loop::post_event_to_thread(
                 thread,
@@ -347,6 +362,7 @@ struct ForwardedDestroy {
     id: ObjectId,
     state: Option<Arc<ObjectBorrowState>>,
     free: Option<SendFree>,
+    movable_across_threads: bool,
 }
 
 // SAFETY: the payload is a `SendFree` (see its `Send` impl) and an `Arc<ObjectBorrowState>`, whose
@@ -358,7 +374,7 @@ impl ForwardedDestroy {
     fn deliver(&mut self) {
         if let (Some(state), Some(free)) = (self.state.take(), self.free.take()) {
             // The object may have moved again, or been unregistered, since the post.
-            destroy_owned(self.id, state, free);
+            destroy_owned(self.id, state, self.movable_across_threads, free);
         }
     }
 }
