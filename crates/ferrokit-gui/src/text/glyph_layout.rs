@@ -25,22 +25,120 @@ pub struct PositionedGlyph {
     pub advance: f32,
 }
 
+struct LruNode<K, V> {
+    key: K,
+    value: V,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+/// Bounded O(1) LRU cache backed by a slab vector and index map.
+struct LruCache<K, V> {
+    capacity: usize,
+    map: std::collections::HashMap<K, usize>,
+    nodes: Vec<LruNode<K, V>>,
+    head: Option<usize>,
+    tail: Option<usize>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone, V> LruCache<K, V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            map: std::collections::HashMap::new(),
+            nodes: Vec::new(),
+            head: None,
+            tail: None,
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        let &idx = self.map.get(key)?;
+        self.move_to_front(idx);
+        Some(&self.nodes[idx].value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.capacity == 0 {
+            return;
+        }
+        if let Some(&idx) = self.map.get(&key) {
+            self.nodes[idx].value = value;
+            self.move_to_front(idx);
+            return;
+        }
+        if self.nodes.len() < self.capacity {
+            let idx = self.nodes.len();
+            let old_head = self.head;
+            self.nodes.push(LruNode {
+                key: key.clone(),
+                value,
+                prev: None,
+                next: old_head,
+            });
+            if let Some(h) = old_head {
+                self.nodes[h].prev = Some(idx);
+            }
+            self.head = Some(idx);
+            if self.tail.is_none() {
+                self.tail = Some(idx);
+            }
+            self.map.insert(key, idx);
+        } else if let Some(idx) = self.tail {
+            self.map.remove(&self.nodes[idx].key);
+            self.nodes[idx].key = key.clone();
+            self.nodes[idx].value = value;
+            self.map.insert(key, idx);
+            self.move_to_front(idx);
+        }
+    }
+
+    fn move_to_front(&mut self, idx: usize) {
+        if self.head == Some(idx) {
+            return;
+        }
+        let prev = self.nodes[idx].prev;
+        let next = self.nodes[idx].next;
+        if let Some(p) = prev {
+            self.nodes[p].next = next;
+        }
+        if let Some(n) = next {
+            self.nodes[n].prev = prev;
+        } else {
+            self.tail = prev;
+        }
+        let old_head = self.head;
+        self.nodes[idx].prev = None;
+        self.nodes[idx].next = old_head;
+        if let Some(h) = old_head {
+            self.nodes[h].prev = Some(idx);
+        }
+        self.head = Some(idx);
+        if self.tail.is_none() {
+            self.tail = Some(idx);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// A single font engine instance combining the glyph source (metrics, coverage bitmaps and
 /// character mapping, see [`GlyphFace`]) and optional raw binary data for OpenType layout
 /// (`rustybuzz`). Mirrors Qt's `QFontEngine`.
-type ColorGlyphCache = Arc<
-    std::sync::Mutex<
-        std::collections::HashMap<(u16, u32), Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)>>,
-    >,
->;
-type MonoGlyphCache = Arc<
-    std::sync::Mutex<std::collections::HashMap<(u16, u32, u32, i32), (GlyphMetrics, Arc<[u8]>)>>,
->;
-type LcdGlyphCache = Arc<
-    std::sync::Mutex<
-        std::collections::HashMap<(u16, u32, u32, i32), Option<(GlyphMetrics, Arc<[u8]>)>>,
-    >,
->;
+type ColorGlyphCache =
+    Arc<std::sync::Mutex<LruCache<(u16, u32), Option<(GlyphMetrics, Arc<tiny_skia::Pixmap>)>>>>;
+type MonoGlyphCache =
+    Arc<std::sync::Mutex<LruCache<(u16, u32, u32, i32), (GlyphMetrics, Arc<[u8]>)>>>;
+type LcdGlyphCache =
+    Arc<std::sync::Mutex<LruCache<(u16, u32, u32, i32), Option<(GlyphMetrics, Arc<[u8]>)>>>>;
 /// Upper bound on cached glyph bitmaps per engine (a CJK font could otherwise grow without limit).
 const MONO_GLYPH_CACHE_LIMIT: usize = 4096;
 /// Upper bound on cached color glyph pixmaps per engine.
@@ -266,9 +364,11 @@ impl FontEngine {
             face,
             raw_data: None,
             face_index: 0,
-            color_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            mono_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            lcd_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            color_cache: Arc::new(std::sync::Mutex::new(LruCache::new(
+                COLOR_GLYPH_CACHE_LIMIT,
+            ))),
+            mono_cache: Arc::new(std::sync::Mutex::new(LruCache::new(MONO_GLYPH_CACHE_LIMIT))),
+            lcd_cache: Arc::new(std::sync::Mutex::new(LruCache::new(MONO_GLYPH_CACHE_LIMIT))),
             shaping_faces: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             has_color_table: Arc::new(std::sync::OnceLock::new()),
             script_chains: None,
@@ -367,7 +467,7 @@ impl FontEngine {
             return None;
         }
         let key = (glyph_id, (px_size * 64.0).round() as u32);
-        if let Ok(guard) = self.color_cache.lock()
+        if let Ok(mut guard) = self.color_cache.lock()
             && let Some(entry) = guard.get(&key)
         {
             return entry.clone();
@@ -383,9 +483,6 @@ impl FontEngine {
         .map(|(m, p)| (m, Arc::new(p)));
 
         if let Ok(mut guard) = self.color_cache.lock() {
-            if guard.len() >= COLOR_GLYPH_CACHE_LIMIT {
-                guard.clear();
-            }
             guard.insert(key, rendered.clone());
         }
 
@@ -445,7 +542,7 @@ impl FontEngine {
         rasterize: impl FnOnce() -> (GlyphMetrics, Vec<u8>),
     ) -> (GlyphMetrics, Arc<[u8]>) {
         let key = (glyph_id, size.to_bits(), scale.to_bits(), subpixel);
-        if let Ok(guard) = self.mono_cache.lock()
+        if let Ok(mut guard) = self.mono_cache.lock()
             && let Some((metrics, bitmap)) = guard.get(&key)
         {
             return (*metrics, bitmap.clone());
@@ -453,9 +550,6 @@ impl FontEngine {
         let (metrics, bitmap) = rasterize();
         let bitmap: Arc<[u8]> = bitmap.into();
         if let Ok(mut guard) = self.mono_cache.lock() {
-            if guard.len() >= MONO_GLYPH_CACHE_LIMIT {
-                guard.clear();
-            }
             guard.insert(key, (metrics, bitmap.clone()));
         }
         (metrics, bitmap)
@@ -504,16 +598,13 @@ impl FontEngine {
         rasterize: impl FnOnce() -> Option<(GlyphMetrics, Vec<u8>)>,
     ) -> Option<(GlyphMetrics, Arc<[u8]>)> {
         let key = (glyph_id, size.to_bits(), scale.to_bits(), subpixel);
-        if let Ok(guard) = self.lcd_cache.lock()
+        if let Ok(mut guard) = self.lcd_cache.lock()
             && let Some(entry) = guard.get(&key)
         {
             return entry.clone();
         }
         let rendered = rasterize().map(|(metrics, bitmap)| (metrics, Arc::<[u8]>::from(bitmap)));
         if let Ok(mut guard) = self.lcd_cache.lock() {
-            if guard.len() >= MONO_GLYPH_CACHE_LIMIT {
-                guard.clear();
-            }
             guard.insert(key, rendered.clone());
         }
         rendered
@@ -2271,5 +2362,37 @@ mod tests {
         let engine = FontEngine::new(face).with_raw_data(data);
         assert!(engine.rasterize_color_glyph(1, 16.0).is_none());
         assert!(engine.color_cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lru_cache_evicts_least_recently_used_and_preserves_hot_entries() {
+        let mut single = LruCache::new(1);
+        single.insert("a", 1);
+        single.insert("b", 2);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single.get(&"a"), None);
+        assert_eq!(single.get(&"b"), Some(&2));
+
+        let mut cache = LruCache::new(3);
+        cache.insert("a", 1);
+        cache.insert("b", 2);
+        cache.insert("c", 3);
+        // Promote "a" so "b" becomes least recently used.
+        assert_eq!(cache.get(&"a"), Some(&1));
+        cache.insert("d", 4);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.get(&"b"), None);
+        assert_eq!(cache.get(&"a"), Some(&1));
+        assert_eq!(cache.get(&"c"), Some(&3));
+        assert_eq!(cache.get(&"d"), Some(&4));
+
+        // Updating "c" promotes it; "a" is now LRU and evicted by "e".
+        cache.insert("c", 30);
+        cache.insert("e", 5);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.get(&"a"), None);
+        assert_eq!(cache.get(&"c"), Some(&30));
+        assert_eq!(cache.get(&"d"), Some(&4));
+        assert_eq!(cache.get(&"e"), Some(&5));
     }
 }
