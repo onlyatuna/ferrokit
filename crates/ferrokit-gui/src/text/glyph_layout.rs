@@ -43,6 +43,10 @@ type LcdGlyphCache = Arc<
 >;
 /// Upper bound on cached glyph bitmaps per engine (a CJK font could otherwise grow without limit).
 const MONO_GLYPH_CACHE_LIMIT: usize = 4096;
+/// Upper bound on cached color glyph pixmaps per engine.
+const COLOR_GLYPH_CACHE_LIMIT: usize = 1024;
+/// Upper bound on cached HarfBuzz shaping faces (one per ppem) per engine.
+const SHAPING_FACE_CACHE_LIMIT: usize = 64;
 type ShapingFaceCache =
     Arc<std::sync::Mutex<std::collections::HashMap<u16, Option<Arc<ShapingFace>>>>>;
 
@@ -282,10 +286,15 @@ impl FontEngine {
     pub fn shaping_face(&self, ppem: u16) -> Option<Arc<ShapingFace>> {
         let data = self.raw_data.as_ref()?;
         let mut faces = self.shaping_faces.lock().unwrap_or_else(|e| e.into_inner());
-        faces
-            .entry(ppem)
-            .or_insert_with(|| ShapingFace::new(data, self.face_index, ppem).map(Arc::new))
-            .clone()
+        if let Some(entry) = faces.get(&ppem) {
+            return entry.clone();
+        }
+        let entry = ShapingFace::new(data, self.face_index, ppem).map(Arc::new);
+        if faces.len() >= SHAPING_FACE_CACHE_LIMIT {
+            faces.clear();
+        }
+        faces.insert(ppem, entry.clone());
+        entry
     }
 
     /// Sets the face index within a font collection file.
@@ -362,6 +371,9 @@ impl FontEngine {
         .map(|(m, p)| (m, Arc::new(p)));
 
         if let Ok(mut guard) = self.color_cache.lock() {
+            if guard.len() >= COLOR_GLYPH_CACHE_LIMIT {
+                guard.clear();
+            }
             guard.insert(key, rendered.clone());
         }
 

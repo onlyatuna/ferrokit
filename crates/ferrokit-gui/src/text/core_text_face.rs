@@ -386,6 +386,30 @@ fn os2_avg_char_width(font: *const c_void) -> Option<f32> {
     width
 }
 
+/// Upper bound on cached `CTFontRef`s per face.
+const CT_FONT_CACHE_LIMIT: usize = 128;
+/// Upper bound on cached sub-pixel position counts per face.
+const SUBPIXEL_COUNT_CACHE_LIMIT: usize = 256;
+
+/// Retained `CTFontRef` guard returned by [`CoreTextFace::ctfont`] so a cache eviction cannot
+/// release the handle while a caller is still using it.
+struct RetainedCtFont(*const c_void);
+
+impl RetainedCtFont {
+    fn as_ptr(&self) -> *const c_void {
+        self.0
+    }
+}
+
+impl Drop for RetainedCtFont {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: `self.0` was retained for this guard in `CoreTextFace::ctfont`.
+            unsafe { CFRelease(self.0) };
+        }
+    }
+}
+
 /// A font face rasterized and measured by Apple CoreText.
 pub struct CoreTextFace {
     /// Glyph lookup and tables, parsed from `_data`.
@@ -540,12 +564,15 @@ impl CoreTextFace {
 
     /// The `CTFontRef` at pixel size `px` (`QCoreTextFontEngine::ctfont`), made once per size;
     /// `None` when CoreText cannot make one.
-    fn ctfont(&self, px: f32) -> Option<*const c_void> {
+    fn ctfont(&self, px: f32) -> Option<RetainedCtFont> {
         let px = if px > 0.0 { px } else { 0.0 };
+        let key = px.to_bits();
         let mut cache = self.ct_cache.lock().unwrap_or_else(|e| e.into_inner());
-        let font = *cache.entry(px.to_bits()).or_insert_with(|| {
+        let font = if let Some(&cached) = cache.get(&key) {
+            cached
+        } else {
             // SAFETY: creates a CTFontRef at pixel size `px` from the handles owned by `self`.
-            unsafe {
+            let created = unsafe {
                 if self.is_system_ui {
                     CTFontCreateUIFontForLanguage(UI_FONT_SYSTEM, f64::from(px), std::ptr::null())
                 } else if !self.descriptor.is_null() {
@@ -558,9 +585,25 @@ impl CoreTextFace {
                         std::ptr::null(),
                     )
                 }
+            };
+            if cache.len() >= CT_FONT_CACHE_LIMIT {
+                for (_, old) in cache.drain() {
+                    if !old.is_null() {
+                        // SAFETY: releasing evicted CTFontRef; live callers hold `RetainedCtFont`.
+                        unsafe { CFRelease(old) };
+                    }
+                }
             }
-        });
-        (!font.is_null()).then_some(font)
+            cache.insert(key, created);
+            created
+        };
+        if font.is_null() {
+            return None;
+        }
+        // SAFETY: `font` is a live `CTFontRef` owned by `cache`; retaining it for the returned
+        // `RetainedCtFont` keeps it valid even if `cache` evicts or `self` drops.
+        unsafe { CFRetain(font) };
+        Some(RetainedCtFont(font))
     }
 
     /// `QCoreTextFontEngine::boundingBox` of a glyph: the bounding rectangle and the advance.
@@ -607,7 +650,7 @@ impl CoreTextFace {
             return (GlyphMetrics::default(), Vec::new());
         };
         let scale = f64::from(scale);
-        let (rect, advance) = Self::glyph_rect(ctfont, glyph_id);
+        let (rect, advance) = Self::glyph_rect(ctfont.as_ptr(), glyph_id);
         let alpha_box = AlphaBox::new(rect, scale);
         let metrics = Self::bitmap_metrics(alpha_box, advance);
         if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
@@ -656,7 +699,7 @@ impl CoreTextFace {
             CGContextSetFillColorWithColor(ctx, color);
             CGContextSetTextDrawingMode(ctx, 0);
             CGContextSetTextPosition(ctx, pos_x, pos_y);
-            CTFontDrawGlyphs(ctfont, &glyph_id, &CGPoint::default(), 1, ctx);
+            CTFontDrawGlyphs(ctfont.as_ptr(), &glyph_id, &CGPoint::default(), 1, ctx);
             CGContextRelease(ctx);
         }
 
@@ -679,7 +722,7 @@ impl CoreTextFace {
         };
         // SAFETY: `ctfont` is valid; a null path or an empty one is an empty glyph.
         unsafe {
-            let path = CTFontCreatePathForGlyph(ctfont, glyph_id, std::ptr::null());
+            let path = CTFontCreatePathForGlyph(ctfont.as_ptr(), glyph_id, std::ptr::null());
             if path.is_null() {
                 return false;
             }
@@ -715,6 +758,9 @@ impl CoreTextFace {
             }
         }
         let count = images.len() as i64;
+        if counts.len() >= SUBPIXEL_COUNT_CACHE_LIMIT {
+            counts.clear();
+        }
         counts.insert(key, count);
         count
     }
@@ -722,7 +768,8 @@ impl CoreTextFace {
 
 impl Drop for CoreTextFace {
     fn drop(&mut self) {
-        if let Ok(mut cache) = self.ct_cache.lock() {
+        {
+            let mut cache = self.ct_cache.lock().unwrap_or_else(|e| e.into_inner());
             for (_, ctfont) in cache.drain() {
                 if !ctfont.is_null() {
                     // SAFETY: releasing cached CTFontRef.
@@ -757,7 +804,7 @@ impl GlyphFace for CoreTextFace {
         // SAFETY: ctfont is valid; encoded and glyphs buffers match length.
         let ok = unsafe {
             CTFontGetGlyphsForCharacters(
-                ctfont,
+                ctfont.as_ptr(),
                 encoded.as_ptr(),
                 glyphs.as_mut_ptr(),
                 encoded.len() as isize,
@@ -773,7 +820,7 @@ impl GlyphFace for CoreTextFace {
         let Some(ctfont) = self.ctfont(px) else {
             return GlyphMetrics::default();
         };
-        let (rect, advance) = Self::glyph_rect(ctfont, glyph_id);
+        let (rect, advance) = Self::glyph_rect(ctfont.as_ptr(), glyph_id);
         let metrics = Self::bitmap_metrics(AlphaBox::new(rect, 1.0), advance);
         if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
             return GlyphMetrics {
@@ -819,9 +866,9 @@ impl GlyphFace for CoreTextFace {
         // SAFETY: ctfont is a valid CTFontRef.
         let (asc, desc, lead) = unsafe {
             (
-                CTFontGetAscent(ctfont),
-                CTFontGetDescent(ctfont),
-                CTFontGetLeading(ctfont),
+                CTFontGetAscent(ctfont.as_ptr()),
+                CTFontGetDescent(ctfont.as_ptr()),
+                CTFontGetLeading(ctfont.as_ptr()),
             )
         };
         Some(LineMetrics {
@@ -854,7 +901,7 @@ impl GlyphFace for CoreTextFace {
         }
         let ctfont = self.ctfont(px)?;
         // SAFETY: ctfont is a valid CTFontRef.
-        let c = unsafe { CTFontGetCapHeight(ctfont) };
+        let c = unsafe { CTFontGetCapHeight(ctfont.as_ptr()) };
         if c > 0.0 {
             Some(q_fixed(c) as f32)
         } else {
@@ -878,7 +925,7 @@ impl GlyphFace for CoreTextFace {
             ..CGAffineTransform::IDENTITY
         };
         // SAFETY: ctfont is a valid CTFontRef.
-        let path = unsafe { CTFontCreatePathForGlyph(ctfont, glyph_id, &matrix) };
+        let path = unsafe { CTFontCreatePathForGlyph(ctfont.as_ptr(), glyph_id, &matrix) };
         if path.is_null() {
             return None;
         }
@@ -954,7 +1001,7 @@ impl GlyphFace for CoreTextFace {
             return None;
         }
         let ctfont = self.ctfont(size)?;
-        let (rect, advance) = Self::glyph_rect(ctfont, glyph_id);
+        let (rect, advance) = Self::glyph_rect(ctfont.as_ptr(), glyph_id);
         let rsb = q_fixed(advance.width) - q_fixed(rect.origin.x) - q_fixed(rect.size.width);
         Some(rsb as f32)
     }
