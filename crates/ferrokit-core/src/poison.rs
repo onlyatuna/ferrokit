@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Poison-tolerant locking for the process-global and per-thread registries that object
-//! destruction, event-loop teardown and thread-affinity bookkeeping must always be able to reach.
+//! Poison-tolerant locking for the process-global and per-thread registries, event loops,
+//! application state, and internal sync gates that must remain reachable after an unrelated panic.
 //!
 //! Unregistering an object (`unregister_qobject`), dropping an `OwnedObject` and dropping an
 //! `EventLoop` cannot return an error. If one of them panicked because an earlier panic had
@@ -9,21 +9,21 @@
 //!
 //! Recovering with [`PoisonError::into_inner`](std::sync::PoisonError::into_inner) is only
 //! correct when the guarded data is structurally valid after a panic with the guard held. These
-//! helpers are therefore used only for locks whose data is a plain container (`HashMap`, `Vec`,
-//! a queue of events) changed by single-step operations (insert, remove, retain, push, store),
-//! or by steps that run no user code between the first and the last change. For such data the
-//! poison flag carries no information, so it is cleared when a helper recovers the lock, and
-//! later lockers see a healthy lock. Code outside the crate that locks the same mutex (for
-//! example `EventLoop::queue()`) before any internal caller has recovered it still sees the
-//! poison.
+//! helpers are therefore used for locks whose data is a plain container (`HashMap`, `Vec`,
+//! a queue of events), global configuration/state, or internal synchronization flags changed
+//! without leaving broken multi-step invariants across user callbacks. When a helper recovers a
+//! lock, it clears the poison flag so later lockers see a healthy lock.
 //!
 //! Do not use them for data with an invariant that spans several steps with user code in
 //! between: there a poisoned lock must be reported, or the user code must run without the lock.
 
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, WaitTimeoutResult,
+};
+use std::time::Duration;
 
 /// Locks `mutex`, recovering the data when a previous holder panicked.
-pub(crate) fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock_unpoisoned<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| {
         mutex.clear_poison();
         poisoned.into_inner()
@@ -31,7 +31,7 @@ pub(crate) fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Takes a read lock on `lock`, recovering the data when a previous writer panicked.
-pub(crate) fn read_unpoisoned<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+pub fn read_unpoisoned<T: ?Sized>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(|poisoned| {
         lock.clear_poison();
         poisoned.into_inner()
@@ -39,11 +39,28 @@ pub(crate) fn read_unpoisoned<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
 }
 
 /// Takes a write lock on `lock`, recovering the data when a previous writer panicked.
-pub(crate) fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+pub fn write_unpoisoned<T: ?Sized>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(|poisoned| {
         lock.clear_poison();
         poisoned.into_inner()
     })
+}
+
+/// Waits on `cond` with `guard`, recovering the guard if the underlying mutex was poisoned.
+pub fn wait_unpoisoned<'a, T>(cond: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    cond.wait(guard)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Waits on `cond` with `guard` up to `dur`, recovering the guard if the underlying mutex was
+/// poisoned.
+pub fn wait_timeout_unpoisoned<'a, T>(
+    cond: &Condvar,
+    guard: MutexGuard<'a, T>,
+    dur: Duration,
+) -> (MutexGuard<'a, T>, WaitTimeoutResult) {
+    cond.wait_timeout(guard, dur)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

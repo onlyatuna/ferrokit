@@ -173,21 +173,21 @@ impl<T> Sender<T> {
         // with no channel lock held (a slot may use the channel again). So the emissions are
         // prepared from `val` here and run after it has been queued.
         let emissions: Vec<DeferredEmission> = {
-            let emitters = self.shared.signal_emitters.lock().unwrap().clone();
+            let emitters = crate::poison::lock_unpoisoned(&self.shared.signal_emitters).clone();
             emitters.iter().map(|emit| emit(&val)).collect()
         };
 
         {
-            let mut queue = self.shared.queue.lock().unwrap();
-            let is_closed = *self.shared.is_closed.lock().unwrap();
+            let mut queue = crate::poison::lock_unpoisoned(&self.shared.queue);
+            let is_closed = *crate::poison::lock_unpoisoned(&self.shared.is_closed);
             if is_closed {
                 return Err(SendError(val));
             }
 
             if let Some(cap) = self.shared.capacity {
                 while queue.len() >= cap {
-                    queue = self.shared.send_cond.wait(queue).unwrap();
-                    let closed = *self.shared.is_closed.lock().unwrap();
+                    queue = crate::poison::wait_unpoisoned(&self.shared.send_cond, queue);
+                    let closed = *crate::poison::lock_unpoisoned(&self.shared.is_closed);
                     if closed {
                         return Err(SendError(val));
                     }
@@ -200,7 +200,7 @@ impl<T> Sender<T> {
         self.shared.recv_cond.notify_one();
 
         // Wake up connected Qt event loops
-        let event_senders = self.shared.event_senders.lock().unwrap().clone();
+        let event_senders = crate::poison::lock_unpoisoned(&self.shared.event_senders).clone();
         for sender in event_senders {
             (sender.wakeup)();
         }
@@ -215,7 +215,7 @@ impl<T> Sender<T> {
 
     /// Whether the channel has been closed.
     pub fn is_closed(&self) -> bool {
-        *self.shared.is_closed.lock().unwrap()
+        *crate::poison::lock_unpoisoned(&self.shared.is_closed)
     }
 }
 
@@ -227,29 +227,29 @@ pub struct Receiver<T> {
 impl<T> Receiver<T> {
     /// Blocks until an item is available, returning an error if disconnected.
     pub fn recv(&self) -> Result<T, RecvError> {
-        let mut queue = self.shared.queue.lock().unwrap();
+        let mut queue = crate::poison::lock_unpoisoned(&self.shared.queue);
         loop {
             if let Some(val) = queue.pop_front() {
                 self.shared.send_cond.notify_one();
                 return Ok(val);
             }
-            if *self.shared.is_closed.lock().unwrap() {
+            if *crate::poison::lock_unpoisoned(&self.shared.is_closed) {
                 return Err(RecvError);
             }
-            queue = self.shared.recv_cond.wait(queue).unwrap();
+            queue = crate::poison::wait_unpoisoned(&self.shared.recv_cond, queue);
         }
     }
 
     /// Attempts to receive an item without blocking.
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        let mut queue = self.shared.queue.lock().unwrap();
+        let mut queue = crate::poison::lock_unpoisoned(&self.shared.queue);
         match queue.pop_front() {
             Some(val) => {
                 self.shared.send_cond.notify_one();
                 Ok(val)
             }
             _ => {
-                if *self.shared.is_closed.lock().unwrap() {
+                if *crate::poison::lock_unpoisoned(&self.shared.is_closed) {
                     Err(TryRecvError::Disconnected)
                 } else {
                     Err(TryRecvError::Empty)
@@ -261,14 +261,14 @@ impl<T> Receiver<T> {
     /// Blocks until an item is available or timeout expires.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
-        let mut queue = self.shared.queue.lock().unwrap();
+        let mut queue = crate::poison::lock_unpoisoned(&self.shared.queue);
 
         loop {
             if let Some(val) = queue.pop_front() {
                 self.shared.send_cond.notify_one();
                 return Ok(val);
             }
-            if *self.shared.is_closed.lock().unwrap() {
+            if *crate::poison::lock_unpoisoned(&self.shared.is_closed) {
                 return Err(RecvTimeoutError::Disconnected);
             }
             let now = Instant::now();
@@ -276,11 +276,8 @@ impl<T> Receiver<T> {
                 return Err(RecvTimeoutError::Timeout);
             }
             let remaining = deadline - now;
-            let (next_queue, timeout_res) = self
-                .shared
-                .recv_cond
-                .wait_timeout(queue, remaining)
-                .unwrap();
+            let (next_queue, timeout_res) =
+                crate::poison::wait_timeout_unpoisoned(&self.shared.recv_cond, queue, remaining);
             queue = next_queue;
             if timeout_res.timed_out() && queue.is_empty() {
                 return Err(RecvTimeoutError::Timeout);
@@ -290,7 +287,7 @@ impl<T> Receiver<T> {
 
     /// Attaches an [`EventSender`] to wake up a Qt thread event loop when items are sent.
     pub fn attach_event_sender(&self, sender: EventSender) {
-        self.shared.event_senders.lock().unwrap().push(sender);
+        crate::poison::lock_unpoisoned(&self.shared.event_senders).push(sender);
     }
 
     /// Attaches a [`Signal`] that will be emitted whenever a new item is sent through the channel.
@@ -306,7 +303,7 @@ impl<T> Receiver<T> {
             let value = val.clone();
             Box::new(move || signal.emit(&value)) as DeferredEmission
         });
-        self.shared.signal_emitters.lock().unwrap().push(emitter);
+        crate::poison::lock_unpoisoned(&self.shared.signal_emitters).push(emitter);
     }
 
     /// Closes the channel.

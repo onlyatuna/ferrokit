@@ -18,7 +18,7 @@ fn with_registry<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<String, Arc<[u8]>>) -> R,
 {
-    let mut lock = RESOURCE_REGISTRY.write().unwrap();
+    let mut lock = crate::poison::write_unpoisoned(&RESOURCE_REGISTRY);
     if lock.is_none() {
         *lock = Some(HashMap::new());
     }
@@ -75,7 +75,7 @@ impl Resource {
     /// Returns `true` if a resource exists at `path`.
     pub fn exists(path: &str) -> bool {
         let norm_path = normalize_resource_path(path);
-        let lock = RESOURCE_REGISTRY.read().unwrap();
+        let lock = crate::poison::read_unpoisoned(&RESOURCE_REGISTRY);
         lock.as_ref()
             .map(|reg| reg.contains_key(&norm_path))
             .unwrap_or(false)
@@ -84,7 +84,7 @@ impl Resource {
     /// Retrieves an Arc clone of the resource data payload.
     pub fn data(path: &str) -> Option<Arc<[u8]>> {
         let norm_path = normalize_resource_path(path);
-        let lock = RESOURCE_REGISTRY.read().unwrap();
+        let lock = crate::poison::read_unpoisoned(&RESOURCE_REGISTRY);
         lock.as_ref().and_then(|reg| reg.get(&norm_path).cloned())
     }
 
@@ -107,7 +107,7 @@ impl Resource {
             format!("{}/", norm_prefix)
         };
 
-        let lock = RESOURCE_REGISTRY.read().unwrap();
+        let lock = crate::poison::read_unpoisoned(&RESOURCE_REGISTRY);
         let mut results = Vec::new();
         if let Some(ref reg) = *lock {
             for key in reg.keys() {

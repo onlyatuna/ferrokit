@@ -81,14 +81,14 @@ impl<T> FutureShared<T> {
     }
 
     fn live_watchers(&self) -> Vec<Arc<FutureWatcherSignals<T>>> {
-        let mut list = self.watchers.lock().unwrap();
+        let mut list = crate::poison::lock_unpoisoned(&self.watchers);
         list.retain(|w| w.alive.load(Ordering::SeqCst));
         list.clone()
     }
 
     /// Wakes every task parked in `poll`.
     fn wake_wakers(&self) {
-        let wakers = std::mem::take(&mut *self.wakers.lock().unwrap());
+        let wakers = std::mem::take(&mut *crate::poison::lock_unpoisoned(&self.wakers));
         for waker in wakers {
             waker.wake();
         }
@@ -100,14 +100,14 @@ impl<T> FutureShared<T> {
     /// store. Taking `results` once the flag is visible guarantees the waiter is either already
     /// parked (and gets notified) or re-checks the flag.
     fn sync_with_waiters(&self) {
-        drop(self.results.lock().unwrap());
+        drop(crate::poison::lock_unpoisoned(&self.results));
     }
 }
 
 impl<T: Clone + Send + 'static> FutureShared<T> {
     fn cancel(&self) {
         let watchers = {
-            let mut list = self.watchers.lock().unwrap();
+            let mut list = crate::poison::lock_unpoisoned(&self.watchers);
             // Qt: QFutureInterfaceBase::cancel is a no-op once canceled.
             if self.is_canceled.swap(true, Ordering::SeqCst) {
                 return;
@@ -125,7 +125,7 @@ impl<T: Clone + Send + 'static> FutureShared<T> {
 
     fn finish(&self) {
         let watchers = {
-            let mut list = self.watchers.lock().unwrap();
+            let mut list = crate::poison::lock_unpoisoned(&self.watchers);
             // Qt: reportFinished guards on !isFinished() (qfutureinterface.cpp:461).
             if self.is_finished.swap(true, Ordering::SeqCst) {
                 return;
@@ -188,7 +188,7 @@ impl<T: Clone + Send + 'static> Promise<T> {
         // Appending the result and listing the watchers under one `results` critical section
         // lets `Future::watcher` tell exactly which results a watcher still has to be sent.
         let watchers = {
-            let mut res = self.shared.results.lock().unwrap();
+            let mut res = crate::poison::lock_unpoisoned(&self.shared.results);
             res.push(value.clone());
             self.shared.live_watchers()
         };
@@ -259,22 +259,24 @@ impl<T> Clone for Future<T> {
 impl<T: Clone + Send + 'static> Future<T> {
     /// Returns the first result if available.
     pub fn result(&self) -> Option<T> {
-        self.shared.results.lock().unwrap().first().cloned()
+        crate::poison::lock_unpoisoned(&self.shared.results)
+            .first()
+            .cloned()
     }
 
     /// Returns all produced results.
     pub fn results(&self) -> Vec<T> {
-        self.shared.results.lock().unwrap().clone()
+        crate::poison::lock_unpoisoned(&self.shared.results).clone()
     }
 
     /// Blocks until at least one result is available or computation finishes.
     pub fn wait_result(&self) -> Option<T> {
-        let mut res = self.shared.results.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.results);
         while res.is_empty()
             && !self.shared.is_finished.load(Ordering::SeqCst)
             && !self.is_canceled()
         {
-            res = self.shared.cond.wait(res).unwrap();
+            res = crate::poison::wait_unpoisoned(&self.shared.cond, res);
         }
         res.first().cloned()
     }
@@ -282,7 +284,7 @@ impl<T: Clone + Send + 'static> Future<T> {
     /// Blocks until computation finishes within `timeout`.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<T> {
         let deadline = Instant::now() + timeout;
-        let mut res = self.shared.results.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.results);
 
         while res.is_empty()
             && !self.shared.is_finished.load(Ordering::SeqCst)
@@ -293,7 +295,8 @@ impl<T: Clone + Send + 'static> Future<T> {
                 return None;
             }
             let remaining = deadline - now;
-            let (next_res, timeout_res) = self.shared.cond.wait_timeout(res, remaining).unwrap();
+            let (next_res, timeout_res) =
+                crate::poison::wait_timeout_unpoisoned(&self.shared.cond, res, remaining);
             res = next_res;
             if timeout_res.timed_out() {
                 return res.first().cloned();
@@ -306,9 +309,9 @@ impl<T: Clone + Send + 'static> Future<T> {
     /// Blocks until the computation is finished (Qt: `QFuture::waitForFinished`), regardless of
     /// how many results were reported so far.
     pub fn wait_for_finished(&self) {
-        let mut res = self.shared.results.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.results);
         while !self.shared.is_finished.load(Ordering::SeqCst) {
-            res = self.shared.cond.wait(res).unwrap();
+            res = crate::poison::wait_unpoisoned(&self.shared.cond, res);
         }
     }
 
@@ -350,8 +353,8 @@ impl<T: Clone + Send + 'static> Future<T> {
         // posted by the producer, never both and never neither (Qt: `QFutureWatcher::setFuture`
         // replays the current state).
         let (replay, canceled, finished) = {
-            let results = self.shared.results.lock().unwrap();
-            let mut watchers = self.shared.watchers.lock().unwrap();
+            let results = crate::poison::lock_unpoisoned(&self.shared.results);
+            let mut watchers = crate::poison::lock_unpoisoned(&self.shared.watchers);
             watchers.push(Arc::clone(&signals));
             (
                 results.clone(),
@@ -400,7 +403,7 @@ impl<T: Clone + Send + 'static> StdFuture for Future<T> {
         }
 
         {
-            let mut wakers = self.shared.wakers.lock().unwrap();
+            let mut wakers = crate::poison::lock_unpoisoned(&self.shared.wakers);
             if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
                 wakers.push(cx.waker().clone());
             }

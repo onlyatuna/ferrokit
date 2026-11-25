@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
+//! Qt-compatible public synchronization primitives (`Mutex`, `RecursiveMutex`, `ReadWriteLock`,
+//! `WaitCondition`, `Semaphore`); internal state gates use `crate::poison` helpers.
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::marker::PhantomData;
@@ -45,9 +47,9 @@ impl<T> Mutex<T> {
 impl<T: ?Sized> Mutex<T> {
     /// Acquires the mutex, blocking the current thread until it is available.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        let mut locked = self.inner.lock().unwrap();
+        let mut locked = crate::poison::lock_unpoisoned(&self.inner);
         while *locked {
-            locked = self.cond.wait(locked).unwrap();
+            locked = crate::poison::wait_unpoisoned(&self.cond, locked);
         }
         *locked = true;
         Ok(MutexGuard { mutex: self })
@@ -57,7 +59,7 @@ impl<T: ?Sized> Mutex<T> {
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         // The gate is only ever held for a few instructions, so waiting for it is cheap; a
         // `try_lock` on it would fail spuriously while the user mutex is actually free.
-        let mut locked = self.inner.lock().unwrap();
+        let mut locked = crate::poison::lock_unpoisoned(&self.inner);
         if !*locked {
             *locked = true;
             Some(MutexGuard { mutex: self })
@@ -73,14 +75,15 @@ impl<T: ?Sized> Mutex<T> {
 
     /// Attempts to acquire the mutex, waiting until `deadline`.
     pub fn try_lock_until(&self, deadline: Instant) -> Option<MutexGuard<'_, T>> {
-        let mut locked = self.inner.lock().unwrap();
+        let mut locked = crate::poison::lock_unpoisoned(&self.inner);
         while *locked {
             let now = Instant::now();
             if now >= deadline {
                 return None;
             }
             let remaining = deadline - now;
-            let (next_locked, timeout_res) = self.cond.wait_timeout(locked, remaining).unwrap();
+            let (next_locked, timeout_res) =
+                crate::poison::wait_timeout_unpoisoned(&self.cond, locked, remaining);
             locked = next_locked;
             if timeout_res.timed_out() && *locked {
                 return None;
@@ -196,7 +199,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
     /// Acquires the recursive mutex. Re-entrant calls on the same thread succeed immediately.
     pub fn lock(&self) -> RecursiveMutexGuard<'_, T> {
         let current_id = current_thread().id();
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.state);
 
         loop {
             match state.owner {
@@ -210,7 +213,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
                     return RecursiveMutexGuard::new(self);
                 }
                 Some(_) => {
-                    state = self.cond.wait(state).unwrap();
+                    state = crate::poison::wait_unpoisoned(&self.cond, state);
                 }
             }
         }
@@ -219,7 +222,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
     /// Attempts to acquire the recursive mutex without blocking.
     pub fn try_lock(&self) -> Option<RecursiveMutexGuard<'_, T>> {
         let current_id = current_thread().id();
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.state);
 
         match state.owner {
             None => {
@@ -243,7 +246,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
     /// Attempts to acquire the recursive mutex, waiting until `deadline`.
     pub fn try_lock_until(&self, deadline: Instant) -> Option<RecursiveMutexGuard<'_, T>> {
         let current_id = current_thread().id();
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.state);
 
         loop {
             match state.owner {
@@ -263,7 +266,7 @@ impl<T: ?Sized> RecursiveMutex<T> {
                     }
                     let remaining = deadline - now;
                     let (next_state, timeout_res) =
-                        self.cond.wait_timeout(state, remaining).unwrap();
+                        crate::poison::wait_timeout_unpoisoned(&self.cond, state, remaining);
                     state = next_state;
                     if timeout_res.timed_out()
                         && state.owner != Some(current_id)
@@ -453,9 +456,9 @@ impl Semaphore {
         if n == 0 {
             return;
         }
-        let mut available = self.permits.lock().unwrap();
+        let mut available = crate::poison::lock_unpoisoned(&self.permits);
         while *available < n {
-            available = self.cond.wait(available).unwrap();
+            available = crate::poison::wait_unpoisoned(&self.cond, available);
         }
         *available -= n;
     }
@@ -465,7 +468,7 @@ impl Semaphore {
         if n == 0 {
             return true;
         }
-        let mut available = self.permits.lock().unwrap();
+        let mut available = crate::poison::lock_unpoisoned(&self.permits);
         if *available >= n {
             *available -= n;
             true
@@ -480,7 +483,7 @@ impl Semaphore {
             return true;
         }
         let deadline = Instant::now() + timeout;
-        let mut available = self.permits.lock().unwrap();
+        let mut available = crate::poison::lock_unpoisoned(&self.permits);
 
         while *available < n {
             let now = Instant::now();
@@ -489,7 +492,7 @@ impl Semaphore {
             }
             let remaining = deadline - now;
             let (next_available, timeout_res) =
-                self.cond.wait_timeout(available, remaining).unwrap();
+                crate::poison::wait_timeout_unpoisoned(&self.cond, available, remaining);
             available = next_available;
             if timeout_res.timed_out() && *available < n {
                 return false;
@@ -504,14 +507,14 @@ impl Semaphore {
         if n == 0 {
             return;
         }
-        let mut available = self.permits.lock().unwrap();
+        let mut available = crate::poison::lock_unpoisoned(&self.permits);
         *available += n;
         self.cond.notify_all();
     }
 
     /// Returns the number of currently available permits.
     pub fn available(&self) -> usize {
-        *self.permits.lock().unwrap()
+        *crate::poison::lock_unpoisoned(&self.permits)
     }
 }
 
@@ -557,7 +560,7 @@ impl WaitCondition {
     /// Atomically releases `guard`, waits until signaled, and re-acquires the lock upon waking.
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         let mutex = guard.mutex;
-        let mut state = self.gate.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.gate);
         state.waiters += 1;
 
         // Releasing through the guard unlocks exactly once. The gate stays held until the
@@ -565,7 +568,7 @@ impl WaitCondition {
         drop(guard);
 
         while state.wakeups == 0 {
-            state = self.cond.wait(state).unwrap();
+            state = crate::poison::wait_unpoisoned(&self.cond, state);
         }
         state.waiters -= 1;
         state.wakeups -= 1;
@@ -574,8 +577,8 @@ impl WaitCondition {
         // mutex may itself be blocked on the gate.
         drop(state);
 
-        // Re-acquire mutex
-        mutex.lock().unwrap()
+        // Re-acquire mutex (custom `thread::sync::Mutex::lock` never poisons).
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Waits on the condition for at most `timeout`. Returns the re-acquired guard and whether signaled.
@@ -589,7 +592,7 @@ impl WaitCondition {
     ) -> (Option<MutexGuard<'a, T>>, bool) {
         let deadline = Instant::now() + timeout;
         let mutex = guard.mutex;
-        let mut state = self.gate.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.gate);
         state.waiters += 1;
 
         drop(guard);
@@ -601,7 +604,7 @@ impl WaitCondition {
                 signaled = false;
                 break;
             }
-            state = self.cond.wait_timeout(state, deadline - now).unwrap().0;
+            state = crate::poison::wait_timeout_unpoisoned(&self.cond, state, deadline - now).0;
         }
         state.waiters -= 1;
         if signaled {
@@ -614,14 +617,14 @@ impl WaitCondition {
 
     /// Wakes one waiting thread.
     pub fn wake_one(&self) {
-        let mut state = self.gate.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.gate);
         state.wakeups = (state.wakeups + 1).min(state.waiters);
         self.cond.notify_one();
     }
 
     /// Wakes all waiting threads.
     pub fn wake_all(&self) {
-        let mut state = self.gate.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.gate);
         state.wakeups = state.waiters;
         self.cond.notify_all();
     }

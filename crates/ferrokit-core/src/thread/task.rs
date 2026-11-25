@@ -109,7 +109,7 @@ impl<T> TaskShared<T> {
     /// it was already canceled while queued, or its token was canceled before it started (in
     /// which case it is completed as canceled here).
     pub(crate) fn try_start(&self) -> bool {
-        let mut st = self.status.lock().unwrap();
+        let mut st = crate::poison::lock_unpoisoned(&self.status);
         if *st != TaskStatus::Queued {
             return false;
         }
@@ -124,14 +124,14 @@ impl<T> TaskShared<T> {
     /// Completes a task that was dropped from a queue without running as canceled, so nobody
     /// waiting on it is left blocked.
     pub(crate) fn cancel_unstarted(&self) {
-        let st = self.status.lock().unwrap();
+        let st = crate::poison::lock_unpoisoned(&self.status);
         if *st == TaskStatus::Queued {
             self.settle(st, Err(TaskError::Canceled));
         }
     }
 
     pub(crate) fn finish(&self, res: Result<T, TaskError>) {
-        let st = self.status.lock().unwrap();
+        let st = crate::poison::lock_unpoisoned(&self.status);
         self.settle(st, res);
     }
 
@@ -144,12 +144,12 @@ impl<T> TaskShared<T> {
                 TaskStatus::Failed
             }
         };
-        *self.result.lock().unwrap() = Some(res);
+        *crate::poison::lock_unpoisoned(&self.result) = Some(res);
         drop(st);
         self.cond.notify_all();
 
         let wakers = {
-            let mut w = self.wakers.lock().unwrap();
+            let mut w = crate::poison::lock_unpoisoned(&self.wakers);
             std::mem::take(&mut *w)
         };
         for waker in wakers {
@@ -182,7 +182,7 @@ impl<T> TaskHandle<T> {
 
     /// Current execution status of the task.
     pub fn status(&self) -> TaskStatus {
-        *self.shared.status.lock().unwrap()
+        *crate::poison::lock_unpoisoned(&self.shared.status)
     }
 
     /// Whether the task has finished executing (completed, canceled, or failed).
@@ -204,7 +204,7 @@ impl<T> TaskHandle<T> {
     pub fn cancel(&self) -> bool {
         // The token is set under the status lock so that a worker deciding whether to start the
         // task (see `TaskShared::try_start`) sees "canceled" exactly when `cancel` reports it.
-        let st = self.shared.status.lock().unwrap();
+        let st = crate::poison::lock_unpoisoned(&self.shared.status);
         self.shared.cancel_token.cancel();
         if *st == TaskStatus::Queued {
             self.shared.settle(st, Err(TaskError::Canceled));
@@ -236,7 +236,8 @@ impl<T> TaskHandle<T> {
 
     /// Whether the result is there or has been moved out by `join`.
     fn is_settled(&self) -> bool {
-        self.shared.result.lock().unwrap().is_some() || self.shared.taken.load(Ordering::SeqCst)
+        crate::poison::lock_unpoisoned(&self.shared.result).is_some()
+            || self.shared.taken.load(Ordering::SeqCst)
     }
 
     /// Blocks until the task completes and returns a copy/clone of the result if `T: Clone`.
@@ -248,9 +249,9 @@ impl<T> TaskHandle<T> {
         T: Clone,
     {
         let _blocked = self.prepare_to_wait();
-        let mut res = self.shared.result.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.result);
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
-            res = self.shared.cond.wait(res).unwrap();
+            res = crate::poison::wait_unpoisoned(&self.shared.cond, res);
         }
         match res.as_ref() {
             Some(r) => r.clone(),
@@ -269,7 +270,7 @@ impl<T> TaskHandle<T> {
     {
         let deadline = Instant::now() + timeout;
         let _blocked = self.prepare_to_wait();
-        let mut res = self.shared.result.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.result);
 
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
             let now = Instant::now();
@@ -277,7 +278,8 @@ impl<T> TaskHandle<T> {
                 return Ok(None);
             }
             let remaining = deadline - now;
-            let (next_res, timeout_res) = self.shared.cond.wait_timeout(res, remaining).unwrap();
+            let (next_res, timeout_res) =
+                crate::poison::wait_timeout_unpoisoned(&self.shared.cond, res, remaining);
             res = next_res;
             if timeout_res.timed_out() && res.is_none() && !self.shared.taken.load(Ordering::SeqCst)
             {
@@ -300,9 +302,9 @@ impl<T> TaskHandle<T> {
     /// still queued is run by the joining job itself, instead of waiting for a free worker.
     pub fn join(self) -> Result<T, TaskError> {
         let _blocked = self.prepare_to_wait();
-        let mut res = self.shared.result.lock().unwrap();
+        let mut res = crate::poison::lock_unpoisoned(&self.shared.result);
         while res.is_none() && !self.shared.taken.load(Ordering::SeqCst) {
-            res = self.shared.cond.wait(res).unwrap();
+            res = crate::poison::wait_unpoisoned(&self.shared.cond, res);
         }
         match res.take() {
             Some(r) => {
@@ -319,21 +321,21 @@ impl<T: Clone> Future for TaskHandle<T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         {
-            let res = self.shared.result.lock().unwrap();
+            let res = crate::poison::lock_unpoisoned(&self.shared.result);
             if let Some(r) = res.as_ref() {
                 return Poll::Ready(r.clone());
             }
             if self.shared.taken.load(Ordering::SeqCst) {
                 return Poll::Ready(Err(TaskError::ResultTaken));
             }
-            let mut wakers = self.shared.wakers.lock().unwrap();
+            let mut wakers = crate::poison::lock_unpoisoned(&self.shared.wakers);
             if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
                 wakers.push(cx.waker().clone());
             }
         }
         // Checked with `result` released: `settle` takes `status` before `result`.
         if let Some(job) = &self.shared.queued_job
-            && *self.shared.status.lock().unwrap() == TaskStatus::Queued
+            && *crate::poison::lock_unpoisoned(&self.shared.status) == TaskStatus::Queued
         {
             // Lets `block_on` on a worker of the same pool run the task inline.
             note_awaited_job(job);
