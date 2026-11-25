@@ -237,21 +237,24 @@ struct OwnedScan<'a> {
 /// `lparam` must be the address of an `OwnedScan` that is live and not otherwise borrowed for
 /// the call (as `EnumWindows` passes it back from `release_owned_windows`).
 unsafe extern "system" fn collect_owned(hwnd: HWND, lparam: LPARAM) -> i32 {
-    // SAFETY: `lparam` is the `OwnedScan` that `release_owned_windows` keeps alive across
-    // `EnumWindows`, which calls this on the same thread before it returns.
-    let scan = unsafe { &mut *(lparam as *mut OwnedScan) };
-    // SAFETY: GetWindow takes only a window handle and validates it; `hwnd` is the one EnumWindows
-    // just passed.
-    if unsafe { GetWindow(hwnd, GW_OWNER) } == scan.owner {
-        let mut name = [0u16; 64];
-        // SAFETY: `name` is a local buffer of `name.len()` u16s, the capacity passed to GetClassNameW,
-        // which writes at most that many and returns the count copied (`len <= 64`).
-        let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
-        if len > 0 && name[..len as usize] == *scan.class {
-            scan.found.push(hwnd);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `lparam` is the `OwnedScan` that `release_owned_windows` keeps alive across
+        // `EnumWindows`, which calls this on the same thread before it returns.
+        let scan = unsafe { &mut *(lparam as *mut OwnedScan) };
+        // SAFETY: GetWindow takes only a window handle and validates it; `hwnd` is the one EnumWindows
+        // just passed.
+        if unsafe { GetWindow(hwnd, GW_OWNER) } == scan.owner {
+            let mut name = [0u16; 64];
+            // SAFETY: `name` is a local buffer of `name.len()` u16s, the capacity passed to GetClassNameW,
+            // which writes at most that many and returns the count copied (`len <= 64`).
+            let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
+            if len > 0 && name[..len as usize] == *scan.class {
+                scan.found.push(hwnd);
+            }
         }
-    }
-    1
+        1
+    }))
+    .unwrap_or(0)
 }
 
 /// `QWindowsWindow::destroyWindow` (`qwindowswindow.cpp:1708-1718`): the windows this one owns

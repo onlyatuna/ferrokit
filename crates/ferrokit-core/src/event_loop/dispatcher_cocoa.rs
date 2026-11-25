@@ -315,24 +315,28 @@ static WAIT_FOR_MORE_EVENTS: AtomicBool = AtomicBool::new(false);
 /// The posted-events source's callback, on the main thread (:877-896). Posted and timer events
 /// are sent by the ferrokit event loop, so the callback only ends a wait.
 extern "C" fn wake_source_perform(_info: *mut c_void) {
-    if INITIALIZING_NSAPP.load(Ordering::SeqCst) {
-        WAKE_DEFERRED.store(true, Ordering::SeqCst);
-        return;
-    }
-    if WAIT_FOR_MORE_EVENTS.load(Ordering::SeqCst) {
-        post_wakeup_event();
-    }
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if INITIALIZING_NSAPP.load(Ordering::SeqCst) {
+            WAKE_DEFERRED.store(true, Ordering::SeqCst);
+            return;
+        }
+        if WAIT_FOR_MORE_EVENTS.load(Ordering::SeqCst) {
+            post_wakeup_event();
+        }
+    }));
 }
 
 /// Runs once `[NSApp run]` has launched the application (:568-572).
 extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
-    let app = ns_app();
-    // SAFETY: [inferred] `stop:` takes one object argument and returns void, matching
-    // `send1::<Id, ()>`; `app` is `NSApp` from `ns_app()` and the sender argument may be
-    // `NSApp` itself. This timer callout runs on the main run loop (the timer was added to
-    // `CFRunLoopGetMain` in `ensure_nsapp_initialized`).
-    unsafe { send1::<Id, ()>(app, RUNTIME.stop, app) };
-    post_wakeup_event();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let app = ns_app();
+        // SAFETY: [inferred] `stop:` takes one object argument and returns void, matching
+        // `send1::<Id, ()>`; `app` is `NSApp` from `ns_app()` and the sender argument may be
+        // `NSApp` itself. This timer callout runs on the main run loop (the timer was added to
+        // `CFRunLoopGetMain` in `ensure_nsapp_initialized`).
+        unsafe { send1::<Id, ()>(app, RUNTIME.stop, app) };
+        post_wakeup_event();
+    }));
 }
 
 /// The version-0 run loop source on the main run loop's common modes that `wake_up` signals
