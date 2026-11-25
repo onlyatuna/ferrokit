@@ -45,19 +45,20 @@ pub fn mark_property_dirty(id: PropertyId) {
     mark_property_dirty_recursive(id, &mut visited);
 }
 
-fn mark_property_dirty_recursive(id: PropertyId, visited: &mut HashSet<PropertyId>) {
+fn mark_property_dirty_recursive(id: PropertyId, visited: &mut HashSet<PropertyId>) -> bool {
     if !visited.insert(id) {
-        return;
+        return true;
     }
-    let notifier = {
-        match PROPERTY_DIRTY_NOTIFIERS.read() {
-            Ok(map) => map.get(&id).cloned(),
-            _ => None,
-        }
+    let notifier = match PROPERTY_DIRTY_NOTIFIERS.read() {
+        Ok(map) => map.get(&id).cloned(),
+        // Preserve dependents if the global registry lock is poisoned.
+        Err(_) => return true,
     };
-    if let Some(n) = notifier {
-        n(visited);
-    }
+    let Some(n) = notifier else {
+        return false;
+    };
+    n(visited);
+    true
 }
 
 /// Reactive property equivalent to Qt 6 `QProperty<T>`.
@@ -122,8 +123,18 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
                 Ok(d) => d.iter().copied().collect(),
                 _ => Vec::new(),
             };
+            let mut stale = Vec::new();
             for dep in deps {
-                mark_property_dirty_recursive(dep, visited);
+                if !mark_property_dirty_recursive(dep, visited) {
+                    stale.push(dep);
+                }
+            }
+            if !stale.is_empty()
+                && let Ok(mut d) = dependents_clone.write()
+            {
+                for dep in stale {
+                    d.remove(&dep);
+                }
             }
         });
 
@@ -266,8 +277,19 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             Ok(d) => d.iter().copied().collect(),
             _ => Vec::new(),
         };
+        let mut visited = HashSet::new();
+        let mut stale = Vec::new();
         for dep in deps {
-            mark_property_dirty(dep);
+            if !mark_property_dirty_recursive(dep, &mut visited) {
+                stale.push(dep);
+            }
+        }
+        if !stale.is_empty()
+            && let Ok(mut d) = self.dependents.write()
+        {
+            for dep in stale {
+                d.remove(&dep);
+            }
         }
     }
 }
@@ -371,5 +393,18 @@ mod tests {
 
         should_panic.store(false, Ordering::SeqCst);
         assert_eq!(prop.get(), 42);
+    }
+
+    #[test]
+    fn dropped_dependent_is_pruned_on_upstream_notify() {
+        let upstream = Property::new(1i32);
+        let u = upstream.clone();
+        let dependent = Property::with_binding(move || u.get() + 1);
+        assert_eq!(dependent.get(), 2);
+        assert_eq!(upstream.dependents.read().unwrap().len(), 1);
+
+        drop(dependent);
+        upstream.set(2);
+        assert!(upstream.dependents.read().unwrap().is_empty());
     }
 }

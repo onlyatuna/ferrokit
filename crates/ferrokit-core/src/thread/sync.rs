@@ -128,7 +128,7 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        let mut locked = self.mutex.inner.lock().unwrap();
+        let mut locked = crate::poison::lock_unpoisoned(&self.mutex.inner);
         *locked = false;
         self.mutex.cond.notify_one();
     }
@@ -338,7 +338,7 @@ impl<T: ?Sized> Deref for RecursiveMutexGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RecursiveMutexGuard<'_, T> {
     fn drop(&mut self) {
-        let mut state = self.mutex.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.mutex.state);
         debug_assert!(state.count > 0);
         state.count -= 1;
         if state.count == 0 {

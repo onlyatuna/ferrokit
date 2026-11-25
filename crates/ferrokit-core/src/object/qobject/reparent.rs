@@ -74,11 +74,11 @@ pub(super) fn release_child(child_id: ObjectId, parent_id: ObjectId) {
         // The child's own link cannot be read, but the registry's can: another parent there
         // means the entry is stale. (A link already cleared, as `unregister_qobject` of the
         // dying parent does before its object is freed, is this parent's child all the same.)
-        let linked_to = *read_unpoisoned(&child_record.parent);
+        let linked_to = *read_ignoring_poison(&child_record.parent);
         if linked_to.is_some_and(|linked| linked != parent_id) {
             return;
         }
-        *lock_unpoisoned(&child_record.pending_parent_sync) = Some((None, None));
+        *lock_ignoring_poison(&child_record.pending_parent_sync) = Some((None, None));
         child_record
             .has_pending_parent_sync
             .store(true, Ordering::Release);
@@ -98,19 +98,19 @@ pub(super) fn release_child(child_id: ObjectId, parent_id: ObjectId) {
 /// never linked in the registry) and is not a child to destroy or move.
 pub(super) fn registered_children_of(id: ObjectId) -> Vec<ObjectId> {
     // Reached from the cleanup of a destroyed object, which cannot report a failure and must not
-    // skip its children: a poisoned lock is read as it is (see `read_unpoisoned`).
-    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    // skip its children: a poisoned lock is read as it is (see `read_ignoring_poison`).
+    let registry = read_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
     let Some(record) = registry.get(&id) else {
         return Vec::new();
     };
-    let children = read_unpoisoned(&record.children);
+    let children = read_ignoring_poison(&record.children);
     children
         .iter()
         .copied()
         .filter(|child_id| {
             registry
                 .get(child_id)
-                .is_some_and(|child| *read_unpoisoned(&child.parent) == Some(id))
+                .is_some_and(|child| *read_ignoring_poison(&child.parent) == Some(id))
         })
         .collect()
 }
@@ -182,7 +182,7 @@ pub(super) fn ancestors_in(
         chain.push(id);
         cursor = registry
             .get(&id)
-            .and_then(|record| *read_unpoisoned(&record.parent));
+            .and_then(|record| *read_ignoring_poison(&record.parent));
     }
     chain
 }
@@ -313,13 +313,13 @@ pub(crate) fn sync_child_local_parent(
         let raw = data.raw_data_mut();
         raw.parent = current_reg_parent;
         raw.parent_liveness = target_liveness;
-        *lock_unpoisoned(&child_record.pending_parent_sync) = None;
+        *lock_ignoring_poison(&child_record.pending_parent_sync) = None;
         child_record
             .has_pending_parent_sync
             .store(false, Ordering::Release);
         PostCommitSyncStatus::AppliedDirectly
     } else {
-        *lock_unpoisoned(&child_record.pending_parent_sync) =
+        *lock_ignoring_poison(&child_record.pending_parent_sync) =
             Some((current_reg_parent, target_liveness));
         child_record
             .has_pending_parent_sync
@@ -820,7 +820,7 @@ pub fn set_parent(
     // dispatched, and reconciled on panic before resuming unwind.
     let pending_sync = if let Some(ref rec) = child_rec {
         if rec.has_pending_parent_sync.swap(false, Ordering::AcqRel) {
-            lock_unpoisoned(&rec.pending_parent_sync).take()
+            lock_ignoring_poison(&rec.pending_parent_sync).take()
         } else {
             None
         }

@@ -524,9 +524,9 @@ impl CoreApplication {
 impl Drop for CoreApplication {
     fn drop(&mut self) {
         APP_INSTANCE_EXISTS.store(false, Ordering::SeqCst);
-        *APP_OBJECT_ID.write().unwrap() = None;
-        *ABOUT_TO_QUIT.write().unwrap() = None;
-        *APP_THREAD.write().unwrap() = None;
+        *crate::poison::write_unpoisoned(&APP_OBJECT_ID) = None;
+        *crate::poison::write_unpoisoned(&ABOUT_TO_QUIT) = None;
+        *crate::poison::write_unpoisoned(&APP_THREAD) = None;
         IN_EXEC.store(false, Ordering::SeqCst);
         ABOUT_TO_QUIT_EMITTED.store(false, Ordering::SeqCst);
         // SAFETY: `unregister_qobject` is memory-neutral per its documentation: it works from the

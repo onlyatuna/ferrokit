@@ -989,7 +989,7 @@ impl QObject for Handler {
 /// one, so that they do not meet.
 fn serial() -> MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
-    lock_unpoisoned(&SERIAL)
+    lock_ignoring_poison(&SERIAL)
 }
 
 const PROBE_WINDOW: Duration = Duration::from_secs(5);
@@ -1022,12 +1022,12 @@ fn record(id: ObjectId) -> Arc<ObjectRecord> {
 
 /// Sets the `parent` link of a registered object, as a commit does (the index follows).
 fn link(id: ObjectId, parent: Option<ObjectId>) {
-    let registry = read_unpoisoned(&GLOBAL_OBJECT_REGISTRY);
+    let registry = read_ignoring_poison(&GLOBAL_OBJECT_REGISTRY);
     let record = &registry[&id];
     store_link(
         &registry,
         record,
-        &mut write_unpoisoned(&record.parent),
+        &mut write_ignoring_poison(&record.parent),
         parent,
     );
 }
@@ -1090,8 +1090,8 @@ fn states(objects: &[&ObjectData]) -> Vec<State> {
             ),
             registry: registry.get(&data.id).map(|r| {
                 // The list (L1) before the link (L2), one lock at a time, like the commits.
-                let children = read_unpoisoned(&r.children).clone();
-                let parent = *read_unpoisoned(&r.parent);
+                let children = read_ignoring_poison(&r.children).clone();
+                let parent = *read_ignoring_poison(&r.parent);
                 (
                     parent,
                     children,
@@ -2579,7 +2579,7 @@ fn test_add_owned_child_refuses_a_parent_whose_list_is_poisoned_and_changes_noth
     let (error, returned) = unsafe { add_owned_child(parent_id, boxed) }.unwrap_err();
     assert_eq!(error, ReparentError::Busy);
     assert_eq!(parent.with(|p| states(&[&p.0])).unwrap(), before);
-    assert!(read_unpoisoned(&parent_record.children).is_empty());
+    assert!(read_ignoring_poison(&parent_record.children).is_empty());
     assert_eq!(
         query_object_parent(child_id),
         None,
@@ -2874,7 +2874,7 @@ fn test_unregister_finishes_its_cleanup_when_the_locks_of_its_records_are_poison
     // SAFETY: no callback of the child runs; this is its registration thread.
     unsafe { unregister_qobject(child_id) };
     assert_eq!(query_object_parent(child_id), None);
-    assert!(!read_unpoisoned(&parent_record.children).contains(&child_id));
+    assert!(!read_ignoring_poison(&parent_record.children).contains(&child_id));
     assert!(!child_record.liveness.load(Ordering::Acquire));
     drop(parent);
 }
@@ -3333,7 +3333,7 @@ fn test_set_parent_reentrant_new_parent_deletion_clears_local_state() {
         "has_pending_parent_sync must be false"
     );
     assert!(
-        lock_unpoisoned(&child_rec.pending_parent_sync).is_none(),
+        lock_ignoring_poison(&child_rec.pending_parent_sync).is_none(),
         "pending_parent_sync record must be None"
     );
     drop(child);
