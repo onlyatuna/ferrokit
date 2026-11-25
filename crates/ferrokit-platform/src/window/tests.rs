@@ -462,3 +462,25 @@ fn test_suspend_and_resume_backdrop_keep_backdrop_active() {
     win.set_backdrop(BackdropType::None, false);
     assert!(!win.backdrop_active);
 }
+
+#[test]
+fn native_window_exposes_win32_raw_handles() {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+
+    let win = NativeWindow::new(
+        "Raw Handle Window",
+        Rect::new(20, 20, 200, 150),
+        WindowFlags::NORMAL,
+    )
+    .expect("failed to create window");
+    let win_handle = win.window_handle().expect("win32 window handle");
+    assert!(matches!(
+        win_handle.as_raw(),
+        RawWindowHandle::Win32(h) if h.hwnd.get() == win.hwnd() as isize
+    ));
+    let display_handle = win.display_handle().expect("win32 display handle");
+    assert!(matches!(
+        display_handle.as_raw(),
+        RawDisplayHandle::Windows(_)
+    ));
+}

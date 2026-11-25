@@ -991,6 +991,36 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         self.hwnd as isize
     }
 
+    fn raw_window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let Some(hwnd) = std::num::NonZeroIsize::new(self.native_handle()) else {
+            return Err(raw_window_handle::HandleError::Unavailable);
+        };
+        let handle = raw_window_handle::Win32WindowHandle::new(hwnd);
+        // SAFETY: `self.hwnd` is non-null and stays live for the lifetime of `&self` (destroyed
+        // only in `NativeWindow::drop`).
+        Ok(unsafe {
+            raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::Win32(
+                handle,
+            ))
+        })
+    }
+
+    fn raw_display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: Win32 display handles carry no borrowed pointer; `WindowsDisplayHandle` is
+        // valid for `&self`.
+        Ok(unsafe {
+            raw_window_handle::DisplayHandle::borrow_raw(
+                raw_window_handle::RawDisplayHandle::Windows(
+                    raw_window_handle::WindowsDisplayHandle::new(),
+                ),
+            )
+        })
+    }
+
     fn device_pixel_ratio(&self) -> f32 {
         get_window_dpr(self.hwnd)
     }
@@ -1118,6 +1148,22 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
             self.drop_target = None;
             true
         }
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for NativeWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        crate::platform_window::PlatformWindow::raw_window_handle(self)
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for NativeWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        crate::platform_window::PlatformWindow::raw_display_handle(self)
     }
 }
 
