@@ -2,6 +2,7 @@
 name = "ferrokit-fuzz"
 version = "0.0.0"
 edition = "2024"
+license = "LGPL-3.0-only"
 publish = false
 
 [package.metadata]

@@ -45,7 +45,7 @@ cargo test --workspace
 - `tools/run_test_binaries.py` runs every test binary on its own with a time limit.
 - Developed and tested with the current stable Rust toolchain (rustc 1.98.1 at the time of writing);
   CI uses the toolchain that GitHub's runner images provide and prints its version in the log. No
-  minimum supported Rust version is tested or promised. The crates use edition 2021, and the locked
+  minimum supported Rust version is tested or promised. The crates use edition 2024, and the locked
   dependency `unicode-segmentation` alone needs Rust 1.85.
 
 ## Environment variables
