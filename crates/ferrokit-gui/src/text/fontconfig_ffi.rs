@@ -463,7 +463,7 @@ mod imp {
     }
 
     impl<'a> FontSet<'a> {
-        fn patterns(&self) -> Vec<SetPattern<'a>> {
+        fn patterns(&self) -> Vec<SetPattern<'_>> {
             // SAFETY: `self.raw` is a live font set whose `fonts` array holds `nfont` pointers.
             unsafe {
                 let set = &*self.raw;
