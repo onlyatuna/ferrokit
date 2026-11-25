@@ -66,11 +66,11 @@ impl PlatformMenuItem for Win32MenuItem {
     }
 
     fn text(&self) -> String {
-        self.text.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.text).clone()
     }
 
     fn set_text(&mut self, text: &str) {
-        *self.text.lock().unwrap() = text.to_string();
+        *ferrokit_core::poison::lock_unpoisoned(&self.text) = text.to_string();
     }
 
     fn is_separator(&self) -> bool {
@@ -82,19 +82,19 @@ impl PlatformMenuItem for Win32MenuItem {
     }
 
     fn is_checked(&self) -> bool {
-        *self.checked.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked)
     }
 
     fn set_checked(&mut self, checked: bool) {
-        *self.checked.lock().unwrap() = checked;
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked) = checked;
     }
 
     fn is_enabled(&self) -> bool {
-        *self.enabled.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        *self.enabled.lock().unwrap() = enabled;
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled) = enabled;
     }
 
     fn activated(&self) -> &Signal<()> {

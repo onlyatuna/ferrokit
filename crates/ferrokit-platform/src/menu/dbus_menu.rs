@@ -86,22 +86,22 @@ impl DBusMenuItem {
             );
             props.insert(
                 "visible".to_string(),
-                DBusMenuPropValue::Boolean(*self.visible.lock().unwrap()),
+                DBusMenuPropValue::Boolean(*ferrokit_core::poison::lock_unpoisoned(&self.visible)),
             );
             return props;
         }
 
         props.insert(
             "label".to_string(),
-            DBusMenuPropValue::String(self.text.lock().unwrap().clone()),
+            DBusMenuPropValue::String(ferrokit_core::poison::lock_unpoisoned(&self.text).clone()),
         );
         props.insert(
             "enabled".to_string(),
-            DBusMenuPropValue::Boolean(*self.enabled.lock().unwrap()),
+            DBusMenuPropValue::Boolean(*ferrokit_core::poison::lock_unpoisoned(&self.enabled)),
         );
         props.insert(
             "visible".to_string(),
-            DBusMenuPropValue::Boolean(*self.visible.lock().unwrap()),
+            DBusMenuPropValue::Boolean(*ferrokit_core::poison::lock_unpoisoned(&self.visible)),
         );
 
         if self.checkable {
@@ -109,11 +109,15 @@ impl DBusMenuItem {
                 "toggle-type".to_string(),
                 DBusMenuPropValue::String("checkmark".to_string()),
             );
-            let state = if *self.checked.lock().unwrap() { 1 } else { 0 };
+            let state = if *ferrokit_core::poison::lock_unpoisoned(&self.checked) {
+                1
+            } else {
+                0
+            };
             props.insert("toggle-state".to_string(), DBusMenuPropValue::Int(state));
         }
 
-        if self.submenu.lock().unwrap().is_some() {
+        if ferrokit_core::poison::lock_unpoisoned(&self.submenu).is_some() {
             props.insert(
                 "children-display".to_string(),
                 DBusMenuPropValue::String("submenu".to_string()),
@@ -130,11 +134,11 @@ impl PlatformMenuItem for DBusMenuItem {
     }
 
     fn text(&self) -> String {
-        self.text.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.text).clone()
     }
 
     fn set_text(&mut self, text: &str) {
-        *self.text.lock().unwrap() = text.to_string();
+        *ferrokit_core::poison::lock_unpoisoned(&self.text) = text.to_string();
     }
 
     fn is_separator(&self) -> bool {
@@ -146,19 +150,19 @@ impl PlatformMenuItem for DBusMenuItem {
     }
 
     fn is_checked(&self) -> bool {
-        *self.checked.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked)
     }
 
     fn set_checked(&mut self, checked: bool) {
-        *self.checked.lock().unwrap() = checked;
+        *ferrokit_core::poison::lock_unpoisoned(&self.checked) = checked;
     }
 
     fn is_enabled(&self) -> bool {
-        *self.enabled.lock().unwrap()
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        *self.enabled.lock().unwrap() = enabled;
+        *ferrokit_core::poison::lock_unpoisoned(&self.enabled) = enabled;
     }
 
     fn activated(&self) -> &Signal<()> {
@@ -186,11 +190,11 @@ impl DBusMenu {
     }
 
     pub fn items(&self) -> Vec<Arc<DBusMenuItem>> {
-        self.items.lock().unwrap().clone()
+        ferrokit_core::poison::lock_unpoisoned(&self.items).clone()
     }
 
     pub fn get_layout(&self, parent_id: u32, recursion_depth: i32) -> DBusMenuLayoutNode {
-        let items = self.items.lock().unwrap();
+        let items = ferrokit_core::poison::lock_unpoisoned(&self.items);
 
         let mut children = Vec::new();
         if recursion_depth != 0 {
@@ -220,19 +224,16 @@ impl DBusMenu {
 
     pub fn handle_event(&self, id: u32, event_id: &str) -> bool {
         // Release the items lock before emitting so slots may call back into the menu.
-        let found = self
-            .items
-            .lock()
-            .unwrap()
+        let found = ferrokit_core::poison::lock_unpoisoned(&self.items)
             .iter()
             .find(|i| i.id == id)
             .cloned();
         let Some(item) = found else {
             return false;
         };
-        if event_id == "clicked" && *item.enabled.lock().unwrap() {
+        if event_id == "clicked" && *ferrokit_core::poison::lock_unpoisoned(&item.enabled) {
             if item.checkable {
-                let mut chk = item.checked.lock().unwrap();
+                let mut chk = ferrokit_core::poison::lock_unpoisoned(&item.checked);
                 *chk = !*chk;
                 self.revision.fetch_add(1, Ordering::SeqCst);
             }
@@ -254,29 +255,27 @@ impl Default for DBusMenu {
 impl PlatformMenu for DBusMenu {
     fn add_action(&mut self, id: u32, text: &str) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(DBusMenuItem::new_action(id, text));
-        self.items.lock().unwrap().push(item.clone());
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item.clone());
         self.revision.fetch_add(1, Ordering::SeqCst);
         item
     }
 
     fn add_checkable(&mut self, id: u32, text: &str, checked: bool) -> Arc<dyn PlatformMenuItem> {
         let item = Arc::new(DBusMenuItem::new_checkable(id, text, checked));
-        self.items.lock().unwrap().push(item.clone());
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item.clone());
         self.revision.fetch_add(1, Ordering::SeqCst);
         item
     }
 
     fn add_separator(&mut self) {
-        self.items
-            .lock()
-            .unwrap()
+        ferrokit_core::poison::lock_unpoisoned(&self.items)
             .push(Arc::new(DBusMenuItem::new_separator()));
         self.revision.fetch_add(1, Ordering::SeqCst);
     }
 
     fn add_submenu(&mut self, text: &str, submenu: Box<dyn PlatformMenu>) {
         let item = Arc::new(DBusMenuItem {
-            id: (self.items.lock().unwrap().len() + 1000) as u32,
+            id: (ferrokit_core::poison::lock_unpoisoned(&self.items).len() + 1000) as u32,
             text: Mutex::new(text.to_string()),
             separator: false,
             checkable: false,
@@ -286,17 +285,17 @@ impl PlatformMenu for DBusMenu {
             activated: Signal::new(),
             submenu: Mutex::new(Some(submenu)),
         });
-        self.items.lock().unwrap().push(item);
+        ferrokit_core::poison::lock_unpoisoned(&self.items).push(item);
         self.revision.fetch_add(1, Ordering::SeqCst);
     }
 
     fn show_popup(&self, _screen_pos: Point) {
         // On Linux D-Bus architecture, client requests activation.
         // Send ItemActivationRequested signal.
-        *self.is_popup_requested.lock().unwrap() = true;
+        *ferrokit_core::poison::lock_unpoisoned(&self.is_popup_requested) = true;
     }
 
     fn dismiss(&self) {
-        *self.is_popup_requested.lock().unwrap() = false;
+        *ferrokit_core::poison::lock_unpoisoned(&self.is_popup_requested) = false;
     }
 }

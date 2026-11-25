@@ -190,15 +190,15 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             self.recompute();
         }
 
-        self.value.read().unwrap().clone()
+        crate::poison::read_unpoisoned(&self.value).clone()
     }
 
     /// Directly sets a new value, breaking any existing binding.
     pub fn set(&self, new_val: T) {
-        *self.binding.write().unwrap() = None;
+        *crate::poison::write_unpoisoned(&self.binding) = None;
 
         let changed = {
-            let mut val_lock = self.value.write().unwrap();
+            let mut val_lock = crate::poison::write_unpoisoned(&self.value);
             if *val_lock != new_val {
                 *val_lock = new_val.clone();
                 true
@@ -219,18 +219,18 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        *self.binding.write().unwrap() = Some(Arc::new(compute));
+        *crate::poison::write_unpoisoned(&self.binding) = Some(Arc::new(compute));
         self.dirty.store(true, Ordering::Release);
         self.recompute();
     }
 
     /// Returns true if this property currently has an active binding.
     pub fn has_binding(&self) -> bool {
-        self.binding.read().unwrap().is_some()
+        crate::poison::read_unpoisoned(&self.binding).is_some()
     }
 
     fn recompute(&self) {
-        let binding_opt = self.binding.read().unwrap().clone();
+        let binding_opt = crate::poison::read_unpoisoned(&self.binding).clone();
         if let Some(compute) = binding_opt {
             if self.in_evaluation.swap(true, Ordering::AcqRel) {
                 // Cycle detected, retain current value
@@ -256,7 +256,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Property<T> {
             drop(eval_guard);
 
             let changed = {
-                let mut val_lock = self.value.write().unwrap();
+                let mut val_lock = crate::poison::write_unpoisoned(&self.value);
                 if *val_lock != new_val {
                     *val_lock = new_val.clone();
                     true

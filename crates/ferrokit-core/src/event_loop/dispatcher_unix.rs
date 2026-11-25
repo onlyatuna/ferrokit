@@ -69,7 +69,7 @@ impl TimerFd {
     }
 
     pub fn check_and_fire(&self, now: Instant) -> bool {
-        let mut next = self.next_fire.lock().unwrap();
+        let mut next = crate::poison::lock_unpoisoned(&self.next_fire);
         if let Some(target) = *next
             && now >= target
         {
@@ -265,7 +265,7 @@ impl EpollReactor {
         if let Some(poller) = &self.poller {
             poller.wake();
         }
-        let _guard = self.lock.lock().unwrap();
+        let _guard = crate::poison::lock_unpoisoned(&self.lock);
         self.cond.notify_all();
     }
 
@@ -276,12 +276,12 @@ impl EpollReactor {
 
     pub fn register_timer(&self, id: TimerId, interval: Duration, single_shot: bool) {
         let tfd = Arc::new(TimerFd::new(id, interval, single_shot));
-        self.timer_fds.lock().unwrap().insert(id, tfd);
+        crate::poison::lock_unpoisoned(&self.timer_fds).insert(id, tfd);
         self.notify_sleeper();
     }
 
     pub fn unregister_timer(&self, id: TimerId) {
-        self.timer_fds.lock().unwrap().remove(&id);
+        crate::poison::lock_unpoisoned(&self.timer_fds).remove(&id);
     }
 
     /// The epoll events `fd` needs for its enabled notifiers. A Read and an Exception notifier
@@ -313,7 +313,7 @@ impl EpollReactor {
     fn sync_fd(&self, fd: SocketDescriptor) {
         #[cfg(target_os = "linux")]
         if let Some(poller) = &self.poller {
-            let notifiers = self.socket_notifiers.lock().unwrap();
+            let notifiers = crate::poison::lock_unpoisoned(&self.socket_notifiers);
             poller.set_interest(fd, Self::interest_of(&notifiers, fd));
         }
         #[cfg(not(target_os = "linux"))]
@@ -328,10 +328,7 @@ impl EpollReactor {
 
     pub fn register_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
         let key = (notifier.descriptor(), notifier.event_type());
-        self.socket_notifiers
-            .lock()
-            .unwrap()
-            .insert(key, Arc::clone(notifier));
+        crate::poison::lock_unpoisoned(&self.socket_notifiers).insert(key, Arc::clone(notifier));
         self.sync_fd(key.0);
     }
 
@@ -340,7 +337,7 @@ impl EpollReactor {
     pub fn unregister_socket_notifier(&self, notifier: &Arc<SocketNotifier>) {
         let key = (notifier.descriptor(), notifier.event_type());
         {
-            let mut notifiers = self.socket_notifiers.lock().unwrap();
+            let mut notifiers = crate::poison::lock_unpoisoned(&self.socket_notifiers);
             if !notifiers
                 .get(&key)
                 .is_some_and(|current| Arc::ptr_eq(current, notifier))
@@ -363,7 +360,7 @@ impl EpollReactor {
     }
 
     pub fn trigger_socket_event(&self, fd: SocketDescriptor, event: SocketEvent) {
-        self.pending_socket_events.lock().unwrap().push((fd, event));
+        crate::poison::lock_unpoisoned(&self.pending_socket_events).push((fd, event));
         self.notify_sleeper();
     }
 
@@ -398,7 +395,9 @@ impl EpollReactor {
         timeout: Option<Duration>,
     ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
         let start = Instant::now();
-        let mut pending_sockets = std::mem::take(&mut *self.pending_socket_events.lock().unwrap());
+        let mut pending_sockets = std::mem::take(&mut *crate::poison::lock_unpoisoned(
+            &self.pending_socket_events,
+        ));
         let mut awoken = self.event_fd.is_readable();
         if awoken {
             self.event_fd.read();
@@ -425,9 +424,9 @@ impl EpollReactor {
                     expired.push(id);
                 }
             }
-            pending_sockets.extend(std::mem::take(
-                &mut *self.pending_socket_events.lock().unwrap(),
-            ));
+            pending_sockets.extend(std::mem::take(&mut *crate::poison::lock_unpoisoned(
+                &self.pending_socket_events,
+            )));
         }
         for (fd, flags) in ready {
             let failed = flags & (libc::EPOLLERR | libc::EPOLLHUP | libc::EPOLLRDHUP) as u32 != 0;
@@ -448,7 +447,9 @@ impl EpollReactor {
         timeout: Option<Duration>,
     ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
         let start = Instant::now();
-        let pending_sockets = std::mem::take(&mut *self.pending_socket_events.lock().unwrap());
+        let pending_sockets = std::mem::take(&mut *crate::poison::lock_unpoisoned(
+            &self.pending_socket_events,
+        ));
 
         // Check if eventfd is readable
         if self.event_fd.is_readable() {
@@ -472,7 +473,7 @@ impl EpollReactor {
         }
 
         // Wait on condition variable or timeout
-        let guard = self.lock.lock().unwrap();
+        let guard = crate::poison::lock_unpoisoned(&self.lock);
         if self.event_fd.is_readable() {
             self.event_fd.read();
             let now = Instant::now();
@@ -480,7 +481,8 @@ impl EpollReactor {
             return (true, expired, pending_sockets);
         }
 
-        let (guard, _timeout_res) = self.cond.wait_timeout(guard, sleep_duration).unwrap();
+        let (guard, _timeout_res) =
+            crate::poison::wait_timeout_unpoisoned(&self.cond, guard, sleep_duration);
         let was_awoken = if self.event_fd.is_readable() {
             self.event_fd.read();
             true
@@ -491,15 +493,17 @@ impl EpollReactor {
 
         let now = Instant::now();
         let expired = self.collect_expired_timers(now);
-        let pending_sockets = std::mem::take(&mut *self.pending_socket_events.lock().unwrap());
+        let pending_sockets = std::mem::take(&mut *crate::poison::lock_unpoisoned(
+            &self.pending_socket_events,
+        ));
         (was_awoken, expired, pending_sockets)
     }
 
     fn next_timer_delay(&self, now: Instant) -> Option<Duration> {
-        let tfds = self.timer_fds.lock().unwrap();
+        let tfds = crate::poison::lock_unpoisoned(&self.timer_fds);
         let mut min_delay: Option<Duration> = None;
         for tfd in tfds.values() {
-            if let Some(target) = *tfd.next_fire.lock().unwrap() {
+            if let Some(target) = *crate::poison::lock_unpoisoned(&tfd.next_fire) {
                 let delay = if target > now {
                     target - now
                 } else {
@@ -512,7 +516,7 @@ impl EpollReactor {
     }
 
     fn collect_expired_timers(&self, now: Instant) -> Vec<TimerId> {
-        let tfds = self.timer_fds.lock().unwrap();
+        let tfds = crate::poison::lock_unpoisoned(&self.timer_fds);
         let mut expired = Vec::new();
         for (id, tfd) in tfds.iter() {
             if tfd.check_and_fire(now) {
@@ -602,7 +606,7 @@ impl EventDispatcher for UnixEventDispatcher {
             // Collect under the lock, then notify without it: a notifier may run a nested event
             // loop that registers or unregisters notifiers, which would deadlock on this lock.
             let notifiers: Vec<Arc<SocketNotifier>> = {
-                let map = self.reactor.socket_notifiers.lock().unwrap();
+                let map = crate::poison::lock_unpoisoned(&self.reactor.socket_notifiers);
                 triggered_sockets
                     .iter()
                     .filter_map(|key| map.get(key).cloned())
@@ -617,7 +621,7 @@ impl EventDispatcher for UnixEventDispatcher {
         // and would be lost otherwise.
         let timers_due = !expired_timers.is_empty();
         if timers_due {
-            self.pending_timers.lock().unwrap().extend(expired_timers);
+            crate::poison::lock_unpoisoned(&self.pending_timers).extend(expired_timers);
         }
         if awoken {
             return DispatchResult::Awoken;
@@ -676,7 +680,7 @@ impl EventDispatcher for UnixEventDispatcher {
 
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>) {
         let now_ms = crate::timer::current_time_ms();
-        let pending = std::mem::take(&mut *self.pending_timers.lock().unwrap());
+        let pending = std::mem::take(&mut *crate::poison::lock_unpoisoned(&self.pending_timers));
         for id in crate::timer::deliver_due_timers(registry, now_ms, pending) {
             self.reactor.unregister_timer(id);
         }

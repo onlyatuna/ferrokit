@@ -375,7 +375,7 @@ impl X11NativeWindow {
     }
 
     pub fn queue_x11_event(&self, event: X11Event) {
-        self.pending_events.lock().unwrap().push(event);
+        ferrokit_core::poison::lock_unpoisoned(&self.pending_events).push(event);
     }
 
     pub fn dispatch_x11_event(&mut self, event: X11Event) -> bool {
@@ -531,7 +531,7 @@ impl PlatformWindow for X11NativeWindow {
 
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
-        let mut surface_guard = self.surface.lock().unwrap();
+        let mut surface_guard = ferrokit_core::poison::lock_unpoisoned(&self.surface);
         if let Some(surf) = surface_guard.as_mut()
             && rect.width > 0
             && rect.height > 0
@@ -604,7 +604,7 @@ impl PlatformWindow for X11NativeWindow {
     }
 
     fn present(&mut self, pixmap: &mut Pixmap, opacity: f32) -> Result<(), &'static str> {
-        let mut surface_guard = self.surface.lock().unwrap();
+        let mut surface_guard = ferrokit_core::poison::lock_unpoisoned(&self.surface);
         if let Some(surf) = surface_guard.as_mut() {
             surf.present(pixmap, opacity)?;
         }
@@ -626,7 +626,9 @@ impl PlatformWindow for X11NativeWindow {
     }
 
     fn poll_events(&mut self) -> usize {
-        let events = std::mem::take(&mut *self.pending_events.lock().unwrap());
+        let events = std::mem::take(&mut *ferrokit_core::poison::lock_unpoisoned(
+            &self.pending_events,
+        ));
         let count = events.len();
         for event in events {
             self.dispatch_x11_event(event);

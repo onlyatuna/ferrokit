@@ -634,7 +634,7 @@ impl CocoaNativeWindow {
     }
 
     pub fn queue_cocoa_event(&self, event: CocoaNativeEvent) {
-        self.pending_events.lock().unwrap().push(event);
+        ferrokit_core::poison::lock_unpoisoned(&self.pending_events).push(event);
     }
 
     #[inline]
@@ -1475,7 +1475,9 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn poll_events(&mut self) -> usize {
-        let events = std::mem::take(&mut *self.pending_events.lock().unwrap());
+        let events = std::mem::take(&mut *ferrokit_core::poison::lock_unpoisoned(
+            &self.pending_events,
+        ));
         let count = events.len();
         for event in events {
             self.dispatch_cocoa_event(event);

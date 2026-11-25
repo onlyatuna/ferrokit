@@ -249,9 +249,7 @@ impl WaylandNativeWindow {
 
     #[inline]
     pub fn is_buffer_busy(&self) -> bool {
-        self.surface
-            .lock()
-            .unwrap()
+        ferrokit_core::poison::lock_unpoisoned(&self.surface)
             .as_ref()
             .map(|s| s.is_busy())
             .unwrap_or(false)
@@ -336,7 +334,7 @@ impl WaylandNativeWindow {
     }
 
     pub fn queue_wayland_event(&self, event: WaylandEvent) {
-        self.pending_events.lock().unwrap().push(event);
+        ferrokit_core::poison::lock_unpoisoned(&self.pending_events).push(event);
     }
 
     pub fn dispatch_wayland_event(&mut self, event: WaylandEvent) -> bool {
@@ -347,7 +345,7 @@ impl WaylandNativeWindow {
         }
 
         if let WaylandEvent::BufferRelease = event {
-            if let Some(surface) = self.surface.lock().unwrap().as_ref() {
+            if let Some(surface) = ferrokit_core::poison::lock_unpoisoned(&self.surface).as_ref() {
                 surface.on_buffer_release();
             }
             return true;
@@ -450,7 +448,9 @@ impl WaylandNativeWindow {
                 handler.handle_window_event(WindowSystemEvent::CloseRequest);
             }
             WaylandEvent::BufferRelease => {
-                if let Some(surface) = self.surface.lock().unwrap().as_ref() {
+                if let Some(surface) =
+                    ferrokit_core::poison::lock_unpoisoned(&self.surface).as_ref()
+                {
                     surface.on_buffer_release();
                 }
             }
@@ -479,7 +479,7 @@ impl PlatformWindow for WaylandNativeWindow {
 
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
-        let mut surface_guard = self.surface.lock().unwrap();
+        let mut surface_guard = ferrokit_core::poison::lock_unpoisoned(&self.surface);
         if let Some(surf) = surface_guard.as_mut()
             && rect.width > 0
             && rect.height > 0
@@ -550,7 +550,7 @@ impl PlatformWindow for WaylandNativeWindow {
     }
 
     fn present(&mut self, pixmap: &mut Pixmap, opacity: f32) -> Result<(), &'static str> {
-        let mut surface_guard = self.surface.lock().unwrap();
+        let mut surface_guard = ferrokit_core::poison::lock_unpoisoned(&self.surface);
         if let Some(surf) = surface_guard.as_mut() {
             surf.present(pixmap, opacity)?;
         }
@@ -572,7 +572,9 @@ impl PlatformWindow for WaylandNativeWindow {
     }
 
     fn poll_events(&mut self) -> usize {
-        let events = std::mem::take(&mut *self.pending_events.lock().unwrap());
+        let events = std::mem::take(&mut *ferrokit_core::poison::lock_unpoisoned(
+            &self.pending_events,
+        ));
         let count = events.len();
         for event in events {
             self.dispatch_wayland_event(event);

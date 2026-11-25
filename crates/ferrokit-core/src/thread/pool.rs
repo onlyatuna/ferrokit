@@ -91,7 +91,7 @@ pub(crate) struct BlockedWorker(Arc<PoolShared>);
 pub(crate) fn enter_blocking() -> Option<BlockedWorker> {
     let shared = WORKER_POOL.with(|pool| pool.borrow().as_ref().and_then(Weak::upgrade))?;
     let (first_id, count) = {
-        let mut state = shared.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&shared.state);
         state.blocked_workers += 1;
         shared.reserve_workers(&state)
     };
@@ -104,7 +104,7 @@ pub(crate) fn enter_blocking() -> Option<BlockedWorker> {
 impl Drop for BlockedWorker {
     fn drop(&mut self) {
         let surplus = {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = crate::poison::lock_unpoisoned(&self.0.state);
             state.blocked_workers -= 1;
             self.0.has_surplus_workers(&state)
         };
@@ -164,7 +164,7 @@ pub(crate) fn steal_awaited_job(job: &JobRef) -> Option<InlineJob> {
         return None;
     }
     let shared = job.pool.upgrade()?;
-    let mut state = shared.state.lock().unwrap();
+    let mut state = crate::poison::lock_unpoisoned(&shared.state);
     let pos = state.queue.iter().position(|queued| queued.id == job.id)?;
     state.queue.remove(pos).map(InlineJob)
 }
@@ -215,14 +215,14 @@ impl PoolShared {
             WORKER_POOL.with(|slot| *slot.borrow_mut() = Some(Arc::downgrade(&pool)));
             loop {
                 let job = {
-                    let mut state = pool.state.lock().unwrap();
+                    let mut state = crate::poison::lock_unpoisoned(&pool.state);
                     let mut retire = false;
                     while state.queue.is_empty() && !state.shutdown {
                         if pool.has_surplus_workers(&state) {
                             retire = true;
                             break;
                         }
-                        state = pool.work_cond.wait(state).unwrap();
+                        state = crate::poison::wait_unpoisoned(&pool.work_cond, state);
                     }
 
                     if retire {
@@ -244,7 +244,7 @@ impl PoolShared {
                 }
 
                 {
-                    let mut state = pool.state.lock().unwrap();
+                    let mut state = crate::poison::lock_unpoisoned(&pool.state);
                     state.busy_workers -= 1;
                     if state.queue.is_empty() && state.busy_workers == 0 {
                         pool.done_cond.notify_all();
@@ -255,10 +255,10 @@ impl PoolShared {
 
         match handle_res {
             Ok(handle) => {
-                let mut workers = self.workers.lock().unwrap();
+                let mut workers = crate::poison::lock_unpoisoned(&self.workers);
                 // Checked under the `workers` lock: `Drop` sets `shutdown` before it takes the
                 // list, so a handle pushed while `shutdown` is unset is joined by `Drop`.
-                if self.state.lock().unwrap().shutdown {
+                if crate::poison::lock_unpoisoned(&self.state).shutdown {
                     drop(workers);
                     // `Drop` has taken (or is taking) the list without this handle. The pool
                     // has shut down, so the new worker exits at once: join it here instead.
@@ -307,7 +307,7 @@ pub struct ThreadPool {
 impl Drop for ThreadPool {
     fn drop(&mut self) {
         let discarded = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
             state.shutdown = true;
             std::mem::take(&mut state.queue)
         };
@@ -321,7 +321,7 @@ impl Drop for ThreadPool {
         let current = std::thread::current().id();
         // Taken out so that a worker still starting replacements (`block_on`) cannot deadlock
         // against the join below.
-        let workers = std::mem::take(&mut *self.shared.workers.lock().unwrap());
+        let workers = std::mem::take(&mut *crate::poison::lock_unpoisoned(&self.shared.workers));
         for worker in workers {
             if worker.thread().id() != current {
                 let _ = worker.join();
@@ -416,7 +416,7 @@ impl ThreadPool {
 
     fn submit_job(&self, job: Job) {
         let (first_id, count) = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
             state.queue.push_back(job);
             self.shared.reserve_workers(&state)
         };
@@ -430,7 +430,7 @@ impl ThreadPool {
 
     /// Current maximum number of worker threads.
     pub fn max_thread_count(&self) -> usize {
-        self.shared.state.lock().unwrap().max_threads
+        crate::poison::lock_unpoisoned(&self.shared.state).max_threads
     }
 
     /// Sets the maximum number of worker threads.
@@ -438,7 +438,7 @@ impl ThreadPool {
     /// Raising the limit immediately starts workers for tasks that are already queued.
     pub fn set_max_thread_count(&self, count: usize) {
         let (first_id, spawn_count) = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
             state.max_threads = count.max(1);
             self.shared.reserve_workers(&state)
         };
@@ -449,12 +449,14 @@ impl ThreadPool {
 
     /// Returns the number of currently active (busy) worker threads.
     pub fn active_thread_count(&self) -> usize {
-        self.shared.state.lock().unwrap().busy_workers
+        crate::poison::lock_unpoisoned(&self.shared.state).busy_workers
     }
 
     /// Returns the number of queued tasks waiting for workers.
     pub fn queued_task_count(&self) -> usize {
-        self.shared.state.lock().unwrap().queue.len()
+        crate::poison::lock_unpoisoned(&self.shared.state)
+            .queue
+            .len()
     }
 
     /// Clears all unstarted tasks from the queue, matching `QThreadPool::clear()`.
@@ -462,7 +464,7 @@ impl ThreadPool {
     /// The handles of the discarded tasks complete as [`TaskError::Canceled`].
     pub fn clear_queue(&self) {
         let (discarded, idle) = {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
             (std::mem::take(&mut state.queue), state.busy_workers == 0)
         };
         // Dropping the jobs completes their handles; done outside the lock because that may
@@ -476,9 +478,9 @@ impl ThreadPool {
 
     /// Blocks until all queued and executing tasks have completed.
     pub fn wait_for_done(&self) -> bool {
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
         while !state.queue.is_empty() || state.busy_workers > 0 {
-            state = self.shared.done_cond.wait(state).unwrap();
+            state = crate::poison::wait_unpoisoned(&self.shared.done_cond, state);
         }
         true
     }
@@ -486,7 +488,7 @@ impl ThreadPool {
     /// Blocks until all tasks complete or `timeout` expires.
     pub fn wait_for_done_timeout(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = crate::poison::lock_unpoisoned(&self.shared.state);
 
         while !state.queue.is_empty() || state.busy_workers > 0 {
             let now = Instant::now();
@@ -494,11 +496,8 @@ impl ThreadPool {
                 return false;
             }
             let remaining = deadline - now;
-            let (next_state, timeout_res) = self
-                .shared
-                .done_cond
-                .wait_timeout(state, remaining)
-                .unwrap();
+            let (next_state, timeout_res) =
+                crate::poison::wait_timeout_unpoisoned(&self.shared.done_cond, state, remaining);
             state = next_state;
             if timeout_res.timed_out() && (!state.queue.is_empty() || state.busy_workers > 0) {
                 return false;

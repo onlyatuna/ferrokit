@@ -642,21 +642,21 @@ impl MockObjcRuntime {
     }
 
     pub fn get_class(&self, name: &str) -> Class {
-        let mut lock = self.classes.lock().unwrap();
+        let mut lock = ferrokit_core::poison::lock_unpoisoned(&self.classes);
         let next = lock.len() + 1;
         let id = lock.entry(name.to_string()).or_insert(next);
         Class(*id as *mut c_void)
     }
 
     pub fn register_sel(&self, name: &str) -> Sel {
-        let mut lock = self.selectors.lock().unwrap();
+        let mut lock = ferrokit_core::poison::lock_unpoisoned(&self.selectors);
         let next = lock.len() + 1;
         let id = lock.entry(name.to_string()).or_insert(next);
         Sel(*id as *const c_void)
     }
 
     pub fn allocate_object(&self, class_name: &str) -> Id {
-        let mut id_lock = self.next_id.lock().unwrap();
+        let mut id_lock = ferrokit_core::poison::lock_unpoisoned(&self.next_id);
         let id = *id_lock;
         *id_lock += 1;
 
@@ -674,7 +674,7 @@ impl MockObjcRuntime {
                 parent: Id(id as *mut c_void),
                 ..Default::default()
             };
-            self.objects.lock().unwrap().insert(button_id, button);
+            ferrokit_core::poison::lock_unpoisoned(&self.objects).insert(button_id, button);
             obj.button = Id(button_id as *mut c_void);
         }
 
@@ -690,22 +690,26 @@ impl MockObjcRuntime {
             obj.title = "CocoaPrimaryScreen".to_string();
         }
 
-        self.objects.lock().unwrap().insert(id, obj);
+        ferrokit_core::poison::lock_unpoisoned(&self.objects).insert(id, obj);
         Id(id as *mut c_void)
     }
 
     pub fn get_object_data(&self, id: Id) -> Option<MockObjectData> {
-        self.objects.lock().unwrap().get(&(id.0 as usize)).cloned()
+        ferrokit_core::poison::lock_unpoisoned(&self.objects)
+            .get(&(id.0 as usize))
+            .cloned()
     }
 
     pub fn update_object<F: FnOnce(&mut MockObjectData)>(&self, id: Id, f: F) {
-        if let Some(obj) = self.objects.lock().unwrap().get_mut(&(id.0 as usize)) {
+        if let Some(obj) =
+            ferrokit_core::poison::lock_unpoisoned(&self.objects).get_mut(&(id.0 as usize))
+        {
             f(obj);
         }
     }
 
     pub fn remove_object(&self, id: Id) {
-        self.objects.lock().unwrap().remove(&(id.0 as usize));
+        ferrokit_core::poison::lock_unpoisoned(&self.objects).remove(&(id.0 as usize));
     }
 
     /// `-retain`: another owner holds `id`.
@@ -718,13 +722,13 @@ impl MockObjcRuntime {
     pub fn release(&self, id: Id) {
         let mut pending = vec![id];
         while let Some(id) = pending.pop() {
-            let mut objects = self.objects.lock().unwrap();
+            let mut objects = ferrokit_core::poison::lock_unpoisoned(&self.objects);
             let key = id.0 as usize;
             let Some(obj) = objects.get_mut(&key) else {
                 drop(objects);
                 // `allocate_object` locks `next_id` before `objects`; never the reverse.
-                if key < *self.next_id.lock().unwrap() {
-                    self.over_released.lock().unwrap().push(key);
+                if key < *ferrokit_core::poison::lock_unpoisoned(&self.next_id) {
+                    ferrokit_core::poison::lock_unpoisoned(&self.over_released).push(key);
                 }
                 continue;
             };
@@ -745,10 +749,7 @@ impl MockObjcRuntime {
 
     /// Whether `id` was sent `release` after it had already been deallocated.
     pub fn was_over_released(&self, id: Id) -> bool {
-        self.over_released
-            .lock()
-            .unwrap()
-            .contains(&(id.0 as usize))
+        ferrokit_core::poison::lock_unpoisoned(&self.over_released).contains(&(id.0 as usize))
     }
 
     /// `-[NSWindow close]`: orders the window out and, if `releasedWhenClosed`, releases it.
@@ -789,10 +790,7 @@ pub struct ObjcMsg;
 /// Name the mock runtime registered for `sel` (the reverse of `sel_register_name`).
 #[cfg(not(target_os = "macos"))]
 fn mock_selector_name(sel: Sel) -> String {
-    MockObjcRuntime::instance()
-        .selectors
-        .lock()
-        .unwrap()
+    ferrokit_core::poison::lock_unpoisoned(&MockObjcRuntime::instance().selectors)
         .iter()
         .find(|&(_, &v)| v == (sel.0 as usize))
         .map(|(k, _)| k.clone())
@@ -918,10 +916,7 @@ impl ObjcMsg {
         #[cfg(not(target_os = "macos"))]
         {
             let runtime = MockObjcRuntime::instance();
-            let class_name = runtime
-                .classes
-                .lock()
-                .unwrap()
+            let class_name = ferrokit_core::poison::lock_unpoisoned(&runtime.classes)
                 .iter()
                 .find(|&(_, &v)| v == (class.0 as usize))
                 .map(|(k, _)| k.clone())
@@ -931,22 +926,26 @@ impl ObjcMsg {
             if sel_name == "systemStatusBar" {
                 runtime.allocate_object("NSStatusBar")
             } else if sel_name == "sharedApplication" {
-                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
-                    if v.class_name == "NSApplication" {
-                        Some(Id(k as *mut c_void))
-                    } else {
-                        None
-                    }
-                });
+                let existing = ferrokit_core::poison::lock_unpoisoned(&runtime.objects)
+                    .iter()
+                    .find_map(|(&k, v)| {
+                        if v.class_name == "NSApplication" {
+                            Some(Id(k as *mut c_void))
+                        } else {
+                            None
+                        }
+                    });
                 existing.unwrap_or_else(|| runtime.allocate_object("NSApplication"))
             } else if sel_name == "defaultCenter" {
-                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
-                    if v.class_name == "NSNotificationCenter" {
-                        Some(Id(k as *mut c_void))
-                    } else {
-                        None
-                    }
-                });
+                let existing = ferrokit_core::poison::lock_unpoisoned(&runtime.objects)
+                    .iter()
+                    .find_map(|(&k, v)| {
+                        if v.class_name == "NSNotificationCenter" {
+                            Some(Id(k as *mut c_void))
+                        } else {
+                            None
+                        }
+                    });
                 existing.unwrap_or_else(|| runtime.allocate_object("NSNotificationCenter"))
             } else if sel_name == "mainScreen" {
                 runtime.allocate_object("NSScreen")
@@ -975,13 +974,15 @@ impl ObjcMsg {
                     unsafe { appkit::standard_cursor(&sel_name) }
                 }
             } else if sel_name == "clearColor" || sel_name == "windowBackgroundColor" {
-                let existing = runtime.objects.lock().unwrap().iter().find_map(|(&k, v)| {
-                    if v.class_name == "NSColor" && v.title == sel_name {
-                        Some(Id(k as *mut c_void))
-                    } else {
-                        None
-                    }
-                });
+                let existing = ferrokit_core::poison::lock_unpoisoned(&runtime.objects)
+                    .iter()
+                    .find_map(|(&k, v)| {
+                        if v.class_name == "NSColor" && v.title == sel_name {
+                            Some(Id(k as *mut c_void))
+                        } else {
+                            None
+                        }
+                    });
                 existing.unwrap_or_else(|| {
                     let id = runtime.allocate_object("NSColor");
                     runtime.update_object(id, |d| d.title = sel_name);

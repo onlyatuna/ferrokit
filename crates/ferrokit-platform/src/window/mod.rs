@@ -149,7 +149,7 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 pub fn set_window_size_limits(hwnd: HWND, limits: crate::size_limits::SizeLimits) {
-    let mut writer = WINDOW_SIZE_LIMITS.write().unwrap();
+    let mut writer = ferrokit_core::poison::write_unpoisoned(&WINDOW_SIZE_LIMITS);
     if writer.is_none() {
         *writer = Some(HashMap::new());
     }
@@ -159,21 +159,21 @@ pub fn set_window_size_limits(hwnd: HWND, limits: crate::size_limits::SizeLimits
 }
 
 pub fn get_window_size_limits(hwnd: HWND) -> Option<crate::size_limits::SizeLimits> {
-    let reader = WINDOW_SIZE_LIMITS.read().unwrap();
+    let reader = ferrokit_core::poison::read_unpoisoned(&WINDOW_SIZE_LIMITS);
     reader
         .as_ref()
         .and_then(|map| map.get(&(hwnd as isize)).copied())
 }
 
 pub fn remove_window_size_limits(hwnd: HWND) {
-    let mut writer = WINDOW_SIZE_LIMITS.write().unwrap();
+    let mut writer = ferrokit_core::poison::write_unpoisoned(&WINDOW_SIZE_LIMITS);
     if let Some(map) = writer.as_mut() {
         map.remove(&(hwnd as isize));
     }
 }
 
 pub fn register_window_event_binding(hwnd: HWND, handle: EventLoopHandle, receiver: ObjectId) {
-    let mut map = WINDOW_EVENT_BINDINGS.write().unwrap();
+    let mut map = ferrokit_core::poison::write_unpoisoned(&WINDOW_EVENT_BINDINGS);
     if map.is_none() {
         *map = Some(HashMap::new());
     }
@@ -198,15 +198,15 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
     // Values removed from the shared registries are dropped only after every guard is released:
     // a Drop that reaches back into the registries would otherwise re-enter the same RwLock.
     let removed_binding = {
-        let mut map = WINDOW_EVENT_BINDINGS.write().unwrap();
+        let mut map = ferrokit_core::poison::write_unpoisoned(&WINDOW_EVENT_BINDINGS);
         map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
     };
     let removed_cfg = {
-        let mut cfg_map = WINDOW_FRAMELESS_CONFIGS.write().unwrap();
+        let mut cfg_map = ferrokit_core::poison::write_unpoisoned(&WINDOW_FRAMELESS_CONFIGS);
         cfg_map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
     };
     let removed_limits = {
-        let mut limits_map = WINDOW_SIZE_LIMITS.write().unwrap();
+        let mut limits_map = ferrokit_core::poison::write_unpoisoned(&WINDOW_SIZE_LIMITS);
         limits_map.as_mut().and_then(|m| m.remove(&(hwnd as isize)))
     };
     drop((removed_binding, removed_cfg, removed_limits));
@@ -230,19 +230,19 @@ pub fn unregister_window_event_binding(hwnd: HWND) {
 
 #[inline]
 fn get_window_event_binding(hwnd: HWND) -> Option<(EventLoopHandle, ObjectId)> {
-    let map = WINDOW_EVENT_BINDINGS.read().unwrap();
+    let map = ferrokit_core::poison::read_unpoisoned(&WINDOW_EVENT_BINDINGS);
     map.as_ref().and_then(|m| m.get(&(hwnd as isize)).cloned())
 }
 
 #[inline]
 #[allow(dead_code)]
 fn get_window_frameless_config(hwnd: HWND) -> Option<CustomFramelessConfig> {
-    let map = WINDOW_FRAMELESS_CONFIGS.read().unwrap();
+    let map = ferrokit_core::poison::read_unpoisoned(&WINDOW_FRAMELESS_CONFIGS);
     map.as_ref().and_then(|m| m.get(&(hwnd as isize)).copied())
 }
 
 pub fn set_window_frameless_config(hwnd: HWND, config: CustomFramelessConfig) {
-    let mut map = WINDOW_FRAMELESS_CONFIGS.write().unwrap();
+    let mut map = ferrokit_core::poison::write_unpoisoned(&WINDOW_FRAMELESS_CONFIGS);
     if map.is_none() {
         *map = Some(HashMap::new());
     }

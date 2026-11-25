@@ -78,9 +78,7 @@ static APP_THREAD: RwLock<Option<ThreadId>> = RwLock::new(None);
 static QUIT_GATE: parking_lot::RwLock<Option<fn() -> bool>> = parking_lot::RwLock::new(None);
 
 fn is_app_thread() -> bool {
-    APP_THREAD
-        .read()
-        .unwrap()
+    crate::poison::read_unpoisoned(&APP_THREAD)
         .as_ref()
         .is_some_and(|t| *t == ThreadId::current())
 }
@@ -97,7 +95,7 @@ pub fn set_quit_gate(gate: fn() -> bool) {
 
 /// Whether `receiver` is the application object (`QCoreApplication::self`).
 pub(crate) fn is_application_object(receiver: ObjectId) -> bool {
-    *APP_OBJECT_ID.read().unwrap() == Some(receiver)
+    *crate::poison::read_unpoisoned(&APP_OBJECT_ID) == Some(receiver)
 }
 
 /// Delivers `Quit` to the application object: `QCoreApplication::event` (qcoreapplication.cpp:2052-2058)
@@ -134,7 +132,7 @@ fn current_event_loop() -> Option<Rc<EventLoop>> {
 /// `Quit` events on loop entry (qeventloop.cpp:192-195).
 pub(crate) fn app_object_on_current_thread() -> Option<ObjectId> {
     if is_app_thread() {
-        *APP_OBJECT_ID.read().unwrap()
+        *crate::poison::read_unpoisoned(&APP_OBJECT_ID)
     } else {
         None
     }
@@ -146,7 +144,7 @@ pub(crate) fn emit_about_to_quit_once() {
     if ABOUT_TO_QUIT_EMITTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let signal = ABOUT_TO_QUIT.read().unwrap().clone();
+    let signal = crate::poison::read_unpoisoned(&ABOUT_TO_QUIT).clone();
     if let Some(signal) = signal {
         signal.emit(&());
     }
@@ -184,8 +182,8 @@ impl CoreApplication {
 
         let id = ObjectId::next();
         let about_to_quit = Signal::new();
-        *ABOUT_TO_QUIT.write().unwrap() = Some(about_to_quit.clone());
-        *APP_THREAD.write().unwrap() = Some(ThreadId::current());
+        *crate::poison::write_unpoisoned(&ABOUT_TO_QUIT) = Some(about_to_quit.clone());
+        *crate::poison::write_unpoisoned(&APP_THREAD) = Some(ThreadId::current());
         let app = Self {
             data: ObjectData::new(id),
             about_to_quit,
@@ -193,7 +191,7 @@ impl CoreApplication {
 
         // Initialize metadata if not already set
         {
-            let mut meta_guard = GLOBAL_METADATA.write().unwrap();
+            let mut meta_guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
             let mut meta = meta_guard.take().unwrap_or_default();
             meta.arguments = args;
             if meta.application_name.is_empty()
@@ -218,7 +216,7 @@ impl CoreApplication {
             *el.borrow_mut() = Some(Rc::new(EventLoop::with_dispatcher_kind(kind)));
         });
 
-        *APP_OBJECT_ID.write().unwrap() = Some(id);
+        *crate::poison::write_unpoisoned(&APP_OBJECT_ID) = Some(id);
 
         app
     }
@@ -230,7 +228,7 @@ impl CoreApplication {
 
     /// Returns the `ObjectId` of the application object if it exists.
     pub fn instance_id() -> Option<ObjectId> {
-        *APP_OBJECT_ID.read().unwrap()
+        *crate::poison::read_unpoisoned(&APP_OBJECT_ID)
     }
 
     /// Signal emitted when the application is about to exit the main event loop (`aboutToQuit`).
@@ -304,7 +302,7 @@ impl CoreApplication {
     /// Posts an event to a receiver object with priority.
     pub fn post_event_with_priority(receiver: ObjectId, event: Event, priority: i32) {
         let app_thread = if is_application_object(receiver) {
-            *APP_THREAD.read().unwrap()
+            *crate::poison::read_unpoisoned(&APP_THREAD)
         } else {
             None
         };
@@ -348,16 +346,14 @@ impl CoreApplication {
     // --- Application Metadata ---
 
     pub fn application_name() -> String {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.application_name.clone())
             .unwrap_or_default()
     }
 
     pub fn set_application_name(name: impl Into<String>) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut() {
             m.application_name = name.into();
         } else {
@@ -369,16 +365,14 @@ impl CoreApplication {
     }
 
     pub fn application_version() -> String {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.application_version.clone())
             .unwrap_or_default()
     }
 
     pub fn set_application_version(version: impl Into<String>) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut() {
             m.application_version = version.into();
         } else {
@@ -390,16 +384,14 @@ impl CoreApplication {
     }
 
     pub fn organization_name() -> String {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.organization_name.clone())
             .unwrap_or_default()
     }
 
     pub fn set_organization_name(name: impl Into<String>) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut() {
             m.organization_name = name.into();
         } else {
@@ -411,16 +403,14 @@ impl CoreApplication {
     }
 
     pub fn organization_domain() -> String {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.organization_domain.clone())
             .unwrap_or_default()
     }
 
     pub fn set_organization_domain(domain: impl Into<String>) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut() {
             m.organization_domain = domain.into();
         } else {
@@ -432,9 +422,7 @@ impl CoreApplication {
     }
 
     pub fn arguments() -> Vec<String> {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.arguments.clone())
             .unwrap_or_else(|| std::env::args().collect())
@@ -458,23 +446,21 @@ impl CoreApplication {
     // --- Library Paths ---
 
     pub fn library_paths() -> Vec<PathBuf> {
-        GLOBAL_METADATA
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_METADATA)
             .as_ref()
             .map(|m| m.library_paths.clone())
             .unwrap_or_default()
     }
 
     pub fn set_library_paths(paths: Vec<PathBuf>) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut() {
             m.library_paths = paths;
         }
     }
 
     pub fn add_library_path(path: PathBuf) {
-        let mut guard = GLOBAL_METADATA.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_METADATA);
         if let Some(m) = guard.as_mut()
             && !m.library_paths.contains(&path)
         {
@@ -485,7 +471,7 @@ impl CoreApplication {
     // --- Application Attributes ---
 
     pub fn set_attribute(attribute: ApplicationAttribute, on: bool) {
-        let mut guard = GLOBAL_ATTRIBUTES.write().unwrap();
+        let mut guard = crate::poison::write_unpoisoned(&GLOBAL_ATTRIBUTES);
         let set = guard.get_or_insert_with(HashSet::new);
         if on {
             set.insert(attribute);
@@ -495,9 +481,7 @@ impl CoreApplication {
     }
 
     pub fn test_attribute(attribute: ApplicationAttribute) -> bool {
-        GLOBAL_ATTRIBUTES
-            .read()
-            .unwrap()
+        crate::poison::read_unpoisoned(&GLOBAL_ATTRIBUTES)
             .as_ref()
             .map(|set| set.contains(&attribute))
             .unwrap_or(false)
@@ -507,13 +491,13 @@ impl CoreApplication {
     #[doc(hidden)]
     pub fn reset_for_test() {
         APP_INSTANCE_EXISTS.store(false, Ordering::SeqCst);
-        *APP_OBJECT_ID.write().unwrap() = None;
-        *ABOUT_TO_QUIT.write().unwrap() = None;
-        *APP_THREAD.write().unwrap() = None;
+        *crate::poison::write_unpoisoned(&APP_OBJECT_ID) = None;
+        *crate::poison::write_unpoisoned(&ABOUT_TO_QUIT) = None;
+        *crate::poison::write_unpoisoned(&APP_THREAD) = None;
         IN_EXEC.store(false, Ordering::SeqCst);
         ABOUT_TO_QUIT_EMITTED.store(false, Ordering::SeqCst);
-        *GLOBAL_METADATA.write().unwrap() = None;
-        *GLOBAL_ATTRIBUTES.write().unwrap() = None;
+        *crate::poison::write_unpoisoned(&GLOBAL_METADATA) = None;
+        *crate::poison::write_unpoisoned(&GLOBAL_ATTRIBUTES) = None;
         let _ = LOCAL_EVENT_LOOP.try_with(|el| {
             *el.borrow_mut() = None;
         });

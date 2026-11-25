@@ -10,7 +10,7 @@ static URL_HANDLER: RwLock<Option<UrlHandler>> = RwLock::new(None);
 /// Sets or unsets a custom URL handler (aligned with `QDesktopServices::setUrlHandler`).
 /// If a handler is set and returns `true`, default OS launching is bypassed.
 pub fn set_url_handler(handler: Option<UrlHandler>) {
-    let mut guard = URL_HANDLER.write().unwrap();
+    let mut guard = ferrokit_core::poison::write_unpoisoned(&URL_HANDLER);
     *guard = handler;
 }
 
@@ -23,7 +23,7 @@ pub fn open_url(url: &str) -> bool {
 
     // Check if custom or test handler is registered
     {
-        let guard = URL_HANDLER.read().unwrap();
+        let guard = ferrokit_core::poison::read_unpoisoned(&URL_HANDLER);
         if let Some(ref handler) = *guard {
             return handler(url);
         }
