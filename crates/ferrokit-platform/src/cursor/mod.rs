@@ -632,8 +632,8 @@ pub mod cocoa_cursor {
         /// asks Cocoa windows to rebuild their cursor rects.
         pub fn clear_override() {
             OVERRIDE_SHAPE.store(NO_SHAPE, Ordering::Relaxed);
-            let previous = OVERRIDDEN_CURSOR.swap(0, Ordering::AcqRel);
             if appkit::is_main_thread() {
+                let previous = OVERRIDDEN_CURSOR.swap(0, Ordering::AcqRel);
                 if previous != 0 {
                     let prev_id = Id(previous as *mut c_void);
                     Self::apply_cursor_id(prev_id);
