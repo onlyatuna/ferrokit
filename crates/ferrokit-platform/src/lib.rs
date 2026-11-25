@@ -14,8 +14,9 @@ pub(crate) fn current_uid() -> u32 {
 pub mod dialogs;
 pub use dialogs::macos as dialogs_cocoa;
 pub use dialogs::{
-    DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult, PlatformDialogs, SystemDialogs,
-    platform_dialogs,
+    AsyncDialogs, DialogHandle, DialogIcon, FileFilter, MessageBoxButtons, MessageBoxResult,
+    PlatformDialogs, SystemDialogs, message_box_async, open_file_async, open_files_async,
+    platform_dialogs, save_file_async, select_folder_async,
 };
 pub mod desktop_services;
 pub use desktop_services::{UrlHandler, open_file, open_url, set_url_handler};
