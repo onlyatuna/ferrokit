@@ -347,3 +347,101 @@ fn test_shuttle_negative_mutant_clear_pending_before_mark_ended_fails() {
         ITERATIONS,
     );
 }
+
+// ---- Synced 9-level lock hierarchy, reparent_owned, and H-free detach ----
+
+#[test]
+fn test_shuttle_reparent_owned_and_detach_without_h() {
+    shuttle::check_random(
+        || {
+            let reg = Arc::new(HierarchyRegistry::new(4));
+            reg.set_parent(0, Some(1)).unwrap();
+            reg.set_parent(3, Some(2)).unwrap();
+
+            let r1 = Arc::clone(&reg);
+            let t1 = thread::spawn(move || {
+                let _ = r1.reparent_owned(0, 1, Some(2));
+            });
+
+            let r2 = Arc::clone(&reg);
+            let t2 = thread::spawn(move || {
+                let _ = r2.set_parent(0, Some(3));
+            });
+
+            let r3 = Arc::clone(&reg);
+            let t3 = thread::spawn(move || {
+                let _ = r3.detach_without_h(0);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+            t3.join().unwrap();
+
+            reg.assert_invariants();
+        },
+        200,
+    );
+}
+
+#[test]
+fn test_shuttle_full_lock_hierarchy_paths() {
+    shuttle::check_random(
+        || {
+            let reg = Arc::new(HierarchyRegistry::new(3));
+
+            let r1 = Arc::clone(&reg);
+            let t1 = thread::spawn(move || {
+                let _ = r1.timer_dispatch_read(0);
+            });
+
+            let r2 = Arc::clone(&reg);
+            let t2 = thread::spawn(move || {
+                r2.update_thread_affinity(0, 42);
+            });
+
+            let r3 = Arc::clone(&reg);
+            let t3 = thread::spawn(move || {
+                let _ = r3.set_parent(0, Some(1));
+                let _ = r3.reparent_owned(0, 1, Some(2));
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+            t3.join().unwrap();
+
+            reg.assert_invariants();
+        },
+        200,
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_shuttle_negative_mutant_invert_outer_locks_deadlocks() {
+    shuttle::check_random(
+        || {
+            let reg = Arc::new(HierarchyRegistry::with_mutants(
+                2,
+                MutantConfig {
+                    invert_outer_locks: true,
+                    ..MutantConfig::default()
+                },
+            ));
+
+            let r1 = Arc::clone(&reg);
+            let t1 = thread::spawn(move || {
+                let _ = r1.timer_dispatch_read(0);
+            });
+
+            let r2 = Arc::clone(&reg);
+            let t2 = thread::spawn(move || {
+                let _q = r2.q.lock().unwrap();
+                let _l0 = r2.l0.write().unwrap();
+            });
+
+            let _ = t1.join();
+            let _ = t2.join();
+        },
+        100,
+    );
+}

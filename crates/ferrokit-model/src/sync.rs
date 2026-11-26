@@ -18,7 +18,7 @@ pub mod sys {
     pub use loom::thread_local;
 
     pub mod atomic {
-        pub use loom::sync::atomic::{AtomicU64, Ordering};
+        pub use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     }
 }
 
@@ -29,7 +29,7 @@ pub mod sys {
     pub use shuttle::thread_local;
 
     pub mod atomic {
-        pub use shuttle::sync::atomic::{AtomicU64, Ordering};
+        pub use shuttle::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     }
 }
 
@@ -40,6 +40,6 @@ pub mod sys {
     pub use std::thread_local;
 
     pub mod atomic {
-        pub use std::sync::atomic::{AtomicU64, Ordering};
+        pub use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     }
 }

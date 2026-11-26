@@ -4,19 +4,23 @@
 //! # Model Scope and Limitations
 //!
 //! **IMPORTANT**: This crate provides an **abstract simplified model** to verify scheduling
-//! interleavings, lock-ordering protocols (H -> L0 -> L1 -> L2), cycle detection, and snapshot
-//! revalidation. It is **NOT** a direct verification of `crates/ferrokit-core/src/object/qobject.rs`.
+//! interleavings, the full 9-level lock-ordering protocol
+//! (`TR -> EH -> Q -> GT -> H -> L0 -> L1 -> L2 -> Leaves`, matching
+//! `crates/ferrokit-core/src/object/mod.rs`), cycle detection, `reparent_owned`
+//! (`ObjectBorrowGuard` CAS + `old_parent` revalidation + post-lock guard drop, matching
+//! `crates/ferrokit-core/src/object/qobject/reparent.rs`), `H`-free link removal, and
+//! `parent_link_index` leaf synchronization. It is **NOT** a direct verification of
+//! `crates/ferrokit-core/src/object/qobject/`.
 //!
 //! Specifically, this model deliberately abstracts away:
-//! 1. `OwnedObject` memory management and ownership transfer mechanics.
-//! 2. `_old_parent` re-validation in `reparent_owned_object`.
-//! 3. External borrow flag CAS (`ObjectBorrowGuard`) and `pending_child_changes`.
-//! 4. Event loop queueing, posted events dispatch, and timer integrations.
-//! 5. Direct `QObject` destructors and foreign thread affinity migrations.
+//! 1. `OwnedObject` heap allocation and `Box` ownership transfer mechanics.
+//! 2. `pending_child_changes` deferred queue flushing inside `ObjectBorrowGuard::drop`.
+//! 3. Event loop queueing, posted events dispatch, and timer wheel integrations.
+//! 4. Direct `QObject` destructors and foreign thread affinity migrations.
 //!
 //! Production hierarchy invariants are verified through a combination of this abstract model,
 //! ThreadSanitizer native stress testing, production lockdep instrumentation, and snapshot
-//! invariance tests on `qobject.rs`.
+//! invariance tests on `qobject`.
 
 use crate::sync::sys::*;
 
@@ -27,6 +31,8 @@ pub struct ObjectRecord {
     pub id: ObjectId,
     pub parent: RwLock<Option<ObjectId>>, // L2
     pub children: RwLock<Vec<ObjectId>>,  // L1
+    pub borrowed: atomic::AtomicBool,     // CAS borrow guard (outside hierarchy locks)
+    pub thread_id: RwLock<u32>,           // Leaf
 }
 
 impl ObjectRecord {
@@ -35,7 +41,37 @@ impl ObjectRecord {
             id,
             parent: RwLock::new(None),
             children: RwLock::new(Vec::new()),
+            borrowed: atomic::AtomicBool::new(false),
+            thread_id: RwLock::new(0),
         }
+    }
+}
+
+/// RAII guard modeling `ObjectBorrowGuard` CAS acquisition before locks and release after locks.
+struct BorrowGuard<'a> {
+    record: &'a ObjectRecord,
+}
+
+impl<'a> BorrowGuard<'a> {
+    fn try_acquire(record: &'a ObjectRecord) -> Result<Self, ModelError> {
+        record
+            .borrowed
+            .compare_exchange(
+                false,
+                true,
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
+            )
+            .map(|_| Self { record })
+            .map_err(|_| ModelError::Busy)
+    }
+}
+
+impl Drop for BorrowGuard<'_> {
+    fn drop(&mut self) {
+        self.record
+            .borrowed
+            .store(false, atomic::Ordering::Release);
     }
 }
 
@@ -45,6 +81,8 @@ pub enum ModelError {
     AncestorConflict,
     InvalidParent,
     LockViolation,
+    Busy,
+    StaleParent,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -52,13 +90,36 @@ pub struct MutantConfig {
     pub omit_h: bool,
     pub invert_l1: bool,
     pub skip_revalidation: bool,
+    pub invert_outer_locks: bool,
 }
 
 pub struct HierarchyRegistry {
-    pub h: Mutex<()>,                          // H
-    pub l0: RwLock<()>,                        // L0
+    pub tr: Mutex<()>,                         // 1. TR
+    pub eh: Mutex<()>,                         // 2. EH
+    pub q: Mutex<()>,                          // 3. Q
+    pub gt: RwLock<()>,                        // 4. GT
+    pub h: Mutex<()>,                          // 5. H
+    pub l0: RwLock<()>,                        // 6. L0
     pub records: Vec<Arc<ObjectRecord>>,
+    pub parent_link_index: Mutex<Vec<Vec<ObjectId>>>, // 9. Leaf (mirrors ObjectRecord::parent)
     pub mutants: MutantConfig,
+}
+
+fn update_parent_link_index(
+    index: &mut [Vec<ObjectId>],
+    child_id: ObjectId,
+    old_parent: Option<ObjectId>,
+    new_parent: Option<ObjectId>,
+) {
+    if let Some(op) = old_parent {
+        index[op as usize].retain(|&id| id != child_id);
+    }
+    if let Some(np) = new_parent {
+        let list = &mut index[np as usize];
+        if !list.contains(&child_id) {
+            list.push(child_id);
+        }
+    }
 }
 
 impl HierarchyRegistry {
@@ -72,9 +133,14 @@ impl HierarchyRegistry {
             records.push(Arc::new(ObjectRecord::new(i as ObjectId)));
         }
         Self {
+            tr: Mutex::new(()),
+            eh: Mutex::new(()),
+            q: Mutex::new(()),
+            gt: RwLock::new(()),
             h: Mutex::new(()),
             l0: RwLock::new(()),
             records,
+            parent_link_index: Mutex::new(vec![Vec::new(); count]),
             mutants,
         }
     }
@@ -152,10 +218,10 @@ impl HierarchyRegistry {
         }
 
         // 3. Cycle check
-        if let Some(np) = new_parent {
-            if self.would_create_cycle(child_id, np) {
-                return Err(ModelError::CycleDetected);
-            }
+        if let Some(np) = new_parent
+            && self.would_create_cycle(child_id, np)
+        {
+            return Err(ModelError::CycleDetected);
         }
 
         // 4. Lock parents' L1 write guards
@@ -181,10 +247,8 @@ impl HierarchyRegistry {
         let mut child_p_guard = child_rec.parent.write().unwrap();
 
         // Pre-commit revalidation:
-        if !self.mutants.skip_revalidation {
-            if *child_p_guard != old_parent {
-                return Err(ModelError::LockViolation);
-            }
+        if !self.mutants.skip_revalidation && *child_p_guard != old_parent {
+            return Err(ModelError::LockViolation);
         }
 
         // 6. Commit phase
@@ -213,6 +277,10 @@ impl HierarchyRegistry {
         }
 
         *child_p_guard = new_parent;
+        {
+            let mut idx = self.parent_link_index.lock().unwrap();
+            update_parent_link_index(&mut idx, child_id, old_parent, new_parent);
+        }
 
         // 7. Strict release order: L2 -> L1 -> L0 -> H
         drop(child_p_guard);
@@ -297,6 +365,15 @@ impl HierarchyRegistry {
         for (idx, &(_, new_p)) in all_children.iter().enumerate() {
             *child_guards[idx] = Some(new_p);
         }
+        {
+            let mut idx = self.parent_link_index.lock().unwrap();
+            for &c in a_children.iter() {
+                update_parent_link_index(&mut idx, c, Some(a_id), Some(b_id));
+            }
+            for &c in b_children.iter() {
+                update_parent_link_index(&mut idx, c, Some(b_id), Some(a_id));
+            }
+        }
 
         if let Some((s_a, s_b)) = stale_snapshots {
             if first_id == a_id {
@@ -320,9 +397,172 @@ impl HierarchyRegistry {
         Ok(())
     }
 
-    /// Reparent an owned child from old_parent to new_parent.
-    pub fn reparent(&self, child_id: ObjectId, _old_parent: ObjectId, new_parent: ObjectId) -> Result<(), ModelError> {
-        self.set_parent(child_id, Some(new_parent))
+    /// Reparent an owned child from `expected_old_parent` to `new_parent` (or `None` to
+    /// release), modeling `reparent_owned_object`: CAS borrow guards outside locks, `H -> L0`
+    /// acquisition, `old_parent` revalidation, `L1 -> L2 -> Leaf` commit, and strict release order
+    /// before dropping borrow guards.
+    pub fn reparent_owned(
+        &self,
+        child_id: ObjectId,
+        expected_old_parent: ObjectId,
+        new_parent: Option<ObjectId>,
+    ) -> Result<(), ModelError> {
+        if new_parent == Some(child_id) || expected_old_parent == child_id {
+            return Err(ModelError::InvalidParent);
+        }
+
+        // Borrow guards are declared BEFORE hierarchy locks so they drop strictly AFTER
+        // `L2 -> L1 -> L0 -> H`.
+        let child_rec = self.get(child_id);
+        let _child_borrow = BorrowGuard::try_acquire(&child_rec)?;
+        let old_rec = self.get(expected_old_parent);
+        let _old_borrow = BorrowGuard::try_acquire(&old_rec)?;
+        let new_rec = new_parent.map(|np| self.get(np));
+        let _new_borrow = match new_rec.as_ref() {
+            Some(nr) if nr.id != expected_old_parent => Some(BorrowGuard::try_acquire(nr)?),
+            _ => None,
+        };
+
+        let _h = if !self.mutants.omit_h {
+            Some(self.h.lock().unwrap())
+        } else {
+            None
+        };
+        let _l0 = self.l0.read().unwrap();
+
+        if !self.mutants.skip_revalidation {
+            let current_parent = *child_rec.parent.read().unwrap();
+            if current_parent != Some(expected_old_parent) {
+                return Err(ModelError::StaleParent);
+            }
+        }
+        if new_parent == Some(expected_old_parent) {
+            return Ok(());
+        }
+        if let Some(np) = new_parent
+            && self.would_create_cycle(child_id, np)
+        {
+            return Err(ModelError::CycleDetected);
+        }
+
+        let (first_p, second_p) = match new_parent {
+            Some(np) => {
+                if !self.mutants.invert_l1 {
+                    if expected_old_parent < np {
+                        (Some(Arc::clone(&old_rec)), Some(self.get(np)))
+                    } else {
+                        (Some(self.get(np)), Some(Arc::clone(&old_rec)))
+                    }
+                } else {
+                    (Some(Arc::clone(&old_rec)), Some(self.get(np)))
+                }
+            }
+            None => (Some(Arc::clone(&old_rec)), None),
+        };
+
+        let mut g1 = first_p.as_ref().map(|r| r.children.write().unwrap());
+        let mut g2 = second_p.as_ref().map(|r| r.children.write().unwrap());
+        let mut child_p_guard = child_rec.parent.write().unwrap();
+
+        if !self.mutants.skip_revalidation && *child_p_guard != Some(expected_old_parent) {
+            return Err(ModelError::StaleParent);
+        }
+
+        if first_p.as_ref().map(|r| r.id) == Some(expected_old_parent) {
+            g1.as_deref_mut()
+                .unwrap()
+                .retain(|&id| id != child_id);
+        } else if second_p.as_ref().map(|r| r.id) == Some(expected_old_parent) {
+            g2.as_deref_mut()
+                .unwrap()
+                .retain(|&id| id != child_id);
+        }
+
+        if let Some(np) = new_parent {
+            if first_p.as_ref().map(|r| r.id) == Some(np) {
+                let list = g1.as_deref_mut().unwrap();
+                if !list.contains(&child_id) {
+                    list.push(child_id);
+                }
+            } else if second_p.as_ref().map(|r| r.id) == Some(np) {
+                let list = g2.as_deref_mut().unwrap();
+                if !list.contains(&child_id) {
+                    list.push(child_id);
+                }
+            }
+        }
+
+        *child_p_guard = new_parent;
+        {
+            let mut idx = self.parent_link_index.lock().unwrap();
+            update_parent_link_index(&mut idx, child_id, Some(expected_old_parent), new_parent);
+        }
+
+        drop(child_p_guard);
+        drop(g2);
+        drop(g1);
+        drop(_l0);
+        drop(_h);
+
+        Ok(())
+    }
+
+    /// Reparent an owned child from `old_parent` to `new_parent`.
+    pub fn reparent(&self, child_id: ObjectId, old_parent: ObjectId, new_parent: ObjectId) -> Result<(), ModelError> {
+        self.reparent_owned(child_id, old_parent, Some(new_parent))
+    }
+
+    /// Detach `child_id` from its current parent without acquiring `H`, modeling link-removal
+    /// paths (`unregister_qobject`, `release_child`) that acquire `L0 (read) -> L1 -> L2 -> Leaf`.
+    pub fn detach_without_h(&self, child_id: ObjectId) -> Result<(), ModelError> {
+        let _l0 = self.l0.read().unwrap();
+        let child_rec = self.get(child_id);
+        let Some(old_parent) = *child_rec.parent.read().unwrap() else {
+            return Ok(());
+        };
+        let parent_rec = self.get(old_parent);
+        let mut p_children = parent_rec.children.write().unwrap();
+        let mut child_p_guard = child_rec.parent.write().unwrap();
+        if !self.mutants.skip_revalidation && *child_p_guard != Some(old_parent) {
+            return Err(ModelError::StaleParent);
+        }
+        p_children.retain(|&id| id != child_id);
+        *child_p_guard = None;
+        {
+            let mut idx = self.parent_link_index.lock().unwrap();
+            update_parent_link_index(&mut idx, child_id, Some(old_parent), None);
+        }
+        drop(child_p_guard);
+        drop(p_children);
+        drop(_l0);
+        Ok(())
+    }
+
+    /// Models `TR -> EH -> Q -> L0 (read) -> Leaf (thread_id)` during timer dispatch.
+    pub fn timer_dispatch_read(&self, id: ObjectId) -> u32 {
+        let _tr = self.tr.lock().unwrap();
+        let _eh = self.eh.lock().unwrap();
+        if self.mutants.invert_outer_locks {
+            let _l0 = self.l0.read().unwrap();
+            let _q = self.q.lock().unwrap();
+            return *self.get(id).thread_id.read().unwrap();
+        }
+        let _q = self.q.lock().unwrap();
+        let _l0 = self.l0.read().unwrap();
+        *self.get(id).thread_id.read().unwrap()
+    }
+
+    /// Models `GT (write) -> L0 (read) -> Leaf (thread_id)` during thread-affinity updates.
+    pub fn update_thread_affinity(&self, id: ObjectId, new_thread: u32) {
+        if self.mutants.invert_outer_locks {
+            let _l0 = self.l0.read().unwrap();
+            let _gt = self.gt.write().unwrap();
+            *self.get(id).thread_id.write().unwrap() = new_thread;
+            return;
+        }
+        let _gt = self.gt.write().unwrap();
+        let _l0 = self.l0.read().unwrap();
+        *self.get(id).thread_id.write().unwrap() = new_thread;
     }
 
     /// Assert all tree invariants:
@@ -375,6 +615,29 @@ impl HierarchyRegistry {
                         other_i, child_id, parent_id
                     );
                 }
+            }
+        }
+
+        // 4. Leaf `parent_link_index` mirrors `ObjectRecord::parent` / `children`
+        let idx = self.parent_link_index.lock().unwrap();
+        assert_eq!(idx.len(), count);
+        for (p_idx, indexed_children) in idx.iter().enumerate() {
+            let p_children = self.records[p_idx].children.read().unwrap();
+            assert_eq!(
+                indexed_children.len(),
+                p_children.len(),
+                "PARENT_LINK_INDEX mismatch for parent {}: {:?} vs {:?}",
+                p_idx,
+                indexed_children,
+                *p_children
+            );
+            for &c in indexed_children {
+                assert!(
+                    p_children.contains(&c),
+                    "PARENT_LINK_INDEX has orphan {} under parent {}",
+                    c,
+                    p_idx
+                );
             }
         }
     }

@@ -62,6 +62,45 @@ mod native_stress {
         reg.assert_invariants();
     }
 
+    #[test]
+    fn test_native_full_hierarchy_stress_tsan() {
+        let reg = Arc::new(HierarchyRegistry::new(6));
+        reg.set_parent(1, Some(0)).unwrap();
+        reg.set_parent(2, Some(0)).unwrap();
+
+        let mut handles = Vec::new();
+
+        let r1 = Arc::clone(&reg);
+        handles.push(thread::spawn(move || {
+            for _ in 0..200 {
+                let _ = r1.reparent_owned(1, 0, Some(2));
+                let _ = r1.reparent_owned(1, 2, Some(0));
+            }
+        }));
+
+        let r2 = Arc::clone(&reg);
+        handles.push(thread::spawn(move || {
+            for _ in 0..200 {
+                let _ = r2.detach_without_h(1);
+                let _ = r2.set_parent(1, Some(0));
+            }
+        }));
+
+        let r3 = Arc::clone(&reg);
+        handles.push(thread::spawn(move || {
+            for i in 0..200u32 {
+                let _ = r3.timer_dispatch_read(1);
+                r3.update_thread_affinity(1, i % 4);
+            }
+        }));
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        reg.assert_invariants();
+    }
+
     /// Thread-owned slots (`src/local_slots.rs`) on real threads, for ThreadSanitizer: owners
     /// install slots with nested captures, publish handles on a shared board, call and drop each
     /// other's handles, drain their queues and exit while foreign drops are still in flight.
