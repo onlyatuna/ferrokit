@@ -67,8 +67,20 @@ pub trait PlatformDialogs: Send + Sync {
     ) -> Option<PathBuf>;
 
     fn select_folder(&self, title: &str, initial_path: &str) -> Option<PathBuf>;
+
+    /// Whether this backend may safely execute dialogs on a background worker thread.
+    ///
+    /// Returns `true` by default (`SystemDialogs` / `tinyfiledialogs`). Backends with main-thread
+    /// affinity (such as AppKit on macOS) override this to `false`.
+    fn runs_on_worker_thread(&self) -> bool {
+        true
+    }
 }
 
+/// Native dialog backend backed by `tinyfiledialogs`.
+///
+/// Prefer the non-blocking `*_async` functions (or [`AsyncDialogs`]) from GUI threads so modal
+/// dialogs run on a worker thread without blocking the event loop.
 #[derive(Debug, Default)]
 pub struct SystemDialogs;
 
@@ -197,5 +209,446 @@ pub fn platform_dialogs() -> &'static dyn PlatformDialogs {
     #[cfg(not(target_os = "macos"))]
     {
         &SYSTEM_DIALOGS
+    }
+}
+
+/// Handle for an in-flight non-blocking native dialog launched via [`AsyncDialogs`] or the
+/// `*_async` helpers.
+pub struct DialogHandle<T> {
+    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rx: std::sync::mpsc::Receiver<T>,
+}
+
+impl<T> DialogHandle<T> {
+    /// Returns `true` once the dialog has completed and its result is ready.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Returns the dialog result without blocking if it has completed.
+    pub fn try_recv(&self) -> Option<T> {
+        self.rx.try_recv().ok()
+    }
+
+    /// Blocks until the dialog completes and returns its result.
+    pub fn wait(self) -> Option<T> {
+        self.rx.recv().ok()
+    }
+}
+
+fn dispatch_dialog_async<T, F, C>(runs_on_worker: bool, work: F, on_done: C) -> DialogHandle<T>
+where
+    T: Clone + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+    C: FnOnce(T) + Send + 'static,
+{
+    use ferrokit_core::event::{Event, EventKind};
+    use ferrokit_core::event_loop::post_event_to_thread;
+    use ferrokit_core::object::{ObjectId, ThreadId};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    let caller_thread = ThreadId::current();
+    let (tx, rx) = mpsc::channel();
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_clone = Arc::clone(&finished);
+
+    if runs_on_worker {
+        let task = move || {
+            let result = work();
+            let _ = tx.send(result.clone());
+            post_event_to_thread(
+                caller_thread,
+                ObjectId(0),
+                Event::new(EventKind::MetaCall(Box::new(move |_| on_done(result)))),
+            );
+            finished_clone.store(true, Ordering::Release);
+        };
+        let _ = std::thread::Builder::new()
+            .name("ferrokit-dialog".into())
+            .spawn(task);
+    } else {
+        post_event_to_thread(
+            caller_thread,
+            ObjectId(0),
+            Event::new(EventKind::MetaCall(Box::new(move |_| {
+                let result = work();
+                let _ = tx.send(result.clone());
+                finished_clone.store(true, Ordering::Release);
+                on_done(result);
+            }))),
+        );
+    }
+
+    DialogHandle { finished, rx }
+}
+
+/// Non-blocking wrapper around any [`PlatformDialogs`] backend.
+///
+/// Backends where [`PlatformDialogs::runs_on_worker_thread`] is `true` run on a worker thread and
+/// post results back to the calling thread's event loop. Main-thread-only backends (such as macOS
+/// AppKit) defer execution to the calling thread's event loop so the current handler returns
+/// immediately.
+#[derive(Clone)]
+pub struct AsyncDialogs {
+    backend: std::sync::Arc<dyn PlatformDialogs>,
+}
+
+impl AsyncDialogs {
+    pub fn new(backend: std::sync::Arc<dyn PlatformDialogs>) -> Self {
+        Self { backend }
+    }
+
+    pub fn message_box(
+        &self,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        icon: DialogIcon,
+        buttons: MessageBoxButtons,
+        on_done: impl FnOnce(MessageBoxResult) + Send + 'static,
+    ) -> DialogHandle<MessageBoxResult> {
+        let backend = std::sync::Arc::clone(&self.backend);
+        let title = title.into();
+        let message = message.into();
+        dispatch_dialog_async(
+            backend.runs_on_worker_thread(),
+            move || backend.message_box(&title, &message, icon, buttons),
+            on_done,
+        )
+    }
+
+    pub fn open_file(
+        &self,
+        title: impl Into<String>,
+        initial_path: impl Into<String>,
+        filter: Option<FileFilter>,
+        on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+    ) -> DialogHandle<Option<PathBuf>> {
+        let backend = std::sync::Arc::clone(&self.backend);
+        let title = title.into();
+        let initial_path = initial_path.into();
+        dispatch_dialog_async(
+            backend.runs_on_worker_thread(),
+            move || backend.open_file(&title, &initial_path, filter.as_ref()),
+            on_done,
+        )
+    }
+
+    pub fn open_files(
+        &self,
+        title: impl Into<String>,
+        initial_path: impl Into<String>,
+        filter: Option<FileFilter>,
+        on_done: impl FnOnce(Option<Vec<PathBuf>>) + Send + 'static,
+    ) -> DialogHandle<Option<Vec<PathBuf>>> {
+        let backend = std::sync::Arc::clone(&self.backend);
+        let title = title.into();
+        let initial_path = initial_path.into();
+        dispatch_dialog_async(
+            backend.runs_on_worker_thread(),
+            move || backend.open_files(&title, &initial_path, filter.as_ref()),
+            on_done,
+        )
+    }
+
+    pub fn save_file(
+        &self,
+        title: impl Into<String>,
+        initial_path: impl Into<String>,
+        filter: Option<FileFilter>,
+        on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+    ) -> DialogHandle<Option<PathBuf>> {
+        let backend = std::sync::Arc::clone(&self.backend);
+        let title = title.into();
+        let initial_path = initial_path.into();
+        dispatch_dialog_async(
+            backend.runs_on_worker_thread(),
+            move || backend.save_file(&title, &initial_path, filter.as_ref()),
+            on_done,
+        )
+    }
+
+    pub fn select_folder(
+        &self,
+        title: impl Into<String>,
+        initial_path: impl Into<String>,
+        on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+    ) -> DialogHandle<Option<PathBuf>> {
+        let backend = std::sync::Arc::clone(&self.backend);
+        let title = title.into();
+        let initial_path = initial_path.into();
+        dispatch_dialog_async(
+            backend.runs_on_worker_thread(),
+            move || backend.select_folder(&title, &initial_path),
+            on_done,
+        )
+    }
+}
+
+/// Non-blocking [`PlatformDialogs::message_box`] using [`platform_dialogs`].
+pub fn message_box_async(
+    title: impl Into<String>,
+    message: impl Into<String>,
+    icon: DialogIcon,
+    buttons: MessageBoxButtons,
+    on_done: impl FnOnce(MessageBoxResult) + Send + 'static,
+) -> DialogHandle<MessageBoxResult> {
+    let backend = platform_dialogs();
+    let title = title.into();
+    let message = message.into();
+    dispatch_dialog_async(
+        backend.runs_on_worker_thread(),
+        move || backend.message_box(&title, &message, icon, buttons),
+        on_done,
+    )
+}
+
+/// Non-blocking [`PlatformDialogs::open_file`] using [`platform_dialogs`].
+pub fn open_file_async(
+    title: impl Into<String>,
+    initial_path: impl Into<String>,
+    filter: Option<FileFilter>,
+    on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) -> DialogHandle<Option<PathBuf>> {
+    let backend = platform_dialogs();
+    let title = title.into();
+    let initial_path = initial_path.into();
+    dispatch_dialog_async(
+        backend.runs_on_worker_thread(),
+        move || backend.open_file(&title, &initial_path, filter.as_ref()),
+        on_done,
+    )
+}
+
+/// Non-blocking [`PlatformDialogs::open_files`] using [`platform_dialogs`].
+pub fn open_files_async(
+    title: impl Into<String>,
+    initial_path: impl Into<String>,
+    filter: Option<FileFilter>,
+    on_done: impl FnOnce(Option<Vec<PathBuf>>) + Send + 'static,
+) -> DialogHandle<Option<Vec<PathBuf>>> {
+    let backend = platform_dialogs();
+    let title = title.into();
+    let initial_path = initial_path.into();
+    dispatch_dialog_async(
+        backend.runs_on_worker_thread(),
+        move || backend.open_files(&title, &initial_path, filter.as_ref()),
+        on_done,
+    )
+}
+
+/// Non-blocking [`PlatformDialogs::save_file`] using [`platform_dialogs`].
+pub fn save_file_async(
+    title: impl Into<String>,
+    initial_path: impl Into<String>,
+    filter: Option<FileFilter>,
+    on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) -> DialogHandle<Option<PathBuf>> {
+    let backend = platform_dialogs();
+    let title = title.into();
+    let initial_path = initial_path.into();
+    dispatch_dialog_async(
+        backend.runs_on_worker_thread(),
+        move || backend.save_file(&title, &initial_path, filter.as_ref()),
+        on_done,
+    )
+}
+
+/// Non-blocking [`PlatformDialogs::select_folder`] using [`platform_dialogs`].
+pub fn select_folder_async(
+    title: impl Into<String>,
+    initial_path: impl Into<String>,
+    on_done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) -> DialogHandle<Option<PathBuf>> {
+    let backend = platform_dialogs();
+    let title = title.into();
+    let initial_path = initial_path.into();
+    dispatch_dialog_async(
+        backend.runs_on_worker_thread(),
+        move || backend.select_folder(&title, &initial_path),
+        on_done,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferrokit_core::event_loop::EventLoop;
+    use ferrokit_core::object::ThreadId;
+    use ferrokit_core::poison::lock_unpoisoned;
+    use std::sync::{Arc, Barrier, Mutex};
+
+    struct BlockingWorkerDialogs {
+        gate: Arc<Barrier>,
+    }
+
+    impl PlatformDialogs for BlockingWorkerDialogs {
+        fn message_box(
+            &self,
+            _title: &str,
+            _message: &str,
+            _icon: DialogIcon,
+            _buttons: MessageBoxButtons,
+        ) -> MessageBoxResult {
+            MessageBoxResult::Ok
+        }
+
+        fn open_file(
+            &self,
+            _title: &str,
+            initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<PathBuf> {
+            self.gate.wait();
+            Some(PathBuf::from(initial_path).join("picked.txt"))
+        }
+
+        fn open_files(
+            &self,
+            _title: &str,
+            _initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<Vec<PathBuf>> {
+            None
+        }
+
+        fn save_file(
+            &self,
+            _title: &str,
+            _initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<PathBuf> {
+            None
+        }
+
+        fn select_folder(&self, _title: &str, _initial_path: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    struct MainThreadDialogs {
+        ran_on: Arc<Mutex<Option<ThreadId>>>,
+    }
+
+    impl PlatformDialogs for MainThreadDialogs {
+        fn runs_on_worker_thread(&self) -> bool {
+            false
+        }
+
+        fn message_box(
+            &self,
+            _title: &str,
+            _message: &str,
+            _icon: DialogIcon,
+            _buttons: MessageBoxButtons,
+        ) -> MessageBoxResult {
+            *lock_unpoisoned(&self.ran_on) = Some(ThreadId::current());
+            MessageBoxResult::Yes
+        }
+
+        fn open_file(
+            &self,
+            _title: &str,
+            _initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<PathBuf> {
+            None
+        }
+
+        fn open_files(
+            &self,
+            _title: &str,
+            _initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<Vec<PathBuf>> {
+            None
+        }
+
+        fn save_file(
+            &self,
+            _title: &str,
+            _initial_path: &str,
+            _filter: Option<&FileFilter>,
+        ) -> Option<PathBuf> {
+            None
+        }
+
+        fn select_folder(&self, _title: &str, _initial_path: &str) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    #[test]
+    fn worker_thread_dialog_does_not_block_caller_and_delivers_on_caller_thread() {
+        let event_loop = EventLoop::new();
+        let caller = ThreadId::current();
+        let gate = Arc::new(Barrier::new(2));
+        let dialogs = AsyncDialogs::new(Arc::new(BlockingWorkerDialogs {
+            gate: Arc::clone(&gate),
+        }));
+
+        let delivered = Arc::new(Mutex::new(None));
+        let delivered_cb = Arc::clone(&delivered);
+
+        let handle = dialogs.open_file("Open", "base", None, move |picked| {
+            *lock_unpoisoned(&delivered_cb) = Some((ThreadId::current(), picked));
+        });
+        assert!(
+            !handle.is_finished(),
+            "dialog call must return without blocking"
+        );
+
+        gate.wait();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(handle.is_finished());
+
+        event_loop.send_posted_events();
+        let (cb_thread, cb_path) = lock_unpoisoned(&delivered)
+            .take()
+            .expect("callback must run on caller thread");
+        assert_eq!(cb_thread, caller);
+        assert_eq!(cb_path, Some(PathBuf::from("base").join("picked.txt")));
+        assert_eq!(
+            handle.try_recv(),
+            Some(Some(PathBuf::from("base").join("picked.txt")))
+        );
+    }
+
+    #[test]
+    fn main_thread_dialog_defers_execution_and_runs_on_caller_thread() {
+        let event_loop = EventLoop::new();
+        let caller = ThreadId::current();
+        let ran_on = Arc::new(Mutex::new(None));
+        let dialogs = AsyncDialogs::new(Arc::new(MainThreadDialogs {
+            ran_on: Arc::clone(&ran_on),
+        }));
+
+        let cb_result: Arc<Mutex<Option<(ThreadId, MessageBoxResult)>>> =
+            Arc::new(Mutex::new(None));
+        let cb_clone = Arc::clone(&cb_result);
+        let handle = dialogs.message_box(
+            "Title",
+            "Body",
+            DialogIcon::Question,
+            MessageBoxButtons::YesNo,
+            move |res| {
+                *lock_unpoisoned(&cb_clone) = Some((ThreadId::current(), res));
+            },
+        );
+        assert!(lock_unpoisoned(&ran_on).is_none());
+        assert!(!handle.is_finished());
+
+        event_loop.send_posted_events();
+        assert_eq!(*lock_unpoisoned(&ran_on), Some(caller));
+        assert!(handle.is_finished());
+        assert_eq!(handle.try_recv(), Some(MessageBoxResult::Yes));
+        assert_eq!(
+            *lock_unpoisoned(&cb_result),
+            Some((caller, MessageBoxResult::Yes))
+        );
     }
 }

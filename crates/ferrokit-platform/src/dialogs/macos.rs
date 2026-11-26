@@ -321,6 +321,10 @@ impl<R: DialogRuntime> CocoaDialogs<R> {
 }
 
 impl<R: DialogRuntime + Send + Sync> PlatformDialogs for CocoaDialogs<R> {
+    fn runs_on_worker_thread(&self) -> bool {
+        false
+    }
+
     fn message_box(
         &self,
         title: &str,
