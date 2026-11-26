@@ -65,11 +65,9 @@ LGPL-3.0-only, see [LICENSE](LICENSE). ferrokit is derived from the design and b
 subsidiaries; this project is independent and is not affiliated with them.
 
 Every Rust source file of the crates starts with an `SPDX-License-Identifier: LGPL-3.0-only` line,
-except where it says otherwise: `ftgrays.rs` is `LGPL-3.0-only AND FTL` (a port of FreeType code) and
-`third_party/` holds copies of the `skrifa` and `read-fonts` crates (MIT OR Apache-2.0, some files
-`(MIT OR Apache-2.0) AND FTL`), see [NOTICE](NOTICE) and `third_party/*/README.ferrokit.md`. Unless
-you state otherwise, a contribution you submit is licensed under LGPL-3.0-only (under the terms of
-the file you change in `third_party/`), with no additional terms.
+except where it says otherwise: `ftgrays.rs` is `LGPL-3.0-only AND FTL` (a port of FreeType code),
+see [NOTICE](NOTICE). Unless you state otherwise, a contribution you submit is licensed under
+LGPL-3.0-only, with no additional terms.
 
 Rust links crates statically by default. If you distribute a closed-source program that includes
 ferrokit, section 4 of the LGPL applies to you, in particular its requirements about letting users
