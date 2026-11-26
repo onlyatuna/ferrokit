@@ -250,6 +250,24 @@ pub(crate) mod objc2_bridge {
         const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
     }
 
+    /// Converts a raw selector pointer into an `objc2::runtime::Sel`.
+    ///
+    /// # Safety
+    /// `ptr` must be a non-null, valid Objective-C `SEL` pointer.
+    #[inline]
+    pub(crate) unsafe fn to_objc2_sel(ptr: *const c_void) -> Objc2Sel {
+        // SAFETY: `objc2::runtime::Sel` is `#[repr(transparent)]` around `NonNull<c_void>`;
+        // caller guarantees `ptr` is a valid non-null `SEL`.
+        unsafe { std::mem::transmute::<*const c_void, Objc2Sel>(ptr) }
+    }
+
+    /// Converts an `objc2::runtime::Sel` into a raw selector pointer.
+    #[inline]
+    pub(crate) fn from_objc2_sel(sel: Objc2Sel) -> *const c_void {
+        // SAFETY: `objc2::runtime::Sel` is `#[repr(transparent)]` around `NonNull<c_void>`.
+        unsafe { std::mem::transmute::<Objc2Sel, *const c_void>(sel) }
+    }
+
     /// Sends an Objective-C instance message via `objc2::runtime::MessageReceiver::send_message`
     /// (with `catch-all` exception handling and architecture-appropriate ABI dispatch).
     ///
@@ -264,7 +282,7 @@ pub(crate) mod objc2_bridge {
     ) -> R {
         // SAFETY: caller guarantees `receiver` is nil or a valid `AnyObject` and `sel` is valid
         // with signature `(A) -> R`.
-        unsafe { (receiver.0.cast::<AnyObject>()).send_message(Objc2Sel::from_ptr(sel.0), args) }
+        unsafe { (receiver.0.cast::<AnyObject>()).send_message(to_objc2_sel(sel.0), args) }
     }
 
     /// Sends an Objective-C class message via `objc2::runtime::MessageReceiver::send_message`.
@@ -280,7 +298,7 @@ pub(crate) mod objc2_bridge {
     ) -> R {
         // SAFETY: caller guarantees `class` is a valid `AnyClass` and `sel` is valid with
         // signature `(A) -> R`.
-        unsafe { (&*(class.0.cast::<AnyClass>())).send_message(Objc2Sel::from_ptr(sel.0), args) }
+        unsafe { (&*(class.0.cast::<AnyClass>())).send_message(to_objc2_sel(sel.0), args) }
     }
 
     /// Sends an Objective-C superclass message via
@@ -301,7 +319,7 @@ pub(crate) mod objc2_bridge {
         unsafe {
             (receiver.cast::<AnyObject>()).send_super_message(
                 &*(super_class.0.cast::<AnyClass>()),
-                Objc2Sel::from_ptr(sel),
+                to_objc2_sel(sel),
                 args,
             )
         }
@@ -384,14 +402,14 @@ pub fn qnsview_class() -> Class {
         let sel = Sel::register("isFlipped");
         let inherited = objc2::ffi::class_getInstanceMethod(
             ns_view.0.cast::<objc2::runtime::AnyClass>(),
-            objc2::runtime::Sel::from_ptr(sel.0),
+            objc2_bridge::to_objc2_sel(sel.0),
         );
         let imp: objc2::runtime::Imp =
             std::mem::transmute::<*const c_void, objc2::runtime::Imp>(is_flipped as *const c_void);
         objc2::ffi::class_addMethod(
             class,
-            objc2::runtime::Sel::from_ptr(sel.0),
-            Some(imp),
+            objc2_bridge::to_objc2_sel(sel.0),
+            imp,
             objc2::ffi::method_getTypeEncoding(inherited),
         );
         appkit::install_view_methods(class.cast());
@@ -515,8 +533,8 @@ pub fn qcocoa_application_delegate() -> Id {
                 );
             objc2::ffi::class_addMethod(
                 raw,
-                objc2::runtime::Sel::from_ptr(Sel::register("applicationDidFinishLaunching:").0),
-                Some(did_launch_imp),
+                objc2_bridge::to_objc2_sel(Sel::register("applicationDidFinishLaunching:").0),
+                did_launch_imp,
                 c"v@:@".as_ptr(),
             );
             let did_active_imp: objc2::runtime::Imp =
@@ -525,8 +543,8 @@ pub fn qcocoa_application_delegate() -> Id {
                 );
             objc2::ffi::class_addMethod(
                 raw,
-                objc2::runtime::Sel::from_ptr(Sel::register("applicationDidBecomeActive:").0),
-                Some(did_active_imp),
+                objc2_bridge::to_objc2_sel(Sel::register("applicationDidBecomeActive:").0),
+                did_active_imp,
                 c"v@:@".as_ptr(),
             );
             objc2::ffi::objc_registerClassPair(raw);
@@ -578,7 +596,9 @@ pub fn sel_register_name(name: &str) -> Sel {
     #[cfg(target_os = "macos")]
     {
         let c_str = CString::new(name).unwrap();
-        Sel(objc2::runtime::Sel::register(&c_str).as_ptr())
+        Sel(objc2_bridge::from_objc2_sel(objc2::runtime::Sel::register(
+            &c_str,
+        )))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1969,8 +1989,8 @@ fn action_target_class() -> Class {
         >(perform_action as *const c_void);
         objc2::ffi::class_addMethod(
             class,
-            objc2::runtime::Sel::from_ptr(Sel::register(ACTION_TARGET_SELECTOR).0),
-            Some(perform_imp),
+            objc2_bridge::to_objc2_sel(Sel::register(ACTION_TARGET_SELECTOR).0),
+            perform_imp,
             c"v@:@".as_ptr(),
         );
         let observe_imp: objc2::runtime::Imp = std::mem::transmute::<
@@ -1979,10 +1999,10 @@ fn action_target_class() -> Class {
         >(observe_value as *const c_void);
         objc2::ffi::class_addMethod(
             class,
-            objc2::runtime::Sel::from_ptr(
+            objc2_bridge::to_objc2_sel(
                 Sel::register("observeValueForKeyPath:ofObject:change:context:").0,
             ),
-            Some(observe_imp),
+            observe_imp,
             c"v@:@@@^v".as_ptr(),
         );
         objc2::ffi::objc_registerClassPair(class);

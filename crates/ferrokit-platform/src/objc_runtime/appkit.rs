@@ -1766,8 +1766,8 @@ mod native {
                     std::mem::transmute::<*const c_void, objc2::runtime::Imp>(imp);
                 objc2::ffi::class_addMethod(
                     cls,
-                    objc2::runtime::Sel::from_ptr(Sel::register(name).0),
-                    Some(fn_ptr),
+                    objc2_bridge::to_objc2_sel(Sel::register(name).0),
+                    fn_ptr,
                     types.as_ptr(),
                 )
             };
@@ -1936,8 +1936,8 @@ mod native {
             for selector in ["canBecomeKeyWindow", "canBecomeMainWindow"] {
                 objc2::ffi::class_addMethod(
                     class,
-                    objc2::runtime::Sel::from_ptr(Sel::register(selector).0),
-                    Some(yes_imp),
+                    objc2_bridge::to_objc2_sel(Sel::register(selector).0),
+                    yes_imp,
                     ENC_BOOL_GETTER.as_ptr(),
                 );
             }
@@ -1950,8 +1950,8 @@ mod native {
             >(window_should_close as *const c_void);
             objc2::ffi::class_addMethod(
                 class,
-                objc2::runtime::Sel::from_ptr(Sel::register("windowShouldClose:").0),
-                Some(close_imp),
+                objc2_bridge::to_objc2_sel(Sel::register("windowShouldClose:").0),
+                close_imp,
                 ENC_BOOL_METHOD_WITH_ID_ARG.as_ptr(),
             );
             objc2::ffi::objc_registerClassPair(class);
