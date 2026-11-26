@@ -25,7 +25,7 @@ ferrokit-platform = { path = ".", features = ["test-hooks"] }
 windows-sys = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Future dependencies: zbus, x11rb / wayland-client
+x11rb = { version = "0.13", features = ["randr", "shape"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["catch-all", "relax-void-encoding", "disable-encoding-assertions"] }

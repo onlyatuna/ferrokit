@@ -5,6 +5,21 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::Event;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::shape::{self, ConnectionExt as _};
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xproto::{
+    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, CreateWindowAux,
+    EventMask, PropMode, Rectangle, WindowClass,
+};
+#[cfg(target_os = "linux")]
+use x11rb::rust_connection::RustConnection;
+#[cfg(target_os = "linux")]
+use x11rb::wrapper::ConnectionExt as _;
 
 use ferrokit_core::event_loop::{
     EventDispatcher, SocketDescriptor, SocketEvent, SocketNotifier, SocketNotifierError,
@@ -202,8 +217,14 @@ pub struct X11NativeWindow {
     opacity: f32,
     size_limits: crate::size_limits::SizeLimits,
     #[cfg(target_os = "linux")]
-    /// Owns the display connection for the window's lifetime (closed on drop).
-    _stream: Option<UnixStream>,
+    /// Owns the X11 server connection for the window's lifetime (closed on drop).
+    conn: Option<Arc<RustConnection>>,
+    #[cfg(target_os = "linux")]
+    root: u32,
+    #[cfg(target_os = "linux")]
+    wm_delete_window: u32,
+    #[cfg(target_os = "linux")]
+    screen_num: usize,
 }
 
 static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
@@ -211,6 +232,25 @@ static X11_WINDOW_ID_COUNTER: std::sync::atomic::AtomicU32 =
 
 /// Error returned when the X11 display socket cannot be connected.
 pub(crate) const X11_CONNECT_FAILED: &str = "Failed to connect to the X11 display";
+
+#[cfg(target_os = "linux")]
+fn intern_atom(conn: &RustConnection, name: &[u8]) -> Option<u32> {
+    conn.intern_atom(false, name)
+        .ok()?
+        .reply()
+        .ok()
+        .map(|r| r.atom)
+}
+
+#[cfg(target_os = "linux")]
+struct LiveX11Init {
+    conn: Arc<RustConnection>,
+    xid: u32,
+    root: u32,
+    wm_delete_window: u32,
+    screen_num: usize,
+    depth: u8,
+}
 
 impl X11NativeWindow {
     /// Whether the display named by `DISPLAY` (default `:0`) accepts a connection.
@@ -240,15 +280,131 @@ impl X11NativeWindow {
         #[cfg(target_os = "linux")]
         {
             let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
-            let display_num = display_name
-                .split(':')
-                .nth(1)
-                .and_then(|s| s.split('.').next())
-                .unwrap_or("0");
-            let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{}", display_num))
-                .map_err(|_| X11_CONNECT_FAILED)?;
-            let _ = stream.set_nonblocking(true);
-            Self::build(title, rect, flags, display_name, Some(stream))
+            let (conn, screen_num) =
+                RustConnection::connect(None).map_err(|_| X11_CONNECT_FAILED)?;
+            let conn = Arc::new(conn);
+            let screen = &conn.setup().roots[screen_num];
+            let root = screen.root;
+            let depth = screen.root_depth;
+            let xid = conn
+                .generate_id()
+                .map_err(|_| "Failed to generate X11 window id")?;
+
+            let event_mask = EventMask::EXPOSURE
+                | EventMask::STRUCTURE_NOTIFY
+                | EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::POINTER_MOTION
+                | EventMask::KEY_PRESS
+                | EventMask::KEY_RELEASE
+                | EventMask::FOCUS_CHANGE;
+            let override_redirect = flags.contains(WindowFlags::TOOLTIP);
+            let aux = CreateWindowAux::new()
+                .event_mask(event_mask)
+                .override_redirect(u32::from(override_redirect));
+            conn.create_window(
+                x11rb::COPY_DEPTH_FROM_PARENT,
+                xid,
+                root,
+                rect.x as i16,
+                rect.y as i16,
+                rect.width.max(1) as u16,
+                rect.height.max(1) as u16,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &aux,
+            )
+            .map_err(|_| "Failed to create X11 window")?;
+
+            let _ = conn.change_property8(
+                PropMode::REPLACE,
+                xid,
+                AtomEnum::WM_NAME,
+                AtomEnum::STRING,
+                title.as_bytes(),
+            );
+            if let (Some(net_wm_name), Some(utf8)) = (
+                intern_atom(&conn, b"_NET_WM_NAME"),
+                intern_atom(&conn, b"UTF8_STRING"),
+            ) {
+                let _ = conn.change_property8(
+                    PropMode::REPLACE,
+                    xid,
+                    net_wm_name,
+                    utf8,
+                    title.as_bytes(),
+                );
+            }
+
+            let wm_delete_window = intern_atom(&conn, b"WM_DELETE_WINDOW").unwrap_or(0);
+            if wm_delete_window != 0
+                && let Some(wm_protocols) = intern_atom(&conn, b"WM_PROTOCOLS")
+            {
+                let _ = conn.change_property32(
+                    PropMode::REPLACE,
+                    xid,
+                    wm_protocols,
+                    AtomEnum::ATOM,
+                    &[wm_delete_window],
+                );
+            }
+
+            if flags.contains(WindowFlags::FRAMELESS)
+                && let Some(motif) = intern_atom(&conn, b"_MOTIF_WM_HINTS")
+            {
+                // flags = MWM_HINTS_DECORATIONS (2), decorations = 0 (borderless)
+                let _ = conn.change_property32(
+                    PropMode::REPLACE,
+                    xid,
+                    motif,
+                    motif,
+                    &[2u32, 0, 0, 0, 0],
+                );
+            }
+
+            if (flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP))
+                && let (Some(wm_state), Some(above)) = (
+                    intern_atom(&conn, b"_NET_WM_STATE"),
+                    intern_atom(&conn, b"_NET_WM_STATE_ABOVE"),
+                )
+            {
+                let _ = conn.change_property32(
+                    PropMode::REPLACE,
+                    xid,
+                    wm_state,
+                    AtomEnum::ATOM,
+                    &[above],
+                );
+            }
+
+            if flags.contains(WindowFlags::CLICK_THROUGH) {
+                let _ = conn.shape_rectangles(
+                    shape::SO::SET,
+                    shape::SK::INPUT,
+                    x11rb::protocol::xproto::ClipOrdering::UNSORTED,
+                    xid,
+                    0,
+                    0,
+                    &[],
+                );
+            }
+
+            let _ = conn.flush();
+            Self::build(
+                title,
+                rect,
+                flags,
+                display_name,
+                Some(LiveX11Init {
+                    conn,
+                    xid,
+                    root,
+                    wm_delete_window,
+                    screen_num,
+                    depth,
+                }),
+            )
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -281,25 +437,66 @@ impl X11NativeWindow {
         rect: Rect,
         flags: WindowFlags,
         display_name: String,
-        #[cfg(target_os = "linux")] stream: Option<UnixStream>,
+        #[cfg(target_os = "linux")] live: Option<LiveX11Init>,
     ) -> Result<Self, &'static str> {
-        let xid = X11_WINDOW_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         #[cfg(target_os = "linux")]
-        let connection_fd = stream
-            .as_ref()
-            .map_or(-1, |s| s.as_raw_fd() as SocketDescriptor);
+        let (xid, connection_fd, conn, root, wm_delete_window, screen_num, depth) = match live {
+            Some(init) => {
+                let fd = init.conn.stream().as_raw_fd() as SocketDescriptor;
+                (
+                    init.xid,
+                    fd,
+                    Some(init.conn),
+                    init.root,
+                    init.wm_delete_window,
+                    init.screen_num,
+                    init.depth,
+                )
+            }
+            None => (
+                X11_WINDOW_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
+                -1,
+                None,
+                0,
+                0,
+                0,
+                24,
+            ),
+        };
         #[cfg(not(target_os = "linux"))]
-        let connection_fd: SocketDescriptor = -1;
+        let (xid, connection_fd): (u32, SocketDescriptor) =
+            (X11_WINDOW_ID_COUNTER.fetch_add(1, Ordering::SeqCst), -1);
         let stays_on_top =
             flags.contains(WindowFlags::STAYS_ON_TOP) || flags.contains(WindowFlags::TOOLTIP);
         let click_through = flags.contains(WindowFlags::CLICK_THROUGH);
 
         let surface = if rect.width > 0 && rect.height > 0 {
-            Some(X11ShmSurface::new(
-                xid,
-                rect.width as u32,
-                rect.height as u32,
-            )?)
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(ref c) = conn {
+                    Some(X11ShmSurface::new_with_connection(
+                        Arc::clone(c),
+                        xid,
+                        depth,
+                        rect.width as u32,
+                        rect.height as u32,
+                    )?)
+                } else {
+                    Some(X11ShmSurface::new(
+                        xid,
+                        rect.width as u32,
+                        rect.height as u32,
+                    )?)
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Some(X11ShmSurface::new(
+                    xid,
+                    rect.width as u32,
+                    rect.height as u32,
+                )?)
+            }
         } else {
             None
         };
@@ -323,7 +520,13 @@ impl X11NativeWindow {
             opacity: 1.0,
             size_limits: crate::size_limits::SizeLimits::default(),
             #[cfg(target_os = "linux")]
-            _stream: stream,
+            conn,
+            #[cfg(target_os = "linux")]
+            root,
+            #[cfg(target_os = "linux")]
+            wm_delete_window,
+            #[cfg(target_os = "linux")]
+            screen_num,
         })
     }
 
@@ -511,14 +714,149 @@ impl X11NativeWindow {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl Drop for X11NativeWindow {
+    fn drop(&mut self) {
+        // Free the GC before destroying the window.
+        *ferrokit_core::poison::lock_unpoisoned(&self.surface) = None;
+        if let Some(ref conn) = self.conn {
+            let _ = conn.destroy_window(self.xid);
+            let _ = conn.flush();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl X11NativeWindow {
+    fn apply_size_hints(&self) {
+        let Some(ref conn) = self.conn else {
+            return;
+        };
+        let (min_w, min_h) = self.size_limits.min;
+        let (max_w, max_h) = self.size_limits.max;
+        let mut flags = 0u32;
+        if min_w > 0 || min_h > 0 {
+            flags |= 1 << 4; // PMinSize
+        }
+        if max_w < crate::size_limits::WINDOW_SIZE_MAX
+            || max_h < crate::size_limits::WINDOW_SIZE_MAX
+        {
+            flags |= 1 << 5; // PMaxSize
+        }
+        let mut hints = [0u32; 18];
+        hints[0] = flags;
+        hints[5] = min_w.max(0) as u32;
+        hints[6] = min_h.max(0) as u32;
+        hints[7] = max_w.max(0) as u32;
+        hints[8] = max_h.max(0) as u32;
+        let _ = conn.change_property32(
+            PropMode::REPLACE,
+            self.xid,
+            AtomEnum::WM_NORMAL_HINTS,
+            AtomEnum::WM_SIZE_HINTS,
+            &hints,
+        );
+        let _ = conn.flush();
+    }
+
+    fn drain_connection_events(&self) -> Vec<X11Event> {
+        let Some(ref conn) = self.conn else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(ev)) = conn.poll_for_event() {
+            match ev {
+                Event::Expose(e) if e.window == self.xid => {
+                    out.push(X11Event::Expose {
+                        rect: Rect::new(
+                            i32::from(e.x),
+                            i32::from(e.y),
+                            i32::from(e.width),
+                            i32::from(e.height),
+                        ),
+                    });
+                }
+                Event::ConfigureNotify(e) if e.window == self.xid => {
+                    out.push(X11Event::ConfigureNotify {
+                        rect: Rect::new(
+                            i32::from(e.x),
+                            i32::from(e.y),
+                            i32::from(e.width),
+                            i32::from(e.height),
+                        ),
+                    });
+                }
+                Event::ButtonPress(e) if e.event == self.xid => {
+                    out.push(X11Event::ButtonPress {
+                        button: u32::from(e.detail),
+                        x: i32::from(e.event_x),
+                        y: i32::from(e.event_y),
+                        modifiers: u32::from(u16::from(e.state)),
+                    });
+                }
+                Event::ButtonRelease(e) if e.event == self.xid => {
+                    out.push(X11Event::ButtonRelease {
+                        button: u32::from(e.detail),
+                        x: i32::from(e.event_x),
+                        y: i32::from(e.event_y),
+                        modifiers: u32::from(u16::from(e.state)),
+                    });
+                }
+                Event::MotionNotify(e) if e.event == self.xid => {
+                    out.push(X11Event::MotionNotify {
+                        x: i32::from(e.event_x),
+                        y: i32::from(e.event_y),
+                        modifiers: u32::from(u16::from(e.state)),
+                    });
+                }
+                Event::KeyPress(e) if e.event == self.xid => {
+                    out.push(X11Event::KeyPress {
+                        keycode: u32::from(e.detail),
+                        modifiers: u32::from(u16::from(e.state)),
+                    });
+                }
+                Event::KeyRelease(e) if e.event == self.xid => {
+                    out.push(X11Event::KeyRelease {
+                        keycode: u32::from(e.detail),
+                        modifiers: u32::from(u16::from(e.state)),
+                    });
+                }
+                Event::FocusIn(e) if e.event == self.xid => out.push(X11Event::FocusIn),
+                Event::FocusOut(e) if e.event == self.xid => out.push(X11Event::FocusOut),
+                Event::ClientMessage(e)
+                    if e.window == self.xid
+                        && self.wm_delete_window != 0
+                        && e.data.as_data32()[0] == self.wm_delete_window =>
+                {
+                    out.push(X11Event::ClientMessage {
+                        atom: "WM_DELETE_WINDOW",
+                    });
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 impl PlatformWindow for X11NativeWindow {
     fn show(&self) {
         self.visible.store(true, Ordering::Release);
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn {
+            let _ = conn.map_window(self.xid);
+            let _ = conn.flush();
+        }
     }
 
     fn hide(&self) {
         self.visible.store(false, Ordering::Release);
         self.active.store(false, Ordering::Release);
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn {
+            let _ = conn.unmap_window(self.xid);
+            let _ = conn.flush();
+        }
     }
 
     fn is_active(&self) -> bool {
@@ -531,6 +869,16 @@ impl PlatformWindow for X11NativeWindow {
 
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn {
+            let aux = ConfigureWindowAux::new()
+                .x(rect.x)
+                .y(rect.y)
+                .width(rect.width.max(1) as u32)
+                .height(rect.height.max(1) as u32);
+            let _ = conn.configure_window(self.xid, &aux);
+            let _ = conn.flush();
+        }
         let mut surface_guard = ferrokit_core::poison::lock_unpoisoned(&self.surface);
         if let Some(surf) = surface_guard.as_mut()
             && rect.width > 0
@@ -543,12 +891,51 @@ impl PlatformWindow for X11NativeWindow {
     fn set_stays_on_top(&mut self, enabled: bool) {
         self.stays_on_top = enabled;
         self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn
+            && let (Some(wm_state), Some(above)) = (
+                intern_atom(conn, b"_NET_WM_STATE"),
+                intern_atom(conn, b"_NET_WM_STATE_ABOVE"),
+            )
+        {
+            let action = u32::from(enabled); // _NET_WM_STATE_REMOVE = 0, _NET_WM_STATE_ADD = 1
+            let msg = ClientMessageEvent::new(32, self.xid, wm_state, [action, above, 0, 1, 0]);
+            let _ = conn.send_event(
+                false,
+                self.root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                msg,
+            );
+            let _ = conn.flush();
+        }
     }
 
     fn set_click_through(&mut self, enabled: bool) {
         self.click_through = enabled;
         self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
-        // In X11, setting an empty XCB_SHAPE_SK_INPUT region makes mouse events pass through
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn {
+            let rects: Vec<Rectangle> = if enabled {
+                Vec::new()
+            } else {
+                vec![Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: self.geometry.width.max(1) as u16,
+                    height: self.geometry.height.max(1) as u16,
+                }]
+            };
+            let _ = conn.shape_rectangles(
+                shape::SO::SET,
+                shape::SK::INPUT,
+                x11rb::protocol::xproto::ClipOrdering::UNSORTED,
+                self.xid,
+                0,
+                0,
+                &rects,
+            );
+            let _ = conn.flush();
+        }
     }
 
     fn flags(&self) -> WindowFlags {
@@ -579,16 +966,30 @@ impl PlatformWindow for X11NativeWindow {
 
     fn set_opacity(&mut self, opacity: f32) {
         self.opacity = opacity.clamp(0.0, 1.0);
+        #[cfg(target_os = "linux")]
+        if let Some(ref conn) = self.conn
+            && let Some(atom) = intern_atom(conn, b"_NET_WM_WINDOW_OPACITY")
+        {
+            let val = (f64::from(self.opacity) * f64::from(u32::MAX)).round() as u32;
+            let _ = conn.change_property32(
+                PropMode::REPLACE,
+                self.xid,
+                atom,
+                AtomEnum::CARDINAL,
+                &[val],
+            );
+            let _ = conn.flush();
+        }
     }
 
     fn opacity(&self) -> f32 {
         self.opacity
     }
 
-    /// Stored and reported only: this backend does not pass size hints to the window system
-    /// (`WM_NORMAL_HINTS`), so a minimum or maximum is not enforced on X11.
     fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {
         self.size_limits.min = crate::size_limits::clamp_size_limit(min_w, min_h);
+        #[cfg(target_os = "linux")]
+        self.apply_size_hints();
     }
 
     fn minimum_size(&self) -> (i32, i32) {
@@ -597,6 +998,8 @@ impl PlatformWindow for X11NativeWindow {
 
     fn set_maximum_size(&mut self, max_w: i32, max_h: i32) {
         self.size_limits.max = crate::size_limits::clamp_size_limit(max_w, max_h);
+        #[cfg(target_os = "linux")]
+        self.apply_size_hints();
     }
 
     fn maximum_size(&self) -> (i32, i32) {
@@ -619,6 +1022,53 @@ impl PlatformWindow for X11NativeWindow {
         self.xid as isize
     }
 
+    fn raw_window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        #[cfg(target_os = "linux")]
+        {
+            if !self.is_live_display() {
+                return Err(raw_window_handle::HandleError::Unavailable);
+            }
+            let window = std::num::NonZeroU32::new(self.xid)
+                .ok_or(raw_window_handle::HandleError::Unavailable)?;
+            let handle = raw_window_handle::XcbWindowHandle::new(window);
+            // SAFETY: `self.xid` is a live X11 window owned by `self` for the lifetime of `&self`.
+            Ok(unsafe {
+                raw_window_handle::WindowHandle::borrow_raw(
+                    raw_window_handle::RawWindowHandle::Xcb(handle),
+                )
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(raw_window_handle::HandleError::Unavailable)
+        }
+    }
+
+    fn raw_display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        #[cfg(target_os = "linux")]
+        {
+            if !self.is_live_display() {
+                return Err(raw_window_handle::HandleError::Unavailable);
+            }
+            let handle =
+                raw_window_handle::XcbDisplayHandle::new(None, self.screen_num as std::ffi::c_int);
+            // SAFETY: the X11 connection and screen index stay valid for the lifetime of `&self`.
+            Ok(unsafe {
+                raw_window_handle::DisplayHandle::borrow_raw(
+                    raw_window_handle::RawDisplayHandle::Xcb(handle),
+                )
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(raw_window_handle::HandleError::Unavailable)
+        }
+    }
+
     /// Per-window screen lookup is not implemented on this backend yet: the primary screen's
     /// ratio (what every window used before `PlatformWindow::device_pixel_ratio` existed).
     fn device_pixel_ratio(&self) -> f32 {
@@ -626,8 +1076,12 @@ impl PlatformWindow for X11NativeWindow {
     }
 
     fn poll_events(&mut self) -> usize {
-        let events = std::mem::take(&mut *ferrokit_core::poison::lock_unpoisoned(
-            &self.pending_events,
+        #[cfg(target_os = "linux")]
+        let mut events = self.drain_connection_events();
+        #[cfg(not(target_os = "linux"))]
+        let mut events = Vec::new();
+        events.extend(std::mem::take(
+            &mut *ferrokit_core::poison::lock_unpoisoned(&self.pending_events),
         ));
         let count = events.len();
         for event in events {
