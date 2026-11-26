@@ -14,7 +14,18 @@ use crate::objc_runtime::{
 fn should_invoke_native_popup() -> bool {
     #[cfg(target_os = "macos")]
     {
-        !crate::integration::CocoaPlatformIntegration::is_headless()
+        if crate::integration::CocoaPlatformIntegration::is_headless() {
+            return false;
+        }
+        // `popUpMenuPositioningItem:atLocation:inView:` runs a modal tracking loop; skip it when
+        // no `NSApplication` run loop is active (e.g. `appkit_main_thread` checks).
+        let app_cls = Class::get("NSApplication").unwrap_or(Class::NIL);
+        // SAFETY: `sharedApplication` takes no arguments and returns `NSApplication *` or nil;
+        // `isRunning` takes no arguments and returns `BOOL`.
+        unsafe {
+            let app = ObjcMsg::send_class_0(app_cls, Sel::register("sharedApplication"));
+            ObjcMsg::send_bool_return(app, Sel::register("isRunning"))
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
