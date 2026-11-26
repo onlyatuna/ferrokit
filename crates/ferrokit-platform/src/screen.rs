@@ -917,6 +917,231 @@ pub mod x11_screen {
 
 pub use x11_screen::X11Screen;
 
+pub mod wayland_screen {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct WaylandScreen {
+        name: String,
+        geometry: Rect,
+        available_geometry: Rect,
+        is_primary: bool,
+        dpr: f32,
+    }
+
+    impl WaylandScreen {
+        fn fallback_primary() -> Self {
+            Self {
+                name: "WaylandPrimaryScreen".to_string(),
+                geometry: Rect::new(0, 0, 1920, 1080),
+                available_geometry: Rect::new(0, 0, 1920, 1040),
+                is_primary: true,
+                dpr: 1.0,
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        pub(crate) fn query_from_socket(
+            stream: std::os::unix::net::UnixStream,
+        ) -> Option<Vec<Self>> {
+            use wayland_client::protocol::{
+                wl_output::{self, WlOutput},
+                wl_registry,
+            };
+            use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+
+            #[derive(Default)]
+            struct OutputRecord {
+                global_name: u32,
+                name: Option<String>,
+                x: i32,
+                y: i32,
+                width: i32,
+                height: i32,
+                scale: i32,
+            }
+
+            #[derive(Default)]
+            struct ScreenQueryState {
+                outputs: Vec<(u32, WlOutput)>,
+                records: Vec<OutputRecord>,
+            }
+
+            impl Dispatch<wl_registry::WlRegistry, ()> for ScreenQueryState {
+                fn event(
+                    state: &mut Self,
+                    registry: &wl_registry::WlRegistry,
+                    event: wl_registry::Event,
+                    _: &(),
+                    _: &Connection,
+                    qh: &QueueHandle<Self>,
+                ) {
+                    if let wl_registry::Event::Global {
+                        name,
+                        interface,
+                        version,
+                    } = event
+                        && interface == "wl_output"
+                    {
+                        let ver = version.min(4);
+                        let output = registry.bind::<WlOutput, _, _>(name, ver, qh, name);
+                        state.outputs.push((name, output));
+                        state.records.push(OutputRecord {
+                            global_name: name,
+                            scale: 1,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+
+            impl Dispatch<WlOutput, u32> for ScreenQueryState {
+                fn event(
+                    state: &mut Self,
+                    _: &WlOutput,
+                    event: wl_output::Event,
+                    &global_name: &u32,
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                    let Some(rec) = state
+                        .records
+                        .iter_mut()
+                        .find(|r| r.global_name == global_name)
+                    else {
+                        return;
+                    };
+                    match event {
+                        wl_output::Event::Geometry { x, y, .. } => {
+                            rec.x = x;
+                            rec.y = y;
+                        }
+                        wl_output::Event::Mode {
+                            flags,
+                            width,
+                            height,
+                            ..
+                        } => {
+                            if let WEnum::Value(mode_flags) = flags
+                                && mode_flags.contains(wl_output::Mode::Current)
+                            {
+                                rec.width = width;
+                                rec.height = height;
+                            }
+                        }
+                        wl_output::Event::Scale { factor } => {
+                            rec.scale = factor.max(1);
+                        }
+                        wl_output::Event::Name { name } => {
+                            rec.name = Some(name);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let conn = Connection::from_socket(stream).ok()?;
+            let mut event_queue = conn.new_event_queue::<ScreenQueryState>();
+            let qh = event_queue.handle();
+            let _registry = conn.display().get_registry(&qh, ());
+            let mut state = ScreenQueryState::default();
+            event_queue.roundtrip(&mut state).ok()?;
+            event_queue.roundtrip(&mut state).ok()?;
+
+            let screens: Vec<Self> = state
+                .records
+                .into_iter()
+                .enumerate()
+                .filter(|(_, r)| r.width > 0 && r.height > 0)
+                .map(|(idx, r)| {
+                    let scale = r.scale.max(1) as f32;
+                    let logical_w = ((r.width as f32) / scale).round() as i32;
+                    let logical_h = ((r.height as f32) / scale).round() as i32;
+                    let geom = Rect::new(r.x, r.y, logical_w.max(1), logical_h.max(1));
+                    Self {
+                        name: r
+                            .name
+                            .unwrap_or_else(|| format!("WaylandOutput-{}", r.global_name)),
+                        geometry: geom,
+                        available_geometry: geom,
+                        is_primary: idx == 0,
+                        dpr: scale,
+                    }
+                })
+                .collect();
+
+            if screens.is_empty() {
+                None
+            } else {
+                Some(screens)
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn query_screens() -> Option<Vec<Self>> {
+            let display_name =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| format!("/run/user/{}", crate::current_uid()));
+            let socket_path = std::path::Path::new(&runtime_dir).join(display_name);
+            let stream = std::os::unix::net::UnixStream::connect(socket_path).ok()?;
+            Self::query_from_socket(stream)
+        }
+
+        pub fn primary() -> Self {
+            let screens = Self::screens();
+            screens
+                .iter()
+                .find(|s| s.is_primary)
+                .cloned()
+                .unwrap_or_else(|| {
+                    screens
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(Self::fallback_primary)
+                })
+        }
+
+        pub fn screens() -> Vec<Self> {
+            #[cfg(target_os = "linux")]
+            if let Some(screens) = Self::query_screens() {
+                return screens;
+            }
+            vec![Self::fallback_primary()]
+        }
+
+        pub fn screen_at(pos: Point) -> Option<Self> {
+            Self::screens()
+                .into_iter()
+                .find(|s| s.geometry.contains(pos))
+        }
+    }
+
+    impl PlatformScreen for WaylandScreen {
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn geometry(&self) -> Rect {
+            self.geometry
+        }
+
+        fn available_geometry(&self) -> Rect {
+            self.available_geometry
+        }
+
+        fn is_primary(&self) -> bool {
+            self.is_primary
+        }
+
+        fn device_pixel_ratio(&self) -> f32 {
+            self.dpr
+        }
+    }
+}
+
+pub use wayland_screen::WaylandScreen;
+
 /// Clamps a candidate window rectangle so that it is guaranteed to be visible on an active screen.
 ///
 /// Behavior:

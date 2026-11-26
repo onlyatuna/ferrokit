@@ -333,18 +333,35 @@ pub mod unix {
         }
 
         fn primary_screen(&self) -> Box<dyn PlatformScreen> {
-            Box::new(crate::screen::X11Screen::primary())
+            if Self::detect_display_server() == DisplayServerKind::Wayland {
+                Box::new(crate::screen::WaylandScreen::primary())
+            } else {
+                Box::new(crate::screen::X11Screen::primary())
+            }
         }
 
         fn screens(&self) -> Vec<Box<dyn PlatformScreen>> {
-            crate::screen::X11Screen::screens()
-                .into_iter()
-                .map(|s| Box::new(s) as Box<dyn PlatformScreen>)
-                .collect()
+            if Self::detect_display_server() == DisplayServerKind::Wayland {
+                crate::screen::WaylandScreen::screens()
+                    .into_iter()
+                    .map(|s| Box::new(s) as Box<dyn PlatformScreen>)
+                    .collect()
+            } else {
+                crate::screen::X11Screen::screens()
+                    .into_iter()
+                    .map(|s| Box::new(s) as Box<dyn PlatformScreen>)
+                    .collect()
+            }
         }
 
         fn screen_at(&self, pos: Point) -> Option<Box<dyn PlatformScreen>> {
-            crate::screen::X11Screen::screen_at(pos).map(|s| Box::new(s) as Box<dyn PlatformScreen>)
+            if Self::detect_display_server() == DisplayServerKind::Wayland {
+                crate::screen::WaylandScreen::screen_at(pos)
+                    .map(|s| Box::new(s) as Box<dyn PlatformScreen>)
+            } else {
+                crate::screen::X11Screen::screen_at(pos)
+                    .map(|s| Box::new(s) as Box<dyn PlatformScreen>)
+            }
         }
 
         fn screen_changed(&self) -> &Signal<()> {

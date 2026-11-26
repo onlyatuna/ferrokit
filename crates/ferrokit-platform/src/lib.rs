@@ -125,8 +125,8 @@ pub use presenter::{Win32DcPresenter, Win32LayeredPresenter, WindowsPresenter};
 #[cfg(windows)]
 pub use screen::Win32Screen;
 pub use screen::{
-    CocoaScreen, GenericScreen, PlatformScreen, X11Screen, clamp_window_rect_to_screens,
-    ensure_within_screens,
+    CocoaScreen, GenericScreen, PlatformScreen, WaylandScreen, X11Screen,
+    clamp_window_rect_to_screens, ensure_within_screens,
 };
 pub use surface::PlatformSurface;
 #[cfg(windows)]
